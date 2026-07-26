@@ -595,7 +595,7 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-                "role": {"type": "string", "enum": ["children", "attributes", "tabularSections", "forms", "commands", "templates", "references"]},
+                "role": {"type": "string", "enum": ["children", "attributes", "tabularSections", "forms", "commands", "templates"]},
                 "kind": {"type": "string", "enum": ["contains", "references"], "default": "contains"},
                 "pageSize": {"type": "integer", "minimum": 1, "maximum": 100}
             },
@@ -611,7 +611,7 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
                     {"type": "object", "additionalProperties": false, "properties": {"named": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}, "uniqueItems": true}}, "required": ["named"]}
                 ]},
                 "facets": {"type": "string", "enum": ["none", "summary", "full"]},
-                "relations": {"type": "array", "uniqueItems": true, "items": relation_selection}
+                "relations": {"type": "array", "items": relation_selection}
             }
         });
         schema["properties"]["objectRef"] = json!({

@@ -28,7 +28,7 @@ Use exactly one target mode per request:
 
 ## Selection and relation pages
 
-`select` is optional for bootstrap and object-reference requests. It may select typed properties, facets, and relation roles. Each relation request has a `role`, an optional `kind`, and optional `pageSize`; omitted `kind` is exactly `contains` (it never selects reference edges), the default page size is 25 and the maximum is 100. Select `kind: "references"` explicitly for reference edges. There is no offset pagination.
+`select` is optional for bootstrap and object-reference requests. It may select typed properties, facets, and relation roles. Each relation request has a `role`, an optional `kind`, and optional `pageSize`; omitted `kind` is exactly `contains` (it never selects reference edges), the default page size is 25 and the maximum is 100. Select `kind: "references"` explicitly for reference edges. Repeated relation selections are normalized by `(role, kind)` with the smaller page size. There is no offset pagination.
 
 ```json
 {

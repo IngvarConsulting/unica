@@ -313,7 +313,6 @@ pub(crate) enum RelationRole {
     Forms,
     Commands,
     Templates,
-    References,
 }
 
 impl RelationRole {
@@ -325,7 +324,6 @@ impl RelationRole {
             "forms" => Ok(Self::Forms),
             "commands" => Ok(Self::Commands),
             "templates" => Ok(Self::Templates),
-            "references" => Ok(Self::References),
             _ => Err(SourceAdapterError::new(SourceAdapterErrorKind::ProjectionAmbiguous, "invalid relation role")),
         }
     }
@@ -666,22 +664,24 @@ pub(crate) fn semantic_actions_for_relation(
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NavigationFacetVisibility {
+    Full,
+    Summary,
+    None,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NavigationNode {
     pub(crate) object_ref: ObjectRef,
     pub(crate) reference: ObjectRef,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) capability_state: Option<CapabilityState>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) capability: Option<CapabilityVector>,
+    pub(crate) capability_state: CapabilityState,
+    pub(crate) capability: CapabilityVector,
     pub(crate) properties: BTreeMap<String, SemanticProperty>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) action_profile: Option<ActionProfile>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) semantic_actions: Option<Vec<SemanticActionDescriptor>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) actions: Option<Vec<SemanticAction>>,
+    pub(crate) action_profile: ActionProfile,
+    pub(crate) semantic_actions: Vec<SemanticActionDescriptor>,
+    pub(crate) actions: Vec<SemanticAction>,
+    pub(crate) facet_visibility: NavigationFacetVisibility,
 }
 
 impl NavigationNode {
@@ -700,16 +700,49 @@ impl NavigationNode {
         Self {
             object_ref: reference.clone(),
             reference,
-            capability_state: Some(capability_state),
-            capability: Some(capability),
+            capability_state,
+            capability,
             properties: BTreeMap::new(),
-            action_profile: Some(action_profile),
-            semantic_actions: Some(semantic_actions),
-            actions: Some(Vec::new()),
+            action_profile,
+            semantic_actions,
+            actions: Vec::new(),
+            facet_visibility: NavigationFacetVisibility::Full,
         }
     }
     pub(crate) fn semantic_actions(&self) -> &[SemanticActionDescriptor] {
-        self.semantic_actions.as_deref().unwrap_or_default()
+        &self.semantic_actions
+    }
+}
+
+impl Serialize for NavigationNode {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let fields = match self.facet_visibility {
+            NavigationFacetVisibility::Full => 8,
+            NavigationFacetVisibility::Summary => 5,
+            NavigationFacetVisibility::None => 3,
+        };
+        let mut state = serializer.serialize_struct("NavigationNode", fields)?;
+        state.serialize_field("objectRef", &self.object_ref)?;
+        state.serialize_field("reference", &self.reference)?;
+        state.serialize_field("properties", &self.properties)?;
+        match self.facet_visibility {
+            NavigationFacetVisibility::Full => {
+                state.serialize_field("capabilityState", &self.capability_state)?;
+                state.serialize_field("capability", &self.capability)?;
+                state.serialize_field("actionProfile", &self.action_profile)?;
+                state.serialize_field("semanticActions", &self.semantic_actions)?;
+                state.serialize_field("actions", &self.actions)?;
+            }
+            NavigationFacetVisibility::Summary => {
+                state.serialize_field("capabilityState", &self.capability_state)?;
+                state.serialize_field("actionProfile", &self.action_profile)?;
+            }
+            NavigationFacetVisibility::None => {}
+        }
+        state.end()
     }
 }
 
@@ -775,9 +808,9 @@ struct LegacyOwnerSegment {
 #[serde(rename_all = "camelCase")]
 struct LegacyNavigationNode {
     reference: LegacyGraphObjectRef,
-    capability_state: Option<CapabilityState>,
-    action_profile: Option<ActionProfile>,
-    semantic_actions: Option<Vec<SemanticActionDescriptor>>,
+    capability_state: CapabilityState,
+    action_profile: ActionProfile,
+    semantic_actions: Vec<SemanticActionDescriptor>,
 }
 
 #[derive(Serialize)]
@@ -914,8 +947,7 @@ impl NavigationEnvelope {
         self.nodes
             .iter()
             .find(|node| node.object_ref.display_name == name)
-            .and_then(|node| node.actions.as_ref())
-            .and_then(|actions| actions.iter().find(|action| action.kind == kind))
+            .and_then(|node| node.actions.iter().find(|action| action.kind == kind))
     }
 }
 
@@ -1125,6 +1157,44 @@ impl RelationSelection {
     }
 }
 
+/// Produces the sole canonical selection representation used for runtime
+/// paging, cursor payloads, and selection hashes. Raw omitted kinds are
+/// represented as `Contains` before this function is called.
+pub(crate) fn normalize_navigation_selection(
+    mut selection: NavigationSelection,
+) -> Result<NavigationSelection, SourceAdapterError> {
+    if let PropertySelection::Named(names) = &selection.properties {
+        for name in names {
+            validate_selection_token(name)?;
+        }
+    }
+    for relation in &selection.relations {
+        if relation.page_size == 0 || relation.page_size > 100 {
+            return Err(SourceAdapterError::new(
+                SourceAdapterErrorKind::ProjectionAmbiguous,
+                "invalid relation selection",
+            ));
+        }
+    }
+    selection.relations.sort_by(|left, right| {
+        serde_json::to_vec(left)
+            .expect("relation selection is serializable")
+            .cmp(&serde_json::to_vec(right).expect("relation selection is serializable"))
+    });
+    let mut relations = Vec::new();
+    for relation in selection.relations {
+        if let Some(existing) = relations.iter_mut().find(|existing: &&mut RelationSelection| {
+            existing.role == relation.role && existing.kind == relation.kind
+        }) {
+            existing.page_size = existing.page_size.min(relation.page_size);
+        } else {
+            relations.push(relation);
+        }
+    }
+    selection.relations = relations;
+    Ok(selection)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct NavigationCursor {
@@ -1156,6 +1226,7 @@ impl NavigationCursor {
         if source_id != relation.source_id || target != relation.owner.object_key {
             return Err(SourceAdapterError::new(SourceAdapterErrorKind::SourceUnavailable, "navigation cursor relation belongs to another source"));
         }
+        let selection = normalize_navigation_selection(selection)?;
         let selection_hash = normalized_selection_hash(&selection)?;
         let mut cursor = Self {
             schema_version: Self::SCHEMA_VERSION,
@@ -1262,17 +1333,7 @@ fn hex_decode(value: &str) -> Result<Vec<u8>, SourceAdapterError> {
 }
 
 pub(crate) fn normalized_selection_hash(selection: &NavigationSelection) -> Result<String, SourceAdapterError> {
-    if let PropertySelection::Named(names) = &selection.properties {
-        for name in names {
-            validate_selection_token(name)?;
-        }
-    }
-    let mut normalized = selection.clone();
-    normalized.relations.sort_by(|left, right| {
-        serde_json::to_vec(left)
-            .expect("relation selection is serializable")
-            .cmp(&serde_json::to_vec(right).expect("relation selection is serializable"))
-    });
+    let normalized = normalize_navigation_selection(selection.clone())?;
     let canonical_json = serde_json::to_vec(&normalized).map_err(|error| {
         SourceAdapterError::new(
             SourceAdapterErrorKind::ProjectionAmbiguous,

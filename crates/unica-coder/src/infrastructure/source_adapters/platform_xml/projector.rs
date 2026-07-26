@@ -7,7 +7,7 @@ use crate::domain::{
     navigation::{
         action_profile_for, ActionAvailability, Atomicity, Authorability, CapabilityState,
         CapabilityVector, CoverageState, FormatCompatibility, IdentityStrength, NavigationEnvelope,
-        NavigationNode, NodeKind, ObjectKey, ObjectRef, PropertyCapability, PropertyProvenance,
+        NavigationFacetVisibility, NavigationNode, NodeKind, ObjectKey, ObjectRef, PropertyCapability, PropertyProvenance,
         PropertyType, PropertyValue, RelationGroupRef, RelationKey, RelationKind, RelationRef,
         RelationRole,
         ResolutionState, SemanticAction, SemanticActionKind, SemanticProperty, SemanticRelation,
@@ -85,11 +85,11 @@ impl<'a> GraphBuilder<'a> {
         self.nodes.push(NavigationNode {
             object_ref: reference.clone(),
             reference: reference.clone(),
-            capability_state: Some(CapabilityState::new(
+            capability_state: CapabilityState::new(
                 ResolutionState::Resolved,
                 Authorability::DerivedReadOnly,
-            )),
-            capability: Some(CapabilityVector {
+            ),
+            capability: CapabilityVector {
                 resolution: ResolutionState::Resolved,
                 identity: reference.identity_strength.clone(),
                 consistency: self.native.source.consistency.clone(),
@@ -97,11 +97,12 @@ impl<'a> GraphBuilder<'a> {
                 format: FormatCompatibility::Compatible,
                 source_access: SourceAccess::ReadOnly,
                 authorability: Authorability::DerivedReadOnly,
-            }),
+            },
             properties: BTreeMap::new(),
-            action_profile: Some(action_profile_for(&NodeKind::SourceRoot)),
-            semantic_actions: Some(Vec::new()),
-            actions: Some(vec![modeled_action(SemanticActionKind::Inspect, reference.clone(), None)]),
+            action_profile: action_profile_for(&NodeKind::SourceRoot),
+            semantic_actions: Vec::new(),
+            actions: vec![modeled_action(SemanticActionKind::Inspect, reference.clone(), None)],
+            facet_visibility: NavigationFacetVisibility::Full,
         });
         Ok(reference)
     }
@@ -156,12 +157,13 @@ impl<'a> GraphBuilder<'a> {
         self.nodes.push(NavigationNode {
             object_ref: reference.clone(),
             reference: reference.clone(),
-            capability_state: Some(capability_state),
-            capability: Some(capability),
+            capability_state,
+            capability,
             properties: properties(&native_node.properties)?,
-            action_profile: Some(action_profile_for(&kind)),
-            semantic_actions: Some(Vec::new()),
-            actions: Some(actions),
+            action_profile: action_profile_for(&kind),
+            semantic_actions: Vec::new(),
+            actions,
+            facet_visibility: NavigationFacetVisibility::Full,
         });
 
         for child in &native_node.children {
@@ -581,7 +583,7 @@ mod tests {
         let envelope = project_fixture(document_fixture()).unwrap();
 
         assert!(envelope.nodes.iter().all(|node| {
-            node.capability.as_ref().is_some_and(|capability| capability.format == FormatCompatibility::Compatible)
+            node.capability.format == FormatCompatibility::Compatible
         }));
     }
 
@@ -843,11 +845,11 @@ mod tests {
         let envelope = project_fixture(root).unwrap();
         let form = envelope.node_named(NodeKind::Form, "OrderForm").unwrap();
 
-        assert_eq!(form.capability.as_ref().unwrap().coverage, CoverageState::Partial);
-        assert_eq!(form.capability.as_ref().unwrap().resolution, ResolutionState::Resolved);
-        assert_eq!(form.capability.as_ref().unwrap().authorability, Authorability::Authorable);
-        assert_eq!(form.actions.as_ref().unwrap().len(), 1);
-        assert_eq!(form.actions.as_ref().unwrap()[0].kind, ActionKind::Inspect);
+        assert_eq!(form.capability.coverage, CoverageState::Partial);
+        assert_eq!(form.capability.resolution, ResolutionState::Resolved);
+        assert_eq!(form.capability.authorability, Authorability::Authorable);
+        assert_eq!(form.actions.len(), 1);
+        assert_eq!(form.actions[0].kind, ActionKind::Inspect);
     }
 
     #[test]
@@ -905,8 +907,8 @@ mod tests {
         let before = project(&snapshot, &captured).unwrap();
         let after = project(&snapshot, &after_change).unwrap();
         assert_eq!(
-            before.node_named(NodeKind::Document, "Order").unwrap().capability.as_ref().unwrap().authorability,
-            after.node_named(NodeKind::Document, "Order").unwrap().capability.as_ref().unwrap().authorability,
+            before.node_named(NodeKind::Document, "Order").unwrap().capability.authorability,
+            after.node_named(NodeKind::Document, "Order").unwrap().capability.authorability,
         );
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -962,7 +964,7 @@ mod tests {
             .inspect_provider(&provider, &descriptor)
             .unwrap();
         assert_eq!(
-            envelope.node_named(NodeKind::Document, "Order").unwrap().capability.as_ref().unwrap().authorability,
+            envelope.node_named(NodeKind::Document, "Order").unwrap().capability.authorability,
             Authorability::SupportLocked,
         );
         std::fs::remove_dir_all(root).unwrap();

@@ -3804,14 +3804,16 @@ fn inspect_meta_navigation_inner(
         MetaNavigationTarget::ObjectPath(path) => {
             let object_path = resolve_meta_info_path(absolutize(PathBuf::from(path), &context.cwd))
                 .map_err(|_| source_unavailable("metadata target cannot be resolved"))?;
-            let source_set = configured_source_set_for_path(&object_path, context)?;
-            let navigation = inspect_source_path(object_path, source_set.clone(), context)?;
+            let binding = resolve_object_path_binding(&object_path, context)?;
+            let navigation = inspect_source_path(&binding, context)?;
             if matches!(navigation.status, crate::domain::navigation::NavigationStatus::Unavailable) {
                 return Ok(navigation);
             }
             let snapshot = navigation.snapshot.as_ref().ok_or_else(|| source_unavailable("ready navigation has no snapshot"))?;
-            let source = resolve_navigation_source(&snapshot.source_id, context)?;
-            cache_ready_navigation(navigation.clone(), navigation_scope(context, &snapshot.source_id, &source)?)?;
+            if snapshot.source_id != binding.source_id {
+                return Err(source_unavailable("adapter source identity does not match the authorized source binding"));
+            }
+            cache_ready_navigation(navigation.clone(), &binding)?;
             let target_ref = object_path_target(&navigation)?;
             (navigation, target_ref, parse_navigation_selection(args.get("select"))?, None)
         }
@@ -3899,17 +3901,41 @@ fn cursor_snapshot_revision(value: &Value) -> Result<crate::domain::source_adapt
     crate::domain::source_adapters::SourceRevision::new(value.get("snapshotRevision").and_then(Value::as_str).ok_or_else(|| SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor has no valid snapshotRevision"))?)
 }
 
-fn configured_source_set_for_path(path: &Path, context: &WorkspaceContext) -> Result<String, SourceAdapterError> {
+#[derive(Clone)]
+struct ResolvedConfiguredSourceBinding {
+    name: String,
+    source_id: SourceId,
+    kind: crate::domain::project_sources::SourceSetKind,
+    source_format: crate::domain::project_sources::SourceFormat,
+    configured_path: String,
+    canonical_target: PathBuf,
+    canonical_root: PathBuf,
+    format_evidence: Vec<String>,
+    config_path: Option<String>,
+    configured_format_raw: Option<String>,
+    workspace_epoch: u64,
+    scope: String,
+}
+
+fn resolve_object_path_binding(path: &Path, context: &WorkspaceContext) -> Result<ResolvedConfiguredSourceBinding, SourceAdapterError> {
     let source_map = discover_project_source_map(&context.workspace_root).map_err(|_| source_unavailable("project source map cannot be resolved"))?;
     let canonical_target = crate::infrastructure::source_roots::normalize_contained_source_root(&context.workspace_root, path)
         .map_err(|_| source_unavailable("metadata target cannot be resolved inside the workspace"))?;
-    source_map.source_sets.into_iter().filter_map(|source_set| {
+    let config_path = source_map.config_path.clone();
+    let configured_format_raw = source_map.configured_format_raw.clone();
+    let (canonical_root, source_set) = source_map.source_sets.into_iter().filter_map(|source_set| {
         let root = crate::infrastructure::source_roots::normalize_contained_source_root(&context.workspace_root, &source_set.path).ok()?;
         canonical_target.starts_with(&root).then_some((root, source_set))
-    }).max_by_key(|(root, _)| root.as_os_str().len()).map(|(_, source_set)| source_set.name).ok_or_else(|| source_unavailable("metadata target is not in a configured source set"))
+    }).max_by_key(|(root, _)| root.as_os_str().len()).ok_or_else(|| source_unavailable("metadata target is not in a configured source set"))?;
+    if source_set.source_format != crate::domain::project_sources::SourceFormat::PlatformXml {
+        return Err(source_unavailable("navigation source does not authorize the Platform XML adapter"));
+    }
+    let source_id = SourceId::new(format!("workspace:{}", source_set.name))?;
+    let scope = configured_binding_scope(&source_id, &source_set.name, source_set.kind, source_set.source_format, &source_set.path, &canonical_root, &source_set.format_evidence, &config_path, &configured_format_raw, context.workspace_epoch)?;
+    Ok(ResolvedConfiguredSourceBinding { name: source_set.name, source_id, kind: source_set.kind, source_format: source_set.source_format, configured_path: source_set.path, canonical_target, canonical_root, format_evidence: source_set.format_evidence, config_path, configured_format_raw, workspace_epoch: context.workspace_epoch, scope })
 }
 
-fn resolve_navigation_source(source_id: &SourceId, context: &WorkspaceContext) -> Result<ResolvedNavigationSource, SourceAdapterError> {
+fn resolve_current_source_binding(source_id: &SourceId, context: &WorkspaceContext) -> Result<ResolvedConfiguredSourceBinding, SourceAdapterError> {
     let source_map = discover_project_source_map(&context.workspace_root).map_err(|_| source_unavailable("project source map cannot be resolved"))?;
     let config_path = source_map.config_path.clone();
     let configured_format_raw = source_map.configured_format_raw.clone();
@@ -3920,32 +3946,25 @@ fn resolve_navigation_source(source_id: &SourceId, context: &WorkspaceContext) -
     if source_set.source_format != crate::domain::project_sources::SourceFormat::PlatformXml {
         return Err(source_unavailable("navigation source no longer authorizes the Platform XML adapter"));
     }
-    let source_root = crate::infrastructure::source_roots::normalize_contained_source_root(&context.workspace_root, &source_set.path)
+    let canonical_root = crate::infrastructure::source_roots::normalize_contained_source_root(&context.workspace_root, &source_set.path)
         .map_err(|_| source_unavailable("navigation source root cannot be resolved inside the workspace"))?;
-    Ok(ResolvedNavigationSource {
-        name: source_set.name,
-        kind: source_set.kind,
-        source_format: source_set.source_format,
-        configured_path: source_set.path,
-        source_root,
-        format_evidence: source_set.format_evidence,
-        config_path,
-        configured_format_raw,
-    })
+    let scope = configured_binding_scope(source_id, &source_set.name, source_set.kind, source_set.source_format, &source_set.path, &canonical_root, &source_set.format_evidence, &config_path, &configured_format_raw, context.workspace_epoch)?;
+    Ok(ResolvedConfiguredSourceBinding { name: source_set.name, source_id: source_id.clone(), kind: source_set.kind, source_format: source_set.source_format, configured_path: source_set.path, canonical_target: canonical_root.clone(), canonical_root, format_evidence: source_set.format_evidence, config_path, configured_format_raw, workspace_epoch: context.workspace_epoch, scope })
 }
 
-fn navigation_scope(
-    context: &WorkspaceContext,
-    source_id: &SourceId,
-    source: &ResolvedNavigationSource,
+fn configured_binding_scope(
+    source_id: &SourceId, name: &str,
+    kind: crate::domain::project_sources::SourceSetKind,
+    source_format: crate::domain::project_sources::SourceFormat,
+    configured_path: &str, canonical_root: &Path,
+    format_evidence: &[String], config_path: &Option<String>, configured_format_raw: &Option<String>, workspace_epoch: u64,
 ) -> Result<String, SourceAdapterError> {
     let mut digest = Sha256::new();
     digest.update(b"unica.meta.navigation.scope.v3\0");
     let tuple = serde_json::to_vec(&(
-        source_id, &source.name, source.kind, source.source_format, &source.configured_path,
-        source.source_root.as_os_str().as_encoded_bytes(),
-        &source.format_evidence, &source.config_path, &source.configured_format_raw,
-        context.workspace_epoch,
+        source_id, name, kind, source_format, configured_path,
+        canonical_root.as_os_str().as_encoded_bytes(),
+        format_evidence, config_path, configured_format_raw, workspace_epoch,
     )).map_err(|error| SourceAdapterError::new(SourceAdapterErrorKind::ProjectionAmbiguous, format!("cannot serialize navigation authorization scope: {error}")))?;
     digest.update(tuple);
     Ok(format!("sha256:{:x}", digest.finalize()))
@@ -3953,16 +3972,16 @@ fn navigation_scope(
 
 fn cache_ready_navigation(
     navigation: crate::domain::navigation::NavigationEnvelope,
-    scope: String,
+    binding: &ResolvedConfiguredSourceBinding,
 ) -> Result<(), SourceAdapterError> {
     let snapshot = navigation.snapshot.as_ref().ok_or_else(|| source_unavailable("ready navigation has no snapshot"))?;
     if navigation.nodes.len() > SNAPSHOT_CACHE_MAX_NODES || navigation.relation_index.len() > SNAPSHOT_CACHE_MAX_RELATIONS {
         return Ok(());
     }
     let mut cache = snapshot_cache().lock().map_err(|_| source_unavailable("navigation snapshot cache is unavailable"))?;
-    cache.entries.retain(|entry| !(entry.scope == scope && entry.source_id == snapshot.source_id && entry.revision == snapshot.revision));
+    cache.entries.retain(|entry| !(entry.scope == binding.scope && entry.source_id == snapshot.source_id && entry.revision == snapshot.revision));
     while cache.entries.len() >= SNAPSHOT_CACHE_CAPACITY { cache.entries.pop_front(); }
-    cache.entries.push_back(CachedNavigation { scope, source_id: snapshot.source_id.clone(), revision: snapshot.revision.clone(), navigation });
+    cache.entries.push_back(CachedNavigation { scope: binding.scope.clone(), source_id: snapshot.source_id.clone(), revision: snapshot.revision.clone(), navigation });
     Ok(())
 }
 
@@ -3972,10 +3991,9 @@ fn cached_navigation_target(
     revision: &crate::domain::source_adapters::SourceRevision,
     context: &WorkspaceContext,
 ) -> Result<(crate::domain::navigation::NavigationEnvelope, ObjectRef), SourceAdapterError> {
-    let source = resolve_navigation_source(source_id, context)?;
-    let scope = navigation_scope(context, source_id, &source)?;
+    let binding = resolve_current_source_binding(source_id, context)?;
     let mut cache = snapshot_cache().lock().map_err(|_| source_unavailable("navigation snapshot cache is unavailable"))?;
-    let index = cache.entries.iter().position(|entry| entry.scope == scope && entry.source_id == *source_id && entry.revision == *revision).ok_or_else(|| source_unavailable("navigation snapshot is unavailable; restart navigation from ObjectPath"))?;
+    let index = cache.entries.iter().position(|entry| entry.scope == binding.scope && entry.source_id == *source_id && entry.revision == *revision).ok_or_else(|| source_unavailable("navigation snapshot is unavailable; restart navigation from ObjectPath"))?;
     let entry = cache.entries.remove(index).expect("cache entry index is valid");
     let navigation = entry.navigation.clone();
     cache.entries.push_back(entry);
@@ -3987,9 +4005,9 @@ fn cached_navigation_target(
     }
 }
 
-fn inspect_source_path(target: PathBuf, configured_source_set: String, context: &WorkspaceContext) -> Result<crate::domain::navigation::NavigationEnvelope, SourceAdapterError> {
+fn inspect_source_path(binding: &ResolvedConfiguredSourceBinding, context: &WorkspaceContext) -> Result<crate::domain::navigation::NavigationEnvelope, SourceAdapterError> {
     crate::infrastructure::source_adapters::registry::BuiltInSourceAdapterRegistry::new().inspect(crate::infrastructure::source_adapters::SourceInput {
-        workspace_root: context.workspace_root.clone(), target, configured_source_set: Some(configured_source_set),
+        workspace_root: context.workspace_root.clone(), target: binding.canonical_target.clone(), configured_source_set: Some(binding.name.clone()),
     })
 }
 
@@ -4112,17 +4130,8 @@ fn parse_navigation_selection(value: Option<&Value>) -> Result<crate::domain::na
         }).collect::<Result<Vec<_>, _>>()?,
         _ => return Err(SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "select.relations is invalid")),
     };
-    let mut normalized = relations;
-    normalized.sort_by_key(|relation| serde_json::to_string(&(relation.role, relation.kind)).expect("closed relation selection serializes"));
-    let mut relations: Vec<RelationSelection> = Vec::new();
-    for relation in normalized {
-        if let Some(existing) = relations.iter_mut().find(|existing| existing.role == relation.role && existing.kind == relation.kind) {
-            existing.page_size = existing.page_size.min(relation.page_size);
-        } else {
-            relations.push(relation);
-        }
-    }
-    Ok(NavigationSelection { properties, facets, relations })
+    crate::domain::navigation::normalize_navigation_selection(NavigationSelection { properties, facets, relations })
+        .map_err(|_| SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "select is invalid"))
 }
 
 fn materialize_navigation_pages(
@@ -4187,19 +4196,9 @@ fn project_selected_node(
         node.properties.retain(|name, _| names.contains(name));
     }
     match selection.facets {
-        FacetSelection::None => {
-            node.capability_state = None;
-            node.capability = None;
-            node.action_profile = None;
-            node.semantic_actions = None;
-            node.actions = None;
-        }
-        FacetSelection::Summary => {
-            node.capability = None;
-            node.semantic_actions = None;
-            node.actions = None;
-        }
-        FacetSelection::Full => {}
+        FacetSelection::None => node.facet_visibility = crate::domain::navigation::NavigationFacetVisibility::None,
+        FacetSelection::Summary => node.facet_visibility = crate::domain::navigation::NavigationFacetVisibility::Summary,
+        FacetSelection::Full => node.facet_visibility = crate::domain::navigation::NavigationFacetVisibility::Full,
     }
     node
 }
@@ -13321,15 +13320,50 @@ mod tests {
         let link = context.workspace_root.join("linked");
         symlink("first", &link).unwrap();
         let source_id = SourceId::new("workspace:main").unwrap();
-        let first = resolve_navigation_source(&source_id, &context).unwrap();
-        let first_scope = navigation_scope(&context, &source_id, &first).unwrap();
+        let first = resolve_current_source_binding(&source_id, &context).unwrap();
+        let first_scope = first.scope.clone();
 
         std::fs::remove_file(&link).unwrap();
         symlink("second", &link).unwrap();
-        let second = resolve_navigation_source(&source_id, &context).unwrap();
-        let second_scope = navigation_scope(&context, &source_id, &second).unwrap();
-        assert_ne!(first.source_root, second.source_root);
+        let second = resolve_current_source_binding(&source_id, &context).unwrap();
+        let second_scope = second.scope.clone();
+        assert_ne!(first.canonical_root, second.canonical_root);
         assert_ne!(first_scope, second_scope);
+        std::fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_object_path_binding_inspects_its_canonical_target_and_current_binding_cannot_resume_it() {
+        use std::os::unix::fs::symlink;
+
+        let (context, _) = fixture("2.20", "<Attribute><Properties><Name>Code</Name></Properties></Attribute>");
+        let source = context.workspace_root.join("src");
+        let replacement = context.workspace_root.join("replacement");
+        std::fs::create_dir_all(replacement.join("Catalogs")).unwrap();
+        std::fs::copy(source.join("Configuration.xml"), replacement.join("Configuration.xml")).unwrap();
+        std::fs::copy(source.join("Catalogs/Items.xml"), replacement.join("Catalogs/Items.xml")).unwrap();
+        std::fs::write(
+            context.workspace_root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: linked\n",
+        ).unwrap();
+        let link = context.workspace_root.join("linked");
+        symlink("src", &link).unwrap();
+        let linked_target = link.join("Catalogs/Items.xml");
+        let saved = resolve_object_path_binding(&linked_target, &context).unwrap();
+        assert_eq!(saved.canonical_target, crate::infrastructure::source_roots::normalize_contained_source_root(&context.workspace_root, source.join("Catalogs/Items.xml")).unwrap());
+
+        std::fs::remove_file(&link).unwrap();
+        symlink("replacement", &link).unwrap();
+        let navigation = inspect_source_path(&saved, &context).unwrap();
+        let snapshot = navigation.snapshot.clone().unwrap();
+        let target = object_path_target(&navigation).unwrap();
+        cache_ready_navigation(navigation, &saved).unwrap();
+        let current = resolve_object_path_binding(&linked_target, &context).unwrap();
+        assert_eq!(current.canonical_target, crate::infrastructure::source_roots::normalize_contained_source_root(&context.workspace_root, replacement.join("Catalogs/Items.xml")).unwrap());
+        assert_ne!(saved.scope, current.scope);
+        let error = cached_navigation_target(&snapshot.source_id, &target.object_key, &snapshot.revision, &context).unwrap_err();
+        assert_eq!(error.code(), "source_unavailable");
         std::fs::remove_dir_all(context.workspace_root).unwrap();
     }
 
@@ -13351,9 +13385,10 @@ mod tests {
         assert_eq!(grouped.len(), 2);
         assert_ne!(grouped[0].relation_ref.relation_key, grouped[1].relation_ref.relation_key);
         assert!(page.items.iter().all(|item| item.properties.keys().collect::<Vec<_>>() == vec!["name"]));
-        assert!(page.items.iter().all(|item| item.semantic_actions.is_none() && item.actions.is_none()));
+        assert!(page.items.iter().all(|item| item.facet_visibility == crate::domain::navigation::NavigationFacetVisibility::None));
 
-        let mut full = inspect_source_path(context.workspace_root.join("src/Catalogs/Items.xml"), "main".to_string(), &context).unwrap();
+        let binding = resolve_object_path_binding(&context.workspace_root.join("src/Catalogs/Items.xml"), &context).unwrap();
+        let mut full = inspect_source_path(&binding, &context).unwrap();
         let target = object_path_target(&full).unwrap();
         let tabular = full.relation_index.iter().find(|relation| relation.source == target && relation.role == crate::domain::navigation::RelationRole::TabularSections).unwrap().target.clone();
         assert_eq!(
@@ -13389,14 +13424,14 @@ mod tests {
         }).as_object().unwrap().clone(), &context).unwrap();
         let page = &first.relations[0];
         assert_eq!(page.items[0].properties.keys().collect::<Vec<_>>(), vec!["name"]);
-        assert!(page.items[0].semantic_actions.is_none() && page.items[0].actions.is_none());
+        assert_eq!(page.items[0].facet_visibility, crate::domain::navigation::NavigationFacetVisibility::None);
         let cursor = page.next_cursor.clone().unwrap();
         assert_eq!(cursor.relation, page.relation.group_key);
         assert_eq!(cursor.relation_role, page.relation.role);
         let second = inspect_meta_navigation(&json!({"cursor": serde_json::to_value(cursor).unwrap()}).as_object().unwrap().clone(), &context).unwrap();
         assert_eq!(second.relations[0].relation.group_key, page.relation.group_key);
         assert_eq!(second.relations[0].items[0].properties.keys().collect::<Vec<_>>(), vec!["name"]);
-        assert!(second.relations[0].items[0].semantic_actions.is_none() && second.relations[0].items[0].actions.is_none());
+        assert_eq!(second.relations[0].items[0].facet_visibility, crate::domain::navigation::NavigationFacetVisibility::None);
         std::fs::remove_dir_all(context.workspace_root).unwrap();
     }
 
@@ -13425,6 +13460,7 @@ mod tests {
             json!({"properties": ["name", "name"]}),
             json!({"facets": 1}),
             json!({"relations": [{"role": "unknown"}]}),
+            json!({"relations": [{"role": "references"}]}),
             json!({"relations": [{"role": "attributes", "pageSize": "1"}]}),
             json!({"relations": [{"role": "attributes", "offset": 0}]}),
         ] {
@@ -13483,6 +13519,19 @@ mod tests {
         assert!(summary_node.get("capability").is_none());
         assert!(summary_node.get("actions").is_none());
         assert!(summary_node.get("semanticActions").is_none());
+        let full = inspect_meta_navigation(&json!({
+            "ObjectPath": context.workspace_root.join("src/Catalogs/Items.xml"),
+            "select": {"facets": "full", "relations": [{"role": "attributes", "pageSize": 1}]}
+        }).as_object().unwrap().clone(), &context).unwrap();
+        assert!(full.nodes[0].facet_visibility == crate::domain::navigation::NavigationFacetVisibility::Full);
+        let expected = std::collections::BTreeSet::from([
+            "objectRef".to_string(), "reference".to_string(), "properties".to_string(),
+            "capabilityState".to_string(), "capability".to_string(), "actionProfile".to_string(),
+            "semanticActions".to_string(), "actions".to_string(),
+        ]);
+        let full_json = serde_json::to_value(&full).unwrap();
+        assert_eq!(full_json["nodes"][0].as_object().unwrap().keys().cloned().collect::<std::collections::BTreeSet<_>>(), expected);
+        assert_eq!(full_json["relations"][0]["items"][0].as_object().unwrap().keys().cloned().collect::<std::collections::BTreeSet<_>>(), expected);
         let runtime_error = parse_navigation_selection(Some(&json!({"relations": [{"role": "attributes", "offset": 0}]}))).unwrap_err();
         assert_eq!(runtime_error.code(), "decode_corrupted");
         std::fs::remove_dir_all(context.workspace_root).unwrap();

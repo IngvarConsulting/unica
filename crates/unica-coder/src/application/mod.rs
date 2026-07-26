@@ -54,8 +54,8 @@ mod meta_info_contract_tests {
         assert_eq!(schema["properties"]["objectRef"]["additionalProperties"], false);
         assert_eq!(schema["properties"]["select"]["additionalProperties"], false);
         assert_eq!(schema["properties"]["select"]["properties"]["relations"]["items"]["additionalProperties"], false);
-        assert_eq!(schema["properties"]["select"]["properties"]["relations"]["uniqueItems"], true);
-        assert_eq!(schema["properties"]["select"]["properties"]["relations"]["items"]["properties"]["role"]["enum"], json!(["children", "attributes", "tabularSections", "forms", "commands", "templates", "references"]));
+        assert!(schema["properties"]["select"]["properties"]["relations"].get("uniqueItems").is_none());
+        assert_eq!(schema["properties"]["select"]["properties"]["relations"]["items"]["properties"]["role"]["enum"], json!(["children", "attributes", "tabularSections", "forms", "commands", "templates"]));
         assert_eq!(schema["properties"]["select"]["properties"]["relations"]["items"]["properties"]["kind"]["default"], "contains");
         assert_eq!(schema["properties"]["cursor"]["additionalProperties"], false);
         assert!(schema["properties"]["cursor"]["required"].as_array().unwrap().contains(&json!("relationRole")));
@@ -66,9 +66,14 @@ mod meta_info_contract_tests {
             json!({"objectRef": {"sourceId": "workspace:main"}, "snapshotRevision": "sha256:one"}),
             json!({"objectRef": {"sourceId": "workspace:main", "objectKey": "uuid:one", "extra": true}, "snapshotRevision": "sha256:one"}),
             json!({"ObjectPath": "src/Catalogs/Items.xml", "select": {"relations": [{"role": "attributes", "offset": 0}]}}),
+            json!({"ObjectPath": "src/Catalogs/Items.xml", "select": {"relations": [{"role": "references"}]}}),
         ] {
             assert!(!validator.is_valid(&invalid), "schema accepted {invalid}");
         }
+        assert!(validator.is_valid(&json!({
+            "ObjectPath": "src/Catalogs/Items.xml",
+            "select": {"relations": [{"role": "attributes"}, {"role": "attributes"}]}
+        })));
     }
 
     #[test]
