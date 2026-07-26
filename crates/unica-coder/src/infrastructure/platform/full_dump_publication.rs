@@ -6619,94 +6619,112 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// One staged file per `STAGED_ROOT_REGISTRY` entry, at the dump-relative
-    /// path the platform writes it to.
+    /// One staged file and independently recorded version policy per
+    /// `STAGED_ROOT_REGISTRY` entry, at the dump-relative path the platform
+    /// writes it to.
     ///
     /// Where a checked-in fixture exists the case uses those bytes, keeping the
     /// platform BOM and CRLF. The remaining cases are the smallest document that
     /// still carries the registered root, because the guard reads nothing below
     /// it. `staged_root_registry_covers_every_registered_root` fails if a
     /// registry entry has no case here.
-    const STAGED_ROOT_CASES: &[(&str, &[u8])] = &[
+    const STAGED_ROOT_CASES: &[(&str, &[u8], StagedRootVersionPolicy)] = &[
         (
             "Configuration.xml",
             br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties/></Configuration></MetaDataObject>"#,
+            StagedRootVersionPolicy::ExactRootVersion,
         ),
         (
             "Catalogs/Товары/Forms/Форма/Ext/Form.xml",
             br#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"/>"#,
+            StagedRootVersionPolicy::ExactRootVersion,
         ),
         (
             "Subsystems/Продажи/Ext/CommandInterface.xml",
             br#"<CommandInterface xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"/>"#,
+            StagedRootVersionPolicy::ExactRootVersion,
         ),
         (
             "Catalogs/Товары/Ext/Help.xml",
             br#"<Help xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"/>"#,
+            StagedRootVersionPolicy::ExactRootVersion,
         ),
         (
             "ExchangePlans/Обмен/Ext/Content.xml",
             include_bytes!("../../../../../tests/fixtures/platform_8_3_27/exchange_plan/Content.xml"),
+            StagedRootVersionPolicy::ExactRootVersion,
         ),
         (
             "Ext/HomePageWorkArea.xml",
             br#"<HomePageWorkArea xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"/>"#,
+            StagedRootVersionPolicy::ExactRootVersion,
         ),
         (
             "CommonPictures/Логотип/Ext/Picture.xml",
             include_bytes!(
                 "../../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/Picture.xml"
             ),
+            StagedRootVersionPolicy::ExactRootVersion,
         ),
         (
             "ScheduledJobs/ОбновлениеКурсов/Ext/Schedule.xml",
             include_bytes!(
                 "../../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/Schedule.xml"
             ),
+            StagedRootVersionPolicy::ExactRootVersion,
         ),
         (
             "Catalogs/Товары/Ext/Predefined.xml",
             include_bytes!(
                 "../../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/Predefined.xml"
             ),
+            StagedRootVersionPolicy::ExactRootVersion,
         ),
         (
             "ConfigDumpInfo.xml",
             include_bytes!(
                 "../../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/ConfigDumpInfo.xml"
             ),
+            StagedRootVersionPolicy::ExactRootVersion,
         ),
         (
             "BusinessProcesses/Согласование/Ext/Flowchart.xml",
             br#"<GraphicalSchema xmlns="http://v8.1c.ru/8.3/xcf/scheme" version="2.20"/>"#,
+            StagedRootVersionPolicy::ExactRootVersion,
         ),
         (
             "Roles/Администратор/Ext/Rights.xml",
             br#"<Rights xmlns="http://v8.1c.ru/8.2/roles" version="2.20"/>"#,
+            StagedRootVersionPolicy::ExactRootVersion,
         ),
         (
             "Reports/Продажи/Templates/Основной/Ext/Template.xml",
             br#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"/>"#,
+            StagedRootVersionPolicy::Versionless,
         ),
         (
             "CommonTemplates/ОформлениеОтчетов/Ext/Template.xml",
             include_bytes!(
                 "../../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/Template.xml"
             ),
+            StagedRootVersionPolicy::Versionless,
         ),
         (
             "CommonTemplates/ПечатнаяФорма/Ext/Template.xml",
             include_bytes!("../../../../../tests/fixtures/platform_8_3_27/mxl/Template.xml"),
+            StagedRootVersionPolicy::Versionless,
         ),
         (
             "WSReferences/СлужбаОбмена/Ext/WSDefinition.xml",
             include_bytes!(
                 "../../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/WSDefinition.xml"
             ),
+            StagedRootVersionPolicy::Versionless,
         ),
         (
             "Ext/ClientApplicationInterface.xml",
             br#"<ClientApplicationInterface xmlns="http://v8.1c.ru/8.2/managed-application/core"/>"#,
+            StagedRootVersionPolicy::Versionless,
         ),
     ];
 
@@ -6735,7 +6753,7 @@ mod tests {
     fn staged_root_registry_covers_every_registered_root() {
         let covered = STAGED_ROOT_CASES
             .iter()
-            .map(|(_, source)| staged_root_case_root(source))
+            .map(|(_, source, _)| staged_root_case_root(source))
             .collect::<BTreeSet<_>>();
         let uncovered = STAGED_ROOT_REGISTRY
             .iter()
@@ -6754,7 +6772,7 @@ mod tests {
     #[test]
     fn staged_root_registry_publishes_every_platform_8_3_27_dump_root() {
         let root = staged_root_case_tree("accepted");
-        for (relative, source) in STAGED_ROOT_CASES {
+        for (relative, source, _) in STAGED_ROOT_CASES {
             let path = root.join(relative);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, source).unwrap();
@@ -6769,45 +6787,57 @@ mod tests {
 
     #[test]
     fn staged_root_registry_binds_each_platform_root_to_its_version_policy() {
-        for (index, (relative, source)) in STAGED_ROOT_CASES.iter().enumerate() {
+        for (index, (relative, source, expected_policy)) in STAGED_ROOT_CASES.iter().enumerate() {
             let (namespace, local_name) = staged_root_case_root(source);
             let policy = staged_root_version_policy(&namespace, &local_name)
                 .unwrap_or_else(|| panic!("{relative}: case root must be registered"));
+            assert_eq!(
+                policy, *expected_policy,
+                "{relative}: registry policy must match the independently recorded platform evidence"
+            );
             let text = std::str::from_utf8(source).unwrap();
-            let declaration_end = text.find("?>").map(|end| end + 2).unwrap_or_default();
-            let (declaration, element) = text.split_at(declaration_end);
-            let (mutated, expected) = match policy {
+            let source_without_bom = text.trim_start_matches('\u{feff}');
+            let document = Document::parse(source_without_bom).unwrap();
+            let root_node = document.root_element();
+            let root_start = text.len() - source_without_bom.len() + root_node.range().start;
+            let root_tag_end = root_start
+                + text[root_start..]
+                    .find('>')
+                    .expect("case root opening tag is well formed");
+            let root_tag = &text[root_start..root_tag_end];
+            let (mutated, expected) = match expected_policy {
                 StagedRootVersionPolicy::ExactRootVersion => {
-                    assert!(
-                        element.contains(r#"version="2.20""#),
-                        "{relative}: the case must carry the exact 2.20 literal"
+                    assert_eq!(
+                        root_node.attribute("version"),
+                        Some("2.20"),
+                        "{relative}: the root must carry the exact 2.20 value"
                     );
-                    (
-                        format!(
-                            "{declaration}{}",
-                            element.replace(r#"version="2.20""#, r#"version="2.19""#)
-                        ),
-                        "2.19",
-                    )
+                    let version_literal = r#"version="2.20""#;
+                    let version_start = root_start
+                        + root_tag.find(version_literal).unwrap_or_else(|| {
+                            panic!("{relative}: root must carry the raw 2.20 literal")
+                        });
+                    let mut mutated = text.to_string();
+                    mutated.replace_range(
+                        version_start..version_start + version_literal.len(),
+                        r#"version="2.19""#,
+                    );
+                    (mutated, "2.19")
                 }
                 StagedRootVersionPolicy::Versionless => {
                     assert!(
-                        !element.contains("version="),
-                        "{relative}: the case must stay versionless"
+                        root_node.attribute("version").is_none(),
+                        "{relative}: the root must stay versionless"
                     );
-                    let tag_start = element.find('<').expect("case has a root element");
-                    let tag_name_end = tag_start
-                        + element[tag_start..]
-                            .find(|character: char| character.is_whitespace() || character == '>')
+                    let tag_name_end = root_start
+                        + text[root_start..]
+                            .find(|character: char| {
+                                character.is_whitespace() || character == '/' || character == '>'
+                            })
                             .expect("case root element is well formed");
-                    (
-                        format!(
-                            "{declaration}{} version=\"2.20\"{}",
-                            &element[..tag_name_end],
-                            &element[tag_name_end..]
-                        ),
-                        "versionless",
-                    )
+                    let mut mutated = text.to_string();
+                    mutated.insert_str(tag_name_end, r#" version="2.20""#);
+                    (mutated, "versionless")
                 }
             };
             let root = staged_root_case_tree(&index.to_string());
