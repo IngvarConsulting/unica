@@ -8,8 +8,10 @@ use crate::{
         },
     },
     infrastructure::source_adapters::{
-        platform_xml::{probe::PlatformXmlProbe, provider::PlatformXmlProvider, PlatformXmlReadAdapter}, ProbeOutcome, SourceInput,
-        SourceProbe, SourceReadAdapter,
+        platform_xml::{
+            probe::PlatformXmlProbe, provider::PlatformXmlProvider, PlatformXmlReadAdapter,
+        },
+        ProbeOutcome, SourceInput, SourceProbe, SourceReadAdapter,
     },
 };
 
@@ -68,18 +70,24 @@ impl BuiltInSourceAdapterRegistry {
                 "captured provider did not recognize the target as Platform XML",
             ));
         };
-        let Some(reader) = self.select_narrowest_reader(self.compatible_readers(&descriptor))? else {
+        let Some(reader) = self.select_narrowest_reader(self.compatible_readers(&descriptor))?
+        else {
             return Ok(NavigationEnvelope::unavailable(SourceAdapterError::new(
                 SourceAdapterErrorKind::FormatUnsupported,
-                format!("no reader supports {:?} format {}", descriptor.family, descriptor.format_version),
+                format!(
+                    "no reader supports {:?} format {}",
+                    descriptor.family, descriptor.format_version
+                ),
             )));
         };
-        reader.inspect_platform_xml_provider(provider, &descriptor).ok_or_else(|| {
-            SourceAdapterError::new(
-                SourceAdapterErrorKind::SourceUnavailable,
-                "selected reader cannot inspect the captured Platform XML provider",
-            )
-        })?
+        reader
+            .inspect_platform_xml_provider(provider, &descriptor)
+            .ok_or_else(|| {
+                SourceAdapterError::new(
+                    SourceAdapterErrorKind::SourceUnavailable,
+                    "selected reader cannot inspect the captured Platform XML provider",
+                )
+            })?
     }
 
     fn probe(&self, input: &SourceInput) -> Result<SourceDescriptor, SourceAdapterError> {
@@ -128,14 +136,21 @@ impl BuiltInSourceAdapterRegistry {
             .flat_map(|(reader_index, reader)| {
                 let manifest = reader.manifest();
                 let compatible = manifest.source_family == descriptor.family
-                    && manifest.required_features.is_subset(&descriptor.detected_features)
-                    && manifest.excluded_features.is_disjoint(&descriptor.detected_features);
+                    && manifest
+                        .required_features
+                        .is_subset(&descriptor.detected_features)
+                    && manifest
+                        .excluded_features
+                        .is_disjoint(&descriptor.detected_features);
 
                 manifest
                     .supported_formats
                     .iter()
                     .filter(move |range| compatible && range.contains(&descriptor.format_version))
-                    .map(move |range| Candidate { reader_index, range })
+                    .map(move |range| Candidate {
+                        reader_index,
+                        range,
+                    })
             })
             .collect()
     }
@@ -151,9 +166,9 @@ impl BuiltInSourceAdapterRegistry {
         let minimal = candidates
             .iter()
             .filter(|candidate| {
-                !candidates.iter().any(|other| {
-                    range_is_strictly_narrower(other.range, candidate.range)
-                })
+                !candidates
+                    .iter()
+                    .any(|other| range_is_strictly_narrower(other.range, candidate.range))
             })
             .collect::<Vec<_>>();
 
@@ -218,7 +233,9 @@ mod tests {
                 SourceRevision, SourceSnapshot,
             },
         },
-        infrastructure::source_adapters::{ProbeOutcome, SourceInput, SourceProbe, SourceReadAdapter},
+        infrastructure::source_adapters::{
+            ProbeOutcome, SourceInput, SourceProbe, SourceReadAdapter,
+        },
     };
 
     use super::BuiltInSourceAdapterRegistry;
@@ -229,7 +246,10 @@ mod tests {
 
         assert_eq!(registry.probes.len(), 1);
         assert_eq!(registry.readers.len(), 1);
-        assert_eq!(registry.readers[0].manifest().adapter_id, "platform-xml-2.20");
+        assert_eq!(
+            registry.readers[0].manifest().adapter_id,
+            "platform-xml-2.20"
+        );
     }
 
     #[test]
@@ -269,7 +289,10 @@ mod tests {
 
         let error = registry.inspect(input()).unwrap_err();
 
-        assert_eq!(error.kind, crate::domain::source_adapters::SourceAdapterErrorKind::ProbeAmbiguous);
+        assert_eq!(
+            error.kind,
+            crate::domain::source_adapters::SourceAdapterErrorKind::ProbeAmbiguous
+        );
     }
 
     #[test]
@@ -284,17 +307,26 @@ mod tests {
 
         let error = registry.inspect(input()).unwrap_err();
 
-        assert_eq!(error.kind, crate::domain::source_adapters::SourceAdapterErrorKind::ProbeAmbiguous);
+        assert_eq!(
+            error.kind,
+            crate::domain::source_adapters::SourceAdapterErrorKind::ProbeAmbiguous
+        );
     }
 
     #[test]
     fn matching_probes_merge_evidence_independently_of_registration_order() {
         let first = registry_with(
-            vec![probe_with_evidence("2.20", "b.xml"), probe_with_evidence("2.20", "a.xml")],
+            vec![
+                probe_with_evidence("2.20", "b.xml"),
+                probe_with_evidence("2.20", "a.xml"),
+            ],
             vec![reader("xml-2.20", exact("2.20"))],
         );
         let second = registry_with(
-            vec![probe_with_evidence("2.20", "a.xml"), probe_with_evidence("2.20", "b.xml")],
+            vec![
+                probe_with_evidence("2.20", "a.xml"),
+                probe_with_evidence("2.20", "b.xml"),
+            ],
             vec![reader("xml-2.20", exact("2.20"))],
         );
 
@@ -309,7 +341,13 @@ mod tests {
     fn family_and_feature_exclusions_prevent_reader_selection() {
         let family_mismatch = registry_with(
             vec![probe_match("2.20")],
-            vec![reader_with("edt-2.20", SourceFamily::Edt, exact("2.20"), [], [])],
+            vec![reader_with(
+                "edt-2.20",
+                SourceFamily::Edt,
+                exact("2.20"),
+                [],
+                [],
+            )],
         );
         let excluded_feature = registry_with(
             vec![probe_with_feature("2.20", "legacy")],
@@ -322,8 +360,14 @@ mod tests {
             )],
         );
 
-        assert_eq!(family_mismatch.inspect(input()).unwrap().status, NavigationStatus::Unavailable);
-        assert_eq!(excluded_feature.inspect(input()).unwrap().status, NavigationStatus::Unavailable);
+        assert_eq!(
+            family_mismatch.inspect(input()).unwrap().status,
+            NavigationStatus::Unavailable
+        );
+        assert_eq!(
+            excluded_feature.inspect(input()).unwrap().status,
+            NavigationStatus::Unavailable
+        );
     }
 
     #[test]
@@ -349,8 +393,14 @@ mod tests {
             )],
         );
 
-        assert_eq!(missing.inspect(input()).unwrap().status, NavigationStatus::Unavailable);
-        assert_eq!(present.inspect(input()).unwrap().status, NavigationStatus::Available);
+        assert_eq!(
+            missing.inspect(input()).unwrap().status,
+            NavigationStatus::Unavailable
+        );
+        assert_eq!(
+            present.inspect(input()).unwrap().status,
+            NavigationStatus::Available
+        );
     }
 
     #[test]
@@ -362,7 +412,10 @@ mod tests {
 
         let error = registry.inspect(input()).unwrap_err();
 
-        assert_eq!(error.kind, crate::domain::source_adapters::SourceAdapterErrorKind::ProbeAmbiguous);
+        assert_eq!(
+            error.kind,
+            crate::domain::source_adapters::SourceAdapterErrorKind::ProbeAmbiguous
+        );
     }
 
     #[test]
@@ -371,14 +424,26 @@ mod tests {
         let registry = registry_with(
             vec![probe_match("2.20")],
             vec![
-                Box::new(FailingReader { manifest: manifest("xml-exact", exact("2.20")), error: SourceAdapterError::new(crate::domain::source_adapters::SourceAdapterErrorKind::DecodeCorrupted, "corrupt XML") }),
-                Box::new(CountingReader { manifest: manifest("xml-broad", range("2.0", "2.30")), calls: Arc::clone(&fallback_calls) }),
+                Box::new(FailingReader {
+                    manifest: manifest("xml-exact", exact("2.20")),
+                    error: SourceAdapterError::new(
+                        crate::domain::source_adapters::SourceAdapterErrorKind::DecodeCorrupted,
+                        "corrupt XML",
+                    ),
+                }),
+                Box::new(CountingReader {
+                    manifest: manifest("xml-broad", range("2.0", "2.30")),
+                    calls: Arc::clone(&fallback_calls),
+                }),
             ],
         );
 
         let error = registry.inspect(input()).unwrap_err();
 
-        assert_eq!(error.kind, crate::domain::source_adapters::SourceAdapterErrorKind::DecodeCorrupted);
+        assert_eq!(
+            error.kind,
+            crate::domain::source_adapters::SourceAdapterErrorKind::DecodeCorrupted
+        );
         assert_eq!(fallback_calls.load(Ordering::SeqCst), 0);
     }
 
@@ -398,7 +463,9 @@ mod tests {
     }
 
     fn probe_match(version: &str) -> Box<dyn SourceProbe> {
-        Box::new(FakeProbe { descriptor: descriptor(version) })
+        Box::new(FakeProbe {
+            descriptor: descriptor(version),
+        })
     }
 
     fn probe_with_evidence(version: &str, evidence: &str) -> Box<dyn SourceProbe> {
@@ -425,7 +492,13 @@ mod tests {
         excluded_features: [&str; EXCLUDED],
     ) -> Box<dyn SourceReadAdapter> {
         Box::new(FakeReader {
-            manifest: manifest_with(adapter_id, source_family, range, required_features, excluded_features),
+            manifest: manifest_with(
+                adapter_id,
+                source_family,
+                range,
+                required_features,
+                excluded_features,
+            ),
         })
     }
 

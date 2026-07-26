@@ -14,8 +14,8 @@ use crate::{
             platform_xml::{
                 provider::PlatformXmlProvider,
                 schema::{
-                    child_metadata_class_profile, metadata_class_profile, MetadataClassProfile, MetadataClassRole,
-                    ROOT_STRUCTURAL_CHILDREN,
+                    child_metadata_class_profile, metadata_class_profile, MetadataClassProfile,
+                    MetadataClassRole, ROOT_STRUCTURAL_CHILDREN,
                 },
             },
             ProbeOutcome, SourceInput, SourceProbe,
@@ -63,8 +63,8 @@ impl PlatformXmlProbe {
     ) -> Result<ProbeOutcome, SourceAdapterError> {
         let xml = std::str::from_utf8(bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes))
             .map_err(|_| corrupted("Platform XML descriptor is not valid UTF-8"))?;
-        let document = Document::parse(xml)
-            .map_err(|_| corrupted("Platform XML descriptor is malformed"))?;
+        let document =
+            Document::parse(xml).map_err(|_| corrupted("Platform XML descriptor is malformed"))?;
         let root = document.root_element();
         if root.tag_name().name() != "MetaDataObject"
             || root.tag_name().namespace() != Some(METADATA_NAMESPACE)
@@ -87,17 +87,21 @@ impl PlatformXmlProbe {
             }
         };
         if class.tag_name().namespace() != Some(METADATA_NAMESPACE) {
-            return Err(unsupported("Platform XML metadata class has an unsupported namespace"));
+            return Err(unsupported(
+                "Platform XML metadata class has an unsupported namespace",
+            ));
         }
         let class_name = class.tag_name().name();
-        let profile = metadata_class_profile(class_name).ok_or_else(|| {
-            unsupported("Platform XML metadata class is not supported")
-        })?;
+        let profile = metadata_class_profile(class_name)
+            .ok_or_else(|| unsupported("Platform XML metadata class is not supported"))?;
         let mut detected_features = BTreeSet::new();
         detected_features.insert(format!("metadata-class:{class_name}"));
         inspect_structural_features(*class, profile, true, &mut detected_features)?;
         let uuid = match class.attribute("uuid") {
-            Some(raw) => Some(Uuid::parse_str(raw).map_err(|_| corrupted("Platform XML metadata UUID is invalid"))?),
+            Some(raw) => Some(
+                Uuid::parse_str(raw)
+                    .map_err(|_| corrupted("Platform XML metadata UUID is invalid"))?,
+            ),
             None => None,
         };
         let version = root
@@ -140,7 +144,9 @@ fn inspect_structural_features(
     for child in structural_children(class) {
         let name = structural_child_name(child)?;
         if !ROOT_STRUCTURAL_CHILDREN.contains(&name) {
-            return Err(unsupported("Platform XML root contains an unsupported structural feature"));
+            return Err(unsupported(
+                "Platform XML root contains an unsupported structural feature",
+            ));
         }
         if let Some(scope) = structural_scope(profile, is_direct_metadata_root) {
             features.insert(format!("structural:{scope}:{name}"));
@@ -163,9 +169,14 @@ fn inspect_child_objects(
             unsupported("Platform XML child objects contain an unsupported structural feature")
         })?;
         if child_profile.class_name != name {
-            return Err(unsupported("Platform XML child objects contain an unsupported structural feature"));
+            return Err(unsupported(
+                "Platform XML child objects contain an unsupported structural feature",
+            ));
         }
-        features.insert(format!("structural:{}:{name}", child_object_scope(owner_profile)));
+        features.insert(format!(
+            "structural:{}:{name}",
+            child_object_scope(owner_profile)
+        ));
         inspect_structural_features(child, child_profile, false, features)?;
     }
     Ok(())
@@ -203,7 +214,9 @@ fn structural_child_name<'a, 'input>(
     child: roxmltree::Node<'a, 'input>,
 ) -> Result<&'input str, SourceAdapterError> {
     if child.tag_name().namespace() != Some(METADATA_NAMESPACE) {
-        return Err(unsupported("Platform XML structural feature has an unsupported namespace"));
+        return Err(unsupported(
+            "Platform XML structural feature has an unsupported namespace",
+        ));
     }
     Ok(child.tag_name().name())
 }
@@ -219,7 +232,9 @@ impl SourceProbe for PlatformXmlProbe {
             .file_name()
             .and_then(|name| name.to_str())
             .filter(|name| !name.is_empty())
-            .ok_or_else(|| unavailable("Platform XML descriptor does not have a UTF-8 file name"))?;
+            .ok_or_else(|| {
+                unavailable("Platform XML descriptor does not have a UTF-8 file name")
+            })?;
         let provider = PlatformXmlProvider::open(root)?;
         self.probe_provider(input, &provider, descriptor_key)
     }
@@ -287,13 +302,22 @@ mod tests {
         )
         .unwrap();
 
-        let ProbeOutcome::Match(descriptor) = outcome else { panic!("expected Platform XML match") };
+        let ProbeOutcome::Match(descriptor) = outcome else {
+            panic!("expected Platform XML match")
+        };
         assert_eq!(descriptor.family, SourceFamily::PlatformXml);
-        assert_eq!(descriptor.format_version, FormatVersion::parse("2.20").unwrap());
-        assert!(descriptor.detected_features.contains("metadata-class:Document"));
+        assert_eq!(
+            descriptor.format_version,
+            FormatVersion::parse("2.20").unwrap()
+        );
+        assert!(descriptor
+            .detected_features
+            .contains("metadata-class:Document"));
         let snapshot = descriptor.snapshot_evidence.unwrap();
         assert!(snapshot.root_descriptor_digest.starts_with("sha256:"));
-        assert!(serde_json::to_string(&snapshot).unwrap().contains("sha256:"));
+        assert!(serde_json::to_string(&snapshot)
+            .unwrap()
+            .contains("sha256:"));
     }
 
     #[test]
@@ -304,8 +328,13 @@ mod tests {
         )
         .unwrap();
 
-        let ProbeOutcome::Match(descriptor) = outcome else { panic!("family and version should still be evidenced") };
-        assert_eq!(descriptor.format_version, FormatVersion::parse("2.19").unwrap());
+        let ProbeOutcome::Match(descriptor) = outcome else {
+            panic!("family and version should still be evidenced")
+        };
+        assert_eq!(
+            descriptor.format_version,
+            FormatVersion::parse("2.19").unwrap()
+        );
     }
 
     #[test]
@@ -331,7 +360,10 @@ mod tests {
             Some("main"),
         )
         .unwrap_err();
-        assert_eq!(invalid_version.kind, SourceAdapterErrorKind::FormatUnsupported);
+        assert_eq!(
+            invalid_version.kind,
+            SourceAdapterErrorKind::FormatUnsupported
+        );
 
         let invalid_uuid = probe_fixture(
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document uuid="not-a-uuid"/></MetaDataObject>"#,
@@ -356,8 +388,12 @@ mod tests {
                 Some("main"),
             )
             .unwrap();
-            let ProbeOutcome::Match(descriptor) = outcome else { panic!("expected {class} match") };
-            assert!(descriptor.detected_features.contains(&format!("metadata-class:{class}")));
+            let ProbeOutcome::Match(descriptor) = outcome else {
+                panic!("expected {class} match")
+            };
+            assert!(descriptor
+                .detected_features
+                .contains(&format!("metadata-class:{class}")));
         }
     }
 
@@ -403,10 +439,18 @@ mod tests {
         )
         .unwrap();
 
-        let ProbeOutcome::Match(descriptor) = outcome else { panic!("expected Configuration match") };
-        assert!(descriptor.detected_features.contains("structural:configuration-child:Catalog"));
-        assert!(descriptor.detected_features.contains("structural:configuration-child:Document"));
-        assert!(descriptor.detected_features.contains("structural:configuration-child:CommonModule"));
+        let ProbeOutcome::Match(descriptor) = outcome else {
+            panic!("expected Configuration match")
+        };
+        assert!(descriptor
+            .detected_features
+            .contains("structural:configuration-child:Catalog"));
+        assert!(descriptor
+            .detected_features
+            .contains("structural:configuration-child:Document"));
+        assert!(descriptor
+            .detected_features
+            .contains("structural:configuration-child:CommonModule"));
     }
 
     #[test]
@@ -428,8 +472,12 @@ mod tests {
                 Some("main"),
             )
             .unwrap();
-            let ProbeOutcome::Match(descriptor) = outcome else { panic!("expected {} match", profile.class_name) };
-            assert!(descriptor.detected_features.contains(&format!("metadata-class:{}", profile.class_name)));
+            let ProbeOutcome::Match(descriptor) = outcome else {
+                panic!("expected {} match", profile.class_name)
+            };
+            assert!(descriptor
+                .detected_features
+                .contains(&format!("metadata-class:{}", profile.class_name)));
         }
     }
 
@@ -439,8 +487,12 @@ mod tests {
         let first = probe_fixture(xml, Some("main")).unwrap();
         let second = probe_fixture(xml, Some("main")).unwrap();
 
-        let ProbeOutcome::Match(first) = first else { panic!("expected first match") };
-        let ProbeOutcome::Match(second) = second else { panic!("expected second match") };
+        let ProbeOutcome::Match(first) = first else {
+            panic!("expected first match")
+        };
+        let ProbeOutcome::Match(second) = second else {
+            panic!("expected second match")
+        };
         assert_eq!(first.detected_features, second.detected_features);
         assert_eq!(
             first.detected_features.into_iter().collect::<Vec<_>>(),
@@ -470,8 +522,12 @@ mod tests {
         )
         .unwrap();
 
-        let ProbeOutcome::Match(nested) = nested else { panic!("expected nested match") };
-        let ProbeOutcome::Match(direct) = direct else { panic!("expected direct match") };
+        let ProbeOutcome::Match(nested) = nested else {
+            panic!("expected nested match")
+        };
+        let ProbeOutcome::Match(direct) = direct else {
+            panic!("expected direct match")
+        };
         assert!(!nested
             .detected_features
             .contains("structural:root:Properties"));
@@ -482,7 +538,10 @@ mod tests {
 
     #[test]
     fn foreign_parsed_root_remains_no_match() {
-        assert!(matches!(probe_fixture("<foreign/>", Some("main")).unwrap(), ProbeOutcome::NoMatch));
+        assert!(matches!(
+            probe_fixture("<foreign/>", Some("main")).unwrap(),
+            ProbeOutcome::NoMatch
+        ));
     }
 
     #[test]
@@ -490,13 +549,19 @@ mod tests {
         let root = fixture_root();
         let target = root.join("Configuration.xml");
         fs::write(&target, r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document uuid="11111111-1111-1111-1111-111111111111"/></MetaDataObject>"#).unwrap();
-        let first = PlatformXmlProbe::new().probe(&input(&root, &target, None)).unwrap();
+        let first = PlatformXmlProbe::new()
+            .probe(&input(&root, &target, None))
+            .unwrap();
         fs::write(&target, r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document uuid="11111111-1111-1111-1111-111111111111" changed="yes"/></MetaDataObject>"#).unwrap();
-        let second = PlatformXmlProbe::new().probe(&input(&root, &target, None)).unwrap();
+        let second = PlatformXmlProbe::new()
+            .probe(&input(&root, &target, None))
+            .unwrap();
         assert_eq!(source_id_json(first), source_id_json(second));
 
         fs::write(&target, r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document/></MetaDataObject>"#).unwrap();
-        let error = PlatformXmlProbe::new().probe(&input(&root, &target, None)).unwrap_err();
+        let error = PlatformXmlProbe::new()
+            .probe(&input(&root, &target, None))
+            .unwrap_err();
         assert_eq!(error.kind, SourceAdapterErrorKind::ProjectionAmbiguous);
     }
 
@@ -520,24 +585,36 @@ mod tests {
         fs::write(&root.join("v8project.yaml"), "source-set: invalid").unwrap();
         fs::write(&target, r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document uuid="11111111-1111-1111-1111-111111111111"/></MetaDataObject>"#).unwrap();
 
-        let error = PlatformXmlProbe::new().probe(&input(&root, &target, None)).unwrap_err();
+        let error = PlatformXmlProbe::new()
+            .probe(&input(&root, &target, None))
+            .unwrap_err();
 
         assert_eq!(error.kind, SourceAdapterErrorKind::SourceUnavailable);
         assert!(!error.message.contains(&root.display().to_string()));
     }
 
-    fn probe_fixture(xml: &str, configured_source_set: Option<&str>) -> Result<ProbeOutcome, crate::domain::source_adapters::SourceAdapterError> {
+    fn probe_fixture(
+        xml: &str,
+        configured_source_set: Option<&str>,
+    ) -> Result<ProbeOutcome, crate::domain::source_adapters::SourceAdapterError> {
         probe_bytes_fixture(xml.as_bytes(), configured_source_set)
     }
 
-    fn probe_bytes_fixture(bytes: &[u8], configured_source_set: Option<&str>) -> Result<ProbeOutcome, crate::domain::source_adapters::SourceAdapterError> {
+    fn probe_bytes_fixture(
+        bytes: &[u8],
+        configured_source_set: Option<&str>,
+    ) -> Result<ProbeOutcome, crate::domain::source_adapters::SourceAdapterError> {
         let root = fixture_root();
         let target = root.join("Configuration.xml");
         fs::write(&target, bytes).unwrap();
         PlatformXmlProbe::new().probe(&input(&root, &target, configured_source_set))
     }
 
-    fn input(root: &std::path::Path, target: &std::path::Path, configured_source_set: Option<&str>) -> SourceInput {
+    fn input(
+        root: &std::path::Path,
+        target: &std::path::Path,
+        configured_source_set: Option<&str>,
+    ) -> SourceInput {
         SourceInput {
             workspace_root: PathBuf::from(root),
             target: PathBuf::from(target),
@@ -546,7 +623,9 @@ mod tests {
     }
 
     fn source_id_json(outcome: ProbeOutcome) -> String {
-        let ProbeOutcome::Match(descriptor) = outcome else { panic!("expected Platform XML match") };
+        let ProbeOutcome::Match(descriptor) = outcome else {
+            panic!("expected Platform XML match")
+        };
         serde_json::to_string(&descriptor.source_id).unwrap()
     }
 

@@ -70,14 +70,36 @@ mod tests {
         let args = json!({"ObjectPath": path}).as_object().unwrap().clone();
         for dry_run in [false, true] {
             let result = NativeOperationAdapter::invoke_with_data(
-                "meta-info", "unica.meta.info", &args, &context, dry_run, false,
-            ).unwrap();
+                "meta-info",
+                "unica.meta.info",
+                &args,
+                &context,
+                dry_run,
+                false,
+            )
+            .unwrap();
             assert!(result.adapter.ok);
             assert!(result.adapter.stdout.is_none());
             let data = result.data.unwrap();
             let navigation = &data["navigation"];
-            let keys = navigation.as_object().unwrap().keys().cloned().collect::<std::collections::BTreeSet<_>>();
-            assert_eq!(keys, std::collections::BTreeSet::from(["diagnostics".to_string(), "nodes".to_string(), "relations".to_string(), "root".to_string(), "schemaVersion".to_string(), "snapshot".to_string(), "status".to_string()]));
+            let keys = navigation
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(
+                keys,
+                std::collections::BTreeSet::from([
+                    "diagnostics".to_string(),
+                    "nodes".to_string(),
+                    "relations".to_string(),
+                    "root".to_string(),
+                    "schemaVersion".to_string(),
+                    "snapshot".to_string(),
+                    "status".to_string()
+                ])
+            );
             assert_eq!(navigation["status"], "ready");
             assert!(navigation.get("graph").is_none());
             assert!(data.get("text").is_none());
@@ -86,8 +108,17 @@ mod tests {
 
         let (unsupported_context, unsupported_path) = fixture("2.19");
         let unavailable = NativeOperationAdapter::invoke_with_data(
-            "meta-info", "unica.meta.info", &json!({"ObjectPath": unsupported_path}).as_object().unwrap().clone(), &unsupported_context, false, false,
-        ).unwrap();
+            "meta-info",
+            "unica.meta.info",
+            &json!({"ObjectPath": unsupported_path})
+                .as_object()
+                .unwrap()
+                .clone(),
+            &unsupported_context,
+            false,
+            false,
+        )
+        .unwrap();
         assert!(unavailable.adapter.ok);
         assert!(unavailable.adapter.stdout.is_none());
         let navigation = &unavailable.data.unwrap()["navigation"];
@@ -101,7 +132,9 @@ mod tests {
 
     fn fixture(version: &str) -> (WorkspaceContext, PathBuf) {
         let root = std::env::temp_dir().join(format!(
-            "unica-meta-typed-gateway-{}-{}", std::process::id(), NEXT_GATEWAY_FIXTURE.fetch_add(1, Ordering::Relaxed),
+            "unica-meta-typed-gateway-{}-{}",
+            std::process::id(),
+            NEXT_GATEWAY_FIXTURE.fetch_add(1, Ordering::Relaxed),
         ));
         let src = root.join("src");
         let path = src.join("Catalogs/Items.xml");
@@ -109,6 +142,14 @@ mod tests {
         std::fs::write(root.join("v8project.yaml"), "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n").unwrap();
         std::fs::write(src.join("Configuration.xml"), format!(r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="{version}"><Configuration uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"><Properties><Name>Configuration</Name></Properties></Configuration></MetaDataObject>"#)).unwrap();
         std::fs::write(&path, format!(r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="{version}"><Catalog uuid="11111111-1111-1111-1111-111111111111"><Properties><Name>Items</Name></Properties></Catalog></MetaDataObject>"#)).unwrap();
-        (WorkspaceContext { cwd: root.clone(), workspace_root: root.clone(), cache_root: root.join(".build/unica"), workspace_epoch: 1 }, path)
+        (
+            WorkspaceContext {
+                cwd: root.clone(),
+                workspace_root: root.clone(),
+                cache_root: root.join(".build/unica"),
+                workspace_epoch: 1,
+            },
+            path,
+        )
     }
 }

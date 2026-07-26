@@ -22,14 +22,16 @@ read-only without an executable action.
 
 Captured by
 `public_typed_gateway_platform_xml_2_20_serializes_navigation`, which invokes
-`native_operations::meta::inspect_meta_navigation` on the 2.20 fixture and
-prints the result from `serde_json::to_string` under the public
-`data.navigation` envelope. This is an actual serialized test invocation, not
-handwritten example data. The compact capture is path-free and includes the
-full navigation envelope shape plus one canonical typed property/capability:
+the real `NativeOperationAdapter::invoke_with_data("meta-info", ...)` gateway
+on the 2.20 fixture. It verifies an OK adapter with no `stdout`, a `data`
+object containing only `navigation`, and the exact seven-key navigation
+envelope before serializing the returned data under `data`. This is an actual
+serialized gateway result, not handwritten example data. The compact capture
+is path-free and includes the full navigation envelope shape plus one canonical
+typed property/capability:
 
 ```json
-{"data":{"navigation":{"schemaVersion":"1","status":"ready","snapshot":{"sourceId":"workspace:main","revision":"sha256:6639379e4ec1d89d128a206c994ad093e27284717ef4b23f290e7ef67a40c936","consistency":"consistent","adapterId":"platform-xml-2.20"},"root":{"sourceId":"workspace:main","objectKey":"uuid:11111111-1111-1111-1111-111111111111","identityStrength":"persistent","kind":"document","displayName":"Shipment"},"nodes":[{"objectRef":{"sourceId":"workspace:main","objectKey":"uuid:11111111-1111-1111-1111-111111111111","identityStrength":"persistent","kind":"document","displayName":"Shipment"},"reference":{"sourceId":"workspace:main","objectKey":"uuid:11111111-1111-1111-1111-111111111111","identityStrength":"persistent","kind":"document","displayName":"Shipment"},"properties":{"name":{"type":"string","valueState":"explicit","value":"Shipment","provenance":"descriptor","capability":"readOnly"}},"capabilityState":{"resolutionState":"resolved","authorability":"unknown_read_only"},"actionProfile":"document_metadata_object"}],"relations":[],"diagnostics":[]}}}
+{"data":{"navigation":{"schemaVersion":"1","status":"ready","snapshot":{"sourceId":"workspace:main","revision":"sha256:9c5e449d4fdadc296159c649f2c82e4e2ba16970896b3e611b37d7a0fbd6547c","consistency":"consistent","adapterId":"platform-xml-2.20"},"root":{"sourceId":"workspace:main","objectKey":"uuid:11111111-1111-1111-1111-111111111111","identityStrength":"persistent","kind":"document","displayName":"Shipment"},"nodes":[{"objectRef":{"sourceId":"workspace:main","objectKey":"uuid:11111111-1111-1111-1111-111111111111","identityStrength":"persistent","kind":"document","displayName":"Shipment"},"reference":{"sourceId":"workspace:main","objectKey":"uuid:11111111-1111-1111-1111-111111111111","identityStrength":"persistent","kind":"document","displayName":"Shipment"},"properties":{"name":{"type":"string","valueState":"explicit","value":"Shipment","provenance":"descriptor","capability":"readOnly"}},"capabilityState":{"resolutionState":"resolved","authorability":"authorable"},"actionProfile":"document_metadata_object"}],"relations":[],"diagnostics":[]}}}
 ```
 
 ## Completion-criteria audit
@@ -60,3 +62,22 @@ Task 9 edits. Certification now supplies the missing evidence, but strict
 temporal ordering of the original promotion cannot be reconstructed from this
 task alone. The claim remains limited to object-level navigation; Form coverage
 is explicitly partial and no writer is present.
+
+## Fix Round 1
+
+- Ran generated `cargo fmt --all`; `cargo fmt --all -- --check` exits `0`.
+- Certification: `3 passed`; it now uses the typed-result gateway, captures an
+  external Form UUID conflict as `ProjectionAmbiguous` / `projection_ambiguous`,
+  and separately keeps duplicate inline Form identity as `IdentityCollision`.
+- Corrupted captured support bytes require both `capability.authorability` and
+  `capabilityState.authorability` to be exactly `UnknownSupportState`, and all
+  actions remain non-executable. Ignoring the bytes yields `Authorable` and
+  fails the test.
+- Focused suites: Platform XML `96 passed`; meta `18 passed`; typed_result
+  `1 passed`; support_guard `3 passed`.
+- Full `cargo test -p unica-coder`: `845 passed, 0 failed, 2 ignored`; extra
+  targets: `2 passed` and `1 passed`. `cargo build -p unica-coder` and
+  `git diff --check` both exit `0`.
+- Package check used `git diff --name-only 0aacaaf3..HEAD --` for the three
+  package-contract files and produced no output. The implementation plan and
+  tracked Task 9 brief now use the same fixed implementation base.

@@ -3,7 +3,10 @@ use std::ops::Deref;
 
 use uuid::Uuid;
 
-use crate::domain::{navigation::{CoverageState, RelationRole}, source_adapters::SourceSnapshot};
+use crate::domain::{
+    navigation::{CoverageState, RelationRole},
+    source_adapters::SourceSnapshot,
+};
 
 use super::schema::MetadataClassRole;
 

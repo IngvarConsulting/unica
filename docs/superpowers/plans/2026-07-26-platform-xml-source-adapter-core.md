@@ -1985,7 +1985,7 @@ Expected:
 Run:
 
 ```bash
-git diff --name-only HEAD~8..HEAD -- \
+git diff --name-only 0aacaaf3..HEAD -- \
   plugins/unica/.mcp.json \
   plugins/unica/.codex-plugin/plugin.json \
   plugins/unica/third-party/tools.lock.json

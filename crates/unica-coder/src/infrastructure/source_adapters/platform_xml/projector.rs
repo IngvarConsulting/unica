@@ -7,19 +7,19 @@ use crate::domain::{
     navigation::{
         action_profile_for, ActionAvailability, Atomicity, Authorability, CapabilityState,
         CapabilityVector, CoverageState, FormatCompatibility, IdentityStrength, NavigationEnvelope,
-        NavigationFacetVisibility, NavigationNode, NodeKind, ObjectKey, ObjectRef, PropertyCapability, PropertyProvenance,
-        PropertyType, PropertyValue, RelationGroupRef, RelationKey, RelationKind, RelationRef,
-        RelationRole,
-        ResolutionState, SemanticAction, SemanticActionKind, SemanticProperty, SemanticRelation,
+        NavigationFacetVisibility, NavigationNode, NodeKind, ObjectKey, ObjectRef,
+        PropertyCapability, PropertyProvenance, PropertyType, PropertyValue, RelationGroupRef,
+        RelationKey, RelationKind, RelationRef, RelationRole, ResolutionState, SemanticAction,
+        SemanticActionKind, SemanticProperty, SemanticRelation,
     },
     source_adapters::{SourceAccess, SourceAdapterError, SourceAdapterErrorKind, SourceId},
 };
 
 use super::{
     native_model::{
-        NativeEvidenceState, NativeMetadataChild, NativeMetadataNode, NativeNodeBacking, NativeNodeState,
-        NativeProperty, NativePropertyProvenance, NativePropertyValue, PlatformXmlNativeSnapshot,
-        NativeScalarType,
+        NativeEvidenceState, NativeMetadataChild, NativeMetadataNode, NativeNodeBacking,
+        NativeNodeState, NativeProperty, NativePropertyProvenance, NativePropertyValue,
+        NativeScalarType, PlatformXmlNativeSnapshot,
     },
     schema::{
         is_type_property_2_20, parse_type_description_2_20, scalar_property_kind_2_20,
@@ -36,7 +36,9 @@ pub(crate) fn project(
     support: &SupportFacts,
 ) -> Result<NavigationEnvelope, SourceAdapterError> {
     if native.source.adapter_id != PROJECTOR_ID {
-        return Err(ambiguous("Platform XML projection requires the exact 2.20 decoder"));
+        return Err(ambiguous(
+            "Platform XML projection requires the exact 2.20 decoder",
+        ));
     }
 
     let mut graph = GraphBuilder::new(native, support);
@@ -101,7 +103,11 @@ impl<'a> GraphBuilder<'a> {
             properties: BTreeMap::new(),
             action_profile: action_profile_for(&NodeKind::SourceRoot),
             semantic_actions: Vec::new(),
-            actions: vec![modeled_action(SemanticActionKind::Inspect, reference.clone(), None)],
+            actions: vec![modeled_action(
+                SemanticActionKind::Inspect,
+                reference.clone(),
+                None,
+            )],
             facet_visibility: NavigationFacetVisibility::Full,
         });
         Ok(reference)
@@ -172,7 +178,11 @@ impl<'a> GraphBuilder<'a> {
         Ok(reference)
     }
 
-    fn project_child(&mut self, child: &NativeMetadataChild, owner: &ObjectRef) -> Result<ObjectRef, SourceAdapterError> {
+    fn project_child(
+        &mut self,
+        child: &NativeMetadataChild,
+        owner: &ObjectRef,
+    ) -> Result<ObjectRef, SourceAdapterError> {
         self.project_node(&child.node, Some(owner), child.role)
     }
 
@@ -200,7 +210,10 @@ impl<'a> GraphBuilder<'a> {
             kind: RelationKind::Contains,
         };
         let group_ref = RelationGroupRef::new(
-            self.native.source.source_id.clone(), owner.clone(), role, RelationKind::Contains,
+            self.native.source.source_id.clone(),
+            owner.clone(),
+            role,
+            RelationKind::Contains,
         )?;
         self.relations.push(SemanticRelation {
             relation_ref: relation_ref.clone(),
@@ -248,7 +261,6 @@ impl<'a> GraphBuilder<'a> {
     }
 }
 
-
 fn object_key(
     source_id: &SourceId,
     owner: Option<&ObjectKey>,
@@ -258,7 +270,10 @@ fn object_key(
 ) -> Result<(ObjectKey, IdentityStrength), SourceAdapterError> {
     validate_name(validated_name)?;
     if let Some(uuid) = native_uuid {
-        return Ok((ObjectKey::new(format!("uuid:{uuid}"))?, IdentityStrength::Persistent));
+        return Ok((
+            ObjectKey::new(format!("uuid:{uuid}"))?,
+            IdentityStrength::Persistent,
+        ));
     }
     let digest = digest_parts(&[
         source_id.as_str(),
@@ -309,7 +324,9 @@ fn canonical_kind(kind: &NodeKind) -> String {
         NodeKind::FormAttribute => "formAttribute".to_string(),
         NodeKind::FormCommand => "formCommand".to_string(),
         NodeKind::FormElement => "formElement".to_string(),
-        NodeKind::Template { template_type } => format!("template:{}", template_type.as_deref().unwrap_or("unknown")),
+        NodeKind::Template { template_type } => {
+            format!("template:{}", template_type.as_deref().unwrap_or("unknown"))
+        }
     }
 }
 
@@ -322,7 +339,9 @@ fn validate_name(name: &str) -> Result<(), SourceAdapterError> {
 
 fn node_kind(node: &NativeMetadataNode) -> NodeKind {
     match node.class.role {
-        MetadataClassRole::TopLevelObject if node.class.canonical_name == "Document" => NodeKind::Document,
+        MetadataClassRole::TopLevelObject if node.class.canonical_name == "Document" => {
+            NodeKind::Document
+        }
         MetadataClassRole::TopLevelObject | MetadataClassRole::Configuration => {
             NodeKind::metadata_object(node.class.canonical_name)
         }
@@ -340,9 +359,18 @@ fn template_type(node: &NativeMetadataNode) -> Option<String> {
     let NativeNodeBacking::Template(template) = &node.backing else {
         return None;
     };
-    match (&template.descriptor.state, &template.canonical_content.state, &template.descriptor_type, template.mxl_root_kind) {
-        (NativeEvidenceState::Validated, NativeEvidenceState::Validated, NativePropertyValue::Scalar(value), Some(_))
-            if value == "SpreadsheetDocument" => Some(value.clone()),
+    match (
+        &template.descriptor.state,
+        &template.canonical_content.state,
+        &template.descriptor_type,
+        template.mxl_root_kind,
+    ) {
+        (
+            NativeEvidenceState::Validated,
+            NativeEvidenceState::Validated,
+            NativePropertyValue::Scalar(value),
+            Some(_),
+        ) if value == "SpreadsheetDocument" => Some(value.clone()),
         _ => None,
     }
 }
@@ -350,7 +378,9 @@ fn template_type(node: &NativeMetadataNode) -> Option<String> {
 fn node_resolution(node: &NativeMetadataNode) -> ResolutionState {
     match node.state {
         NativeNodeState::UnresolvedRegistration { .. } => ResolutionState::Unresolved,
-        NativeNodeState::ResolvedInline | NativeNodeState::ResolvedRegistration { .. } => ResolutionState::Resolved,
+        NativeNodeState::ResolvedInline | NativeNodeState::ResolvedRegistration { .. } => {
+            ResolutionState::Resolved
+        }
     }
 }
 
@@ -364,10 +394,19 @@ fn node_coverage(node: &NativeMetadataNode, snapshot_coverage: CoverageState) ->
     match &node.backing {
         NativeNodeBacking::Form(form)
             if !matches!(form.descriptor.state, NativeEvidenceState::Validated)
-                || !matches!(form.managed_content.state, NativeEvidenceState::Validated) => CoverageState::Partial,
+                || !matches!(form.managed_content.state, NativeEvidenceState::Validated) =>
+        {
+            CoverageState::Partial
+        }
         NativeNodeBacking::Template(template)
             if !matches!(template.descriptor.state, NativeEvidenceState::Validated)
-                || !matches!(template.canonical_content.state, NativeEvidenceState::Validated) => CoverageState::Partial,
+                || !matches!(
+                    template.canonical_content.state,
+                    NativeEvidenceState::Validated
+                ) =>
+        {
+            CoverageState::Partial
+        }
         _ => CoverageState::Complete,
     }
 }
@@ -417,7 +456,9 @@ fn properties(
 
 fn property_name(id: &str) -> String {
     let mut chars = id.chars();
-    let Some(first) = chars.next() else { return String::new() };
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
     first.to_lowercase().chain(chars).collect()
 }
 
@@ -429,16 +470,24 @@ fn project_property(property: &NativeProperty) -> Result<SemanticProperty, Sourc
     };
     let mut projected = match &property.value {
         NativePropertyValue::Absent => SemanticProperty::absent(PropertyType::Unknown, provenance),
-        NativePropertyValue::Unresolved => SemanticProperty::unresolved(PropertyType::Unknown, provenance),
+        NativePropertyValue::Unresolved => {
+            SemanticProperty::unresolved(PropertyType::Unknown, provenance)
+        }
         NativePropertyValue::UnresolvedScalar { .. } => {
             SemanticProperty::unresolved(PropertyType::Unknown, provenance)
         }
         NativePropertyValue::Scalar(value) => {
             scalar_property(&property.canonical_id, value, None, provenance)?
         }
-        NativePropertyValue::AnnotatedScalar { value, type_annotation } => {
-            scalar_property(&property.canonical_id, value, Some(*type_annotation), provenance)?
-        }
+        NativePropertyValue::AnnotatedScalar {
+            value,
+            type_annotation,
+        } => scalar_property(
+            &property.canonical_id,
+            value,
+            Some(*type_annotation),
+            provenance,
+        )?,
         NativePropertyValue::RawXml(xml) if is_type_property_2_20(&property.canonical_id) => {
             SemanticProperty::explicit(
                 PropertyType::TypeSet,
@@ -448,7 +497,9 @@ fn project_property(property: &NativeProperty) -> Result<SemanticProperty, Sourc
         }
         NativePropertyValue::RawXml(_) => SemanticProperty::explicit(
             PropertyType::Unknown,
-            PropertyValue::Unknown { summary: "non-scalar XML property".to_string() },
+            PropertyValue::Unknown {
+                summary: "non-scalar XML property".to_string(),
+            },
             provenance,
         )?,
     };
@@ -465,7 +516,9 @@ fn scalar_property(
     let Some(kind) = scalar_property_kind_2_20(canonical_id) else {
         return SemanticProperty::explicit(
             PropertyType::Unknown,
-            PropertyValue::Unknown { summary: "unrecognized Platform XML scalar property".to_string() },
+            PropertyValue::Unknown {
+                summary: "unrecognized Platform XML scalar property".to_string(),
+            },
             provenance,
         );
     };
@@ -477,23 +530,43 @@ fn scalar_property(
         },
         ScalarPropertyKind::Integer => (
             PropertyType::Integer,
-            PropertyValue::Integer(value.parse().map_err(|_| ambiguous("invalid integer Platform XML scalar property"))?),
+            PropertyValue::Integer(
+                value
+                    .parse()
+                    .map_err(|_| ambiguous("invalid integer Platform XML scalar property"))?,
+            ),
         ),
         ScalarPropertyKind::Uuid => (
             PropertyType::Uuid,
-            PropertyValue::Uuid(value.parse().map_err(|_| ambiguous("invalid UUID Platform XML scalar property"))?),
+            PropertyValue::Uuid(
+                value
+                    .parse()
+                    .map_err(|_| ambiguous("invalid UUID Platform XML scalar property"))?,
+            ),
         ),
-        ScalarPropertyKind::String => (PropertyType::String, PropertyValue::String(value.to_string())),
+        ScalarPropertyKind::String => (
+            PropertyType::String,
+            PropertyValue::String(value.to_string()),
+        ),
         ScalarPropertyKind::PolymorphicFillValue => match type_annotation {
             Some(NativeScalarType::Decimal) => match normalize_xml_schema_decimal(value) {
                 Some(value) => (PropertyType::Decimal, PropertyValue::Decimal(value)),
-                None => return Ok(SemanticProperty::unresolved(PropertyType::Unknown, provenance)),
+                None => {
+                    return Ok(SemanticProperty::unresolved(
+                        PropertyType::Unknown,
+                        provenance,
+                    ))
+                }
             },
-            Some(NativeScalarType::String) => {
-                (PropertyType::String, PropertyValue::String(value.to_string()))
-            }
+            Some(NativeScalarType::String) => (
+                PropertyType::String,
+                PropertyValue::String(value.to_string()),
+            ),
             None | Some(_) => {
-                return Ok(SemanticProperty::unresolved(PropertyType::Unknown, provenance));
+                return Ok(SemanticProperty::unresolved(
+                    PropertyType::Unknown,
+                    provenance,
+                ));
             }
         },
     };
@@ -524,7 +597,12 @@ fn normalize_xml_schema_decimal(value: &str) -> Option<String> {
     let fraction = fraction.trim_end_matches('0');
     let fraction = if fraction.is_empty() { "0" } else { fraction };
     let is_zero = integer == "0" && fraction == "0";
-    Some(format!("{}{}.{}", if negative && !is_zero { "-" } else { "" }, integer, fraction))
+    Some(format!(
+        "{}{}.{}",
+        if negative && !is_zero { "-" } else { "" },
+        integer,
+        fraction
+    ))
 }
 
 fn ambiguous(message: impl Into<String>) -> SourceAdapterError {
@@ -538,7 +616,10 @@ mod tests {
     use super::*;
     use crate::{
         domain::{
-            navigation::{ActionKind, FormatCompatibility, PropertyType, PropertyValue, PropertyValueState, RelationKind, TypeVariant},
+            navigation::{
+                ActionKind, FormatCompatibility, PropertyType, PropertyValue, PropertyValueState,
+                RelationKind, TypeVariant,
+            },
             source_adapters::{SnapshotConsistency, SourceId, SourceRevision, SourceSnapshot},
         },
         infrastructure::source_adapters::platform_xml::{
@@ -582,9 +663,10 @@ mod tests {
     fn format_compatibility_is_part_of_every_node_capability() {
         let envelope = project_fixture(document_fixture()).unwrap();
 
-        assert!(envelope.nodes.iter().all(|node| {
-            node.capability.format == FormatCompatibility::Compatible
-        }));
+        assert!(envelope
+            .nodes
+            .iter()
+            .all(|node| { node.capability.format == FormatCompatibility::Compatible }));
     }
 
     #[test]
@@ -592,9 +674,18 @@ mod tests {
         let envelope = project_fixture(document_fixture()).unwrap();
         let document = envelope.node_named(NodeKind::Document, "Order").unwrap();
 
-        assert_eq!(document.properties["numberLength"].value_type, PropertyType::Integer);
-        assert_eq!(document.properties["numberLength"].value, Some(PropertyValue::Integer(11)));
-        assert_eq!(document.properties["numberLength"].value_state, PropertyValueState::Explicit);
+        assert_eq!(
+            document.properties["numberLength"].value_type,
+            PropertyType::Integer
+        );
+        assert_eq!(
+            document.properties["numberLength"].value,
+            Some(PropertyValue::Integer(11))
+        );
+        assert_eq!(
+            document.properties["numberLength"].value_state,
+            PropertyValueState::Explicit
+        );
     }
 
     #[test]
@@ -602,10 +693,17 @@ mod tests {
         let envelope = project_fixture(attribute_fixture()).unwrap();
         let attribute = envelope.node_named(NodeKind::Attribute, "Product").unwrap();
 
-        let PropertyValue::TypeSet(type_set) = attribute.properties["dataType"].value.clone().unwrap() else {
+        let PropertyValue::TypeSet(type_set) =
+            attribute.properties["dataType"].value.clone().unwrap()
+        else {
             panic!("expected structured type set");
         };
-        assert_eq!(type_set.variants[0], TypeVariant::Reference { target: "Catalog.Products".to_string() });
+        assert_eq!(
+            type_set.variants[0],
+            TypeVariant::Reference {
+                target: "Catalog.Products".to_string()
+            }
+        );
     }
 
     #[test]
@@ -618,11 +716,16 @@ mod tests {
         assert_eq!(
             type_set.variants,
             vec![
-                TypeVariant::Enumeration { target: "Enum.Statuses".to_string() },
+                TypeVariant::Enumeration {
+                    target: "Enum.Statuses".to_string()
+                },
                 TypeVariant::Primitive {
                     kind: "String".to_string(),
                     qualifiers: BTreeMap::from([
-                        ("allowedLength".to_string(), PropertyValue::EnumSymbol("Variable".to_string())),
+                        (
+                            "allowedLength".to_string(),
+                            PropertyValue::EnumSymbol("Variable".to_string())
+                        ),
                         ("length".to_string(), PropertyValue::Integer(10)),
                     ]),
                 },
@@ -675,11 +778,19 @@ mod tests {
         let decimal = project_fixture(decimal).unwrap();
         let string = project_fixture(string).unwrap();
         assert_eq!(
-            decimal.node_named(NodeKind::Document, "Order").unwrap().properties["fillValue"].value,
+            decimal
+                .node_named(NodeKind::Document, "Order")
+                .unwrap()
+                .properties["fillValue"]
+                .value,
             Some(PropertyValue::Decimal("0.0".to_string())),
         );
         assert_eq!(
-            string.node_named(NodeKind::Document, "Order").unwrap().properties["fillValue"].value,
+            string
+                .node_named(NodeKind::Document, "Order")
+                .unwrap()
+                .properties["fillValue"]
+                .value,
             Some(PropertyValue::String("true".to_string())),
         );
     }
@@ -687,10 +798,14 @@ mod tests {
     #[test]
     fn fill_value_without_a_known_annotation_is_unresolved() {
         let mut root = document_fixture();
-        root.properties.insert("FillValue".to_string(), scalar("FillValue", "true"));
+        root.properties
+            .insert("FillValue".to_string(), scalar("FillValue", "true"));
 
         let envelope = project_fixture(root).unwrap();
-        let property = &envelope.node_named(NodeKind::Document, "Order").unwrap().properties["fillValue"];
+        let property = &envelope
+            .node_named(NodeKind::Document, "Order")
+            .unwrap()
+            .properties["fillValue"];
         assert_eq!(property.value_state, PropertyValueState::Unresolved);
         assert_eq!(property.value, None);
     }
@@ -727,11 +842,18 @@ mod tests {
 
         let string = project_fixture(string).unwrap();
         assert_eq!(
-            string.node_named(NodeKind::Document, "Order").unwrap().properties["fillValue"].value,
+            string
+                .node_named(NodeKind::Document, "Order")
+                .unwrap()
+                .properties["fillValue"]
+                .value,
             Some(PropertyValue::String(String::new())),
         );
         let decimal = project_fixture(decimal).unwrap();
-        let property = &decimal.node_named(NodeKind::Document, "Order").unwrap().properties["fillValue"];
+        let property = &decimal
+            .node_named(NodeKind::Document, "Order")
+            .unwrap()
+            .properties["fillValue"];
         assert_eq!(property.value_state, PropertyValueState::Unresolved);
         assert_eq!(property.value, None);
     }
@@ -754,11 +876,19 @@ mod tests {
         );
         let decimal = project_fixture(root.clone()).unwrap();
         assert_eq!(
-            decimal.node_named(NodeKind::Document, "Order").unwrap().properties["fillValue"].value,
+            decimal
+                .node_named(NodeKind::Document, "Order")
+                .unwrap()
+                .properties["fillValue"]
+                .value,
             Some(PropertyValue::Decimal("1.23".to_string())),
         );
 
-        for annotation in [NativeScalarType::Boolean, NativeScalarType::Integer, NativeScalarType::Uuid] {
+        for annotation in [
+            NativeScalarType::Boolean,
+            NativeScalarType::Integer,
+            NativeScalarType::Uuid,
+        ] {
             root.properties.insert(
                 "FillValue".to_string(),
                 NativeProperty {
@@ -772,7 +902,9 @@ mod tests {
             );
             let envelope = project_fixture(root.clone()).unwrap();
             let property = &envelope
-                .node_named(NodeKind::Document, "Order").unwrap().properties["fillValue"];
+                .node_named(NodeKind::Document, "Order")
+                .unwrap()
+                .properties["fillValue"];
             assert_eq!(property.value_state, PropertyValueState::Unresolved);
             assert_eq!(property.value, None);
         }
@@ -795,8 +927,13 @@ mod tests {
         );
         let envelope = project_fixture(root).unwrap();
         let document = envelope.node_named(NodeKind::Document, "Order").unwrap();
-        assert_eq!(document.properties["fillValue"].value_state, PropertyValueState::Unresolved);
-        assert!(envelope.node_named(NodeKind::Attribute, "Product").is_some());
+        assert_eq!(
+            document.properties["fillValue"].value_state,
+            PropertyValueState::Unresolved
+        );
+        assert!(envelope
+            .node_named(NodeKind::Attribute, "Product")
+            .is_some());
 
         let mut malformed = document_fixture();
         malformed.properties.insert(
@@ -812,7 +949,9 @@ mod tests {
         );
         let malformed = project_fixture(malformed).unwrap();
         let property = &malformed
-            .node_named(NodeKind::Document, "Order").unwrap().properties["fillValue"];
+            .node_named(NodeKind::Document, "Order")
+            .unwrap()
+            .properties["fillValue"];
         assert_eq!(property.value_state, PropertyValueState::Unresolved);
         assert_eq!(property.value, None);
     }
@@ -840,7 +979,10 @@ mod tests {
             Vec::new(),
         );
         let mut root = document_fixture();
-        root.children = vec![NativeMetadataChild { role: RelationRole::Forms, node: form }];
+        root.children = vec![NativeMetadataChild {
+            role: RelationRole::Forms,
+            node: form,
+        }];
 
         let envelope = project_fixture(root).unwrap();
         let form = envelope.node_named(NodeKind::Form, "OrderForm").unwrap();
@@ -855,15 +997,23 @@ mod tests {
     #[test]
     fn scalar_values_follow_the_property_schema_not_their_text() {
         let mut root = document_fixture();
-        root.properties.insert("Code".to_string(), scalar("Code", "001"));
-        root.properties.insert("UnknownScalar".to_string(), scalar("UnknownScalar", "42"));
+        root.properties
+            .insert("Code".to_string(), scalar("Code", "001"));
+        root.properties
+            .insert("UnknownScalar".to_string(), scalar("UnknownScalar", "42"));
 
         let envelope = project_fixture(root).unwrap();
         let document = envelope.node_named(NodeKind::Document, "Order").unwrap();
 
         assert_eq!(document.properties["code"].value_type, PropertyType::String);
-        assert_eq!(document.properties["code"].value, Some(PropertyValue::String("001".to_string())));
-        assert_eq!(document.properties["unknownScalar"].value_type, PropertyType::Unknown);
+        assert_eq!(
+            document.properties["code"].value,
+            Some(PropertyValue::String("001".to_string()))
+        );
+        assert_eq!(
+            document.properties["unknownScalar"].value_type,
+            PropertyType::Unknown
+        );
     }
 
     #[test]
@@ -886,13 +1036,11 @@ mod tests {
         ));
         std::fs::create_dir_all(&root).unwrap();
         let provider = PlatformXmlProvider::open(&root).unwrap();
-        let captured = support::read_support_facts_bytes(
-            provider.parent_configurations_bytes().as_deref(),
-        );
+        let captured =
+            support::read_support_facts_bytes(provider.parent_configurations_bytes().as_deref());
         std::fs::write(root.join("ParentConfigurations.bin"), b"changed-after-open").unwrap();
-        let after_change = support::read_support_facts_bytes(
-            provider.parent_configurations_bytes().as_deref(),
-        );
+        let after_change =
+            support::read_support_facts_bytes(provider.parent_configurations_bytes().as_deref());
         let snapshot = PlatformXmlNativeSnapshot {
             source: SourceSnapshot {
                 source_id: SourceId::new("workspace:main").unwrap(),
@@ -907,8 +1055,16 @@ mod tests {
         let before = project(&snapshot, &captured).unwrap();
         let after = project(&snapshot, &after_change).unwrap();
         assert_eq!(
-            before.node_named(NodeKind::Document, "Order").unwrap().capability.authorability,
-            after.node_named(NodeKind::Document, "Order").unwrap().capability.authorability,
+            before
+                .node_named(NodeKind::Document, "Order")
+                .unwrap()
+                .capability
+                .authorability,
+            after
+                .node_named(NodeKind::Document, "Order")
+                .unwrap()
+                .capability
+                .authorability,
         );
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -941,9 +1097,11 @@ mod tests {
             ),
         )
         .unwrap();
-        let support = |first_state: &str| format!(
+        let support = |first_state: &str| {
+            format!(
             "{{6,0,1,{PROVIDER},0,{VENDOR_CONFIGURATION},\"1.0\",\"Vendor\",\"VendorConf\",3,1,1,{CONFIGURATION},{CONFIGURATION},0,{first_state},{UUID},{UUID},2,1,{SECOND},{SECOND}}}"
-        );
+        )
+        };
         std::fs::write(root.join("ParentConfigurations.bin"), support("0")).unwrap();
         let provider = PlatformXmlProvider::open(&root).unwrap();
         let descriptor = SourceDescriptor {
@@ -964,7 +1122,11 @@ mod tests {
             .inspect_provider(&provider, &descriptor)
             .unwrap();
         assert_eq!(
-            envelope.node_named(NodeKind::Document, "Order").unwrap().capability.authorability,
+            envelope
+                .node_named(NodeKind::Document, "Order")
+                .unwrap()
+                .capability
+                .authorability,
             Authorability::SupportLocked,
         );
         std::fs::remove_dir_all(root).unwrap();
@@ -983,9 +1145,7 @@ mod tests {
         };
         project(
             &snapshot,
-            &support::read_support_facts(std::path::Path::new(
-                "/definitely/not/a/support/file",
-            )),
+            &support::read_support_facts(std::path::Path::new("/definitely/not/a/support/file")),
         )
     }
 
@@ -1046,12 +1206,21 @@ mod tests {
         children: Vec<NativeMetadataNode>,
     ) -> NativeMetadataNode {
         NativeMetadataNode {
-            class: NativeMetadataClass { canonical_name: class, role },
+            class: NativeMetadataClass {
+                canonical_name: class,
+                role,
+            },
             uuid: uuid.map(|value| value.parse().unwrap()),
             name: name.to_string(),
             state: NativeNodeState::ResolvedInline,
             properties,
-            children: children.into_iter().map(|node| NativeMetadataChild { role: fixture_child_role(&node), node }).collect(),
+            children: children
+                .into_iter()
+                .map(|node| NativeMetadataChild {
+                    role: fixture_child_role(&node),
+                    node,
+                })
+                .collect(),
             backing: NativeNodeBacking::None,
         }
     }

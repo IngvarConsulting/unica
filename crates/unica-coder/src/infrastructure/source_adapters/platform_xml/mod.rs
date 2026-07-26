@@ -12,8 +12,8 @@ use crate::{
 pub(crate) mod decoder;
 pub(crate) mod native_model;
 pub(crate) mod probe;
-pub(crate) mod provider;
 pub(crate) mod projector;
+pub(crate) mod provider;
 pub(crate) mod schema;
 pub(crate) mod support;
 
@@ -38,7 +38,9 @@ pub(crate) struct PlatformXmlReadAdapter {
 
 impl PlatformXmlReadAdapter {
     pub(crate) fn new() -> Self {
-        Self { manifest: manifest() }
+        Self {
+            manifest: manifest(),
+        }
     }
 
     pub(crate) fn inspect_provider(

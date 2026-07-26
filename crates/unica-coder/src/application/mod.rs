@@ -45,20 +45,62 @@ mod meta_info_contract_tests {
         let schema = input_schema_for_tool(&meta_info_tool());
         let properties = schema["properties"].as_object().unwrap();
         for removed in ["Mode", "Name", "Limit", "Offset", "OutFile"] {
-            assert!(!properties.contains_key(removed), "{removed} must be removed");
+            assert!(
+                !properties.contains_key(removed),
+                "{removed} must be removed"
+            );
         }
-        for field in ["ObjectPath", "objectRef", "snapshotRevision", "select", "cursor"] {
+        for field in [
+            "ObjectPath",
+            "objectRef",
+            "snapshotRevision",
+            "select",
+            "cursor",
+        ] {
             assert!(properties.contains_key(field), "{field} must be present");
         }
         assert_eq!(schema["oneOf"].as_array().unwrap().len(), 3);
-        assert_eq!(schema["properties"]["objectRef"]["additionalProperties"], false);
-        assert_eq!(schema["properties"]["select"]["additionalProperties"], false);
-        assert_eq!(schema["properties"]["select"]["properties"]["relations"]["items"]["additionalProperties"], false);
-        assert!(schema["properties"]["select"]["properties"]["relations"].get("uniqueItems").is_none());
-        assert_eq!(schema["properties"]["select"]["properties"]["relations"]["items"]["properties"]["role"]["enum"], json!(["children", "attributes", "tabularSections", "forms", "commands", "templates"]));
-        assert_eq!(schema["properties"]["select"]["properties"]["relations"]["items"]["properties"]["kind"]["default"], "contains");
-        assert_eq!(schema["properties"]["cursor"]["additionalProperties"], false);
-        assert!(schema["properties"]["cursor"]["required"].as_array().unwrap().contains(&json!("relationRole")));
+        assert_eq!(
+            schema["properties"]["objectRef"]["additionalProperties"],
+            false
+        );
+        assert_eq!(
+            schema["properties"]["select"]["additionalProperties"],
+            false
+        );
+        assert_eq!(
+            schema["properties"]["select"]["properties"]["relations"]["items"]
+                ["additionalProperties"],
+            false
+        );
+        assert!(schema["properties"]["select"]["properties"]["relations"]
+            .get("uniqueItems")
+            .is_none());
+        assert_eq!(
+            schema["properties"]["select"]["properties"]["relations"]["items"]["properties"]
+                ["role"]["enum"],
+            json!([
+                "children",
+                "attributes",
+                "tabularSections",
+                "forms",
+                "commands",
+                "templates"
+            ])
+        );
+        assert_eq!(
+            schema["properties"]["select"]["properties"]["relations"]["items"]["properties"]
+                ["kind"]["default"],
+            "contains"
+        );
+        assert_eq!(
+            schema["properties"]["cursor"]["additionalProperties"],
+            false
+        );
+        assert!(schema["properties"]["cursor"]["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("relationRole")));
 
         let validator = jsonschema::validator_for(&schema).unwrap();
         for invalid in [
@@ -85,7 +127,9 @@ mod meta_info_contract_tests {
             json!({"snapshotRevision": "sha256:one"}),
             json!({"cursor": {}, "ObjectPath": "src/Catalogs/Items.xml"}),
         ] {
-            let error = tool_contracts::validate_tool_arguments(tool, args.as_object().unwrap(), false).unwrap_err();
+            let error =
+                tool_contracts::validate_tool_arguments(tool, args.as_object().unwrap(), false)
+                    .unwrap_err();
             assert!(error.contains("exactly one target mode"), "{error}");
         }
     }
@@ -3560,7 +3604,13 @@ mod tests {
 
         assert!(result.ok, "{result:?}");
         assert!(result.stdout.is_none(), "{result:?}");
-        assert!(result.data.as_ref().is_some_and(|data| data.get("navigation").is_some()), "{result:?}");
+        assert!(
+            result
+                .data
+                .as_ref()
+                .is_some_and(|data| data.get("navigation").is_some()),
+            "{result:?}"
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }

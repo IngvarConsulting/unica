@@ -21,17 +21,16 @@ use crate::{
 use super::{
     native_model::{
         NativeContentEvidence, NativeDescriptorEvidence, NativeEvidenceState, NativeForm,
-        NativeMetadataChild, NativeMetadataClass, NativeMetadataNode, NativeMxlRootKind, NativeNodeBacking,
-        NativeNodeState,
-        NativeProperty, NativePropertyProvenance, NativePropertyValue, NativeScalarType,
-        NativeRegistrationEvidence, NativeScalarAnnotationIssue, NativeTemplate,
-        PlatformXmlNativeSnapshot,
+        NativeMetadataChild, NativeMetadataClass, NativeMetadataNode, NativeMxlRootKind,
+        NativeNodeBacking, NativeNodeState, NativeProperty, NativePropertyProvenance,
+        NativePropertyValue, NativeRegistrationEvidence, NativeScalarAnnotationIssue,
+        NativeScalarType, NativeTemplate, PlatformXmlNativeSnapshot,
     },
     probe::PlatformXmlProbe,
     provider::PlatformXmlProvider,
     schema::{
-        child_metadata_class_profile, metadata_class_profile, ChildObjectsVocabulary,
-        scalar_property_kind_2_20, MetadataClassProfile, MetadataClassRole, ScalarPropertyKind,
+        child_metadata_class_profile, metadata_class_profile, scalar_property_kind_2_20,
+        ChildObjectsVocabulary, MetadataClassProfile, MetadataClassRole, ScalarPropertyKind,
     },
 };
 
@@ -66,7 +65,9 @@ pub(crate) fn decode(
     provider: &PlatformXmlProvider,
     descriptor: &SourceDescriptor,
 ) -> Result<PlatformXmlNativeSnapshot, SourceAdapterError> {
-    if descriptor.family != SourceFamily::PlatformXml || descriptor.format_version.to_string() != "2.20" {
+    if descriptor.family != SourceFamily::PlatformXml
+        || descriptor.format_version.to_string() != "2.20"
+    {
         return Err(error(
             SourceAdapterErrorKind::FormatUnsupported,
             "decoder supports exactly Platform XML 2.20",
@@ -103,9 +104,12 @@ pub(crate) fn decode(
         ));
     }
 
-    let xml = utf8(&root_bytes, "Platform XML root descriptor is not valid UTF-8")?;
-    let document = Document::parse(xml)
-        .map_err(|_| corrupted("Platform XML root descriptor is malformed"))?;
+    let xml = utf8(
+        &root_bytes,
+        "Platform XML root descriptor is not valid UTF-8",
+    )?;
+    let document =
+        Document::parse(xml).map_err(|_| corrupted("Platform XML root descriptor is malformed"))?;
     let wrapper = document.root_element();
     validate_metadata_wrapper(wrapper)?;
     if wrapper.attribute("version").map(str::trim) != Some("2.20") {
@@ -134,14 +138,7 @@ pub(crate) fn decode(
         .strip_suffix(".xml")
         .ok_or_else(|| corrupted("Platform XML root descriptor is not an XML file"))?;
     let mut context = DecodeContext::default();
-    let decoded = decode_inline_node(
-        provider,
-        class,
-        profile,
-        base_key,
-        xml,
-        &mut context,
-    )?;
+    let decoded = decode_inline_node(provider, class, profile, base_key, xml, &mut context)?;
 
     Ok(PlatformXmlNativeSnapshot {
         source: SourceSnapshot {
@@ -218,7 +215,10 @@ fn decode_children(
             .ok_or_else(|| {
                 corrupted("Platform XML child class is not allowed by the schema registry")
             })?;
-        let decoded = if matches!(profile.role, MetadataClassRole::Form | MetadataClassRole::Template) {
+        let decoded = if matches!(
+            profile.role,
+            MetadataClassRole::Form | MetadataClassRole::Template
+        ) {
             decode_backed_registration(provider, child, profile, base_key, source_xml, context)?
         } else if direct_children(child, "Properties").is_empty() {
             if owner_profile.child_objects != ChildObjectsVocabulary::ConfigurationTopLevel
@@ -291,17 +291,9 @@ fn decode_backed_registration(
             let descriptor = match snapshot_file(provider, &descriptor_key) {
                 Some(bytes) => {
                     let parsed = parse_registered_descriptor(&bytes, profile, &registration.name)?;
-                    descriptor_evidence(
-                        NativeEvidenceState::Validated,
-                        descriptor_key,
-                        parsed.uuid,
-                    )
+                    descriptor_evidence(NativeEvidenceState::Validated, descriptor_key, parsed.uuid)
                 }
-                None => descriptor_evidence(
-                    NativeEvidenceState::Absent,
-                    descriptor_key,
-                    None,
-                ),
+                None => descriptor_evidence(NativeEvidenceState::Absent, descriptor_key, None),
             };
             let managed_content = match snapshot_file(provider, &content_key) {
                 Some(bytes) => {
@@ -316,8 +308,7 @@ fn decode_backed_registration(
             };
             let complete = descriptor.state == NativeEvidenceState::Validated
                 && managed_content.state == NativeEvidenceState::Validated;
-            let effective_uuid =
-                reconcile_registered_uuid(registration.uuid, descriptor.uuid)?;
+            let effective_uuid = reconcile_registered_uuid(registration.uuid, descriptor.uuid)?;
             context.register_uuid(effective_uuid)?;
             let state = registration_state(&registration, complete);
             Ok(DecodedNode {
@@ -417,10 +408,12 @@ fn decode_backed_registration(
                 }
             };
             let complete = descriptor.state == NativeEvidenceState::Validated
-                && !matches!(descriptor_type, NativePropertyValue::Absent | NativePropertyValue::Unresolved)
+                && !matches!(
+                    descriptor_type,
+                    NativePropertyValue::Absent | NativePropertyValue::Unresolved
+                )
                 && canonical_content.state == NativeEvidenceState::Validated;
-            let effective_uuid =
-                reconcile_registered_uuid(registration.uuid, descriptor.uuid)?;
+            let effective_uuid = reconcile_registered_uuid(registration.uuid, descriptor.uuid)?;
             context.register_uuid(effective_uuid)?;
             let state = registration_state(&registration, complete);
             Ok(DecodedNode {
@@ -452,8 +445,8 @@ fn parse_registered_descriptor(
     expected_name: &str,
 ) -> Result<ParsedDescriptor, SourceAdapterError> {
     let xml = utf8(bytes, "registered descriptor is not valid UTF-8")?;
-    let document = Document::parse(xml)
-        .map_err(|_| corrupted("registered descriptor is malformed XML"))?;
+    let document =
+        Document::parse(xml).map_err(|_| corrupted("registered descriptor is malformed XML"))?;
     let wrapper = document.root_element();
     validate_metadata_wrapper(wrapper)?;
     let class = single_metadata_class(wrapper)?;
@@ -488,7 +481,9 @@ fn validate_metadata_wrapper(wrapper: Node<'_, '_>) -> Result<(), SourceAdapterE
     if wrapper.tag_name().name() != "MetaDataObject"
         || wrapper.tag_name().namespace() != Some(METADATA_NAMESPACE)
     {
-        return Err(corrupted("Platform XML descriptor root identity is invalid"));
+        return Err(corrupted(
+            "Platform XML descriptor root identity is invalid",
+        ));
     }
     Ok(())
 }
@@ -514,7 +509,9 @@ fn profile_for_node(
     node: Node<'_, '_>,
 ) -> Result<&'static MetadataClassProfile, SourceAdapterError> {
     if node.tag_name().namespace() != Some(METADATA_NAMESPACE) {
-        return Err(corrupted("Platform XML metadata class namespace is invalid"));
+        return Err(corrupted(
+            "Platform XML metadata class namespace is invalid",
+        ));
     }
     metadata_class_profile(node.tag_name().name())
         .ok_or_else(|| corrupted("Platform XML metadata class is absent from the schema registry"))
@@ -592,7 +589,9 @@ fn scalar_property_value(
     let Some((prefix, local_name)) = annotation.split_once(':') else {
         return unresolved_scalar(NativeScalarAnnotationIssue::Unknown);
     };
-    if prefix.is_empty() || local_name.is_empty() || local_name.contains(':')
+    if prefix.is_empty()
+        || local_name.is_empty()
+        || local_name.contains(':')
         || property.lookup_namespace_uri(Some(prefix)) != Some(XML_SCHEMA_NAMESPACE)
     {
         return unresolved_scalar(NativeScalarAnnotationIssue::Unknown);
@@ -678,7 +677,9 @@ fn required_name(properties: Node<'_, '_>) -> Result<String, SourceAdapterError>
 
 fn validate_name(name: String) -> Result<String, SourceAdapterError> {
     if !is_1c_identifier(&name) {
-        return Err(corrupted("Platform XML native identity is not a 1C identifier"));
+        return Err(corrupted(
+            "Platform XML native identity is not a 1C identifier",
+        ));
     }
     Ok(name)
 }
@@ -750,16 +751,15 @@ fn direct_children<'a, 'input>(
 fn parse_optional_uuid(node: Node<'_, '_>) -> Result<Option<Uuid>, SourceAdapterError> {
     node.attribute("uuid")
         .map(|raw| {
-            Uuid::parse_str(raw)
-                .map_err(|_| corrupted("Platform XML native UUID is invalid"))
+            Uuid::parse_str(raw).map_err(|_| corrupted("Platform XML native UUID is invalid"))
         })
         .transpose()
 }
 
 fn validate_managed_form(bytes: &[u8]) -> Result<(), SourceAdapterError> {
     let xml = utf8(bytes, "managed Form content is not valid UTF-8")?;
-    let document = Document::parse(xml)
-        .map_err(|_| corrupted("managed Form content is malformed XML"))?;
+    let document =
+        Document::parse(xml).map_err(|_| corrupted("managed Form content is malformed XML"))?;
     let root = document.root_element();
     if root.tag_name().name() != "Form"
         || root.tag_name().namespace() != Some(MANAGED_FORM_NAMESPACE)
@@ -771,16 +771,13 @@ fn validate_managed_form(bytes: &[u8]) -> Result<(), SourceAdapterError> {
 
 fn parse_mxl_root(bytes: &[u8]) -> Result<NativeMxlRootKind, SourceAdapterError> {
     let xml = utf8(bytes, "MXL content is not valid UTF-8")?;
-    let document = Document::parse(xml)
-        .map_err(|_| corrupted("MXL content is malformed XML"))?;
+    let document = Document::parse(xml).map_err(|_| corrupted("MXL content is malformed XML"))?;
     let root = document.root_element();
     match (root.tag_name().name(), root.tag_name().namespace()) {
         ("SpreadsheetDocument", Some(SPREADSHEET_DOCUMENT_NAMESPACE)) => {
             Ok(NativeMxlRootKind::SpreadsheetDocument)
         }
-        ("document", Some(LEGACY_SPREADSHEET_NAMESPACE)) => {
-            Ok(NativeMxlRootKind::LegacyDocument)
-        }
+        ("document", Some(LEGACY_SPREADSHEET_NAMESPACE)) => Ok(NativeMxlRootKind::LegacyDocument),
         _ => Err(corrupted("MXL content root identity is invalid")),
     }
 }
@@ -920,10 +917,7 @@ fn corrupted(message: impl Into<String>) -> SourceAdapterError {
     error(SourceAdapterErrorKind::DecodeCorrupted, message)
 }
 
-fn error(
-    kind: SourceAdapterErrorKind,
-    message: impl Into<String>,
-) -> SourceAdapterError {
+fn error(kind: SourceAdapterErrorKind, message: impl Into<String>) -> SourceAdapterError {
     SourceAdapterError::new(kind, message)
 }
 #[cfg(test)]
@@ -944,8 +938,8 @@ mod tests {
     };
 
     use super::{
-        decode, NativeEvidenceState, NativeMxlRootKind, NativePropertyProvenance,
-        NativeNodeBacking, NativeNodeState, NativePropertyValue, PlatformXmlProvider,
+        decode, NativeEvidenceState, NativeMxlRootKind, NativeNodeBacking, NativeNodeState,
+        NativePropertyProvenance, NativePropertyValue, PlatformXmlProvider,
     };
 
     static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
@@ -1000,12 +994,13 @@ mod tests {
 
     #[test]
     fn stale_revision_is_rejected_before_decode() {
-        let mut fixture = fixture(
-            "Shipment.xml",
-            &[("Shipment.xml", "not XML".to_string())],
-        );
-        fixture.descriptor.snapshot_evidence.as_mut().unwrap().revision =
-            SourceRevision::new("sha256:stale").unwrap();
+        let mut fixture = fixture("Shipment.xml", &[("Shipment.xml", "not XML".to_string())]);
+        fixture
+            .descriptor
+            .snapshot_evidence
+            .as_mut()
+            .unwrap()
+            .revision = SourceRevision::new("sha256:stale").unwrap();
 
         let error = decode(&fixture.provider, &fixture.descriptor).unwrap_err();
 
@@ -1014,10 +1009,7 @@ mod tests {
 
     #[test]
     fn inconsistent_root_digest_is_rejected_before_decode() {
-        let mut fixture = fixture(
-            "Shipment.xml",
-            &[("Shipment.xml", "not XML".to_string())],
-        );
+        let mut fixture = fixture("Shipment.xml", &[("Shipment.xml", "not XML".to_string())]);
         fixture
             .descriptor
             .snapshot_evidence
@@ -1067,25 +1059,24 @@ mod tests {
             number.uuid.unwrap().to_string(),
             "22222222-2222-2222-2222-222222222222"
         );
-        assert!(decoded.root.children.iter().any(|child| child.name == "Post"));
+        assert!(decoded
+            .root
+            .children
+            .iter()
+            .any(|child| child.name == "Post"));
         assert_eq!(
             decoded.root.properties["Comment"].provenance,
             NativePropertyProvenance::Absent
         );
         assert_eq!(
             decoded.root.properties["Synonym"].value,
-            NativePropertyValue::RawXml(
-                "<Synonym><item>Shipment</item></Synonym>".to_string()
-            )
+            NativePropertyValue::RawXml("<Synonym><item>Shipment</item></Synonym>".to_string())
         );
     }
 
     #[test]
     fn root_filename_must_correspond_to_native_name() {
-        let fixture = fixture(
-            "Other.xml",
-            &[("Other.xml", metadata_document(""))],
-        );
+        let fixture = fixture("Other.xml", &[("Other.xml", metadata_document(""))]);
 
         let error = decode(&fixture.provider, &fixture.descriptor).unwrap_err();
 
@@ -1152,10 +1143,7 @@ mod tests {
         let fixture = document_fixture_with_files(
             "<ChildObjects><Form>ItemForm</Form></ChildObjects>",
             &[
-                (
-                    "Shipment/Forms/ItemForm.xml",
-                    form_descriptor("ItemForm"),
-                ),
+                ("Shipment/Forms/ItemForm.xml", form_descriptor("ItemForm")),
                 (
                     "Shipment/Forms/ItemForm/Ext/Form.xml",
                     managed_form_source().to_string(),
@@ -1177,10 +1165,7 @@ mod tests {
     fn malformed_registered_descriptor_and_managed_form_are_typed_failures() {
         let malformed_descriptor = document_fixture_with_files(
             "<ChildObjects><Form>ItemForm</Form></ChildObjects>",
-            &[(
-                "Shipment/Forms/ItemForm.xml",
-                "<MetaDataObject".to_string(),
-            )],
+            &[("Shipment/Forms/ItemForm.xml", "<MetaDataObject".to_string())],
         );
         assert_eq!(
             decode(
@@ -1195,10 +1180,7 @@ mod tests {
         let fixture = document_fixture_with_files(
             "<ChildObjects><Form>ItemForm</Form></ChildObjects>",
             &[
-                (
-                    "Shipment/Forms/ItemForm.xml",
-                    form_descriptor("ItemForm"),
-                ),
+                ("Shipment/Forms/ItemForm.xml", form_descriptor("ItemForm")),
                 (
                     "Shipment/Forms/ItemForm/Ext/Form.xml",
                     "<Form xmlns=\"http://v8.1c.ru/8.3/MDClasses\"/>".to_string(),
@@ -1320,10 +1302,7 @@ mod tests {
     fn invalid_registered_identity_is_rejected_before_snapshot_lookup() {
         let fixture = document_fixture_with_files(
             "<ChildObjects><Form>../../outside</Form></ChildObjects>",
-            &[(
-                "outside/Ext/Form.xml",
-                managed_form_source().to_string(),
-            )],
+            &[("outside/Ext/Form.xml", managed_form_source().to_string())],
         );
 
         let error = decode(&fixture.provider, &fixture.descriptor).unwrap_err();
@@ -1351,7 +1330,10 @@ mod tests {
         let decoded = decode(&fixture.provider, &fixture.descriptor).unwrap();
 
         assert_eq!(decoded.coverage, CoverageState::Complete);
-        assert!(matches!(decoded.root.state, NativeNodeState::ResolvedInline));
+        assert!(matches!(
+            decoded.root.state,
+            NativeNodeState::ResolvedInline
+        ));
         assert!(matches!(
             decoded.root.children[0].children[0].state,
             NativeNodeState::ResolvedInline
@@ -1440,10 +1422,7 @@ mod tests {
             &[
                 (
                     "Shipment/Forms/ItemForm.xml",
-                    form_descriptor_with_uuid(
-                        "ItemForm",
-                        "22222222-2222-2222-2222-222222222222",
-                    ),
+                    form_descriptor_with_uuid("ItemForm", "22222222-2222-2222-2222-222222222222"),
                 ),
                 (
                     "Shipment/Forms/ItemForm/Ext/Form.xml",
@@ -1472,10 +1451,7 @@ mod tests {
             &[
                 (
                     "Shipment/Forms/ItemForm.xml",
-                    form_descriptor_with_uuid(
-                        "ItemForm",
-                        "22222222-2222-2222-2222-222222222222",
-                    ),
+                    form_descriptor_with_uuid("ItemForm", "22222222-2222-2222-2222-222222222222"),
                 ),
                 (
                     "Shipment/Forms/ItemForm/Ext/Form.xml",
@@ -1498,10 +1474,7 @@ mod tests {
             &[
                 (
                     "Shipment/Forms/ItemForm.xml",
-                    form_descriptor_with_uuid(
-                        "ItemForm",
-                        "33333333-3333-3333-3333-333333333333",
-                    ),
+                    form_descriptor_with_uuid("ItemForm", "33333333-3333-3333-3333-333333333333"),
                 ),
                 (
                     "Shipment/Forms/ItemForm/Ext/Form.xml",
@@ -1524,10 +1497,7 @@ mod tests {
             &[
                 (
                     "Shipment/Forms/ItemForm.xml",
-                    form_descriptor_with_uuid(
-                        "ItemForm",
-                        "22222222-2222-2222-2222-222222222222",
-                    ),
+                    form_descriptor_with_uuid("ItemForm", "22222222-2222-2222-2222-222222222222"),
                 ),
                 (
                     "Shipment/Forms/ItemForm/Ext/Form.xml",
@@ -1601,25 +1571,41 @@ mod tests {
         );
 
         assert_eq!(
-            decode(&alien.provider, &alien.descriptor).unwrap().root.properties["FillValue"].value,
+            decode(&alien.provider, &alien.descriptor)
+                .unwrap()
+                .root
+                .properties["FillValue"]
+                .value,
             NativePropertyValue::UnresolvedScalar {
                 issue: NativeScalarAnnotationIssue::Unknown,
             },
         );
         assert_eq!(
-            decode(&conflicting.provider, &conflicting.descriptor).unwrap().root.properties["FillValue"].value,
+            decode(&conflicting.provider, &conflicting.descriptor)
+                .unwrap()
+                .root
+                .properties["FillValue"]
+                .value,
             NativePropertyValue::UnresolvedScalar {
                 issue: NativeScalarAnnotationIssue::Conflicting,
             },
         );
         assert_eq!(
-            decode(&missing.provider, &missing.descriptor).unwrap().root.properties["FillValue"].value,
+            decode(&missing.provider, &missing.descriptor)
+                .unwrap()
+                .root
+                .properties["FillValue"]
+                .value,
             NativePropertyValue::UnresolvedScalar {
                 issue: NativeScalarAnnotationIssue::Missing,
             },
         );
         assert_eq!(
-            decode(&unqualified.provider, &unqualified.descriptor).unwrap().root.properties["FillValue"].value,
+            decode(&unqualified.provider, &unqualified.descriptor)
+                .unwrap()
+                .root
+                .properties["FillValue"]
+                .value,
             NativePropertyValue::UnresolvedScalar {
                 issue: NativeScalarAnnotationIssue::Unqualified,
             },
@@ -1662,30 +1648,43 @@ mod tests {
                 type_annotation: NativeScalarType::String,
             },
         );
-        assert_eq!(decoded.root.properties["Description"].value, NativePropertyValue::Scalar("Sibling".to_string()));
+        assert_eq!(
+            decoded.root.properties["Description"].value,
+            NativePropertyValue::Scalar("Sibling".to_string())
+        );
         let decoded = decode(&decimal.provider, &decimal.descriptor).unwrap();
         assert_eq!(
             decoded.root.properties["FillValue"].value,
-            NativePropertyValue::UnresolvedScalar { issue: NativeScalarAnnotationIssue::InvalidLexical },
+            NativePropertyValue::UnresolvedScalar {
+                issue: NativeScalarAnnotationIssue::InvalidLexical
+            },
         );
-        assert_eq!(decoded.root.properties["Description"].value, NativePropertyValue::Scalar("Sibling".to_string()));
+        assert_eq!(
+            decoded.root.properties["Description"].value,
+            NativePropertyValue::Scalar("Sibling".to_string())
+        );
         for fixture in [&alien, &unbound, &conflicting, &unsupported] {
             assert!(matches!(
-                decode(&fixture.provider, &fixture.descriptor).unwrap().root.properties["FillValue"].value,
+                decode(&fixture.provider, &fixture.descriptor)
+                    .unwrap()
+                    .root
+                    .properties["FillValue"]
+                    .value,
                 NativePropertyValue::UnresolvedScalar { .. },
             ));
         }
         assert_eq!(
-            decode(&absent.provider, &absent.descriptor).unwrap().root.properties["FillValue"].value,
+            decode(&absent.provider, &absent.descriptor)
+                .unwrap()
+                .root
+                .properties["FillValue"]
+                .value,
             NativePropertyValue::Absent,
         );
     }
 
     fn document_fixture(body: &str) -> Fixture {
-        fixture(
-            "Shipment.xml",
-            &[("Shipment.xml", metadata_document(body))],
-        )
+        fixture("Shipment.xml", &[("Shipment.xml", metadata_document(body))])
     }
 
     fn document_fixture_with_files(body: &str, other_files: &[(&str, String)]) -> Fixture {

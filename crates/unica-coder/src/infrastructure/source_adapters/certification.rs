@@ -12,13 +12,14 @@ use serde_json::json;
 use crate::{
     domain::{
         navigation::{
-            ActionAvailability, CoverageState, FormatCompatibility, NavigationStatus, NodeKind,
+            ActionAvailability, Authorability, CoverageState, FormatCompatibility,
+            NavigationStatus, NodeKind,
         },
         source_adapters::{AdapterMaturity, SourceAdapterErrorKind},
         workspace::WorkspaceContext,
     },
     infrastructure::{
-        native_operations::meta::inspect_meta_navigation,
+        native_operations::{typed_result::NativeOperationResult, NativeOperationAdapter},
         source_adapters::{
             platform_xml::PlatformXmlReadAdapter, registry::BuiltInSourceAdapterRegistry,
             SourceInput, SourceReadAdapter,
@@ -161,12 +162,26 @@ fn platform_xml_certification_fails_closed_at_declared_boundaries() {
         Fixture::document(
             "2.20",
             r#"<ChildObjects>
-                <Form><Properties><Name>ShipmentForm</Name></Properties></Form>
-                <Form><Properties><Name>ShipmentForm</Name></Properties></Form>
+                <Form>ShipmentForm</Form>
+                <Form>ShipmentForm</Form>
             </ChildObjects>"#,
         ),
         SourceAdapterErrorKind::IdentityCollision,
     );
+
+    let conflicting_form = Fixture::document(
+        "2.20",
+        r#"<ChildObjects><Form uuid="22222222-2222-2222-2222-222222222222">ShipmentForm</Form></ChildObjects>"#,
+    );
+    conflicting_form.write(
+        "src/Documents/Shipment/Forms/ShipmentForm.xml",
+        form_descriptor("33333333-3333-3333-3333-333333333333"),
+    );
+    let error = registry
+        .inspect(conflicting_form.input())
+        .expect_err("conflicting external Form descriptor must fail closed");
+    assert_eq!(error.kind, SourceAdapterErrorKind::ProjectionAmbiguous);
+    assert_eq!(error.code(), "projection_ambiguous");
 
     let noncanonical_mxl = Fixture::document(
         "2.20",
@@ -187,10 +202,21 @@ fn platform_xml_certification_fails_closed_at_declared_boundaries() {
     );
 
     let unreadable_support = Fixture::certified_document("2.20");
-    unreadable_support.write("src/Ext/ParentConfigurations.bin", "{");
+    unreadable_support.write("src/Documents/ParentConfigurations.bin", "{");
     let navigation = registry
         .inspect(unreadable_support.input())
         .expect("unreadable support remains inspectable but non-authorable");
+    let affected = navigation
+        .node_named(NodeKind::Document, "Shipment")
+        .expect("supported document node");
+    assert_eq!(
+        affected.capability.authorability,
+        Authorability::UnknownSupportState
+    );
+    assert_eq!(
+        affected.capability_state.authorability,
+        Authorability::UnknownSupportState
+    );
     assert!(navigation.nodes.iter().all(|node| {
         node.actions
             .iter()
@@ -209,15 +235,21 @@ fn platform_xml_certification_fails_closed_at_declared_boundaries() {
 #[test]
 fn public_typed_gateway_platform_xml_2_20_serializes_navigation() {
     let fixture = Fixture::certified_document("2.20");
-    let navigation = inspect_meta_navigation(
+    let result = NativeOperationAdapter::invoke_with_data(
+        "meta-info",
+        "unica.meta.info",
         &json!({"ObjectPath": fixture.target})
             .as_object()
             .expect("object args")
             .clone(),
         &fixture.context(),
+        false,
+        false,
     )
     .expect("typed gateway must return navigation");
-    let serialized = json!({"data": {"navigation": navigation}});
+    assert_public_typed_result(&result);
+    let data = result.data.expect("typed gateway data");
+    let serialized = json!({"data": data});
     let output = serde_json::to_string(&serialized).expect("typed navigation serializes");
     assert!(!output.contains(&fixture.root.display().to_string()));
     assert_eq!(serialized["data"]["navigation"]["status"], "ready");
@@ -235,6 +267,37 @@ fn public_typed_gateway_platform_xml_2_20_serializes_navigation() {
         "readOnly"
     );
     println!("CERTIFICATION_TYPED_GATEWAY_JSON={output}");
+}
+
+fn assert_public_typed_result(result: &NativeOperationResult) {
+    assert!(result.adapter.ok);
+    assert!(result.adapter.stdout.is_none());
+    let data = result.data.as_ref().expect("typed gateway data");
+    assert_eq!(
+        data.as_object()
+            .expect("typed gateway object")
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["navigation".to_string()])
+    );
+    assert_eq!(
+        data["navigation"]
+            .as_object()
+            .expect("navigation object")
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "diagnostics".to_string(),
+            "nodes".to_string(),
+            "relations".to_string(),
+            "root".to_string(),
+            "schemaVersion".to_string(),
+            "snapshot".to_string(),
+            "status".to_string(),
+        ])
+    );
 }
 
 fn assert_error(
@@ -256,6 +319,14 @@ struct Fixture {
 impl Fixture {
     fn certified_document(version: &str) -> Self {
         let fixture = Self::document(version, standard_children());
+        fixture.write(
+            "src/Documents/Shipment/Forms/ShipmentForm.xml",
+            form_descriptor("22222222-2222-2222-2222-222222222222"),
+        );
+        fixture.write(
+            "src/Documents/Shipment/Forms/ShipmentForm/Ext/Form.xml",
+            managed_form(),
+        );
         fixture.write(
             "src/Documents/Shipment/Templates/Print.xml",
             template_descriptor(),
@@ -346,9 +417,19 @@ fn standard_children() -> &'static str {
         <Attribute><Properties><Name>Number</Name></Properties></Attribute>
         <TabularSection><Properties><Name>Lines</Name></Properties></TabularSection>
         <Command><Properties><Name>Post</Name></Properties></Command>
-        <Form><Properties><Name>ShipmentForm</Name></Properties></Form>
+        <Form uuid="22222222-2222-2222-2222-222222222222">ShipmentForm</Form>
         <Template>Print</Template>
     </ChildObjects>"#
+}
+
+fn form_descriptor(uuid: &str) -> String {
+    format!(
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Form uuid="{uuid}"><Properties><Name>ShipmentForm</Name></Properties></Form></MetaDataObject>"#
+    )
+}
+
+fn managed_form() -> &'static str {
+    r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform"/>"#
 }
 
 fn template_descriptor() -> &'static str {

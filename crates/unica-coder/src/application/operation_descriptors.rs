@@ -157,13 +157,7 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         OBJECT_PATH,
         Some(path_guard(OBJECT_PATH, SupportGuardRequirement::Editable)),
     ),
-    descriptor(
-        "meta-info",
-        EMPTY,
-        EMPTY,
-        EMPTY,
-        None,
-    ),
+    descriptor("meta-info", EMPTY, EMPTY, EMPTY, None),
     descriptor(
         "meta-remove",
         META_REMOVE_REQUIRED,

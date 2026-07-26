@@ -125,7 +125,10 @@ mod scalar_tests {
     fn legacy_metadata_kind_mapping_uses_the_shared_top_level_class_source() {
         assert_eq!(METADATA_KIND_TAGS, LEGACY_TOP_LEVEL_METADATA_CLASSES);
         assert_eq!(
-            METADATA_KINDS.iter().map(|kind| kind.tag).collect::<Vec<_>>(),
+            METADATA_KINDS
+                .iter()
+                .map(|kind| kind.tag)
+                .collect::<Vec<_>>(),
             LEGACY_TOP_LEVEL_METADATA_CLASSES,
         );
     }
@@ -175,11 +178,19 @@ pub(crate) fn is_type_property_2_20(id: &str) -> bool {
 /// Parses the bounded 2.20 type-description grammar.  Only direct `Type`
 /// members and declared qualifier elements are accepted; arbitrary descendant
 /// text can never become a semantic type value.
-pub(crate) fn parse_type_description_2_20(raw_xml: &str) -> Result<TypeSetValue, SourceAdapterError> {
-    let document = Document::parse(raw_xml).map_err(|_| projection_error("malformed Platform XML type description"))?;
+pub(crate) fn parse_type_description_2_20(
+    raw_xml: &str,
+) -> Result<TypeSetValue, SourceAdapterError> {
+    let document = Document::parse(raw_xml)
+        .map_err(|_| projection_error("malformed Platform XML type description"))?;
     let root = document.root_element();
-    if !matches!(root.tag_name().name(), "TypeDescription" | "DataType" | "Type") {
-        return Err(projection_error("unsupported Platform XML type description root"));
+    if !matches!(
+        root.tag_name().name(),
+        "TypeDescription" | "DataType" | "Type"
+    ) {
+        return Err(projection_error(
+            "unsupported Platform XML type description root",
+        ));
     }
     let mut variants = Vec::new();
     let mut qualifiers = BTreeMap::new();
@@ -191,11 +202,20 @@ pub(crate) fn parse_type_description_2_20(raw_xml: &str) -> Result<TypeSetValue,
             match child.tag_name().name() {
                 "Type" => variants.push(parse_type_variant(&text_only(child)?)?),
                 "StringQualifiers" => parse_qualifier_group(
-                    QualifierGroup::String, child, &mut qualifier_groups, &mut qualifiers,
-                    &[("Length", QualifierKind::Integer), ("AllowedLength", QualifierKind::AllowedLength)],
+                    QualifierGroup::String,
+                    child,
+                    &mut qualifier_groups,
+                    &mut qualifiers,
+                    &[
+                        ("Length", QualifierKind::Integer),
+                        ("AllowedLength", QualifierKind::AllowedLength),
+                    ],
                 )?,
                 "NumberQualifiers" => parse_qualifier_group(
-                    QualifierGroup::Number, child, &mut qualifier_groups, &mut qualifiers,
+                    QualifierGroup::Number,
+                    child,
+                    &mut qualifier_groups,
+                    &mut qualifiers,
                     &[
                         ("Digits", QualifierKind::Integer),
                         ("FractionDigits", QualifierKind::Integer),
@@ -203,30 +223,56 @@ pub(crate) fn parse_type_description_2_20(raw_xml: &str) -> Result<TypeSetValue,
                     ],
                 )?,
                 "DateQualifiers" => parse_qualifier_group(
-                    QualifierGroup::Date, child, &mut qualifier_groups, &mut qualifiers,
+                    QualifierGroup::Date,
+                    child,
+                    &mut qualifier_groups,
+                    &mut qualifiers,
                     &[("DateFractions", QualifierKind::DateFractions)],
                 )?,
-                _ => return Err(projection_error("unsupported Platform XML type-description member")),
+                _ => {
+                    return Err(projection_error(
+                        "unsupported Platform XML type-description member",
+                    ))
+                }
             }
         }
     }
     if variants.is_empty() {
-        return Err(projection_error("Platform XML type description has no variants"));
+        return Err(projection_error(
+            "Platform XML type description has no variants",
+        ));
     }
     if !qualifier_groups.is_empty() {
         let primitive_indexes = variants
             .iter()
             .enumerate()
-            .filter_map(|(index, variant)| matches!(variant, TypeVariant::Primitive { .. }).then_some(index))
+            .filter_map(|(index, variant)| {
+                matches!(variant, TypeVariant::Primitive { .. }).then_some(index)
+            })
             .collect::<Vec<_>>();
         if primitive_indexes.len() != 1 {
-            return Err(projection_error("type qualifiers require one primitive variant"));
+            return Err(projection_error(
+                "type qualifiers require one primitive variant",
+            ));
         }
-        let TypeVariant::Primitive { kind, .. } = &variants[primitive_indexes[0]] else { unreachable!() };
-        if !qualifier_groups.iter().all(|group| group.is_compatible_with(kind)) {
-            return Err(projection_error("type qualifier group is incompatible with primitive variant"));
+        let TypeVariant::Primitive { kind, .. } = &variants[primitive_indexes[0]] else {
+            unreachable!()
+        };
+        if !qualifier_groups
+            .iter()
+            .all(|group| group.is_compatible_with(kind))
+        {
+            return Err(projection_error(
+                "type qualifier group is incompatible with primitive variant",
+            ));
         }
-        let TypeVariant::Primitive { qualifiers: destination, .. } = &mut variants[primitive_indexes[0]] else { unreachable!() };
+        let TypeVariant::Primitive {
+            qualifiers: destination,
+            ..
+        } = &mut variants[primitive_indexes[0]]
+        else {
+            unreachable!()
+        };
         *destination = qualifiers;
     }
     variants.sort_by_key(type_variant_key);
@@ -235,10 +281,19 @@ pub(crate) fn parse_type_description_2_20(raw_xml: &str) -> Result<TypeSetValue,
 }
 
 #[derive(Clone, Copy)]
-enum QualifierKind { Integer, AllowedLength, AllowedSign, DateFractions }
+enum QualifierKind {
+    Integer,
+    AllowedLength,
+    AllowedSign,
+    DateFractions,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum QualifierGroup { String, Number, Date }
+enum QualifierGroup {
+    String,
+    Number,
+    Date,
+}
 
 impl QualifierGroup {
     fn is_compatible_with(self, primitive_kind: &str) -> bool {
@@ -257,7 +312,9 @@ fn parse_qualifier_group(
     allowed: &[(&str, QualifierKind)],
 ) -> Result<(), SourceAdapterError> {
     if !groups.insert(group) {
-        return Err(projection_error("duplicate Platform XML type qualifier group"));
+        return Err(projection_error(
+            "duplicate Platform XML type qualifier group",
+        ));
     }
     let validated_children = qualifiers.len();
     parse_qualifiers(node, qualifiers, allowed)?;
@@ -273,7 +330,10 @@ fn parse_qualifiers(
     allowed: &[(&str, QualifierKind)],
 ) -> Result<(), SourceAdapterError> {
     for child in node.children().filter(Node::is_element) {
-        let Some((_, kind)) = allowed.iter().find(|(name, _)| *name == child.tag_name().name()) else {
+        let Some((_, kind)) = allowed
+            .iter()
+            .find(|(name, _)| *name == child.tag_name().name())
+        else {
             return Err(projection_error("unsupported Platform XML type qualifier"));
         };
         let key = lower_camel(child.tag_name().name());
@@ -282,10 +342,21 @@ fn parse_qualifiers(
         }
         let text = text_only(child)?;
         let value = match kind {
-            QualifierKind::Integer => PropertyValue::Integer(text.parse().map_err(|_| projection_error("invalid numeric type qualifier"))?),
-            QualifierKind::AllowedLength if matches!(text.as_str(), "Fixed" | "Variable") => PropertyValue::EnumSymbol(text.to_string()),
-            QualifierKind::AllowedSign if matches!(text.as_str(), "Any" | "Nonnegative") => PropertyValue::EnumSymbol(text.to_string()),
-            QualifierKind::DateFractions if matches!(text.as_str(), "Date" | "DateTime" | "Time") => PropertyValue::EnumSymbol(text.to_string()),
+            QualifierKind::Integer => PropertyValue::Integer(
+                text.parse()
+                    .map_err(|_| projection_error("invalid numeric type qualifier"))?,
+            ),
+            QualifierKind::AllowedLength if matches!(text.as_str(), "Fixed" | "Variable") => {
+                PropertyValue::EnumSymbol(text.to_string())
+            }
+            QualifierKind::AllowedSign if matches!(text.as_str(), "Any" | "Nonnegative") => {
+                PropertyValue::EnumSymbol(text.to_string())
+            }
+            QualifierKind::DateFractions
+                if matches!(text.as_str(), "Date" | "DateTime" | "Time") =>
+            {
+                PropertyValue::EnumSymbol(text.to_string())
+            }
             _ => return Err(projection_error("invalid Platform XML type qualifier")),
         };
         qualifiers.insert(key, value);
@@ -303,30 +374,48 @@ fn parse_type_variant(value: &str) -> Result<TypeVariant, SourceAdapterError> {
         _ => None,
     };
     if let Some(kind) = primitive {
-        return Ok(TypeVariant::Primitive { kind: kind.to_string(), qualifiers: BTreeMap::new() });
+        return Ok(TypeVariant::Primitive {
+            kind: kind.to_string(),
+            qualifiers: BTreeMap::new(),
+        });
     }
     let Some((class, name)) = value.split_once('.') else {
         return Err(projection_error("unsupported Platform XML type variant"));
     };
     if value.split('.').count() != 2 || !is_identifier(name) {
-        return Err(projection_error("invalid Platform XML metadata type target"));
+        return Err(projection_error(
+            "invalid Platform XML metadata type target",
+        ));
     }
     let target = match class {
         "CatalogRef" => format!("Catalog.{name}"),
         "DocumentRef" => format!("Document.{name}"),
-        "EnumRef" => return Ok(TypeVariant::Enumeration { target: format!("Enum.{name}") }),
+        "EnumRef" => {
+            return Ok(TypeVariant::Enumeration {
+                target: format!("Enum.{name}"),
+            })
+        }
         "ChartOfAccountsRef" => format!("ChartOfAccounts.{name}"),
         "ChartOfCharacteristicTypesRef" => format!("ChartOfCharacteristicTypes.{name}"),
-        _ => return Err(projection_error("unsupported Platform XML metadata type class")),
+        _ => {
+            return Err(projection_error(
+                "unsupported Platform XML metadata type class",
+            ))
+        }
     };
     Ok(TypeVariant::Reference { target })
 }
 
 fn text_only(node: Node<'_, '_>) -> Result<String, SourceAdapterError> {
     if node.children().any(|child| child.is_element()) {
-        return Err(projection_error("nested Platform XML type value is unsupported"));
+        return Err(projection_error(
+            "nested Platform XML type value is unsupported",
+        ));
     }
-    let value = node.text().map(str::trim).filter(|value| !value.is_empty())
+    let value = node
+        .text()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
         .ok_or_else(|| projection_error("empty Platform XML type value"))?;
     if value.contains(['/', '\\']) || value.contains("..") || value.chars().any(char::is_control) {
         return Err(projection_error("invalid Platform XML type value"));
@@ -342,7 +431,10 @@ fn is_identifier(value: &str) -> bool {
 
 fn lower_camel(value: &str) -> String {
     let mut chars = value.chars();
-    chars.next().map(|first| first.to_lowercase().chain(chars).collect()).unwrap_or_default()
+    chars
+        .next()
+        .map(|first| first.to_lowercase().chain(chars).collect())
+        .unwrap_or_default()
 }
 
 fn type_variant_key(value: &TypeVariant) -> String {

@@ -5,10 +5,10 @@ use crate::domain::{
     source_adapters::{AdapterManifest, SourceAdapterError, SourceDescriptor},
 };
 
-pub(crate) mod registry;
-pub(crate) mod platform_xml;
 #[cfg(test)]
 pub(crate) mod certification;
+pub(crate) mod platform_xml;
+pub(crate) mod registry;
 
 pub(crate) struct SourceInput {
     pub(crate) workspace_root: PathBuf,

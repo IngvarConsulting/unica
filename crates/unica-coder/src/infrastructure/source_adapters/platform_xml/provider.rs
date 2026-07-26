@@ -7,9 +7,7 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-use crate::domain::source_adapters::{
-    SourceAdapterError, SourceAdapterErrorKind, SourceRevision,
-};
+use crate::domain::source_adapters::{SourceAdapterError, SourceAdapterErrorKind, SourceRevision};
 
 #[derive(Debug)]
 pub(crate) struct PlatformXmlProvider {
@@ -84,7 +82,10 @@ impl PlatformXmlProvider {
         self.files.get("ParentConfigurations.bin").cloned()
     }
 
-    pub(crate) fn digest_relative(&self, raw: impl AsRef<Path>) -> Result<String, SourceAdapterError> {
+    pub(crate) fn digest_relative(
+        &self,
+        raw: impl AsRef<Path>,
+    ) -> Result<String, SourceAdapterError> {
         let bytes = self.read_relative(raw)?;
         Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
     }
@@ -142,8 +143,10 @@ fn capture_directory(
         if metadata.is_dir() {
             capture_directory(&path, &key, files)?;
         } else if metadata.is_file() {
-            let bytes: Arc<[u8]> = Arc::from(fs::read(&path).map_err(|_| unavailable("aggregate file"))?);
-            let after_read = fs::symlink_metadata(&path).map_err(|_| unavailable("aggregate file"))?;
+            let bytes: Arc<[u8]> =
+                Arc::from(fs::read(&path).map_err(|_| unavailable("aggregate file"))?);
+            let after_read =
+                fs::symlink_metadata(&path).map_err(|_| unavailable("aggregate file"))?;
             if after_read.file_type().is_symlink() || !after_read.is_file() {
                 return Err(unavailable("aggregate file changed while being read"));
             }
@@ -151,7 +154,9 @@ fn capture_directory(
                 return Err(unavailable("aggregate contains duplicate relative keys"));
             }
         } else {
-            return Err(unavailable("aggregate entry is not a regular file or directory"));
+            return Err(unavailable(
+                "aggregate entry is not a regular file or directory",
+            ));
         }
     }
     Ok(())
@@ -159,12 +164,16 @@ fn capture_directory(
 
 fn normalized_relative_key(raw: &Path) -> Result<String, SourceAdapterError> {
     if raw.as_os_str().is_empty() || raw.is_absolute() {
-        return Err(unavailable("requested path must be a non-empty relative path"));
+        return Err(unavailable(
+            "requested path must be a non-empty relative path",
+        ));
     }
     let mut parts = Vec::new();
     for component in raw.components() {
         let Component::Normal(part) = component else {
-            return Err(unavailable("requested path must not contain traversal components"));
+            return Err(unavailable(
+                "requested path must not contain traversal components",
+            ));
         };
         let part = part
             .to_str()
@@ -213,7 +222,10 @@ mod tests {
     #[test]
     fn provider_rejects_parent_traversal_before_io() {
         let fixture = fixture(&[("Object.xml", b"<MetaDataObject/>" as &[u8])]);
-        let error = fixture.provider.read_relative("../outside.xml").unwrap_err();
+        let error = fixture
+            .provider
+            .read_relative("../outside.xml")
+            .unwrap_err();
 
         assert_eq!(error.kind, SourceAdapterErrorKind::SourceUnavailable);
     }
@@ -228,7 +240,10 @@ mod tests {
         second.provider.read_relative("Object.xml").unwrap();
         second.provider.read_relative("Nested/Other.xml").unwrap();
 
-        assert_eq!(first.provider.revision().unwrap(), second.provider.revision().unwrap());
+        assert_eq!(
+            first.provider.revision().unwrap(),
+            second.provider.revision().unwrap()
+        );
     }
 
     #[test]
@@ -239,7 +254,10 @@ mod tests {
         without_extra.provider.read_relative("Object.xml").unwrap();
         with_extra.provider.read_relative("Object.xml").unwrap();
 
-        assert_ne!(without_extra.provider.revision().unwrap(), with_extra.provider.revision().unwrap());
+        assert_ne!(
+            without_extra.provider.revision().unwrap(),
+            with_extra.provider.revision().unwrap()
+        );
     }
 
     #[test]
@@ -248,7 +266,14 @@ mod tests {
         fs::write(fixture.root.join("Object.xml"), b"after").unwrap();
         fs::remove_file(fixture.root.join("Object.xml")).unwrap();
 
-        assert_eq!(fixture.provider.read_relative("Object.xml").unwrap().as_ref(), b"before");
+        assert_eq!(
+            fixture
+                .provider
+                .read_relative("Object.xml")
+                .unwrap()
+                .as_ref(),
+            b"before"
+        );
     }
 
     #[test]
@@ -257,7 +282,11 @@ mod tests {
         fs::write(fixture.root.join("ParentConfigurations.bin"), b"after").unwrap();
 
         assert_eq!(
-            fixture.provider.parent_configurations_bytes().unwrap().as_ref(),
+            fixture
+                .provider
+                .parent_configurations_bytes()
+                .unwrap()
+                .as_ref(),
             b"before"
         );
     }
@@ -279,15 +308,23 @@ mod tests {
     fn provider_rejects_file_and_directory_symlinks() {
         let outside = fixture_root(&[("outside.xml", b"outside")]);
         let file_root = fixture_root(&[]);
-        if let Some(result) = create_file_symlink_for_test(outside.join("outside.xml"), file_root.join("linked.xml")) {
+        if let Some(result) =
+            create_file_symlink_for_test(outside.join("outside.xml"), file_root.join("linked.xml"))
+        {
             result.unwrap();
-            assert_eq!(PlatformXmlProvider::open(&file_root).unwrap_err().kind, SourceAdapterErrorKind::SourceUnavailable);
+            assert_eq!(
+                PlatformXmlProvider::open(&file_root).unwrap_err().kind,
+                SourceAdapterErrorKind::SourceUnavailable
+            );
         }
 
         let directory_root = fixture_root(&[]);
         if let Some(result) = create_dir_symlink_for_test(&outside, directory_root.join("linked")) {
             result.unwrap();
-            assert_eq!(PlatformXmlProvider::open(&directory_root).unwrap_err().kind, SourceAdapterErrorKind::SourceUnavailable);
+            assert_eq!(
+                PlatformXmlProvider::open(&directory_root).unwrap_err().kind,
+                SourceAdapterErrorKind::SourceUnavailable
+            );
         }
 
         let root_link = std::env::temp_dir().join(format!(
@@ -297,7 +334,10 @@ mod tests {
         ));
         if let Some(result) = create_dir_symlink_for_test(&outside, &root_link) {
             result.unwrap();
-            assert_eq!(PlatformXmlProvider::open(&root_link).unwrap_err().kind, SourceAdapterErrorKind::SourceUnavailable);
+            assert_eq!(
+                PlatformXmlProvider::open(&root_link).unwrap_err().kind,
+                SourceAdapterErrorKind::SourceUnavailable
+            );
         }
     }
 

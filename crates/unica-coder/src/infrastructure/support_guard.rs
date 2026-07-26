@@ -3,6 +3,7 @@ use crate::application::operation_descriptors::{
 };
 use crate::application::ports::SupportGuardCheck;
 use crate::application::{AdapterOutcome, ToolHandler, ToolSpec};
+use crate::domain::navigation::Authorability;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::common::{
     absolutize, find_support_config_dir, path_arg, required_string, support_object_uuid_for_path,
@@ -12,7 +13,6 @@ use crate::infrastructure::native_operations::{meta, template};
 use crate::infrastructure::source_adapters::platform_xml::support::{
     read_support_facts, EffectiveSupportRule,
 };
-use crate::domain::navigation::Authorability;
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 
@@ -44,12 +44,14 @@ pub(crate) fn support_guard_violation(
         .or_else(|| support_root_uuid(&config_dir.join("Configuration.xml")));
     let effective = facts.effective_rule_for(object_uuid.as_deref().unwrap_or(""));
     if effective == EffectiveSupportRule::Unreadable {
-        let error = facts.parse_error().expect("unreadable facts carry a parse error");
+        let error = facts
+            .parse_error()
+            .expect("unreadable facts carry a parse error");
         let location = error
             .offset
             .map(|offset| format!(" at byte {offset}"))
             .unwrap_or_default();
-            return Some(SupportGuardViolation {
+        return Some(SupportGuardViolation {
                 code: "support-state-unreadable",
                 reason: format!(
                     "не удалось прочитать состояние поддержки (ParentConfigurations.bin): {}{}; безопасность правки не подтверждена",
@@ -65,17 +67,22 @@ pub(crate) fn support_guard_violation(
             EffectiveSupportRule::Removed => None,
             EffectiveSupportRule::ConfigurationReadOnly => Some(SupportGuardViolation {
                 code: "capability-off",
-                reason: "возможность изменения конфигурации выключена (вся конфигурация read-only)".to_string(),
+                reason: "возможность изменения конфигурации выключена (вся конфигурация read-only)"
+                    .to_string(),
                 target_path,
                 config_dir,
             }),
-            EffectiveSupportRule::Locked | EffectiveSupportRule::Editable | EffectiveSupportRule::Absent => Some(SupportGuardViolation {
+            EffectiveSupportRule::Locked
+            | EffectiveSupportRule::Editable
+            | EffectiveSupportRule::Absent => Some(SupportGuardViolation {
                 code: "not-removed",
                 reason: "объект не снят с поддержки; удаление сломает обновления".to_string(),
                 target_path,
                 config_dir,
             }),
-            EffectiveSupportRule::Unreadable => unreachable!("unreadable returns before requirement evaluation"),
+            EffectiveSupportRule::Unreadable => {
+                unreachable!("unreadable returns before requirement evaluation")
+            }
         };
     }
     match effective.authorability() {

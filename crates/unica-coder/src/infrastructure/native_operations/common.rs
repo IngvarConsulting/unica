@@ -1812,7 +1812,10 @@ pub(crate) fn support_state_lines_for_configuration(
         "  Объектов: на замке {} / редактируется {} / снято {}",
         counts[0], counts[1], counts[2]
     ));
-    lines.push(format!("  Конфигураций поставщика: {}", facts.vendors().len()));
+    lines.push(format!(
+        "  Конфигураций поставщика: {}",
+        facts.vendors().len()
+    ));
     if facts.vendors().len() > 1 {
         for vendor in facts.vendors() {
             lines.push(format!(
