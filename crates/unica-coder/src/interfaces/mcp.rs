@@ -146,16 +146,16 @@ impl ServerHandler for UnicaServer {
 pub fn tool_definitions(specs: &[ToolSpec]) -> Vec<Tool> {
     specs
         .iter()
-        .map(|spec| {
-            let schema = match input_schema_for_tool(spec) {
-                Value::Object(schema) => schema,
-                other => {
-                    unreachable!("tool {} produced a non-object schema: {other}", spec.name)
-                }
-            };
-            Tool::new(spec.name, spec.description, schema)
-        })
+        .filter_map(|spec| tool_definition_from_schema(spec, input_schema_for_tool(spec)))
         .collect()
+}
+
+fn tool_definition_from_schema(spec: &ToolSpec, schema: Value) -> Option<Tool> {
+    let Value::Object(schema) = schema else {
+        eprintln!("skipping tool {} with a non-object input schema", spec.name);
+        return None;
+    };
+    Some(Tool::new(spec.name, spec.description, schema))
 }
 
 fn call_tool_text(
@@ -419,6 +419,16 @@ mod tests {
                 "missing {name}"
             );
         }
+    }
+
+    #[test]
+    fn tool_definition_skips_non_object_schema() {
+        let spec = crate::application::tools()
+            .into_iter()
+            .next()
+            .expect("the public registry must contain a tool");
+
+        assert!(tool_definition_from_schema(&spec, json!("malformed")).is_none());
     }
 
     #[test]
