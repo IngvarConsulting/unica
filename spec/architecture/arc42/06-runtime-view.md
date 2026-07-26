@@ -10,7 +10,11 @@
    preserving stdio.
 4. The Rust runtime resolver starts internal bundled tools directly from the
    cached `bin/<target>/<tool>` after SHA-256 verification.
-5. MCP `initialize` returns `serverInfo.name = "unica"`.
+5. The MCP transport is the official Rust SDK (`rmcp`, ADR-0013). It enforces
+   the specification handshake: the first request must be a well-formed
+   `initialize` (`ping` may precede it), and `protocolVersion` is negotiated
+   with the client.
+6. MCP `initialize` returns `serverInfo.name = "unica"`.
 
 ## Tool List
 
@@ -20,25 +24,24 @@
 
 ## Concurrent MCP Dispatch and Cancellation
 
-1. The stdio reader handles `initialize`, `tools/list`, and `ping` without
-   waiting for an active `tools/call`; each tool call runs in its own worker.
-   Input lines are capped at 8 MiB and only 32 tool workers are admitted.
-   Oversized input returns `-32700`; saturation returns `-32603` with an
-   `overloaded` message while synchronous `ping` and cancellation stay usable.
-2. The dispatcher registers the JSON-RPC request ID with a cancellation token.
-   Numeric and string IDs remain distinct.
-3. `notifications/cancelled` with `params.requestId` cancels that token. The
-   token is propagated through the application ports, CLI/index commands, and
-   the workspace-service connector.
-4. A cancelled request emits at most one response: JSON-RPC error `-32800` with
-   message `request cancelled`. On EOF, already accepted workers get a 250 ms
-   publication grace, then are cancelled and get up to 2 seconds to publish a
-   terminal response. The publication-admission gate then closes without
-   waiting for generic writer I/O: no response not already admitted may begin
-   I/O after that linearization point. A publication already inside an arbitrary
-   blocking `Write` may complete after `run_stdio_with_handler` returns; the real
-   stdio process then exits and closes stdout. Response-writer failure also
-   closes admission and cancels all active requests.
+1. The SDK spawns each request into its own task, so `initialize`,
+   `tools/list`, and `ping` never wait for an active `tools/call`. Tool
+   execution runs in a blocking worker; only 32 tool calls are admitted at
+   once, and saturation returns `-32603` with an `overloaded` message while
+   `ping` and cancellation stay usable.
+2. The SDK tracks each request ID with a cancellation token.
+   `notifications/cancelled` with `params.requestId` cancels that token; the
+   MCP interface bridges it to the domain cancellation token propagated
+   through the application ports, CLI/index commands, and the
+   workspace-service connector.
+3. A request cancelled through `notifications/cancelled` gets no response, as
+   the MCP specification prescribes; the SDK drops a late handler result.
+4. On EOF the SDK drains finishing calls (bounded at 5 seconds), then the
+   process cancels all still-running domain operations and waits up to
+   2 seconds for them before exiting and closing stdout, so tool
+   implementations can terminate their child process trees. Public input line
+   length is delegated to the SDK transport; the internal workspace-service
+   protocol keeps its own 8 MiB bound.
 
 ## Mutating Dry Run
 

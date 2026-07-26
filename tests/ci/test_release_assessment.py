@@ -40,15 +40,55 @@ from __future__ import annotations
 import json
 import sys
 
-message = json.loads(sys.stdin.readline())
-for response_id in {json.dumps(response_ids)}:
-    print(json.dumps({{
-        "jsonrpc": "2.0",
-        "id": response_id,
-        "result": {{"content": [{{"type": "text", "text": "ok"}}]}},
-    }}), flush=True)
+for raw in sys.stdin:
+    message = json.loads(raw)
+    if message.get("method") == "initialize":
+        print(json.dumps({{
+            "jsonrpc": "2.0",
+            "id": message["id"],
+            "result": {{"serverInfo": {{"name": "unica"}}}},
+        }}), flush=True)
+        continue
+    if "id" not in message:
+        continue
+    for response_id in {json.dumps(response_ids)}:
+        print(json.dumps({{
+            "jsonrpc": "2.0",
+            "id": response_id,
+            "result": {{"content": [{{"type": "text", "text": "ok"}}]}},
+        }}), flush=True)
+    break
 for _raw in sys.stdin:
     pass
+""",
+            encoding="utf-8",
+        )
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+
+    def write_handshake_error_mcp(self, path: Path) -> None:
+        path.write_text(
+            """#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import sys
+
+for raw in sys.stdin:
+    message = json.loads(raw)
+    if message.get("method") == "initialize":
+        print(json.dumps({
+            "jsonrpc": "2.0",
+            "id": message["id"],
+            "error": {"code": -32001, "message": "initialize rejected"},
+        }), flush=True)
+        continue
+    if "id" not in message:
+        continue
+    print(json.dumps({
+        "jsonrpc": "2.0",
+        "id": message["id"],
+        "result": {"content": [{"type": "text", "text": "ok"}]},
+    }), flush=True)
 """,
             encoding="utf-8",
         )
@@ -77,8 +117,18 @@ def respond(message):
     print(json.dumps(response), flush=True)
 
 for raw in sys.stdin:
+    message = json.loads(raw)
+    if message.get("method") == "initialize":
+        print(json.dumps({
+            "jsonrpc": "2.0",
+            "id": message["id"],
+            "result": {"serverInfo": {"name": "unica"}},
+        }), flush=True)
+        continue
+    if "id" not in message:
+        continue
     print(json.dumps({"jsonrpc": "2.0", "method": "notifications/progress", "params": {}}), flush=True)
-    worker = threading.Thread(target=respond, args=(json.loads(raw),))
+    worker = threading.Thread(target=respond, args=(message,))
     worker.start()
     workers.append(worker)
 
@@ -114,6 +164,8 @@ TOOLS = [
 for raw in sys.stdin:
     message = json.loads(raw)
     method = message.get("method")
+    if "id" not in message:
+        continue
     response = {"jsonrpc": "2.0", "id": message.get("id")}
     if method == "initialize":
         response["result"] = {"serverInfo": {"name": "unica"}}
@@ -213,6 +265,32 @@ for raw in sys.stdin:
             self.assertEqual(returncode, 0, stderr)
             self.assertEqual(len(responses), 1)
             self.assertNotIn("error", responses[0])
+
+    def test_mcp_client_surfaces_injected_handshake_error(self) -> None:
+        module = load_assessment_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_mcp = root / ("run-unica.py" if os.name == "nt" else "run-unica")
+            self.write_handshake_error_mcp(fake_mcp)
+
+            responses, _duration_ms, _stdout, stderr, returncode = module.call_mcp(
+                fake_mcp,
+                [module.tool_call_message(1, "unica.cf.info", {})],
+                cwd=root,
+                cache_dir=root / "cache",
+                timeout_seconds=2,
+            )
+
+            self.assertEqual(returncode, 0, stderr)
+            self.assertTrue(
+                any(
+                    response.get("error", {}).get("message")
+                    == "MCP handshake failed: initialize rejected"
+                    for response in responses
+                ),
+                responses,
+            )
 
     def test_mcp_client_rejects_unexpected_response_id(self) -> None:
         module = load_assessment_module()
