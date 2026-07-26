@@ -72,7 +72,8 @@ The central types are:
 ```rust
 pub(crate) struct SourceTextSnapshot {
     raw: Vec<u8>,
-    text: String,
+    decoded_text: String,
+    content_start: usize,
     bom: Utf8Bom,
     line_endings: LineEndingProfile,
     terminal_line_ending: Option<LineEnding>,
@@ -108,9 +109,12 @@ pub(crate) enum EolPolicy {
 ```
 
 `SourceTextSnapshot::from_bytes` accepts exactly zero or one leading UTF-8 BOM.
-The BOM is excluded from `text` but retained unchanged in `raw`. A second
-leading BOM is rejected as an ambiguous text preamble. Invalid UTF-8 is
-rejected without lossy conversion.
+The BOM is retained unchanged in `raw` and represented as U+FEFF in
+`decoded_text`. The `text()` accessor returns the content after that one
+preamble, while `decoded_text()` returns the byte-aligned decoded source for
+consumers whose UTF-8 offsets must still index `raw`. A second leading BOM is
+rejected as an ambiguous text preamble. Invalid UTF-8 is rejected without lossy
+conversion.
 
 The module exposes borrowed accessors instead of public fields. Callers cannot
 mutate the snapshot after construction.
@@ -164,8 +168,10 @@ LF silently.
 ### `unica.code.patch` adoption
 
 `code.patch` constructs one `SourceTextSnapshot` from the bytes it already
-reads. Its selector, parser validation, exact-preimage publication, hashes,
-ranges, and MCP data remain unchanged.
+reads and uses `decoded_text()` so existing offsets continue to address the
+exact raw preimage even when it starts with a BOM. Its selector, parser
+validation, exact-preimage publication, hashes, ranges, and MCP data remain
+unchanged.
 
 The insertion-site scanner continues to determine the local line ending from
 the selected method or anchor. That observation becomes `Option<LineEnding>`
