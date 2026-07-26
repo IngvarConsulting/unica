@@ -386,6 +386,11 @@ def main():
                     similar = find_similar(r_name, valid_rights)
                     sug_str = f' Did you mean: {", ".join(similar)}?' if similar else ''
                     report_warn(f"{obj_name}: unknown right '{r_name}'.{sug_str}")
+                elif r_value == 'true' and r_name.endswith('PredefinedData'):
+                    report_warn(
+                        f"{obj_name}: '{r_name}' = true grants interactive changes to predefined data "
+                        "(predefined data is part of the configuration and should not be available to end users)"
+                    )
 
     report_ok(f'{obj_count} objects, {right_count} rights')
     if rls_count > 0:

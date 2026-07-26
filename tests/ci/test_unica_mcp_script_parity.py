@@ -3647,6 +3647,27 @@ SUCCESS_SCENARIOS = [
         ),
         expect_ok=True,
     ),
+    ParityScenario(
+        name="role-validate-predefined-data",
+        tool="unica.role.validate",
+        skill="role-validate",
+        script="role-validate.py",
+        arguments={
+            "RightsPath": "src/Roles/PredefinedDataEditor/Ext/Rights.xml",
+            "Detailed": True,
+        },
+        fixtures=(
+            FileFixture(
+                "role-validate-predefined-data/PredefinedDataEditor.xml",
+                "src/Roles/PredefinedDataEditor.xml",
+            ),
+            FileFixture(
+                "role-validate-predefined-data/PredefinedDataEditor/Ext/Rights.xml",
+                "src/Roles/PredefinedDataEditor/Ext/Rights.xml",
+            ),
+        ),
+        expect_ok=True,
+    ),
 ]
 
 
