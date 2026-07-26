@@ -1,4 +1,4 @@
-use crate::domain::navigation::Authorability;
+use crate::domain::{navigation::Authorability, navigation_limits::MAX_NAVIGATION_NESTING_DEPTH};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Read;
@@ -25,6 +25,7 @@ pub(crate) enum SupportParseErrorKind {
     InvalidUuid,
     DuplicateRule,
     ConflictingEvidence,
+    NestingLimitExceeded,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -820,7 +821,7 @@ impl<'a> AstParser<'a> {
 
     fn parse_document(mut self) -> Result<AstValue, SupportParseError> {
         self.skip_whitespace();
-        let value = self.parse_value()?;
+        let value = self.parse_value(0)?;
         self.skip_whitespace();
         if self.position != self.input.len() {
             return Err(self.error(SupportParseErrorKind::TrailingData, "document"));
@@ -828,17 +829,23 @@ impl<'a> AstParser<'a> {
         Ok(value)
     }
 
-    fn parse_value(&mut self) -> Result<AstValue, SupportParseError> {
+    fn parse_value(&mut self, nesting_depth: usize) -> Result<AstValue, SupportParseError> {
         self.skip_whitespace();
         match self.byte() {
-            Some(b'{') => self.parse_list(),
+            Some(b'{') => self.parse_list(nesting_depth),
             Some(b'"') => self.parse_string(),
             Some(_) => self.parse_atom(),
             None => Err(self.error(SupportParseErrorKind::Truncated, "value")),
         }
     }
 
-    fn parse_list(&mut self) -> Result<AstValue, SupportParseError> {
+    fn parse_list(&mut self, nesting_depth: usize) -> Result<AstValue, SupportParseError> {
+        let nesting_depth = nesting_depth.checked_add(1).ok_or_else(|| {
+            self.error(SupportParseErrorKind::NestingLimitExceeded, "list nesting")
+        })?;
+        if nesting_depth > MAX_NAVIGATION_NESTING_DEPTH {
+            return Err(self.error(SupportParseErrorKind::NestingLimitExceeded, "list nesting"));
+        }
         let offset = self.base_offset + self.position;
         self.position += 1;
         self.skip_whitespace();
@@ -847,7 +854,7 @@ impl<'a> AstParser<'a> {
             return Ok(AstValue::List { values, offset });
         }
         loop {
-            values.push(self.parse_value()?);
+            values.push(self.parse_value(nesting_depth)?);
             self.skip_whitespace();
             if self.consume(b'}') {
                 return Ok(AstValue::List { values, offset });
@@ -1175,6 +1182,21 @@ mod tests {
         assert_eq!(error.offset, Some(input.find(invalid).unwrap()));
     }
 
+    #[test]
+    fn parent_configurations_ast_nesting_is_bounded_before_recursive_allocation() {
+        let at_limit = nested_lists(crate::domain::navigation_limits::MAX_NAVIGATION_NESTING_DEPTH);
+        assert!(super::AstParser::new(&at_limit, 0).parse_document().is_ok());
+
+        let over_limit =
+            nested_lists(crate::domain::navigation_limits::MAX_NAVIGATION_NESTING_DEPTH + 1);
+        let facts = parse_parent_configurations(over_limit.as_bytes());
+        assert_eq!(
+            unreadable_kind(&facts),
+            SupportParseErrorKind::NestingLimitExceeded
+        );
+        assert_eq!(unreadable_error(&facts).context, "list nesting");
+    }
+
     fn payload(
         vendor_flag: &str,
         global: &str,
@@ -1185,6 +1207,10 @@ mod tests {
         format!(
             "{{6,{global},1,{PROVIDER},{vendor_flag},{VENDOR_CONFIGURATION},\"1.0\",\"Vendor\",\"VendorConf\",3,{configuration_state},0,{CONFIGURATION},{first_state},0,{FIRST},{FIRST},{second_state},0,{SECOND},{SECOND}}}"
         )
+    }
+
+    fn nested_lists(depth: usize) -> String {
+        format!("{}0{}", "{".repeat(depth), "}".repeat(depth))
     }
 
     fn assert_kind(input: &[u8], expected: SupportParseErrorKind) {

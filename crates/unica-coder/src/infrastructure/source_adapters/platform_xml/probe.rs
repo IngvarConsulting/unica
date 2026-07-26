@@ -1,6 +1,5 @@
 use std::collections::BTreeSet;
 
-use roxmltree::Document;
 use uuid::Uuid;
 
 use crate::{
@@ -15,6 +14,7 @@ use crate::{
                 child_metadata_class_profile, metadata_class_profile, MetadataClassProfile,
                 MetadataClassRole, METADATA_NAMESPACE_2_20, ROOT_STRUCTURAL_CHILDREN,
             },
+            xml::{parse_bounded_xml_document, BoundedXmlError},
             PlatformXmlCapturedSession,
         },
         CapturedSourceSession, ProbeOutcome, SourceInput, SourceProbe,
@@ -77,10 +77,14 @@ impl PlatformXmlProbe {
         snapshot_evidence: SnapshotEvidence,
         binding: &SourceBinding,
     ) -> Result<ProbeOutcome, SourceAdapterError> {
-        let xml = std::str::from_utf8(bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes))
-            .map_err(|_| corrupted("Platform XML descriptor is not valid UTF-8"))?;
-        let document =
-            Document::parse(xml).map_err(|_| corrupted("Platform XML descriptor is malformed"))?;
+        let (_, document) = parse_bounded_xml_document(bytes).map_err(|error| match error {
+            BoundedXmlError::InvalidUtf8 => corrupted("Platform XML descriptor is not valid UTF-8"),
+            BoundedXmlError::Malformed => corrupted("Platform XML descriptor is malformed"),
+            BoundedXmlError::ResourceLimit => SourceAdapterError::new(
+                SourceAdapterErrorKind::ResourceLimit,
+                "Platform XML descriptor nesting depth exceeds navigation limit",
+            ),
+        })?;
         let root = document.root_element();
         if root.tag_name().name() != "MetaDataObject"
             || root.tag_name().namespace() != Some(METADATA_NAMESPACE_2_20)
@@ -88,20 +92,16 @@ impl PlatformXmlProbe {
             return Ok(ProbeOutcome::NoMatch);
         }
 
-        let classes = root
-            .children()
-            .filter(|node| node.is_element())
-            .collect::<Vec<_>>();
-        let class = match classes.as_slice() {
-            [] => return Err(corrupted("Platform XML metadata descriptor has no class")),
-            [class] => class,
-            _ => {
-                return Err(SourceAdapterError::new(
-                    SourceAdapterErrorKind::ProbeAmbiguous,
-                    "Platform XML metadata descriptor has multiple classes",
-                ));
-            }
-        };
+        let mut classes = root.children().filter(|node| node.is_element());
+        let class = classes
+            .next()
+            .ok_or_else(|| corrupted("Platform XML metadata descriptor has no class"))?;
+        if classes.next().is_some() {
+            return Err(SourceAdapterError::new(
+                SourceAdapterErrorKind::ProbeAmbiguous,
+                "Platform XML metadata descriptor has multiple classes",
+            ));
+        }
         if class.tag_name().namespace() != Some(METADATA_NAMESPACE_2_20) {
             return Err(unsupported(
                 "Platform XML metadata class has an unsupported namespace",
@@ -112,7 +112,7 @@ impl PlatformXmlProbe {
             .ok_or_else(|| unsupported("Platform XML metadata class is not supported"))?;
         let mut detected_features = BTreeSet::new();
         detected_features.insert(format!("metadata-class:{class_name}"));
-        inspect_structural_features(*class, profile, true, &mut detected_features)?;
+        inspect_structural_features(class, profile, true, &mut detected_features)?;
         let _uuid = match class.attribute("uuid") {
             Some(raw) => Some(
                 Uuid::parse_str(raw)
@@ -350,6 +350,26 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(ambiguous.kind, SourceAdapterErrorKind::ProbeAmbiguous);
+    }
+
+    #[test]
+    fn probe_preflights_depth_and_bounds_metadata_class_cardinality() {
+        let mut deep = String::from(
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">"#,
+        );
+        for _ in 1..crate::domain::navigation_limits::MAX_NAVIGATION_NESTING_DEPTH {
+            deep.push_str("<Nested>");
+        }
+        deep.push_str("<Leaf/>");
+        let deep_error = probe_fixture(&deep, Some("main")).unwrap_err();
+        assert_eq!(deep_error.kind, SourceAdapterErrorKind::ResourceLimit);
+
+        let max_plus_one = probe_fixture(
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document/><Document/></MetaDataObject>"#,
+            Some("main"),
+        )
+        .unwrap_err();
+        assert_eq!(max_plus_one.kind, SourceAdapterErrorKind::ProbeAmbiguous);
     }
 
     #[test]

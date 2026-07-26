@@ -6,12 +6,13 @@ use std::{
     sync::Arc,
 };
 
-use roxmltree::Document;
 use sha2::{Digest, Sha256};
 
 use crate::domain::source_adapters::{
     SourceAdapterError, SourceAdapterErrorKind, SourceRevision, TargetIdentity,
 };
+
+use super::xml::{parse_bounded_xml_document, BoundedXmlError};
 
 pub(crate) const MAX_CAPTURED_FILES: usize = 512;
 pub(crate) const MAX_CAPTURED_FILE_BYTES: usize = 8 * 1024 * 1024;
@@ -174,10 +175,13 @@ impl PlatformXmlProvider {
         let bytes = self
             .configuration_bytes()
             .ok_or_else(|| unavailable("Configuration.xml is absent from the source snapshot"))?;
-        let xml = std::str::from_utf8(bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(&bytes))
-            .map_err(|_| unavailable("Configuration.xml is not valid UTF-8"))?;
-        let document =
-            Document::parse(xml).map_err(|_| unavailable("Configuration.xml is malformed"))?;
+        let (_, document) = parse_bounded_xml_document(&bytes).map_err(|error| match error {
+            BoundedXmlError::InvalidUtf8 => unavailable("Configuration.xml is not valid UTF-8"),
+            BoundedXmlError::Malformed => unavailable("Configuration.xml is malformed"),
+            BoundedXmlError::ResourceLimit => {
+                resource_limit("Configuration.xml nesting depth exceeds navigation limit")
+            }
+        })?;
         let root = document.root_element();
         if root.tag_name().name() != "MetaDataObject"
             || root.tag_name().namespace() != Some(super::schema::METADATA_NAMESPACE_2_20)
@@ -187,15 +191,17 @@ impl PlatformXmlProvider {
                 "Configuration.xml must have the official 2.20 MetaDataObject wrapper",
             ));
         }
-        let children = root
-            .children()
-            .filter(|node| node.is_element())
-            .collect::<Vec<_>>();
-        let [configuration] = children.as_slice() else {
+        let mut children = root.children().filter(|node| node.is_element());
+        let Some(configuration) = children.next() else {
             return Err(unavailable(
                 "Configuration.xml must contain exactly one Configuration element",
             ));
         };
+        if children.next().is_some() {
+            return Err(unavailable(
+                "Configuration.xml must contain exactly one Configuration element",
+            ));
+        }
         if configuration.tag_name().name() != "Configuration"
             || configuration.tag_name().namespace() != Some(super::schema::METADATA_NAMESPACE_2_20)
         {
@@ -1181,6 +1187,35 @@ mod tests {
         )]);
         assert_eq!(
             alien_child.provider.configuration_uuid().unwrap_err().kind,
+            SourceAdapterErrorKind::SourceUnavailable
+        );
+    }
+
+    #[test]
+    fn configuration_uuid_preflights_depth_and_bounds_element_cardinality() {
+        let uuid = "11111111-1111-1111-1111-111111111111";
+        let mut deep = String::from(
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">"#,
+        );
+        for _ in 1..crate::domain::navigation_limits::MAX_NAVIGATION_NESTING_DEPTH {
+            deep.push_str("<Nested>");
+        }
+        deep.push_str("<Leaf/>");
+        let deep_fixture = fixture(&[("Configuration.xml", deep.as_bytes())]);
+        assert_eq!(
+            deep_fixture.provider.configuration_uuid().unwrap_err().kind,
+            SourceAdapterErrorKind::ResourceLimit
+        );
+
+        let max_plus_one = fixture(&[(
+            "Configuration.xml",
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="{uuid}"/><Configuration uuid="{uuid}"/></MetaDataObject>"#
+            )
+            .as_bytes(),
+        )]);
+        assert_eq!(
+            max_plus_one.provider.configuration_uuid().unwrap_err().kind,
             SourceAdapterErrorKind::SourceUnavailable
         );
     }

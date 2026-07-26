@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use quick_xml::{events::Event, Reader};
 use roxmltree::{Document, Node};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -527,54 +526,29 @@ fn parse_bounded_xml_document<'a>(
     invalid_utf8_message: &str,
     malformed_message: &str,
 ) -> Result<(&'a str, Document<'a>), SourceAdapterError> {
-    let xml = utf8(bytes, invalid_utf8_message)?;
-    preflight_xml_nesting(xml, malformed_message)?;
-    let document = Document::parse(xml).map_err(|_| corrupted(malformed_message))?;
-    Ok((xml, document))
+    super::xml::parse_bounded_xml_document(bytes)
+        .map_err(|error| map_bounded_xml_error(error, invalid_utf8_message, malformed_message))
 }
 
+#[cfg(test)]
 fn preflight_xml_nesting(xml: &str, malformed_message: &str) -> Result<(), SourceAdapterError> {
-    let mut reader = Reader::from_str(xml);
-    let mut depth = 0usize;
-    loop {
-        match reader.read_event() {
-            Ok(Event::Start(_)) => {
-                depth = increment_xml_depth(depth)?;
-            }
-            Ok(Event::End(_)) => {
-                depth = depth
-                    .checked_sub(1)
-                    .ok_or_else(|| corrupted(malformed_message))?;
-            }
-            Ok(Event::Empty(_)) => {
-                let _ = increment_xml_depth(depth)?;
-            }
-            Ok(Event::Eof) => break,
-            Ok(_) => {}
-            Err(_) => return Err(corrupted(malformed_message)),
-        }
-    }
-    if depth == 0 {
-        Ok(())
-    } else {
-        Err(corrupted(malformed_message))
-    }
+    super::xml::preflight_xml_nesting(xml)
+        .map_err(|error| map_bounded_xml_error(error, malformed_message, malformed_message))
 }
 
-fn increment_xml_depth(depth: usize) -> Result<usize, SourceAdapterError> {
-    let next_depth = depth.checked_add(1).ok_or_else(|| {
-        error(
-            SourceAdapterErrorKind::ResourceLimit,
-            "Platform XML nesting depth overflow",
-        )
-    })?;
-    if next_depth > MAX_NAVIGATION_NESTING_DEPTH {
-        return Err(error(
+fn map_bounded_xml_error(
+    bounded_error: super::xml::BoundedXmlError,
+    invalid_utf8_message: &str,
+    malformed_message: &str,
+) -> SourceAdapterError {
+    match bounded_error {
+        super::xml::BoundedXmlError::InvalidUtf8 => corrupted(invalid_utf8_message),
+        super::xml::BoundedXmlError::Malformed => corrupted(malformed_message),
+        super::xml::BoundedXmlError::ResourceLimit => error(
             SourceAdapterErrorKind::ResourceLimit,
             "Platform XML nesting depth exceeds navigation limit",
-        ));
+        ),
     }
-    Ok(next_depth)
 }
 
 fn single_metadata_class<'a, 'input>(
@@ -943,11 +917,6 @@ fn content_evidence(
         relative_key: relative_key.into(),
         digest,
     }
-}
-
-fn utf8<'a>(bytes: &'a [u8], message: &str) -> Result<&'a str, SourceAdapterError> {
-    let bytes = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes);
-    std::str::from_utf8(bytes).map_err(|_| corrupted(message))
 }
 
 fn digest(bytes: &[u8]) -> String {

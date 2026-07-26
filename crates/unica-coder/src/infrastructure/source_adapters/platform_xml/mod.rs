@@ -19,6 +19,7 @@ pub(crate) mod projector;
 pub(crate) mod provider;
 pub(crate) mod schema;
 pub(crate) mod support;
+pub(crate) mod xml;
 
 pub(crate) fn manifest() -> AdapterManifest {
     AdapterManifest {
