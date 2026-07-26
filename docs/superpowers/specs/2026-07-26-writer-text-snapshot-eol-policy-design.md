@@ -188,8 +188,9 @@ Existing behavior remains:
 
 CR-only source is classified by the shared core, but `code.patch` does not gain
 CR insertion support in this slice because its parser/range path has not yet
-established CR-only acceptance. Such a target remains rejected by existing
-validation rather than being normalized.
+established CR-only mutation support. The parser accepts lone CR, so the
+consumer explicitly rejects any source profile containing lone CR before
+selector planning rather than inserting CR or borrowing a distant LF.
 
 ## Error Handling
 
@@ -202,6 +203,9 @@ Policy resolution fails before postimage construction when:
 
 - `repository` has no implemented repository resolver;
 - `preserve` lacks unambiguous local or uniform source evidence.
+
+`code.patch` also fails before postimage construction when the source contains
+lone CR line endings, including a mixed profile with LF or CRLF.
 
 All failures occur before publication. They do not create workspace events or
 cache changes.

@@ -502,6 +502,11 @@ let eol = resolve_line_ending(EolPolicy::Preserve, snapshot, local)
     .map_err(|error| format!("resolve code.patch EOL: {error}"))?;
 ```
 
+Before calculating the selector offset, reject `Uniform(LineEnding::Cr)` and
+any `Mixed` profile whose lone-CR count is nonzero. This keeps the first
+consumer fail-closed because its parser accepts CR-only input even though this
+slice does not establish CR mutation support.
+
 Store the resolved `LineEnding` in `InsertionSite` before calling
 `normalized_content`. Update the test-only `locate_insertion` helper to create a
 snapshot and pass it to `locate_selector`. In `prove_repeat_is_noop`, create one

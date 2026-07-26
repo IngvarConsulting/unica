@@ -16,7 +16,9 @@ use std::path::{Component, Path, PathBuf};
 
 use super::common::guard_active_format_owner;
 use super::compile_transaction::CompileTransaction;
-use super::text_snapshot::{resolve_line_ending, EolPolicy, LineEnding, SourceTextSnapshot};
+use super::text_snapshot::{
+    resolve_line_ending, EolPolicy, LineEnding, LineEndingProfile, SourceTextSnapshot,
+};
 
 pub(crate) fn apply_with_data(
     args: &Map<String, Value>,
@@ -759,6 +761,7 @@ fn locate_selector(
     selector: &Selector,
     methods: &[Method],
 ) -> Result<InsertionSite, String> {
+    reject_lone_cr_line_endings(snapshot)?;
     let text = snapshot.decoded_text();
     let offset = match selector {
         Selector::Method(name) => {
@@ -816,6 +819,20 @@ fn locate_selector(
         eol,
         leading_separator,
     })
+}
+
+fn reject_lone_cr_line_endings(snapshot: &SourceTextSnapshot) -> Result<(), String> {
+    match snapshot.line_endings() {
+        LineEndingProfile::Uniform(LineEnding::Cr) | LineEndingProfile::Mixed { cr: 1.., .. } => {
+            Err(
+                "unica.code.patch v1 does not support source containing lone CR line endings"
+                    .to_string(),
+            )
+        }
+        LineEndingProfile::None
+        | LineEndingProfile::Uniform(LineEnding::Lf | LineEnding::CrLf)
+        | LineEndingProfile::Mixed { cr: 0, .. } => Ok(()),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1261,6 +1278,20 @@ mod tests {
         let site = locate_insertion(module, &args).unwrap();
 
         assert_eq!(site.eol, LineEnding::Lf);
+    }
+
+    #[test]
+    fn code_patch_rejects_lone_cr_instead_of_inventing_or_gaining_an_eol_policy() {
+        let args = arguments(json!({"method": "First"}), "after");
+
+        for module in [
+            "Procedure First()\rEndProcedure\r",
+            "Procedure First()\rEndProcedure\rProcedure Second()\nEndProcedure\n",
+        ] {
+            let error = locate_insertion(module, &args).unwrap_err();
+
+            assert!(error.contains("lone CR line endings"), "{error}");
+        }
     }
 
     #[test]
