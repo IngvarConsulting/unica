@@ -2630,8 +2630,12 @@ mod tests {
             ext.join("ParentConfigurations.bin"),
             support_test_parent_configurations_bin(
                 "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
                 "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            )
+            .replace(
+                ",3,1,0,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,",
+                ",3,0,0,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,",
             ),
         )
         .unwrap();
@@ -6233,7 +6237,7 @@ mod tests {
         removed_uuid: &str,
     ) -> String {
         format!(
-            "\u{feff}{{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"VendorConf\",3,1,1,{config_uuid},{config_uuid},0,0,{locked_uuid},{locked_uuid},2,2,{removed_uuid},{removed_uuid}}}"
+            "\u{feff}{{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"VendorConf\",3,1,0,{config_uuid},0,0,{locked_uuid},{locked_uuid},2,0,{removed_uuid},{removed_uuid}}}"
         )
     }
 
