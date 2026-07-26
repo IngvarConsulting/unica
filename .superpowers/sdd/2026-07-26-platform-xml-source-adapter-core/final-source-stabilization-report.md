@@ -87,3 +87,9 @@ that its locked object projects as `SupportLocked`.
 - Support input is bounded to 1 MiB, at most 8 vendor blocks, and at most 4096
   rules per vendor.  Unsupported or ambiguous layouts fail closed.
 - Multi-vendor merge semantics are deliberately deferred rather than guessed.
+
+## Fix Round 1
+
+- RED: foreign capture/probe processing could abort inspection, registry trusted unbound descriptors and Ready snapshots, direct QName type properties could fall through to scalar decoding, and support alternatives discarded later UUID errors.
+- GREEN: declared family gates capture/probe routing; Platform XML returns `NoMatch` for foreign sessions; descriptors and Ready snapshots are bound to immutable sessions and selected readers; all type properties use namespace-aware decoding; support alternatives retain the furthest typed error.
+- Accepted limit: configured source sets declare a source family but no XML revision. The binding carries this absence explicitly; a configured revision is checked whenever present.

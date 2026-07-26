@@ -413,6 +413,8 @@ impl Fixture {
             source_root: self.root.join("src"),
             target: self.target.clone(),
             configured_source_set: None,
+            declared_family: crate::domain::source_adapters::SourceFamily::PlatformXml,
+            declared_format: None,
         }
     }
 

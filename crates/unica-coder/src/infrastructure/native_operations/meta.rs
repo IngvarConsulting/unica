@@ -4011,6 +4011,8 @@ struct ResolvedConfiguredSourceBinding {
     format_evidence: Vec<String>,
     config_path: Option<String>,
     configured_format_raw: Option<String>,
+    declared_family: crate::domain::source_adapters::SourceFamily,
+    declared_format: Option<crate::domain::source_adapters::FormatVersion>,
     workspace_epoch: u64,
     scope: String,
     captured_session: Box<dyn crate::infrastructure::source_adapters::CapturedSourceSession>,
@@ -4084,6 +4086,8 @@ fn resolve_object_path_binding(
         source_root: canonical_root.clone(),
         target: canonical_target.clone(),
         configured_source_set: Some(source_set.name.clone()),
+        declared_family: crate::domain::source_adapters::SourceFamily::PlatformXml,
+        declared_format: None,
     };
     let captured_session =
         crate::infrastructure::source_adapters::registry::BuiltInSourceAdapterRegistry::new()
@@ -4100,6 +4104,8 @@ fn resolve_object_path_binding(
         format_evidence: source_set.format_evidence,
         config_path,
         configured_format_raw,
+        declared_family: crate::domain::source_adapters::SourceFamily::PlatformXml,
+        declared_format: None,
         workspace_epoch: context.workspace_epoch,
         scope,
         captured_session,
@@ -4317,6 +4323,8 @@ fn inspect_source_path(
                 source_root: binding.canonical_root.clone(),
                 target: binding.canonical_target.clone(),
                 configured_source_set: Some(binding.name.clone()),
+                declared_family: binding.declared_family.clone(),
+                declared_format: binding.declared_format.clone(),
             },
             binding.captured_session.as_ref(),
         )

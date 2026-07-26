@@ -540,9 +540,7 @@ fn parse_vendor_blocks(
         let (configuration_rule, object_rules) = match parsed {
             Ok(parsed) => parsed,
             Err(error) => {
-                if first_rule_error.is_none() {
-                    first_rule_error = Some(error);
-                }
+                retain_furthest_error(&mut first_rule_error, error);
                 continue;
             }
         };
@@ -562,45 +560,64 @@ fn parse_vendor_blocks(
             } else if rules_end < values.len() {
                 trailing_candidate = Some(values[rules_end].offset());
             }
-        } else if let Ok((end, mut rest)) = parse_vendor_blocks(
-            values,
-            rules_end,
-            remaining_vendors - 1,
-            input_len,
-            expected_configuration_uuid,
-        ) {
-            let mut all = vec![vendor];
-            all.append(&mut rest);
-            matches.push((end, all));
+        } else {
+            match parse_vendor_blocks(
+                values,
+                rules_end,
+                remaining_vendors - 1,
+                input_len,
+                expected_configuration_uuid,
+            ) {
+                Ok((end, mut rest)) => {
+                    let mut all = vec![vendor];
+                    all.append(&mut rest);
+                    matches.push((end, all));
+                }
+                Err(error) => retain_furthest_error(&mut first_rule_error, error),
+            }
         }
     }
     match matches.len() {
         1 => Ok(matches.pop().expect("one candidate")),
-        0 if trailing_candidate.is_some() => Err(SupportParseError::new(
-            SupportParseErrorKind::TrailingData,
-            trailing_candidate.expect("trailing candidate"),
-            "vendor block",
-        )),
-        0 => Err(first_rule_error.unwrap_or_else(|| {
-            if header_end >= values.len() {
-                SupportParseError::new(
+        0 => {
+            let trailing_error = trailing_candidate.map(|offset| {
+                SupportParseError::new(SupportParseErrorKind::TrailingData, offset, "vendor block")
+            });
+            match (first_rule_error, trailing_error) {
+                (Some(error), Some(trailing))
+                    if error.offset.unwrap_or(0) >= trailing.offset.unwrap_or(0) =>
+                {
+                    Err(error)
+                }
+                (Some(_), Some(trailing)) => Err(trailing),
+                (Some(error), None) => Err(error),
+                (None, Some(trailing)) => Err(trailing),
+                (None, None) if header_end >= values.len() => Err(SupportParseError::new(
                     SupportParseErrorKind::Truncated,
                     input_len,
                     "rule collection",
-                )
-            } else {
-                SupportParseError::new(
+                )),
+                (None, None) => Err(SupportParseError::new(
                     SupportParseErrorKind::UnsupportedLayout,
                     values[header_end].offset(),
                     "rule collection",
-                )
+                )),
             }
-        })),
+        }
         _ => Err(SupportParseError::new(
             SupportParseErrorKind::UnsupportedLayout,
             values[header_end].offset(),
             "ambiguous vendor rule layout",
         )),
+    }
+}
+
+fn retain_furthest_error(slot: &mut Option<SupportParseError>, candidate: SupportParseError) {
+    let replace = slot
+        .as_ref()
+        .is_none_or(|current| candidate.offset.unwrap_or(0) >= current.offset.unwrap_or(0));
+    if replace {
+        *slot = Some(candidate);
     }
 }
 
@@ -1142,6 +1159,20 @@ mod tests {
         let facts = read_support_facts(&path);
         assert_eq!(facts.authorability_for(FIRST), Authorability::SupportLocked);
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn second_vendor_invalid_uuid_keeps_its_specific_original_offset() {
+        let invalid = "not-a-uuid";
+        let input = format!(
+            "{{6,1,2,{PROVIDER},0,{VENDOR_CONFIGURATION},\"1.0\",\"Vendor\",\"VendorConf\",0,{invalid},0,{VENDOR_CONFIGURATION},\"1.0\",\"Vendor\",\"VendorConf\",0}}"
+        );
+
+        let facts = parse_parent_configurations(input.as_bytes());
+        let error = unreadable_error(&facts);
+
+        assert_eq!(error.kind, SupportParseErrorKind::InvalidUuid);
+        assert_eq!(error.offset, Some(input.find(invalid).unwrap()));
     }
 
     fn payload(

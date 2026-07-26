@@ -43,6 +43,7 @@ pub(crate) struct PlatformXmlCapturedSession {
     provider: provider::PlatformXmlProvider,
     descriptor_key: String,
     evidence: Vec<String>,
+    declared_format: Option<FormatVersion>,
 }
 
 impl PlatformXmlCapturedSession {
@@ -58,6 +59,10 @@ impl PlatformXmlCapturedSession {
 impl CapturedSourceSession for PlatformXmlCapturedSession {
     fn source_family(&self) -> SourceFamily {
         SourceFamily::PlatformXml
+    }
+
+    fn declared_format(&self) -> Option<&FormatVersion> {
+        self.declared_format.as_ref()
     }
 
     fn revision(
@@ -84,7 +89,14 @@ impl PlatformXmlCaptureAdapter {
 }
 
 impl SourceCaptureAdapter for PlatformXmlCaptureAdapter {
+    fn source_family(&self) -> SourceFamily {
+        SourceFamily::PlatformXml
+    }
+
     fn capture(&self, input: &SourceInput) -> Result<CaptureOutcome, SourceAdapterError> {
+        if input.declared_family != SourceFamily::PlatformXml {
+            return Ok(CaptureOutcome::NoMatch);
+        }
         let descriptor_key = input
             .target
             .file_name()
@@ -103,6 +115,7 @@ impl SourceCaptureAdapter for PlatformXmlCaptureAdapter {
                 provider,
                 descriptor_key,
                 evidence: vec!["platform-xml:immutable-capture".to_string()],
+                declared_format: input.declared_format.clone(),
             },
         )))
     }
@@ -151,8 +164,8 @@ impl SourceReadAdapter for PlatformXmlReadAdapter {
             .downcast_ref::<PlatformXmlCapturedSession>()
             .ok_or_else(|| {
                 SourceAdapterError::new(
-                    crate::domain::source_adapters::SourceAdapterErrorKind::SourceUnavailable,
-                    "captured source session does not contain Platform XML evidence",
+                    crate::domain::source_adapters::SourceAdapterErrorKind::SnapshotInconsistent,
+                    "captured session declares Platform XML but has a different payload type",
                 )
             })?;
         self.inspect_provider(session.provider(), descriptor)

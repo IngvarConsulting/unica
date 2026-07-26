@@ -15,7 +15,7 @@ use crate::{
                 provider::PlatformXmlProvider,
                 schema::{
                     child_metadata_class_profile, metadata_class_profile, MetadataClassProfile,
-                    MetadataClassRole, ROOT_STRUCTURAL_CHILDREN,
+                    MetadataClassRole, METADATA_NAMESPACE_2_20, ROOT_STRUCTURAL_CHILDREN,
                 },
                 PlatformXmlCapturedSession,
             },
@@ -23,8 +23,6 @@ use crate::{
         },
     },
 };
-
-const METADATA_NAMESPACE: &str = "http://v8.1c.ru/8.3/MDClasses";
 
 pub(crate) struct PlatformXmlProbe;
 
@@ -82,7 +80,7 @@ impl PlatformXmlProbe {
             Document::parse(xml).map_err(|_| corrupted("Platform XML descriptor is malformed"))?;
         let root = document.root_element();
         if root.tag_name().name() != "MetaDataObject"
-            || root.tag_name().namespace() != Some(METADATA_NAMESPACE)
+            || root.tag_name().namespace() != Some(METADATA_NAMESPACE_2_20)
         {
             return Ok(ProbeOutcome::NoMatch);
         }
@@ -101,7 +99,7 @@ impl PlatformXmlProbe {
                 ));
             }
         };
-        if class.tag_name().namespace() != Some(METADATA_NAMESPACE) {
+        if class.tag_name().namespace() != Some(METADATA_NAMESPACE_2_20) {
             return Err(unsupported(
                 "Platform XML metadata class has an unsupported namespace",
             ));
@@ -228,7 +226,7 @@ fn structural_children<'a, 'input>(
 fn structural_child_name<'a, 'input>(
     child: roxmltree::Node<'a, 'input>,
 ) -> Result<&'input str, SourceAdapterError> {
-    if child.tag_name().namespace() != Some(METADATA_NAMESPACE) {
+    if child.tag_name().namespace() != Some(METADATA_NAMESPACE_2_20) {
         return Err(unsupported(
             "Platform XML structural feature has an unsupported namespace",
         ));
@@ -237,15 +235,27 @@ fn structural_child_name<'a, 'input>(
 }
 
 impl SourceProbe for PlatformXmlProbe {
+    fn source_family(&self) -> SourceFamily {
+        SourceFamily::PlatformXml
+    }
+
     fn probe(
         &self,
         input: &SourceInput,
         session: &dyn CapturedSourceSession,
     ) -> Result<ProbeOutcome, SourceAdapterError> {
+        if session.source_family() != SourceFamily::PlatformXml {
+            return Ok(ProbeOutcome::NoMatch);
+        }
         let session = session
             .as_any()
             .downcast_ref::<PlatformXmlCapturedSession>()
-            .ok_or_else(|| unavailable("captured session is not Platform XML"))?;
+            .ok_or_else(|| {
+                SourceAdapterError::new(
+                    SourceAdapterErrorKind::SnapshotInconsistent,
+                    "captured session declares Platform XML but has a different payload type",
+                )
+            })?;
         self.probe_provider(input, session.provider(), session.descriptor_key())
     }
 }
@@ -630,6 +640,8 @@ mod tests {
             source_root: PathBuf::from(root),
             target: PathBuf::from(target),
             configured_source_set: configured_source_set.map(str::to_string),
+            declared_family: SourceFamily::PlatformXml,
+            declared_format: None,
         }
     }
 

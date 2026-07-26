@@ -126,12 +126,31 @@ impl PlatformXmlProvider {
             .map_err(|_| unavailable("Configuration.xml is not valid UTF-8"))?;
         let document =
             Document::parse(xml).map_err(|_| unavailable("Configuration.xml is malformed"))?;
-        let configuration = document
-            .root_element()
+        let root = document.root_element();
+        if root.tag_name().name() != "MetaDataObject"
+            || root.tag_name().namespace() != Some(super::schema::METADATA_NAMESPACE_2_20)
+            || root.attribute("version") != Some("2.20")
+        {
+            return Err(unavailable(
+                "Configuration.xml must have the official 2.20 MetaDataObject wrapper",
+            ));
+        }
+        let children = root
             .children()
             .filter(|node| node.is_element())
-            .find(|node| node.tag_name().name() == "Configuration")
-            .ok_or_else(|| unavailable("Configuration.xml has no Configuration class"))?;
+            .collect::<Vec<_>>();
+        let [configuration] = children.as_slice() else {
+            return Err(unavailable(
+                "Configuration.xml must contain exactly one Configuration element",
+            ));
+        };
+        if configuration.tag_name().name() != "Configuration"
+            || configuration.tag_name().namespace() != Some(super::schema::METADATA_NAMESPACE_2_20)
+        {
+            return Err(unavailable(
+                "Configuration.xml Configuration element must use the official 2.20 namespace",
+            ));
+        }
         uuid::Uuid::parse_str(configuration.attribute("uuid").unwrap_or_default())
             .map(|uuid| uuid.to_string())
             .map_err(|_| unavailable("Configuration.xml has an invalid UUID"))
@@ -452,6 +471,38 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("sha256:"));
+    }
+
+    #[test]
+    fn configuration_uuid_requires_official_220_wrapper_and_configuration_namespace() {
+        let uuid = "11111111-1111-1111-1111-111111111111";
+        let official = fixture(&[(
+            "Configuration.xml",
+            format!(r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="{uuid}"/></MetaDataObject>"#).as_bytes(),
+        )]);
+        assert_eq!(official.provider.configuration_uuid().unwrap(), uuid);
+
+        let alien_wrapper = fixture(&[(
+            "Configuration.xml",
+            format!(r#"<MetaDataObject xmlns="urn:alien" version="2.20"><Configuration uuid="{uuid}"/></MetaDataObject>"#).as_bytes(),
+        )]);
+        assert_eq!(
+            alien_wrapper
+                .provider
+                .configuration_uuid()
+                .unwrap_err()
+                .kind,
+            SourceAdapterErrorKind::SourceUnavailable
+        );
+
+        let alien_child = fixture(&[(
+            "Configuration.xml",
+            format!(r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:alien="urn:alien" version="2.20"><alien:Configuration uuid="{uuid}"/></MetaDataObject>"#).as_bytes(),
+        )]);
+        assert_eq!(
+            alien_child.provider.configuration_uuid().unwrap_err().kind,
+            SourceAdapterErrorKind::SourceUnavailable
+        );
     }
 
     #[test]

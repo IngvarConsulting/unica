@@ -142,6 +142,8 @@ use crate::domain::{
     source_adapters::{SourceAdapterError, SourceAdapterErrorKind},
 };
 
+pub(crate) const METADATA_NAMESPACE_2_20: &str = "http://v8.1c.ru/8.3/MDClasses";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScalarPropertyKind {
     Boolean,
@@ -199,7 +201,7 @@ pub(crate) fn parse_type_description_2_20(
     let mut qualifiers = BTreeMap::new();
     let mut qualifier_groups = BTreeSet::new();
     let children = root.children().filter(Node::is_element).collect::<Vec<_>>();
-    if root.tag_name().name() == "Type" && children.is_empty() {
+    if children.is_empty() {
         variants.push(parse_type_variant(&text_only(root)?, root)?);
     } else {
         for child in children {

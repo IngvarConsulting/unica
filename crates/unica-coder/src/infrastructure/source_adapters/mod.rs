@@ -3,7 +3,8 @@ use std::{any::Any, path::PathBuf};
 use crate::domain::{
     navigation::NavigationEnvelope,
     source_adapters::{
-        AdapterManifest, SourceAdapterError, SourceDescriptor, SourceFamily, SourceRevision,
+        AdapterManifest, FormatVersion, SourceAdapterError, SourceDescriptor, SourceFamily,
+        SourceRevision,
     },
 };
 
@@ -19,6 +20,8 @@ pub(crate) struct SourceInput {
     pub(crate) source_root: PathBuf,
     pub(crate) target: PathBuf,
     pub(crate) configured_source_set: Option<String>,
+    pub(crate) declared_family: SourceFamily,
+    pub(crate) declared_format: Option<FormatVersion>,
 }
 
 #[derive(Debug)]
@@ -31,6 +34,7 @@ pub(crate) enum ProbeOutcome {
 /// boundary intentionally contains no family-specific provider type.
 pub(crate) trait CapturedSourceSession: Send + Sync {
     fn source_family(&self) -> SourceFamily;
+    fn declared_format(&self) -> Option<&FormatVersion>;
     fn revision(&self) -> Result<SourceRevision, SourceAdapterError>;
     fn evidence(&self) -> &[String];
     fn as_any(&self) -> &dyn Any;
@@ -42,10 +46,14 @@ pub(crate) enum CaptureOutcome {
 }
 
 pub(crate) trait SourceCaptureAdapter: Send + Sync {
+    fn source_family(&self) -> SourceFamily;
+
     fn capture(&self, input: &SourceInput) -> Result<CaptureOutcome, SourceAdapterError>;
 }
 
 pub(crate) trait SourceProbe: Send + Sync {
+    fn source_family(&self) -> SourceFamily;
+
     fn probe(
         &self,
         input: &SourceInput,

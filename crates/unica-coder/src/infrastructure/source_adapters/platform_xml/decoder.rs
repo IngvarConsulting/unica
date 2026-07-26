@@ -537,25 +537,31 @@ fn decode_properties(
                 "Platform XML property occurs more than once",
             ));
         }
-        let (value, provenance) = if property.children().any(|child| child.is_element()) {
-            let value = if crate::infrastructure::source_adapters::platform_xml::schema::is_type_property_2_20(&canonical_id) {
-                NativePropertyValue::TypeSet(parse_type_description_2_20(property)?)
+        let (value, provenance) =
+            if crate::infrastructure::source_adapters::platform_xml::schema::is_type_property_2_20(
+                &canonical_id,
+            ) {
+                (
+                    NativePropertyValue::TypeSet(parse_type_description_2_20(property)?),
+                    NativePropertyProvenance::Explicit,
+                )
+            } else if property.children().any(|child| child.is_element()) {
+                (
+                    NativePropertyValue::Structured,
+                    NativePropertyProvenance::Explicit,
+                )
             } else {
-                NativePropertyValue::Structured
+                let value = property.text().unwrap_or_default().trim();
+                let scalar = scalar_property_value(&canonical_id, property, value);
+                let provenance = if matches!(scalar, NativePropertyValue::Absent) {
+                    NativePropertyProvenance::Absent
+                } else if matches!(scalar, NativePropertyValue::UnresolvedScalar { .. }) {
+                    NativePropertyProvenance::Unresolved
+                } else {
+                    NativePropertyProvenance::Explicit
+                };
+                (scalar, provenance)
             };
-            (value, NativePropertyProvenance::Explicit)
-        } else {
-            let value = property.text().unwrap_or_default().trim();
-            let scalar = scalar_property_value(&canonical_id, property, value);
-            let provenance = if matches!(scalar, NativePropertyValue::Absent) {
-                NativePropertyProvenance::Absent
-            } else if matches!(scalar, NativePropertyValue::UnresolvedScalar { .. }) {
-                NativePropertyProvenance::Unresolved
-            } else {
-                NativePropertyProvenance::Explicit
-            };
-            (scalar, provenance)
-        };
         decoded.insert(
             canonical_id.clone(),
             NativeProperty {
@@ -926,6 +932,58 @@ fn corrupted(message: impl Into<String>) -> SourceAdapterError {
 fn error(kind: SourceAdapterErrorKind, message: impl Into<String>) -> SourceAdapterError {
     SourceAdapterError::new(kind, message)
 }
+
+#[cfg(test)]
+mod direct_type_property_tests {
+    use roxmltree::Document;
+
+    use crate::{
+        domain::source_adapters::SourceAdapterErrorKind,
+        infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue,
+    };
+
+    use super::decode_properties;
+
+    #[test]
+    fn direct_inherited_official_qname_is_a_type_set_not_a_scalar() {
+        let document = Document::parse(
+            r#"<Properties xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xs="http://www.w3.org/2001/XMLSchema"><Type>xs:string</Type></Properties>"#,
+        )
+        .unwrap();
+
+        let properties = decode_properties(document.root_element(), "").unwrap();
+
+        assert!(matches!(
+            &properties["Type"].value,
+            NativePropertyValue::TypeSet(_)
+        ));
+    }
+
+    #[test]
+    fn direct_foreign_qname_fails_closed_instead_of_becoming_a_scalar() {
+        let document = Document::parse(
+            r#"<Properties xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:alien="urn:alien"><DataType>alien:string</DataType></Properties>"#,
+        )
+        .unwrap();
+
+        let error = decode_properties(document.root_element(), "").unwrap_err();
+
+        assert_eq!(error.kind, SourceAdapterErrorKind::ProjectionAmbiguous);
+    }
+
+    #[test]
+    fn unbound_direct_qname_is_rejected_by_type_namespace_resolution() {
+        let document = Document::parse(
+            r#"<Properties xmlns="http://v8.1c.ru/8.3/MDClasses"><Type>unbound:string</Type></Properties>"#,
+        )
+        .unwrap();
+
+        let error = decode_properties(document.root_element(), "").unwrap_err();
+
+        assert_eq!(error.kind, SourceAdapterErrorKind::ProjectionAmbiguous);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{

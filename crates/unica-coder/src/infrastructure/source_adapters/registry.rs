@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use crate::{
     domain::{
-        navigation::NavigationEnvelope,
+        navigation::{NavigationEnvelope, NavigationStatus},
         source_adapters::{
             FormatRange, SourceAdapterError, SourceAdapterErrorKind, SourceDescriptor,
         },
@@ -55,15 +55,25 @@ impl BuiltInSourceAdapterRegistry {
         &self,
         input: &SourceInput,
     ) -> Result<Box<dyn CapturedSourceSession>, SourceAdapterError> {
-        let sessions = self
+        let mut sessions = Vec::new();
+        for capturer in self
             .capturers
             .iter()
-            .filter_map(|capturer| match capturer.capture(input) {
-                Ok(CaptureOutcome::NoMatch) => None,
-                Ok(CaptureOutcome::Captured(session)) => Some(Ok(session)),
-                Err(error) => Some(Err(error)),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+            .filter(|capturer| capturer.source_family() == input.declared_family)
+        {
+            match capturer.capture(input)? {
+                CaptureOutcome::NoMatch => {}
+                CaptureOutcome::Captured(session) => {
+                    if session.source_family() != input.declared_family {
+                        return Err(SourceAdapterError::new(
+                            SourceAdapterErrorKind::SnapshotInconsistent,
+                            "source capture adapter returned a session for a different family",
+                        ));
+                    }
+                    sessions.push(session);
+                }
+            }
+        }
         match sessions.len() {
             0 => Err(SourceAdapterError::new(
                 SourceAdapterErrorKind::SourceUnavailable,
@@ -95,7 +105,9 @@ impl BuiltInSourceAdapterRegistry {
             )));
         };
 
-        reader.inspect_captured(session, &descriptor)
+        let envelope = reader.inspect_captured(session, &descriptor)?;
+        validate_ready_envelope(&envelope, session, &descriptor, reader)?;
+        Ok(envelope)
     }
 
     fn probe(
@@ -103,15 +115,20 @@ impl BuiltInSourceAdapterRegistry {
         input: &SourceInput,
         session: &dyn CapturedSourceSession,
     ) -> Result<SourceDescriptor, SourceAdapterError> {
-        let matches = self
+        let mut matches = Vec::new();
+        for probe in self
             .probes
             .iter()
-            .filter_map(|probe| match probe.probe(input, session) {
-                Ok(ProbeOutcome::NoMatch) => None,
-                Ok(ProbeOutcome::Match(descriptor)) => Some(Ok(descriptor)),
-                Err(error) => Some(Err(error)),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+            .filter(|probe| probe.source_family() == session.source_family())
+        {
+            match probe.probe(input, session)? {
+                ProbeOutcome::NoMatch => {}
+                ProbeOutcome::Match(descriptor) => {
+                    validate_probe_descriptor(input, session, &descriptor)?;
+                    matches.push(descriptor);
+                }
+            }
+        }
 
         let Some(first) = matches.first() else {
             return Err(SourceAdapterError::new(
@@ -225,10 +242,78 @@ fn range_is_strictly_narrower(left: &FormatRange, right: &FormatRange) -> bool {
         && (left.min_inclusive != right.min_inclusive || left.max_inclusive != right.max_inclusive)
 }
 
+fn validate_probe_descriptor(
+    input: &SourceInput,
+    session: &dyn CapturedSourceSession,
+    descriptor: &SourceDescriptor,
+) -> Result<(), SourceAdapterError> {
+    if descriptor.family != input.declared_family || descriptor.family != session.source_family() {
+        return Err(SourceAdapterError::new(
+            SourceAdapterErrorKind::SnapshotInconsistent,
+            "source probe descriptor family does not match the captured session",
+        ));
+    }
+    if let Some(format) = session.declared_format() {
+        if descriptor.format_version != *format {
+            return Err(SourceAdapterError::new(
+                SourceAdapterErrorKind::SnapshotInconsistent,
+                "source probe descriptor format does not match the declared session format",
+            ));
+        }
+    }
+    let captured_revision = session.revision()?;
+    let evidence = descriptor.snapshot_evidence.as_ref().ok_or_else(|| {
+        SourceAdapterError::new(
+            SourceAdapterErrorKind::SnapshotInconsistent,
+            "source probe descriptor has no immutable snapshot evidence",
+        )
+    })?;
+    if evidence.revision != captured_revision {
+        return Err(SourceAdapterError::new(
+            SourceAdapterErrorKind::SnapshotStale,
+            "source probe descriptor revision differs from the captured session",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_ready_envelope(
+    envelope: &NavigationEnvelope,
+    session: &dyn CapturedSourceSession,
+    descriptor: &SourceDescriptor,
+    reader: &dyn SourceReadAdapter,
+) -> Result<(), SourceAdapterError> {
+    if envelope.status != NavigationStatus::Available {
+        return Ok(());
+    }
+    let snapshot = envelope.snapshot.as_ref().ok_or_else(|| {
+        SourceAdapterError::new(
+            SourceAdapterErrorKind::SnapshotInconsistent,
+            "ready navigation envelope has no snapshot",
+        )
+    })?;
+    if snapshot.source_id != descriptor.source_id
+        || snapshot.adapter_id != reader.manifest().adapter_id
+    {
+        return Err(SourceAdapterError::new(
+            SourceAdapterErrorKind::SnapshotInconsistent,
+            "ready navigation snapshot identity does not match the selected descriptor and reader",
+        ));
+    }
+    if snapshot.revision != session.revision()? {
+        return Err(SourceAdapterError::new(
+            SourceAdapterErrorKind::SnapshotStale,
+            "ready navigation snapshot revision differs from the captured session",
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
         collections::BTreeSet,
+        fs,
         path::PathBuf,
         sync::{
             atomic::{AtomicUsize, Ordering},
@@ -241,11 +326,14 @@ mod tests {
             navigation::{NavigationEnvelope, NavigationStatus, SourceAdapterDiagnostic},
             source_adapters::{
                 AdapterManifest, AdapterMaturity, FormatRange, FormatVersion, SnapshotConsistency,
-                SourceAccess, SourceAdapterError, SourceDescriptor, SourceFamily, SourceId,
-                SourceRevision, SourceSnapshot,
+                SourceAccess, SourceAdapterError, SourceAdapterErrorKind, SourceDescriptor,
+                SourceFamily, SourceId, SourceRevision, SourceSnapshot,
             },
         },
         infrastructure::source_adapters::{
+            platform_xml::{
+                probe::PlatformXmlProbe, PlatformXmlCaptureAdapter, PlatformXmlReadAdapter,
+            },
             CaptureOutcome, CapturedSourceSession, ProbeOutcome, SourceCaptureAdapter, SourceInput,
             SourceProbe, SourceReadAdapter,
         },
@@ -469,6 +557,7 @@ mod tests {
             vec![Box::new(FakeCapture {
                 session: FakeSession {
                     family: SourceFamily::PlatformXml,
+                    declared_format: None,
                 },
             })],
             probes,
@@ -482,6 +571,8 @@ mod tests {
             source_root: PathBuf::from("/workspace"),
             target: PathBuf::from("/workspace/Configuration.xml"),
             configured_source_set: None,
+            declared_family: SourceFamily::PlatformXml,
+            declared_format: None,
         }
     }
 
@@ -556,7 +647,10 @@ mod tests {
             producer_version: None,
             detected_features: BTreeSet::new(),
             probe_evidence: vec!["configuration.xml".to_string()],
-            snapshot_evidence: None,
+            snapshot_evidence: Some(crate::domain::source_adapters::SnapshotEvidence {
+                revision: SourceRevision::new("sha256:fake-session").unwrap(),
+                root_descriptor_digest: "sha256:fixture".to_string(),
+            }),
         }
     }
 
@@ -576,6 +670,10 @@ mod tests {
     }
 
     impl SourceProbe for FakeProbe {
+        fn source_family(&self) -> SourceFamily {
+            self.descriptor.family.clone()
+        }
+
         fn probe(
             &self,
             _input: &SourceInput,
@@ -596,7 +694,7 @@ mod tests {
 
         fn inspect_captured(
             &self,
-            _session: &dyn CapturedSourceSession,
+            session: &dyn CapturedSourceSession,
             descriptor: &SourceDescriptor,
         ) -> Result<NavigationEnvelope, SourceAdapterError> {
             Ok(NavigationEnvelope {
@@ -604,7 +702,7 @@ mod tests {
                 status: NavigationStatus::Available,
                 snapshot: Some(SourceSnapshot {
                     source_id: descriptor.source_id.clone(),
-                    revision: SourceRevision::new("sha256:fixture").unwrap(),
+                    revision: session.revision()?,
                     consistency: SnapshotConsistency::Consistent,
                     adapter_id: self.manifest.adapter_id.to_string(),
                 }),
@@ -665,11 +763,16 @@ mod tests {
     #[derive(Clone)]
     struct FakeSession {
         family: SourceFamily,
+        declared_format: Option<FormatVersion>,
     }
 
     impl CapturedSourceSession for FakeSession {
         fn source_family(&self) -> SourceFamily {
             self.family.clone()
+        }
+
+        fn declared_format(&self) -> Option<&FormatVersion> {
+            self.declared_format.as_ref()
         }
 
         fn revision(&self) -> Result<SourceRevision, SourceAdapterError> {
@@ -690,6 +793,10 @@ mod tests {
     }
 
     impl SourceCaptureAdapter for FakeCapture {
+        fn source_family(&self) -> SourceFamily {
+            self.session.family.clone()
+        }
+
         fn capture(&self, _input: &SourceInput) -> Result<CaptureOutcome, SourceAdapterError> {
             Ok(CaptureOutcome::Captured(Box::new(self.session.clone())))
         }
@@ -703,6 +810,7 @@ mod tests {
             vec![Box::new(FakeCapture {
                 session: FakeSession {
                     family: SourceFamily::Cf,
+                    declared_format: None,
                 },
             })],
             vec![Box::new(FakeProbe { descriptor })],
@@ -716,9 +824,139 @@ mod tests {
         );
 
         let navigation = registry
-            .inspect(input())
+            .inspect(SourceInput {
+                declared_family: SourceFamily::Cf,
+                ..input()
+            })
             .expect("second family is inspectable");
 
         assert_eq!(navigation.snapshot.expect("snapshot").adapter_id, "fake-cf");
+    }
+
+    #[test]
+    fn builtins_and_a_second_family_coexist_without_platform_ambiguity() {
+        let mut cf_descriptor = descriptor("2.20");
+        cf_descriptor.family = SourceFamily::Cf;
+        let registry = BuiltInSourceAdapterRegistry::with_adapters(
+            vec![
+                Box::new(PlatformXmlCaptureAdapter::new()),
+                Box::new(FakeCapture {
+                    session: FakeSession {
+                        family: SourceFamily::Cf,
+                        declared_format: None,
+                    },
+                }),
+            ],
+            vec![
+                Box::new(PlatformXmlProbe::new()),
+                Box::new(FakeProbe {
+                    descriptor: cf_descriptor,
+                }),
+            ],
+            vec![
+                Box::new(PlatformXmlReadAdapter::new()),
+                reader_with("fake-cf", SourceFamily::Cf, exact("2.20"), [], []),
+            ],
+        );
+
+        let cf = registry
+            .inspect(SourceInput {
+                declared_family: SourceFamily::Cf,
+                ..input()
+            })
+            .expect("CF source is selected through the common registry");
+        assert_eq!(cf.snapshot.expect("CF snapshot").adapter_id, "fake-cf");
+
+        let root = std::env::temp_dir().join(format!(
+            "unica-source-adapter-coexist-{}-{}",
+            std::process::id(),
+            AtomicUsize::new(0).fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("Configuration.xml");
+        fs::write(
+            &target,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="11111111-1111-1111-1111-111111111111"><Properties><Name>Main</Name></Properties></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        let platform = registry
+            .inspect(SourceInput {
+                workspace_root: root.clone(),
+                source_root: root.clone(),
+                target,
+                configured_source_set: Some("main".to_string()),
+                declared_family: SourceFamily::PlatformXml,
+                declared_format: None,
+            })
+            .expect("Platform XML source is selected with the same registry");
+        assert_eq!(
+            platform.snapshot.expect("Platform snapshot").adapter_id,
+            "platform-xml-2.20"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stale_reader_snapshot_revision_is_rejected() {
+        let registry = registry_with(
+            vec![probe_match("2.20")],
+            vec![Box::new(StaleReader {
+                manifest: manifest("xml-2.20", exact("2.20")),
+            })],
+        );
+
+        let error = registry.inspect(input()).unwrap_err();
+
+        assert_eq!(error.kind, SourceAdapterErrorKind::SnapshotStale);
+    }
+
+    #[test]
+    fn descriptor_format_must_match_a_pinned_captured_session() {
+        let registry = BuiltInSourceAdapterRegistry::with_adapters(
+            vec![Box::new(FakeCapture {
+                session: FakeSession {
+                    family: SourceFamily::PlatformXml,
+                    declared_format: Some(FormatVersion::parse("2.20").unwrap()),
+                },
+            })],
+            vec![probe_match("2.19")],
+            vec![reader("xml-2.19", exact("2.19"))],
+        );
+
+        let error = registry.inspect(input()).unwrap_err();
+
+        assert_eq!(error.kind, SourceAdapterErrorKind::SnapshotInconsistent);
+    }
+
+    struct StaleReader {
+        manifest: AdapterManifest,
+    }
+
+    impl SourceReadAdapter for StaleReader {
+        fn manifest(&self) -> &AdapterManifest {
+            &self.manifest
+        }
+
+        fn inspect_captured(
+            &self,
+            _session: &dyn CapturedSourceSession,
+            descriptor: &SourceDescriptor,
+        ) -> Result<NavigationEnvelope, SourceAdapterError> {
+            Ok(NavigationEnvelope {
+                schema_version: "1".to_string(),
+                status: NavigationStatus::Available,
+                snapshot: Some(SourceSnapshot {
+                    source_id: descriptor.source_id.clone(),
+                    revision: SourceRevision::new("sha256:stale-reader").unwrap(),
+                    consistency: SnapshotConsistency::Consistent,
+                    adapter_id: self.manifest.adapter_id.to_string(),
+                }),
+                root: None,
+                nodes: Vec::new(),
+                relations: Vec::new(),
+                diagnostics: Vec::new(),
+                relation_index: Vec::new(),
+            })
+        }
     }
 }
