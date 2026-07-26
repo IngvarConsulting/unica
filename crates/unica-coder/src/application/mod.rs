@@ -9356,7 +9356,7 @@ mod tests {
     }
 
     #[test]
-    fn read_only_native_outfile_is_workspace_write_guarded() {
+    fn read_only_native_outfile_is_rejected_before_any_write() {
         let root = std::env::temp_dir().join(format!(
             "unica-read-outfile-write-guard-{}",
             std::process::id()
@@ -9390,11 +9390,17 @@ mod tests {
         );
 
         let error = match UnicaApplication::new().call_tool("unica.cf.info", &args) {
-            Ok(result) => panic!("expected OutFile write guard, got {}", result.summary),
+            Ok(result) => panic!(
+                "expected OutFile contract rejection, got {}",
+                result.summary
+            ),
             Err(error) => error,
         };
 
-        assert!(error.contains("outside workspace root"), "{error}");
+        assert!(
+            error.contains("does not accept argument `OutFile`"),
+            "{error}"
+        );
         assert!(!outside.exists());
 
         let _ = std::fs::remove_dir_all(root);

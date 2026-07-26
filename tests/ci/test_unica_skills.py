@@ -517,7 +517,7 @@ SCENARIO_PRESERVING_TOKENS = {
         '"MaxParams": 20',
         '"Offset": 150',
     ],
-    "role-info": ['"OutFile": "<output.txt>"', '"Offset": 150'],
+    "role-info": ['"Offset": 150'],
 }
 
 
@@ -587,6 +587,30 @@ class UnicaSkillRoutingTests(unittest.TestCase):
 
     def reference_root(self) -> Path:
         return self.repo_root() / "plugins" / "unica" / "references"
+
+    def test_read_only_skills_do_not_offer_outfile(self) -> None:
+        read_only_skills = [
+            "cf-info",
+            "cf-validate",
+            "cfe-validate",
+            "meta-info",
+            "meta-validate",
+            "interface-validate",
+            "subsystem-info",
+            "subsystem-validate",
+            "dcs-info",
+            "dcs-validate",
+            "role-info",
+            "role-validate",
+        ]
+
+        for skill in read_only_skills:
+            with self.subTest(skill=skill):
+                text = (self.skill_root() / skill / "SKILL.md").read_text(
+                    encoding="utf-8"
+                )
+                self.assertNotIn("OutFile", text)
+                self.assertNotIn("outFile", text)
 
     def unica_reference_models_root(self) -> Path:
         return (

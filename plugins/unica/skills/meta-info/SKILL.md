@@ -29,7 +29,6 @@ allowed-tools:
 | `Mode` | Режим: `overview` (default), `brief`, `full` |
 | `Name` | Drill-down по имени элемента (реквизит, ТЧ, значение перечисления, шаблон URL, операция) |
 | `Limit` / `Offset` | Пагинация (по умолчанию 150 строк) |
-| `OutFile` | Записать результат в файл (UTF-8 BOM) |
 
 ```json
 {

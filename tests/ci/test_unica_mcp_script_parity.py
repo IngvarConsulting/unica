@@ -201,7 +201,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "ExtensionPath": "src-cfe/Configuration.xml",
             "Detailed": True,
-            "OutFile": "cfe-validate.txt",
         },
         setup_steps=(
             SetupStep(
@@ -630,7 +629,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "ConfigPath": "src/Configuration.xml",
             "Mode": "overview",
-            "OutFile": "cf-info.txt",
         },
         fixtures=(FileFixture("cf-info/Configuration.xml", "src/Configuration.xml"),),
         expect_ok=True,
@@ -686,7 +684,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "ConfigPath": "src/Configuration.xml",
             "Detailed": True,
-            "OutFile": "cf-validate.txt",
         },
         fixtures=(
             FileFixture("cf-validate/Configuration.xml", "src/Configuration.xml"),
@@ -861,7 +858,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "ObjectPath": "src/Catalogs/ParityCatalog.xml",
             "Mode": "overview",
-            "OutFile": "meta-info.txt",
         },
         setup_steps=(
             SetupStep(
@@ -882,7 +878,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "ObjectPath": "src/Catalogs/ParityCatalog.xml",
             "Detailed": True,
-            "OutFile": "meta-validate.txt",
         },
         setup_steps=(
             SetupStep(
@@ -1475,7 +1470,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "SubsystemPath": "src/Subsystems/Subsystems/ParitySubsystem.xml",
             "Mode": "full",
-            "OutFile": "subsystem-info.txt",
             "Limit": 0,
         },
         setup_steps=(
@@ -1501,7 +1495,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "SubsystemPath": "src/Subsystems/Subsystems/ParitySubsystem.xml",
             "Detailed": True,
-            "OutFile": "subsystem-validate.txt",
         },
         setup_steps=(
             SetupStep(
@@ -1702,7 +1695,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "CIPath": "src/Subsystems/Sales/Ext/CommandInterface.xml",
             "Detailed": True,
-            "OutFile": "interface-validate.txt",
         },
         fixtures=(
             FileFixture(
@@ -1940,7 +1932,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "TemplatePath": "templates/DCS.xml",
             "Mode": "overview",
-            "OutFile": "dcs-info.txt",
         },
         setup_steps=(
             SetupStep(
@@ -2096,7 +2087,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "TemplatePath": "src/Reports/ParityReport/Templates/Main/Ext/Template.xml",
             "Detailed": True,
-            "OutFile": "dcs-validate.txt",
         },
         setup_steps=(
             SetupStep(
@@ -3558,7 +3548,6 @@ SUCCESS_SCENARIOS = [
             "RightsPath": "src/Roles/SalesReader/Ext/Rights.xml",
             "Limit": 5,
             "Offset": 1,
-            "OutFile": "role-info.txt",
         },
         fixtures=(
             FileFixture("role-info/SalesReader.xml", "src/Roles/SalesReader.xml"),
@@ -3578,7 +3567,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "RightsPath": "src/Roles/SalesReader/Ext/Rights.xml",
             "Detailed": True,
-            "OutFile": "role-validate.txt",
         },
         fixtures=(
             FileFixture("role-info/SalesReader.xml", "src/Roles/SalesReader.xml"),

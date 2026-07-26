@@ -29,7 +29,6 @@ allowed-tools:
 | `Mode` | Режим: `overview` (default), `content`, `ci`, `tree`, `full` |
 | `Name` | Drill-down: тип объекта в content, секция в ci, имя подсистемы в tree |
 | `Limit` / `Offset` | Пагинация (по умолчанию 150 строк) |
-| `OutFile` | Записать результат в файл (UTF-8 BOM) |
 
 ```json
 {
