@@ -3301,6 +3301,7 @@ fn resolve_source_dir(
         .map(|resolved| resolved.path)
 }
 
+/// Rejects diagnostics paths whose normalized identity escapes the resolved source directory.
 fn validate_diagnostics_path(source_dir: &Path, raw_path: &str) -> Result<(), String> {
     let raw_path = Path::new(raw_path);
     let candidate = if raw_path.is_absolute() {
