@@ -540,7 +540,12 @@ def markdown_routing_units(text: str) -> list[str]:
             flush()
         current.append(stripped)
     flush()
-    return units
+    return [
+        claim.strip()
+        for unit in units
+        for claim in re.split(r"(?<=[.!?;])\s+", unit)
+        if claim.strip()
+    ]
 
 
 def find_unsafe_platform_evidence_routes(
@@ -550,6 +555,7 @@ def find_unsafe_platform_evidence_routes(
         "development-standard",
         "development standards",
         "not platform",
+        "do not infer",
         "do not present",
     ]
     unsafe_routes = []
@@ -718,6 +724,22 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                     "- Use `unica.standards.search` for platform API rules.\n"
                     "- Use `unica.standards.search` only for a "
                     "`development-standard`, not platform evidence.\n",
+                )
+            ]
+        )
+
+        self.assertEqual(len(unsafe_routes), 1)
+        self.assertIn("platform API rules", unsafe_routes[0])
+        self.assertNotIn("development-standard", unsafe_routes[0])
+
+    def test_route_linter_checks_claims_within_one_markdown_item(self) -> None:
+        unsafe_routes = find_unsafe_platform_evidence_routes(
+            [
+                (
+                    "same-item-fixture.md",
+                    "- `unica.standards.search` is a `development-standard`, "
+                    "not platform evidence. Use `unica.standards.search` for "
+                    "platform API rules.\n",
                 )
             ]
         )
