@@ -98,7 +98,6 @@ fn run_cfe_patch_after_borrowed_read_hook() {}
 pub(crate) struct CfeValidationRun {
     pub(crate) ok: bool,
     pub(crate) stdout: String,
-    pub(crate) out_file: Option<PathBuf>,
     pub(crate) artifact: PathBuf,
     pub(crate) errors: Vec<String>,
 }
@@ -3674,8 +3673,6 @@ pub(crate) fn validate_cfe(
     let result = (|| -> Result<CfeValidationRun, String> {
         let resolved_path = resolve_cfe_validate_config_path(args, context)?;
         let config_dir = resolved_path.parent().unwrap_or(context.cwd.as_path());
-        let out_file =
-            path_arg(args, &["outFile", "OutFile"]).map(|path| absolutize(path, &context.cwd));
         let detailed = bool_arg(args, &["detailed", "Detailed"]);
         let max_errors = int_arg(args, &["maxErrors", "MaxErrors"])
             .and_then(|value| usize::try_from(value).ok())
@@ -3698,7 +3695,6 @@ pub(crate) fn validate_cfe(
                 return Ok(CfeValidationRun {
                     ok,
                     stdout,
-                    out_file,
                     artifact: resolved_path,
                     errors,
                 });
@@ -3719,7 +3715,6 @@ pub(crate) fn validate_cfe(
             return Ok(CfeValidationRun {
                 ok,
                 stdout,
-                out_file,
                 artifact: resolved_path,
                 errors,
             });
@@ -3749,7 +3744,6 @@ pub(crate) fn validate_cfe(
             return Ok(CfeValidationRun {
                 ok,
                 stdout,
-                out_file,
                 artifact: resolved_path,
                 errors,
             });
@@ -3779,99 +3773,73 @@ pub(crate) fn validate_cfe(
             ));
         }
         if report.stopped {
-            return cfe_validation_finish(report, out_file, resolved_path);
+            return cfe_validation_finish(report, resolved_path);
         }
 
         cfe_validate_internal_info(&mut report, cfg_node);
         if report.stopped {
-            return cfe_validation_finish(report, out_file, resolved_path);
+            return cfe_validation_finish(report, resolved_path);
         }
         let def_lang = cfe_validate_properties(&mut report, props_node, &obj_name);
         if report.stopped {
-            return cfe_validation_finish(report, out_file, resolved_path);
+            return cfe_validation_finish(report, resolved_path);
         }
         cfe_validate_enum_properties(&mut report, props_node);
         if report.stopped {
-            return cfe_validation_finish(report, out_file, resolved_path);
+            return cfe_validation_finish(report, resolved_path);
         }
 
         let child_obj_node = meta_info_child(cfg_node, "ChildObjects");
         let child_index = cfe_validate_child_objects(&mut report, child_obj_node);
         if report.stopped {
-            return cfe_validation_finish(report, out_file, resolved_path);
+            return cfe_validation_finish(report, resolved_path);
         }
         cfe_validate_default_language(&mut report, child_obj_node, &def_lang);
         if report.stopped {
-            return cfe_validation_finish(report, out_file, resolved_path);
+            return cfe_validation_finish(report, resolved_path);
         }
         cfe_validate_language_files(&mut report, child_obj_node, config_dir);
         if report.stopped {
-            return cfe_validation_finish(report, out_file, resolved_path);
+            return cfe_validation_finish(report, resolved_path);
         }
         cfe_validate_object_dirs(&mut report, child_obj_node, config_dir);
         if report.stopped {
-            return cfe_validation_finish(report, out_file, resolved_path);
+            return cfe_validation_finish(report, resolved_path);
         }
         let borrowed_forms =
             cfe_validate_borrowed_objects(&mut report, child_obj_node, config_dir, &child_index);
         if report.stopped {
-            return cfe_validation_finish(report, out_file, resolved_path);
+            return cfe_validation_finish(report, resolved_path);
         }
         cfe_validate_borrowed_forms(&mut report, &borrowed_forms);
         if report.stopped {
-            return cfe_validation_finish(report, out_file, resolved_path);
+            return cfe_validation_finish(report, resolved_path);
         }
         cfe_validate_form_dependencies(&mut report, &borrowed_forms, &child_index);
         if report.stopped {
-            return cfe_validation_finish(report, out_file, resolved_path);
+            return cfe_validation_finish(report, resolved_path);
         }
         cfe_validate_typelinks(&mut report, &borrowed_forms);
 
-        cfe_validation_finish(report, out_file, resolved_path)
+        cfe_validation_finish(report, resolved_path)
     })();
 
     match result {
-        Ok(run) => {
-            let mut stdout = run.stdout.clone();
-            let mut artifacts = vec![run.artifact.display().to_string()];
-            if let Some(out_file) = &run.out_file {
-                match write_utf8_bom(out_file, run.stdout.trim_end_matches('\n')) {
-                    Ok(()) => {
-                        stdout.push_str(&format!("Written to: {}\n", out_file.display()));
-                        artifacts.push(out_file.display().to_string());
-                    }
-                    Err(error) => {
-                        return AdapterOutcome {
-                            ok: false,
-                            summary: "unica.cfe.validate failed in native extension validator"
-                                .to_string(),
-                            changes: Vec::new(),
-                            warnings: Vec::new(),
-                            errors: vec![error.clone()],
-                            artifacts,
-                            stdout: None,
-                            stderr: Some(format!("{error}\n")),
-                            command: None,
-                        };
-                    }
-                }
-            }
-            AdapterOutcome {
-                ok: run.ok,
-                summary: if run.ok {
-                    "unica.cfe.validate completed with native extension validator".to_string()
-                } else {
-                    "unica.cfe.validate failed in native extension validator".to_string()
-                },
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: run.errors,
-                artifacts,
-                stdout: Some(stdout),
-                stderr: Some(String::new()),
-                command: None,
-            }
-        }
+        Ok(run) => AdapterOutcome {
+            ok: run.ok,
+            summary: if run.ok {
+                "unica.cfe.validate completed with native extension validator".to_string()
+            } else {
+                "unica.cfe.validate failed in native extension validator".to_string()
+            },
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: run.errors,
+            artifacts: vec![run.artifact.display().to_string()],
+            stdout: Some(run.stdout),
+            stderr: Some(String::new()),
+            command: None,
+        },
         Err(error) => AdapterOutcome {
             ok: false,
             summary: "unica.cfe.validate failed in native extension validator".to_string(),
@@ -3888,14 +3856,12 @@ pub(crate) fn validate_cfe(
 
 pub(crate) fn cfe_validation_finish(
     report: CfeValidationReporter,
-    out_file: Option<PathBuf>,
     artifact: PathBuf,
 ) -> Result<CfeValidationRun, String> {
     let (ok, stdout, errors) = report.finalize();
     Ok(CfeValidationRun {
         ok,
         stdout,
-        out_file,
         artifact,
         errors,
     })

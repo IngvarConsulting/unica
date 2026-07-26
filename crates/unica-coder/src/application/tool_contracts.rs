@@ -2784,16 +2784,18 @@ mod tests {
                 .find(|tool| tool.name == name)
                 .expect("read-only tool is registered");
             let (path_key, path) = required_path(name);
-            let args = Map::from_iter([
-                (path_key.to_string(), json!(path)),
-                ("OutFile".to_string(), json!("report.txt")),
-            ]);
+            for argument in ["OutFile", "outFile"] {
+                let args = Map::from_iter([
+                    (path_key.to_string(), json!(path)),
+                    (argument.to_string(), json!("report.txt")),
+                ]);
 
-            let error = validate_tool_arguments(tool, &args, false).unwrap_err();
-            assert!(
-                error.contains("does not accept argument `OutFile`"),
-                "{name}: {error}"
-            );
+                let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+                assert!(
+                    error.contains(&format!("does not accept argument `{argument}`")),
+                    "{name}: {error}"
+                );
+            }
         }
     }
 

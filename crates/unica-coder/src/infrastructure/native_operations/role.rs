@@ -138,7 +138,7 @@ pub(crate) fn analyze_role_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    let result = (|| -> Result<(String, Option<PathBuf>, PathBuf), String> {
+    let result = (|| -> Result<(String, PathBuf), String> {
         let rights_path = resolve_role_read_rights_path(args, context)?;
         if !rights_path.is_file() {
             return Err(format!("[ERROR] File not found: {}", rights_path.display()));
@@ -334,7 +334,6 @@ pub(crate) fn analyze_role_info(
                     format!(
                         "[INFO] Offset {offset} exceeds total lines ({total_lines}). Nothing to show.\n"
                     ),
-                    None,
                     rights_path,
                 ));
             }
@@ -351,37 +350,21 @@ pub(crate) fn analyze_role_info(
             out_lines = shown;
         }
 
-        if let Some(out_file) = path_arg(args, &["outFile", "OutFile"]) {
-            let out_file = absolutize(out_file, &context.cwd);
-            write_utf8_bom(&out_file, &out_lines.join("\n"))?;
-            Ok((
-                format!("Output written to {}\n", out_file.display()),
-                Some(out_file),
-                rights_path,
-            ))
-        } else {
-            Ok((format!("{}\n", out_lines.join("\n")), None, rights_path))
-        }
+        Ok((format!("{}\n", out_lines.join("\n")), rights_path))
     })();
 
     match result {
-        Ok((stdout, out_file, rights_path)) => {
-            let mut artifacts = vec![rights_path.display().to_string()];
-            if let Some(out_file) = out_file {
-                artifacts.push(out_file.display().to_string());
-            }
-            AdapterOutcome {
-                ok: true,
-                summary: "unica.role.info completed with native role analyzer".to_string(),
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: Vec::new(),
-                artifacts,
-                stdout: Some(stdout),
-                stderr: Some(String::new()),
-                command: None,
-            }
-        }
+        Ok((stdout, rights_path)) => AdapterOutcome {
+            ok: true,
+            summary: "unica.role.info completed with native role analyzer".to_string(),
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: Vec::new(),
+            artifacts: vec![rights_path.display().to_string()],
+            stdout: Some(stdout),
+            stderr: Some(String::new()),
+            command: None,
+        },
         Err(error) => AdapterOutcome {
             ok: false,
             summary: "unica.role.info failed in native role analyzer".to_string(),
@@ -530,10 +513,8 @@ pub(crate) fn validate_role(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    let result = (|| -> Result<(bool, String, PathBuf, Option<PathBuf>, String), String> {
+    let result = (|| -> Result<(bool, String, PathBuf, String), String> {
         let rights_path = resolve_role_read_rights_path(args, context)?;
-        let out_file =
-            path_arg(args, &["outFile", "OutFile"]).map(|path| absolutize(path, &context.cwd));
         let detailed = bool_arg(args, &["detailed", "Detailed"]);
 
         let layout = role_read_layout(&rights_path);
@@ -543,7 +524,7 @@ pub(crate) fn validate_role(
         if !rights_path.exists() {
             report.error(format!("File not found: {}", rights_path.display()));
             let text = report.lines.join("\n");
-            return Ok((false, text, rights_path, out_file, String::new()));
+            return Ok((false, text, rights_path, String::new()));
         }
 
         let rights_text = fs::read_to_string(&rights_path)
@@ -556,7 +537,7 @@ pub(crate) fn validate_role(
             Err(err) => {
                 report.error(format!("XML parse error: {err}"));
                 let text = report.lines.join("\n");
-                return Ok((false, text, rights_path, out_file, String::new()));
+                return Ok((false, text, rights_path, String::new()));
             }
         };
 
@@ -856,66 +837,25 @@ pub(crate) fn validate_role(
 
         let ok = report.errors == 0;
         let text = report.finish(&inferred_role_name);
-        Ok((ok, text, rights_path, out_file, String::new()))
+        Ok((ok, text, rights_path, String::new()))
     })();
 
     match result {
-        Ok((ok, text, rights_path, out_file, error_slot)) => {
-            let stdout = if let Some(out_file) = &out_file {
-                if let Some(parent) = out_file.parent() {
-                    if let Err(err) = fs::create_dir_all(parent) {
-                        return AdapterOutcome {
-                            ok: false,
-                            summary: "unica.role.validate failed in native role validator"
-                                .to_string(),
-                            changes: Vec::new(),
-                            warnings: Vec::new(),
-                            errors: vec![format!("failed to create {}: {err}", parent.display())],
-                            artifacts: Vec::new(),
-                            stdout: None,
-                            stderr: None,
-                            command: None,
-                        };
-                    }
-                }
-                if let Err(error) = write_utf8_bom(out_file, &text) {
-                    return AdapterOutcome {
-                        ok: false,
-                        summary: "unica.role.validate failed in native role validator".to_string(),
-                        changes: Vec::new(),
-                        warnings: Vec::new(),
-                        errors: vec![error.clone()],
-                        artifacts: Vec::new(),
-                        stdout: None,
-                        stderr: Some(format!("{error}\n")),
-                        command: None,
-                    };
-                }
-                format!("Written to: {}\n", out_file.display())
+        Ok((ok, text, rights_path, error_slot)) => AdapterOutcome {
+            ok,
+            summary: if ok {
+                "unica.role.validate completed with native role validator".to_string()
             } else {
-                format!("{text}\n")
-            };
-
-            let mut artifacts = vec![rights_path.display().to_string()];
-            if let Some(out_file) = out_file {
-                artifacts.push(out_file.display().to_string());
-            }
-            AdapterOutcome {
-                ok,
-                summary: if ok {
-                    "unica.role.validate completed with native role validator".to_string()
-                } else {
-                    "unica.role.validate failed in native role validator".to_string()
-                },
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: if ok { Vec::new() } else { vec![error_slot] },
-                artifacts,
-                stdout: Some(stdout),
-                stderr: Some(String::new()),
-                command: None,
-            }
-        }
+                "unica.role.validate failed in native role validator".to_string()
+            },
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: if ok { Vec::new() } else { vec![error_slot] },
+            artifacts: vec![rights_path.display().to_string()],
+            stdout: Some(format!("{text}\n")),
+            stderr: Some(String::new()),
+            command: None,
+        },
         Err(error) => AdapterOutcome {
             ok: false,
             summary: "unica.role.validate failed in native role validator".to_string(),

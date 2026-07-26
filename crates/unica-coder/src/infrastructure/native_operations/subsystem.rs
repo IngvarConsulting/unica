@@ -931,22 +931,14 @@ pub(crate) fn validate_subsystem(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    let result = (|| -> Result<(bool, String, PathBuf, Option<PathBuf>, String), String> {
+    let result = (|| -> Result<(bool, String, PathBuf, String), String> {
         let raw_path = required_path(args, SUBSYSTEM_PATH, "SubsystemPath")?;
         let path = absolutize(raw_path, &context.cwd);
         let detailed = bool_arg(args, &["detailed", "Detailed"]);
-        let out_file =
-            path_arg(args, &["outFile", "OutFile"]).map(|path| absolutize(path, &context.cwd));
         let xml_path = match resolve_subsystem_validate_xml(path) {
             Ok(path) => path,
             Err(stdout) => {
-                return Ok((
-                    false,
-                    format!("{stdout}\n"),
-                    PathBuf::new(),
-                    out_file,
-                    String::new(),
-                ));
+                return Ok((false, format!("{stdout}\n"), PathBuf::new(), String::new()));
             }
         };
 
@@ -959,7 +951,7 @@ pub(crate) fn validate_subsystem(
             Err(err) => {
                 report.error(format!("1. XML parse error: {err}"));
                 let result = report.finish("");
-                return Ok((false, result, xml_path, out_file, String::new()));
+                return Ok((false, result, xml_path, String::new()));
             }
         };
 
@@ -976,7 +968,7 @@ pub(crate) fn validate_subsystem(
         }) else {
             report.error("1. Root structure: expected MetaDataObject/Subsystem, not found");
             let result = report.finish("");
-            return Ok((false, result, xml_path, out_file, String::new()));
+            return Ok((false, result, xml_path, String::new()));
         };
         let uuid_val = sub.attribute("uuid").unwrap_or("");
         if !uuid_val.is_empty() && is_valid_uuid(uuid_val) {
@@ -992,7 +984,7 @@ pub(crate) fn validate_subsystem(
         }) else {
             report.error("2. Properties: <Properties> element not found");
             let result = report.finish("");
-            return Ok((false, result, xml_path, out_file, String::new()));
+            return Ok((false, result, xml_path, String::new()));
         };
 
         let required_props = [
@@ -1290,35 +1282,16 @@ pub(crate) fn validate_subsystem(
 
         let ok = report.errors == 0;
         let result = report.finish(&sub_name);
-        Ok((ok, result, xml_path, out_file, String::new()))
+        Ok((ok, result, xml_path, String::new()))
     })();
 
     match result {
-        Ok((ok, text, artifact, out_file, error_slot)) => {
-            let mut stdout = text.clone();
-            let mut artifacts = if artifact.as_os_str().is_empty() {
+        Ok((ok, text, artifact, error_slot)) => {
+            let artifacts = if artifact.as_os_str().is_empty() {
                 Vec::new()
             } else {
                 vec![artifact.display().to_string()]
             };
-            if let Some(out_file) = out_file {
-                if let Err(error) = write_utf8_bom(&out_file, &text) {
-                    return AdapterOutcome {
-                        ok: false,
-                        summary: "unica.subsystem.validate failed in native subsystem validator"
-                            .to_string(),
-                        changes: Vec::new(),
-                        warnings: Vec::new(),
-                        errors: vec![error.clone()],
-                        artifacts: Vec::new(),
-                        stdout: None,
-                        stderr: Some(format!("{error}\n")),
-                        command: None,
-                    };
-                }
-                stdout.push_str(&format!("Written to: {}\n", out_file.display()));
-                artifacts.push(out_file.display().to_string());
-            }
             AdapterOutcome {
                 ok,
                 summary: if ok {
@@ -1330,7 +1303,7 @@ pub(crate) fn validate_subsystem(
                 warnings: Vec::new(),
                 errors: if ok { Vec::new() } else { vec![error_slot] },
                 artifacts,
-                stdout: Some(stdout),
+                stdout: Some(text),
                 stderr: Some(String::new()),
                 command: None,
             }
@@ -1366,13 +1339,11 @@ pub(crate) fn analyze_subsystem_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    let result = (|| -> Result<(String, Option<PathBuf>, PathBuf), String> {
+    let result = (|| -> Result<(String, PathBuf), String> {
         let raw_path = required_path(args, SUBSYSTEM_PATH, "SubsystemPath")?;
         let path = absolutize(raw_path, &context.cwd);
         let mode = string_arg(args, &["mode", "Mode"]).unwrap_or("overview");
         let name_filter = string_arg(args, &["name", "Name"]).unwrap_or("");
-        let out_file =
-            path_arg(args, &["outFile", "OutFile"]).map(|path| absolutize(path, &context.cwd));
 
         let (mut lines, artifact) = match mode {
             "tree" => subsystem_info_tree(&path, name_filter)?,
@@ -1427,40 +1398,24 @@ pub(crate) fn analyze_subsystem_info(
         };
 
         if let Some(stdout) = paginate_subsystem_info(&mut lines, args) {
-            return Ok((stdout, None, artifact));
+            return Ok((stdout, artifact));
         }
 
-        if let Some(out_file) = out_file {
-            write_utf8_bom(&out_file, &lines.join("\n"))?;
-            Ok((
-                format!("Output written to {}\n", out_file.display()),
-                Some(out_file),
-                artifact,
-            ))
-        } else {
-            Ok((format!("{}\n", lines.join("\n")), None, artifact))
-        }
+        Ok((format!("{}\n", lines.join("\n")), artifact))
     })();
 
     match result {
-        Ok((stdout, out_file, artifact)) => {
-            let mut artifacts = vec![artifact.display().to_string()];
-            if let Some(out_file) = out_file {
-                artifacts.push(out_file.display().to_string());
-            }
-            AdapterOutcome {
-                ok: true,
-                summary: "unica.subsystem.info completed with native subsystem analyzer"
-                    .to_string(),
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: Vec::new(),
-                artifacts,
-                stdout: Some(stdout),
-                stderr: Some(String::new()),
-                command: None,
-            }
-        }
+        Ok((stdout, artifact)) => AdapterOutcome {
+            ok: true,
+            summary: "unica.subsystem.info completed with native subsystem analyzer".to_string(),
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: Vec::new(),
+            artifacts: vec![artifact.display().to_string()],
+            stdout: Some(stdout),
+            stderr: Some(String::new()),
+            command: None,
+        },
         Err(error) => AdapterOutcome {
             ok: false,
             summary: "unica.subsystem.info failed in native subsystem analyzer".to_string(),

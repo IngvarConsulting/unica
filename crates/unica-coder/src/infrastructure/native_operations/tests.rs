@@ -1,6 +1,6 @@
 use super::NativeOperationAdapter;
 use crate::infrastructure::workspace::discover_workspace;
-use serde_json::Map;
+use serde_json::{json, Map};
 use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -100,6 +100,43 @@ fn subsystem_preview_with_unavailable_parent_uses_the_legacy_placeholder() {
     assert!(result.ok);
     assert!(result.summary.contains("dry run"));
     assert!(result.warnings[0].contains("parent subsystem is unavailable"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn read_only_native_dispatch_does_not_honor_legacy_outfile() {
+    let root = temp_root("read-only-outfile");
+    let config_path = root.join("Configuration.xml");
+    let original = br#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Configuration>
+    <Properties>
+      <Name>ReadOnlyContract</Name>
+    </Properties>
+    <ChildObjects/>
+  </Configuration>
+</MetaDataObject>
+"#;
+    fs::write(&config_path, original).unwrap();
+    let context = discover_workspace(Some(root.clone())).unwrap();
+    let args = serde_json::from_value(json!({
+        "ConfigPath": "Configuration.xml",
+        "Mode": "brief",
+        "OutFile": "Configuration.xml"
+    }))
+    .unwrap();
+
+    let result =
+        NativeOperationAdapter::invoke("cf-info", "unica.cf.info", &args, &context, false, false)
+            .unwrap();
+
+    assert!(result.ok, "{result:?}");
+    assert_eq!(fs::read(&config_path).unwrap(), original);
+    assert!(result
+        .stdout
+        .as_deref()
+        .is_some_and(|stdout| stdout.contains("ReadOnlyContract")));
+
     fs::remove_dir_all(root).unwrap();
 }
 
