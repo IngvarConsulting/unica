@@ -24,7 +24,7 @@ Use exactly one target mode per request:
 | Expand node | `objectRef`, `snapshotRevision` | Re-resolve a known semantic object in the same captured snapshot. |
 | Continue page | `cursor` | Continue the exact relation page returned earlier. |
 
-`objectRef` is the returned semantic identity with `sourceId` and `objectKey`. It is not a file path. `snapshotRevision` binds expansion to the exact retained immutable snapshot; it does not re-read live metadata. A cursor is opaque, path-free, selection-bound, and snapshot-bound; return it unchanged. Live source drift does not invalidate either continuation. Continuations are available only while that exact captured snapshot is retained for the current authorization scope. If it is evicted, lost after restart, unavailable, or mismatched, start again with `ObjectPath`; the result is structured `snapshot_stale`, never a filesystem fallback. `source_unavailable` is reserved for bootstrap failures and current source-map or authorization failures.
+`objectRef` is the returned semantic identity with `sourceId` and `objectKey`. It is not a file path. `objectRef` plus `snapshotRevision` and a cursor are both continuations of the exact retained immutable snapshot; a cursor is opaque, path-free, and selection-bound, so return it unchanged. Live source drift does not invalidate either continuation or cause a source rescan. `snapshot_stale` means that exact retained snapshot was evicted, lost after restart, does not match the requested revision, or does not match the current authorization scope. `source_unavailable` is reserved for bootstrap failures and current source-map or authorization resolution failures.
 
 ## Selection and relation pages
 

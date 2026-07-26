@@ -115,3 +115,21 @@ sibling descriptors to preserve that invariant.
   `Configuration.xml`, and `Ext/ParentConfigurations.bin` to distinguishable
   invalid bytes. Cursor and objectRef continuation both retain the original
   revision, object data, and capability without a source rescan.
+
+## Fix Round 4
+
+- The retained-live-drift regression now uses only public
+  `inspect_meta_navigation`, so it exercises the process-global retained cache
+  and its production cursor HMAC after a deterministic test-only cache reset.
+  Its fixture workspace root provides a unique source scope.
+- Before mutation it captures typed and serialized full-page `Code`,
+  `Description`, root, and target-node baselines. After companion,
+  `Configuration.xml`, and support-file mutations, public cursor continuation
+  must return the complete original `Description`; public `objectRef +
+  snapshotRevision` continuation must return the complete original target and
+  root at the original revision without a source rescan.
+- The architecture, packaged `meta-info` skill, and their contract test now
+  define the same boundary: retained-snapshot eviction, restart, revision
+  mismatch, or authorization-scope mismatch is `snapshot_stale`; bootstrap or
+  current source-map or authorization resolution failure is
+  `source_unavailable`.

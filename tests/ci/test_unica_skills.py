@@ -920,6 +920,32 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertIn("`type`", meta_info)
         self.assertIn("`valueState`", meta_info)
 
+    def test_retained_navigation_snapshot_contract_is_aligned_with_meta_info_skill(self) -> None:
+        architecture = (
+            self.repo_root()
+            / "spec"
+            / "designs"
+            / "2026-07-26-versioned-source-adapter-architecture.md"
+        ).read_text(encoding="utf-8")
+        meta_info = (self.skill_root() / "meta-info" / "SKILL.md").read_text(encoding="utf-8")
+
+        for text in [architecture, meta_info]:
+            self.assertIn("objectRef", text)
+            self.assertIn("snapshotRevision", text)
+            self.assertIn("cursor", text)
+            self.assertIn("snapshot_stale", text)
+            self.assertIn("source_unavailable", text)
+            self.assertIn("live source drift", text.lower())
+
+        self.assertIn("evicted", architecture)
+        self.assertIn("lost on restart", architecture)
+        self.assertIn("authorization scope", architecture)
+        self.assertIn("source-map or\nauthorization resolution failures", architecture)
+        self.assertIn("evicted", meta_info)
+        self.assertIn("lost after restart", meta_info)
+        self.assertIn("current authorization scope", meta_info)
+        self.assertIn("source-map or authorization resolution failures", meta_info)
+
     def test_meta_compile_tracks_upstream_choice_history_through_unica_boundary(self) -> None:
         meta_compile = (self.skill_root() / "meta-compile" / "SKILL.md").read_text(
             encoding="utf-8"

@@ -4873,6 +4873,18 @@ fn snapshot_cache() -> &'static Mutex<SnapshotCache> {
     SNAPSHOT_CACHE.get_or_init(|| Mutex::new(SnapshotCache::default()))
 }
 
+#[cfg(test)]
+fn reset_snapshot_cache_scope_for_test(scope: &str) {
+    let mut cache = snapshot_cache()
+        .lock()
+        .expect("global navigation snapshot cache must not be poisoned");
+    while let Some(index) = cache.entries.iter().position(|entry| entry.scope == scope) {
+        cache
+            .remove_at(index)
+            .expect("test cache scope removal must preserve byte accounting");
+    }
+}
+
 fn inspect_meta_navigation_inner(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -15175,9 +15187,47 @@ mod tests {
             )),
         )
         .unwrap();
-        let cache = Mutex::new(SnapshotCache::default());
-        let secret = b"retained-snapshot-secret";
-        let initial = inspect_meta_navigation_with_cache(
+        // `fixture` creates a unique workspace root, hence a unique source scope. Resetting
+        // only that scope keeps this production-path regression deterministic without
+        // disturbing parallel tests using the process-global cache.
+        let source_scope =
+            resolve_current_source_binding(&SourceId::new("workspace:main").unwrap(), &context)
+                .unwrap()
+                .scope;
+        reset_snapshot_cache_scope_for_test(&source_scope);
+        let baseline = inspect_meta_navigation(
+            json!({
+                "ObjectPath": path,
+                "select": {"facets": "full", "relations": [{"role": "attributes", "pageSize": 100}]}
+            })
+            .as_object()
+            .unwrap(),
+            &context,
+        )
+        .unwrap();
+        let revision = baseline.snapshot.as_ref().unwrap().revision.clone();
+        let code = baseline.relations[0]
+            .items
+            .iter()
+            .find(|node| node.object_ref.display_name == "Code")
+            .unwrap()
+            .clone();
+        let description = baseline.relations[0]
+            .items
+            .iter()
+            .find(|node| node.object_ref.display_name == "Description")
+            .unwrap()
+            .clone();
+        let baseline_target = code.object_ref.clone();
+        let baseline_target_node = code.clone();
+        // An object-reference continuation re-roots its envelope at the requested object.
+        let baseline_object_root = baseline_target.clone();
+        let code_serialized = serde_json::to_value(&code).unwrap();
+        let description_serialized = serde_json::to_value(&description).unwrap();
+        let root_serialized = serde_json::to_value(&baseline_object_root).unwrap();
+        let target_serialized = serde_json::to_value(&baseline_target_node).unwrap();
+
+        let cursor_bootstrap = inspect_meta_navigation(
             json!({
                 "ObjectPath": path,
                 "select": {"facets": "full", "relations": [{"role": "attributes", "pageSize": 1}]}
@@ -15185,42 +15235,39 @@ mod tests {
             .as_object()
             .unwrap(),
             &context,
-            &cache,
-            secret,
         )
         .unwrap();
-        let revision = initial.snapshot.as_ref().unwrap().revision.clone();
-        let original_item = initial.relations[0].items[0].clone();
+        assert_eq!(
+            cursor_bootstrap.snapshot.as_ref().unwrap().revision,
+            revision
+        );
+        assert_eq!(cursor_bootstrap.relations[0].items[0], code);
+        assert_eq!(serde_json::to_value(&code).unwrap(), code_serialized);
         let cursor =
-            serde_json::to_value(initial.relations[0].next_cursor.clone().unwrap()).unwrap();
+            serde_json::to_value(cursor_bootstrap.relations[0].next_cursor.clone().unwrap())
+                .unwrap();
 
         std::fs::write(source_root.join("Configuration.xml"), b"<not-platform-xml").unwrap();
         std::fs::write(&companion, b"companion-invalid-after").unwrap();
         std::fs::write(&support, b"{").unwrap();
 
-        let continued = inspect_meta_navigation_with_cache(
-            json!({"cursor": cursor}).as_object().unwrap(),
-            &context,
-            &cache,
-            secret,
-        )
-        .unwrap();
+        let continued =
+            inspect_meta_navigation(json!({"cursor": cursor}).as_object().unwrap(), &context)
+                .unwrap();
 
         assert_eq!(continued.snapshot.as_ref().unwrap().revision, revision);
+        let continued_description = continued.relations[0].items[0].clone();
+        assert_eq!(continued_description, description);
         assert_eq!(
-            continued.relations[0].items[0].object_ref.display_name,
-            "Description"
-        );
-        assert_eq!(
-            continued.relations[0].items[0].capability,
-            original_item.capability
+            serde_json::to_value(&continued_description).unwrap(),
+            description_serialized
         );
 
-        let by_object_ref = inspect_meta_navigation_with_cache(
+        let by_object_ref = inspect_meta_navigation(
             json!({
                 "objectRef": {
-                    "sourceId": original_item.object_ref.source_id.as_str(),
-                    "objectKey": original_item.object_ref.object_key.as_str(),
+                    "sourceId": baseline_target.source_id.as_str(),
+                    "objectKey": baseline_target.object_key.as_str(),
                 },
                 "snapshotRevision": serde_json::to_value(&revision).unwrap(),
                 "select": {"facets": "full"},
@@ -15228,19 +15275,26 @@ mod tests {
             .as_object()
             .unwrap(),
             &context,
-            &cache,
-            secret,
         )
         .unwrap();
-        let retained_item = by_object_ref
+        let retained_target = by_object_ref
             .nodes
             .iter()
-            .find(|node| node.object_ref == original_item.object_ref)
+            .find(|node| node.object_ref == baseline_target)
             .unwrap();
         assert_eq!(by_object_ref.snapshot.as_ref().unwrap().revision, revision);
-        assert_eq!(retained_item.object_ref, original_item.object_ref);
-        assert_eq!(retained_item.capability, original_item.capability);
+        assert_eq!(by_object_ref.root.as_ref(), Some(&baseline_object_root));
+        assert_eq!(
+            serde_json::to_value(by_object_ref.root.as_ref().unwrap()).unwrap(),
+            root_serialized
+        );
+        assert_eq!(retained_target, &baseline_target_node);
+        assert_eq!(
+            serde_json::to_value(retained_target).unwrap(),
+            target_serialized
+        );
         std::fs::remove_dir_all(context.workspace_root).unwrap();
+        reset_snapshot_cache_scope_for_test(&source_scope);
     }
 
     #[cfg(unix)]

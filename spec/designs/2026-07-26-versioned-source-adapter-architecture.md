@@ -425,8 +425,8 @@ cursor
 ```
 
 - `ObjectPath` bootstraps navigation from a workspace source.
-- `objectRef + snapshotRevision` expands an already discovered node.
-- `cursor` continues one previously selected relation page.
+- `objectRef + snapshotRevision` expands an already discovered node from its retained snapshot.
+- `cursor` continues one previously selected relation page from its retained snapshot.
 
 An optional `select` object chooses:
 
@@ -443,14 +443,21 @@ The default selection returns all bounded scalar properties of the target,
 facet summaries, relation counts, and the first page of requested child
 relations. `pageSize` defaults to 25 and cannot exceed 100.
 
-Offset pagination is not supported. Cursors are opaque JSON objects, bind the
-source ID, snapshot revision, target, relation, selection, and next position,
-and address one retained immutable snapshot. A cursor remains valid across live
-source drift: continuation never rescans the source and returns the retained
-revision. It fails with `SnapshotStale` only when that exact cached snapshot is
-evicted, lost on restart, unavailable, mismatched, or no longer belongs to the
-current authorization scope. Clients pass a cursor back unchanged and must not
-construct or edit its fields.
+Offset pagination is not supported. Both `cursor` and `objectRef +
+snapshotRevision` are continuation forms for one retained immutable snapshot.
+They bind source ID, snapshot revision, authorization scope, and target;
+cursors additionally bind relation, selection, and next position. Both remain
+valid across live source drift, never rescan the source on continuation, and
+return the retained revision. A new `ObjectPath` bootstrap may observe a newer
+revision. Clients pass cursors back unchanged and must not construct or edit
+their fields.
+
+`snapshot_stale` means the exact retained snapshot requested by either
+continuation form is unavailable: it was evicted, lost on restart, does not
+match the requested revision, or does not match the current authorization
+scope. `source_unavailable` is reserved for bootstrap or current source-map or
+authorization resolution failures; live source drift after a successful
+bootstrap is not a continuation failure.
 
 The response is canonical JSON:
 
