@@ -13,8 +13,8 @@ description: "Фоновые и регламентные задания 1С. И�
 
 ## References
 
-- Read `references/platform/platform-mechanics.md` for background job context, temporary storage, locks, and security boundaries.
-- Read `references/platform/runtime-diagnostics.md` when the task includes ЖР/ТЖ, hangs, retries, or process/session evidence.
+- Read `../../references/platform/platform-mechanics.md` for background job context, temporary storage, locks, and security boundaries.
+- Read `../../references/platform/runtime-diagnostics.md` when the task includes ЖР/ТЖ, hangs, retries, or process/session evidence.
 
 ## Workflow
 

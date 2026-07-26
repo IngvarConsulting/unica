@@ -63,7 +63,7 @@ allowed-tools:
 
 ## JSON-схема DSL
 
-Полная спецификация формата: **`docs/mxl-dsl-spec.md`** (прочитать через Read tool перед написанием JSON).
+Полная спецификация формата: **`../../references/specs/mxl-dsl-spec.md`** (прочитать через Read tool перед написанием JSON).
 
 Краткая структура:
 

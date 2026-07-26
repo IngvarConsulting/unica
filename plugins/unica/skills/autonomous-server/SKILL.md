@@ -21,7 +21,7 @@ description: "Автономный сервер отладки 1С. Исполь
 
 ## Diagnostics
 
-- Read `references/platform/runtime-diagnostics.md` before explaining startup, HTTP-service, web-client, or process-level failures.
+- Read `../../references/platform/runtime-diagnostics.md` before explaining startup, HTTP-service, web-client, or process-level failures.
 - Preserve launch command/result, platform version, infobase path, port, URL, client mode, source-set, process id, session id, and temporary artifact paths.
 - For HTTP-service debugging, map URL path to metadata and handler module before interpreting the error.
 - For web-client debugging, separate server startup, authentication, UI load, client script failure, and business error.

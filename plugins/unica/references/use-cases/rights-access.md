@@ -23,6 +23,6 @@ compile focused role definitions rather than broad presets.
 
 ## Related references
 
-- `references/specs/1c-role-spec.md`
-- `references/specs/role-dsl-spec.md`
-- `references/platform/development-standards.md`
+- `../specs/1c-role-spec.md`
+- `../specs/role-dsl-spec.md`
+- `../platform/development-standards.md`

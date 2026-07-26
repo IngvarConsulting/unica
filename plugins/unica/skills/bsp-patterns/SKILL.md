@@ -21,7 +21,7 @@ description: "Поиск и применение паттернов БСП. Ис
 
 ## References
 
-- Read `references/platform/compatibility-modes.md` when BSP code gates
+- Read `../../references/platform/compatibility-modes.md` when BSP code gates
   behavior by a platform version or compatibility mode. Platform guidance
   remains the contract source; BSP code is corroborating implementation
   evidence that must be reconciled with that contract.

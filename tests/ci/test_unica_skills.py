@@ -6,6 +6,19 @@ import unittest
 from pathlib import Path
 
 
+# Both ways a document points at another one: a backticked path, where the
+# slash separates a link from a bare filename mentioned as prose (`SKILL.md`),
+# and a markdown link, where the target is a path whether it has a slash or not.
+DOCUMENT_LINK_PATTERNS = (
+    re.compile(r"`([^`\s]*/[^`\s]*\.md)`"),
+    re.compile(r"\]\((?!\w+:)([^)\s#]+\.md)(?:#[^)\s]*)?\)"),
+)
+
+
+def document_links(text: str) -> list[str]:
+    return [match for pattern in DOCUMENT_LINK_PATTERNS for match in pattern.findall(text)]
+
+
 IN_SCOPE_TOOLS = {
     "cf-edit": "unica.cf.edit",
     "cf-info": "unica.cf.info",
@@ -1477,21 +1490,29 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                     with self.subTest(path=path.relative_to(self.repo_root()), pattern=pattern):
                         self.assertIsNone(re.search(pattern, text, flags=re.I))
 
-    def test_documented_reference_paths_exist(self) -> None:
+    def test_documented_paths_resolve_from_the_document_that_carries_them(self) -> None:
+        """A documented link is only unambiguous when it is document-relative.
+
+        The reader of a skill or reference doc has that doc's directory as its
+        only stable anchor: the repository root is absent once the plugin is
+        packaged, and the plugin root is not knowable from the prose. So every
+        link resolves from its own document, and nothing resolves from a root.
+        """
         roots = [
             self.repo_root() / "README.md",
             self.repo_root() / "plugins" / "unica" / "README.md",
-            *self.skill_root().glob("*/SKILL.md"),
+            *self.skill_root().glob("*/**/*.md"),
             *self.reference_root().rglob("*.md"),
         ]
-        pattern = re.compile(r"`(references/[^`]+?\.md)`")
-        for doc in roots:
+        seen = 0
+        for doc in sorted(roots):
             text = doc.read_text(encoding="utf-8")
-            for match in pattern.findall(text):
+            for match in document_links(text):
+                seen += 1
                 with self.subTest(doc=doc.relative_to(self.repo_root()), reference=match):
-                    local_target = doc.parent / match
-                    plugin_target = self.repo_root() / "plugins" / "unica" / match
-                    self.assertTrue(local_target.is_file() or plugin_target.is_file())
+                    self.assertTrue((doc.parent / match).is_file())
+
+        self.assertGreater(seen, 0)
 
     def test_skills_do_not_use_model_specific_assistant_names(self) -> None:
         forbidden = ["Claude", "claude", "Anthropic", ".claude", "CLAUDE.md"]

@@ -45,9 +45,9 @@ source-set:
 
 ## Related references
 
-- `references/specs/1c-dcs-spec.md`
-- `references/specs/dcs-dsl-spec.md`
-- `references/specs/1c-spreadsheet-spec.md`
-- `references/specs/mxl-dsl-spec.md`
-- `references/specs/1c-epf-spec.md`
-- `references/specs/1c-erf-spec.md`
+- `../specs/1c-dcs-spec.md`
+- `../specs/dcs-dsl-spec.md`
+- `../specs/1c-spreadsheet-spec.md`
+- `../specs/mxl-dsl-spec.md`
+- `../specs/1c-epf-spec.md`
+- `../specs/1c-erf-spec.md`

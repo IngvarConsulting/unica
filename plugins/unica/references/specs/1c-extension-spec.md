@@ -11,7 +11,7 @@
 > - Подсистемы — [1c-subsystem-spec.md](1c-subsystem-spec.md)
 > - Управляемые формы — [1c-form-spec.md](1c-form-spec.md)
 > - Роли — [1c-role-spec.md](1c-role-spec.md)
-> - Сводный индекс — [1c-specs-index.md](1c-specs-index.md)
+> - Сводный индекс — [format-index.md](format-index.md)
 
 ---
 

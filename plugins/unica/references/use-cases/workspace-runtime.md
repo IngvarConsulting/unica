@@ -56,6 +56,6 @@ platform-generated CDFI sidecar out of Git; a legitimate metadata descriptor
 
 ## Related references
 
-- `references/tooling/v8project.md`
-- `references/tooling/runtime-build.md`
-- `references/use-cases/autonomous-server-debug.md`
+- `../tooling/v8project.md`
+- `../tooling/runtime-build.md`
+- `autonomous-server-debug.md`

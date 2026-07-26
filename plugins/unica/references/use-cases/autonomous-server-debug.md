@@ -23,6 +23,6 @@ boundary.
 
 ## Related references
 
-- `references/tooling/v8project.md`
-- `references/tooling/runtime-build.md`
-- `references/specs/web-spec.md`
+- `../tooling/v8project.md`
+- `../tooling/runtime-build.md`
+- `../specs/web-spec.md`

@@ -694,6 +694,38 @@ class PackageUnicaPluginTests(unittest.TestCase):
             for link in local_license_links:
                 self.assertTrue((destination / link).is_file(), link)
 
+    def test_documented_resources_are_packaged(self) -> None:
+        module = load_package_module()
+        repo_root = Path(__file__).resolve().parents[2]
+        plugin_src = repo_root / "plugins" / "unica"
+        # Both ways a document points at another one: a backticked path, where
+        # the slash separates a link from a bare filename mentioned as prose,
+        # and a markdown link, where the target is a path either way.
+        patterns = (
+            re.compile(r"`([^`\s]*/[^`\s]*\.md)`"),
+            re.compile(r"\]\((?!\w+:)([^)\s#]+\.md)(?:#[^)\s]*)?\)"),
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / "unica"
+            module.copy_tracked_plugin_source(repo_root, plugin_src, destination)
+
+            checked = 0
+            for doc in sorted(destination.rglob("*.md")):
+                relative_doc = doc.relative_to(destination)
+                text = doc.read_text(encoding="utf-8")
+                for link in [m for p in patterns for m in p.findall(text)]:
+                    checked += 1
+                    # The package has no repository root and no knowable
+                    # plugin root, so a link only survives packaging when it
+                    # resolves from the document that carries it.
+                    self.assertTrue(
+                        (doc.parent / link).is_file(),
+                        f"{relative_doc}: {link}",
+                    )
+
+            self.assertGreater(checked, 0)
+
     def test_plugin_source_copy_rejects_tracked_source_bin(self) -> None:
         module = load_package_module()
 

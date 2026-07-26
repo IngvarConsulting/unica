@@ -59,7 +59,7 @@ allowed-tools:
 
 ## JSON-схема DSL
 
-Полная спецификация формата: **`docs/mxl-dsl-spec.md`** (прочитать через Read tool).
+Полная спецификация формата: **`../../references/specs/mxl-dsl-spec.md`** (прочитать через Read tool).
 
 ## Генерация имён
 

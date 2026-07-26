@@ -39,7 +39,7 @@ format evidence, and keep it out of Git. A legitimate metadata descriptor
 
 ## Related references
 
-- `references/specs/1c-configuration-spec.md`
-- `references/specs/1c-config-objects-spec.md`
-- `references/specs/meta-dsl-spec.md`
-- `references/specs/1c-subsystem-spec.md`
+- `../specs/1c-configuration-spec.md`
+- `../specs/1c-config-objects-spec.md`
+- `../specs/meta-dsl-spec.md`
+- `../specs/1c-subsystem-spec.md`
