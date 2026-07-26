@@ -72,4 +72,12 @@ impl SourceReadAdapter for PlatformXmlReadAdapter {
         let provider = provider::PlatformXmlProvider::open(root)?;
         self.inspect_provider(&provider, descriptor)
     }
+
+    fn inspect_platform_xml_provider(
+        &self,
+        provider: &provider::PlatformXmlProvider,
+        descriptor: &crate::domain::source_adapters::SourceDescriptor,
+    ) -> Option<Result<NavigationEnvelope, SourceAdapterError>> {
+        Some(self.inspect_provider(provider, descriptor))
+    }
 }

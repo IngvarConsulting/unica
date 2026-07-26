@@ -32,4 +32,12 @@ pub(crate) trait SourceReadAdapter: Send + Sync {
         input: &SourceInput,
         descriptor: &SourceDescriptor,
     ) -> Result<NavigationEnvelope, SourceAdapterError>;
+
+    fn inspect_platform_xml_provider(
+        &self,
+        _provider: &platform_xml::provider::PlatformXmlProvider,
+        _descriptor: &SourceDescriptor,
+    ) -> Option<Result<NavigationEnvelope, SourceAdapterError>> {
+        None
+    }
 }

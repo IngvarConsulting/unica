@@ -3901,7 +3901,6 @@ fn cursor_snapshot_revision(value: &Value) -> Result<crate::domain::source_adapt
     crate::domain::source_adapters::SourceRevision::new(value.get("snapshotRevision").and_then(Value::as_str).ok_or_else(|| SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor has no valid snapshotRevision"))?)
 }
 
-#[derive(Clone)]
 struct ResolvedConfiguredSourceBinding {
     name: String,
     source_id: SourceId,
@@ -3909,6 +3908,25 @@ struct ResolvedConfiguredSourceBinding {
     source_format: crate::domain::project_sources::SourceFormat,
     configured_path: String,
     canonical_target: PathBuf,
+    canonical_root: PathBuf,
+    format_evidence: Vec<String>,
+    config_path: Option<String>,
+    configured_format_raw: Option<String>,
+    workspace_epoch: u64,
+    scope: String,
+    provider: crate::infrastructure::source_adapters::platform_xml::provider::PlatformXmlProvider,
+    descriptor_key: String,
+    provider_revision: crate::domain::source_adapters::SourceRevision,
+}
+
+/// Fresh project-map authorization evidence for continuation. It intentionally
+/// contains no provider and never opens or scans a source path.
+struct CurrentConfiguredSourceBinding {
+    name: String,
+    source_id: SourceId,
+    kind: crate::domain::project_sources::SourceSetKind,
+    source_format: crate::domain::project_sources::SourceFormat,
+    configured_path: String,
     canonical_root: PathBuf,
     format_evidence: Vec<String>,
     config_path: Option<String>,
@@ -3932,10 +3950,17 @@ fn resolve_object_path_binding(path: &Path, context: &WorkspaceContext) -> Resul
     }
     let source_id = SourceId::new(format!("workspace:{}", source_set.name))?;
     let scope = configured_binding_scope(&source_id, &source_set.name, source_set.kind, source_set.source_format, &source_set.path, &canonical_root, &source_set.format_evidence, &config_path, &configured_format_raw, context.workspace_epoch)?;
-    Ok(ResolvedConfiguredSourceBinding { name: source_set.name, source_id, kind: source_set.kind, source_format: source_set.source_format, configured_path: source_set.path, canonical_target, canonical_root, format_evidence: source_set.format_evidence, config_path, configured_format_raw, workspace_epoch: context.workspace_epoch, scope })
+    let descriptor_key = canonical_target.file_name().and_then(|name| name.to_str()).filter(|name| !name.is_empty())
+        .ok_or_else(|| source_unavailable("metadata target does not have a UTF-8 descriptor name"))?.to_string();
+    let capture_root = canonical_target.parent().ok_or_else(|| source_unavailable("metadata target has no aggregate root"))?;
+    let provider = crate::infrastructure::source_adapters::platform_xml::provider::PlatformXmlProvider::open(capture_root)?;
+    let provider_revision = provider.revision()?;
+    let binding = ResolvedConfiguredSourceBinding { name: source_set.name, source_id, kind: source_set.kind, source_format: source_set.source_format, configured_path: source_set.path, canonical_target, canonical_root, format_evidence: source_set.format_evidence, config_path, configured_format_raw, workspace_epoch: context.workspace_epoch, scope, provider, descriptor_key, provider_revision };
+    verify_captured_provider_binding(&binding)?;
+    Ok(binding)
 }
 
-fn resolve_current_source_binding(source_id: &SourceId, context: &WorkspaceContext) -> Result<ResolvedConfiguredSourceBinding, SourceAdapterError> {
+fn resolve_current_source_binding(source_id: &SourceId, context: &WorkspaceContext) -> Result<CurrentConfiguredSourceBinding, SourceAdapterError> {
     let source_map = discover_project_source_map(&context.workspace_root).map_err(|_| source_unavailable("project source map cannot be resolved"))?;
     let config_path = source_map.config_path.clone();
     let configured_format_raw = source_map.configured_format_raw.clone();
@@ -3949,7 +3974,20 @@ fn resolve_current_source_binding(source_id: &SourceId, context: &WorkspaceConte
     let canonical_root = crate::infrastructure::source_roots::normalize_contained_source_root(&context.workspace_root, &source_set.path)
         .map_err(|_| source_unavailable("navigation source root cannot be resolved inside the workspace"))?;
     let scope = configured_binding_scope(source_id, &source_set.name, source_set.kind, source_set.source_format, &source_set.path, &canonical_root, &source_set.format_evidence, &config_path, &configured_format_raw, context.workspace_epoch)?;
-    Ok(ResolvedConfiguredSourceBinding { name: source_set.name, source_id: source_id.clone(), kind: source_set.kind, source_format: source_set.source_format, configured_path: source_set.path, canonical_target: canonical_root.clone(), canonical_root, format_evidence: source_set.format_evidence, config_path, configured_format_raw, workspace_epoch: context.workspace_epoch, scope })
+    Ok(CurrentConfiguredSourceBinding { name: source_set.name, source_id: source_id.clone(), kind: source_set.kind, source_format: source_set.source_format, configured_path: source_set.path, canonical_root, format_evidence: source_set.format_evidence, config_path, configured_format_raw, workspace_epoch: context.workspace_epoch, scope })
+}
+
+fn verify_captured_provider_binding(binding: &ResolvedConfiguredSourceBinding) -> Result<(), SourceAdapterError> {
+    let capture_root = binding.canonical_target.parent().ok_or_else(|| source_unavailable("metadata target has no aggregate root"))?;
+    if binding.provider.captured_root() != capture_root
+        || !binding.provider.captured_root().starts_with(&binding.canonical_root)
+        || !binding.canonical_target.starts_with(&binding.canonical_root)
+        || binding.provider.captured_root().join(&binding.descriptor_key) != binding.canonical_target
+        || binding.provider.revision()? != binding.provider_revision
+    {
+        return Err(source_unavailable("captured Platform XML provider no longer matches the authorized source binding"));
+    }
+    Ok(())
 }
 
 fn configured_binding_scope(
@@ -3975,6 +4013,10 @@ fn cache_ready_navigation(
     binding: &ResolvedConfiguredSourceBinding,
 ) -> Result<(), SourceAdapterError> {
     let snapshot = navigation.snapshot.as_ref().ok_or_else(|| source_unavailable("ready navigation has no snapshot"))?;
+    verify_captured_provider_binding(binding)?;
+    if snapshot.revision != binding.provider_revision || snapshot.source_id != binding.source_id {
+        return Err(source_unavailable("navigation snapshot does not match the captured authorization binding"));
+    }
     if navigation.nodes.len() > SNAPSHOT_CACHE_MAX_NODES || navigation.relation_index.len() > SNAPSHOT_CACHE_MAX_RELATIONS {
         return Ok(());
     }
@@ -4006,9 +4048,14 @@ fn cached_navigation_target(
 }
 
 fn inspect_source_path(binding: &ResolvedConfiguredSourceBinding, context: &WorkspaceContext) -> Result<crate::domain::navigation::NavigationEnvelope, SourceAdapterError> {
-    crate::infrastructure::source_adapters::registry::BuiltInSourceAdapterRegistry::new().inspect(crate::infrastructure::source_adapters::SourceInput {
-        workspace_root: context.workspace_root.clone(), target: binding.canonical_target.clone(), configured_source_set: Some(binding.name.clone()),
-    })
+    verify_captured_provider_binding(binding)?;
+    crate::infrastructure::source_adapters::registry::BuiltInSourceAdapterRegistry::new().inspect_platform_xml_provider(
+        crate::infrastructure::source_adapters::SourceInput {
+            workspace_root: context.workspace_root.clone(), target: binding.canonical_target.clone(), configured_source_set: Some(binding.name.clone()),
+        },
+        &binding.provider,
+        &binding.descriptor_key,
+    )
 }
 
 fn object_path_target(
@@ -13343,6 +13390,14 @@ mod tests {
         std::fs::create_dir_all(replacement.join("Catalogs")).unwrap();
         std::fs::copy(source.join("Configuration.xml"), replacement.join("Configuration.xml")).unwrap();
         std::fs::copy(source.join("Catalogs/Items.xml"), replacement.join("Catalogs/Items.xml")).unwrap();
+        let replacement_descriptor = replacement.join("Catalogs/Items.xml");
+        std::fs::write(
+            &replacement_descriptor,
+            std::fs::read_to_string(&replacement_descriptor)
+                .unwrap()
+                .replace("Items", "Replacement"),
+        )
+        .unwrap();
         std::fs::write(
             context.workspace_root.join("v8project.yaml"),
             "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: linked\n",
@@ -13356,6 +13411,17 @@ mod tests {
         std::fs::remove_file(&link).unwrap();
         symlink("replacement", &link).unwrap();
         let navigation = inspect_source_path(&saved, &context).unwrap();
+        assert!(navigation
+            .nodes
+            .iter()
+            .any(|node| node.reference.display_name == "Items"));
+        assert!(!navigation
+            .nodes
+            .iter()
+            .any(|node| node.reference.display_name == "Replacement"));
+        assert!(!serde_json::to_string(&navigation)
+            .unwrap()
+            .contains(context.workspace_root.to_string_lossy().as_ref()));
         let snapshot = navigation.snapshot.clone().unwrap();
         let target = object_path_target(&navigation).unwrap();
         cache_ready_navigation(navigation, &saved).unwrap();

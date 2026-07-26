@@ -8,7 +8,7 @@ use crate::{
         },
     },
     infrastructure::source_adapters::{
-        platform_xml::{probe::PlatformXmlProbe, PlatformXmlReadAdapter}, ProbeOutcome, SourceInput,
+        platform_xml::{probe::PlatformXmlProbe, provider::PlatformXmlProvider, PlatformXmlReadAdapter}, ProbeOutcome, SourceInput,
         SourceProbe, SourceReadAdapter,
     },
 };
@@ -51,6 +51,35 @@ impl BuiltInSourceAdapterRegistry {
         };
 
         reader.inspect(&input, &descriptor)
+    }
+
+    /// Inspects a Platform XML target from an already captured immutable
+    /// provider. No path is reopened after this entrypoint is called.
+    pub(crate) fn inspect_platform_xml_provider(
+        &self,
+        input: SourceInput,
+        provider: &PlatformXmlProvider,
+        descriptor_key: &str,
+    ) -> Result<NavigationEnvelope, SourceAdapterError> {
+        let outcome = PlatformXmlProbe::new().probe_provider(&input, provider, descriptor_key)?;
+        let ProbeOutcome::Match(descriptor) = outcome else {
+            return Err(SourceAdapterError::new(
+                SourceAdapterErrorKind::SourceUnavailable,
+                "captured provider did not recognize the target as Platform XML",
+            ));
+        };
+        let Some(reader) = self.select_narrowest_reader(self.compatible_readers(&descriptor))? else {
+            return Ok(NavigationEnvelope::unavailable(SourceAdapterError::new(
+                SourceAdapterErrorKind::FormatUnsupported,
+                format!("no reader supports {:?} format {}", descriptor.family, descriptor.format_version),
+            )));
+        };
+        reader.inspect_platform_xml_provider(provider, &descriptor).ok_or_else(|| {
+            SourceAdapterError::new(
+                SourceAdapterErrorKind::SourceUnavailable,
+                "selected reader cannot inspect the captured Platform XML provider",
+            )
+        })?
     }
 
     fn probe(&self, input: &SourceInput) -> Result<SourceDescriptor, SourceAdapterError> {

@@ -14,7 +14,7 @@ use crate::{
             platform_xml::{
                 provider::PlatformXmlProvider,
                 schema::{
-                    child_metadata_class_profile, metadata_class_profile, MetadataClassProfile,
+                    child_metadata_class_profile, metadata_class_profile, MetadataClassProfile, MetadataClassRole,
                     ROOT_STRUCTURAL_CHILDREN,
                 },
             },
@@ -30,6 +30,15 @@ pub(crate) struct PlatformXmlProbe;
 impl PlatformXmlProbe {
     pub(crate) const fn new() -> Self {
         Self
+    }
+
+    pub(crate) fn probe_provider(
+        &self,
+        input: &SourceInput,
+        provider: &PlatformXmlProvider,
+        descriptor_key: &str,
+    ) -> Result<ProbeOutcome, SourceAdapterError> {
+        self.probe_snapshot(input, provider, descriptor_key)
     }
 
     fn probe_snapshot(
@@ -132,7 +141,7 @@ fn inspect_structural_features(
         if !ROOT_STRUCTURAL_CHILDREN.contains(&name) {
             return Err(unsupported("Platform XML root contains an unsupported structural feature"));
         }
-        features.insert(format!("structural:root:{name}"));
+        features.insert(format!("structural:{}:{name}", structural_scope(profile)));
         if name == "ChildObjects" {
             inspect_child_objects(child, profile, features)?;
         }
@@ -153,10 +162,25 @@ fn inspect_child_objects(
         if child_profile.class_name != name {
             return Err(unsupported("Platform XML child objects contain an unsupported structural feature"));
         }
-        features.insert(format!("structural:child-object:{name}"));
+        features.insert(format!("structural:{}:{name}", child_object_scope(owner_profile)));
         inspect_structural_features(child, child_profile, features)?;
     }
     Ok(())
+}
+
+fn structural_scope(profile: &MetadataClassProfile) -> &'static str {
+    match profile.role {
+        MetadataClassRole::TabularSection => "tabular-section",
+        _ => "root",
+    }
+}
+
+fn child_object_scope(owner_profile: &MetadataClassProfile) -> &'static str {
+    match owner_profile.role {
+        MetadataClassRole::Configuration => "configuration-child",
+        MetadataClassRole::TabularSection => "tabular-section",
+        _ => "child-object",
+    }
 }
 
 fn structural_children<'a, 'input>(
@@ -187,7 +211,7 @@ impl SourceProbe for PlatformXmlProbe {
             .filter(|name| !name.is_empty())
             .ok_or_else(|| unavailable("Platform XML descriptor does not have a UTF-8 file name"))?;
         let provider = PlatformXmlProvider::open(root)?;
-        self.probe_snapshot(input, &provider, descriptor_key)
+        self.probe_provider(input, &provider, descriptor_key)
     }
 }
 
@@ -413,7 +437,6 @@ mod tests {
             vec![
                 "metadata-class:Document",
                 "structural:child-object:Command",
-                "structural:child-object:Properties",
                 "structural:child-object:TabularSection",
                 "structural:root:ChildObjects",
                 "structural:root:Properties",

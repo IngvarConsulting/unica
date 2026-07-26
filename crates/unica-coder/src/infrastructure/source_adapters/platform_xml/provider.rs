@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     fs,
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
     sync::Arc,
 };
 
@@ -15,6 +15,7 @@ use crate::domain::source_adapters::{
 pub(crate) struct PlatformXmlProvider {
     files: BTreeMap<String, Arc<[u8]>>,
     revision: SourceRevision,
+    captured_root: PathBuf,
 }
 
 impl PlatformXmlProvider {
@@ -36,6 +37,7 @@ impl PlatformXmlProvider {
     ) -> Result<Self, SourceAdapterError> {
         let root = root.as_ref();
         ensure_directory(root)?;
+        let captured_root = fs::canonicalize(root).map_err(|_| unavailable("aggregate root"))?;
         let first = capture(root)?;
         after_first_capture();
         let second = capture(root)?;
@@ -49,6 +51,7 @@ impl PlatformXmlProvider {
         Ok(Self {
             files: first,
             revision,
+            captured_root,
         })
     }
 
@@ -67,6 +70,12 @@ impl PlatformXmlProvider {
 
     pub(crate) fn revision(&self) -> Result<SourceRevision, SourceAdapterError> {
         Ok(self.revision.clone())
+    }
+
+    /// Canonical aggregate root whose bytes were captured. This is internal
+    /// evidence only and must never be serialized into navigation output.
+    pub(crate) fn captured_root(&self) -> &Path {
+        &self.captured_root
     }
 
     /// Returns support evidence captured with this immutable aggregate.  The
