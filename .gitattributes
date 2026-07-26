@@ -11,6 +11,9 @@ tests/fixtures/unica_mcp_script_parity/cc-1c-skills/** -text -whitespace
 tests/fixtures/platform_8_3_27/support-edit-bin-only/** -text -whitespace
 tests/fixtures/unica_mcp_script_parity/cfe-patch-method/base-common-module.bsl -text -whitespace
 
+# Staged-dump root fixtures keep the BOM and CRLF an 8.3.27 dump writes.
+tests/fixtures/platform_8_3_27/staged_dump_roots/** -text -whitespace
+
 # Harvested platform specifications retain their original CRLF where present.
 plugins/unica/references/specs/*.md whitespace=cr-at-eol
 

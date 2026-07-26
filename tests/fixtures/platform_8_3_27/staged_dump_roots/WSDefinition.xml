@@ -1,0 +1,9 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://schemas.xmlsoap.org/wsdl/"
+		xmlns:soapbind="http://schemas.xmlsoap.org/wsdl/soap/"
+		xmlns:tns="http://example.invalid/unica"
+		xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+		name="UnicaFixtureService"
+		targetNamespace="http://example.invalid/unica">
+	<types/>
+</definitions>

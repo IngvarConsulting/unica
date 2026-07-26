@@ -1607,6 +1607,8 @@ fn property_schema(name: &str) -> Value {
             | "createIfMissing"
             | "IsFunction"
             | "isFunction"
+            | "KeepFiles"
+            | "keepFiles"
             | "allExtensions"
             | "checkUseModality"
             | "checkUseSynchronousCalls"
@@ -2581,6 +2583,8 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
             | "createIfMissing"
             | "IsFunction"
             | "isFunction"
+            | "KeepFiles"
+            | "keepFiles"
             | "allExtensions"
             | "checkUseModality"
             | "checkUseSynchronousCalls"
@@ -2914,6 +2918,30 @@ mod tests {
         let args = Map::new();
 
         validate_tool_arguments(tool, &args, true).unwrap();
+    }
+
+    #[test]
+    fn meta_remove_keep_files_contract_is_boolean() {
+        let remove = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.meta.remove")
+            .expect("unica.meta.remove must be registered");
+        let schema = input_schema_for_tool(&remove);
+
+        assert_eq!(schema["properties"]["KeepFiles"]["type"], "boolean");
+        assert_eq!(schema["properties"]["keepFiles"]["type"], "boolean");
+        validate_tool_arguments(
+            remove,
+            json!({
+                "ConfigDir": "src",
+                "Object": "Catalog.Legacy",
+                "KeepFiles": true,
+            })
+            .as_object()
+            .expect("test arguments must be an object"),
+            false,
+        )
+        .expect("meta.remove must accept boolean KeepFiles");
     }
 
     #[test]
