@@ -1596,7 +1596,7 @@ impl NavigationCursor {
             &cursor.relation_kind,
         ) {
             return Err(SourceAdapterError::new(
-                SourceAdapterErrorKind::SourceUnavailable,
+                SourceAdapterErrorKind::SnapshotStale,
                 "navigation cursor target or relation cannot be re-resolved",
             ));
         }

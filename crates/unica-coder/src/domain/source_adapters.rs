@@ -215,6 +215,7 @@ pub(crate) enum SourceAdapterErrorKind {
     MutationConflict,
     ValidationFailed,
     RecoveryRequired,
+    ResourceLimit,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -246,6 +247,7 @@ impl SourceAdapterError {
             SourceAdapterErrorKind::MutationConflict => "mutation_conflict",
             SourceAdapterErrorKind::ValidationFailed => "validation_failed",
             SourceAdapterErrorKind::RecoveryRequired => "recovery_required",
+            SourceAdapterErrorKind::ResourceLimit => "resource_limit",
         }
     }
 }
