@@ -4031,8 +4031,9 @@ fn validate_navigation_cache_payload(
             "navigation snapshot has too many relations for continuation",
         ));
     }
+    validate_semantic_string(&navigation.schema_version, limits.max_semantic_string_bytes)?;
     if let Some(snapshot) = &navigation.snapshot {
-        serialized_bytes_with_limit(snapshot, limits.max_semantic_string_bytes)?;
+        validate_source_snapshot_strings(snapshot, limits.max_semantic_string_bytes)?;
     }
     if let Some(root) = &navigation.root {
         validate_object_ref_strings(root, limits.max_semantic_string_bytes)?;
@@ -4048,9 +4049,11 @@ fn validate_navigation_cache_payload(
         for (name, property) in &node.properties {
             validate_semantic_string(name, limits.max_semantic_string_bytes)?;
             validate_property_type_strings(&property.value_type, limits.max_semantic_string_bytes)?;
+            if let Some(value) = &property.value {
+                validate_property_value(value, limits, 0)?;
+            }
             serialized_bytes_with_limit(property, limits.max_property_bytes)?;
             if let Some(value) = &property.value {
-                validate_property_value_strings(value, limits)?;
                 serialized_bytes_with_limit(value, limits.max_property_value_bytes)?;
             }
         }
@@ -4074,6 +4077,15 @@ fn validate_object_ref_strings(
     validate_semantic_string(&reference.display_name, limit)
 }
 
+fn validate_source_snapshot_strings(
+    snapshot: &crate::domain::source_adapters::SourceSnapshot,
+    limit: usize,
+) -> Result<(), SourceAdapterError> {
+    validate_semantic_string(snapshot.source_id.as_str(), limit)?;
+    validate_semantic_string(snapshot.revision.as_str(), limit)?;
+    validate_semantic_string(&snapshot.adapter_id, limit)
+}
+
 fn validate_property_type_strings(
     value_type: &crate::domain::navigation::PropertyType,
     limit: usize,
@@ -4084,79 +4096,81 @@ fn validate_property_type_strings(
     Ok(())
 }
 
-fn validate_property_value_strings(
+fn validate_property_value(
     value: &crate::domain::navigation::PropertyValue,
     limits: SnapshotCacheLimits,
+    depth: usize,
 ) -> Result<(), SourceAdapterError> {
     use crate::domain::navigation::{PropertyValue, TypeVariant};
 
-    let mut values = vec![(value, 0usize)];
-    while let Some((value, depth)) = values.pop() {
-        if depth > limits.max_property_value_depth {
-            return Err(resource_limit(
-                "navigation property value exceeds continuation cache nesting limit",
-            ));
+    match value {
+        PropertyValue::Decimal(value)
+        | PropertyValue::String(value)
+        | PropertyValue::EnumSymbol(value)
+        | PropertyValue::Date(value) => {
+            validate_semantic_string(value, limits.max_semantic_string_bytes)?;
         }
-        match value {
-            PropertyValue::Decimal(value)
-            | PropertyValue::String(value)
-            | PropertyValue::EnumSymbol(value)
-            | PropertyValue::Date(value) => {
+        PropertyValue::LocalizedString(values) => {
+            for (locale, value) in values {
+                validate_semantic_string(locale, limits.max_semantic_string_bytes)?;
                 validate_semantic_string(value, limits.max_semantic_string_bytes)?;
             }
-            PropertyValue::LocalizedString(values) => {
-                for (locale, value) in values {
-                    validate_semantic_string(locale, limits.max_semantic_string_bytes)?;
-                    validate_semantic_string(value, limits.max_semantic_string_bytes)?;
-                }
-            }
-            PropertyValue::TypeSet(value) => {
-                let next_depth = property_value_next_depth(depth)?;
-                for variant in &value.variants {
-                    match variant {
-                        TypeVariant::Primitive { kind, qualifiers } => {
-                            validate_semantic_string(kind, limits.max_semantic_string_bytes)?;
-                            for (name, value) in qualifiers {
-                                validate_semantic_string(name, limits.max_semantic_string_bytes)?;
-                                values.push((value, next_depth));
-                            }
+        }
+        PropertyValue::TypeSet(value) => {
+            for variant in &value.variants {
+                match variant {
+                    TypeVariant::Primitive { kind, qualifiers } => {
+                        validate_semantic_string(kind, limits.max_semantic_string_bytes)?;
+                        for (name, value) in qualifiers {
+                            validate_semantic_string(name, limits.max_semantic_string_bytes)?;
+                            validate_property_value_child(value, limits, depth)?;
                         }
-                        TypeVariant::Reference { target } | TypeVariant::Enumeration { target } => {
-                            validate_semantic_string(target, limits.max_semantic_string_bytes)?;
-                        }
+                    }
+                    TypeVariant::Reference { target } | TypeVariant::Enumeration { target } => {
+                        validate_semantic_string(target, limits.max_semantic_string_bytes)?;
                     }
                 }
             }
-            PropertyValue::ObjectRef(reference) => {
-                validate_object_ref_strings(reference, limits.max_semantic_string_bytes)?;
-            }
-            PropertyValue::List(nested) => {
-                let next_depth = property_value_next_depth(depth)?;
-                values.extend(nested.iter().map(|value| (value, next_depth)));
-            }
-            PropertyValue::Structure(nested) => {
-                let next_depth = property_value_next_depth(depth)?;
-                for (name, value) in nested {
-                    validate_semantic_string(name, limits.max_semantic_string_bytes)?;
-                    values.push((value, next_depth));
-                }
-            }
-            PropertyValue::Unknown { summary } => {
-                validate_semantic_string(summary, limits.max_semantic_string_bytes)?;
-            }
-            PropertyValue::Boolean(_)
-            | PropertyValue::Integer(_)
-            | PropertyValue::Uuid(_)
-            | PropertyValue::Null => {}
         }
+        PropertyValue::ObjectRef(reference) => {
+            validate_object_ref_strings(reference, limits.max_semantic_string_bytes)?;
+        }
+        PropertyValue::List(nested) => {
+            for value in nested {
+                validate_property_value_child(value, limits, depth)?;
+            }
+        }
+        PropertyValue::Structure(nested) => {
+            for (name, value) in nested {
+                validate_semantic_string(name, limits.max_semantic_string_bytes)?;
+                validate_property_value_child(value, limits, depth)?;
+            }
+        }
+        PropertyValue::Unknown { summary } => {
+            validate_semantic_string(summary, limits.max_semantic_string_bytes)?;
+        }
+        PropertyValue::Boolean(_)
+        | PropertyValue::Integer(_)
+        | PropertyValue::Uuid(_)
+        | PropertyValue::Null => {}
     }
     Ok(())
 }
 
-fn property_value_next_depth(depth: usize) -> Result<usize, SourceAdapterError> {
-    depth.checked_add(1).ok_or_else(|| {
+fn validate_property_value_child(
+    value: &crate::domain::navigation::PropertyValue,
+    limits: SnapshotCacheLimits,
+    parent_depth: usize,
+) -> Result<(), SourceAdapterError> {
+    let depth = parent_depth.checked_add(1).ok_or_else(|| {
         resource_limit("navigation property value nesting depth cannot be represented")
-    })
+    })?;
+    if depth > limits.max_property_value_depth {
+        return Err(resource_limit(
+            "navigation property value exceeds continuation cache nesting limit",
+        ));
+    }
+    validate_property_value(value, limits, depth)
 }
 
 fn validate_semantic_relation_strings(
@@ -14894,6 +14908,76 @@ mod tests {
         assert_resource_limit_unavailable(
             &crate::domain::navigation::NavigationEnvelope::unavailable(error),
         );
+        std::fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn broad_shallow_property_value_is_cacheable_without_width_proportional_validation_stack() {
+        let (context, path) = fixture(
+            "2.20",
+            "<Attribute><Properties><Name>Code</Name></Properties></Attribute>",
+        );
+        let binding = resolve_object_path_binding(&path, &context).unwrap();
+        let mut navigation = inspect_source_path(&binding, &context).unwrap();
+        navigation
+            .nodes
+            .iter_mut()
+            .find_map(|node| node.properties.values_mut().next())
+            .unwrap()
+            .value = Some(crate::domain::navigation::PropertyValue::List(vec![
+            crate::domain::navigation::PropertyValue::Null;
+            100_000
+        ]));
+        let snapshot = navigation.snapshot.as_ref().unwrap().clone();
+        let entry = CachedNavigation::new(
+            "broad-shallow-value".to_string(),
+            snapshot.source_id,
+            snapshot.revision,
+            navigation,
+            DEFAULT_SNAPSHOT_CACHE_LIMITS,
+        )
+        .unwrap();
+        assert!(matches!(
+            SnapshotCache::default().admit(entry).unwrap(),
+            SnapshotCacheAdmission::Admitted(_)
+        ));
+        std::fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn aggregate_snapshot_metadata_and_diagnostics_over_semantic_string_limit_are_cacheable() {
+        let (context, path) = fixture(
+            "2.20",
+            "<Attribute><Properties><Name>Code</Name></Properties></Attribute>",
+        );
+        let binding = resolve_object_path_binding(&path, &context).unwrap();
+        let mut navigation = inspect_source_path(&binding, &context).unwrap();
+        let individual = "x".repeat(300 * 1024);
+        navigation.snapshot.as_mut().unwrap().adapter_id = individual.clone();
+        navigation.diagnostics = vec![
+            crate::domain::navigation::SourceAdapterDiagnostic {
+                code: "first".to_string(),
+                message: individual.clone(),
+            },
+            crate::domain::navigation::SourceAdapterDiagnostic {
+                code: "second".to_string(),
+                message: individual,
+            },
+        ];
+        let snapshot = navigation.snapshot.as_ref().unwrap().clone();
+        let entry = CachedNavigation::new(
+            "aggregate-snapshot-metadata".to_string(),
+            snapshot.source_id,
+            snapshot.revision,
+            navigation,
+            DEFAULT_SNAPSHOT_CACHE_LIMITS,
+        )
+        .unwrap();
+        assert!(entry.charged_bytes > SNAPSHOT_CACHE_MAX_SEMANTIC_STRING_BYTES);
+        assert!(matches!(
+            SnapshotCache::default().admit(entry).unwrap(),
+            SnapshotCacheAdmission::Admitted(_)
+        ));
         std::fs::remove_dir_all(context.workspace_root).unwrap();
     }
 

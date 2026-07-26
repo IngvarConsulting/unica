@@ -137,6 +137,10 @@ impl SourceRevision {
         validate_source_value(&raw, "source revision")?;
         Ok(Self(raw))
     }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 impl Serialize for SourceRevision {
