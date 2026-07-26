@@ -2264,12 +2264,32 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         } else {
             "bsl-analyzer-diagnostics"
         };
+        let readiness_warnings = bsl_mcp_readiness_warnings(&output.result_text);
+        let diagnostics_pending = tool_name == "unica.code.diagnostics"
+            && diagnostics_mode_reports_findings(diagnostics_mode(args))
+            && !readiness_warnings.is_empty();
+        let (summary, warnings, errors) = if diagnostics_pending {
+            (
+                format!("{tool_name} is pending while bsl-analyzer prepares diagnostics"),
+                Vec::new(),
+                readiness_warnings
+                    .into_iter()
+                    .map(|warning| format!("{DIAGNOSTICS_PENDING_PREFIX} {warning}"))
+                    .collect(),
+            )
+        } else {
+            (
+                format!("{tool_name} completed through typed bsl-analyzer MCP adapter"),
+                readiness_warnings,
+                Vec::new(),
+            )
+        };
         Ok(AdapterOutcome {
-            ok: true,
-            summary: format!("{tool_name} completed through typed bsl-analyzer MCP adapter"),
+            ok: !diagnostics_pending,
+            summary,
             changes: Vec::new(),
-            warnings: bsl_mcp_readiness_warnings(&output.result_text),
-            errors: Vec::new(),
+            warnings,
+            errors,
             artifacts: vec![
                 source_dir.display().to_string(),
                 command.tool_name.to_string(),
@@ -3134,10 +3154,25 @@ fn grep_body(stdout: &str, mode: &str, limit: usize) -> String {
     lines.join("\n")
 }
 
+/// Machine-readable marker for a retryable diagnostics reply, mirroring the
+/// `index_pending:` code the RLM index outcomes already publish so a caller can
+/// tell a pending analyzer from a permanent failure without reading prose.
+const DIAGNOSTICS_PENDING_PREFIX: &str = "diagnostics_pending:";
+
 fn diagnostics_mode(args: &Map<String, Value>) -> &str {
     args.get("mode")
         .and_then(Value::as_str)
         .unwrap_or("analyze")
+}
+
+/// Modes whose reply is a finding set, so an empty result reads as "clean code".
+/// `status` exists to report analyzer readiness and `catalog` lists diagnostic
+/// codes: neither claims anything about a file, so a loading model stays a
+/// warning there instead of failing the call that was asked to observe it.
+/// `analyze` belongs to the set by meaning; it is routed to the CLI adapter, so
+/// it does not reach the readiness check here.
+fn diagnostics_mode_reports_findings(mode: &str) -> bool {
+    matches!(mode, "analyze" | "file" | "workspace")
 }
 
 fn diagnostics_analyze_args(args: &Map<String, Value>) -> Map<String, Value> {
@@ -3257,12 +3292,7 @@ fn resolve_source_dir(
 }
 
 fn bsl_mcp_readiness_warnings(text: &str) -> Vec<String> {
-    if text.contains("\"reload\":\"running\"")
-        || text.contains("\"state\":\"loading\"")
-        || text.contains("\"status\":\"loading\"")
-        || text.contains("not_ready")
-        || text.contains("not ready")
-    {
+    if bsl_mcp_reply_is_pending(text) {
         vec![
             "bsl-analyzer workspace model is not ready yet; retry status or the request after reload completes"
                 .to_string(),
@@ -3270,6 +3300,41 @@ fn bsl_mcp_readiness_warnings(text: &str) -> Vec<String> {
     } else {
         Vec::new()
     }
+}
+
+/// Top-level reply fields that carry the analyzer readiness state, paired with
+/// the value that means "still loading".
+const BSL_MCP_READINESS_STATES: &[(&str, &str)] = &[
+    ("reload", "running"),
+    ("state", "loading"),
+    ("status", "loading"),
+];
+/// Top-level reply fields whose free text may name the not-ready state.
+const BSL_MCP_READINESS_MESSAGE_FIELDS: &[&str] = &["error", "message", "state", "status"];
+
+/// Reads readiness from the reply's own fields rather than from a substring of
+/// the whole payload: a diagnostics reply embeds finding messages and, with
+/// `detail=detailed`, source text, so a scan of the full text flags a complete
+/// result whose findings merely quote `not ready` or `"status":"loading"`.
+fn bsl_mcp_reply_is_pending(text: &str) -> bool {
+    let Ok(Value::Object(reply)) = serde_json::from_str::<Value>(text) else {
+        // No object to inspect: the reply is then a bare status line rather than
+        // a finding set, so the raw text is the only signal available.
+        return names_not_ready(text);
+    };
+    BSL_MCP_READINESS_STATES
+        .iter()
+        .any(|(field, pending)| reply.get(*field).and_then(Value::as_str) == Some(*pending))
+        || BSL_MCP_READINESS_MESSAGE_FIELDS.iter().any(|field| {
+            reply
+                .get(*field)
+                .and_then(Value::as_str)
+                .is_some_and(names_not_ready)
+        })
+}
+
+fn names_not_ready(text: &str) -> bool {
+    text.contains("not_ready") || text.contains("not ready")
 }
 
 fn safe_workspace_rel(context: &WorkspaceContext, raw: &str) -> Result<String, String> {
@@ -6890,6 +6955,98 @@ source-set:
             .warnings
             .iter()
             .any(|warning| warning.contains("not ready")));
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn diagnostics_mcp_adapter_reports_loading_as_retryable_failure() {
+        let context = temp_context("diagnostics-loading");
+        let runner = RecordingBslMcpRunner {
+            commands: RefCell::new(Vec::new()),
+            output: BslMcpOutput {
+                result_text: "{\"action\":\"file\",\"status\":\"loading\"}".to_string(),
+                stderr: String::new(),
+            },
+        };
+        let mut args = Map::new();
+        args.insert("mode".to_string(), json!("file"));
+        args.insert(
+            "path".to_string(),
+            json!("CommonModules/Probe/Ext/Module.bsl"),
+        );
+
+        let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
+            .invoke("unica.code.diagnostics", &args, &context, false)
+            .unwrap();
+
+        assert!(!outcome.ok);
+        assert!(outcome.warnings.is_empty());
+        assert!(outcome.summary.contains("pending"));
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| error.starts_with(DIAGNOSTICS_PENDING_PREFIX)
+                && error.contains("not ready")));
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn diagnostics_status_mode_reports_loading_without_failing() {
+        let context = temp_context("diagnostics-status-loading");
+        let runner = RecordingBslMcpRunner {
+            commands: RefCell::new(Vec::new()),
+            output: BslMcpOutput {
+                result_text: "{\"action\":\"status\",\"reload\":\"running\",\"state\":\"loading\"}"
+                    .to_string(),
+                stderr: String::new(),
+            },
+        };
+        let mut args = Map::new();
+        args.insert("mode".to_string(), json!("status"));
+
+        let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
+            .invoke("unica.code.diagnostics", &args, &context, false)
+            .unwrap();
+
+        // `status` is the readiness probe callers are told to run first: it
+        // answered the question it was asked, so a loading model is its result
+        // and not a failed call.
+        assert!(outcome.ok);
+        assert!(outcome.errors.is_empty());
+        assert!(outcome
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("not ready")));
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn diagnostics_findings_quoting_loading_state_stay_successful() {
+        let context = temp_context("diagnostics-quoted-loading");
+        let runner = RecordingBslMcpRunner {
+            commands: RefCell::new(Vec::new()),
+            output: BslMcpOutput {
+                result_text: "{\"action\":\"file\",\"findings\":[{\"code\":\"LineLength\",\"message\":\"literal \\\"status\\\":\\\"loading\\\" is not ready for review\"}]}"
+                    .to_string(),
+                stderr: String::new(),
+            },
+        };
+        let mut args = Map::new();
+        args.insert("mode".to_string(), json!("file"));
+        args.insert(
+            "path".to_string(),
+            json!("CommonModules/Probe/Ext/Module.bsl"),
+        );
+
+        let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
+            .invoke("unica.code.diagnostics", &args, &context, false)
+            .unwrap();
+
+        // Readiness lives in the reply's own fields; a finding that quotes the
+        // words must not turn a complete result into a retryable failure.
+        assert!(outcome.ok);
+        assert!(outcome.errors.is_empty());
+        assert!(outcome.warnings.is_empty());
         cleanup_context(&context);
     }
 
