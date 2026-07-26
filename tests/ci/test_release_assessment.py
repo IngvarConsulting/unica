@@ -90,6 +90,13 @@ def respond(message):
 for raw in sys.stdin:
     print(json.dumps({"jsonrpc": "2.0", "method": "notifications/progress", "params": {}}), flush=True)
     message = json.loads(raw)
+    if message.get("method") == "initialize":
+        print(json.dumps({
+            "jsonrpc": "2.0",
+            "id": message["id"],
+            "result": {"serverInfo": {"name": "unica"}},
+        }), flush=True)
+        continue
     if "id" not in message:
         continue
     worker = threading.Thread(target=respond, args=(message,))

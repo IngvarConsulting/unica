@@ -338,6 +338,10 @@ def call_mcp(
     if timed_out:
         return [], duration_ms, stdout, stderr or f"timed out after {timeout_seconds}s", 124
     handshake_key = rpc_id_key(MCP_HANDSHAKE_ID)
+    handshake_response = responses_by_key.get(handshake_key)
+    if handshake_response is not None and "error" in handshake_response:
+        error = handshake_response["error"]
+        protocol_error(f"MCP handshake failed: {error.get('message', error)}")
     responses = [
         responses_by_key[key]
         for key in expected_keys
