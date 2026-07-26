@@ -44,6 +44,9 @@ impl SourceTextSnapshot {
         &self.raw
     }
 
+    // These observations are part of the shared writer contract; code.patch is
+    // intentionally the first consumer and does not need every field yet.
+    #[allow(dead_code)]
     pub(crate) fn text(&self) -> &str {
         &self.decoded_text[self.content_start..]
     }
@@ -52,6 +55,7 @@ impl SourceTextSnapshot {
         &self.decoded_text
     }
 
+    #[allow(dead_code)]
     pub(crate) fn bom(&self) -> Utf8Bom {
         self.bom
     }
@@ -60,6 +64,7 @@ impl SourceTextSnapshot {
         self.line_endings
     }
 
+    #[allow(dead_code)]
     pub(crate) fn terminal_line_ending(&self) -> Option<LineEnding> {
         self.terminal_line_ending
     }
@@ -113,6 +118,7 @@ impl fmt::Display for SnapshotError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) enum EolPolicy {
     Preserve,
     Lf,

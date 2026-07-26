@@ -16,6 +16,7 @@ use std::path::{Component, Path, PathBuf};
 
 use super::common::guard_active_format_owner;
 use super::compile_transaction::CompileTransaction;
+use super::text_snapshot::{resolve_line_ending, EolPolicy, LineEnding, SourceTextSnapshot};
 
 pub(crate) fn apply_with_data(
     args: &Map<String, Value>,
@@ -157,21 +158,6 @@ impl Selector {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Eol {
-    Lf,
-    CrLf,
-}
-
-impl Eol {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Lf => "\n",
-            Self::CrLf => "\r\n",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LeadingSeparator {
     None,
     LocalEol,
@@ -181,7 +167,7 @@ enum LeadingSeparator {
 struct InsertionSite {
     offset: usize,
     position: Position,
-    eol: Eol,
+    eol: LineEnding,
     leading_separator: LeadingSeparator,
 }
 
@@ -211,7 +197,9 @@ fn build_patch(args: &Map<String, Value>, context: &WorkspaceContext) -> Result<
     let target = resolve_target(args, context)?;
     let before = fs::read(&target.path)
         .map_err(|error| format!("failed to read {}: {error}", target.path.display()))?;
-    let text = std::str::from_utf8(&before).map_err(|_| "BSL module must be UTF-8".to_string())?;
+    let snapshot = SourceTextSnapshot::from_bytes(&before)
+        .map_err(|error| format!("BSL module snapshot: {error}"))?;
+    let text = snapshot.decoded_text();
     let selector = Selector::parse(args)?;
     let position = Position::parse(string_arg(args, "position")?)?;
     if string_arg(args, "operation")? != "insert" {
@@ -219,11 +207,11 @@ fn build_patch(args: &Map<String, Value>, context: &WorkspaceContext) -> Result<
     }
     let indexed = analyze_module(text)?;
     reject_parse_diagnostics(&indexed.diagnostics, "validate original BSL module")?;
-    let site = locate_selector(text, position, &selector, &indexed.methods)?;
+    let site = locate_selector(&snapshot, position, &selector, &indexed.methods)?;
     let content = string_arg(args, "content")?.to_string();
     let insertion = normalized_content(&content, site.eol, site.leading_separator);
-    let no_op = insertion_is_present(text.as_bytes(), site, &insertion);
-    let mut after = before.clone();
+    let no_op = insertion_is_present(snapshot.raw(), site, &insertion);
+    let mut after = snapshot.raw().to_vec();
     if !no_op {
         after.splice(site.offset..site.offset, insertion.iter().copied());
     }
@@ -758,17 +746,20 @@ fn locate_insertion(text: &str, args: &Map<String, Value>) -> Result<InsertionSi
     }
     let position = Position::parse(string_arg(args, "position")?)?;
     let selector = Selector::parse(args)?;
+    let snapshot = SourceTextSnapshot::from_bytes(text.as_bytes())
+        .map_err(|error| format!("BSL module snapshot: {error}"))?;
     let indexed = analyze_module(text)?;
     reject_parse_diagnostics(&indexed.diagnostics, "validate original BSL module")?;
-    locate_selector(text, position, &selector, &indexed.methods)
+    locate_selector(&snapshot, position, &selector, &indexed.methods)
 }
 
 fn locate_selector(
-    text: &str,
+    snapshot: &SourceTextSnapshot,
     position: Position,
     selector: &Selector,
     methods: &[Method],
 ) -> Result<InsertionSite, String> {
+    let text = snapshot.decoded_text();
     let offset = match selector {
         Selector::Method(name) => {
             let folded_name = name.to_lowercase();
@@ -807,7 +798,9 @@ fn locate_selector(
             }
         }
     };
-    let eol = local_eol_at(text, offset, position);
+    let local = local_line_ending_at(text, offset, position);
+    let eol = resolve_line_ending(EolPolicy::Preserve, snapshot, local)
+        .map_err(|error| format!("resolve code.patch EOL: {error}"))?;
     let leading_separator = if position == Position::After
         && offset == text.len()
         && !text.is_empty()
@@ -889,7 +882,9 @@ fn prove_repeat_is_noop(
     plan: &PatchPlan,
     methods: &[Method],
 ) -> Result<(), String> {
-    let repeat_site = locate_selector(postimage, plan.site.position, &plan.selector, methods)
+    let snapshot = SourceTextSnapshot::from_bytes(postimage.as_bytes())
+        .map_err(|error| format!("patched BSL module snapshot: {error}"))?;
+    let repeat_site = locate_selector(&snapshot, plan.site.position, &plan.selector, methods)
         .map_err(|error| {
             format!("patch cannot be applied idempotently on the next call: {error}")
         })?;
@@ -1052,27 +1047,27 @@ fn line_column(text: &str, offset: usize) -> Result<(usize, usize), String> {
     Ok((line, column))
 }
 
-fn local_eol_at(text: &str, offset: usize, position: Position) -> Eol {
+fn local_line_ending_at(text: &str, offset: usize, position: Position) -> Option<LineEnding> {
     let bytes = text.as_bytes();
     let before = bytes
         .get(..offset)
         .and_then(|prefix| prefix.iter().rposition(|byte| *byte == b'\n'))
-        .map(|newline| eol_at_newline(bytes, newline));
+        .map(|newline| line_ending_at_newline(bytes, newline));
     let after = bytes
         .get(offset..)
         .and_then(|suffix| suffix.iter().position(|byte| *byte == b'\n'))
-        .map(|newline| eol_at_newline(bytes, offset + newline));
+        .map(|newline| line_ending_at_newline(bytes, offset + newline));
     match position {
-        Position::Before => after.or(before).unwrap_or(Eol::Lf),
-        Position::After => before.or(after).unwrap_or(Eol::Lf),
+        Position::Before => after.or(before),
+        Position::After => before.or(after),
     }
 }
 
-fn eol_at_newline(bytes: &[u8], newline: usize) -> Eol {
+fn line_ending_at_newline(bytes: &[u8], newline: usize) -> LineEnding {
     if newline > 0 && bytes.get(newline - 1) == Some(&b'\r') {
-        Eol::CrLf
+        LineEnding::CrLf
     } else {
-        Eol::Lf
+        LineEnding::Lf
     }
 }
 
@@ -1080,7 +1075,11 @@ fn canonicalize_eol(content: &str) -> String {
     content.replace("\r\n", "\n").replace('\r', "\n")
 }
 
-fn normalized_content(content: &str, eol: Eol, leading_separator: LeadingSeparator) -> Vec<u8> {
+fn normalized_content(
+    content: &str,
+    eol: LineEnding,
+    leading_separator: LeadingSeparator,
+) -> Vec<u8> {
     let eol = eol.as_str();
     let normalized = canonicalize_eol(content).replace('\n', eol);
     let mut bytes = Vec::new();
@@ -1136,12 +1135,15 @@ fn unified_diff(path: &str, before: &str, after: &str) -> Result<String, String>
 #[cfg(test)]
 mod tests {
     use super::{
-        analyze_module, hash, insertion_is_present, line_column, locate_insertion, module_identity,
-        normalized_content, patch_inner, unified_diff, Eol, LeadingSeparator, PatchMode, Position,
-        ValidationStatus,
+        analyze_module, hash, insertion_is_present, line_column, local_line_ending_at,
+        locate_insertion, module_identity, normalized_content, patch_inner, unified_diff,
+        LeadingSeparator, PatchMode, Position, ValidationStatus,
     };
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::native_operations::single_file_publisher::with_before_commit_hook;
+    use crate::infrastructure::native_operations::text_snapshot::{
+        resolve_line_ending, EolPolicy, LineEnding, SourceTextSnapshot,
+    };
     use crate::infrastructure::platform::testing::{
         create_file_link_fixture_for_test, FileLinkFixtureOutcome,
     };
@@ -1216,7 +1218,7 @@ mod tests {
         let site = locate_insertion(module, &args).unwrap();
 
         assert_eq!(site.offset, module.find("    Third();").unwrap());
-        assert_eq!(site.eol, Eol::Lf);
+        assert_eq!(site.eol, LineEnding::Lf);
     }
 
     #[test]
@@ -1229,7 +1231,7 @@ mod tests {
         let site = locate_insertion(module, &args).unwrap();
 
         assert_eq!(site.offset, module.find("    Third();").unwrap());
-        assert_eq!(site.eol, Eol::CrLf);
+        assert_eq!(site.eol, LineEnding::CrLf);
     }
 
     #[test]
@@ -1258,21 +1260,36 @@ mod tests {
         let args = arguments(json!({"method": "Second"}), "after");
         let site = locate_insertion(module, &args).unwrap();
 
-        assert_eq!(site.eol, Eol::Lf);
+        assert_eq!(site.eol, LineEnding::Lf);
+    }
+
+    #[test]
+    fn local_eol_observation_is_resolved_by_shared_preserve_policy() {
+        let snapshot = SourceTextSnapshot::from_bytes(
+            b"Procedure First()\r\nEndProcedure\r\nProcedure Second()\nEndProcedure\n",
+        )
+        .unwrap();
+        let offset = snapshot.decoded_text().len();
+        let local = local_line_ending_at(snapshot.decoded_text(), offset, Position::After);
+
+        assert_eq!(
+            resolve_line_ending(EolPolicy::Preserve, &snapshot, local),
+            Ok(LineEnding::Lf)
+        );
     }
 
     #[test]
     fn inserted_content_uses_local_line_ending_once() {
         assert_eq!(
-            normalized_content("A\r\nB", Eol::Lf, LeadingSeparator::None),
+            normalized_content("A\r\nB", LineEnding::Lf, LeadingSeparator::None),
             b"A\nB\n"
         );
         assert_eq!(
-            normalized_content("A\nB", Eol::CrLf, LeadingSeparator::None),
+            normalized_content("A\nB", LineEnding::CrLf, LeadingSeparator::None),
             b"A\r\nB\r\n"
         );
         assert_eq!(
-            normalized_content("A", Eol::Lf, LeadingSeparator::LocalEol),
+            normalized_content("A", LineEnding::Lf, LeadingSeparator::LocalEol),
             b"\nA\n"
         );
     }
@@ -1283,7 +1300,7 @@ mod tests {
         let before_site = super::InsertionSite {
             offset: 10,
             position: Position::Before,
-            eol: Eol::Lf,
+            eol: LineEnding::Lf,
             leading_separator: LeadingSeparator::None,
         };
         assert!(insertion_is_present(before, before_site, b"// marker\n"));
@@ -1292,7 +1309,7 @@ mod tests {
         let after_site = super::InsertionSite {
             offset: after.len() - b"// marker\n".len(),
             position: Position::After,
-            eol: Eol::Lf,
+            eol: LineEnding::Lf,
             leading_separator: LeadingSeparator::None,
         };
         assert!(insertion_is_present(after, after_site, b"// marker\n"));
@@ -1406,15 +1423,23 @@ mod tests {
             .workspace_root
             .join("src/CommonModules/Sample/Ext/Module.bsl");
         fs::create_dir_all(module.parent().unwrap()).unwrap();
-        fs::write(&module, "\u{feff}Procedure Run()\r\nEndProcedure\r\n").unwrap();
+        let before = b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\n";
+        let expected =
+            b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\nProcedure Added()\r\nEndProcedure\r\n";
+        fs::write(&module, before).unwrap();
         let args = patch_args(
             "src/CommonModules/Sample/Ext/Module.bsl",
             "Run",
             "Procedure Added()\nEndProcedure",
         );
 
+        let preview = patch_inner(&args, &context, PatchMode::Preview);
+        assert!(preview.outcome.ok, "{:?}", preview.outcome.errors);
+        assert_eq!(fs::read(&module).unwrap(), before);
+
         let applied = patch_inner(&args, &context, PatchMode::Apply);
         assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
+        assert_eq!(fs::read(&module).unwrap(), expected);
         assert!(applied.outcome.stdout.is_none());
         let data = applied.data.unwrap();
         assert_eq!(data.source_set, "main");
@@ -1427,6 +1452,7 @@ mod tests {
 
         let repeated = patch_inner(&args, &context, PatchMode::Apply);
         assert!(repeated.outcome.ok, "{:?}", repeated.outcome.errors);
+        assert_eq!(fs::read(&module).unwrap(), expected);
         assert!(repeated.outcome.changes.is_empty());
         let data = repeated.data.unwrap();
         assert_eq!(data.pre_hash, data.post_hash);
