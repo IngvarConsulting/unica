@@ -2264,12 +2264,27 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         } else {
             "bsl-analyzer-diagnostics"
         };
+        let readiness_warnings = bsl_mcp_readiness_warnings(&output.result_text);
+        let diagnostics_loading =
+            tool_name == "unica.code.diagnostics" && !readiness_warnings.is_empty();
         Ok(AdapterOutcome {
-            ok: true,
-            summary: format!("{tool_name} completed through typed bsl-analyzer MCP adapter"),
+            ok: !diagnostics_loading,
+            summary: if diagnostics_loading {
+                format!("{tool_name} is pending while bsl-analyzer prepares diagnostics")
+            } else {
+                format!("{tool_name} completed through typed bsl-analyzer MCP adapter")
+            },
             changes: Vec::new(),
-            warnings: bsl_mcp_readiness_warnings(&output.result_text),
-            errors: Vec::new(),
+            warnings: if diagnostics_loading {
+                Vec::new()
+            } else {
+                readiness_warnings.clone()
+            },
+            errors: if diagnostics_loading {
+                readiness_warnings
+            } else {
+                Vec::new()
+            },
             artifacts: vec![
                 source_dir.display().to_string(),
                 command.tool_name.to_string(),
@@ -6890,6 +6905,37 @@ source-set:
             .warnings
             .iter()
             .any(|warning| warning.contains("not ready")));
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn diagnostics_mcp_adapter_reports_loading_as_retryable_failure() {
+        let context = temp_context("diagnostics-loading");
+        let runner = RecordingBslMcpRunner {
+            commands: RefCell::new(Vec::new()),
+            output: BslMcpOutput {
+                result_text: "{\"action\":\"file\",\"status\":\"loading\"}".to_string(),
+                stderr: String::new(),
+            },
+        };
+        let mut args = Map::new();
+        args.insert("mode".to_string(), json!("file"));
+        args.insert(
+            "path".to_string(),
+            json!("CommonModules/Probe/Ext/Module.bsl"),
+        );
+
+        let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
+            .invoke("unica.code.diagnostics", &args, &context, false)
+            .unwrap();
+
+        assert!(!outcome.ok);
+        assert!(outcome.warnings.is_empty());
+        assert!(outcome.summary.contains("pending"));
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| error.contains("not ready")));
         cleanup_context(&context);
     }
 
