@@ -1719,9 +1719,11 @@ dependencies = [
 name = "unica-format-core"
 version = "0.10.0"
 dependencies = [
+ "hmac",
  "serde",
  "serde_json",
  "sha2",
+ "uuid",
 ]
 
 [[package]]

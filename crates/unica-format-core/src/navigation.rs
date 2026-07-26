@@ -1,11 +1,11 @@
 //! JSON navigation contracts for semantic 1C metadata projections.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::{Display, Formatter};
-use std::str::FromStr;
 
+use hmac::{Hmac, Mac};
 use serde::{ser::SerializeStruct, Serialize, Serializer};
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 use crate::limits::{
     MAX_NAVIGATION_PROPERTY_SELECTORS, MAX_NAVIGATION_RELATION_SELECTORS,
@@ -1130,7 +1130,7 @@ pub enum PropertyValue {
     Decimal(String),
     String(String),
     LocalizedString(BTreeMap<String, String>),
-    Uuid(UuidValue),
+    Uuid(Uuid),
     EnumSymbol(String),
     Date(String),
     TypeSet(TypeSetValue),
@@ -1139,61 +1139,6 @@ pub enum PropertyValue {
     Structure(BTreeMap<String, PropertyValue>),
     Null,
     Unknown { summary: String },
-}
-
-/// Parser-independent UUID value used by neutral semantic properties.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-pub struct UuidValue(String);
-
-impl UuidValue {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl FromStr for UuidValue {
-    type Err = SourceAdapterError;
-
-    fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        let raw = raw.strip_prefix("urn:uuid:").unwrap_or(raw);
-        let raw = raw
-            .strip_prefix('{')
-            .and_then(|value| value.strip_suffix('}'))
-            .unwrap_or(raw);
-        let valid_shape = (raw.len() == 32 && raw.bytes().all(|byte| byte.is_ascii_hexdigit()))
-            || (raw.len() == 36
-                && raw.bytes().enumerate().all(|(index, byte)| {
-                    if matches!(index, 8 | 13 | 18 | 23) {
-                        byte == b'-'
-                    } else {
-                        byte.is_ascii_hexdigit()
-                    }
-                }));
-        if !valid_shape {
-            return Err(SourceAdapterError::new(
-                SourceAdapterErrorKind::ProjectionAmbiguous,
-                "invalid UUID value",
-            ));
-        }
-        let compact = raw.bytes().filter(|byte| *byte != b'-').collect::<Vec<_>>();
-        let compact = String::from_utf8(compact)
-            .expect("ASCII hexadecimal UUID validation guarantees UTF-8")
-            .to_ascii_lowercase();
-        Ok(Self(format!(
-            "{}-{}-{}-{}-{}",
-            &compact[0..8],
-            &compact[8..12],
-            &compact[12..16],
-            &compact[16..20],
-            &compact[20..32],
-        )))
-    }
-}
-
-impl Display for UuidValue {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
-    }
 }
 
 impl Serialize for PropertyValue {
@@ -1562,7 +1507,7 @@ impl NavigationCursor {
     ) -> Result<(), SourceAdapterError> {
         let parts = cursor_wire_parts(value)?;
         let tag = hex_decode(parts.auth_tag)?;
-        let expected_tag = cursor_mac_parts(
+        let mac = cursor_mac_parts(
             secret,
             parts.schema_version,
             parts.source_id,
@@ -1574,14 +1519,12 @@ impl NavigationCursor {
             parts.selection_hash,
             parts.next_position,
         )?;
-        if constant_time_eq(&expected_tag, &tag) {
-            Ok(())
-        } else {
-            Err(SourceAdapterError::new(
+        mac.verify_slice(&tag).map_err(|_| {
+            SourceAdapterError::new(
                 SourceAdapterErrorKind::DecodeCorrupted,
                 "navigation cursor authentication failed",
-            ))
-        }
+            )
+        })
     }
 
     pub fn decode_authenticated<F>(
@@ -1650,7 +1593,10 @@ impl NavigationCursor {
     }
 }
 
-fn cursor_mac(secret: &[u8], cursor: &NavigationCursor) -> Result<[u8; 32], SourceAdapterError> {
+fn cursor_mac(
+    secret: &[u8],
+    cursor: &NavigationCursor,
+) -> Result<Hmac<Sha256>, SourceAdapterError> {
     cursor_mac_parts(
         secret,
         cursor.schema_version,
@@ -1689,7 +1635,13 @@ fn cursor_mac_parts(
     relation_kind: &str,
     selection_hash: &str,
     next_position: u64,
-) -> Result<[u8; 32], SourceAdapterError> {
+) -> Result<Hmac<Sha256>, SourceAdapterError> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).map_err(|_| {
+        SourceAdapterError::new(
+            SourceAdapterErrorKind::DecodeCorrupted,
+            "navigation cursor key is invalid",
+        )
+    })?;
     let canonical = serde_json::to_vec(&CursorAuthClaims {
         schema_version,
         source_id,
@@ -1707,51 +1659,9 @@ fn cursor_mac_parts(
             format!("cannot serialize navigation cursor: {error}"),
         )
     })?;
-    let mut message =
-        Vec::with_capacity(b"unica.navigation.cursor.auth.v2\0".len() + canonical.len());
-    message.extend_from_slice(b"unica.navigation.cursor.auth.v2\0");
-    message.extend_from_slice(&canonical);
-    Ok(hmac_sha256(secret, &message))
-}
-
-fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
-    const BLOCK_BYTES: usize = 64;
-
-    let mut key_block = [0_u8; BLOCK_BYTES];
-    if key.len() > BLOCK_BYTES {
-        key_block[..32].copy_from_slice(&Sha256::digest(key));
-    } else {
-        key_block[..key.len()].copy_from_slice(key);
-    }
-
-    let mut inner_pad = [0x36_u8; BLOCK_BYTES];
-    let mut outer_pad = [0x5c_u8; BLOCK_BYTES];
-    for index in 0..BLOCK_BYTES {
-        inner_pad[index] ^= key_block[index];
-        outer_pad[index] ^= key_block[index];
-    }
-
-    let mut inner = Sha256::new();
-    inner.update(inner_pad);
-    inner.update(message);
-    let inner_digest = inner.finalize();
-
-    let mut outer = Sha256::new();
-    outer.update(outer_pad);
-    outer.update(inner_digest);
-    outer.finalize().into()
-}
-
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    left.iter()
-        .zip(right)
-        .fold(0_u8, |difference, (left, right)| {
-            difference | (left ^ right)
-        })
-        == 0
+    mac.update(b"unica.navigation.cursor.auth.v2\0");
+    mac.update(&canonical);
+    Ok(mac)
 }
 
 struct CursorWireParts<'a> {
@@ -1854,7 +1764,9 @@ fn relation_kind_token(kind: RelationKind) -> &'static str {
 }
 
 fn cursor_auth_tag(secret: &[u8], cursor: &NavigationCursor) -> Result<String, SourceAdapterError> {
-    Ok(hex_encode(&cursor_mac(secret, cursor)?))
+    Ok(hex_encode(
+        &cursor_mac(secret, cursor)?.finalize().into_bytes(),
+    ))
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -1955,16 +1867,25 @@ mod tests {
     }
 
     #[test]
-    fn uuid_values_normalize_supported_forms_and_reject_misplaced_hyphens() {
-        let value = UuidValue::from_str("{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}").unwrap();
-        assert_eq!(value.as_str(), "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
-        assert!(UuidValue::from_str("aaaaaaaa-bbbbcccc-dddd-eeee-eeeeeeee").is_err());
+    fn uuid_values_use_mature_parsing_and_preserve_canonical_serialization() {
+        let value = "{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}"
+            .parse::<Uuid>()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(PropertyValue::Uuid(value)).unwrap(),
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        );
+        assert!("aaaaaaaa-bbbbcccc-dddd-eeee-eeeeeeee"
+            .parse::<Uuid>()
+            .is_err());
     }
 
     #[test]
     fn hmac_sha256_matches_rfc_4231_case_one() {
+        let mut mac = Hmac::<Sha256>::new_from_slice(&[0x0b; 20]).unwrap();
+        mac.update(b"Hi There");
         assert_eq!(
-            hex_encode(&hmac_sha256(&[0x0b; 20], b"Hi There")),
+            hex_encode(&mac.finalize().into_bytes()),
             "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
         );
     }
