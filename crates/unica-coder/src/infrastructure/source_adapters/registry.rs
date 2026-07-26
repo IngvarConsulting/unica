@@ -314,20 +314,63 @@ fn validate_ready_envelope(
             "ready navigation snapshot revision differs from the captured session",
         ));
     }
-    BindingValidator::new(binding).validate_envelope(envelope)
+    validate_identity_bearing_navigation(binding, envelope)
 }
 
 const MAX_BINDING_VALIDATION_DEPTH: usize = 64;
-const MAX_BINDING_VALIDATION_ITEMS: usize = 65_536;
+/// Shared maximum count of typed navigation fields and containers that can
+/// carry source or snapshot identity during validation and cache preflight.
+pub(crate) const MAX_IDENTITY_BEARING_VALIDATION_ITEMS: usize = 1_000_000;
+
+#[derive(Default)]
+pub(crate) struct IdentityValidationBudget {
+    items: usize,
+}
+
+impl IdentityValidationBudget {
+    pub(crate) fn charge(&mut self, count: usize) -> Result<(), SourceAdapterError> {
+        self.items = self.items.checked_add(count).ok_or_else(|| {
+            SourceAdapterError::new(
+                SourceAdapterErrorKind::ResourceLimit,
+                "navigation identity-bearing validation item accounting overflow",
+            )
+        })?;
+        if self.items > MAX_IDENTITY_BEARING_VALIDATION_ITEMS {
+            return Err(SourceAdapterError::new(
+                SourceAdapterErrorKind::ResourceLimit,
+                format!(
+                    "navigation identity-bearing validation item count {} exceeds limit {}",
+                    self.items, MAX_IDENTITY_BEARING_VALIDATION_ITEMS
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn items(&self) -> usize {
+        self.items
+    }
+}
+
+pub(crate) fn validate_identity_bearing_navigation(
+    binding: &SourceBinding,
+    envelope: &NavigationEnvelope,
+) -> Result<(), SourceAdapterError> {
+    BindingValidator::new(binding).validate_envelope(envelope)
+}
 
 struct BindingValidator<'a> {
     binding: &'a SourceBinding,
-    items: usize,
+    budget: IdentityValidationBudget,
 }
 
 impl<'a> BindingValidator<'a> {
     fn new(binding: &'a SourceBinding) -> Self {
-        Self { binding, items: 0 }
+        Self {
+            binding,
+            budget: IdentityValidationBudget::default(),
+        }
     }
 
     fn validate_envelope(
@@ -360,19 +403,7 @@ impl<'a> BindingValidator<'a> {
     }
 
     fn charge(&mut self, count: usize) -> Result<(), SourceAdapterError> {
-        self.items = self.items.checked_add(count).ok_or_else(|| {
-            SourceAdapterError::new(
-                SourceAdapterErrorKind::ResourceLimit,
-                "navigation binding validation item accounting overflow",
-            )
-        })?;
-        if self.items > MAX_BINDING_VALIDATION_ITEMS {
-            return Err(SourceAdapterError::new(
-                SourceAdapterErrorKind::ResourceLimit,
-                "navigation binding validation exceeds the item limit",
-            ));
-        }
-        Ok(())
+        self.budget.charge(count)
     }
 
     fn validate_node(
@@ -550,7 +581,10 @@ mod tests {
         },
     };
 
-    use super::BuiltInSourceAdapterRegistry;
+    use super::{
+        validate_identity_bearing_navigation, BuiltInSourceAdapterRegistry,
+        IdentityValidationBudget, MAX_IDENTITY_BEARING_VALIDATION_ITEMS,
+    };
 
     #[test]
     fn built_in_registry_registers_only_the_platform_xml_probe_and_reader() {
@@ -1177,6 +1211,48 @@ mod tests {
         .inspect(input())
         .expect("ordinary property and diagnostic keys are not semantic references");
         assert_eq!(navigation.status, NavigationStatus::Available);
+    }
+
+    #[test]
+    fn typed_identity_validation_accepts_a_twenty_five_thousand_node_graph() {
+        let session = fake_session(SourceFamily::PlatformXml, None);
+        let binding = &session.binding;
+        let property = structure_property(PropertyValue::Null);
+        let mut nodes = Vec::with_capacity(25_000);
+        for index in 0..25_000 {
+            let mut node = bound_node(bound_reference(binding, &format!("ordinary-{index}")));
+            node.properties = BTreeMap::from([
+                ("first".to_string(), property.clone()),
+                ("second".to_string(), property.clone()),
+            ]);
+            nodes.push(node);
+        }
+        let envelope = NavigationEnvelope {
+            schema_version: "1".to_string(),
+            status: NavigationStatus::Available,
+            snapshot: None,
+            root: None,
+            nodes,
+            relations: Vec::new(),
+            diagnostics: Vec::new(),
+            relation_index: Vec::new(),
+        };
+
+        validate_identity_bearing_navigation(binding, &envelope).unwrap();
+    }
+
+    #[test]
+    fn identity_validation_limit_reports_the_checked_item_count() {
+        let mut budget = IdentityValidationBudget::default();
+        let expected = MAX_IDENTITY_BEARING_VALIDATION_ITEMS
+            .checked_add(1)
+            .unwrap();
+
+        let error = budget.charge(expected).unwrap_err();
+
+        assert_eq!(budget.items(), expected);
+        assert_eq!(error.kind, SourceAdapterErrorKind::ResourceLimit);
+        assert!(error.message.contains(&expected.to_string()));
     }
 
     #[test]

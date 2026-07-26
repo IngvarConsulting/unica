@@ -3990,7 +3990,7 @@ impl CachedNavigation {
         limits: SnapshotCacheLimits,
     ) -> Result<Self, SourceAdapterError> {
         validate_cached_navigation_key(&scope, &binding, limits)?;
-        validate_navigation_cache_payload(&navigation, limits)?;
+        validate_navigation_cache_payload(&binding, &navigation, limits)?;
         let charge = CachedNavigationCharge {
             scope: &scope,
             binding: &binding,
@@ -4028,9 +4028,13 @@ fn serialized_bytes_with_limit<T: Serialize>(
 }
 
 fn validate_navigation_cache_payload(
+    binding: &SourceBinding,
     navigation: &crate::domain::navigation::NavigationEnvelope,
     limits: SnapshotCacheLimits,
 ) -> Result<(), SourceAdapterError> {
+    crate::infrastructure::source_adapters::registry::validate_identity_bearing_navigation(
+        binding, navigation,
+    )?;
     let page_item_count = navigation
         .relations
         .iter()
@@ -5124,7 +5128,8 @@ struct ResolvedConfiguredSourceBinding {
 }
 
 /// Fresh project-map authorization evidence for continuation. It intentionally
-/// contains no provider and never opens or scans a source path.
+/// contains no provider and never opens or scans a source path. Live Platform
+/// XML changes are therefore deliberately irrelevant to retained continuations.
 struct CurrentConfiguredSourceBinding {
     name: String,
     source_id: SourceId,
@@ -5414,8 +5419,9 @@ fn cached_navigation_target_in(
     let navigation = cache
         .navigation(&binding.scope, source_id, revision)
         .ok_or_else(|| {
-            source_unavailable(
-                "navigation snapshot is unavailable; restart navigation from ObjectPath",
+            SourceAdapterError::new(
+                SourceAdapterErrorKind::SnapshotStale,
+                "requested navigation snapshot is not retained for the current authorization scope",
             )
         })?;
     let matches = navigation
@@ -15088,7 +15094,7 @@ mod tests {
             missing.status,
             crate::domain::navigation::NavigationStatus::Unavailable
         ));
-        assert_eq!(missing.diagnostics[0].code, "source_unavailable");
+        assert_eq!(missing.diagnostics[0].code, "snapshot_stale");
 
         let (second_context, _second_path) = fixture(
             "2.20",
@@ -15102,7 +15108,7 @@ mod tests {
             cross_scope.status,
             crate::domain::navigation::NavigationStatus::Unavailable
         ));
-        assert_eq!(cross_scope.diagnostics[0].code, "source_unavailable");
+        assert_eq!(cross_scope.diagnostics[0].code, "snapshot_stale");
         std::fs::remove_dir_all(first_context.workspace_root).unwrap();
         std::fs::remove_dir_all(second_context.workspace_root).unwrap();
     }
@@ -15133,7 +15139,7 @@ mod tests {
             epoch_result.status,
             crate::domain::navigation::NavigationStatus::Unavailable
         ));
-        assert_eq!(epoch_result.diagnostics[0].code, "source_unavailable");
+        assert_eq!(epoch_result.diagnostics[0].code, "snapshot_stale");
 
         std::fs::write(
             context.workspace_root.join("v8project.yaml"),
@@ -15145,7 +15151,58 @@ mod tests {
             kind_result.status,
             crate::domain::navigation::NavigationStatus::Unavailable
         ));
-        assert_eq!(kind_result.diagnostics[0].code, "source_unavailable");
+        assert_eq!(kind_result.diagnostics[0].code, "snapshot_stale");
+        std::fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn retained_cursor_uses_the_original_snapshot_after_live_source_mutation() {
+        let (context, path) = fixture(
+            "2.20",
+            r#"<Attribute><Properties><Name>Code</Name></Properties></Attribute><Attribute><Properties><Name>Description</Name></Properties></Attribute>"#,
+        );
+        let source_root = context.workspace_root.join("src");
+        let companion = source_root.join("Catalogs/Items/evidence.bin");
+        std::fs::create_dir_all(companion.parent().unwrap()).unwrap();
+        std::fs::write(&companion, b"before").unwrap();
+        let cache = Mutex::new(SnapshotCache::default());
+        let secret = b"retained-snapshot-secret";
+        let initial = inspect_meta_navigation_with_cache(
+            json!({
+                "ObjectPath": path,
+                "select": {"relations": [{"role": "attributes", "pageSize": 1}]}
+            })
+            .as_object()
+            .unwrap(),
+            &context,
+            &cache,
+            secret,
+        )
+        .unwrap();
+        let revision = initial.snapshot.as_ref().unwrap().revision.clone();
+        let cursor =
+            serde_json::to_value(initial.relations[0].next_cursor.clone().unwrap()).unwrap();
+
+        std::fs::write(
+            source_root.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"><Properties><Name>Changed</Name></Properties></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(&companion, b"after").unwrap();
+
+        let continued = inspect_meta_navigation_with_cache(
+            json!({"cursor": cursor}).as_object().unwrap(),
+            &context,
+            &cache,
+            secret,
+        )
+        .unwrap();
+
+        assert_eq!(continued.snapshot.as_ref().unwrap().revision, revision);
+        assert_eq!(
+            continued.relations[0].items[0].object_ref.display_name,
+            "Description"
+        );
         std::fs::remove_dir_all(context.workspace_root).unwrap();
     }
 
@@ -15272,7 +15329,7 @@ mod tests {
             &context,
         )
         .unwrap_err();
-        assert_eq!(error.code(), "source_unavailable");
+        assert_eq!(error.code(), "snapshot_stale");
         std::fs::remove_dir_all(context.workspace_root).unwrap();
     }
 
@@ -15537,6 +15594,86 @@ mod tests {
         assert!(!serde_json::to_string(&navigation)
             .unwrap()
             .contains(context.workspace_root.to_string_lossy().as_ref()));
+        std::fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn cache_preflight_accepts_a_twenty_five_thousand_node_identity_graph() {
+        let (context, path) = fixture("2.20", "");
+        let binding = resolve_object_path_binding(&path, &context).unwrap();
+        let mut navigation = inspect_source_path(&binding, &context).unwrap();
+        let property = crate::domain::navigation::SemanticProperty {
+            value_type: crate::domain::navigation::PropertyType::String,
+            value_state: crate::domain::navigation::PropertyValueState::Explicit,
+            value: None,
+            provenance: crate::domain::navigation::PropertyProvenance::Descriptor,
+            capability: crate::domain::navigation::PropertyCapability::ReadOnly,
+        };
+        let mut node = navigation.nodes[0].clone();
+        node.actions.clear();
+        node.semantic_actions.clear();
+        node.properties = std::collections::BTreeMap::from([
+            ("first".to_string(), property.clone()),
+            ("second".to_string(), property),
+        ]);
+        navigation.nodes = (0..25_000).map(|_| node.clone()).collect();
+        navigation.relations.clear();
+        navigation.relation_index.clear();
+        navigation.diagnostics.clear();
+
+        let cached = CachedNavigation::new(
+            "ordinary-identity-graph".to_string(),
+            binding.source_binding.clone(),
+            navigation,
+            DEFAULT_SNAPSHOT_CACHE_LIMITS,
+        )
+        .unwrap();
+
+        assert!(cached.charged_bytes <= SNAPSHOT_CACHE_MAX_SNAPSHOT_BYTES);
+        std::fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn cache_preflight_rejects_the_shared_identity_item_limit() {
+        let (context, path) = fixture("2.20", "");
+        let binding = resolve_object_path_binding(&path, &context).unwrap();
+        let mut navigation = inspect_source_path(&binding, &context).unwrap();
+        let mut node = navigation.nodes.remove(0);
+        node.actions.clear();
+        node.semantic_actions.clear();
+        node.properties = std::collections::BTreeMap::from([(
+            "wide".to_string(),
+            crate::domain::navigation::SemanticProperty {
+                value_type: crate::domain::navigation::PropertyType::List,
+                value_state: crate::domain::navigation::PropertyValueState::Explicit,
+                value: Some(crate::domain::navigation::PropertyValue::List(
+                    (0..=crate::infrastructure::source_adapters::registry::MAX_IDENTITY_BEARING_VALIDATION_ITEMS)
+                        .map(|_| crate::domain::navigation::PropertyValue::Null)
+                        .collect(),
+                )),
+                provenance: crate::domain::navigation::PropertyProvenance::Descriptor,
+                capability: crate::domain::navigation::PropertyCapability::ReadOnly,
+            },
+        )]);
+        navigation.nodes = vec![node];
+        navigation.relations.clear();
+        navigation.relation_index.clear();
+        navigation.diagnostics.clear();
+
+        let error = CachedNavigation::new(
+            "over-limit-identity-graph".to_string(),
+            binding.source_binding.clone(),
+            navigation,
+            DEFAULT_SNAPSHOT_CACHE_LIMITS,
+        )
+        .err()
+        .expect("the shared identity item limit must reject cache preflight");
+
+        assert_eq!(error.kind, SourceAdapterErrorKind::ResourceLimit);
+        assert!(error.message.contains(&(
+            crate::infrastructure::source_adapters::registry::MAX_IDENTITY_BEARING_VALIDATION_ITEMS
+                + 3
+        ).to_string()));
         std::fs::remove_dir_all(context.workspace_root).unwrap();
     }
 
@@ -16315,7 +16452,7 @@ mod tests {
             evicted.status,
             crate::domain::navigation::NavigationStatus::Unavailable
         ));
-        assert_eq!(evicted.diagnostics[0].code, "source_unavailable");
+        assert_eq!(evicted.diagnostics[0].code, "snapshot_stale");
         std::fs::remove_dir_all(context.workspace_root).unwrap();
         std::fs::remove_dir_all(replacement_context.workspace_root).unwrap();
     }

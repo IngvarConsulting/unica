@@ -82,3 +82,22 @@ sibling descriptors to preserve that invariant.
   window; no platform-specific `openat2`-style dependency was introduced.
 - Verification: `cargo fmt --all`; the focused Rust matrix passed `217/217`,
   and `tests/ci/test_unica_skills.py` passed `31/31`.
+
+## Fix Round 2
+
+- Provider capture now limits all visited directories, including empty
+  directories and aggregate roots, to `2,048` and descendant depth to `64`.
+  The first pass retains normalized aggregate-relative directory keys, hashes
+  them into the revision, and the streaming second pass compares the exact
+  file and directory read sets under the same limits.
+- Binding validation and continuation-cache preflight share one documented
+  `1,000,000` identity-bearing typed-item budget with checked accounting.
+  The independent continuation limits remain `50,000` nodes, `100,000`
+  relations, `512` properties per node, and `32 MiB` per retained snapshot.
+- A retained navigation snapshot is immutable and cursor/objectRef
+  continuation is bound to its captured revision. Live changes to
+  `Configuration.xml` or a companion aggregate do not trigger a source rescan
+  and continue from the retained bytes until eviction, restart, or an
+  authorization-scope change. `snapshot_stale` means the requested retained
+  snapshot is unavailable or mismatched for that scope, not that live source
+  files drifted after bootstrap.

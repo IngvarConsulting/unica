@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::Read,
     path::{Component, Path, PathBuf},
@@ -16,6 +16,11 @@ use crate::domain::source_adapters::{
 pub(crate) const MAX_CAPTURED_FILES: usize = 512;
 pub(crate) const MAX_CAPTURED_FILE_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) const MAX_CAPTURED_TOTAL_BYTES: usize = 64 * 1024 * 1024;
+/// Maximum directories visited by one capture or its verification pass,
+/// including empty directories and aggregate roots.
+pub(crate) const MAX_CAPTURE_DIRECTORIES: usize = 2_048;
+/// Maximum descendant depth below a captured aggregate root.
+pub(crate) const MAX_CAPTURE_DEPTH: usize = 64;
 const VERIFY_READ_BUFFER_BYTES: usize = 64 * 1024;
 
 #[derive(Debug)]
@@ -232,6 +237,7 @@ fn ensure_directory(path: &Path) -> Result<(), SourceAdapterError> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CaptureContents {
     files: BTreeMap<String, Arc<[u8]>>,
+    directories: BTreeSet<String>,
     configuration: Option<Arc<[u8]>>,
     parent_configurations: Option<Arc<[u8]>>,
     companion_present: bool,
@@ -246,10 +252,24 @@ struct CaptureReservation {
 #[derive(Default)]
 struct CaptureBudget {
     files: usize,
+    directories: usize,
     bytes: usize,
 }
 
 impl CaptureBudget {
+    fn reserve_directory(&mut self) -> Result<(), SourceAdapterError> {
+        if self.directories >= MAX_CAPTURE_DIRECTORIES {
+            return Err(resource_limit(
+                "Platform XML capture exceeds the directory limit",
+            ));
+        }
+        self.directories = self
+            .directories
+            .checked_add(1)
+            .ok_or_else(|| resource_limit("Platform XML directory accounting overflow"))?;
+        Ok(())
+    }
+
     fn reserve(&mut self, declared: u64) -> Result<CaptureReservation, SourceAdapterError> {
         let declared = usize::try_from(declared)
             .map_err(|_| resource_limit("Platform XML file size cannot be represented"))?;
@@ -317,9 +337,10 @@ fn capture_contents(
 ) -> Result<CaptureContents, SourceAdapterError> {
     let mut budget = CaptureBudget::default();
     let mut files = BTreeMap::new();
+    let mut directories = BTreeSet::new();
     let mut companion_present = false;
     if root_capture {
-        capture_directory(source_root, "", &mut files, &mut budget)?;
+        directories.extend(capture_directory(source_root, "", &mut files, &mut budget)?);
     } else {
         let descriptor_key = descriptor
             .file_name()
@@ -349,7 +370,12 @@ fn capture_contents(
             }
             Ok(_) => {
                 companion_present = true;
-                capture_directory(&companion, stem, &mut files, &mut budget)?
+                directories.extend(capture_directory(
+                    &companion,
+                    stem,
+                    &mut files,
+                    &mut budget,
+                )?);
             }
         }
     }
@@ -365,6 +391,7 @@ fn capture_contents(
     };
     Ok(CaptureContents {
         files,
+        directories,
         configuration,
         parent_configurations,
         companion_present,
@@ -412,43 +439,76 @@ fn capture_directory(
     prefix: &str,
     files: &mut BTreeMap<String, Arc<[u8]>>,
     budget: &mut CaptureBudget,
-) -> Result<(), SourceAdapterError> {
+) -> Result<BTreeSet<String>, SourceAdapterError> {
+    walk_directory(directory, prefix, budget, |path, key, budget| {
+        insert_file(
+            files,
+            key.to_string(),
+            read_limited_regular_file(path, budget, "aggregate file")?,
+        )
+    })
+}
+
+fn walk_directory<F>(
+    directory: &Path,
+    prefix: &str,
+    budget: &mut CaptureBudget,
+    mut visit_file: F,
+) -> Result<BTreeSet<String>, SourceAdapterError>
+where
+    F: FnMut(&Path, &str, &mut CaptureBudget) -> Result<(), SourceAdapterError>,
+{
     ensure_directory(directory)?;
-    let entries = fs::read_dir(directory).map_err(|_| unavailable("aggregate directory"))?;
-    for entry in entries {
-        let entry = entry.map_err(|_| unavailable("aggregate directory entry"))?;
-        let name = entry
-            .file_name()
-            .into_string()
-            .map_err(|_| unavailable("aggregate entry has a non-UTF-8 name"))?;
-        if name.is_empty() || name.contains('\\') || name.contains('/') {
-            return Err(unavailable("aggregate entry has an invalid name"));
-        }
-        let key = if prefix.is_empty() {
-            name
-        } else {
-            format!("{prefix}/{name}")
-        };
-        let path = entry.path();
-        let metadata = fs::symlink_metadata(&path).map_err(|_| unavailable("aggregate entry"))?;
-        if metadata.file_type().is_symlink() {
-            return Err(unavailable("aggregate must not contain symlinks"));
-        }
-        if metadata.is_dir() {
-            capture_directory(&path, &key, files, budget)?;
-        } else if metadata.is_file() {
-            insert_file(
-                files,
-                key,
-                read_limited_regular_file(&path, budget, "aggregate file")?,
-            )?;
-        } else {
-            return Err(unavailable(
-                "aggregate entry is not a regular file or directory",
-            ));
+    budget.reserve_directory()?;
+    let mut directories = BTreeSet::new();
+    if !prefix.is_empty() {
+        directories.insert(prefix.to_string());
+    }
+    let mut pending = vec![(directory.to_path_buf(), prefix.to_string(), 0_usize)];
+    while let Some((current, current_prefix, depth)) = pending.pop() {
+        let entries = fs::read_dir(&current).map_err(|_| unavailable("aggregate directory"))?;
+        for entry in entries {
+            let entry = entry.map_err(|_| unavailable("aggregate directory entry"))?;
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| unavailable("aggregate entry has a non-UTF-8 name"))?;
+            if name.is_empty() || name.contains('\\') || name.contains('/') {
+                return Err(unavailable("aggregate entry has an invalid name"));
+            }
+            let key = if current_prefix.is_empty() {
+                name
+            } else {
+                format!("{current_prefix}/{name}")
+            };
+            let path = entry.path();
+            let metadata =
+                fs::symlink_metadata(&path).map_err(|_| unavailable("aggregate entry"))?;
+            if metadata.file_type().is_symlink() {
+                return Err(unavailable("aggregate must not contain symlinks"));
+            }
+            if metadata.is_dir() {
+                let next_depth = depth.checked_add(1).ok_or_else(|| {
+                    resource_limit("Platform XML capture directory depth cannot be represented")
+                })?;
+                if next_depth > MAX_CAPTURE_DEPTH {
+                    return Err(resource_limit(
+                        "Platform XML capture exceeds the directory depth limit",
+                    ));
+                }
+                budget.reserve_directory()?;
+                directories.insert(key.clone());
+                pending.push((path, key, next_depth));
+            } else if metadata.is_file() {
+                visit_file(&path, &key, budget)?;
+            } else {
+                return Err(unavailable(
+                    "aggregate entry is not a regular file or directory",
+                ));
+            }
         }
     }
-    Ok(())
+    Ok(directories)
 }
 
 fn insert_file(
@@ -531,14 +591,15 @@ fn verify_contents(
 ) -> Result<(), SourceAdapterError> {
     let mut budget = CaptureBudget::default();
     let mut verified_files = 0_usize;
+    let mut verified_directories = BTreeSet::new();
     if root_capture {
-        verify_directory(
+        verified_directories.extend(verify_directory(
             source_root,
             "",
             &expected.files,
             &mut budget,
             &mut verified_files,
-        )?;
+        )?);
     } else {
         let descriptor_key = descriptor
             .file_name()
@@ -576,13 +637,13 @@ fn verify_contents(
                 if !expected.companion_present {
                     return Err(stale());
                 }
-                verify_directory(
+                verified_directories.extend(verify_directory(
                     &companion,
                     stem,
                     &expected.files,
                     &mut budget,
                     &mut verified_files,
-                )?;
+                )?);
             }
         }
         verify_optional_regular_file(
@@ -598,7 +659,7 @@ fn verify_contents(
             &mut budget,
         )?;
     }
-    if verified_files != expected.files.len() {
+    if verified_files != expected.files.len() || verified_directories != expected.directories {
         return Err(stale());
     }
     Ok(())
@@ -610,46 +671,17 @@ fn verify_directory(
     expected_files: &BTreeMap<String, Arc<[u8]>>,
     budget: &mut CaptureBudget,
     verified_files: &mut usize,
-) -> Result<(), SourceAdapterError> {
-    ensure_directory(directory)?;
-    let entries = fs::read_dir(directory).map_err(|_| unavailable("aggregate directory"))?;
-    for entry in entries {
-        let entry = entry.map_err(|_| unavailable("aggregate directory entry"))?;
-        let name = entry
-            .file_name()
-            .into_string()
-            .map_err(|_| unavailable("aggregate entry has a non-UTF-8 name"))?;
-        if name.is_empty() || name.contains('\\') || name.contains('/') {
-            return Err(unavailable("aggregate entry has an invalid name"));
-        }
-        let key = if prefix.is_empty() {
-            name
-        } else {
-            format!("{prefix}/{name}")
-        };
-        let path = entry.path();
-        let metadata = fs::symlink_metadata(&path).map_err(|_| unavailable("aggregate entry"))?;
-        if metadata.file_type().is_symlink() {
-            return Err(unavailable("aggregate must not contain symlinks"));
-        }
-        if metadata.is_dir() {
-            verify_directory(&path, &key, expected_files, budget, verified_files)?;
-        } else if metadata.is_file() {
-            verify_expected_file(
-                &path,
-                &key,
-                expected_files,
-                budget,
-                verified_files,
-                "aggregate file",
-            )?;
-        } else {
-            return Err(unavailable(
-                "aggregate entry is not a regular file or directory",
-            ));
-        }
-    }
-    Ok(())
+) -> Result<BTreeSet<String>, SourceAdapterError> {
+    walk_directory(directory, prefix, budget, |path, key, budget| {
+        verify_expected_file(
+            path,
+            key,
+            expected_files,
+            budget,
+            verified_files,
+            "aggregate file",
+        )
+    })
 }
 
 fn verify_expected_file(
@@ -872,11 +904,17 @@ fn revision_for(
     target_identity: &TargetIdentity,
 ) -> Result<SourceRevision, SourceAdapterError> {
     let mut digest = Sha256::new();
-    digest.update(b"unica:platform-xml:target-snapshot:v2\0");
+    digest.update(b"unica:platform-xml:target-snapshot:v3\0");
     digest.update((target_identity.as_str().len() as u64).to_be_bytes());
     digest.update(target_identity.as_str().as_bytes());
+    for directory in &contents.directories {
+        digest.update([b'D']);
+        digest.update((directory.len() as u64).to_be_bytes());
+        digest.update(directory.as_bytes());
+    }
     for (key, bytes) in &contents.files {
         let file_digest = Sha256::digest(bytes);
+        digest.update([b'F']);
         digest.update((key.len() as u64).to_be_bytes());
         digest.update(key.as_bytes());
         digest.update((bytes.len() as u64).to_be_bytes());
@@ -929,7 +967,7 @@ mod tests {
 
     use super::{
         read_bounded, CaptureBudget, PlatformXmlProvider, MAX_CAPTURED_FILE_BYTES,
-        MAX_CAPTURED_TOTAL_BYTES,
+        MAX_CAPTURED_TOTAL_BYTES, MAX_CAPTURE_DEPTH, MAX_CAPTURE_DIRECTORIES,
     };
     use crate::{
         domain::source_adapters::SourceAdapterErrorKind,
@@ -944,6 +982,7 @@ mod tests {
     fn bounded_reads_use_only_the_remaining_aggregate_budget_and_sentinel() {
         let mut budget = CaptureBudget {
             files: 0,
+            directories: 0,
             bytes: MAX_CAPTURED_TOTAL_BYTES - 3,
         };
         let reservation = budget.reserve(3).unwrap();
@@ -1157,6 +1196,68 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(error.kind, SourceAdapterErrorKind::SnapshotStale);
+    }
+
+    #[test]
+    fn provider_rejects_excessive_directory_count_before_traversing_them() {
+        let root = fixture_root(&[]);
+        for index in 0..=MAX_CAPTURE_DIRECTORIES {
+            fs::create_dir(root.join(format!("directory-{index}"))).unwrap();
+        }
+
+        let error = PlatformXmlProvider::open(&root).unwrap_err();
+
+        assert_eq!(error.kind, SourceAdapterErrorKind::ResourceLimit);
+    }
+
+    #[test]
+    fn provider_rejects_depth_beyond_the_bounded_iterative_walk() {
+        let root = fixture_root(&[]);
+        let mut current = root.clone();
+        for depth in 0..=MAX_CAPTURE_DEPTH {
+            current.push(format!("depth-{depth}"));
+            fs::create_dir(&current).unwrap();
+        }
+
+        let error = PlatformXmlProvider::open(&root).unwrap_err();
+
+        assert_eq!(error.kind, SourceAdapterErrorKind::ResourceLimit);
+    }
+
+    #[test]
+    fn empty_directory_changes_between_capture_passes_are_snapshot_stale() {
+        let removed_root = fixture_root(&[]);
+        fs::create_dir(removed_root.join("empty")).unwrap();
+        let root_for_removal = removed_root.clone();
+        let removed = PlatformXmlProvider::open_with_test_hook(&removed_root, move || {
+            fs::remove_dir(root_for_removal.join("empty")).unwrap();
+        })
+        .unwrap_err();
+        assert_eq!(removed.kind, SourceAdapterErrorKind::SnapshotStale);
+
+        let added_root = fixture_root(&[]);
+        let root_for_addition = added_root.clone();
+        let added = PlatformXmlProvider::open_with_test_hook(&added_root, move || {
+            fs::create_dir(root_for_addition.join("empty")).unwrap();
+        })
+        .unwrap_err();
+        assert_eq!(added.kind, SourceAdapterErrorKind::SnapshotStale);
+    }
+
+    #[test]
+    fn ordinary_capture_retains_files_with_directory_tracking() {
+        let root = fixture_root(&[("Nested/Object.xml", b"before")]);
+        fs::create_dir(root.join("Empty")).unwrap();
+
+        let provider = PlatformXmlProvider::open(&root).unwrap();
+
+        assert_eq!(
+            provider
+                .read_relative("Nested/Object.xml")
+                .unwrap()
+                .as_ref(),
+            b"before"
+        );
     }
 
     #[test]
