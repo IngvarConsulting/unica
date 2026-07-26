@@ -23,6 +23,17 @@ from pathlib import Path
 from typing import Any
 
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.ci.mcp_handshake import (
+    RELEASE_ASSESSMENT_HANDSHAKE_ID as MCP_HANDSHAKE_ID,
+    RELEASE_ASSESSMENT_INITIALIZE_PARAMS as MCP_INITIALIZE_PARAMS,
+    prepare_messages,
+)
+
+
 SCHEMA_VERSION = 1
 BSP_REPO = "https://github.com/1c-syntax/ssl_3_2"
 BSP_REF = "3.2.1.446"
@@ -164,18 +175,11 @@ def call_mcp(
     timeout_seconds: int,
 ) -> tuple[list[dict[str, Any]], int, str, str, int]:
     cache_dir.mkdir(parents=True, exist_ok=True)
-    # The rmcp-based server requires the MCP handshake before requests; prepend
-    # it unless the scenario drives initialize itself, and strip its response.
-    if not messages or messages[0].get("method") != "initialize":
-        messages = [
-            {
-                "jsonrpc": "2.0",
-                "id": MCP_HANDSHAKE_ID,
-                "method": "initialize",
-                "params": MCP_INITIALIZE_PARAMS,
-            },
-            {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
-        ] + messages
+    messages = prepare_messages(
+        messages,
+        handshake_id=MCP_HANDSHAKE_ID,
+        initialize_params=MCP_INITIALIZE_PARAMS,
+    )
     payload = "\n".join(json.dumps(message, ensure_ascii=False) for message in messages) + "\n"
     payload.encode("utf-8", errors="strict")
     env = os.environ.copy()
@@ -356,14 +360,6 @@ def call_mcp(
     if write_error and returncode == 0:
         returncode = 1
     return responses, duration_ms, stdout, stderr, returncode
-
-
-MCP_HANDSHAKE_ID = "unica-assessment-handshake"
-MCP_INITIALIZE_PARAMS = {
-    "protocolVersion": "2025-06-18",
-    "capabilities": {},
-    "clientInfo": {"name": "unica-release-assessment", "version": "1"},
-}
 
 
 def tool_call_message(message_id: int, name: str, arguments: dict[str, Any]) -> dict[str, Any]:

@@ -23,6 +23,7 @@ if str(MODULE_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(MODULE_REPO_ROOT))
 
 from scripts.ci import donor_parity_contract as donor_contract
+from scripts.ci.mcp_handshake import MCP_HANDSHAKE_ID, prepare_messages, without_handshake_response
 
 
 REPO_ROOT = MODULE_REPO_ROOT
@@ -4258,22 +4259,6 @@ UUID_RE = re.compile(
 )
 
 
-MCP_HANDSHAKE_ID = "unica-ci-handshake"
-MCP_HANDSHAKE = [
-    {
-        "jsonrpc": "2.0",
-        "id": MCP_HANDSHAKE_ID,
-        "method": "initialize",
-        "params": {
-            "protocolVersion": "2025-06-18",
-            "capabilities": {},
-            "clientInfo": {"name": "unica-ci", "version": "1"},
-        },
-    },
-    {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
-]
-
-
 def dcs_edit_operations_in_args(arguments: dict[str, Any]) -> set[str]:
     operation = arguments.get("Operation") or arguments.get("operation")
     return {operation} if isinstance(operation, str) and operation else set()
@@ -5007,13 +4992,14 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         threading.Thread(target=read_stdout, daemon=True).start()
         deadline = time.monotonic() + 30
         try:
-            # The rmcp-based server requires the MCP handshake before requests.
-            for message in MCP_HANDSHAKE + messages:
+            caller_initializes = bool(messages and messages[0].get("method") == "initialize")
+            messages = prepare_messages(messages)
+            for message in messages:
                 process.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
             process.stdin.flush()
 
             responses = []
-            expected = 1 + sum("id" in message for message in messages)
+            expected = sum("id" in message for message in messages)
             for _ in range(expected):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -5030,10 +5016,11 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             return_code = process.wait(timeout=max(0.1, deadline - time.monotonic()))
             stderr = process.stderr.read()
             self.assertEqual(return_code, 0, stderr)
-            handshake = [r for r in responses if r.get("id") == MCP_HANDSHAKE_ID]
-            self.assertEqual(len(handshake), 1, responses)
-            self.assertEqual(handshake[0]["result"]["serverInfo"]["name"], "unica")
-            return [r for r in responses if r.get("id") != MCP_HANDSHAKE_ID]
+            if not caller_initializes:
+                handshake = [r for r in responses if r.get("id") == MCP_HANDSHAKE_ID]
+                self.assertEqual(len(handshake), 1, responses)
+                self.assertEqual(handshake[0]["result"]["serverInfo"]["name"], "unica")
+            return without_handshake_response(responses)
         finally:
             if not process.stdin.closed:
                 process.stdin.close()
