@@ -19,6 +19,7 @@ pub(crate) mod single_file_publisher;
 pub(crate) mod subsystem;
 pub(crate) mod support;
 pub(crate) mod template;
+pub(crate) mod text_snapshot;
 pub(crate) mod typed_result;
 
 use crate::{application::AdapterOutcome, domain::workspace::WorkspaceContext};
