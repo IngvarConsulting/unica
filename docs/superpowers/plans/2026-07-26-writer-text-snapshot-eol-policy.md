@@ -431,7 +431,7 @@ fn local_eol_observation_is_resolved_by_shared_preserve_policy() {
         b"Procedure First()\r\nEndProcedure\r\nProcedure Second()\nEndProcedure\n"
     )
     .unwrap();
-    let offset = snapshot.decoded_text().find("Procedure Second()").unwrap();
+    let offset = snapshot.decoded_text().len();
     let local = local_line_ending_at(snapshot.decoded_text(), offset, Position::After);
     assert_eq!(
         resolve_line_ending(EolPolicy::Preserve, &snapshot, local),
