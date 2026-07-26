@@ -73,7 +73,7 @@ pub(crate) enum SnapshotError {
 }
 ```
 
-- [ ] **Step 1: Register the new module**
+- [x] **Step 1: Register the new module**
 
 Add this declaration beside the other family-owned native-operation modules:
 
@@ -81,7 +81,7 @@ Add this declaration beside the other family-owned native-operation modules:
 pub(crate) mod text_snapshot;
 ```
 
-- [ ] **Step 2: Write failing source-observation tests**
+- [x] **Step 2: Write failing source-observation tests**
 
 Create `text_snapshot.rs` with test-only wished-for API and tests that assert:
 
@@ -135,7 +135,7 @@ Add separate tests for:
 The production API is intentionally missing, so compilation must fail because
 `SourceTextSnapshot`, its enums, and its methods do not exist.
 
-- [ ] **Step 3: Run the focused test and verify RED**
+- [x] **Step 3: Run the focused test and verify RED**
 
 Run:
 
@@ -147,7 +147,7 @@ Expected: compilation fails on missing `SourceTextSnapshot`/enum definitions.
 Confirm the failure is caused by the missing feature, not module wiring or a
 test typo.
 
-- [ ] **Step 4: Implement minimal snapshot types and classification**
+- [x] **Step 4: Implement minimal snapshot types and classification**
 
 Implement `SourceTextSnapshot` with owned `Vec<u8>` and one decoded `String`.
 Record the byte length of exactly one leading BOM:
@@ -194,7 +194,7 @@ source contains more than one UTF-8 BOM
 source is not valid UTF-8
 ```
 
-- [ ] **Step 5: Run focused tests and verify GREEN**
+- [x] **Step 5: Run focused tests and verify GREEN**
 
 Run:
 
@@ -204,7 +204,7 @@ cargo test -p unica-coder text_snapshot -- --test-threads=1
 
 Expected: all snapshot tests pass with no warnings.
 
-- [ ] **Step 6: Run formatting and crate compilation**
+- [x] **Step 6: Run formatting and crate compilation**
 
 Run:
 
@@ -215,7 +215,7 @@ cargo check -p unica-coder --all-features
 
 Expected: both commands exit 0.
 
-- [ ] **Step 7: Commit Task 1**
+- [x] **Step 7: Commit Task 1**
 
 ```bash
 git add crates/unica-coder/src/infrastructure/native_operations.rs \
@@ -261,7 +261,7 @@ impl LineEnding {
 }
 ```
 
-- [ ] **Step 1: Write failing policy tests**
+- [x] **Step 1: Write failing policy tests**
 
 Add tests with these exact expectations:
 
@@ -325,7 +325,7 @@ fn repository_policy_is_fail_closed() {
 }
 ```
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 Run:
 
@@ -336,7 +336,7 @@ cargo test -p unica-coder text_snapshot -- --test-threads=1
 Expected: compilation fails because `EolPolicy`, `EolPolicyError`, and
 `resolve_line_ending` are missing.
 
-- [ ] **Step 3: Implement minimal exhaustive policy resolution**
+- [x] **Step 3: Implement minimal exhaustive policy resolution**
 
 Implement without wildcard arms:
 
@@ -373,7 +373,7 @@ preserve EOL policy requires local or uniform source context
 repository EOL policy is unresolved
 ```
 
-- [ ] **Step 4: Run focused tests and verify GREEN**
+- [x] **Step 4: Run focused tests and verify GREEN**
 
 Run:
 
@@ -383,7 +383,7 @@ cargo test -p unica-coder text_snapshot -- --test-threads=1
 
 Expected: all snapshot and policy tests pass.
 
-- [ ] **Step 5: Run formatting and clippy for the module change**
+- [x] **Step 5: Run formatting and clippy for the module change**
 
 Run:
 
@@ -394,7 +394,7 @@ cargo clippy -p unica-coder --lib --all-features -- -D warnings
 
 Expected: both commands exit 0 without warnings.
 
-- [ ] **Step 6: Commit Task 2**
+- [x] **Step 6: Commit Task 2**
 
 ```bash
 git add crates/unica-coder/src/infrastructure/native_operations/text_snapshot.rs
@@ -420,7 +420,7 @@ LineEnding::as_str()
 
 - Produces: unchanged public `CodePatchExecution` and serialized `CodePatchData`.
 
-- [ ] **Step 1: Write failing integration-focused unit tests**
+- [x] **Step 1: Write failing integration-focused unit tests**
 
 Add a helper-level test that requires the shared type:
 
@@ -447,7 +447,7 @@ mixed-EOL test as a behavioral regression.
 The production imports and `local_line_ending_at` API are not present yet, so
 the focused test must fail to compile.
 
-- [ ] **Step 2: Run code-patch tests and verify RED**
+- [x] **Step 2: Run code-patch tests and verify RED**
 
 Run:
 
@@ -458,7 +458,7 @@ cargo test -p unica-coder code_patch -- --test-threads=1
 Expected: compilation fails because `code.rs` has not adopted the shared
 snapshot/policy API.
 
-- [ ] **Step 3: Replace private source decoding and EOL enum**
+- [x] **Step 3: Replace private source decoding and EOL enum**
 
 Import:
 
@@ -509,7 +509,7 @@ snapshot from `postimage.as_bytes()` and use it for repeat location and policy
 resolution. Do not alter selector offsets, diff generation, hash generation,
 validation, or publication.
 
-- [ ] **Step 4: Run focused code-patch tests and verify GREEN**
+- [x] **Step 4: Run focused code-patch tests and verify GREEN**
 
 Run:
 
@@ -520,7 +520,7 @@ cargo test -p unica-coder code_patch -- --test-threads=1
 Expected: all code-patch tests pass, including LF, CRLF, mixed-local, BOM,
 missing-terminal-newline, dry-run/apply equality, and repeat no-op coverage.
 
-- [ ] **Step 5: Run snapshot and code-patch tests together**
+- [x] **Step 5: Run snapshot and code-patch tests together**
 
 Run:
 
@@ -531,7 +531,7 @@ cargo test -p unica-coder code_patch -- --test-threads=1
 
 Expected: both commands exit 0.
 
-- [ ] **Step 6: Refactor while green**
+- [x] **Step 6: Refactor while green**
 
 Remove the old `Eol`, `local_eol_at`, and `eol_at_newline` definitions. Ensure
 the shared `LineEnding` is used only for format semantics and `Position` remains
@@ -546,7 +546,7 @@ cargo clippy -p unica-coder --lib --all-features -- -D warnings
 
 Expected: no dead code, unused imports, wildcard matches, or warnings.
 
-- [ ] **Step 7: Commit Task 3**
+- [x] **Step 7: Commit Task 3**
 
 ```bash
 git add crates/unica-coder/src/infrastructure/native_operations/code.rs \
@@ -566,7 +566,7 @@ git commit -m "refactor(code): use shared text EOL snapshot"
 - Consumes: completed implementation from Tasks 1–3.
 - Produces: a verified, reviewable branch that references #74 without claiming the epic is complete.
 
-- [ ] **Step 1: Run the complete crate test suite**
+- [x] **Step 1: Run the complete crate test suite**
 
 Run:
 
@@ -577,7 +577,7 @@ cargo test -p unica-coder -- --test-threads=1
 Expected: all `unica-coder` unit, integration, and doc tests pass; existing
 ignored tests remain ignored and no new ignore is added.
 
-- [ ] **Step 2: Run formatting and strict Rust linting**
+- [x] **Step 2: Run formatting and strict Rust linting**
 
 Run:
 
@@ -588,7 +588,7 @@ cargo clippy -p unica-coder --all-targets --all-features -- -D warnings
 
 Expected: both commands exit 0 with no warnings.
 
-- [ ] **Step 3: Run repository guardrails**
+- [x] **Step 3: Run repository guardrails**
 
 Run:
 
@@ -599,7 +599,7 @@ git diff --check upstream/main...HEAD
 
 Expected: platform-boundary check passes and Git reports no whitespace errors.
 
-- [ ] **Step 4: Review the Rust diff against the accepted design**
+- [x] **Step 4: Review the Rust diff against the accepted design**
 
 Verify explicitly:
 
@@ -622,7 +622,7 @@ git diff upstream/main...HEAD -- \
   crates/unica-coder/src/infrastructure/native_operations/code.rs
 ```
 
-- [ ] **Step 5: Commit any evidence-only doc correction**
+- [x] **Step 5: Commit any evidence-only doc correction**
 
 If the accepted design needed a factual correction discovered by verification,
 edit only that fact and commit:
@@ -634,7 +634,7 @@ git commit -m "docs: align writer snapshot design evidence"
 
 If no correction is required, do not create an empty commit.
 
-- [ ] **Step 6: Verify final branch state**
+- [x] **Step 6: Verify final branch state**
 
 Run:
 
