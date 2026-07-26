@@ -78,6 +78,16 @@ pub(crate) enum LineEnding {
     Cr,
 }
 
+impl LineEnding {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Lf => "\n",
+            Self::CrLf => "\r\n",
+            Self::Cr => "\r",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LineEndingProfile {
     None,
@@ -99,6 +109,55 @@ impl fmt::Display for SnapshotError {
                 formatter.write_str("source contains more than one UTF-8 BOM")
             }
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EolPolicy {
+    Preserve,
+    Lf,
+    CrLf,
+    Repository,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EolPolicyError {
+    AmbiguousPreservePolicy,
+    MissingPreserveContext,
+    RepositoryPolicyUnresolved,
+}
+
+impl fmt::Display for EolPolicyError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AmbiguousPreservePolicy => formatter.write_str(
+                "preserve EOL policy is ambiguous for mixed line endings without local context",
+            ),
+            Self::MissingPreserveContext => {
+                formatter.write_str("preserve EOL policy requires local or uniform source context")
+            }
+            Self::RepositoryPolicyUnresolved => {
+                formatter.write_str("repository EOL policy is unresolved")
+            }
+        }
+    }
+}
+
+pub(crate) fn resolve_line_ending(
+    policy: EolPolicy,
+    snapshot: &SourceTextSnapshot,
+    local: Option<LineEnding>,
+) -> Result<LineEnding, EolPolicyError> {
+    match policy {
+        EolPolicy::Lf => Ok(LineEnding::Lf),
+        EolPolicy::CrLf => Ok(LineEnding::CrLf),
+        EolPolicy::Repository => Err(EolPolicyError::RepositoryPolicyUnresolved),
+        EolPolicy::Preserve => match (local, snapshot.line_endings()) {
+            (Some(line_ending), _) => Ok(line_ending),
+            (None, LineEndingProfile::Uniform(line_ending)) => Ok(line_ending),
+            (None, LineEndingProfile::Mixed { .. }) => Err(EolPolicyError::AmbiguousPreservePolicy),
+            (None, LineEndingProfile::None) => Err(EolPolicyError::MissingPreserveContext),
+        },
     }
 }
 
@@ -149,7 +208,10 @@ fn classify_line_endings(text: &str) -> (LineEndingProfile, Option<LineEnding>) 
 
 #[cfg(test)]
 mod tests {
-    use super::{LineEnding, LineEndingProfile, SnapshotError, SourceTextSnapshot, Utf8Bom};
+    use super::{
+        resolve_line_ending, EolPolicy, EolPolicyError, LineEnding, LineEndingProfile,
+        SnapshotError, SourceTextSnapshot, Utf8Bom,
+    };
 
     #[test]
     fn snapshot_preserves_raw_bytes_and_excludes_one_bom_from_text() {
@@ -240,6 +302,64 @@ mod tests {
     #[test]
     fn snapshot_reports_missing_terminal_newline() {
         assert_line_endings("A\nB", LineEndingProfile::Uniform(LineEnding::Lf), None);
+    }
+
+    #[test]
+    fn explicit_policies_ignore_source_profile() {
+        let snapshot = SourceTextSnapshot::from_bytes(b"A\r\nB\n").unwrap();
+
+        assert_eq!(
+            resolve_line_ending(EolPolicy::Lf, &snapshot, None),
+            Ok(LineEnding::Lf)
+        );
+        assert_eq!(
+            resolve_line_ending(EolPolicy::CrLf, &snapshot, None),
+            Ok(LineEnding::CrLf)
+        );
+    }
+
+    #[test]
+    fn preserve_prefers_local_context_for_mixed_source() {
+        let snapshot = SourceTextSnapshot::from_bytes(b"A\r\nB\n").unwrap();
+
+        assert_eq!(
+            resolve_line_ending(EolPolicy::Preserve, &snapshot, Some(LineEnding::CrLf)),
+            Ok(LineEnding::CrLf)
+        );
+    }
+
+    #[test]
+    fn preserve_uses_uniform_source_without_local_context() {
+        let snapshot = SourceTextSnapshot::from_bytes(b"A\nB\n").unwrap();
+
+        assert_eq!(
+            resolve_line_ending(EolPolicy::Preserve, &snapshot, None),
+            Ok(LineEnding::Lf)
+        );
+    }
+
+    #[test]
+    fn preserve_rejects_ambiguous_or_missing_context() {
+        let mixed = SourceTextSnapshot::from_bytes(b"A\r\nB\n").unwrap();
+        assert_eq!(
+            resolve_line_ending(EolPolicy::Preserve, &mixed, None),
+            Err(EolPolicyError::AmbiguousPreservePolicy)
+        );
+        let empty = SourceTextSnapshot::from_bytes(b"A").unwrap();
+        assert_eq!(
+            resolve_line_ending(EolPolicy::Preserve, &empty, None),
+            Err(EolPolicyError::MissingPreserveContext)
+        );
+    }
+
+    #[test]
+    fn repository_policy_is_fail_closed() {
+        let snapshot = SourceTextSnapshot::from_bytes(b"A\n").unwrap();
+
+        assert_eq!(
+            resolve_line_ending(EolPolicy::Repository, &snapshot, None),
+            Err(EolPolicyError::RepositoryPolicyUnresolved)
+        );
     }
 
     fn assert_line_endings(
