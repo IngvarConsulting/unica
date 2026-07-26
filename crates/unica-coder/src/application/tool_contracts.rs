@@ -1491,6 +1491,9 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
         ToolHandler::StandardsAdapter { .. } => names.extend(STANDARDS_ARGS),
         ToolHandler::ProjectStatus | ToolHandler::ProjectMap => {}
     }
+    if tool.name == "unica.mxl.decompile" {
+        names.retain(|name| *name != "OutputPath" && *name != "outputPath");
+    }
     names.sort_unstable();
     names.dedup();
     names
@@ -2149,7 +2152,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "outputPath",
-        "Path of the single file to generate: the `Form.xml` for `unica.form.compile`, the `Template.xml` for `dcs.compile` and `mxl.compile`, or the JSON for `mxl.decompile`, where omitting it prints to stdout",
+        "Path of the single file to generate: the `Form.xml` for `unica.form.compile` or the `Template.xml` for `unica.dcs.compile` and `unica.mxl.compile`",
     ),
     (
         "parent",
@@ -2713,6 +2716,17 @@ mod tests {
     }
 
     #[test]
+    fn output_path_description_excludes_read_only_mxl_decompile() {
+        let (_, description) = ARG_DESCRIPTIONS
+            .iter()
+            .find(|(name, _)| *name == "outputPath")
+            .expect("outputPath must have a shared description");
+
+        assert!(description.contains("mxl.compile"));
+        assert!(!description.contains("mxl.decompile"));
+    }
+
+    #[test]
     fn described_arguments_are_still_reachable() {
         let published: std::collections::BTreeSet<String> = tools()
             .into_iter()
@@ -2752,6 +2766,21 @@ mod tests {
         let error = validate_tool_arguments(tool, &args, false).unwrap_err();
 
         assert!(error.contains("does not accept argument `unknown`"));
+    }
+
+    #[test]
+    fn mxl_decompile_rejects_legacy_output_path_aliases() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.mxl.decompile")
+            .unwrap();
+
+        for argument in ["OutputPath", "outputPath"] {
+            let args = Map::from_iter([(argument.to_string(), json!("result.json"))]);
+            let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+
+            assert!(error.contains(&format!("does not accept argument `{argument}`")));
+        }
     }
 
     #[test]
