@@ -4255,6 +4255,22 @@ UUID_RE = re.compile(
 )
 
 
+MCP_HANDSHAKE_ID = "unica-ci-handshake"
+MCP_HANDSHAKE = [
+    {
+        "jsonrpc": "2.0",
+        "id": MCP_HANDSHAKE_ID,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "unica-ci", "version": "1"},
+        },
+    },
+    {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+]
+
+
 def dcs_edit_operations_in_args(arguments: dict[str, Any]) -> set[str]:
     operation = arguments.get("Operation") or arguments.get("operation")
     return {operation} if isinstance(operation, str) and operation else set()
@@ -4995,23 +5011,43 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
 
         threading.Thread(target=read_stdout, daemon=True).start()
         deadline = time.monotonic() + 30
+        def read_response() -> dict[str, Any]:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.fail("timed out waiting for MCP response")
+            try:
+                line = lines.get(timeout=remaining)
+            except queue.Empty:
+                self.fail("timed out waiting for MCP response")
+            if not line:
+                self.fail("MCP process exited before all responses arrived")
+            return json.loads(line)
+
         try:
+            # The rmcp-based server requires the MCP handshake before requests;
+            # perform it unless the scenario drives initialize itself, and wait
+            # for the initialize acknowledgement before sending anything else.
+            if not messages or messages[0].get("method") != "initialize":
+                process.stdin.write(
+                    json.dumps(MCP_HANDSHAKE[0], ensure_ascii=False) + "\n"
+                )
+                process.stdin.flush()
+                handshake_response = read_response()
+                self.assertEqual(
+                    handshake_response.get("id"), MCP_HANDSHAKE_ID, handshake_response
+                )
+                self.assertEqual(
+                    handshake_response["result"]["serverInfo"]["name"], "unica"
+                )
+                process.stdin.write(
+                    json.dumps(MCP_HANDSHAKE[1], ensure_ascii=False) + "\n"
+                )
             for message in messages:
                 process.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
             process.stdin.flush()
 
-            responses = []
-            for _ in messages:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    self.fail("timed out waiting for MCP response")
-                try:
-                    line = lines.get(timeout=remaining)
-                except queue.Empty:
-                    self.fail("timed out waiting for MCP response")
-                if not line:
-                    self.fail("MCP process exited before all responses arrived")
-                responses.append(json.loads(line))
+            expected = sum("id" in message for message in messages)
+            responses = [read_response() for _ in range(expected)]
 
             process.stdin.close()
             return_code = process.wait(timeout=max(0.1, deadline - time.monotonic()))

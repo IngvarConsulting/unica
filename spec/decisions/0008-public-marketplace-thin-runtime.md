@@ -38,6 +38,9 @@ and then use the ordinary marketplace update path.
 ## Consequences
 
 - Git and Codex CLI are consumer prerequisites; Node.js is not.
+- "Thin" constrains the marketplace package and its acquisition path, not the
+  runtime's dependency graph; the runtime binary may embed an async runtime
+  (ADR-0013).
 - First MCP startup may download one target runtime, while later startups reuse
   the verified ready cache.
 - Runtime stdout remains dedicated to MCP JSON-RPC.

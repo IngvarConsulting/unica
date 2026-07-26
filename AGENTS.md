@@ -49,3 +49,12 @@ must not be generalized to other disallowed paths.
 - Keep the public MCP boundary as one server named `unica` with `unica.*` tools unless an ADR changes that contract.
 - Prompt-visible skills stay MCP-first. Direct packaged-script execution paths must not return once a native `unica.*` tool exists, except for documented utility exceptions.
 - One plugin directory serves Codex and Claude Code. Keep both manifests at the same version, keep `.mcp.json` host-neutral, and do not add optional manifest or catalog keys without checking that the oldest supported client accepts them; an unrecognized key is a load error there, not a warning.
+
+## Pull-request Topology
+
+- Default to one independently reviewable PR per coherent change, targeting `main` or an explicitly named release branch.
+- Do not open a PR whose base is the head branch of another open PR. Do not use child PRs as a queue for review fixes: commit and push those fixes to the existing PR's head branch.
+- Before opening a PR, inspect the intended base on GitHub. If it belongs to an open PR, stop and either use that PR's head branch or ask the user for direction; branch names alone are not evidence of an independent base.
+- A stacked PR is allowed only when the user explicitly requests a named stack and its merge/rebase order. Each member must explain its parent, standalone review boundary, and closure plan in its PR body.
+- If an agent cannot push to the existing PR head, it must provide a patch or ask for access; it must not create a child PR as a workaround.
+- A distinct bug discovered during review belongs in an independent `main`-targeted PR or an issue, never in an implicit PR stack.
