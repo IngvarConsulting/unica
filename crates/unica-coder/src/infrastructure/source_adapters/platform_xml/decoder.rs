@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use quick_xml::{events::Event, Reader};
 use roxmltree::{Document, Node};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -521,40 +522,51 @@ fn validate_metadata_wrapper(wrapper: Node<'_, '_>) -> Result<(), SourceAdapterE
     Ok(())
 }
 
-fn validate_xml_nesting(node: Node<'_, '_>, depth: usize) -> Result<(), SourceAdapterError> {
-    if depth > MAX_NAVIGATION_NESTING_DEPTH {
-        return Err(error(
-            SourceAdapterErrorKind::ResourceLimit,
-            "Platform XML nesting depth exceeds navigation limit",
-        ));
-    }
-    for child in node.children().filter(Node::is_element) {
-        let child_depth = depth.checked_add(1).ok_or_else(|| {
-            error(
-                SourceAdapterErrorKind::ResourceLimit,
-                "Platform XML nesting depth overflow",
-            )
-        })?;
-        if child_depth > MAX_NAVIGATION_NESTING_DEPTH {
-            return Err(error(
-                SourceAdapterErrorKind::ResourceLimit,
-                "Platform XML nesting depth exceeds navigation limit",
-            ));
-        }
-        validate_xml_nesting(child, child_depth)?;
-    }
-    Ok(())
-}
-
 fn parse_bounded_xml_document<'a>(
     bytes: &'a [u8],
     invalid_utf8_message: &str,
     malformed_message: &str,
 ) -> Result<(&'a str, Document<'a>), SourceAdapterError> {
     let xml = utf8(bytes, invalid_utf8_message)?;
+    preflight_xml_nesting(xml, malformed_message)?;
     let document = Document::parse(xml).map_err(|_| corrupted(malformed_message))?;
-    validate_xml_nesting(document.root_element(), 1)?;
     Ok((xml, document))
+}
+
+fn preflight_xml_nesting(xml: &str, malformed_message: &str) -> Result<(), SourceAdapterError> {
+    let mut reader = Reader::from_str(xml);
+    let mut depth = 0usize;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(_)) => {
+                depth = depth.checked_add(1).ok_or_else(|| {
+                    error(
+                        SourceAdapterErrorKind::ResourceLimit,
+                        "Platform XML nesting depth overflow",
+                    )
+                })?;
+                if depth > MAX_NAVIGATION_NESTING_DEPTH {
+                    return Err(error(
+                        SourceAdapterErrorKind::ResourceLimit,
+                        "Platform XML nesting depth exceeds navigation limit",
+                    ));
+                }
+            }
+            Ok(Event::End(_)) => {
+                depth = depth
+                    .checked_sub(1)
+                    .ok_or_else(|| corrupted(malformed_message))?;
+            }
+            Ok(Event::Eof) => break,
+            Ok(_) => {}
+            Err(_) => return Err(corrupted(malformed_message)),
+        }
+    }
+    if depth == 0 {
+        Ok(())
+    } else {
+        Err(corrupted(malformed_message))
+    }
 }
 
 fn single_metadata_class<'a, 'input>(
@@ -1378,20 +1390,38 @@ mod tests {
     }
 
     #[test]
-    fn companion_xml_depth_limit_applies_to_every_capture_path() {
+    fn root_descriptor_depth_preflight_stops_before_dom_parse() {
+        let fixture = fixture(
+            "Shipment.xml",
+            &[(
+                "Shipment.xml",
+                deeply_nested_unclosed_xml("MetaDataObject", super::METADATA_NAMESPACE),
+            )],
+        );
+
+        assert_eq!(
+            decode(&fixture.provider, &fixture.descriptor)
+                .unwrap_err()
+                .kind,
+            SourceAdapterErrorKind::ResourceLimit
+        );
+    }
+
+    #[test]
+    fn companion_xml_depth_preflight_stops_before_dom_parse() {
         let fixtures = [
             document_fixture_with_files(
                 "<ChildObjects><Form>ItemForm</Form></ChildObjects>",
                 &[(
                     "Shipment/Forms/ItemForm.xml",
-                    deeply_nested_xml("MetaDataObject", super::METADATA_NAMESPACE),
+                    deeply_nested_unclosed_xml("MetaDataObject", super::METADATA_NAMESPACE),
                 )],
             ),
             document_fixture_with_files(
                 "<ChildObjects><Template>Print</Template></ChildObjects>",
                 &[(
                     "Shipment/Templates/Print.xml",
-                    deeply_nested_xml("MetaDataObject", super::METADATA_NAMESPACE),
+                    deeply_nested_unclosed_xml("MetaDataObject", super::METADATA_NAMESPACE),
                 )],
             ),
             document_fixture_with_files(
@@ -1400,7 +1430,7 @@ mod tests {
                     ("Shipment/Forms/ItemForm.xml", form_descriptor("ItemForm")),
                     (
                         "Shipment/Forms/ItemForm/Ext/Form.xml",
-                        deeply_nested_xml("Form", super::MANAGED_FORM_NAMESPACE),
+                        deeply_nested_unclosed_xml("Form", super::MANAGED_FORM_NAMESPACE),
                     ),
                 ],
             ),
@@ -1413,7 +1443,7 @@ mod tests {
                     ),
                     (
                         "Shipment/Templates/Print/Ext/Template.xml",
-                        deeply_nested_xml(
+                        deeply_nested_unclosed_xml(
                             "SpreadsheetDocument",
                             super::SPREADSHEET_DOCUMENT_NAMESPACE,
                         ),
@@ -1430,6 +1460,26 @@ mod tests {
                 SourceAdapterErrorKind::ResourceLimit
             );
         }
+    }
+
+    #[test]
+    fn streaming_xml_depth_preflight_handles_xml_syntax_tokens_and_malformed_input() {
+        let accepted = r#"<?xml version="1.0"?>
+            <!DOCTYPE Form [<!ELEMENT Form ANY>]>
+            <?platform processing?>
+            <Form><!-- comment --><![CDATA[<not-an-element/>]]><Empty/></Form>"#;
+        assert!(super::preflight_xml_nesting(accepted, "malformed").is_ok());
+
+        let malformed =
+            super::preflight_xml_nesting("<Form><Nested></Form>", "malformed").unwrap_err();
+        assert_eq!(malformed.kind, SourceAdapterErrorKind::DecodeCorrupted);
+
+        let deep = super::preflight_xml_nesting(
+            &deeply_nested_unclosed_xml("Form", super::MANAGED_FORM_NAMESPACE),
+            "malformed",
+        )
+        .unwrap_err();
+        assert_eq!(deep.kind, SourceAdapterErrorKind::ResourceLimit);
     }
 
     #[test]
@@ -2125,15 +2175,11 @@ mod tests {
         "<SpreadsheetDocument xmlns=\"http://v8.1c.ru/spreadsheet/document\"/>"
     }
 
-    fn deeply_nested_xml(root: &str, namespace: &str) -> String {
+    fn deeply_nested_unclosed_xml(root: &str, namespace: &str) -> String {
         let mut xml = format!("<{root} xmlns=\"{namespace}\">");
         for _ in 0..MAX_NAVIGATION_NESTING_DEPTH {
             xml.push_str("<Nested>");
         }
-        for _ in 0..MAX_NAVIGATION_NESTING_DEPTH {
-            xml.push_str("</Nested>");
-        }
-        write!(xml, "</{root}>").unwrap();
         xml
     }
 

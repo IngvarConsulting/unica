@@ -21,3 +21,13 @@ Date: 2026-07-26
 ## Commit
 
 - `fix: address navigation runtime review findings`
+
+## Pre-DOM XML depth follow-up
+
+- P2 was re-confirmed: the prior common helper parsed with `roxmltree` before executing the shared depth check, so the check could not bound DOM allocation.
+- The helper now tokenizes with `quick-xml` before `Document::parse`; starts increment depth, empty elements do not, and comments, CDATA, processing instructions, declarations, and doctypes are non-element tokens. Tokenizer errors and unbalanced depth remain typed `decode_corrupted` failures.
+- Root and every companion regression use malformed-but-deep input. They must return `resource_limit`, proving the streaming preflight aborts before the DOM parser sees the malformed document.
+
+### Commit
+
+- `fix: preflight XML depth before DOM allocation`
