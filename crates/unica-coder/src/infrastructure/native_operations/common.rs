@@ -7,8 +7,8 @@ use crate::domain::format_profile::{
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::source_adapters::platform_xml::support::{
-    read_support_facts, EffectiveSupportRule, SupportFacts, SupportRule, SupportSourceState,
-    SupportVendor,
+    read_support_facts, read_support_facts_bytes, EffectiveSupportRule, SupportFacts, SupportRule,
+    SupportSourceState, SupportVendor,
 };
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
@@ -2500,6 +2500,19 @@ pub(crate) fn support_root_uuid_from_bytes(raw: &[u8]) -> Option<String> {
         .find(|node| node.is_element() && node.attribute("uuid").is_some())
         .and_then(|node| node.attribute("uuid"))
         .map(str::to_ascii_lowercase)
+}
+
+pub(crate) fn parse_support_header(text: &str) -> Option<(u8, usize)> {
+    let facts = read_support_facts_bytes(Some(text.as_bytes()));
+    if !matches!(facts.source, SupportSourceState::Parsed) {
+        return None;
+    }
+    let global_flag = if facts.global_editing_enabled()? {
+        0
+    } else {
+        1
+    };
+    Some((global_flag, facts.vendors().len()))
 }
 
 pub(crate) fn extract_xml_attr(text: &str, element: &str, attr: &str) -> Option<String> {

@@ -2535,7 +2535,6 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
     if tool.name == "unica.form.edit" && name == "definition" {
         return form_edit_definition_schema();
     }
-    }
     if tool.name == "unica.code.patch" {
         return match name {
             "operation" => json!({ "type": "string", "enum": ["insert"] }),

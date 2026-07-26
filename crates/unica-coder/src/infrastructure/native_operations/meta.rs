@@ -23970,6 +23970,7 @@ mod tests {
             },
             path,
         )
+    }
 
     #[test]
     fn meta_info_directory_fallback_selects_first_xml_by_file_name() {
