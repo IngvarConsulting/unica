@@ -5007,13 +5007,19 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         threading.Thread(target=read_stdout, daemon=True).start()
         deadline = time.monotonic() + 30
         try:
-            # The rmcp-based server requires the MCP handshake before requests.
-            for message in MCP_HANDSHAKE + messages:
+            # The rmcp-based server requires the MCP handshake before requests;
+            # prepend it unless the scenario drives initialize itself.
+            handshake = (
+                []
+                if messages and messages[0].get("method") == "initialize"
+                else MCP_HANDSHAKE
+            )
+            for message in handshake + messages:
                 process.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
             process.stdin.flush()
 
             responses = []
-            expected = 1 + sum("id" in message for message in messages)
+            expected = sum("id" in message for message in handshake + messages)
             for _ in range(expected):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -5030,9 +5036,10 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             return_code = process.wait(timeout=max(0.1, deadline - time.monotonic()))
             stderr = process.stderr.read()
             self.assertEqual(return_code, 0, stderr)
-            handshake = [r for r in responses if r.get("id") == MCP_HANDSHAKE_ID]
-            self.assertEqual(len(handshake), 1, responses)
-            self.assertEqual(handshake[0]["result"]["serverInfo"]["name"], "unica")
+            for handshake_response in (r for r in responses if r.get("id") == MCP_HANDSHAKE_ID):
+                self.assertEqual(
+                    handshake_response["result"]["serverInfo"]["name"], "unica"
+                )
             return [r for r in responses if r.get("id") != MCP_HANDSHAKE_ID]
         finally:
             if not process.stdin.closed:

@@ -85,11 +85,12 @@ clarifying sentence to prevent the opposite reading.
 
 ## Verification
 
-- [ ] `tools/list` over the SDK returns the same tools with the same
-  data-driven schemas as before the migration.
-- [ ] `ping` stays responsive while a `tools/call` runs; cancellation reaches
-  the domain token; admission stays bounded at 32.
+- [x] `tools/list` over the SDK returns the same tools with the same
+  data-driven schemas as before the migration
+  (`cargo test -p unica-coder interfaces::mcp`).
+- [x] `ping` stays responsive while a `tools/call` runs; cancellation reaches
+  the domain token; admission stays bounded at 32 (same test module).
 - [ ] Both hosts (Codex and Claude Code) complete `initialize`/`tools/list`
-  against the SDK server.
-- [ ] `spec/acceptance/unica-mcp-validation.md` describes the SDK-era wire
+  against the SDK server (host-level check, performed at release).
+- [x] `spec/acceptance/unica-mcp-validation.md` describes the SDK-era wire
   contract (handshake, cancellation, EOF, line bound).

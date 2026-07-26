@@ -21,7 +21,7 @@ libc = "0.2"
 # MCP transport is owned by the official Rust SDK (ADR-0013); macros stay off
 # because tool schemas are data-driven by operation descriptors (ADR-0001).
 rmcp = { version = "2.2", default-features = false, features = ["server", "transport-io"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 serde_yaml = "0.9"

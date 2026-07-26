@@ -10,8 +10,8 @@ use crate::application::{input_schema_for_tool, ToolSpec, UnicaApplication};
 use crate::domain::cancellation::CancellationToken;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ContentBlock, ErrorCode, ErrorData, Implementation,
-    InitializeResult, ListToolsResult, PaginatedRequestParams, ProtocolVersion,
-    ServerCapabilities, ServerInfo, Tool,
+    InitializeResult, ListToolsResult, PaginatedRequestParams, ProtocolVersion, ServerCapabilities,
+    ServerInfo, Tool,
 };
 use rmcp::service::{RequestContext, ServerInitializeError};
 use rmcp::{RoleServer, ServerHandler, ServiceExt};
@@ -209,7 +209,10 @@ impl InFlightRegistry {
 
     #[cfg(test)]
     fn running(&self) -> usize {
-        self.state.lock().map(|state| state.running.len()).unwrap_or(0)
+        self.state
+            .lock()
+            .map(|state| state.running.len())
+            .unwrap_or(0)
     }
 
     fn cancel_all(&self) {
@@ -321,6 +324,9 @@ mod tests {
         }
 
         async fn shutdown(mut self) {
+            // Dropping a WriteHalf does not close the duplex; shut it down so
+            // the server observes EOF.
+            self.writer.shutdown().await.unwrap();
             drop(self.writer);
             while timeout(TEST_STEP, self.reader.next_line())
                 .await
@@ -497,7 +503,11 @@ mod tests {
         let cancellation_seen = Arc::new(AtomicBool::new(false));
         let seen = Arc::clone(&cancellation_seen);
         let handler: Arc<ToolCallHandler> = Arc::new(move |_, _, cancellation| {
+            let give_up = Instant::now() + 4 * TEST_STEP;
             while !cancellation.is_cancelled() {
+                if Instant::now() > give_up {
+                    return Err((-32603, "test handler was never cancelled".to_string()));
+                }
                 std::thread::sleep(Duration::from_millis(5));
             }
             seen.store(true, Ordering::SeqCst);
@@ -554,7 +564,11 @@ mod tests {
         let cancellation_seen = Arc::new(AtomicBool::new(false));
         let seen = Arc::clone(&cancellation_seen);
         let handler: Arc<ToolCallHandler> = Arc::new(move |_, _, cancellation| {
+            let give_up = Instant::now() + 4 * TEST_STEP;
             while !cancellation.is_cancelled() {
+                if Instant::now() > give_up {
+                    return Err((-32603, "test handler was never cancelled".to_string()));
+                }
                 std::thread::sleep(Duration::from_millis(5));
             }
             seen.store(true, Ordering::SeqCst);
@@ -579,6 +593,7 @@ mod tests {
             );
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
+        client.writer.shutdown().await.unwrap();
         drop(client.writer);
         timeout(TEST_STEP, client.server)
             .await
@@ -615,7 +630,11 @@ mod tests {
         let release = Arc::new(AtomicBool::new(false));
         let gate = Arc::clone(&release);
         let handler: Arc<ToolCallHandler> = Arc::new(move |_, _, _| {
+            let give_up = Instant::now() + 4 * TEST_STEP;
             while !gate.load(Ordering::SeqCst) {
+                if Instant::now() > give_up {
+                    return Err((-32603, "test handler was never released".to_string()));
+                }
                 std::thread::sleep(Duration::from_millis(5));
             }
             Ok("released".to_string())
