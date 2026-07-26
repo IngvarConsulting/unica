@@ -1423,9 +1423,8 @@ mod tests {
             .workspace_root
             .join("src/CommonModules/Sample/Ext/Module.bsl");
         fs::create_dir_all(module.parent().unwrap()).unwrap();
-        let before = b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\n";
-        let expected =
-            b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\nProcedure Added()\r\nEndProcedure\r\n";
+        let before = b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\n// untouched suffix\r\n";
+        let expected = b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\nProcedure Added()\r\nEndProcedure\r\n// untouched suffix\r\n";
         fs::write(&module, before).unwrap();
         let args = patch_args(
             "src/CommonModules/Sample/Ext/Module.bsl",
