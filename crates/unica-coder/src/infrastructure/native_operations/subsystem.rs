@@ -957,7 +957,7 @@ pub(crate) fn validate_subsystem(
         };
 
         let root = doc.root_element();
-        let version = match inspect_platform_xml_compatibility(&xml_path, None) {
+        let version = match inspect_platform_xml_compatibility(&xml_path) {
             Ok(compatibility @ FormatCompatibility::Supported { .. }) => {
                 report.ok("Export format: 2.20");
                 compatibility.actual().to_string()

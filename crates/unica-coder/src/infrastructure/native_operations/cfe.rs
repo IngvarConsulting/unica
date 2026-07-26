@@ -375,7 +375,7 @@ fn prepare_cfe_borrow_with_trace(
         return Err("No <ChildObjects> element found in extension".to_string());
     }
     let name_prefix = meta_info_child_text(props_el, "NamePrefix").unwrap_or_default();
-    let format_version = inspect_platform_xml_compatibility(&ext_path, None)
+    let format_version = inspect_platform_xml_compatibility(&ext_path)
         .map_err(|error| error.message)?
         .actual()
         .to_string();
@@ -3724,7 +3724,7 @@ pub(crate) fn validate_cfe(
             ));
             check1_ok = false;
         }
-        let version = match inspect_platform_xml_compatibility(&resolved_path, None) {
+        let version = match inspect_platform_xml_compatibility(&resolved_path) {
             Ok(compatibility @ FormatCompatibility::Supported { .. }) => {
                 report.ok("Export format: 2.20");
                 compatibility.actual().to_string()
@@ -4568,7 +4568,7 @@ fn guard_cfe_active_format_snapshot_set(
     }
     let mut compatibilities = snapshots
         .keys()
-        .map(|path| inspect_platform_xml_compatibility(path, None).map_err(|error| error.message))
+        .map(|path| inspect_platform_xml_compatibility(path).map_err(|error| error.message))
         .collect::<Result<Vec<_>, _>>()?;
     for target in owner_targets {
         let resolution =
@@ -4914,7 +4914,7 @@ fn cfe_patch_supported_document<'a>(path: &Path, raw: &'a [u8]) -> Result<Docume
     let source = text.trim_start_matches('\u{feff}');
     let document = Document::parse(source)
         .map_err(|error| format!("failed to parse platform XML {}: {error}", path.display()))?;
-    match inspect_platform_xml_compatibility(path, None).map_err(|error| error.message)? {
+    match inspect_platform_xml_compatibility(path).map_err(|error| error.message)? {
         FormatCompatibility::Supported { .. } => Ok(document),
         compatibility => Err(format_compatibility_warning(&compatibility)),
     }

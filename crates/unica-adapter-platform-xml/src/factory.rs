@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use unica_format_core::{
     navigation::{NavigationSelection, NavigationTarget},
@@ -7,9 +7,10 @@ use unica_format_core::{
         FormatCompatibility, FormatInspectionMode, FormatInspectionPort, FormatInspectionRequest,
         FormatInspectionResult, FormatReadRequest, OwnerResolutionRequest, OwnerResolutionResult,
         OwnershipPort, ProbePort, ProbeResult, ReadPort, SourceAdapterRegistration,
-        SupportEvidence, SupportPort, SupportSourceState, SupportVendorEvidence,
+        SupportEvidence, SupportInspectionRequest, SupportPort, SupportSourceState,
+        SupportVendorEvidence,
     },
-    source::{SourceAdapterError, SourceAdapterErrorKind, SourceContext},
+    source::{SourceAdapterError, SourceAdapterErrorKind, SourceContext, SourceFamily},
 };
 
 use crate::versions::v2_20;
@@ -83,26 +84,24 @@ impl FormatInspectionPort for PlatformXmlAdapter {
         &self,
         request: &FormatInspectionRequest,
     ) -> Result<FormatInspectionResult, SourceAdapterError> {
-        let raw = std::fs::read(&request.path).map_err(|read_error| {
+        let path = authorized_target(&request.source)?;
+        let raw = std::fs::read(&path).map_err(|read_error| {
             SourceAdapterError::new(
                 SourceAdapterErrorKind::SourceUnavailable,
-                format!("failed to read {}: {read_error}", request.path.display()),
+                format!("failed to read {}: {read_error}", path.display()),
             )
         })?;
         let text = std::str::from_utf8(&raw).map_err(|utf8_error| {
             SourceAdapterError::new(
                 SourceAdapterErrorKind::DecodeCorrupted,
-                format!(
-                    "failed to read {} as UTF-8: {utf8_error}",
-                    request.path.display()
-                ),
+                format!("failed to read {} as UTF-8: {utf8_error}", path.display()),
             )
         })?;
         let source = text.trim_start_matches('\u{feff}');
         let document = roxmltree::Document::parse(source).map_err(|parse_error| {
             SourceAdapterError::new(
                 SourceAdapterErrorKind::DecodeCorrupted,
-                format!("failed to parse {}: {parse_error}", request.path.display()),
+                format!("failed to parse {}: {parse_error}", path.display()),
             )
         })?;
         let root = document.root_element();
@@ -115,7 +114,7 @@ impl FormatInspectionPort for PlatformXmlAdapter {
                 SourceAdapterErrorKind::DecodeCorrupted,
                 format!(
                     "versionless platform XML root must not declare a version in {}",
-                    request.path.display()
+                    path.display()
                 ),
             )),
             FormatInspectionMode::Versionless => Ok(FormatInspectionResult {
@@ -126,7 +125,7 @@ impl FormatInspectionPort for PlatformXmlAdapter {
                     v2_20::profile::classify_root_version(version).map_err(|format_error| {
                         SourceAdapterError::new(
                             SourceAdapterErrorKind::DecodeCorrupted,
-                            format!("{} in {}", format_error, request.path.display()),
+                            format!("{} in {}", format_error, path.display()),
                         )
                     })?;
                 let actual = unica_format_core::source::FormatVersion::parse(
@@ -153,13 +152,96 @@ impl FormatInspectionPort for PlatformXmlAdapter {
 }
 
 impl SupportPort for PlatformXmlAdapter {
-    fn inspect_path(&self, path: &std::path::Path, object_uuid: &str) -> SupportEvidence {
-        support_evidence(v2_20::support::read_support_facts(path), object_uuid)
+    fn inspect(
+        &self,
+        request: &SupportInspectionRequest,
+    ) -> Result<SupportEvidence, SourceAdapterError> {
+        let path = authorized_target(&request.source)?;
+        let object = request
+            .object
+            .as_ref()
+            .map(|object| object.as_str())
+            .unwrap_or("");
+        Ok(support_evidence(
+            v2_20::support::read_support_facts(&path),
+            object,
+        ))
     }
+}
 
-    fn inspect_bytes(&self, bytes: Option<&[u8]>, object_uuid: &str) -> SupportEvidence {
-        support_evidence(v2_20::support::read_support_facts_bytes(bytes), object_uuid)
+fn authorized_target(source: &SourceContext) -> Result<PathBuf, SourceAdapterError> {
+    if source.declared_family() != &SourceFamily::PlatformXml {
+        return Err(SourceAdapterError::new(
+            SourceAdapterErrorKind::SourceUnavailable,
+            "Platform XML adapter received a source from another family",
+        ));
     }
+    let location = source.location();
+    let workspace = canonical_directory(location.workspace_root())?;
+    let source_root = canonical_directory(location.source_root())?;
+    if !source_root.starts_with(&workspace) {
+        return Err(SourceAdapterError::new(
+            SourceAdapterErrorKind::SourceUnavailable,
+            "authorized source root is outside the workspace root",
+        ));
+    }
+    let target = canonical_target(location.target())?;
+    if !target.starts_with(&source_root) {
+        return Err(SourceAdapterError::new(
+            SourceAdapterErrorKind::SourceUnavailable,
+            "authorized target is outside the source root",
+        ));
+    }
+    Ok(target)
+}
+
+fn canonical_target(path: &std::path::Path) -> Result<PathBuf, SourceAdapterError> {
+    let mut existing = path;
+    let mut suffix = Vec::new();
+    while !existing.exists() {
+        suffix.push(
+            existing
+                .file_name()
+                .ok_or_else(|| {
+                    SourceAdapterError::new(
+                        SourceAdapterErrorKind::SourceUnavailable,
+                        "authorized target has no file name",
+                    )
+                })?
+                .to_os_string(),
+        );
+        existing = existing.parent().ok_or_else(|| {
+            SourceAdapterError::new(
+                SourceAdapterErrorKind::SourceUnavailable,
+                "authorized target has no existing ancestor",
+            )
+        })?;
+    }
+    let mut canonical = std::fs::canonicalize(existing).map_err(|error| {
+        SourceAdapterError::new(
+            SourceAdapterErrorKind::SourceUnavailable,
+            format!(
+                "failed to resolve authorized target ancestor {}: {error}",
+                existing.display()
+            ),
+        )
+    })?;
+    for component in suffix.into_iter().rev() {
+        canonical.push(component);
+    }
+    Ok(canonical)
+}
+
+fn canonical_directory(path: &std::path::Path) -> Result<PathBuf, SourceAdapterError> {
+    std::fs::canonicalize(path).map_err(|error| {
+        SourceAdapterError::new(
+            SourceAdapterErrorKind::SourceUnavailable,
+            format!(
+                "failed to resolve authorized directory {}: {error}",
+                path.display()
+            ),
+        )
+    })
 }
 
 fn validate_query(request: &FormatReadRequest) -> Result<(), SourceAdapterError> {

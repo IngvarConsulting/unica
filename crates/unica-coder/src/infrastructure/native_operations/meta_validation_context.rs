@@ -1,9 +1,7 @@
 use super::common::read_utf8_sig;
 use super::meta::{meta_info_child, meta_info_inner_text, meta_validate_valid_types};
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::platform_xml_owner::{
-    resolve_platform_xml_owners, PlatformXmlOwnerKind,
-};
+use crate::infrastructure::platform_xml_owner::resolve_platform_xml_owners;
 use crate::infrastructure::source_roots::normalize_path_identity;
 use roxmltree::Document;
 use std::collections::HashSet;
@@ -220,13 +218,20 @@ fn resolve_configuration_owner_candidate(
         Ok(owners) => {
             if let Some(owner) = owners.into_iter().find(|owner| {
                 matches!(
-                    owner.kind,
-                    PlatformXmlOwnerKind::Configuration | PlatformXmlOwnerKind::Extension
+                    owner.configured_source_kind,
+                    Some(
+                        unica_format_core::source::ConfiguredSourceSetKind::Configuration
+                            | unica_format_core::source::ConfiguredSourceSetKind::Extension
+                    )
                 )
             }) {
-                let kind = match owner.kind {
-                    PlatformXmlOwnerKind::Extension => MetaValidationOwnerKind::Extension,
-                    PlatformXmlOwnerKind::Configuration => MetaValidationOwnerKind::Configuration,
+                let kind = match owner.configured_source_kind {
+                    Some(unica_format_core::source::ConfiguredSourceSetKind::Extension) => {
+                        MetaValidationOwnerKind::Extension
+                    }
+                    Some(unica_format_core::source::ConfiguredSourceSetKind::Configuration) => {
+                        MetaValidationOwnerKind::Configuration
+                    }
                     _ => unreachable!("filtered above"),
                 };
                 return Ok(OwnerCandidate {

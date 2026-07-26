@@ -199,7 +199,7 @@ fn validate_cf_with_scope(
             ));
             check1_ok = false;
         }
-        let version = match inspect_platform_xml_compatibility(&resolved_path, None) {
+        let version = match inspect_platform_xml_compatibility(&resolved_path) {
             Ok(compatibility @ FormatCompatibility::Supported { .. }) => {
                 report.ok("Export format: 2.20");
                 compatibility.actual().to_string()

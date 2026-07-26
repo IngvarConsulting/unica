@@ -2,7 +2,6 @@
 
 use crate::application::AdapterOutcome;
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::platform_xml_owner::MXL_ROOT;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -2831,12 +2830,7 @@ pub(crate) fn compile_mxl(args: &Map<String, Value>, context: &WorkspaceContext)
         Document::parse(&xml).map_err(|error| format!("compiled MXL is not valid XML: {error}"))?;
         let output_path = absolutize(output_path_raw.clone(), &context.cwd);
         transaction.create_or_replace_bytes(&output_path, utf8_bom_bytes(&xml))?;
-        guard_active_format_owner_with_exact_root(
-            &mut transaction,
-            &output_path,
-            context,
-            MXL_ROOT,
-        )?;
+        guard_active_format_owner(&mut transaction, &output_path, context)?;
         let report = transaction
             .commit_with_post_validation(|| require_mxl_post_validation(&output_path, context))?;
 

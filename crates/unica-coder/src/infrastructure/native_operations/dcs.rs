@@ -3,7 +3,6 @@
 use crate::application::operation_descriptors::TEMPLATE_PATH;
 use crate::application::AdapterOutcome;
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::platform_xml_owner::DCS_ROOT;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -2867,12 +2866,7 @@ pub(crate) fn compile_dcs(args: &Map<String, Value>, context: &WorkspaceContext)
         );
 
         transaction.create_or_replace_bytes(&output_path, replacement)?;
-        guard_active_format_owner_with_exact_root(
-            &mut transaction,
-            &output_path,
-            context,
-            DCS_ROOT,
-        )?;
+        guard_active_format_owner(&mut transaction, &output_path, context)?;
         let mut validation_stdout = None;
         let report = transaction.commit_with_post_validation(|| {
             let validation = require_dcs_post_validation(&output_path, context)?;

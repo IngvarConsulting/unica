@@ -2051,62 +2051,19 @@ pub(crate) fn guard_active_format_owner(
     guard_active_format_dependencies(transaction, &[target], context)
 }
 
-pub(crate) fn guard_active_format_owner_with_exact_root(
-    transaction: &mut CompileTransaction,
-    target: &Path,
-    context: &WorkspaceContext,
-    expected_root: crate::infrastructure::platform_xml_owner::PlatformXmlRootExpectation,
-) -> Result<(), String> {
-    guard_active_format_dependency_targets(
-        transaction,
-        &[FormatDependencyTarget {
-            path: target,
-            expected_root: Some(expected_root),
-        }],
-        context,
-    )
-}
-
 pub(crate) fn guard_active_format_dependencies(
     transaction: &mut CompileTransaction,
     targets: &[&Path],
     context: &WorkspaceContext,
 ) -> Result<(), String> {
-    let targets = targets
-        .iter()
-        .map(|path| FormatDependencyTarget {
-            path,
-            expected_root: None,
-        })
-        .collect::<Vec<_>>();
-    guard_active_format_dependency_targets(transaction, &targets, context)
-}
-
-#[derive(Clone, Copy)]
-struct FormatDependencyTarget<'a> {
-    path: &'a Path,
-    expected_root: Option<crate::infrastructure::platform_xml_owner::PlatformXmlRootExpectation>,
-}
-
-fn guard_active_format_dependency_targets(
-    transaction: &mut CompileTransaction,
-    targets: &[FormatDependencyTarget<'_>],
-    context: &WorkspaceContext,
-) -> Result<(), String> {
     let mut owners = BTreeMap::new();
     let mut provenances = Vec::new();
     for target in targets {
-        let resolution = match target.expected_root {
-            Some(expected_root) => crate::infrastructure::platform_xml_owner::
-                resolve_platform_xml_owners_for_exact_root_with_provenance(
-                    target.path,
-                    context,
-                    expected_root,
-                ),
-            None => crate::infrastructure::platform_xml_owner::
-                resolve_platform_xml_owners_with_provenance(target.path, context),
-        }
-        .map_err(|error| error.message)?;
+        let resolution =
+            crate::infrastructure::platform_xml_owner::resolve_platform_xml_owners_with_provenance(
+                target, context,
+            )
+            .map_err(|error| error.message)?;
         for owner in resolution.owners {
             owners.entry(owner.path.clone()).or_insert(owner);
         }
@@ -2265,11 +2222,12 @@ pub(crate) fn support_state_lines_for_configuration(
     } else {
         config_path.parent().unwrap_or_else(|| Path::new(""))
     };
-    let bin_path = config_dir.join("Ext").join("ParentConfigurations.bin");
-    let evidence = PlatformXmlAdapterFactory::new()
-        .registration()
-        .support
-        .inspect_path(&bin_path, "");
+    let Ok(evidence) = inspect_support_state(config_dir, "") else {
+        return vec![
+            "Поддержка:      состояние ParentConfigurations.bin не удалось прочитать — правки не подтверждены"
+                .to_string(),
+        ];
+    };
     match evidence.source {
         SupportSourceState::Absent => vec![if is_extension {
             "Поддержка:      расширение (CFE), правки свободны".to_string()
@@ -2318,13 +2276,10 @@ pub(crate) fn support_status_for_path(target_path: &Path) -> String {
     };
     let object_uuid = support_object_uuid_for_path(target_path)
         .or_else(|| support_root_uuid(&config_dir.join("Configuration.xml")));
-    let evidence = PlatformXmlAdapterFactory::new()
-        .registration()
-        .support
-        .inspect_path(
-            &config_dir.join("Ext").join("ParentConfigurations.bin"),
-            object_uuid.as_deref().unwrap_or(""),
-        );
+    let Ok(evidence) = inspect_support_state(&config_dir, object_uuid.as_deref().unwrap_or(""))
+    else {
+        return "состояние поддержки не удалось прочитать — правки не подтверждены".to_string();
+    };
     match evidence.effective_rule {
         EffectiveSupportRule::Absent => "не на поддержке".to_string(),
         EffectiveSupportRule::Removed => "снято с поддержки (правки свободны)".to_string(),
@@ -2445,11 +2400,9 @@ pub(crate) fn support_root_uuid_from_bytes(raw: &[u8]) -> Option<String> {
         .map(str::to_ascii_lowercase)
 }
 
-pub(crate) fn parse_support_header(text: &str) -> Option<(u8, usize)> {
-    let evidence = PlatformXmlAdapterFactory::new()
-        .registration()
-        .support
-        .inspect_bytes(Some(text.as_bytes()), "");
+pub(crate) fn parse_support_header(path: &Path) -> Option<(u8, usize)> {
+    let config_dir = path.parent()?.parent()?;
+    let evidence = inspect_support_state(config_dir, "").ok()?;
     if !matches!(evidence.source, SupportSourceState::Parsed) {
         return None;
     }
@@ -2461,6 +2414,35 @@ pub(crate) fn parse_support_header(text: &str) -> Option<(u8, usize)> {
         },
         evidence.vendors.len(),
     ))
+}
+
+pub(crate) fn inspect_support_state(
+    config_dir: &Path,
+    object_uuid: &str,
+) -> Result<unica_format_core::ports::SupportEvidence, unica_format_core::source::SourceAdapterError>
+{
+    let target = config_dir.join("Ext").join("ParentConfigurations.bin");
+    let object = if object_uuid.is_empty() {
+        None
+    } else {
+        Some(unica_format_core::navigation::ObjectKey::new(object_uuid)?)
+    };
+    PlatformXmlAdapterFactory::new()
+        .registration()
+        .support
+        .inspect(&unica_format_core::ports::SupportInspectionRequest {
+            source: unica_format_core::source::SourceContext::new(
+                unica_format_core::source::SourceLocation::new(
+                    config_dir.to_path_buf(),
+                    config_dir.to_path_buf(),
+                    target,
+                ),
+                None,
+                unica_format_core::source::SourceFamily::PlatformXml,
+                None,
+            ),
+            object,
+        })
 }
 
 pub(crate) fn extract_xml_attr(text: &str, element: &str, attr: &str) -> Option<String> {

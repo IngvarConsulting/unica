@@ -5,9 +5,7 @@ use crate::application::AdapterOutcome;
 use crate::domain::form_edit::validate_form_edit_definition;
 use crate::domain::format_profile::FormatCompatibility;
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::platform_xml_owner::{
-    inspect_platform_xml_compatibility, MANAGED_FORM_ROOT,
-};
+use crate::infrastructure::platform_xml_owner::inspect_platform_xml_compatibility;
 use crate::infrastructure::source_roots::normalize_path_identity;
 use roxmltree::Document;
 use serde::Serialize;
@@ -225,7 +223,7 @@ fn validate_form_with_source(
         }
 
         let has_base_form = form_validation_child(root, "BaseForm").is_some();
-        match inspect_platform_xml_compatibility(&form_path, Some(MANAGED_FORM_ROOT)) {
+        match inspect_platform_xml_compatibility(&form_path) {
             Ok(FormatCompatibility::Supported { .. }) => report.ok("Export format: 2.20"),
             Ok(compatibility) => report.warn(format_compatibility_warning(&compatibility)),
             Err(error) => report.error(error.message),
@@ -3912,12 +3910,7 @@ pub(crate) fn compile_form(
                 &input.snapshot.raw,
             )?;
         }
-        guard_active_format_owner_with_exact_root(
-            &mut transaction,
-            &output_path,
-            context,
-            MANAGED_FORM_ROOT,
-        )?;
+        guard_active_format_owner(&mut transaction, &output_path, context)?;
         let mut format_dependencies = Vec::new();
         if let Some(owner_path) = owner_candidate.as_deref() {
             format_dependencies.push(owner_path);

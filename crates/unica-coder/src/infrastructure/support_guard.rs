@@ -6,13 +6,12 @@ use crate::application::{AdapterOutcome, ToolHandler, ToolSpec};
 use crate::domain::navigation::Authorability;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::common::{
-    absolutize, find_support_config_dir, path_arg, required_string, support_object_uuid_for_path,
-    support_root_uuid,
+    absolutize, find_support_config_dir, inspect_support_state, path_arg, required_string,
+    support_object_uuid_for_path, support_root_uuid,
 };
 use crate::infrastructure::native_operations::{meta, template};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
-use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
 use unica_format_core::ports::{EffectiveSupportRule, SupportSourceState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,13 +39,20 @@ pub(crate) fn support_guard_violation(
     let config_dir = find_support_config_dir(&target_path)?;
     let object_uuid = support_object_uuid_for_path(&target_path)
         .or_else(|| support_root_uuid(&config_dir.join("Configuration.xml")));
-    let evidence = PlatformXmlAdapterFactory::new()
-        .registration()
-        .support
-        .inspect_path(
-            &config_dir.join("Ext").join("ParentConfigurations.bin"),
-            object_uuid.as_deref().unwrap_or(""),
-        );
+    let evidence = match inspect_support_state(&config_dir, object_uuid.as_deref().unwrap_or("")) {
+        Ok(evidence) => evidence,
+        Err(error) => {
+            return Some(SupportGuardViolation {
+                code: "support-state-unreadable",
+                reason: format!(
+                    "не удалось прочитать состояние поддержки (ParentConfigurations.bin): {}; безопасность правки не подтверждена",
+                    error.message,
+                ),
+                target_path,
+                config_dir,
+            })
+        }
+    };
     if let SupportSourceState::Unreadable { context, offset } = &evidence.source {
         let location = offset
             .map(|offset| format!(" at byte {offset}"))

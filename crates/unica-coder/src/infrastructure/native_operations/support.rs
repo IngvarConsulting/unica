@@ -170,7 +170,7 @@ fn edit_support_result(
         ));
     }
     let text = decode_parent_configurations(&raw)?;
-    let Some((global_flag, vendor_count)) = parse_support_header(&text) else {
+    let Some((global_flag, vendor_count)) = parse_support_header(&bin_path) else {
         return Err("Неизвестный формат ParentConfigurations.bin".to_string());
     };
     if vendor_count == 0 {
@@ -268,8 +268,7 @@ fn edit_support_result(
                 bin_path.display()
             ));
         }
-        let actual_text = decode_parent_configurations(&actual)?;
-        parse_support_header(&actual_text).ok_or_else(|| {
+        parse_support_header(&bin_path).ok_or_else(|| {
             format!(
                 "support-edit post-write validation could not parse {}",
                 bin_path.display()

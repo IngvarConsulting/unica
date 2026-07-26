@@ -103,6 +103,17 @@ pub enum ConfiguredSourceSetKind {
     ExternalReport,
 }
 
+impl ConfiguredSourceSetKind {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Configuration => "configuration",
+            Self::Extension => "extension",
+            Self::ExternalProcessor => "external_processor",
+            Self::ExternalReport => "external_report",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FormatVersion(Vec<u32>);
 

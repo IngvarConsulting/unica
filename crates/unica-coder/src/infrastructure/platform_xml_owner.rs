@@ -6,8 +6,7 @@ use std::{
 use sha2::{Digest, Sha256};
 use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
 pub(crate) use unica_format_core::ports::{
-    FormatCompatibility, SourceArtifactKind as PlatformXmlRootExpectation,
-    SourceOwnerEvidence as PlatformXmlOwner, SourceOwnerKind as PlatformXmlOwnerKind,
+    FormatCompatibility, SourceOwnerEvidence as PlatformXmlOwner,
 };
 use unica_format_core::{
     ports::{
@@ -87,13 +86,6 @@ pub(crate) struct PlatformXmlOwnerResolution {
     pub provenance: PlatformXmlOwnerProvenance,
 }
 
-pub(crate) const MANAGED_FORM_ROOT: PlatformXmlRootExpectation =
-    PlatformXmlRootExpectation::ManagedForm;
-pub(crate) const DCS_ROOT: PlatformXmlRootExpectation =
-    PlatformXmlRootExpectation::DataCompositionSchema;
-pub(crate) const MXL_ROOT: PlatformXmlRootExpectation =
-    PlatformXmlRootExpectation::SpreadsheetDocument;
-
 pub(crate) fn resolve_platform_xml_owners(
     target: &Path,
     context: &WorkspaceContext,
@@ -101,33 +93,11 @@ pub(crate) fn resolve_platform_xml_owners(
     resolve_platform_xml_owners_with_provenance(target, context).map(|resolution| resolution.owners)
 }
 
-pub(crate) fn resolve_platform_xml_owners_for_exact_root(
-    target: &Path,
-    context: &WorkspaceContext,
-    expected_root: PlatformXmlRootExpectation,
-) -> Result<Vec<PlatformXmlOwner>, PlatformXmlOwnerError> {
-    resolve_platform_xml_owners_for_exact_root_with_provenance(target, context, expected_root)
-        .map(|resolution| resolution.owners)
-}
-
 pub(crate) fn resolve_platform_xml_owners_with_provenance(
     target: &Path,
     context: &WorkspaceContext,
 ) -> Result<PlatformXmlOwnerResolution, PlatformXmlOwnerError> {
-    resolve(target, context, None, OwnerResolutionMode::Existing)
-}
-
-pub(crate) fn resolve_platform_xml_owners_for_exact_root_with_provenance(
-    target: &Path,
-    context: &WorkspaceContext,
-    expected_root: PlatformXmlRootExpectation,
-) -> Result<PlatformXmlOwnerResolution, PlatformXmlOwnerError> {
-    resolve(
-        target,
-        context,
-        Some(expected_root),
-        OwnerResolutionMode::Existing,
-    )
+    resolve(target, context, OwnerResolutionMode::Existing)
 }
 
 pub(crate) fn resolve_existing_platform_xml_owners_for_new_output(
@@ -142,17 +112,11 @@ pub(crate) fn resolve_existing_platform_xml_owners_for_new_output_with_provenanc
     target: &Path,
     context: &WorkspaceContext,
 ) -> Result<PlatformXmlOwnerResolution, PlatformXmlOwnerError> {
-    resolve(
-        target,
-        context,
-        None,
-        OwnerResolutionMode::ExistingForNewOutput,
-    )
+    resolve(target, context, OwnerResolutionMode::ExistingForNewOutput)
 }
 
 pub(crate) fn inspect_platform_xml_compatibility(
     target: &Path,
-    _expected_artifact: Option<PlatformXmlRootExpectation>,
 ) -> Result<FormatCompatibility, PlatformXmlOwnerError> {
     let target = normalize_path_identity(target).map_err(|message| PlatformXmlOwnerError {
         path: target.to_path_buf(),
@@ -162,7 +126,7 @@ pub(crate) fn inspect_platform_xml_compatibility(
         .registration()
         .format_inspection
         .inspect(&FormatInspectionRequest {
-            path: target.clone(),
+            source: inspection_source(&target),
             mode: FormatInspectionMode::Versioned,
         })
         .map_err(|error| PlatformXmlOwnerError {
@@ -184,7 +148,7 @@ pub(crate) fn inspect_platform_xml_versionless(target: &Path) -> Result<(), Plat
         .registration()
         .format_inspection
         .inspect(&FormatInspectionRequest {
-            path: target.clone(),
+            source: inspection_source(&target),
             mode: FormatInspectionMode::Versionless,
         })
         .map(|_| ())
@@ -197,7 +161,6 @@ pub(crate) fn inspect_platform_xml_versionless(target: &Path) -> Result<(), Plat
 fn resolve(
     target: &Path,
     context: &WorkspaceContext,
-    expected_artifact: Option<PlatformXmlRootExpectation>,
     mode: OwnerResolutionMode,
 ) -> Result<PlatformXmlOwnerResolution, PlatformXmlOwnerError> {
     let target = if target.is_absolute() {
@@ -262,11 +225,7 @@ fn resolve(
     let result = PlatformXmlAdapterFactory::new()
         .registration()
         .ownership
-        .resolve(&OwnerResolutionRequest {
-            source,
-            expected_artifact,
-            mode,
-        })
+        .resolve(&OwnerResolutionRequest { source, mode })
         .map_err(|error| PlatformXmlOwnerError {
             path: target,
             message: error.message,
@@ -280,11 +239,220 @@ fn resolve(
     })
 }
 
+fn inspection_source(target: &Path) -> SourceContext {
+    let source_root = target
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .to_path_buf();
+    SourceContext::new(
+        SourceLocation::new(source_root.clone(), source_root, target.to_path_buf()),
+        None,
+        SourceFamily::PlatformXml,
+        None,
+    )
+}
+
 fn configured_kind(kind: SourceSetKind) -> ConfiguredSourceSetKind {
     match kind {
         SourceSetKind::Configuration => ConfiguredSourceSetKind::Configuration,
         SourceSetKind::Extension => ConfiguredSourceSetKind::Extension,
         SourceSetKind::ExternalProcessor => ConfiguredSourceSetKind::ExternalProcessor,
         SourceSetKind::ExternalReport => ConfiguredSourceSetKind::ExternalReport,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn equal_depth_source_sets_are_ambiguous_in_both_orders_and_modes() {
+        let orders = [
+            "  - name: external\n    type: EXTERNAL_DATA_PROCESSORS\n    path: src\n  - name: configuration\n    type: CONFIGURATION\n    path: src\n",
+            "  - name: configuration\n    type: CONFIGURATION\n    path: src\n  - name: external\n    type: EXTERNAL_DATA_PROCESSORS\n    path: src\n",
+        ];
+        for (index, source_sets) in orders.iter().enumerate() {
+            let context = temp_context(&format!("ambiguous-{index}"));
+            fs::write(
+                context.cwd.join("v8project.yaml"),
+                format!("format: DESIGNER\nsource-set:\n{source_sets}"),
+            )
+            .unwrap();
+            let target = context.cwd.join("src/Demo/Ext/ObjectModule.bsl");
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            for mode in [
+                OwnerResolutionMode::Existing,
+                OwnerResolutionMode::ExistingForNewOutput,
+            ] {
+                let error = resolve(&target, &context, mode).unwrap_err();
+                assert!(error.message.contains("ambiguous source-set"), "{error:?}");
+                assert!(error.message.contains("external"), "{error:?}");
+                assert!(error.message.contains("configuration"), "{error:?}");
+            }
+            fs::remove_dir_all(context.cwd).unwrap();
+        }
+    }
+
+    #[test]
+    fn deepest_source_set_boundary_excludes_the_outer_owner() {
+        let context = temp_context("deepest-boundary");
+        fs::write(
+            context.cwd.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: outer\n    type: CONFIGURATION\n    path: src\n  - name: nested\n    type: CONFIGURATION\n    path: src/new\n",
+        )
+        .unwrap();
+        fs::create_dir_all(context.cwd.join("src/new")).unwrap();
+        fs::write(
+            context.cwd.join("src/Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Configuration/></MetaDataObject>"#,
+        )
+        .unwrap();
+        let target = context.cwd.join("src/new/Missing.xml");
+        assert!(
+            resolve_existing_platform_xml_owners_for_new_output(&target, &context)
+                .unwrap()
+                .is_empty()
+        );
+
+        let nested = context.cwd.join("src/new/Configuration.xml");
+        fs::write(
+            &nested,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration/></MetaDataObject>"#,
+        )
+        .unwrap();
+        let owners =
+            resolve_existing_platform_xml_owners_for_new_output(&target, &context).unwrap();
+        assert_eq!(owners.len(), 1);
+        assert_eq!(owners[0].path, fs::canonicalize(nested).unwrap());
+        fs::remove_dir_all(context.cwd).unwrap();
+    }
+
+    #[test]
+    fn owner_provenance_rejects_project_map_remap_before_binding() {
+        let context = temp_context("project-map-race");
+        let project_map = context.cwd.join("v8project.yaml");
+        fs::write(
+            &project_map,
+            "format: DESIGNER\nsource-set:\n  - name: configuration\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let target = context.cwd.join("src/Demo/Ext/ObjectModule.bsl");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(
+            context.cwd.join("src/Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration/></MetaDataObject>"#,
+        )
+        .unwrap();
+        let resolution = resolve_platform_xml_owners_with_provenance(&target, &context).unwrap();
+        fs::write(
+            &project_map,
+            "format: DESIGNER\nsource-set:\n  - name: external\n    type: EXTERNAL_DATA_PROCESSORS\n    path: src\n",
+        )
+        .unwrap();
+
+        let error = resolution
+            .provenance
+            .bind_to(&mut CompileTransaction::new())
+            .unwrap_err();
+
+        assert!(error.contains("v8project.yaml"), "{error}");
+        assert!(error.contains("changed"), "{error}");
+        fs::remove_dir_all(context.cwd).unwrap();
+    }
+
+    #[test]
+    fn owner_provenance_rejects_a_wrapper_created_after_resolution() {
+        let context = temp_context("late-wrapper-race");
+        fs::write(
+            context.cwd.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: configuration\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::create_dir_all(context.cwd.join("src")).unwrap();
+        fs::write(
+            context.cwd.join("src/Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration/></MetaDataObject>"#,
+        )
+        .unwrap();
+        let wrapper = context.cwd.join("src/Reports/Sales/Templates/Planned.xml");
+        let content = context
+            .cwd
+            .join("src/Reports/Sales/Templates/Planned/Ext/Template.xml");
+        fs::create_dir_all(content.parent().unwrap()).unwrap();
+        fs::write(
+            &content,
+            r#"<Template xmlns="http://v8.1c.ru/8.3/xcf/data"/>"#,
+        )
+        .unwrap();
+        let resolution = resolve_platform_xml_owners_with_provenance(&content, &context).unwrap();
+        fs::write(
+            &wrapper,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Template/></MetaDataObject>"#,
+        )
+        .unwrap();
+
+        let error = resolution
+            .provenance
+            .bind_to(&mut CompileTransaction::new())
+            .unwrap_err();
+
+        assert!(error.contains("Planned.xml"), "{error}");
+        assert!(error.contains("absence guard"), "{error}");
+        fs::remove_dir_all(context.cwd).unwrap();
+    }
+
+    #[test]
+    fn owner_provenance_rejects_external_membership_growth() {
+        let context = temp_context("external-membership-race");
+        fs::write(
+            context.cwd.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: external\n    type: EXTERNAL_DATA_PROCESSORS\n    path: external\n",
+        )
+        .unwrap();
+        let source_root = context.cwd.join("external");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::write(
+            source_root.join("Existing.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><ExternalDataProcessor/></MetaDataObject>"#,
+        )
+        .unwrap();
+        let resolution = resolve_existing_platform_xml_owners_for_new_output_with_provenance(
+            &source_root,
+            &context,
+        )
+        .unwrap();
+        fs::write(
+            source_root.join("Late.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><ExternalDataProcessor/></MetaDataObject>"#,
+        )
+        .unwrap();
+
+        let error = resolution
+            .provenance
+            .bind_to(&mut CompileTransaction::new())
+            .unwrap_err();
+
+        assert!(error.contains("directory membership"), "{error}");
+        assert!(error.contains("Late.xml"), "{error}");
+        fs::remove_dir_all(context.cwd).unwrap();
+    }
+
+    fn temp_context(label: &str) -> WorkspaceContext {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "unica-platform-owner-{label}-{}-{nanos}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        }
     }
 }

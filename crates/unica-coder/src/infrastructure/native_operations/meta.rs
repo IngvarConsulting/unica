@@ -32,7 +32,7 @@ use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::metadata_kind;
 use crate::infrastructure::platform_xml_owner::{
     inspect_platform_xml_compatibility, resolve_platform_xml_owners_with_provenance,
-    PlatformXmlOwnerKind, PlatformXmlOwnerProvenance,
+    PlatformXmlOwnerProvenance,
 };
 use crate::infrastructure::project_sources::discover_project_source_map;
 use roxmltree::Document;
@@ -44,7 +44,7 @@ use std::fs;
 use std::io::{self, ErrorKind, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use unica_format_core::ports::LineNumberLengthCapability;
+use unica_format_core::source::{ConfiguredSourceSetKind, FormatVersion};
 
 use super::common::*;
 use super::compile_transaction::{
@@ -5890,7 +5890,7 @@ fn meta_validate_one_with_scope(
         check1_ok = false;
     }
 
-    let version = match inspect_platform_xml_compatibility(&resolved_path, None) {
+    let version = match inspect_platform_xml_compatibility(&resolved_path) {
         Ok(compatibility @ FormatCompatibility::Supported { .. }) => {
             report.ok("Export format: 2.20");
             compatibility.actual().to_string()
@@ -18992,8 +18992,8 @@ fn meta_edit_line_number_length_policy(
     };
     let Some(owner) = resolution.owners.iter().find(|owner| {
         matches!(
-            owner.kind,
-            PlatformXmlOwnerKind::Configuration | PlatformXmlOwnerKind::Extension
+            owner.configured_source_kind,
+            Some(ConfiguredSourceSetKind::Configuration | ConfiguredSourceSetKind::Extension)
         )
     }) else {
         return Ok(MetaEditLineNumberLengthAuthorization {
@@ -19002,12 +19002,12 @@ fn meta_edit_line_number_length_policy(
         });
     };
     Ok(MetaEditLineNumberLengthAuthorization {
-        policy: match owner.line_number_length {
-            LineNumberLengthCapability::FixedFive => MetaEditLineNumberLengthPolicy::FixedFive,
-            LineNumberLengthCapability::Editable => MetaEditLineNumberLengthPolicy::Editable,
-            LineNumberLengthCapability::Unknown => {
-                MetaEditLineNumberLengthPolicy::UnknownCompatibility
+        policy: match owner.producer_version.as_ref() {
+            Some(version) if version > &FormatVersion::parse("8.3.26").expect("valid version") => {
+                MetaEditLineNumberLengthPolicy::Editable
             }
+            Some(_) => MetaEditLineNumberLengthPolicy::FixedFive,
+            None => MetaEditLineNumberLengthPolicy::UnknownCompatibility,
         },
         provenance: Some(resolution.provenance),
     })

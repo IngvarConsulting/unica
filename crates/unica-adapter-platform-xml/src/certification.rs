@@ -11,7 +11,9 @@ use unica_format_core::{
         RelationKey, RelationKind, RelationRole,
     },
     ports::{
-        CaptureResult, FormatReadRequest, OwnerResolutionMode, OwnerResolutionRequest, ProbeResult,
+        CaptureResult, FormatInspectionMode, FormatInspectionRequest, FormatReadRequest,
+        OwnerResolutionMode, OwnerResolutionRequest, ProbeResult, SupportInspectionRequest,
+        SupportSourceState,
     },
     source::{
         ConfiguredSourceSetKind, SourceAdapterErrorKind, SourceContext, SourceFamily, SourceId,
@@ -104,7 +106,6 @@ fn ownership_rejects_external_report_in_external_processor_source_set() {
         .ownership
         .resolve(&OwnerResolutionRequest {
             source,
-            expected_artifact: None,
             mode: OwnerResolutionMode::Existing,
         })
         .unwrap_err();
@@ -112,6 +113,150 @@ fn ownership_rejects_external_report_in_external_processor_source_set() {
     assert_eq!(error.kind, SourceAdapterErrorKind::DecodeCorrupted);
     assert!(error.message.contains("external_processor"), "{error}");
     assert!(error.message.contains("external_report"), "{error}");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn ownership_rejects_mixed_external_kinds_when_correct_owner_sorts_first() {
+    assert_mixed_external_owners(
+        "mixed-correct-then-wrong",
+        &[
+            ("A.xml", "ExternalDataProcessor"),
+            ("B.xml", "ExternalReport"),
+        ],
+        false,
+    );
+}
+
+#[test]
+fn ownership_rejects_mixed_external_kinds_when_wrong_owner_sorts_first() {
+    assert_mixed_external_owners(
+        "mixed-wrong-then-correct",
+        &[
+            ("A.xml", "ExternalReport"),
+            ("B.xml", "ExternalDataProcessor"),
+        ],
+        false,
+    );
+}
+
+#[test]
+fn ownership_accepts_multiple_external_owners_of_the_configured_kind() {
+    assert_mixed_external_owners(
+        "multiple-correct",
+        &[
+            ("A.xml", "ExternalDataProcessor"),
+            ("B.xml", "ExternalDataProcessor"),
+        ],
+        true,
+    );
+}
+
+#[test]
+fn format_inspection_uses_the_authorized_source_target_not_an_unrestricted_path() {
+    let root = fixture_root("authorized-format-target");
+    fs::create_dir_all(&root).unwrap();
+    let authorized = root.join("Authorized.xml");
+    fs::write(
+        &authorized,
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document/></MetaDataObject>"#,
+    )
+    .unwrap();
+    let source = SourceContext::new(
+        SourceLocation::new(root.clone(), root.clone(), authorized),
+        Some("main".to_string()),
+        SourceFamily::PlatformXml,
+        None,
+    );
+
+    let result = PlatformXmlAdapterFactory::new()
+        .registration()
+        .format_inspection
+        .inspect(&FormatInspectionRequest {
+            source,
+            mode: FormatInspectionMode::Versioned,
+        })
+        .unwrap();
+
+    assert_eq!(result.compatibility.unwrap().actual().to_string(), "2.20");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn support_inspection_rejects_a_target_outside_the_authorized_source_root() {
+    let root = fixture_root("support-source-boundary");
+    let source_root = root.join("source");
+    fs::create_dir_all(&source_root).unwrap();
+    let outside = root.join("outside.bin");
+    fs::write(&outside, []).unwrap();
+    let registration = PlatformXmlAdapterFactory::new().registration();
+
+    let error = registration
+        .support
+        .inspect(&SupportInspectionRequest {
+            source: SourceContext::new(
+                SourceLocation::new(root.clone(), source_root, outside),
+                None,
+                SourceFamily::PlatformXml,
+                None,
+            ),
+            object: None,
+        })
+        .unwrap_err();
+
+    assert_eq!(error.kind, SourceAdapterErrorKind::SourceUnavailable);
+
+    let authorized_root = root.join("authorized");
+    fs::create_dir_all(&authorized_root).unwrap();
+    let evidence = registration
+        .support
+        .inspect(&SupportInspectionRequest {
+            source: SourceContext::new(
+                SourceLocation::new(
+                    root.clone(),
+                    authorized_root.clone(),
+                    authorized_root.join("Ext").join("ParentConfigurations.bin"),
+                ),
+                None,
+                SourceFamily::PlatformXml,
+                None,
+            ),
+            object: None,
+        })
+        .unwrap();
+    assert_eq!(evidence.source, SupportSourceState::Absent);
+    fs::remove_dir_all(root).unwrap();
+}
+
+fn assert_mixed_external_owners(label: &str, owners: &[(&str, &str)], expected_success: bool) {
+    let root = fixture_root(label);
+    fs::create_dir_all(&root).unwrap();
+    for (name, kind) in owners {
+        fs::write(
+            root.join(name),
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{kind}/></MetaDataObject>"#
+            ),
+        )
+        .unwrap();
+    }
+    let source = SourceContext::new(
+        SourceLocation::new(root.clone(), root.clone(), root.clone()),
+        Some("external".to_string()),
+        SourceFamily::PlatformXml,
+        None,
+    )
+    .with_configured_source_set_kind(Some(ConfiguredSourceSetKind::ExternalProcessor));
+
+    let result = PlatformXmlAdapterFactory::new()
+        .registration()
+        .ownership
+        .resolve(&OwnerResolutionRequest {
+            source,
+            mode: OwnerResolutionMode::Existing,
+        });
+
+    assert_eq!(result.is_ok(), expected_success, "{result:?}");
     fs::remove_dir_all(root).unwrap();
 }
 

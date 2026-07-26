@@ -1,20 +1,16 @@
 //! Format-neutral ports implemented by concrete source adapters.
 
-use std::{
-    ffi::OsString,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{ffi::OsString, path::PathBuf, sync::Arc};
 
 use crate::{
     navigation::{
-        Authorability, CapabilityVector, NavigationEnvelope, NavigationQuery, ObjectRef,
+        Authorability, CapabilityVector, NavigationEnvelope, NavigationQuery, ObjectKey, ObjectRef,
         PropertyValue, SourceAdapterDiagnostic,
     },
     semantic_ids::{SemanticPropertyId, SemanticRelationId},
     source::{
-        AdapterManifest, FormatVersion, SourceAdapterError, SourceContext, SourceDescriptor,
-        SourceRevision, SourceSnapshot,
+        AdapterManifest, ConfiguredSourceSetKind, FormatVersion, SourceAdapterError, SourceContext,
+        SourceDescriptor, SourceRevision, SourceSnapshot,
     },
 };
 
@@ -113,47 +109,12 @@ impl FormatCompatibility {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SourceArtifactKind {
-    ManagedForm,
-    DataCompositionSchema,
-    SpreadsheetDocument,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SourceOwnerKind {
-    Configuration,
-    Extension,
-    ExternalProcessor,
-    ExternalReport,
-    Standalone,
-}
-
-impl SourceOwnerKind {
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Configuration => "configuration",
-            Self::Extension => "extension",
-            Self::ExternalProcessor => "external_processor",
-            Self::ExternalReport => "external_report",
-            Self::Standalone => "standalone",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LineNumberLengthCapability {
-    FixedFive,
-    Editable,
-    Unknown,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceOwnerEvidence {
-    pub kind: SourceOwnerKind,
+    pub configured_source_kind: Option<ConfiguredSourceSetKind>,
     pub path: PathBuf,
     pub format: FormatCompatibility,
-    pub line_number_length: LineNumberLengthCapability,
+    pub producer_version: Option<FormatVersion>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,7 +141,6 @@ pub enum OwnerResolutionMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnerResolutionRequest {
     pub source: SourceContext,
-    pub expected_artifact: Option<SourceArtifactKind>,
     pub mode: OwnerResolutionMode,
 }
 
@@ -205,7 +165,7 @@ pub enum FormatInspectionMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormatInspectionRequest {
-    pub path: PathBuf,
+    pub source: SourceContext,
     pub mode: FormatInspectionMode,
 }
 
@@ -260,9 +220,17 @@ pub struct SupportEvidence {
     pub vendors: Vec<SupportVendorEvidence>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupportInspectionRequest {
+    pub source: SourceContext,
+    pub object: Option<ObjectKey>,
+}
+
 pub trait SupportPort: Send + Sync {
-    fn inspect_path(&self, path: &Path, object_uuid: &str) -> SupportEvidence;
-    fn inspect_bytes(&self, bytes: Option<&[u8]>, object_uuid: &str) -> SupportEvidence;
+    fn inspect(
+        &self,
+        request: &SupportInspectionRequest,
+    ) -> Result<SupportEvidence, SourceAdapterError>;
 }
 
 #[derive(Clone)]

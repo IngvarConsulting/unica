@@ -2955,8 +2955,7 @@ fn validate_required_owner_raw(path: &Path, kind: SourceSetKind, raw: &[u8]) -> 
             path.display()
         ));
     }
-    let compatibility =
-        inspect_platform_xml_compatibility(path, None).map_err(|error| error.message)?;
+    let compatibility = inspect_platform_xml_compatibility(path).map_err(|error| error.message)?;
     if !matches!(compatibility, FormatCompatibility::Supported { .. }) {
         return Err(format!(
             "staged owner export format must be the exact raw literal {TARGET_EXPORT_FORMAT}; found {} in {}",
@@ -3022,7 +3021,7 @@ fn validate_staged_xml(path: &Path, expected: &TreeEntryKind) -> Result<(), Stri
     match staged_root_version_policy(namespace, local_name) {
         Some(StagedRootVersionPolicy::ExactRootVersion) => {
             let compatibility =
-                inspect_platform_xml_compatibility(path, None).map_err(|error| error.message)?;
+                inspect_platform_xml_compatibility(path).map_err(|error| error.message)?;
             if !matches!(compatibility, FormatCompatibility::Supported { .. }) {
                 return Err(format!(
                     "staged XML root {{{namespace}}}{local_name} must use the exact raw version literal {TARGET_EXPORT_FORMAT}; found {} (missing means legacy format 1.0) in {}",

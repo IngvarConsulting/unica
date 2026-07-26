@@ -45,8 +45,6 @@ use crate::infrastructure::native_operations::support::support_edit_reads_uuid_d
 use crate::infrastructure::native_operations::template::template_add_object_type_folders;
 use crate::infrastructure::platform_xml_owner::{
     resolve_existing_platform_xml_owners_for_new_output, resolve_platform_xml_owners,
-    resolve_platform_xml_owners_for_exact_root, PlatformXmlRootExpectation, DCS_ROOT,
-    MANAGED_FORM_ROOT, MXL_ROOT,
 };
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
@@ -83,11 +81,7 @@ pub(crate) fn evaluate_format_guard(
     let mut owners = Vec::new();
     let mut owner_paths = HashSet::new();
     for (target, new_output) in targets {
-        let expected_root =
-            declared_output_root_expectation(descriptor.operation, args, context, &target);
-        let resolved = if let Some(expected_root) = expected_root {
-            resolve_platform_xml_owners_for_exact_root(&target, context, expected_root)
-        } else if new_output {
+        let resolved = if new_output {
             resolve_existing_platform_xml_owners_for_new_output(&target, context)
         } else {
             resolve_platform_xml_owners(&target, context)
@@ -163,38 +157,14 @@ pub(crate) fn evaluate_format_guard(
             "targetPlatform": ACTIVE_FORMAT_PROFILE.platform_line,
             "compatibility": compatibility.label(),
             "root": owner.path.display().to_string(),
-            "ownerKind": owner.kind.label(),
+            "ownerKind": owner
+                .configured_source_kind
+                .map(|kind| kind.label())
+                .unwrap_or("standalone"),
         });
         return Ok(format_check(spec, warning, diagnostic));
     }
     Ok(FormatGuardCheck::Allow)
-}
-
-fn declared_output_root_expectation(
-    operation: &str,
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-    target: &Path,
-) -> Option<PlatformXmlRootExpectation> {
-    let (output, expected_root) = match operation {
-        "dcs-compile" => (output_path_arg(args, context), DCS_ROOT),
-        "mxl-compile" => (output_path_arg(args, context), MXL_ROOT),
-        "form-compile" => (
-            form_compile_format_paths(args, context).into_iter().next(),
-            MANAGED_FORM_ROOT,
-        ),
-        _ => return None,
-    };
-    output
-        .filter(|output| output == target)
-        .map(|_| expected_root)
-}
-
-fn output_path_arg(args: &Map<String, Value>, context: &WorkspaceContext) -> Option<PathBuf> {
-    ["OutputPath", "outputPath"]
-        .iter()
-        .find_map(|name| args.get(*name).and_then(Value::as_str))
-        .map(|path| absolutize(path, &context.cwd))
 }
 
 fn format_check(spec: ToolSpec, warning: String, diagnostic: Value) -> FormatGuardCheck {
