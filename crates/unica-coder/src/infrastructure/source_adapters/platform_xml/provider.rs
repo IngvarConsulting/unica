@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
     fs,
+    io::Read,
     path::{Component, Path, PathBuf},
     sync::Arc,
 };
@@ -8,7 +9,13 @@ use std::{
 use roxmltree::Document;
 use sha2::{Digest, Sha256};
 
-use crate::domain::source_adapters::{SourceAdapterError, SourceAdapterErrorKind, SourceRevision};
+use crate::domain::source_adapters::{
+    SourceAdapterError, SourceAdapterErrorKind, SourceRevision, TargetIdentity,
+};
+
+pub(crate) const MAX_CAPTURED_FILES: usize = 512;
+pub(crate) const MAX_CAPTURED_FILE_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_CAPTURED_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug)]
 pub(crate) struct PlatformXmlProvider {
@@ -16,6 +23,8 @@ pub(crate) struct PlatformXmlProvider {
     configuration: Option<Arc<[u8]>>,
     parent_configurations: Option<Arc<[u8]>>,
     revision: SourceRevision,
+    target_identity: TargetIdentity,
+    descriptor_key: String,
     captured_root: PathBuf,
     captured_source_root: PathBuf,
 }
@@ -23,7 +32,7 @@ pub(crate) struct PlatformXmlProvider {
 impl PlatformXmlProvider {
     pub(crate) fn open(root: impl AsRef<Path>) -> Result<Self, SourceAdapterError> {
         let root = root.as_ref();
-        Self::capture_with_hook(&root.join("descriptor.xml"), root, || {})
+        Self::capture_root_with_hook(root, || {})
     }
 
     pub(crate) fn capture(
@@ -38,8 +47,34 @@ impl PlatformXmlProvider {
         root: impl AsRef<Path>,
         after_first_capture: impl FnOnce(),
     ) -> Result<Self, SourceAdapterError> {
-        let root = root.as_ref();
-        Self::capture_with_hook(&root.join("descriptor.xml"), root, after_first_capture)
+        Self::capture_root_with_hook(root.as_ref(), after_first_capture)
+    }
+
+    fn capture_root_with_hook(
+        source_root: &Path,
+        after_first_capture: impl FnOnce(),
+    ) -> Result<Self, SourceAdapterError> {
+        ensure_directory(source_root)?;
+        let captured_source_root =
+            fs::canonicalize(source_root).map_err(|_| unavailable("source root"))?;
+        let target_identity = TargetIdentity::from_normalized_relative_path("Configuration.xml")?;
+        let first = capture_contents(&captured_source_root, &captured_source_root, true)?;
+        after_first_capture();
+        let second = capture_contents(&captured_source_root, &captured_source_root, true)?;
+        if first != second {
+            return Err(stale());
+        }
+        let revision = revision_for(&first, &target_identity)?;
+        Ok(Self {
+            files: first.files,
+            configuration: first.configuration,
+            parent_configurations: first.parent_configurations,
+            revision,
+            target_identity,
+            descriptor_key: "Configuration.xml".to_string(),
+            captured_root: captured_source_root.clone(),
+            captured_source_root,
+        })
     }
 
     fn capture_with_hook(
@@ -47,35 +82,47 @@ impl PlatformXmlProvider {
         source_root: &Path,
         after_first_capture: impl FnOnce(),
     ) -> Result<Self, SourceAdapterError> {
-        let aggregate_root = target
-            .parent()
-            .ok_or_else(|| unavailable("Platform XML descriptor has no aggregate root"))?;
-        ensure_directory(aggregate_root)?;
         ensure_directory(source_root)?;
-        let captured_root =
-            fs::canonicalize(aggregate_root).map_err(|_| unavailable("aggregate root"))?;
+        ensure_no_symlink_components(source_root, target)?;
         let captured_source_root =
             fs::canonicalize(source_root).map_err(|_| unavailable("source root"))?;
-        if !captured_root.starts_with(&captured_source_root) {
-            return Err(unavailable(
-                "Platform XML aggregate is outside the authorized source root",
-            ));
-        }
-        let first = capture_contents(&captured_root, &captured_source_root)?;
+        let requested_target = if target.is_absolute() {
+            target.to_path_buf()
+        } else {
+            source_root.join(target)
+        };
+        let canonical_target =
+            fs::canonicalize(&requested_target).map_err(|_| unavailable("Platform XML target"))?;
+        let (descriptor, root_capture) =
+            resolve_descriptor(&canonical_target, &captured_source_root)?;
+        let descriptor_relative = relative_key(&captured_source_root, &descriptor)?;
+        let target_identity = TargetIdentity::from_normalized_relative_path(&descriptor_relative)?;
+        let captured_root = descriptor
+            .parent()
+            .expect("descriptor has parent")
+            .to_path_buf();
+        let descriptor_key = descriptor
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| unavailable("Platform XML descriptor has no UTF-8 file name"))?
+            .to_string();
+        let first = capture_contents(&descriptor, &captured_source_root, root_capture)?;
         after_first_capture();
-        let second = capture_contents(&captured_root, &captured_source_root)?;
+        let second = capture_contents(&descriptor, &captured_source_root, root_capture)?;
         if first != second {
             return Err(SourceAdapterError::new(
                 SourceAdapterErrorKind::SnapshotStale,
                 "Platform XML aggregate changed while the snapshot was captured",
             ));
         }
-        let revision = revision_for(&first)?;
+        let revision = revision_for(&first, &target_identity)?;
         Ok(Self {
             files: first.files,
             configuration: first.configuration,
             parent_configurations: first.parent_configurations,
             revision,
+            target_identity,
+            descriptor_key,
             captured_root,
             captured_source_root,
         })
@@ -96,6 +143,14 @@ impl PlatformXmlProvider {
 
     pub(crate) fn revision(&self) -> Result<SourceRevision, SourceAdapterError> {
         Ok(self.revision.clone())
+    }
+
+    pub(crate) fn target_identity(&self) -> &TargetIdentity {
+        &self.target_identity
+    }
+
+    pub(crate) fn descriptor_key(&self) -> &str {
+        &self.descriptor_key
     }
 
     /// Canonical aggregate root whose bytes were captured. This is internal
@@ -189,25 +244,121 @@ struct CaptureContents {
     parent_configurations: Option<Arc<[u8]>>,
 }
 
+#[derive(Default)]
+struct CaptureBudget {
+    files: usize,
+    bytes: usize,
+}
+
+impl CaptureBudget {
+    fn reserve(&mut self, declared: u64) -> Result<usize, SourceAdapterError> {
+        let declared = usize::try_from(declared)
+            .map_err(|_| resource_limit("Platform XML file size cannot be represented"))?;
+        if self.files >= MAX_CAPTURED_FILES {
+            return Err(resource_limit(
+                "Platform XML capture exceeds the file limit",
+            ));
+        }
+        if declared > MAX_CAPTURED_FILE_BYTES {
+            return Err(resource_limit(
+                "Platform XML file exceeds the per-file byte limit",
+            ));
+        }
+        let next = self
+            .bytes
+            .checked_add(declared)
+            .ok_or_else(|| resource_limit("Platform XML capture byte accounting overflow"))?;
+        if next > MAX_CAPTURED_TOTAL_BYTES {
+            return Err(resource_limit(
+                "Platform XML capture exceeds the total byte limit",
+            ));
+        }
+        self.files += 1;
+        self.bytes = next;
+        Ok(declared)
+    }
+
+    fn reconcile(&mut self, declared: usize, actual: usize) -> Result<(), SourceAdapterError> {
+        if actual > MAX_CAPTURED_FILE_BYTES {
+            return Err(resource_limit(
+                "Platform XML file exceeds the per-file byte limit",
+            ));
+        }
+        let next = self
+            .bytes
+            .checked_sub(declared)
+            .and_then(|value| value.checked_add(actual))
+            .ok_or_else(|| resource_limit("Platform XML capture byte accounting overflow"))?;
+        if next > MAX_CAPTURED_TOTAL_BYTES {
+            return Err(resource_limit(
+                "Platform XML capture exceeds the total byte limit",
+            ));
+        }
+        self.bytes = next;
+        Ok(())
+    }
+}
+
 fn capture_contents(
-    aggregate_root: &Path,
+    descriptor: &Path,
     source_root: &Path,
+    root_capture: bool,
 ) -> Result<CaptureContents, SourceAdapterError> {
+    let mut budget = CaptureBudget::default();
     let mut files = BTreeMap::new();
-    capture_directory(aggregate_root, "", &mut files)?;
+    if root_capture {
+        capture_directory(source_root, "", &mut files, &mut budget)?;
+    } else {
+        let descriptor_key = descriptor
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| unavailable("Platform XML descriptor has no UTF-8 file name"))?
+            .to_string();
+        insert_file(
+            &mut files,
+            descriptor_key.clone(),
+            read_limited_regular_file(descriptor, &mut budget, "Platform XML descriptor")?,
+        )?;
+        let stem = descriptor_key
+            .strip_suffix(".xml")
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| unavailable("Platform XML descriptor must have a .xml extension"))?;
+        let companion = descriptor
+            .parent()
+            .expect("descriptor has parent")
+            .join(stem);
+        match fs::symlink_metadata(&companion) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(unavailable("Platform XML companion aggregate")),
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Err(unavailable(
+                    "Platform XML companion aggregate must be a non-symlink directory",
+                ))
+            }
+            Ok(_) => capture_directory(&companion, stem, &mut files, &mut budget)?,
+        }
+    }
+    let configuration = if root_capture {
+        files.get("Configuration.xml").cloned()
+    } else {
+        capture_optional_regular_file(source_root, "Configuration.xml", &mut budget)?
+    };
+    let parent_configurations = if root_capture {
+        files.get("Ext/ParentConfigurations.bin").cloned()
+    } else {
+        capture_optional_regular_file(source_root, "Ext/ParentConfigurations.bin", &mut budget)?
+    };
     Ok(CaptureContents {
         files,
-        configuration: capture_optional_regular_file(source_root, "Configuration.xml")?,
-        parent_configurations: capture_optional_regular_file(
-            source_root,
-            "Ext/ParentConfigurations.bin",
-        )?,
+        configuration,
+        parent_configurations,
     })
 }
 
 fn capture_optional_regular_file(
     source_root: &Path,
     relative: &str,
+    budget: &mut CaptureBudget,
 ) -> Result<Option<Arc<[u8]>>, SourceAdapterError> {
     if let Some(parent) = Path::new(relative)
         .parent()
@@ -236,18 +387,7 @@ fn capture_optional_regular_file(
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => Err(
             unavailable("authorized source evidence must be a regular file"),
         ),
-        Ok(_) => {
-            let bytes: Arc<[u8]> =
-                Arc::from(fs::read(&path).map_err(|_| unavailable("authorized source evidence"))?);
-            let after = fs::symlink_metadata(&path)
-                .map_err(|_| unavailable("authorized source evidence"))?;
-            if after.file_type().is_symlink() || !after.is_file() {
-                return Err(unavailable(
-                    "authorized source evidence changed while being read",
-                ));
-            }
-            Ok(Some(bytes))
-        }
+        Ok(_) => read_limited_regular_file(&path, budget, "authorized source evidence").map(Some),
     }
 }
 
@@ -255,6 +395,7 @@ fn capture_directory(
     directory: &Path,
     prefix: &str,
     files: &mut BTreeMap<String, Arc<[u8]>>,
+    budget: &mut CaptureBudget,
 ) -> Result<(), SourceAdapterError> {
     ensure_directory(directory)?;
     let entries = fs::read_dir(directory).map_err(|_| unavailable("aggregate directory"))?;
@@ -278,18 +419,13 @@ fn capture_directory(
             return Err(unavailable("aggregate must not contain symlinks"));
         }
         if metadata.is_dir() {
-            capture_directory(&path, &key, files)?;
+            capture_directory(&path, &key, files, budget)?;
         } else if metadata.is_file() {
-            let bytes: Arc<[u8]> =
-                Arc::from(fs::read(&path).map_err(|_| unavailable("aggregate file"))?);
-            let after_read =
-                fs::symlink_metadata(&path).map_err(|_| unavailable("aggregate file"))?;
-            if after_read.file_type().is_symlink() || !after_read.is_file() {
-                return Err(unavailable("aggregate file changed while being read"));
-            }
-            if files.insert(key, bytes).is_some() {
-                return Err(unavailable("aggregate contains duplicate relative keys"));
-            }
+            insert_file(
+                files,
+                key,
+                read_limited_regular_file(&path, budget, "aggregate file")?,
+            )?;
         } else {
             return Err(unavailable(
                 "aggregate entry is not a regular file or directory",
@@ -297,6 +433,134 @@ fn capture_directory(
         }
     }
     Ok(())
+}
+
+fn insert_file(
+    files: &mut BTreeMap<String, Arc<[u8]>>,
+    key: String,
+    bytes: Arc<[u8]>,
+) -> Result<(), SourceAdapterError> {
+    if files.insert(key, bytes).is_some() {
+        return Err(unavailable("aggregate contains duplicate relative keys"));
+    }
+    Ok(())
+}
+
+fn read_limited_regular_file(
+    path: &Path,
+    budget: &mut CaptureBudget,
+    label: &str,
+) -> Result<Arc<[u8]>, SourceAdapterError> {
+    let before = fs::symlink_metadata(path).map_err(|_| unavailable(label))?;
+    if before.file_type().is_symlink() || !before.is_file() {
+        return Err(unavailable(
+            "Platform XML capture requires regular non-symlink files",
+        ));
+    }
+    let declared = budget.reserve(before.len())?;
+    let mut reader = fs::File::open(path)
+        .map_err(|_| unavailable(label))?
+        .take((MAX_CAPTURED_FILE_BYTES as u64) + 1);
+    let mut bytes = Vec::with_capacity(declared.min(MAX_CAPTURED_FILE_BYTES));
+    reader
+        .read_to_end(&mut bytes)
+        .map_err(|_| unavailable(label))?;
+    budget.reconcile(declared, bytes.len())?;
+    let after = fs::symlink_metadata(path).map_err(|_| unavailable(label))?;
+    if after.file_type().is_symlink() || !after.is_file() {
+        return Err(unavailable("Platform XML file changed while being read"));
+    }
+    Ok(Arc::from(bytes))
+}
+
+fn resolve_descriptor(
+    target: &Path,
+    source_root: &Path,
+) -> Result<(PathBuf, bool), SourceAdapterError> {
+    let target = if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        source_root.join(target)
+    };
+    if !target.starts_with(source_root) {
+        return Err(unavailable(
+            "Platform XML target is outside the authorized source root",
+        ));
+    }
+    let metadata = fs::symlink_metadata(&target).map_err(|_| unavailable("Platform XML target"))?;
+    if metadata.file_type().is_symlink() {
+        return Err(unavailable("Platform XML target must not be a symlink"));
+    }
+    let (descriptor, root_capture) = if metadata.is_file() {
+        (target, false)
+    } else if metadata.is_dir() {
+        if target == source_root {
+            (source_root.join("Configuration.xml"), true)
+        } else {
+            let name = target
+                .file_name()
+                .and_then(|name| name.to_str())
+                .filter(|name| !name.is_empty())
+                .ok_or_else(|| unavailable("Platform XML directory target has no UTF-8 name"))?;
+            (
+                target
+                    .parent()
+                    .expect("directory has parent")
+                    .join(format!("{name}.xml")),
+                false,
+            )
+        }
+    } else {
+        return Err(unavailable(
+            "Platform XML target is not a regular file or directory",
+        ));
+    };
+    let metadata =
+        fs::symlink_metadata(&descriptor).map_err(|_| unavailable("Platform XML descriptor"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(unavailable(
+            "Platform XML descriptor must be a regular non-symlink file",
+        ));
+    }
+    Ok((descriptor, root_capture))
+}
+
+fn ensure_no_symlink_components(
+    source_root: &Path,
+    target: &Path,
+) -> Result<(), SourceAdapterError> {
+    let target = if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        source_root.join(target)
+    };
+    let relative = target
+        .strip_prefix(source_root)
+        .map_err(|_| unavailable("Platform XML target is outside the authorized source root"))?;
+    let mut current = source_root.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(component) = component else {
+            return Err(unavailable(
+                "Platform XML target contains an invalid path component",
+            ));
+        };
+        current.push(component);
+        let metadata =
+            fs::symlink_metadata(&current).map_err(|_| unavailable("Platform XML target"))?;
+        if metadata.file_type().is_symlink() {
+            return Err(unavailable(
+                "Symbolic links are not allowed in Platform XML target paths",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn relative_key(source_root: &Path, target: &Path) -> Result<String, SourceAdapterError> {
+    let relative = target
+        .strip_prefix(source_root)
+        .map_err(|_| unavailable("Platform XML target is outside the authorized source root"))?;
+    normalized_relative_key(relative)
 }
 
 fn normalized_relative_key(raw: &Path) -> Result<String, SourceAdapterError> {
@@ -321,9 +585,14 @@ fn normalized_relative_key(raw: &Path) -> Result<String, SourceAdapterError> {
     Ok(parts.join("/"))
 }
 
-fn revision_for(contents: &CaptureContents) -> Result<SourceRevision, SourceAdapterError> {
+fn revision_for(
+    contents: &CaptureContents,
+    target_identity: &TargetIdentity,
+) -> Result<SourceRevision, SourceAdapterError> {
     let mut digest = Sha256::new();
-    digest.update(b"unica:platform-xml:aggregate-snapshot:v1\0");
+    digest.update(b"unica:platform-xml:target-snapshot:v2\0");
+    digest.update((target_identity.as_str().len() as u64).to_be_bytes());
+    digest.update(target_identity.as_str().as_bytes());
     for (key, bytes) in &contents.files {
         let file_digest = Sha256::digest(bytes);
         digest.update((key.len() as u64).to_be_bytes());
@@ -356,6 +625,17 @@ fn unavailable(message: &str) -> SourceAdapterError {
     SourceAdapterError::new(SourceAdapterErrorKind::SourceUnavailable, message)
 }
 
+fn resource_limit(message: &str) -> SourceAdapterError {
+    SourceAdapterError::new(SourceAdapterErrorKind::ResourceLimit, message)
+}
+
+fn stale() -> SourceAdapterError {
+    SourceAdapterError::new(
+        SourceAdapterErrorKind::SnapshotStale,
+        "Platform XML capture changed while the snapshot was captured",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -364,7 +644,7 @@ mod tests {
         sync::atomic::{AtomicU64, Ordering},
     };
 
-    use super::PlatformXmlProvider;
+    use super::{PlatformXmlProvider, MAX_CAPTURED_FILE_BYTES};
     use crate::{
         domain::source_adapters::SourceAdapterErrorKind,
         infrastructure::platform::filesystem::{
@@ -471,6 +751,59 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("sha256:"));
+    }
+
+    #[test]
+    fn sibling_targets_with_identical_bytes_have_distinct_capture_identity_and_revision() {
+        let root = fixture_root(&[
+            ("src/Catalogs/Items.xml", b"same"),
+            ("src/Catalogs/Orders.xml", b"same"),
+            ("src/Configuration.xml", b"configuration"),
+        ]);
+        let items =
+            PlatformXmlProvider::capture(root.join("src/Catalogs/Items.xml"), root.join("src"))
+                .unwrap();
+        let orders =
+            PlatformXmlProvider::capture(root.join("src/Catalogs/Orders.xml"), root.join("src"))
+                .unwrap();
+        assert_ne!(items.target_identity(), orders.target_identity());
+        assert_ne!(items.revision().unwrap(), orders.revision().unwrap());
+        assert!(items.read_relative("Orders.xml").is_err());
+    }
+
+    #[test]
+    fn unrelated_oversized_sibling_is_not_read_but_actual_target_and_root_are_limited() {
+        let root = fixture_root(&[
+            ("src/Catalogs/Items.xml", b"items"),
+            ("src/Configuration.xml", b"configuration"),
+        ]);
+        fs::write(
+            root.join("src/Catalogs/Orders.xml"),
+            vec![0_u8; MAX_CAPTURED_FILE_BYTES + 1],
+        )
+        .unwrap();
+        assert!(PlatformXmlProvider::capture(
+            root.join("src/Catalogs/Items.xml"),
+            root.join("src")
+        )
+        .is_ok());
+        assert_eq!(
+            PlatformXmlProvider::capture(root.join("src"), root.join("src"))
+                .unwrap_err()
+                .kind,
+            SourceAdapterErrorKind::ResourceLimit
+        );
+        fs::write(
+            root.join("src/Catalogs/Items.xml"),
+            vec![0_u8; MAX_CAPTURED_FILE_BYTES + 1],
+        )
+        .unwrap();
+        assert_eq!(
+            PlatformXmlProvider::capture(root.join("src/Catalogs/Items.xml"), root.join("src"))
+                .unwrap_err()
+                .kind,
+            SourceAdapterErrorKind::ResourceLimit
+        );
     }
 
     #[test]

@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::fmt::{Display, Formatter};
 
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct FormatVersion(Vec<u32>);
@@ -119,6 +120,32 @@ impl SourceId {
     }
 }
 
+pub(crate) fn source_id_for_configured_source_set(
+    source_set: &str,
+) -> Result<SourceId, SourceAdapterError> {
+    if source_set.is_empty() {
+        return Err(SourceAdapterError::new(
+            SourceAdapterErrorKind::SourceUnavailable,
+            "configured source set has no logical token",
+        ));
+    }
+    let safe = source_set != "."
+        && source_set != ".."
+        && !source_set.starts_with("encoded-")
+        && source_set.bytes().enumerate().all(|(index, byte)| {
+            (byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+                && !(index == 0 && matches!(byte, b'-' | b'.'))
+        });
+    if safe {
+        return SourceId::new(format!("workspace:{source_set}"));
+    }
+    let mut digest = Sha256::new();
+    digest.update(b"unica:workspace-source-id:v1\0");
+    digest.update((source_set.len() as u64).to_be_bytes());
+    digest.update(source_set.as_bytes());
+    SourceId::new(format!("workspace:encoded-{:x}", digest.finalize()))
+}
+
 impl Serialize for SourceId {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -149,6 +176,62 @@ impl Serialize for SourceRevision {
         S: serde::Serializer,
     {
         serializer.serialize_str(&self.0)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct TargetIdentity(String);
+
+impl TargetIdentity {
+    pub(crate) fn from_normalized_relative_path(path: &str) -> Result<Self, SourceAdapterError> {
+        if path.is_empty()
+            || path.chars().any(char::is_control)
+            || path.contains('\\')
+            || path
+                .split('/')
+                .any(|part| part.is_empty() || matches!(part, "." | ".."))
+        {
+            return Err(SourceAdapterError::new(
+                SourceAdapterErrorKind::SourceUnavailable,
+                "target path is not a normalized source-root-relative path",
+            ));
+        }
+        let mut digest = Sha256::new();
+        digest.update(b"unica:platform-xml-target:v1\0");
+        digest.update((path.len() as u64).to_be_bytes());
+        digest.update(path.as_bytes());
+        Ok(Self(format!("target:sha256:{:x}", digest.finalize())))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct SourceBinding {
+    pub(crate) source_id: SourceId,
+    pub(crate) family: SourceFamily,
+    pub(crate) format: Option<FormatVersion>,
+    pub(crate) target_identity: TargetIdentity,
+    pub(crate) revision: SourceRevision,
+}
+
+impl SourceBinding {
+    pub(crate) fn new(
+        source_id: SourceId,
+        family: SourceFamily,
+        format: Option<FormatVersion>,
+        target_identity: TargetIdentity,
+        revision: SourceRevision,
+    ) -> Self {
+        Self {
+            source_id,
+            family,
+            format,
+            target_identity,
+            revision,
+        }
     }
 }
 
@@ -298,5 +381,23 @@ mod tests {
 
         assert!(!text.contains("/Users/"));
         assert!(!text.contains("C:\\\\"));
+    }
+
+    #[test]
+    fn configured_source_ids_preserve_safe_ascii_and_encode_unicode_opaque() {
+        assert_eq!(
+            source_id_for_configured_source_set("main")
+                .unwrap()
+                .as_str(),
+            "workspace:main"
+        );
+        let first = source_id_for_configured_source_set("Основная").unwrap();
+        let second = source_id_for_configured_source_set("Основная").unwrap();
+        let other = source_id_for_configured_source_set("основная").unwrap();
+        assert_eq!(first, second);
+        assert_ne!(first, other);
+        assert!(first.as_str().starts_with("workspace:encoded-"));
+        assert!(first.as_str().is_ascii());
+        assert!(!first.as_str().contains("Основная"));
     }
 }

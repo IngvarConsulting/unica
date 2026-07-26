@@ -3,8 +3,8 @@ use std::{any::Any, path::PathBuf};
 use crate::domain::{
     navigation::NavigationEnvelope,
     source_adapters::{
-        AdapterManifest, FormatVersion, SourceAdapterError, SourceDescriptor, SourceFamily,
-        SourceRevision,
+        AdapterManifest, FormatVersion, SourceAdapterError, SourceBinding, SourceDescriptor,
+        SourceFamily, SourceRevision,
     },
 };
 
@@ -33,9 +33,19 @@ pub(crate) enum ProbeOutcome {
 /// Immutable source-family session captured before probing.  The common
 /// boundary intentionally contains no family-specific provider type.
 pub(crate) trait CapturedSourceSession: Send + Sync {
-    fn source_family(&self) -> SourceFamily;
-    fn declared_format(&self) -> Option<&FormatVersion>;
-    fn revision(&self) -> Result<SourceRevision, SourceAdapterError>;
+    fn binding(&self) -> &SourceBinding;
+
+    fn source_family(&self) -> SourceFamily {
+        self.binding().family.clone()
+    }
+
+    fn declared_format(&self) -> Option<&FormatVersion> {
+        self.binding().format.as_ref()
+    }
+
+    fn revision(&self) -> Result<SourceRevision, SourceAdapterError> {
+        Ok(self.binding().revision.clone())
+    }
     fn evidence(&self) -> &[String];
     fn as_any(&self) -> &dyn Any;
 }

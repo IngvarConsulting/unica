@@ -225,10 +225,16 @@ fn platform_xml_certification_fails_closed_at_declared_boundaries() {
 
     let invalid_source_map = Fixture::certified_document("2.20");
     invalid_source_map.write("v8project.yaml", "source-set: [");
-    assert_error(
-        &registry,
-        invalid_source_map,
-        SourceAdapterErrorKind::SourceUnavailable,
+    let navigation = registry
+        .inspect(invalid_source_map.input())
+        .expect("explicit source binding does not rediscover the project map");
+    assert_eq!(
+        navigation
+            .snapshot
+            .expect("bound source snapshot")
+            .source_id
+            .as_str(),
+        "workspace:main"
     );
 }
 
@@ -298,6 +304,102 @@ fn public_typed_gateway_platform_xml_2_20_serializes_navigation() {
         "readOnly"
     );
     println!("CERTIFICATION_TYPED_GATEWAY_JSON={output}");
+}
+
+#[test]
+fn typed_navigation_keeps_sibling_targets_and_unicode_source_continuations_live() {
+    let fixture = Fixture::sibling_catalogs();
+    let context = fixture.context();
+    let selection = json!({"relations": [{"role": "attributes", "pageSize": 1}]});
+    let first = NativeOperationAdapter::invoke_with_data(
+        "meta-info",
+        "unica.meta.info",
+        &json!({"ObjectPath": fixture.target.clone(), "select": selection})
+            .as_object()
+            .expect("first object args")
+            .clone(),
+        &context,
+        false,
+        false,
+    )
+    .expect("Items target bootstraps");
+    let first_navigation = first
+        .data
+        .expect("Items navigation data")
+        .get("navigation")
+        .cloned()
+        .expect("Items navigation");
+    let source_id = first_navigation["snapshot"]["sourceId"]
+        .as_str()
+        .expect("Items source id");
+    assert!(source_id.starts_with("workspace:encoded-"));
+    assert!(!source_id.contains(&fixture.root.display().to_string()));
+    let first_revision = first_navigation["snapshot"]["revision"].clone();
+    let first_object_ref = json!({
+        "sourceId": first_navigation["root"]["sourceId"],
+        "objectKey": first_navigation["root"]["objectKey"],
+    });
+    let first_cursor = first_navigation["relations"][0]["nextCursor"].clone();
+    assert!(
+        first_cursor.is_object(),
+        "Items bootstrap must issue a cursor"
+    );
+
+    let orders_target = fixture.root.join("src/Catalogs/Orders.xml");
+    let second = NativeOperationAdapter::invoke_with_data(
+        "meta-info",
+        "unica.meta.info",
+        &json!({"ObjectPath": orders_target, "select": selection})
+            .as_object()
+            .expect("second object args")
+            .clone(),
+        &context,
+        false,
+        false,
+    )
+    .expect("Orders target bootstraps");
+    let second_navigation = second
+        .data
+        .expect("Orders navigation data")
+        .get("navigation")
+        .cloned()
+        .expect("Orders navigation");
+    assert_eq!(second_navigation["snapshot"]["sourceId"], source_id);
+    assert_ne!(second_navigation["snapshot"]["revision"], first_revision);
+
+    let by_object_ref = NativeOperationAdapter::invoke_with_data(
+        "meta-info",
+        "unica.meta.info",
+        &json!({"objectRef": first_object_ref, "snapshotRevision": first_revision})
+            .as_object()
+            .expect("object reference args")
+            .clone(),
+        &context,
+        false,
+        false,
+    )
+    .expect("Items object reference remains live");
+    assert_eq!(
+        by_object_ref.data.expect("object reference data")["navigation"]["status"],
+        "ready"
+    );
+
+    let by_cursor = NativeOperationAdapter::invoke_with_data(
+        "meta-info",
+        "unica.meta.info",
+        &json!({"cursor": first_cursor})
+            .as_object()
+            .expect("cursor args")
+            .clone(),
+        &context,
+        false,
+        false,
+    )
+    .expect("Items cursor remains live");
+    assert_eq!(
+        by_cursor.data.expect("cursor data")["navigation"]["status"],
+        "ready"
+    );
 }
 
 fn assert_public_typed_result(result: &NativeOperationResult) {
@@ -395,6 +497,31 @@ impl Fixture {
         Self { root, target }
     }
 
+    fn sibling_catalogs() -> Self {
+        let root = unique_root();
+        let target = root.join("src/Catalogs/Items.xml");
+        fs::create_dir_all(target.parent().expect("catalog parent")).expect("create fixture");
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: Основная\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .expect("write project");
+        fs::write(
+            root.join("src/Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"><Properties><Name>Configuration</Name></Properties></Configuration></MetaDataObject>"#,
+        )
+        .expect("write configuration");
+        let descriptor = |name: &str| {
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="11111111-1111-1111-1111-111111111111"><Properties><Name>{name}</Name></Properties><ChildObjects><Attribute><Properties><Name>Code</Name></Properties></Attribute><Attribute><Properties><Name>Description</Name></Properties></Attribute></ChildObjects></Catalog></MetaDataObject>"#
+            )
+        };
+        fs::write(&target, descriptor("Items")).expect("write Items descriptor");
+        fs::write(root.join("src/Catalogs/Orders.xml"), descriptor("Orders"))
+            .expect("write Orders descriptor");
+        Self { root, target }
+    }
+
     fn corrupted_root() -> Self {
         let fixture = Self::document("2.20", standard_children());
         fixture.write("src/Documents/Shipment.xml", "<MetaDataObject>");
@@ -412,7 +539,7 @@ impl Fixture {
             workspace_root: self.root.clone(),
             source_root: self.root.join("src"),
             target: self.target.clone(),
-            configured_source_set: None,
+            configured_source_set: Some("main".to_string()),
             declared_family: crate::domain::source_adapters::SourceFamily::PlatformXml,
             declared_format: None,
         }

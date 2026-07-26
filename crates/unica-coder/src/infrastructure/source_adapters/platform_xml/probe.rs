@@ -5,24 +5,24 @@ use uuid::Uuid;
 
 use crate::{
     domain::source_adapters::{
-        FormatVersion, SnapshotEvidence, SourceAdapterError, SourceAdapterErrorKind,
-        SourceDescriptor, SourceFamily, SourceId,
+        FormatVersion, SnapshotEvidence, SourceAdapterError, SourceAdapterErrorKind, SourceBinding,
+        SourceDescriptor, SourceFamily,
     },
-    infrastructure::{
-        project_sources::discover_project_source_map,
-        source_adapters::{
-            platform_xml::{
-                provider::PlatformXmlProvider,
-                schema::{
-                    child_metadata_class_profile, metadata_class_profile, MetadataClassProfile,
-                    MetadataClassRole, METADATA_NAMESPACE_2_20, ROOT_STRUCTURAL_CHILDREN,
-                },
-                PlatformXmlCapturedSession,
+    infrastructure::source_adapters::{
+        platform_xml::{
+            provider::PlatformXmlProvider,
+            schema::{
+                child_metadata_class_profile, metadata_class_profile, MetadataClassProfile,
+                MetadataClassRole, METADATA_NAMESPACE_2_20, ROOT_STRUCTURAL_CHILDREN,
             },
-            CapturedSourceSession, ProbeOutcome, SourceInput, SourceProbe,
+            PlatformXmlCapturedSession,
         },
+        CapturedSourceSession, ProbeOutcome, SourceInput, SourceProbe,
     },
 };
+
+#[cfg(test)]
+use crate::domain::source_adapters::source_id_for_configured_source_set;
 
 pub(crate) struct PlatformXmlProbe;
 
@@ -34,45 +34,48 @@ impl PlatformXmlProbe {
     #[cfg(test)]
     fn probe_path(&self, input: &SourceInput) -> Result<ProbeOutcome, SourceAdapterError> {
         let provider = PlatformXmlProvider::capture(&input.target, &input.source_root)?;
-        let descriptor_key = input
-            .target
-            .file_name()
-            .and_then(|name| name.to_str())
-            .filter(|name| !name.is_empty())
-            .ok_or_else(|| {
-                unavailable("Platform XML descriptor does not have a UTF-8 file name")
-            })?;
-        self.probe_provider(input, &provider, descriptor_key)
+        let binding = SourceBinding::new(
+            source_id_for_configured_source_set(
+                input.configured_source_set.as_deref().ok_or_else(|| {
+                    unavailable("Platform XML probe requires a configured source-set identity")
+                })?,
+            )?,
+            SourceFamily::PlatformXml,
+            input.declared_format.clone(),
+            provider.target_identity().clone(),
+            provider.revision()?,
+        );
+        self.probe_provider(&provider, provider.descriptor_key(), &binding)
     }
 
     pub(crate) fn probe_provider(
         &self,
-        input: &SourceInput,
         provider: &PlatformXmlProvider,
         descriptor_key: &str,
+        binding: &SourceBinding,
     ) -> Result<ProbeOutcome, SourceAdapterError> {
-        self.probe_snapshot(input, provider, descriptor_key)
+        self.probe_snapshot(provider, descriptor_key, binding)
     }
 
     fn probe_snapshot(
         &self,
-        input: &SourceInput,
         provider: &PlatformXmlProvider,
         descriptor_key: &str,
+        binding: &SourceBinding,
     ) -> Result<ProbeOutcome, SourceAdapterError> {
         let bytes = provider.read_relative(descriptor_key)?;
         let snapshot_evidence = SnapshotEvidence {
             revision: provider.revision()?,
             root_descriptor_digest: provider.digest_relative(descriptor_key)?,
         };
-        self.probe_bytes(input, &bytes, snapshot_evidence)
+        self.probe_bytes(&bytes, snapshot_evidence, binding)
     }
 
     fn probe_bytes(
         &self,
-        input: &SourceInput,
         bytes: &[u8],
         snapshot_evidence: SnapshotEvidence,
+        binding: &SourceBinding,
     ) -> Result<ProbeOutcome, SourceAdapterError> {
         let xml = std::str::from_utf8(bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes))
             .map_err(|_| corrupted("Platform XML descriptor is not valid UTF-8"))?;
@@ -110,7 +113,7 @@ impl PlatformXmlProbe {
         let mut detected_features = BTreeSet::new();
         detected_features.insert(format!("metadata-class:{class_name}"));
         inspect_structural_features(*class, profile, true, &mut detected_features)?;
-        let uuid = match class.attribute("uuid") {
+        let _uuid = match class.attribute("uuid") {
             Some(raw) => Some(
                 Uuid::parse_str(raw)
                     .map_err(|_| corrupted("Platform XML metadata UUID is invalid"))?,
@@ -124,7 +127,6 @@ impl PlatformXmlProbe {
         let format_version = FormatVersion::parse(version.trim())
             .map_err(|_| unsupported("Platform XML format version is invalid"))?;
 
-        let source_id = source_id(input, uuid)?;
         let mut probe_evidence = vec![
             "platform-xml:metadata-namespace".to_string(),
             format!("platform-xml:metadata-class={class_name}"),
@@ -137,7 +139,7 @@ impl PlatformXmlProbe {
         );
 
         Ok(ProbeOutcome::Match(SourceDescriptor {
-            source_id,
+            source_id: binding.source_id.clone(),
             family: SourceFamily::PlatformXml,
             format_version,
             producer_version: None,
@@ -241,7 +243,7 @@ impl SourceProbe for PlatformXmlProbe {
 
     fn probe(
         &self,
-        input: &SourceInput,
+        _input: &SourceInput,
         session: &dyn CapturedSourceSession,
     ) -> Result<ProbeOutcome, SourceAdapterError> {
         if session.source_family() != SourceFamily::PlatformXml {
@@ -256,32 +258,12 @@ impl SourceProbe for PlatformXmlProbe {
                     "captured session declares Platform XML but has a different payload type",
                 )
             })?;
-        self.probe_provider(input, session.provider(), session.descriptor_key())
-    }
-}
-
-fn source_id(input: &SourceInput, uuid: Option<Uuid>) -> Result<SourceId, SourceAdapterError> {
-    if let Some(source_set) = &input.configured_source_set {
-        if source_set.is_empty()
-            || !source_set
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-        {
-            return Err(unavailable("configured source set is not a logical token"));
-        }
-        return SourceId::new(format!("workspace:{source_set}"));
-    }
-
-    discover_project_source_map(&input.workspace_root).map_err(|_| {
-        unavailable("project source map could not be discovered for the Platform XML descriptor")
-    })?;
-    let uuid = uuid.ok_or_else(|| {
-        SourceAdapterError::new(
-            SourceAdapterErrorKind::ProjectionAmbiguous,
-            "Platform XML source has neither a configured logical identity nor a metadata UUID",
+        self.probe_provider(
+            session.provider(),
+            session.descriptor_key(),
+            session.binding(),
         )
-    })?;
-    SourceId::new(format!("platform-xml:{uuid}"))
+    }
 }
 
 fn unavailable(message: &str) -> SourceAdapterError {
@@ -565,24 +547,20 @@ mod tests {
     }
 
     #[test]
-    fn ad_hoc_identity_uses_uuid_not_content_and_missing_uuid_is_ambiguous() {
+    fn configured_identity_is_stable_without_path_or_content() {
         let root = fixture_root();
         let target = root.join("Configuration.xml");
         fs::write(&target, r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document uuid="11111111-1111-1111-1111-111111111111"/></MetaDataObject>"#).unwrap();
         let first = PlatformXmlProbe::new()
-            .probe_path(&input(&root, &target, None))
+            .probe_path(&input(&root, &target, Some("Основная")))
             .unwrap();
         fs::write(&target, r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document uuid="11111111-1111-1111-1111-111111111111" changed="yes"/></MetaDataObject>"#).unwrap();
         let second = PlatformXmlProbe::new()
-            .probe_path(&input(&root, &target, None))
+            .probe_path(&input(&root, &target, Some("Основная")))
             .unwrap();
-        assert_eq!(source_id_json(first), source_id_json(second));
-
-        fs::write(&target, r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document/></MetaDataObject>"#).unwrap();
-        let error = PlatformXmlProbe::new()
-            .probe_path(&input(&root, &target, None))
-            .unwrap_err();
-        assert_eq!(error.kind, SourceAdapterErrorKind::ProjectionAmbiguous);
+        let first = source_id_json(first);
+        assert_eq!(first, source_id_json(second));
+        assert!(first.contains("workspace:encoded-"));
     }
 
     #[test]
@@ -592,14 +570,12 @@ mod tests {
         fs::write(&target, r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document/></MetaDataObject>"#).unwrap();
         let error = PlatformXmlProbe::new()
             .probe_path(&input(&root, &target, Some("../outside")))
-            .unwrap_err();
-
-        assert_eq!(error.kind, SourceAdapterErrorKind::SourceUnavailable);
-        assert!(!error.message.contains(&root.display().to_string()));
+            .unwrap();
+        assert!(source_id_json(error).contains("workspace:encoded-"));
     }
 
     #[test]
-    fn project_map_discovery_errors_are_redacted() {
+    fn missing_configured_source_set_fails_without_project_map_fallback() {
         let root = fixture_root();
         let target = root.join("Configuration.xml");
         fs::write(&root.join("v8project.yaml"), "source-set: invalid").unwrap();

@@ -914,6 +914,12 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertNotIn(".ps1", meta_info)
         self.assertNotIn(".py", meta_info)
 
+    def test_meta_info_documents_the_serialized_property_contract(self) -> None:
+        meta_info = (self.skill_root() / "meta-info" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertNotIn("valueType", meta_info)
+        self.assertIn("`type`", meta_info)
+        self.assertIn("`valueState`", meta_info)
+
     def test_meta_compile_tracks_upstream_choice_history_through_unica_boundary(self) -> None:
         meta_compile = (self.skill_root() / "meta-compile" / "SKILL.md").read_text(
             encoding="utf-8"

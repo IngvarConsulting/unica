@@ -46,22 +46,34 @@ pub(crate) fn decode_path(
     input: &SourceInput,
 ) -> Result<PlatformXmlNativeSnapshot, SourceAdapterError> {
     let provider = PlatformXmlProvider::capture(&input.target, &input.source_root)?;
-    let descriptor_key = input
-        .target
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty())
-        .ok_or_else(|| corrupted("Platform XML descriptor has no UTF-8 file name"))?;
-    let descriptor =
-        match PlatformXmlProbe::new().probe_provider(input, &provider, descriptor_key)? {
-            ProbeOutcome::Match(descriptor) => descriptor,
-            ProbeOutcome::NoMatch => {
-                return Err(error(
-                    SourceAdapterErrorKind::FormatUnsupported,
-                    "source is not Platform XML",
-                ));
-            }
-        };
+    let source_id = crate::domain::source_adapters::source_id_for_configured_source_set(
+        input.configured_source_set.as_deref().ok_or_else(|| {
+            error(
+                SourceAdapterErrorKind::SourceUnavailable,
+                "Platform XML decode requires a configured source-set identity",
+            )
+        })?,
+    )?;
+    let binding = crate::domain::source_adapters::SourceBinding::new(
+        source_id,
+        input.declared_family.clone(),
+        input.declared_format.clone(),
+        provider.target_identity().clone(),
+        provider.revision()?,
+    );
+    let descriptor = match PlatformXmlProbe::new().probe_provider(
+        &provider,
+        provider.descriptor_key(),
+        &binding,
+    )? {
+        ProbeOutcome::Match(descriptor) => descriptor,
+        ProbeOutcome::NoMatch => {
+            return Err(error(
+                SourceAdapterErrorKind::FormatUnsupported,
+                "source is not Platform XML",
+            ));
+        }
+    };
     decode(&provider, &descriptor)
 }
 

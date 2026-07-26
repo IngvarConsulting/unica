@@ -12,7 +12,7 @@ allowed-tools:
 
 ## MCP routing
 
-Call only MCP tool `unica.meta.info`. It is read-only and always returns its result in `data.navigation`; do not call packaged scripts or internal adapters.
+Call MCP `unica`, tool `unica.meta.info`. It is read-only and always returns its result in `data.navigation`; do not call packaged scripts or internal adapters.
 
 ## Target modes
 
@@ -31,30 +31,61 @@ Use exactly one target mode per request:
 `select` is optional for bootstrap and object-reference requests. It may select typed properties, facets, and relation roles. Each relation request has a `role`, an optional `kind`, and optional `pageSize`; omitted `kind` is exactly `contains` (it never selects reference edges), the default page size is 25 and the maximum is 100. Select `kind: "references"` explicitly for reference edges. Repeated relation selections are normalized by `(role, kind)` with the smaller page size. There is no offset pagination.
 
 ```json
-{
-  "name": "unica.meta.info",
-  "arguments": {
-    "cwd": "<workspace>",
-    "ObjectPath": "src/Catalogs/Items.xml",
-    "select": {
-      "properties": "all",
-      "facets": "summary",
-      "relations": [{ "role": "attributes", "pageSize": 25 }]
-    }
-  }
-}
+{"method": "tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","ObjectPath": "Catalogs/Валюты/Валюты.xml"}}}
+```
+
+```json
+{"method": "tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","ObjectPath": "Catalogs/Валюты/Валюты.xml","select":{"relations":[{"role":"attributes","pageSize":25}]}}}}
+```
+
+```json
+{"method": "tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","ObjectPath": "Documents/АвансовыйОтчет/АвансовыйОтчет.xml"}}}
+```
+
+```json
+{"method": "tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","ObjectPath": "Documents/АвансовыйОтчет/АвансовыйОтчет.xml","select":{"relations":[{"role":"tabularSections","pageSize":25}]}}}}
+```
+
+```json
+{"method": "tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","ObjectPath": "HTTPServices/ExternalAPI/ExternalAPI.xml"}}}
+```
+
+```json
+{"method": "tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","ObjectPath": "HTTPServices/ExternalAPI/ExternalAPI.xml","select":{"relations":[{"role":"commands","pageSize":25}]}}}}
+```
+
+```json
+{"method": "tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","ObjectPath": "DefinedTypes/GLN/GLN.xml"}}}
+```
+
+```json
+{"method": "tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","ObjectPath": "DefinedTypes/GLN/GLN.xml","select":{"properties":"all","facets":"summary"}}}}
+```
+
+```json
+{"method": "tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","ObjectPath": "Catalogs/Товары/Товары.xml","select":{"relations":[{"role":"forms","pageSize":10}]}}}}
+```
+
+```json
+{"method": "tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","ObjectPath": "Documents/РеализацияТоваровУслуг/РеализацияТоваровУслуг.xml","select":{"relations":[{"role":"attributes","pageSize":10}]}}}}
+```
+
+```json
+{"method": "tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","ObjectPath": "Configuration.xml","select":{"relations":[{"role":"children","pageSize":25}]}}}}
+```
+
+```json
+{"method": "tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","objectRef":{"sourceId":"workspace:main","objectKey":"uuid:<returned>"},"snapshotRevision":"sha256:<returned>"}}}
 ```
 
 Continue a returned page only with its cursor:
 
 ```json
-{
-  "name": "unica.meta.info",
-  "arguments": {
-    "cwd": "<workspace>",
-    "cursor": { "schemaVersion": 1, "...": "returned cursor" }
-  }
-}
+{"method": "tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","cursor":{"schemaVersion":1,"...":"returned cursor"}}}}
+```
+
+```json
+{"method": "tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","ObjectPath": "Catalogs/Контрагенты/Контрагенты.xml","select":{"properties":"all","facets":"none"}}}}
 ```
 
 ## Response contract
@@ -67,7 +98,9 @@ schemaVersion, status, snapshot, root, nodes, relations, diagnostics
 
 `status` is `ready` or `unavailable`. A ready result has semantic `root` and `nodes`. A relation page has `relation`, typed child `items`, and optional `nextCursor`.
 
-Each node exposes its semantic object reference and typed properties. Facets control the remaining node fields: `none` omits all capability and action facets; `summary` exposes only `capabilityState` and `actionProfile`; `full` additionally exposes the detailed capability vector, actions, and semantic actions. Property values are typed values rather than rendered XML: inspect `valueState`, `valueType`, `value`, provenance, and capability. Type descriptions are structured type sets, not text expressions. Capabilities state whether inspection or future mutation is modeled, blocked, or unavailable and include resolution, identity strength, snapshot consistency, coverage, format compatibility, source access, and support authorability.
+Each node exposes its semantic object reference and typed properties. Facets control the remaining node fields: `none` omits all capability and action facets; `summary` exposes only `capabilityState` and `actionProfile`; `full` additionally exposes the detailed capability vector, actions, and semantic actions. Property values are typed values rather than rendered XML: inspect `type`, `valueState`, `value`, provenance, and capability. Type descriptions are structured type sets, not text expressions: preserve the upstream distinctions `Представление типа` and `Представление объекта` rather than flattening them into a rendered string. A returned property may present a value such as `"Name": "Товары"` or `"Name": "TestConnection"`; treat that as data, not as a target path. Capabilities state whether inspection or future mutation is modeled, blocked, or unavailable and include resolution, identity strength, snapshot consistency, coverage, format compatibility, source access, and support authorability.
+
+`Поддержка` is reported from the captured `Ext/ParentConfigurations.bin` evidence when present. Use that state as a read-only guardrail before a mutating `unica.*` operation; never read the raw support file outside the captured adapter boundary.
 
 ## Unavailable navigation
 

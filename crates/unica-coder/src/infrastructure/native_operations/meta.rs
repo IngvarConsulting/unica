@@ -6,7 +6,10 @@ use crate::domain::navigation::{
     NavigationNode, NodeKind, ObjectKey, ObjectRef, RelationKind, Representation, ResolutionState,
     SemanticActionKind,
 };
-use crate::domain::source_adapters::{SourceAdapterError, SourceAdapterErrorKind, SourceId};
+use crate::domain::source_adapters::{
+    source_id_for_configured_source_set, SourceAdapterError, SourceAdapterErrorKind, SourceBinding,
+    SourceId,
+};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::metadata_kind;
 use crate::infrastructure::project_sources::discover_project_source_map;
@@ -3821,8 +3824,7 @@ enum SnapshotCacheAdmission {
 #[derive(Clone)]
 struct CachedNavigation {
     scope: String,
-    source_id: SourceId,
-    revision: crate::domain::source_adapters::SourceRevision,
+    binding: SourceBinding,
     navigation: std::sync::Arc<crate::domain::navigation::NavigationEnvelope>,
     charged_bytes: usize,
 }
@@ -3830,8 +3832,7 @@ struct CachedNavigation {
 #[derive(Serialize)]
 struct CachedNavigationCharge<'a> {
     scope: &'a str,
-    source_id: &'a SourceId,
-    revision: &'a crate::domain::source_adapters::SourceRevision,
+    binding: &'a SourceBinding,
     navigation: &'a crate::domain::navigation::NavigationEnvelope,
     relation_index: &'a [crate::domain::navigation::SemanticRelation],
 }
@@ -3881,8 +3882,9 @@ impl SnapshotCache {
 
         if let Some(index) = self.entries.iter().position(|existing| {
             existing.scope == entry.scope
-                && existing.source_id == entry.source_id
-                && existing.revision == entry.revision
+                && existing.binding.source_id == entry.binding.source_id
+                && existing.binding.revision == entry.binding.revision
+                && existing.binding.target_identity == entry.binding.target_identity
         }) {
             self.remove_at(index)?;
         }
@@ -3918,7 +3920,9 @@ impl SnapshotCache {
         self.entries
             .iter()
             .find(|entry| {
-                entry.scope == scope && entry.source_id == *source_id && entry.revision == *revision
+                entry.scope == scope
+                    && entry.binding.source_id == *source_id
+                    && entry.binding.revision == *revision
             })
             .map(|entry| std::sync::Arc::clone(&entry.navigation))
     }
@@ -3981,25 +3985,22 @@ impl Write for BoundedCountingWriter {
 impl CachedNavigation {
     fn new(
         scope: String,
-        source_id: SourceId,
-        revision: crate::domain::source_adapters::SourceRevision,
+        binding: SourceBinding,
         navigation: crate::domain::navigation::NavigationEnvelope,
         limits: SnapshotCacheLimits,
     ) -> Result<Self, SourceAdapterError> {
-        validate_cached_navigation_key(&scope, &source_id, &revision, limits)?;
+        validate_cached_navigation_key(&scope, &binding, limits)?;
         validate_navigation_cache_payload(&navigation, limits)?;
         let charge = CachedNavigationCharge {
             scope: &scope,
-            source_id: &source_id,
-            revision: &revision,
+            binding: &binding,
             navigation: &navigation,
             relation_index: &navigation.relation_index,
         };
         let charged_bytes = serialized_bytes_with_limit(&charge, limits.max_snapshot_bytes)?;
         Ok(Self {
             scope,
-            source_id,
-            revision,
+            binding,
             navigation: std::sync::Arc::new(navigation),
             charged_bytes,
         })
@@ -4783,8 +4784,7 @@ fn validate_semantic_string(value: &str, limit: usize) -> Result<(), SourceAdapt
 
 fn validate_cached_navigation_key(
     scope: &str,
-    source_id: &SourceId,
-    revision: &crate::domain::source_adapters::SourceRevision,
+    binding: &SourceBinding,
     limits: SnapshotCacheLimits,
 ) -> Result<(), SourceAdapterError> {
     validate_cache_metadata_string(
@@ -4792,8 +4792,13 @@ fn validate_cached_navigation_key(
         "authorization scope",
         limits.max_semantic_string_bytes,
     )?;
-    validate_source_id(source_id.as_str(), limits.max_semantic_string_bytes)?;
-    validate_source_revision(revision.as_str(), limits.max_semantic_string_bytes)
+    validate_source_id(binding.source_id.as_str(), limits.max_semantic_string_bytes)?;
+    validate_source_revision(binding.revision.as_str(), limits.max_semantic_string_bytes)?;
+    validate_cache_metadata_string(
+        binding.target_identity.as_str(),
+        "target identity",
+        limits.max_semantic_string_bytes,
+    )
 }
 
 fn validate_source_id(value: &str, limit: usize) -> Result<(), SourceAdapterError> {
@@ -4820,6 +4825,37 @@ fn validate_cache_metadata_string(
         return Err(resource_limit("navigation cache metadata is invalid"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+fn test_cache_binding(snapshot: &crate::domain::source_adapters::SourceSnapshot) -> SourceBinding {
+    SourceBinding::new(
+        snapshot.source_id.clone(),
+        crate::domain::source_adapters::SourceFamily::PlatformXml,
+        None,
+        crate::domain::source_adapters::TargetIdentity::from_normalized_relative_path(
+            "Configuration.xml",
+        )
+        .unwrap(),
+        snapshot.revision.clone(),
+    )
+}
+
+#[cfg(test)]
+fn test_cache_binding_with(
+    source_id: SourceId,
+    revision: crate::domain::source_adapters::SourceRevision,
+) -> SourceBinding {
+    SourceBinding::new(
+        source_id,
+        crate::domain::source_adapters::SourceFamily::PlatformXml,
+        None,
+        crate::domain::source_adapters::TargetIdentity::from_normalized_relative_path(
+            "Configuration.xml",
+        )
+        .unwrap(),
+        revision,
+    )
 }
 
 static SNAPSHOT_CACHE: OnceLock<Mutex<SnapshotCache>> = OnceLock::new();
@@ -5070,6 +5106,7 @@ fn cursor_snapshot_revision(
 struct ResolvedConfiguredSourceBinding {
     name: String,
     source_id: SourceId,
+    source_binding: SourceBinding,
     kind: crate::domain::project_sources::SourceSetKind,
     source_format: crate::domain::project_sources::SourceFormat,
     configured_path: String,
@@ -5135,9 +5172,9 @@ fn resolve_object_path_binding(
             "navigation source does not authorize the Platform XML adapter",
         ));
     }
-    let source_id = SourceId::new(format!("workspace:{}", source_set.name))?;
+    let expected_source_id = source_id_for_configured_source_set(&source_set.name)?;
     let scope = configured_binding_scope(
-        &source_id,
+        &expected_source_id,
         &source_set.name,
         source_set.kind,
         source_set.source_format,
@@ -5159,10 +5196,19 @@ fn resolve_object_path_binding(
     let captured_session =
         crate::infrastructure::source_adapters::registry::BuiltInSourceAdapterRegistry::new()
             .capture(&capture_input)?;
-    let provider_revision = captured_session.revision()?;
+    let source_binding = captured_session.binding().clone();
+    if source_binding.source_id != expected_source_id
+        || source_binding.family != capture_input.declared_family
+    {
+        return Err(source_unavailable(
+            "captured source binding does not match the authorized source set",
+        ));
+    }
+    let provider_revision = source_binding.revision.clone();
     let binding = ResolvedConfiguredSourceBinding {
         name: source_set.name,
-        source_id,
+        source_id: source_binding.source_id.clone(),
+        source_binding,
         kind: source_set.kind,
         source_format: source_set.source_format,
         configured_path: source_set.path,
@@ -5194,7 +5240,7 @@ fn resolve_current_source_binding(
         .source_sets
         .into_iter()
         .find_map(|source_set| {
-            let expected = SourceId::new(format!("workspace:{}", source_set.name)).ok()?;
+            let expected = source_id_for_configured_source_set(&source_set.name).ok()?;
             (expected == *source_id).then_some(source_set)
         })
         .ok_or_else(|| {
@@ -5245,7 +5291,8 @@ fn verify_captured_provider_binding(
     if !binding
         .canonical_target
         .starts_with(&binding.canonical_root)
-        || binding.captured_session.revision()? != binding.provider_revision
+        || binding.captured_session.binding() != &binding.source_binding
+        || binding.source_binding.revision != binding.provider_revision
     {
         return Err(source_unavailable(
             "captured Platform XML provider no longer matches the authorized source binding",
@@ -5307,7 +5354,9 @@ fn cache_ready_navigation_in(
         .as_ref()
         .ok_or_else(|| source_unavailable("ready navigation has no snapshot"))?;
     verify_captured_provider_binding(binding)?;
-    if snapshot.revision != binding.provider_revision || snapshot.source_id != binding.source_id {
+    if snapshot.revision != binding.source_binding.revision
+        || snapshot.source_id != binding.source_binding.source_id
+    {
         return Err(source_unavailable(
             "navigation snapshot does not match the captured authorization binding",
         ));
@@ -5317,8 +5366,7 @@ fn cache_ready_navigation_in(
         .map_err(|_| source_unavailable("navigation snapshot cache is unavailable"))?;
     let entry = match CachedNavigation::new(
         binding.scope.clone(),
-        snapshot.source_id.clone(),
-        snapshot.revision.clone(),
+        binding.source_binding.clone(),
         navigation,
         cache.limits,
     ) {
@@ -15538,8 +15586,7 @@ mod tests {
         let snapshot = navigation.snapshot.as_ref().unwrap().clone();
         let error = CachedNavigation::new(
             "depth-limit".to_string(),
-            snapshot.source_id,
-            snapshot.revision,
+            test_cache_binding(&snapshot),
             navigation,
             DEFAULT_SNAPSHOT_CACHE_LIMITS,
         )
@@ -15578,8 +15625,7 @@ mod tests {
         let snapshot = navigation.snapshot.as_ref().unwrap().clone();
         let entry = CachedNavigation::new(
             "broad-shallow-value".to_string(),
-            snapshot.source_id,
-            snapshot.revision,
+            test_cache_binding(&snapshot),
             navigation,
             DEFAULT_SNAPSHOT_CACHE_LIMITS,
         )
@@ -15620,8 +15666,7 @@ mod tests {
         let snapshot = navigation.snapshot.as_ref().unwrap().clone();
         let entry = CachedNavigation::new(
             "aggregate-snapshot-metadata".to_string(),
-            snapshot.source_id,
-            snapshot.revision,
+            test_cache_binding(&snapshot),
             navigation,
             DEFAULT_SNAPSHOT_CACHE_LIMITS,
         )
@@ -15658,8 +15703,7 @@ mod tests {
         let snapshot = navigation.snapshot.as_ref().unwrap().clone();
         let entry = CachedNavigation::new(
             "structured-value".to_string(),
-            snapshot.source_id,
-            snapshot.revision,
+            test_cache_binding(&snapshot),
             navigation,
             DEFAULT_SNAPSHOT_CACHE_LIMITS,
         )
@@ -15695,8 +15739,7 @@ mod tests {
         let snapshot = navigation.snapshot.as_ref().unwrap().clone();
         let error = CachedNavigation::new(
             "semantic-string-limit".to_string(),
-            snapshot.source_id,
-            snapshot.revision,
+            test_cache_binding(&snapshot),
             navigation,
             DEFAULT_SNAPSHOT_CACHE_LIMITS,
         )
@@ -15742,8 +15785,7 @@ mod tests {
         let snapshot = navigation.snapshot.as_ref().unwrap().clone();
         let error = CachedNavigation::new(
             "relation-page-depth-limit".to_string(),
-            snapshot.source_id,
-            snapshot.revision,
+            test_cache_binding(&snapshot),
             navigation,
             DEFAULT_SNAPSHOT_CACHE_LIMITS,
         )
@@ -15775,8 +15817,7 @@ mod tests {
         let snapshot = navigation.snapshot.as_ref().unwrap().clone();
         let error = CachedNavigation::new(
             "object-ref-kind-limit".to_string(),
-            snapshot.source_id,
-            snapshot.revision,
+            test_cache_binding(&snapshot),
             navigation,
             DEFAULT_SNAPSHOT_CACHE_LIMITS,
         )
@@ -15815,8 +15856,7 @@ mod tests {
         let snapshot = navigation.snapshot.as_ref().unwrap().clone();
         let error = CachedNavigation::new(
             "action-binding-limit".to_string(),
-            snapshot.source_id,
-            snapshot.revision,
+            test_cache_binding(&snapshot),
             navigation,
             DEFAULT_SNAPSHOT_CACHE_LIMITS,
         )
@@ -15848,8 +15888,7 @@ mod tests {
         let snapshot = navigation.snapshot.as_ref().unwrap().clone();
         let error = CachedNavigation::new(
             "diagnostic-detail-limit".to_string(),
-            snapshot.source_id,
-            snapshot.revision,
+            test_cache_binding(&snapshot),
             navigation,
             DEFAULT_SNAPSHOT_CACHE_LIMITS,
         )
@@ -15882,8 +15921,7 @@ mod tests {
         let snapshot = navigation.snapshot.as_ref().unwrap().clone();
         let error = CachedNavigation::new(
             "diagnostic-total-limit".to_string(),
-            snapshot.source_id,
-            snapshot.revision,
+            test_cache_binding(&snapshot),
             navigation,
             DEFAULT_SNAPSHOT_CACHE_LIMITS,
         )
@@ -15998,8 +16036,7 @@ mod tests {
 
         let scope_error = CachedNavigation::new(
             oversized.clone(),
-            snapshot.source_id.clone(),
-            snapshot.revision.clone(),
+            test_cache_binding(&snapshot),
             navigation.clone(),
             DEFAULT_SNAPSHOT_CACHE_LIMITS,
         )
@@ -16010,8 +16047,7 @@ mod tests {
         let source_id = SourceId::new(oversized.clone()).unwrap();
         let source_error = CachedNavigation::new(
             "outer-source-id".to_string(),
-            source_id,
-            snapshot.revision.clone(),
+            test_cache_binding_with(source_id, snapshot.revision.clone()),
             navigation.clone(),
             DEFAULT_SNAPSHOT_CACHE_LIMITS,
         )
@@ -16023,8 +16059,7 @@ mod tests {
             crate::domain::source_adapters::SourceRevision::new(oversized.clone()).unwrap();
         let revision_error = CachedNavigation::new(
             "outer-revision".to_string(),
-            snapshot.source_id.clone(),
-            revision,
+            test_cache_binding_with(snapshot.source_id.clone(), revision),
             navigation.clone(),
             DEFAULT_SNAPSHOT_CACHE_LIMITS,
         )
@@ -16036,8 +16071,7 @@ mod tests {
         adapter_navigation.snapshot.as_mut().unwrap().adapter_id = oversized;
         let adapter_error = CachedNavigation::new(
             "outer-adapter-id".to_string(),
-            snapshot.source_id,
-            snapshot.revision,
+            test_cache_binding(&snapshot),
             adapter_navigation,
             DEFAULT_SNAPSHOT_CACHE_LIMITS,
         )
@@ -16220,8 +16254,7 @@ mod tests {
         let snapshot = navigation.snapshot.clone().unwrap();
         let probe = CachedNavigation::new(
             "scope-0".to_string(),
-            snapshot.source_id.clone(),
-            snapshot.revision.clone(),
+            test_cache_binding(&snapshot),
             navigation.clone(),
             DEFAULT_SNAPSHOT_CACHE_LIMITS,
         )
@@ -16237,8 +16270,7 @@ mod tests {
         for index in 0..8 {
             let entry = CachedNavigation::new(
                 format!("scope-{index}"),
-                snapshot.source_id.clone(),
-                snapshot.revision.clone(),
+                test_cache_binding(&snapshot),
                 navigation.clone(),
                 byte_cache.limits,
             )

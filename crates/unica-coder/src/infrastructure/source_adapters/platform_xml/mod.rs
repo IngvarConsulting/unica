@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use crate::domain::source_adapters::{
-    AdapterManifest, AdapterMaturity, FormatRange, FormatVersion, SourceAccess, SourceAdapterError,
-    SourceFamily,
+    source_id_for_configured_source_set, AdapterManifest, AdapterMaturity, FormatRange,
+    FormatVersion, SourceAccess, SourceAdapterError, SourceBinding, SourceFamily,
 };
 use crate::{
     domain::navigation::NavigationEnvelope,
@@ -43,7 +43,7 @@ pub(crate) struct PlatformXmlCapturedSession {
     provider: provider::PlatformXmlProvider,
     descriptor_key: String,
     evidence: Vec<String>,
-    declared_format: Option<FormatVersion>,
+    binding: SourceBinding,
 }
 
 impl PlatformXmlCapturedSession {
@@ -57,18 +57,8 @@ impl PlatformXmlCapturedSession {
 }
 
 impl CapturedSourceSession for PlatformXmlCapturedSession {
-    fn source_family(&self) -> SourceFamily {
-        SourceFamily::PlatformXml
-    }
-
-    fn declared_format(&self) -> Option<&FormatVersion> {
-        self.declared_format.as_ref()
-    }
-
-    fn revision(
-        &self,
-    ) -> Result<crate::domain::source_adapters::SourceRevision, SourceAdapterError> {
-        self.provider.revision()
+    fn binding(&self) -> &SourceBinding {
+        &self.binding
     }
 
     fn evidence(&self) -> &[String] {
@@ -97,25 +87,27 @@ impl SourceCaptureAdapter for PlatformXmlCaptureAdapter {
         if input.declared_family != SourceFamily::PlatformXml {
             return Ok(CaptureOutcome::NoMatch);
         }
-        let descriptor_key = input
-            .target
-            .file_name()
-            .and_then(|name| name.to_str())
-            .filter(|name| !name.is_empty())
-            .ok_or_else(|| {
+        let provider = provider::PlatformXmlProvider::capture(&input.target, &input.source_root)?;
+        let source_id = source_id_for_configured_source_set(
+            input.configured_source_set.as_deref().ok_or_else(|| {
                 SourceAdapterError::new(
                     crate::domain::source_adapters::SourceAdapterErrorKind::SourceUnavailable,
-                    "Platform XML descriptor does not have a UTF-8 file name",
+                    "Platform XML capture requires a configured source-set identity",
                 )
-            })?
-            .to_string();
-        let provider = provider::PlatformXmlProvider::capture(&input.target, &input.source_root)?;
+            })?,
+        )?;
         Ok(CaptureOutcome::Captured(Box::new(
             PlatformXmlCapturedSession {
+                descriptor_key: provider.descriptor_key().to_string(),
+                binding: SourceBinding::new(
+                    source_id,
+                    SourceFamily::PlatformXml,
+                    input.declared_format.clone(),
+                    provider.target_identity().clone(),
+                    provider.revision()?,
+                ),
                 provider,
-                descriptor_key,
                 evidence: vec!["platform-xml:immutable-capture".to_string()],
-                declared_format: input.declared_format.clone(),
             },
         )))
     }
