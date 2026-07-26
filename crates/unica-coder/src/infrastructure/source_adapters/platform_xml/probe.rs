@@ -95,7 +95,7 @@ impl PlatformXmlProbe {
         })?;
         let mut detected_features = BTreeSet::new();
         detected_features.insert(format!("metadata-class:{class_name}"));
-        inspect_structural_features(*class, profile, &mut detected_features)?;
+        inspect_structural_features(*class, profile, true, &mut detected_features)?;
         let uuid = match class.attribute("uuid") {
             Some(raw) => Some(Uuid::parse_str(raw).map_err(|_| corrupted("Platform XML metadata UUID is invalid"))?),
             None => None,
@@ -134,6 +134,7 @@ impl PlatformXmlProbe {
 fn inspect_structural_features(
     class: roxmltree::Node<'_, '_>,
     profile: &MetadataClassProfile,
+    is_direct_metadata_root: bool,
     features: &mut BTreeSet<String>,
 ) -> Result<(), SourceAdapterError> {
     for child in structural_children(class) {
@@ -141,7 +142,9 @@ fn inspect_structural_features(
         if !ROOT_STRUCTURAL_CHILDREN.contains(&name) {
             return Err(unsupported("Platform XML root contains an unsupported structural feature"));
         }
-        features.insert(format!("structural:{}:{name}", structural_scope(profile)));
+        if let Some(scope) = structural_scope(profile, is_direct_metadata_root) {
+            features.insert(format!("structural:{scope}:{name}"));
+        }
         if name == "ChildObjects" {
             inspect_child_objects(child, profile, features)?;
         }
@@ -163,15 +166,22 @@ fn inspect_child_objects(
             return Err(unsupported("Platform XML child objects contain an unsupported structural feature"));
         }
         features.insert(format!("structural:{}:{name}", child_object_scope(owner_profile)));
-        inspect_structural_features(child, child_profile, features)?;
+        inspect_structural_features(child, child_profile, false, features)?;
     }
     Ok(())
 }
 
-fn structural_scope(profile: &MetadataClassProfile) -> &'static str {
-    match profile.role {
-        MetadataClassRole::TabularSection => "tabular-section",
-        _ => "root",
+fn structural_scope(
+    profile: &MetadataClassProfile,
+    is_direct_metadata_root: bool,
+) -> Option<&'static str> {
+    if is_direct_metadata_root {
+        Some("root")
+    } else {
+        match profile.role {
+            MetadataClassRole::TabularSection => Some("tabular-section"),
+            _ => None,
+        }
     }
 }
 
@@ -445,6 +455,29 @@ mod tests {
                 "structural:tabular-section:Properties",
             ],
         );
+    }
+
+    #[test]
+    fn root_properties_feature_is_not_inferred_from_nested_command_properties() {
+        let nested = probe_fixture(
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document><ChildObjects><Command><Properties><Name>Post</Name></Properties></Command></ChildObjects></Document></MetaDataObject>"#,
+            Some("main"),
+        )
+        .unwrap();
+        let direct = probe_fixture(
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document><Properties><Name>Shipment</Name></Properties></Document></MetaDataObject>"#,
+            Some("main"),
+        )
+        .unwrap();
+
+        let ProbeOutcome::Match(nested) = nested else { panic!("expected nested match") };
+        let ProbeOutcome::Match(direct) = direct else { panic!("expected direct match") };
+        assert!(!nested
+            .detected_features
+            .contains("structural:root:Properties"));
+        assert!(direct
+            .detected_features
+            .contains("structural:root:Properties"));
     }
 
     #[test]

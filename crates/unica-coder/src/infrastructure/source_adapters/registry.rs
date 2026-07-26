@@ -327,6 +327,33 @@ mod tests {
     }
 
     #[test]
+    fn required_root_properties_feature_selects_only_a_matching_reader() {
+        let missing = registry_with(
+            vec![probe_match("2.20")],
+            vec![reader_with(
+                "xml-2.20-properties",
+                SourceFamily::PlatformXml,
+                exact("2.20"),
+                ["structural:root:Properties"],
+                [],
+            )],
+        );
+        let present = registry_with(
+            vec![probe_with_feature("2.20", "structural:root:Properties")],
+            vec![reader_with(
+                "xml-2.20-properties",
+                SourceFamily::PlatformXml,
+                exact("2.20"),
+                ["structural:root:Properties"],
+                [],
+            )],
+        );
+
+        assert_eq!(missing.inspect(input()).unwrap().status, NavigationStatus::Unavailable);
+        assert_eq!(present.inspect(input()).unwrap().status, NavigationStatus::Available);
+    }
+
+    #[test]
     fn conflicting_probes_are_ambiguous() {
         let registry = registry_with(
             vec![probe_match("2.20"), probe_match("2.21")],

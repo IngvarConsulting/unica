@@ -13381,7 +13381,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn saved_object_path_binding_inspects_its_canonical_target_and_current_binding_cannot_resume_it() {
+    fn captured_object_path_binding_projects_original_bytes_after_source_mutation_and_retarget() {
         use std::os::unix::fs::symlink;
 
         let (context, _) = fixture("2.20", "<Attribute><Properties><Name>Code</Name></Properties></Attribute>");
@@ -13408,6 +13408,15 @@ mod tests {
         let saved = resolve_object_path_binding(&linked_target, &context).unwrap();
         assert_eq!(saved.canonical_target, crate::infrastructure::source_roots::normalize_contained_source_root(&context.workspace_root, source.join("Catalogs/Items.xml")).unwrap());
 
+        let source_descriptor = source.join("Catalogs/Items.xml");
+        std::fs::write(
+            &source_descriptor,
+            std::fs::read_to_string(&source_descriptor)
+                .unwrap()
+                .replace("Items", "MutatedA"),
+        )
+        .unwrap();
+
         std::fs::remove_file(&link).unwrap();
         symlink("replacement", &link).unwrap();
         let navigation = inspect_source_path(&saved, &context).unwrap();
@@ -13415,6 +13424,10 @@ mod tests {
             .nodes
             .iter()
             .any(|node| node.reference.display_name == "Items"));
+        assert!(!navigation
+            .nodes
+            .iter()
+            .any(|node| node.reference.display_name == "MutatedA"));
         assert!(!navigation
             .nodes
             .iter()
