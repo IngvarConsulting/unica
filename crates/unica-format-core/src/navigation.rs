@@ -67,10 +67,11 @@ impl Serialize for RelationKey {
 fn validate_opaque_key(raw: &str, name: &str) -> Result<(), SourceAdapterError> {
     let windows_drive =
         raw.len() >= 2 && raw.as_bytes()[0].is_ascii_alphabetic() && raw.as_bytes()[1] == b':';
+    let has_path_separator = raw.bytes().any(|byte| matches!(byte, b'/' | b'\\'));
     if raw.is_empty()
         || raw.chars().any(char::is_control)
-        || raw.starts_with('/')
-        || raw.starts_with(r"\\")
+        || has_path_separator
+        || matches!(raw, "." | "..")
         || windows_drive
     {
         return Err(SourceAdapterError::new(
@@ -2209,6 +2210,12 @@ mod tests {
             "/tmp/object",
             r"\\server\\share",
             "C:\\object",
+            "Catalogs/Items.xml",
+            "../object",
+            "./object",
+            r"dir\object",
+            ".",
+            "..",
             "line\nfeed",
         ] {
             assert!(
@@ -2218,6 +2225,20 @@ mod tests {
             assert!(
                 RelationKey::new(value).is_err(),
                 "{value:?} must not be a relation key"
+            );
+        }
+        for value in [
+            "uuid:11111111-1111-1111-1111-111111111111",
+            "group:sha256:abc",
+            "reference:document-owner",
+        ] {
+            assert!(
+                ObjectKey::new(value).is_ok(),
+                "{value:?} must remain a valid object key"
+            );
+            assert!(
+                RelationKey::new(value).is_ok(),
+                "{value:?} must remain a valid relation key"
             );
         }
     }

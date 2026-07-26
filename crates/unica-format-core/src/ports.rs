@@ -44,8 +44,23 @@ pub trait ReadPort: Send + Sync {
 /// deliberately absent from this boundary.
 ///
 /// ```compile_fail
+/// use unica_format_core::{
+///     ports::FormatWriteCommand,
+///     semantic_ids::SemanticPropertyId,
+/// };
+/// let command = FormatWriteCommand::SetProperty {
+///     target: todo!(),
+///     property: SemanticPropertyId::NAME,
+///     value: serde_json::json!({"unsafe": true}),
+/// };
+/// ```
+///
+/// ```compile_fail
 /// use unica_format_core::ports::FormatWriteCommand;
-/// let command = FormatWriteCommand::Native(serde_json::json!({"unsafe": true}));
+/// let command: FormatWriteCommand = serde_json::json!({
+///     "operation": "adapter-native",
+///     "payload": {"raw": true}
+/// }).into();
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FormatWriteCommand {
