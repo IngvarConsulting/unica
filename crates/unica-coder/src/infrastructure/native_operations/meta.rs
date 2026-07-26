@@ -16518,6 +16518,7 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
     edit_meta_with_mode(args, context, false)
 }
 
+/// Validates a metadata edit and reports its planned effects without writing files.
 pub(crate) fn preview_meta_edit(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -16547,6 +16548,7 @@ pub(crate) fn preview_meta_edit(
     }
 }
 
+/// Runs the shared metadata-edit workflow in either preview or apply mode.
 fn edit_meta_with_mode(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
