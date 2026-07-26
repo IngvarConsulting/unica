@@ -1525,7 +1525,6 @@ impl NavigationCursor {
             parts.relation,
             parts.relation_role,
             parts.relation_kind,
-            parts.selection,
             parts.selection_hash,
             parts.next_position,
         )?;
@@ -1616,13 +1615,25 @@ fn cursor_mac(
         cursor.relation.as_str(),
         relation_role_token(cursor.relation_role),
         relation_kind_token(cursor.relation_kind),
-        &cursor.selection,
         &cursor.selection_hash,
         cursor.next_position,
     )
 }
 
-fn cursor_mac_parts<S: Serialize>(
+#[derive(Serialize)]
+struct CursorAuthClaims<'a> {
+    schema_version: u16,
+    source_id: &'a str,
+    snapshot_revision: &'a str,
+    target: &'a str,
+    relation: &'a str,
+    relation_role: &'a str,
+    relation_kind: &'a str,
+    selection_hash: &'a str,
+    next_position: u64,
+}
+
+fn cursor_mac_parts(
     secret: &[u8],
     schema_version: u16,
     source_id: &str,
@@ -1631,7 +1642,6 @@ fn cursor_mac_parts<S: Serialize>(
     relation: &str,
     relation_role: &str,
     relation_kind: &str,
-    selection: S,
     selection_hash: &str,
     next_position: u64,
 ) -> Result<Hmac<Sha256>, SourceAdapterError> {
@@ -1641,7 +1651,7 @@ fn cursor_mac_parts<S: Serialize>(
             "navigation cursor key is invalid",
         )
     })?;
-    let canonical = serde_json::to_vec(&(
+    let canonical = serde_json::to_vec(&CursorAuthClaims {
         schema_version,
         source_id,
         snapshot_revision,
@@ -1649,17 +1659,16 @@ fn cursor_mac_parts<S: Serialize>(
         relation,
         relation_role,
         relation_kind,
-        selection,
         selection_hash,
         next_position,
-    ))
+    })
     .map_err(|error| {
         SourceAdapterError::new(
             SourceAdapterErrorKind::ProjectionAmbiguous,
             format!("cannot serialize navigation cursor: {error}"),
         )
     })?;
-    mac.update(b"unica.navigation.cursor.auth.v1\0");
+    mac.update(b"unica.navigation.cursor.auth.v2\0");
     mac.update(&canonical);
     Ok(mac)
 }
@@ -1672,7 +1681,6 @@ struct CursorWireParts<'a> {
     relation: &'a str,
     relation_role: &'a str,
     relation_kind: &'a str,
-    selection: &'a serde_json::Value,
     selection_hash: &'a str,
     auth_tag: &'a str,
     next_position: u64,
@@ -1732,12 +1740,6 @@ fn cursor_wire_parts(value: &serde_json::Value) -> Result<CursorWireParts<'_>, S
         relation: string("relation")?,
         relation_role: string("relationRole")?,
         relation_kind: string("relationKind")?,
-        selection: object.get("selection").ok_or_else(|| {
-            SourceAdapterError::new(
-                SourceAdapterErrorKind::DecodeCorrupted,
-                "navigation cursor has no selection",
-            )
-        })?,
         selection_hash: string("selectionHash")?,
         auth_tag: string("authTag")?,
         next_position: object
@@ -2043,6 +2045,38 @@ mod tests {
         )
         .unwrap();
         assert_eq!(decoded.schema_version, NavigationCursor::SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn cursor_accepts_semantically_identical_selection_with_reordered_keys() {
+        let cursor = NavigationCursor::issue(
+            cursor_test_secret(),
+            source_id("workspace:main"),
+            SourceRevision::new("sha256:one").unwrap(),
+            object_key("uuid:11111111-1111-1111-1111-111111111111"),
+            relation_group_ref(),
+            selection(),
+            0,
+        )
+        .unwrap();
+        let mut value = serde_json::to_value(cursor).unwrap();
+        let selection_fields = value["selection"].as_object_mut().unwrap();
+        let mut fields = std::mem::take(selection_fields)
+            .into_iter()
+            .collect::<Vec<_>>();
+        fields.reverse();
+        selection_fields.extend(fields);
+
+        let decoded = NavigationCursor::decode(
+            value,
+            cursor_test_secret(),
+            &SourceRevision::new("sha256:one").unwrap(),
+            &selection(),
+            |_source, _target, _relation, _role, _kind| true,
+        )
+        .unwrap();
+
+        assert_eq!(decoded.selection, selection());
     }
 
     #[test]

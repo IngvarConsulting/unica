@@ -131,14 +131,12 @@ fn decode_with_context(
         ));
     }
 
-    let xml = utf8(
+    let (xml, document) = parse_bounded_xml_document(
         &root_bytes,
         "Platform XML root descriptor is not valid UTF-8",
+        "Platform XML root descriptor is malformed",
     )?;
-    let document =
-        Document::parse(xml).map_err(|_| corrupted("Platform XML root descriptor is malformed"))?;
     let wrapper = document.root_element();
-    validate_xml_nesting(wrapper, 1)?;
     validate_metadata_wrapper(wrapper)?;
     if wrapper.attribute("version").map(str::trim) != Some("2.20") {
         return Err(error(
@@ -477,9 +475,11 @@ fn parse_registered_descriptor(
     expected_profile: &'static MetadataClassProfile,
     expected_name: &str,
 ) -> Result<ParsedDescriptor, SourceAdapterError> {
-    let xml = utf8(bytes, "registered descriptor is not valid UTF-8")?;
-    let document =
-        Document::parse(xml).map_err(|_| corrupted("registered descriptor is malformed XML"))?;
+    let (_, document) = parse_bounded_xml_document(
+        bytes,
+        "registered descriptor is not valid UTF-8",
+        "registered descriptor is malformed XML",
+    )?;
     let wrapper = document.root_element();
     validate_metadata_wrapper(wrapper)?;
     let class = single_metadata_class(wrapper)?;
@@ -546,21 +546,31 @@ fn validate_xml_nesting(node: Node<'_, '_>, depth: usize) -> Result<(), SourceAd
     Ok(())
 }
 
+fn parse_bounded_xml_document<'a>(
+    bytes: &'a [u8],
+    invalid_utf8_message: &str,
+    malformed_message: &str,
+) -> Result<(&'a str, Document<'a>), SourceAdapterError> {
+    let xml = utf8(bytes, invalid_utf8_message)?;
+    let document = Document::parse(xml).map_err(|_| corrupted(malformed_message))?;
+    validate_xml_nesting(document.root_element(), 1)?;
+    Ok((xml, document))
+}
+
 fn single_metadata_class<'a, 'input>(
     wrapper: Node<'a, 'input>,
 ) -> Result<Node<'a, 'input>, SourceAdapterError> {
-    let classes = wrapper
-        .children()
-        .filter(Node::is_element)
-        .collect::<Vec<_>>();
-    match classes.as_slice() {
-        [class] => Ok(*class),
-        [] => Err(corrupted("Platform XML descriptor has no metadata class")),
-        _ => Err(error(
+    let mut classes = wrapper.children().filter(Node::is_element);
+    let class = classes
+        .next()
+        .ok_or_else(|| corrupted("Platform XML descriptor has no metadata class"))?;
+    if classes.next().is_some() {
+        return Err(error(
             SourceAdapterErrorKind::ProjectionAmbiguous,
             "Platform XML descriptor has multiple metadata classes",
-        )),
+        ));
     }
+    Ok(class)
 }
 
 fn profile_for_node(
@@ -809,9 +819,11 @@ fn parse_optional_uuid(node: Node<'_, '_>) -> Result<Option<Uuid>, SourceAdapter
 }
 
 fn validate_managed_form(bytes: &[u8]) -> Result<(), SourceAdapterError> {
-    let xml = utf8(bytes, "managed Form content is not valid UTF-8")?;
-    let document =
-        Document::parse(xml).map_err(|_| corrupted("managed Form content is malformed XML"))?;
+    let (_, document) = parse_bounded_xml_document(
+        bytes,
+        "managed Form content is not valid UTF-8",
+        "managed Form content is malformed XML",
+    )?;
     let root = document.root_element();
     if root.tag_name().name() != "Form"
         || root.tag_name().namespace() != Some(MANAGED_FORM_NAMESPACE)
@@ -822,8 +834,11 @@ fn validate_managed_form(bytes: &[u8]) -> Result<(), SourceAdapterError> {
 }
 
 fn parse_mxl_root(bytes: &[u8]) -> Result<NativeMxlRootKind, SourceAdapterError> {
-    let xml = utf8(bytes, "MXL content is not valid UTF-8")?;
-    let document = Document::parse(xml).map_err(|_| corrupted("MXL content is malformed XML"))?;
+    let (_, document) = parse_bounded_xml_document(
+        bytes,
+        "MXL content is not valid UTF-8",
+        "MXL content is malformed XML",
+    )?;
     let root = document.root_element();
     match (root.tag_name().name(), root.tag_name().namespace()) {
         ("SpreadsheetDocument", Some(SPREADSHEET_DOCUMENT_NAMESPACE)) => {
@@ -1360,6 +1375,84 @@ mod tests {
         assert_eq!(form.registration.name, "ItemForm");
         assert_eq!(form.descriptor.state, NativeEvidenceState::Validated);
         assert_eq!(form.managed_content.state, NativeEvidenceState::Validated);
+    }
+
+    #[test]
+    fn companion_xml_depth_limit_applies_to_every_capture_path() {
+        let fixtures = [
+            document_fixture_with_files(
+                "<ChildObjects><Form>ItemForm</Form></ChildObjects>",
+                &[(
+                    "Shipment/Forms/ItemForm.xml",
+                    deeply_nested_xml("MetaDataObject", super::METADATA_NAMESPACE),
+                )],
+            ),
+            document_fixture_with_files(
+                "<ChildObjects><Template>Print</Template></ChildObjects>",
+                &[(
+                    "Shipment/Templates/Print.xml",
+                    deeply_nested_xml("MetaDataObject", super::METADATA_NAMESPACE),
+                )],
+            ),
+            document_fixture_with_files(
+                "<ChildObjects><Form>ItemForm</Form></ChildObjects>",
+                &[
+                    ("Shipment/Forms/ItemForm.xml", form_descriptor("ItemForm")),
+                    (
+                        "Shipment/Forms/ItemForm/Ext/Form.xml",
+                        deeply_nested_xml("Form", super::MANAGED_FORM_NAMESPACE),
+                    ),
+                ],
+            ),
+            document_fixture_with_files(
+                "<ChildObjects><Template>Print</Template></ChildObjects>",
+                &[
+                    (
+                        "Shipment/Templates/Print.xml",
+                        template_descriptor("Print", "SpreadsheetDocument"),
+                    ),
+                    (
+                        "Shipment/Templates/Print/Ext/Template.xml",
+                        deeply_nested_xml(
+                            "SpreadsheetDocument",
+                            super::SPREADSHEET_DOCUMENT_NAMESPACE,
+                        ),
+                    ),
+                ],
+            ),
+        ];
+
+        for fixture in fixtures {
+            assert_eq!(
+                decode(&fixture.provider, &fixture.descriptor)
+                    .unwrap_err()
+                    .kind,
+                SourceAdapterErrorKind::ResourceLimit
+            );
+        }
+    }
+
+    #[test]
+    fn companion_metadata_class_max_plus_one_stops_without_collecting_all_classes() {
+        let mut classes = String::new();
+        for _ in 0..=MAX_NAVIGATION_NODES {
+            classes.push_str("<Form/>");
+        }
+        let descriptor = format!(
+            "<MetaDataObject xmlns=\"{}\">{classes}</MetaDataObject>",
+            super::METADATA_NAMESPACE
+        );
+        let fixture = document_fixture_with_files(
+            "<ChildObjects><Form>ItemForm</Form></ChildObjects>",
+            &[("Shipment/Forms/ItemForm.xml", descriptor)],
+        );
+
+        assert_eq!(
+            decode(&fixture.provider, &fixture.descriptor)
+                .unwrap_err()
+                .kind,
+            SourceAdapterErrorKind::ProjectionAmbiguous
+        );
     }
 
     #[test]
@@ -2030,6 +2123,18 @@ mod tests {
 
     fn spreadsheet_document_source() -> &'static str {
         "<SpreadsheetDocument xmlns=\"http://v8.1c.ru/spreadsheet/document\"/>"
+    }
+
+    fn deeply_nested_xml(root: &str, namespace: &str) -> String {
+        let mut xml = format!("<{root} xmlns=\"{namespace}\">");
+        for _ in 0..MAX_NAVIGATION_NESTING_DEPTH {
+            xml.push_str("<Nested>");
+        }
+        for _ in 0..MAX_NAVIGATION_NESTING_DEPTH {
+            xml.push_str("</Nested>");
+        }
+        write!(xml, "</{root}>").unwrap();
+        xml
     }
 
     fn fixture(root_key: &str, files: &[(&str, String)]) -> Fixture {
