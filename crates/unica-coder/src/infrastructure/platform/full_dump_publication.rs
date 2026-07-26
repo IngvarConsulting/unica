@@ -3083,38 +3083,124 @@ enum StagedRootVersionPolicy {
 ///
 /// The registry is fail-closed: an unlisted root discards the staged dump, so a
 /// missing entry makes `mode=full` unusable for every configuration that owns
-/// the artifact. Each entry below is the root of a file the platform itself
-/// produces; the trailing comment names that dump artifact.
+/// the artifact. Each entry is the root of a file the platform itself produces;
+/// the comment above it names that dump artifact. Tests enumerate this table, so
+/// a new entry that no test case reaches fails the coverage assertion.
+static STAGED_ROOT_REGISTRY: &[(&str, &str, StagedRootVersionPolicy)] = &[
+    // Configuration.xml and every object owner
+    (
+        MD_CLASSES_NS,
+        "MetaDataObject",
+        StagedRootVersionPolicy::ExactRootVersion,
+    ),
+    // Forms/*/Ext/Form.xml
+    (
+        "http://v8.1c.ru/8.3/xcf/logform",
+        "Form",
+        StagedRootVersionPolicy::ExactRootVersion,
+    ),
+    // Ext/CommandInterface.xml
+    (
+        "http://v8.1c.ru/8.3/xcf/extrnprops",
+        "CommandInterface",
+        StagedRootVersionPolicy::ExactRootVersion,
+    ),
+    // Ext/Help.xml
+    (
+        "http://v8.1c.ru/8.3/xcf/extrnprops",
+        "Help",
+        StagedRootVersionPolicy::ExactRootVersion,
+    ),
+    // ExchangePlans/*/Ext/Content.xml
+    (
+        "http://v8.1c.ru/8.3/xcf/extrnprops",
+        "ExchangePlanContent",
+        StagedRootVersionPolicy::ExactRootVersion,
+    ),
+    // Ext/HomePageWorkArea.xml
+    (
+        "http://v8.1c.ru/8.3/xcf/extrnprops",
+        "HomePageWorkArea",
+        StagedRootVersionPolicy::ExactRootVersion,
+    ),
+    // CommonPictures/*/Ext/Picture.xml and Ext/Splash.xml
+    (
+        "http://v8.1c.ru/8.3/xcf/extrnprops",
+        "ExtPicture",
+        StagedRootVersionPolicy::ExactRootVersion,
+    ),
+    // ScheduledJobs/*/Ext/Schedule.xml
+    (
+        "http://v8.1c.ru/8.3/xcf/extrnprops",
+        "JobSchedule",
+        StagedRootVersionPolicy::ExactRootVersion,
+    ),
+    // Catalogs/*/Ext/Predefined.xml and the other predefined-data owners
+    (
+        "http://v8.1c.ru/8.3/xcf/predef",
+        "PredefinedData",
+        StagedRootVersionPolicy::ExactRootVersion,
+    ),
+    // ConfigDumpInfo.xml
+    (
+        "http://v8.1c.ru/8.3/xcf/dumpinfo",
+        "ConfigDumpInfo",
+        StagedRootVersionPolicy::ExactRootVersion,
+    ),
+    // BusinessProcesses/*/Ext/Flowchart.xml
+    (
+        "http://v8.1c.ru/8.3/xcf/scheme",
+        "GraphicalSchema",
+        StagedRootVersionPolicy::ExactRootVersion,
+    ),
+    // Roles/*/Ext/Rights.xml
+    (
+        "http://v8.1c.ru/8.2/roles",
+        "Rights",
+        StagedRootVersionPolicy::ExactRootVersion,
+    ),
+    // Templates/*/Ext/Template.xml for a data composition schema
+    (
+        "http://v8.1c.ru/8.1/data-composition-system/schema",
+        "DataCompositionSchema",
+        StagedRootVersionPolicy::Versionless,
+    ),
+    // CommonTemplates/*/Ext/Template.xml for a report appearance template
+    (
+        "http://v8.1c.ru/8.1/data-composition-system/appearance-template",
+        "AppearanceTemplate",
+        StagedRootVersionPolicy::Versionless,
+    ),
+    // Templates/*/Ext/Template.xml for a spreadsheet document
+    (
+        "http://v8.1c.ru/8.2/data/spreadsheet",
+        "document",
+        StagedRootVersionPolicy::Versionless,
+    ),
+    // WSReferences/*/Ext/WSDefinition.xml, stored as the service published it
+    (
+        "http://schemas.xmlsoap.org/wsdl/",
+        "definitions",
+        StagedRootVersionPolicy::Versionless,
+    ),
+    // Ext/ClientApplicationInterface.xml
+    (
+        "http://v8.1c.ru/8.2/managed-application/core",
+        "ClientApplicationInterface",
+        StagedRootVersionPolicy::Versionless,
+    ),
+];
+
 fn staged_root_version_policy(
     namespace: &str,
     local_name: &str,
 ) -> Option<StagedRootVersionPolicy> {
-    match (namespace, local_name) {
-        (MD_CLASSES_NS, "MetaDataObject") // Configuration.xml and every object owner
-        | ("http://v8.1c.ru/8.3/xcf/logform", "Form") // Forms/*/Ext/Form.xml
-        | ("http://v8.1c.ru/8.3/xcf/extrnprops", "CommandInterface") // Ext/CommandInterface.xml
-        | ("http://v8.1c.ru/8.3/xcf/extrnprops", "Help") // Ext/Help.xml
-        | ("http://v8.1c.ru/8.3/xcf/extrnprops", "ExchangePlanContent") // Ext/Content.xml
-        | ("http://v8.1c.ru/8.3/xcf/extrnprops", "HomePageWorkArea") // Ext/HomePageWorkArea.xml
-        | ("http://v8.1c.ru/8.3/xcf/extrnprops", "ExtPicture") // CommonPictures/*/Ext/Picture.xml
-        | ("http://v8.1c.ru/8.3/xcf/extrnprops", "JobSchedule") // ScheduledJobs/*/Ext/Schedule.xml
-        | ("http://v8.1c.ru/8.3/xcf/predef", "PredefinedData") // Catalogs/*/Ext/Predefined.xml
-        | ("http://v8.1c.ru/8.3/xcf/dumpinfo", "ConfigDumpInfo") // ConfigDumpInfo.xml
-        | ("http://v8.1c.ru/8.3/xcf/scheme", "GraphicalSchema") // Ext/Flowchart.xml
-        | ("http://v8.1c.ru/8.2/roles", "Rights") => {
-            // Roles/*/Ext/Rights.xml
-            Some(StagedRootVersionPolicy::ExactRootVersion)
-        }
-        ("http://v8.1c.ru/8.1/data-composition-system/schema", "DataCompositionSchema") // Ext/Template.xml
-        | ("http://v8.1c.ru/8.1/data-composition-system/appearance-template", "AppearanceTemplate") // Ext/Template.xml
-        | ("http://v8.1c.ru/8.2/data/spreadsheet", "document") // Ext/Template.xml
-        | ("http://schemas.xmlsoap.org/wsdl/", "definitions") // WSReferences/*/Ext/WSDefinition.xml
-        | ("http://v8.1c.ru/8.2/managed-application/core", "ClientApplicationInterface") => {
-            // Ext/ClientApplicationInterface.xml
-            Some(StagedRootVersionPolicy::Versionless)
-        }
-        _ => None,
-    }
+    STAGED_ROOT_REGISTRY
+        .iter()
+        .find(|(registered_namespace, registered_local_name, _)| {
+            *registered_namespace == namespace && *registered_local_name == local_name
+        })
+        .map(|(_, _, policy)| *policy)
 }
 
 fn publish_staged_tree(
@@ -4947,18 +5033,19 @@ fn parse_exact_platform_version(value: &str) -> Option<[u32; 4]> {
 #[cfg(all(test, not(windows)))]
 mod tests {
     use super::{
-        normalize_key_value_connection, validate_staged_dump, with_private_create_hook,
-        with_publication_failpoint, with_publication_hook, with_secure_read_hook,
-        with_target_parent_capture_hook, with_targeted_read_hooks, with_tree_open_hook,
-        FullDumpInvocation, PlatformResolver, PlatformUtility, PublicationCheckpoint,
-        SystemPlatformResolver, TreeSnapshot, VerifiedFullDumpAdapter, VerifiedPlatform,
-        TARGET_EXPORT_FORMAT,
+        normalize_key_value_connection, staged_root_version_policy, validate_staged_dump,
+        with_private_create_hook, with_publication_failpoint, with_publication_hook,
+        with_secure_read_hook, with_target_parent_capture_hook, with_targeted_read_hooks,
+        with_tree_open_hook, Document, FullDumpInvocation, PlatformResolver, PlatformUtility,
+        PublicationCheckpoint, StagedRootVersionPolicy, SystemPlatformResolver, TreeSnapshot,
+        VerifiedFullDumpAdapter, VerifiedPlatform, STAGED_ROOT_REGISTRY, TARGET_EXPORT_FORMAT,
     };
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::project_sources::SourceSetKind;
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::internal_adapters::{ProcessCommand, ProcessOutput, ProcessRunner};
     use serde_json::{Map, Value};
+    use std::collections::BTreeSet;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -6532,58 +6619,111 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// Roots an 8.3.27 / format 2.20 Designer dump writes, with the fixture that
-    /// pins each one. The fixture bytes keep the platform BOM and CRLF; their
-    /// root elements are the ones observed in 8.3.27.2074 dumps, while bodies
-    /// are reduced to the smallest shape that still parses.
-    const PLATFORM_DUMP_ROOT_FIXTURES: &[(&str, &[u8], bool)] = &[
+    /// One staged file per `STAGED_ROOT_REGISTRY` entry, at the dump-relative
+    /// path the platform writes it to.
+    ///
+    /// Where a checked-in fixture exists the case uses those bytes, keeping the
+    /// platform BOM and CRLF. The remaining cases are the smallest document that
+    /// still carries the registered root, because the guard reads nothing below
+    /// it. `staged_root_registry_covers_every_registered_root` fails if a
+    /// registry entry has no case here.
+    const STAGED_ROOT_CASES: &[(&str, &[u8])] = &[
         (
-            "Catalogs/Товары/Ext/Predefined.xml",
-            include_bytes!(
-                "../../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/Predefined.xml"
-            ),
-            true,
+            "Configuration.xml",
+            br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties/></Configuration></MetaDataObject>"#,
+        ),
+        (
+            "Catalogs/Товары/Forms/Форма/Ext/Form.xml",
+            br#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"/>"#,
+        ),
+        (
+            "Subsystems/Продажи/Ext/CommandInterface.xml",
+            br#"<CommandInterface xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"/>"#,
+        ),
+        (
+            "Catalogs/Товары/Ext/Help.xml",
+            br#"<Help xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"/>"#,
+        ),
+        (
+            "ExchangePlans/Обмен/Ext/Content.xml",
+            include_bytes!("../../../../../tests/fixtures/platform_8_3_27/exchange_plan/Content.xml"),
+        ),
+        (
+            "Ext/HomePageWorkArea.xml",
+            br#"<HomePageWorkArea xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"/>"#,
         ),
         (
             "CommonPictures/Логотип/Ext/Picture.xml",
             include_bytes!(
                 "../../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/Picture.xml"
             ),
-            true,
         ),
         (
             "ScheduledJobs/ОбновлениеКурсов/Ext/Schedule.xml",
             include_bytes!(
                 "../../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/Schedule.xml"
             ),
-            true,
+        ),
+        (
+            "Catalogs/Товары/Ext/Predefined.xml",
+            include_bytes!(
+                "../../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/Predefined.xml"
+            ),
         ),
         (
             "ConfigDumpInfo.xml",
             include_bytes!(
                 "../../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/ConfigDumpInfo.xml"
             ),
-            true,
+        ),
+        (
+            "BusinessProcesses/Согласование/Ext/Flowchart.xml",
+            br#"<GraphicalSchema xmlns="http://v8.1c.ru/8.3/xcf/scheme" version="2.20"/>"#,
+        ),
+        (
+            "Roles/Администратор/Ext/Rights.xml",
+            br#"<Rights xmlns="http://v8.1c.ru/8.2/roles" version="2.20"/>"#,
+        ),
+        (
+            "Reports/Продажи/Templates/Основной/Ext/Template.xml",
+            br#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"/>"#,
         ),
         (
             "CommonTemplates/ОформлениеОтчетов/Ext/Template.xml",
             include_bytes!(
                 "../../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/Template.xml"
             ),
-            false,
+        ),
+        (
+            "CommonTemplates/ПечатнаяФорма/Ext/Template.xml",
+            include_bytes!("../../../../../tests/fixtures/platform_8_3_27/mxl/Template.xml"),
         ),
         (
             "WSReferences/СлужбаОбмена/Ext/WSDefinition.xml",
             include_bytes!(
                 "../../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/WSDefinition.xml"
             ),
-            false,
+        ),
+        (
+            "Ext/ClientApplicationInterface.xml",
+            br#"<ClientApplicationInterface xmlns="http://v8.1c.ru/8.2/managed-application/core"/>"#,
         ),
     ];
 
-    fn staged_root_fixture_tree(case: &str) -> PathBuf {
+    fn staged_root_case_root(source: &[u8]) -> (String, String) {
+        let text = std::str::from_utf8(source).expect("staged root case is UTF-8");
+        let document = Document::parse(text.trim_start_matches('\u{feff}'))
+            .expect("staged root case parses as XML");
+        let root = document.root_element();
+        (
+            root.tag_name().namespace().unwrap_or_default().to_string(),
+            root.tag_name().name().to_string(),
+        )
+    }
+
+    fn staged_root_case_tree(case: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
-            "unica-staged-root-fixture-{case}-{}",
+            "unica-staged-root-case-{case}-{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&root).unwrap();
@@ -6592,12 +6732,32 @@ mod tests {
     }
 
     #[test]
+    fn staged_root_registry_covers_every_registered_root() {
+        let covered = STAGED_ROOT_CASES
+            .iter()
+            .map(|(_, source)| staged_root_case_root(source))
+            .collect::<BTreeSet<_>>();
+        let uncovered = STAGED_ROOT_REGISTRY
+            .iter()
+            .filter(|(namespace, local_name, _)| {
+                !covered.contains(&((*namespace).to_string(), (*local_name).to_string()))
+            })
+            .map(|(namespace, local_name, _)| format!("{{{namespace}}}{local_name}"))
+            .collect::<Vec<_>>();
+
+        assert!(
+            uncovered.is_empty(),
+            "every registered staged root needs a case: {uncovered:?}"
+        );
+    }
+
+    #[test]
     fn staged_root_registry_publishes_every_platform_8_3_27_dump_root() {
-        let root = staged_root_fixture_tree("accepted");
-        for (relative, bytes, _) in PLATFORM_DUMP_ROOT_FIXTURES {
+        let root = staged_root_case_tree("accepted");
+        for (relative, source) in STAGED_ROOT_CASES {
             let path = root.join(relative);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(&path, bytes).unwrap();
+            std::fs::write(&path, source).unwrap();
         }
 
         validate_staged_dump(&root, SourceSetKind::Configuration).unwrap_or_else(|error| {
@@ -6609,46 +6769,48 @@ mod tests {
 
     #[test]
     fn staged_root_registry_binds_each_platform_root_to_its_version_policy() {
-        for (relative, bytes, version_bearing) in PLATFORM_DUMP_ROOT_FIXTURES {
-            let name = Path::new(relative).file_name().unwrap().to_str().unwrap();
-            let source = std::str::from_utf8(bytes).unwrap();
-            let declaration_end = source
-                .find("?>")
-                .expect("fixture keeps the XML declaration")
-                + 2;
-            let (declaration, element) = source.split_at(declaration_end);
-            let (mutated, expected) = if *version_bearing {
-                assert!(
-                    element.contains(r#"version="2.20""#),
-                    "{name}: the fixture must carry the exact 2.20 literal"
-                );
-                (
-                    format!(
-                        "{declaration}{}",
-                        element.replace(r#"version="2.20""#, r#"version="2.19""#)
-                    ),
-                    "2.19",
-                )
-            } else {
-                assert!(
-                    !element.contains("version="),
-                    "{name}: the fixture must stay versionless"
-                );
-                let tag_start = element.find('<').expect("fixture has a root element");
-                let tag_name_end = tag_start
-                    + element[tag_start..]
-                        .find(|character: char| character.is_whitespace() || character == '>')
-                        .expect("fixture root element is well formed");
-                (
-                    format!(
-                        "{declaration}{} version=\"2.20\"{}",
-                        &element[..tag_name_end],
-                        &element[tag_name_end..]
-                    ),
-                    "versionless",
-                )
+        for (index, (relative, source)) in STAGED_ROOT_CASES.iter().enumerate() {
+            let (namespace, local_name) = staged_root_case_root(source);
+            let policy = staged_root_version_policy(&namespace, &local_name)
+                .unwrap_or_else(|| panic!("{relative}: case root must be registered"));
+            let text = std::str::from_utf8(source).unwrap();
+            let declaration_end = text.find("?>").map(|end| end + 2).unwrap_or_default();
+            let (declaration, element) = text.split_at(declaration_end);
+            let (mutated, expected) = match policy {
+                StagedRootVersionPolicy::ExactRootVersion => {
+                    assert!(
+                        element.contains(r#"version="2.20""#),
+                        "{relative}: the case must carry the exact 2.20 literal"
+                    );
+                    (
+                        format!(
+                            "{declaration}{}",
+                            element.replace(r#"version="2.20""#, r#"version="2.19""#)
+                        ),
+                        "2.19",
+                    )
+                }
+                StagedRootVersionPolicy::Versionless => {
+                    assert!(
+                        !element.contains("version="),
+                        "{relative}: the case must stay versionless"
+                    );
+                    let tag_start = element.find('<').expect("case has a root element");
+                    let tag_name_end = tag_start
+                        + element[tag_start..]
+                            .find(|character: char| character.is_whitespace() || character == '>')
+                            .expect("case root element is well formed");
+                    (
+                        format!(
+                            "{declaration}{} version=\"2.20\"{}",
+                            &element[..tag_name_end],
+                            &element[tag_name_end..]
+                        ),
+                        "versionless",
+                    )
+                }
             };
-            let root = staged_root_fixture_tree(name);
+            let root = staged_root_case_tree(&index.to_string());
             let path = root.join(relative);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, mutated).unwrap();
@@ -6656,7 +6818,7 @@ mod tests {
             let error = validate_staged_dump(&root, SourceSetKind::Configuration)
                 .expect_err("a registered root with the wrong version policy must fail closed");
 
-            assert!(error.contains(expected), "{name}: {error}");
+            assert!(error.contains(expected), "{relative}: {error}");
             std::fs::remove_dir_all(root).unwrap();
         }
     }
