@@ -8863,6 +8863,247 @@ mod tests {
         root
     }
 
+    fn source_tree_snapshot(
+        root: &std::path::Path,
+    ) -> Vec<(std::path::PathBuf, &'static str, Vec<u8>, Option<String>)> {
+        fn visit(
+            root: &std::path::Path,
+            current: &std::path::Path,
+            snapshot: &mut Vec<(std::path::PathBuf, &'static str, Vec<u8>, Option<String>)>,
+        ) {
+            let mut entries = std::fs::read_dir(current)
+                .unwrap()
+                .map(Result::unwrap)
+                .collect::<Vec<_>>();
+            entries.sort_by_key(std::fs::DirEntry::file_name);
+            for entry in entries {
+                let path = entry.path();
+                let relative = path.strip_prefix(root).unwrap().to_path_buf();
+                let metadata = std::fs::symlink_metadata(&path).unwrap();
+                if metadata.file_type().is_symlink() {
+                    snapshot.push((
+                        relative,
+                        "symlink",
+                        std::fs::read_link(&path)
+                            .unwrap()
+                            .as_os_str()
+                            .to_string_lossy()
+                            .as_bytes()
+                            .to_vec(),
+                        None,
+                    ));
+                } else if metadata.is_dir() {
+                    snapshot.push((relative, "directory", Vec::new(), None));
+                    visit(root, &path, snapshot);
+                } else {
+                    let file = std::fs::File::open(&path).unwrap();
+                    let identity =
+                        crate::infrastructure::platform::filesystem::file_identity(&file)
+                            .ok()
+                            .zip(
+                                crate::infrastructure::platform::filesystem::hard_link_count(&file)
+                                    .ok(),
+                            )
+                            .map(|(identity, links)| format!("{identity:?}; links={links}"));
+                    snapshot.push((relative, "file", std::fs::read(&path).unwrap(), identity));
+                }
+            }
+        }
+
+        let mut snapshot = Vec::new();
+        visit(root, root, &mut snapshot);
+        snapshot
+    }
+
+    #[test]
+    fn legacy_read_only_output_sinks_cannot_change_source_path_aliases() {
+        let root = test_workspace_root("unica-read-only-output-aliases");
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let protected = src.join("protected-source.xml");
+        let hard_link = src.join("protected-hard-link.xml");
+        let symlink = src.join("protected-symlink.xml");
+        let outside = root.join("outside/protected-source.xml");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(&protected, b"source bytes").unwrap();
+        std::fs::write(&outside, b"outside bytes").unwrap();
+        std::fs::hard_link(&protected, &hard_link).unwrap();
+        let symlink_created = match create_file_link_fixture_for_test(&protected, &symlink)
+            .expect("unexpected file-link creation error must fail the fixture test")
+        {
+            FileLinkFixtureOutcome::Created => true,
+            FileLinkFixtureOutcome::Unsupported => {
+                eprintln!("[SKIPPED FIXTURE] file links are unsupported on this host");
+                false
+            }
+            FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                eprintln!("[SKIPPED FIXTURE] Windows file-link privilege is unavailable");
+                false
+            }
+        };
+
+        let mut sink_targets = vec![
+            ("same source", protected.clone()),
+            (
+                "parent traversal",
+                workspace.join("src/../../outside/protected-source.xml"),
+            ),
+            ("hard-link alias", hard_link),
+        ];
+        if symlink_created {
+            sink_targets.push(("symlink alias", symlink));
+        }
+
+        let affected_tools = [
+            ("unica.cf.info", "ConfigPath", "OutFile", "outFile"),
+            ("unica.cf.validate", "ConfigPath", "OutFile", "outFile"),
+            ("unica.cfe.validate", "ExtensionPath", "OutFile", "outFile"),
+            ("unica.meta.info", "ObjectPath", "OutFile", "outFile"),
+            ("unica.meta.validate", "ObjectPath", "OutFile", "outFile"),
+            ("unica.interface.validate", "CIPath", "OutFile", "outFile"),
+            (
+                "unica.subsystem.info",
+                "SubsystemPath",
+                "OutFile",
+                "outFile",
+            ),
+            (
+                "unica.subsystem.validate",
+                "SubsystemPath",
+                "OutFile",
+                "outFile",
+            ),
+            ("unica.dcs.info", "TemplatePath", "OutFile", "outFile"),
+            ("unica.dcs.validate", "TemplatePath", "OutFile", "outFile"),
+            ("unica.role.info", "RightsPath", "OutFile", "outFile"),
+            ("unica.role.validate", "RightsPath", "OutFile", "outFile"),
+            (
+                "unica.mxl.decompile",
+                "TemplatePath",
+                "OutputPath",
+                "outputPath",
+            ),
+        ];
+
+        for (tool, input_argument, sink_argument, sink_alias) in affected_tools {
+            for argument in [sink_argument, sink_alias] {
+                for (target_kind, target) in &sink_targets {
+                    let mut args = Map::new();
+                    args.insert(
+                        "cwd".to_string(),
+                        Value::String(workspace.display().to_string()),
+                    );
+                    args.insert(
+                        input_argument.to_string(),
+                        Value::String("src/protected-source.xml".to_string()),
+                    );
+                    args.insert(
+                        argument.to_string(),
+                        Value::String(target.display().to_string()),
+                    );
+                    let before = source_tree_snapshot(&root);
+
+                    let error = UnicaApplication::new()
+                        .call_tool(tool, &args)
+                        .expect_err("legacy output sink must be rejected by the public contract");
+
+                    assert!(
+                        error.contains(&format!("does not accept argument `{argument}`")),
+                        "{tool} {argument} {target_kind}: {error}"
+                    );
+                    assert_eq!(
+                        source_tree_snapshot(&root),
+                        before,
+                        "{tool} {argument} must not change the tree through {target_kind}"
+                    );
+                }
+            }
+        }
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn metadata_and_dcs_format_warnings_leave_source_trees_unchanged() {
+        let dcs_fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "../../tests/fixtures/unica_mcp_script_parity/bsp/dcs/DataProcessors__ВыгрузкаЗагрузкаEnterpriseData__СхемаКомпоновкиДанных/Template.xml",
+        );
+
+        for (format, compatibility) in [("2.19", "older"), ("2.21", "newer")] {
+            let root = test_workspace_root(&format!("unica-read-only-format-{format}"));
+            let workspace = root.join("workspace");
+            let src = workspace.join("src");
+            let object = src.join("Catalogs/Items.xml");
+            let template = src.join("Reports/Sales/Templates/Main/Ext/Template.xml");
+            std::fs::create_dir_all(object.parent().unwrap()).unwrap();
+            std::fs::create_dir_all(template.parent().unwrap()).unwrap();
+            std::fs::write(
+                workspace.join("v8project.yaml"),
+                "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+            )
+            .unwrap();
+            std::fs::write(
+                src.join("Configuration.xml"),
+                support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").replacen(
+                    r#"version="2.20""#,
+                    &format!(r#"version="{format}""#),
+                    1,
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                &object,
+                support_test_catalog_xml("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+            )
+            .unwrap();
+            std::fs::copy(&dcs_fixture, &template).unwrap();
+
+            for (tool, path_argument, path) in [
+                ("unica.meta.info", "ObjectPath", &object),
+                ("unica.meta.validate", "ObjectPath", &object),
+                ("unica.dcs.info", "TemplatePath", &template),
+                ("unica.dcs.validate", "TemplatePath", &template),
+            ] {
+                let mut args = Map::new();
+                args.insert(
+                    "cwd".to_string(),
+                    Value::String(workspace.display().to_string()),
+                );
+                args.insert(
+                    path_argument.to_string(),
+                    Value::String(path.display().to_string()),
+                );
+                let before = source_tree_snapshot(&src);
+
+                let result = UnicaApplication::new().call_tool(tool, &args).unwrap();
+
+                assert!(
+                    !result.warnings.is_empty(),
+                    "{tool} must preserve the {format} warning: {result:?}"
+                );
+                let diagnostic = &result.diagnostics.as_ref().unwrap()["formatCompatibility"];
+                assert_eq!(diagnostic["actualFormat"], format, "{tool}: {result:?}");
+                assert_eq!(
+                    diagnostic["compatibility"], compatibility,
+                    "{tool}: {result:?}"
+                );
+                assert_eq!(
+                    source_tree_snapshot(&src),
+                    before,
+                    "{tool} must not change a {format} source tree"
+                );
+            }
+
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
     fn temp_meta_compile_workspace(prefix: &str) -> std::path::PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
