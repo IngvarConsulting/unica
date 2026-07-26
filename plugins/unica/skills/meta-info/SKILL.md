@@ -24,7 +24,7 @@ Use exactly one target mode per request:
 | Expand node | `objectRef`, `snapshotRevision` | Re-resolve a known semantic object in the same captured snapshot. |
 | Continue page | `cursor` | Continue the exact relation page returned earlier. |
 
-`objectRef` is the returned semantic identity with `sourceId` and `objectKey`. It is not a file path. `snapshotRevision` prevents an expansion from silently reading changed metadata. A cursor is opaque, path-free, selection-bound, and snapshot-bound; return it unchanged. Continuations are available only for the process lifetime of the captured navigation snapshot. If that bounded snapshot is unavailable after restart or eviction, start again with `ObjectPath`; the result is structured `source_unavailable` or stale-snapshot diagnostics, never a filesystem fallback.
+`objectRef` is the returned semantic identity with `sourceId` and `objectKey`. It is not a file path. `snapshotRevision` binds expansion to the exact retained immutable snapshot; it does not re-read live metadata. A cursor is opaque, path-free, selection-bound, and snapshot-bound; return it unchanged. Live source drift does not invalidate either continuation. Continuations are available only while that exact captured snapshot is retained for the current authorization scope. If it is evicted, lost after restart, unavailable, or mismatched, start again with `ObjectPath`; the result is structured `snapshot_stale`, never a filesystem fallback. `source_unavailable` is reserved for bootstrap failures and current source-map or authorization failures.
 
 ## Selection and relation pages
 
@@ -104,4 +104,4 @@ Each node exposes its semantic object reference and typed properties. Facets con
 
 ## Unavailable navigation
 
-Do not retry through a text analyzer. `unavailable` is structured and preserves empty `nodes` and `relations`. Diagnostics distinguish unsupported format (`format_unsupported`), corrupted or ambiguous metadata, stale snapshots/cursors, and unavailable sources. Platform XML 2.19 is intentionally unavailable; only a certified adapter may produce ready navigation.
+Do not retry through a text analyzer. `unavailable` is structured and preserves empty `nodes` and `relations`. Diagnostics distinguish unsupported format (`format_unsupported`), corrupted or ambiguous metadata, unavailable retained continuations (`snapshot_stale`), and bootstrap/current source-map or authorization failures (`source_unavailable`). Platform XML 2.19 is intentionally unavailable; only a certified adapter may produce ready navigation.

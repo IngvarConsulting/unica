@@ -101,3 +101,17 @@ sibling descriptors to preserve that invariant.
   authorization-scope change. `snapshot_stale` means the requested retained
   snapshot is unavailable or mismatched for that scope, not that live source
   files drifted after bootstrap.
+
+## Fix Round 3
+
+- The versioned source-adapter architecture and packaged `meta-info` skill now
+  state the same continuation contract: cursor and objectRef requests use the
+  retained immutable revision across live source drift. Only an evicted, lost,
+  unavailable, mismatched, or authorization-scope-incompatible retained
+  snapshot yields `snapshot_stale`; `source_unavailable` remains a bootstrap,
+  current source-map, or authorization failure.
+- Production navigation regression coverage bootstraps with valid support
+  evidence, then mutates the target companion, source-root
+  `Configuration.xml`, and `Ext/ParentConfigurations.bin` to distinguishable
+  invalid bytes. Cursor and objectRef continuation both retain the original
+  revision, object data, and capability without a source rescan.

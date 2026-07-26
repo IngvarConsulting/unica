@@ -445,8 +445,12 @@ relations. `pageSize` defaults to 25 and cannot exceed 100.
 
 Offset pagination is not supported. Cursors are opaque JSON objects, bind the
 source ID, snapshot revision, target, relation, selection, and next position,
-and fail with `SnapshotStale` when the source revision changes. Clients pass a
-cursor back unchanged and must not construct or edit its fields.
+and address one retained immutable snapshot. A cursor remains valid across live
+source drift: continuation never rescans the source and returns the retained
+revision. It fails with `SnapshotStale` only when that exact cached snapshot is
+evicted, lost on restart, unavailable, mismatched, or no longer belongs to the
+current authorization scope. Clients pass a cursor back unchanged and must not
+construct or edit its fields.
 
 The response is canonical JSON:
 

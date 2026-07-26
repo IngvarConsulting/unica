@@ -15156,21 +15156,31 @@ mod tests {
     }
 
     #[test]
-    fn retained_cursor_uses_the_original_snapshot_after_live_source_mutation() {
+    fn retained_cursor_and_object_ref_use_the_original_snapshot_after_live_source_mutation() {
         let (context, path) = fixture(
             "2.20",
             r#"<Attribute><Properties><Name>Code</Name></Properties></Attribute><Attribute><Properties><Name>Description</Name></Properties></Attribute>"#,
         );
         let source_root = context.workspace_root.join("src");
         let companion = source_root.join("Catalogs/Items/evidence.bin");
+        let support = source_root.join("Ext/ParentConfigurations.bin");
         std::fs::create_dir_all(companion.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(support.parent().unwrap()).unwrap();
         std::fs::write(&companion, b"before").unwrap();
+        std::fs::write(
+            &support,
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/fixtures/unica_mcp_script_parity/cc-1c-skills/cases/meta-compile/fixtures/on-support/Ext/ParentConfigurations.bin"
+            )),
+        )
+        .unwrap();
         let cache = Mutex::new(SnapshotCache::default());
         let secret = b"retained-snapshot-secret";
         let initial = inspect_meta_navigation_with_cache(
             json!({
                 "ObjectPath": path,
-                "select": {"relations": [{"role": "attributes", "pageSize": 1}]}
+                "select": {"facets": "full", "relations": [{"role": "attributes", "pageSize": 1}]}
             })
             .as_object()
             .unwrap(),
@@ -15180,15 +15190,13 @@ mod tests {
         )
         .unwrap();
         let revision = initial.snapshot.as_ref().unwrap().revision.clone();
+        let original_item = initial.relations[0].items[0].clone();
         let cursor =
             serde_json::to_value(initial.relations[0].next_cursor.clone().unwrap()).unwrap();
 
-        std::fs::write(
-            source_root.join("Configuration.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"><Properties><Name>Changed</Name></Properties></Configuration></MetaDataObject>"#,
-        )
-        .unwrap();
-        std::fs::write(&companion, b"after").unwrap();
+        std::fs::write(source_root.join("Configuration.xml"), b"<not-platform-xml").unwrap();
+        std::fs::write(&companion, b"companion-invalid-after").unwrap();
+        std::fs::write(&support, b"{").unwrap();
 
         let continued = inspect_meta_navigation_with_cache(
             json!({"cursor": cursor}).as_object().unwrap(),
@@ -15203,6 +15211,35 @@ mod tests {
             continued.relations[0].items[0].object_ref.display_name,
             "Description"
         );
+        assert_eq!(
+            continued.relations[0].items[0].capability,
+            original_item.capability
+        );
+
+        let by_object_ref = inspect_meta_navigation_with_cache(
+            json!({
+                "objectRef": {
+                    "sourceId": original_item.object_ref.source_id.as_str(),
+                    "objectKey": original_item.object_ref.object_key.as_str(),
+                },
+                "snapshotRevision": serde_json::to_value(&revision).unwrap(),
+                "select": {"facets": "full"},
+            })
+            .as_object()
+            .unwrap(),
+            &context,
+            &cache,
+            secret,
+        )
+        .unwrap();
+        let retained_item = by_object_ref
+            .nodes
+            .iter()
+            .find(|node| node.object_ref == original_item.object_ref)
+            .unwrap();
+        assert_eq!(by_object_ref.snapshot.as_ref().unwrap().revision, revision);
+        assert_eq!(retained_item.object_ref, original_item.object_ref);
+        assert_eq!(retained_item.capability, original_item.capability);
         std::fs::remove_dir_all(context.workspace_root).unwrap();
     }
 
