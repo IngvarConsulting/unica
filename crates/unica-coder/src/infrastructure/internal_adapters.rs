@@ -6172,6 +6172,45 @@ mod tests {
     }
 
     #[test]
+    fn code_outline_adapter_reports_building_index_as_retryable_failure() {
+        let context = temp_context("outline-building-index");
+        let lock_path = context.cache_root.join("locks/bsl_index.lock");
+        fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+        fs::write(&lock_path, "{").unwrap();
+        let index = FakeIndexRunner::default();
+        let grep = FakeProcessRunner {
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+            },
+        };
+        let args = Map::from_iter([(
+            "path".to_string(),
+            json!("CommonModules/SmokeModule/Ext/Module.bsl"),
+        )]);
+
+        let outcome = CodeNavigationAdapter::with_runners(&index, &grep)
+            .invoke("unica.code.outline", &args, &context, false)
+            .unwrap();
+
+        assert!(!outcome.ok);
+        assert_eq!(
+            outcome.summary,
+            "unica.code.outline pending RLM index build"
+        );
+        assert!(outcome.warnings.is_empty());
+        assert_eq!(outcome.errors, vec!["index_pending: rlm index building"]);
+        assert!(outcome.stdout.is_none());
+        assert!(index.commands.borrow().is_empty());
+        cleanup_context(&context);
+    }
+
+    #[test]
     fn code_outline_adapter_reports_invalid_source_dir_as_stable_failure() {
         let context = temp_context("outline-invalid-source-dir");
         let index = FakeIndexRunner::default();
