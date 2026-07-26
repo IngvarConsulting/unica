@@ -2156,7 +2156,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "outputPath",
-        "Path of the single file to generate: the `Form.xml` for `unica.form.compile`, the `Template.xml` for `dcs.compile` and `mxl.compile`, or the JSON for `mxl.decompile`, where omitting it prints to stdout",
+        "Path of the single file to generate: the `Form.xml` for `unica.form.compile`, or the `Template.xml` for `dcs.compile` and `mxl.compile`",
     ),
     (
         "parent",
@@ -2760,16 +2760,18 @@ mod tests {
     }
 
     #[test]
-    fn mxl_decompile_rejects_legacy_output_path() {
+    fn mxl_decompile_rejects_legacy_output_path_aliases() {
         let tool = tools()
             .into_iter()
             .find(|tool| tool.name == "unica.mxl.decompile")
             .unwrap();
-        let args = Map::from_iter([("OutputPath".to_string(), json!("result.json"))]);
 
-        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+        for argument in ["OutputPath", "outputPath"] {
+            let args = Map::from_iter([(argument.to_string(), json!("result.json"))]);
+            let error = validate_tool_arguments(tool, &args, false).unwrap_err();
 
-        assert!(error.contains("does not accept argument `OutputPath`"));
+            assert!(error.contains(&format!("does not accept argument `{argument}`")));
+        }
     }
 
     #[test]

@@ -3437,19 +3437,21 @@ mod tests {
     }
 
     #[test]
-    fn mxl_decompile_ignores_legacy_output_path_without_writing() {
+    fn mxl_decompile_does_not_honor_legacy_output_path() {
         let context = test_context("decompile-no-output-file");
-        let output_path = context.cwd.join("decompiled.json");
-        let mut args = path_args(&platform_mxl_fixture());
+        let template_path = context.cwd.join("Template.xml");
+        fs::copy(platform_mxl_fixture(), &template_path).unwrap();
+        let original = fs::read(&template_path).unwrap();
+        let mut args = path_args(&template_path);
         args.insert(
             "OutputPath".to_string(),
-            json!(output_path.display().to_string()),
+            json!(template_path.display().to_string()),
         );
 
         let outcome = decompile_mxl(&args, &context);
 
         assert!(outcome.ok, "{outcome:?}");
-        assert!(!output_path.exists());
+        assert_eq!(fs::read(&template_path).unwrap(), original);
         assert!(outcome
             .stdout
             .as_deref()
