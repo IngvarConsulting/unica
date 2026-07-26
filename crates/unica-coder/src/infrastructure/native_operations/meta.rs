@@ -3775,6 +3775,10 @@ const SNAPSHOT_CACHE_MAX_PROPERTIES_PER_NODE: usize = 512;
 const SNAPSHOT_CACHE_MAX_PROPERTY_BYTES: usize = 1024 * 1024;
 const SNAPSHOT_CACHE_MAX_PROPERTY_VALUE_BYTES: usize = 768 * 1024;
 const SNAPSHOT_CACHE_MAX_SEMANTIC_STRING_BYTES: usize = 512 * 1024;
+/// Maximum serialized bytes for one diagnostic `details` JSON value.
+const SNAPSHOT_CACHE_MAX_DIAGNOSTIC_DETAILS_BYTES: usize = 256 * 1024;
+/// Maximum serialized bytes for all diagnostics retained in one snapshot.
+const SNAPSHOT_CACHE_MAX_DIAGNOSTICS_BYTES: usize = 1024 * 1024;
 /// Maximum nesting depth for retained `PropertyValue` trees.
 const SNAPSHOT_CACHE_MAX_PROPERTY_VALUE_DEPTH: usize = 64;
 
@@ -3789,6 +3793,8 @@ struct SnapshotCacheLimits {
     max_property_bytes: usize,
     max_property_value_bytes: usize,
     max_semantic_string_bytes: usize,
+    max_diagnostic_details_bytes: usize,
+    max_diagnostics_bytes: usize,
     max_property_value_depth: usize,
 }
 
@@ -3802,6 +3808,8 @@ const DEFAULT_SNAPSHOT_CACHE_LIMITS: SnapshotCacheLimits = SnapshotCacheLimits {
     max_property_bytes: SNAPSHOT_CACHE_MAX_PROPERTY_BYTES,
     max_property_value_bytes: SNAPSHOT_CACHE_MAX_PROPERTY_VALUE_BYTES,
     max_semantic_string_bytes: SNAPSHOT_CACHE_MAX_SEMANTIC_STRING_BYTES,
+    max_diagnostic_details_bytes: SNAPSHOT_CACHE_MAX_DIAGNOSTIC_DETAILS_BYTES,
+    max_diagnostics_bytes: SNAPSHOT_CACHE_MAX_DIAGNOSTICS_BYTES,
     max_property_value_depth: SNAPSHOT_CACHE_MAX_PROPERTY_VALUE_DEPTH,
 };
 
@@ -3978,6 +3986,7 @@ impl CachedNavigation {
         navigation: crate::domain::navigation::NavigationEnvelope,
         limits: SnapshotCacheLimits,
     ) -> Result<Self, SourceAdapterError> {
+        validate_cached_navigation_key(&scope, &source_id, &revision, limits)?;
         validate_navigation_cache_payload(&navigation, limits)?;
         let charge = CachedNavigationCharge {
             scope: &scope,
@@ -4017,21 +4026,6 @@ fn serialized_bytes_with_limit<T: Serialize>(
     Ok(writer.bytes)
 }
 
-#[derive(Default)]
-struct NavigationValidationStats {
-    max_active_depth: usize,
-}
-
-impl NavigationValidationStats {
-    fn observe(&mut self, depth: usize) -> Result<(), SourceAdapterError> {
-        let active_depth = depth
-            .checked_add(1)
-            .ok_or_else(|| resource_limit("navigation validation depth cannot be represented"))?;
-        self.max_active_depth = self.max_active_depth.max(active_depth);
-        Ok(())
-    }
-}
-
 fn validate_navigation_cache_payload(
     navigation: &crate::domain::navigation::NavigationEnvelope,
     limits: SnapshotCacheLimits,
@@ -4065,7 +4059,6 @@ fn validate_navigation_cache_payload(
         ));
     }
 
-    let mut stats = NavigationValidationStats::default();
     validate_semantic_string(&navigation.schema_version, limits.max_semantic_string_bytes)?;
     validate_navigation_status(navigation.status)?;
     if let Some(snapshot) = &navigation.snapshot {
@@ -4075,18 +4068,32 @@ fn validate_navigation_cache_payload(
         validate_object_ref(root, limits.max_semantic_string_bytes)?;
     }
     for node in &navigation.nodes {
-        validate_navigation_node(node, limits, &mut stats)?;
+        validate_navigation_node(node, limits)?;
     }
     for page in &navigation.relations {
-        validate_navigation_relation_page(page, limits, &mut stats)?;
+        validate_navigation_relation_page(page, limits)?;
     }
     for relation in &navigation.relation_index {
         validate_semantic_relation(relation, limits.max_semantic_string_bytes)?;
     }
-    for diagnostic in &navigation.diagnostics {
-        validate_source_adapter_diagnostic(diagnostic, limits)?;
+    validate_navigation_diagnostics(&navigation.diagnostics, limits)
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct NavigationValidationStats {
+    max_active_depth: usize,
+}
+
+#[cfg(test)]
+impl NavigationValidationStats {
+    fn observe(&mut self, depth: usize) -> Result<(), SourceAdapterError> {
+        let active_depth = depth
+            .checked_add(1)
+            .ok_or_else(|| resource_limit("navigation validation depth cannot be represented"))?;
+        self.max_active_depth = self.max_active_depth.max(active_depth);
+        Ok(())
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -4095,14 +4102,70 @@ fn property_value_validation_max_active_depth(
     limits: SnapshotCacheLimits,
 ) -> Result<usize, SourceAdapterError> {
     let mut stats = NavigationValidationStats::default();
-    validate_property_value(value, limits, 0, &mut stats)?;
+    observe_property_value_depth(value, limits, 0, &mut stats)?;
+    validate_property_value(value, limits, 0)?;
     Ok(stats.max_active_depth)
+}
+
+#[cfg(test)]
+fn observe_property_value_depth(
+    value: &crate::domain::navigation::PropertyValue,
+    limits: SnapshotCacheLimits,
+    depth: usize,
+    stats: &mut NavigationValidationStats,
+) -> Result<(), SourceAdapterError> {
+    use crate::domain::navigation::{PropertyValue, TypeVariant};
+
+    stats.observe(depth)?;
+    match value {
+        PropertyValue::TypeSet(value) => {
+            for variant in &value.variants {
+                if let TypeVariant::Primitive { qualifiers, .. } = variant {
+                    for value in qualifiers.values() {
+                        observe_property_value_depth_child(value, limits, depth, stats)?;
+                    }
+                }
+            }
+        }
+        PropertyValue::List(values) => {
+            for value in values {
+                observe_property_value_depth_child(value, limits, depth, stats)?;
+            }
+        }
+        PropertyValue::Structure(values) => {
+            for value in values.values() {
+                observe_property_value_depth_child(value, limits, depth, stats)?;
+            }
+        }
+        PropertyValue::Decimal(_)
+        | PropertyValue::String(_)
+        | PropertyValue::LocalizedString(_)
+        | PropertyValue::EnumSymbol(_)
+        | PropertyValue::ObjectRef(_)
+        | PropertyValue::Boolean(_)
+        | PropertyValue::Integer(_)
+        | PropertyValue::Uuid(_)
+        | PropertyValue::Date(_)
+        | PropertyValue::Unknown { .. }
+        | PropertyValue::Null => {}
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn observe_property_value_depth_child(
+    value: &crate::domain::navigation::PropertyValue,
+    limits: SnapshotCacheLimits,
+    parent_depth: usize,
+    stats: &mut NavigationValidationStats,
+) -> Result<(), SourceAdapterError> {
+    let depth = validation_child_depth(parent_depth, limits)?;
+    observe_property_value_depth(value, limits, depth, stats)
 }
 
 fn validate_navigation_node(
     node: &NavigationNode,
     limits: SnapshotCacheLimits,
-    stats: &mut NavigationValidationStats,
 ) -> Result<(), SourceAdapterError> {
     if node.properties.len() > limits.max_properties_per_node {
         return Err(resource_limit(
@@ -4117,7 +4180,7 @@ fn validate_navigation_node(
     validate_navigation_facet_visibility(node.facet_visibility)?;
     for (name, property) in &node.properties {
         validate_semantic_string(name, limits.max_semantic_string_bytes)?;
-        validate_semantic_property(property, limits, stats)?;
+        validate_semantic_property(property, limits)?;
     }
     for descriptor in &node.semantic_actions {
         validate_semantic_action_descriptor(descriptor)?;
@@ -4131,14 +4194,13 @@ fn validate_navigation_node(
 fn validate_semantic_property(
     property: &crate::domain::navigation::SemanticProperty,
     limits: SnapshotCacheLimits,
-    stats: &mut NavigationValidationStats,
 ) -> Result<(), SourceAdapterError> {
     validate_property_type(&property.value_type, limits.max_semantic_string_bytes)?;
     validate_property_value_state(property.value_state)?;
     validate_property_provenance(property.provenance)?;
     validate_property_capability(property.capability)?;
     if let Some(value) = &property.value {
-        validate_property_value(value, limits, 0, stats)?;
+        validate_property_value(value, limits, 0)?;
     }
     serialized_bytes_with_limit(property, limits.max_property_bytes)?;
     if let Some(value) = &property.value {
@@ -4150,11 +4212,10 @@ fn validate_semantic_property(
 fn validate_navigation_relation_page(
     page: &crate::domain::navigation::NavigationRelationPage,
     limits: SnapshotCacheLimits,
-    stats: &mut NavigationValidationStats,
 ) -> Result<(), SourceAdapterError> {
     validate_relation_group_ref(&page.relation, limits.max_semantic_string_bytes)?;
     for item in &page.items {
-        validate_navigation_node(item, limits, stats)?;
+        validate_navigation_node(item, limits)?;
     }
     if let Some(cursor) = &page.next_cursor {
         validate_navigation_cursor(cursor, limits.max_semantic_string_bytes)?;
@@ -4205,16 +4266,27 @@ fn validate_navigation_selection(
     Ok(())
 }
 
+fn validate_navigation_diagnostics(
+    diagnostics: &[crate::domain::navigation::SourceAdapterDiagnostic],
+    limits: SnapshotCacheLimits,
+) -> Result<(), SourceAdapterError> {
+    for diagnostic in diagnostics {
+        validate_source_adapter_diagnostic(diagnostic, limits)?;
+    }
+    serialized_bytes_with_limit(&diagnostics, limits.max_diagnostics_bytes).map(|_| ())
+}
+
 fn validate_source_adapter_diagnostic(
     diagnostic: &crate::domain::navigation::SourceAdapterDiagnostic,
     limits: SnapshotCacheLimits,
-) -> Result<(), SourceAdapterError> {
+) -> Result<usize, SourceAdapterError> {
     validate_semantic_string(&diagnostic.code, limits.max_semantic_string_bytes)?;
     validate_semantic_string(&diagnostic.message, limits.max_semantic_string_bytes)?;
     if let Some(details) = &diagnostic.details {
         validate_json_value(details, limits, 0)?;
+        serialized_bytes_with_limit(details, limits.max_diagnostic_details_bytes)?;
     }
-    Ok(())
+    serialized_bytes_with_limit(diagnostic, limits.max_diagnostics_bytes)
 }
 
 fn validate_json_value(
@@ -4255,9 +4327,9 @@ fn validate_source_snapshot(
     snapshot: &crate::domain::source_adapters::SourceSnapshot,
     limit: usize,
 ) -> Result<(), SourceAdapterError> {
-    validate_semantic_string(snapshot.source_id.as_str(), limit)?;
-    validate_semantic_string(snapshot.revision.as_str(), limit)?;
-    validate_semantic_string(&snapshot.adapter_id, limit)?;
+    validate_source_id(snapshot.source_id.as_str(), limit)?;
+    validate_source_revision(snapshot.revision.as_str(), limit)?;
+    validate_cache_metadata_string(&snapshot.adapter_id, "adapter id", limit)?;
     match snapshot.consistency {
         crate::domain::source_adapters::SnapshotConsistency::Consistent
         | crate::domain::source_adapters::SnapshotConsistency::Partial
@@ -4547,11 +4619,9 @@ fn validate_property_value(
     value: &crate::domain::navigation::PropertyValue,
     limits: SnapshotCacheLimits,
     depth: usize,
-    stats: &mut NavigationValidationStats,
 ) -> Result<(), SourceAdapterError> {
     use crate::domain::navigation::{PropertyValue, TypeVariant};
 
-    stats.observe(depth)?;
     match value {
         PropertyValue::Decimal(value)
         | PropertyValue::String(value)
@@ -4572,7 +4642,7 @@ fn validate_property_value(
                         validate_semantic_string(kind, limits.max_semantic_string_bytes)?;
                         for (name, value) in qualifiers {
                             validate_semantic_string(name, limits.max_semantic_string_bytes)?;
-                            validate_property_value_child(value, limits, depth, stats)?;
+                            validate_property_value_child(value, limits, depth)?;
                         }
                     }
                     TypeVariant::Reference { target } | TypeVariant::Enumeration { target } => {
@@ -4586,13 +4656,13 @@ fn validate_property_value(
         }
         PropertyValue::List(nested) => {
             for value in nested {
-                validate_property_value_child(value, limits, depth, stats)?;
+                validate_property_value_child(value, limits, depth)?;
             }
         }
         PropertyValue::Structure(nested) => {
             for (name, value) in nested {
                 validate_semantic_string(name, limits.max_semantic_string_bytes)?;
-                validate_property_value_child(value, limits, depth, stats)?;
+                validate_property_value_child(value, limits, depth)?;
             }
         }
         PropertyValue::Unknown { summary } => {
@@ -4610,10 +4680,9 @@ fn validate_property_value_child(
     value: &crate::domain::navigation::PropertyValue,
     limits: SnapshotCacheLimits,
     parent_depth: usize,
-    stats: &mut NavigationValidationStats,
 ) -> Result<(), SourceAdapterError> {
     let depth = validation_child_depth(parent_depth, limits)?;
-    validate_property_value(value, limits, depth, stats)
+    validate_property_value(value, limits, depth)
 }
 
 fn validation_child_depth(
@@ -4712,6 +4781,47 @@ fn validate_semantic_string(value: &str, limit: usize) -> Result<(), SourceAdapt
     Ok(())
 }
 
+fn validate_cached_navigation_key(
+    scope: &str,
+    source_id: &SourceId,
+    revision: &crate::domain::source_adapters::SourceRevision,
+    limits: SnapshotCacheLimits,
+) -> Result<(), SourceAdapterError> {
+    validate_cache_metadata_string(
+        scope,
+        "authorization scope",
+        limits.max_semantic_string_bytes,
+    )?;
+    validate_source_id(source_id.as_str(), limits.max_semantic_string_bytes)?;
+    validate_source_revision(revision.as_str(), limits.max_semantic_string_bytes)
+}
+
+fn validate_source_id(value: &str, limit: usize) -> Result<(), SourceAdapterError> {
+    validate_cache_metadata_string(value, "source id", limit)?;
+    SourceId::new(value.to_string())
+        .map(|_| ())
+        .map_err(|_| resource_limit("navigation cache source id violates its newtype invariant"))
+}
+
+fn validate_source_revision(value: &str, limit: usize) -> Result<(), SourceAdapterError> {
+    validate_cache_metadata_string(value, "source revision", limit)?;
+    crate::domain::source_adapters::SourceRevision::new(value.to_string())
+        .map(|_| ())
+        .map_err(|_| resource_limit("navigation cache revision violates its newtype invariant"))
+}
+
+fn validate_cache_metadata_string(
+    value: &str,
+    _name: &str,
+    limit: usize,
+) -> Result<(), SourceAdapterError> {
+    validate_semantic_string(value, limit)?;
+    if value.is_empty() || value.chars().any(char::is_control) {
+        return Err(resource_limit("navigation cache metadata is invalid"));
+    }
+    Ok(())
+}
+
 static SNAPSHOT_CACHE: OnceLock<Mutex<SnapshotCache>> = OnceLock::new();
 static CURSOR_SECRET: OnceLock<[u8; 16]> = OnceLock::new();
 
@@ -4730,7 +4840,7 @@ fn inspect_meta_navigation_inner(
     cursor_secret: &[u8],
 ) -> Result<crate::domain::navigation::NavigationEnvelope, SourceAdapterError> {
     let target = parse_meta_navigation_target(args)?;
-    let (navigation, target_ref, selection, cursor) = match target {
+    let (navigation, target_ref, selection, cursor, include_cached_diagnostics) = match target {
         MetaNavigationTarget::ObjectPath(path) => {
             let object_path = resolve_meta_info_path(absolutize(PathBuf::from(path), &context.cwd))
                 .map_err(|_| source_unavailable("metadata target cannot be resolved"))?;
@@ -4765,6 +4875,7 @@ fn inspect_meta_navigation_inner(
                 target_ref,
                 parse_navigation_selection(args.get("select"))?,
                 None,
+                true,
             )
         }
         MetaNavigationTarget::ObjectRef {
@@ -4784,6 +4895,7 @@ fn inspect_meta_navigation_inner(
                 target_ref,
                 parse_navigation_selection(args.get("select"))?,
                 None,
+                false,
             )
         }
         MetaNavigationTarget::Cursor(value) => {
@@ -4823,7 +4935,7 @@ fn inspect_meta_navigation_inner(
                         })
                 },
             )?;
-            (navigation, target_ref, selection, Some(cursor))
+            (navigation, target_ref, selection, Some(cursor), false)
         }
     };
     materialize_navigation_pages_with_secret(
@@ -4832,6 +4944,7 @@ fn inspect_meta_navigation_inner(
         selection,
         cursor,
         cursor_secret,
+        include_cached_diagnostics,
     )
 }
 
@@ -5531,7 +5644,15 @@ fn materialize_navigation_pages(
     selection: crate::domain::navigation::NavigationSelection,
     cursor: Option<crate::domain::navigation::NavigationCursor>,
 ) -> Result<crate::domain::navigation::NavigationEnvelope, SourceAdapterError> {
-    materialize_navigation_pages_with_secret(navigation, target, selection, cursor, cursor_secret())
+    let include_cached_diagnostics = cursor.is_none();
+    materialize_navigation_pages_with_secret(
+        navigation,
+        target,
+        selection,
+        cursor,
+        cursor_secret(),
+        include_cached_diagnostics,
+    )
 }
 
 fn materialize_navigation_pages_with_secret(
@@ -5540,6 +5661,7 @@ fn materialize_navigation_pages_with_secret(
     selection: crate::domain::navigation::NavigationSelection,
     cursor: Option<crate::domain::navigation::NavigationCursor>,
     cursor_secret: &[u8],
+    include_cached_diagnostics: bool,
 ) -> Result<crate::domain::navigation::NavigationEnvelope, SourceAdapterError> {
     use crate::domain::navigation::NavigationRelationPage;
     let snapshot = navigation
@@ -5684,7 +5806,9 @@ fn materialize_navigation_pages_with_secret(
         root: Some(target),
         nodes: vec![target_node],
         relations: pages,
-        diagnostics: navigation.diagnostics.clone(),
+        diagnostics: include_cached_diagnostics
+            .then(|| navigation.diagnostics.clone())
+            .unwrap_or_default(),
         relation_index: original_relations.clone(),
     })
 }
@@ -15715,7 +15839,7 @@ mod tests {
             message: "detail payload is validated before cache serialization".to_string(),
             details: Some(json!({
                 "detail": "x".repeat(
-                    SNAPSHOT_CACHE_MAX_SEMANTIC_STRING_BYTES
+                    SNAPSHOT_CACHE_MAX_DIAGNOSTIC_DETAILS_BYTES
                         .checked_add(1)
                         .unwrap(),
                 )
@@ -15732,6 +15856,194 @@ mod tests {
         .err()
         .expect("diagnostic detail payload must reject cache retention");
         assert_eq!(error.kind, SourceAdapterErrorKind::ResourceLimit);
+        std::fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn aggregate_diagnostics_over_total_limit_return_resource_limit() {
+        let (context, path) = fixture(
+            "2.20",
+            "<Attribute><Properties><Name>Code</Name></Properties></Attribute>",
+        );
+        let binding = resolve_object_path_binding(&path, &context).unwrap();
+        let mut navigation = inspect_source_path(&binding, &context).unwrap();
+        let detail = "x".repeat(
+            SNAPSHOT_CACHE_MAX_DIAGNOSTIC_DETAILS_BYTES
+                .checked_sub(64)
+                .unwrap(),
+        );
+        navigation.diagnostics = (0..5)
+            .map(|index| crate::domain::navigation::SourceAdapterDiagnostic {
+                code: format!("diagnostic-{index}"),
+                message: "aggregate diagnostic payload".to_string(),
+                details: Some(json!({"detail": detail})),
+            })
+            .collect();
+        let snapshot = navigation.snapshot.as_ref().unwrap().clone();
+        let error = CachedNavigation::new(
+            "diagnostic-total-limit".to_string(),
+            snapshot.source_id,
+            snapshot.revision,
+            navigation,
+            DEFAULT_SNAPSHOT_CACHE_LIMITS,
+        )
+        .err()
+        .expect("aggregate diagnostic payload must reject cache retention");
+        assert_eq!(error.kind, SourceAdapterErrorKind::ResourceLimit);
+        std::fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn bounded_diagnostics_are_initial_only_for_object_ref_and_cursor_continuations() {
+        let (context, path) = fixture(
+            "2.20",
+            "<Attribute><Properties><Name>Code</Name></Properties></Attribute><Attribute><Properties><Name>Description</Name></Properties></Attribute>",
+        );
+        let binding = resolve_object_path_binding(&path, &context).unwrap();
+        let mut navigation = inspect_source_path(&binding, &context).unwrap();
+        let detail = "x".repeat(
+            SNAPSHOT_CACHE_MAX_DIAGNOSTIC_DETAILS_BYTES
+                .checked_sub(64)
+                .unwrap(),
+        );
+        navigation.diagnostics = vec![crate::domain::navigation::SourceAdapterDiagnostic {
+            code: "bounded_diagnostic".to_string(),
+            message: "initial navigation diagnostic".to_string(),
+            details: Some(json!({"detail": detail})),
+        }];
+        let cache = Mutex::new(SnapshotCache::default());
+        let cached = match cache_ready_navigation_in(navigation, &binding, &cache).unwrap() {
+            SnapshotCacheAdmission::Admitted(navigation) => navigation,
+            SnapshotCacheAdmission::ResourceLimit => panic!("bounded diagnostic must be admitted"),
+        };
+        let target = object_path_target(cached.as_ref()).unwrap();
+        let snapshot = cached.snapshot.as_ref().unwrap().clone();
+        let selection = parse_navigation_selection(Some(&json!({
+            "relations": [{"role": "attributes", "pageSize": 1}]
+        })))
+        .unwrap();
+        let secret = b"bounded-diagnostics-cursor-secret";
+        let initial = materialize_navigation_pages_with_secret(
+            cached.as_ref(),
+            target.clone(),
+            selection.clone(),
+            None,
+            secret,
+            true,
+        )
+        .unwrap();
+        let initial_details = initial.diagnostics[0].details.as_ref().unwrap();
+        let detail_bytes = serialized_bytes_with_limit(
+            initial_details,
+            SNAPSHOT_CACHE_MAX_DIAGNOSTIC_DETAILS_BYTES,
+        )
+        .unwrap();
+        assert!(
+            detail_bytes
+                > SNAPSHOT_CACHE_MAX_DIAGNOSTIC_DETAILS_BYTES
+                    .checked_sub(128)
+                    .unwrap()
+        );
+        assert!(serialized_bytes_with_limit(
+            &initial.diagnostics,
+            SNAPSHOT_CACHE_MAX_DIAGNOSTICS_BYTES,
+        )
+        .is_ok());
+        let cursor = initial.relations[0].next_cursor.clone().unwrap();
+        let by_object_ref = inspect_meta_navigation_with_cache(
+            json!({
+                "objectRef": {
+                    "sourceId": target.source_id.as_str(),
+                    "objectKey": target.object_key.as_str(),
+                },
+                "snapshotRevision": serde_json::to_value(&snapshot.revision).unwrap(),
+                "select": {"relations": [{"role": "attributes", "pageSize": 1}]},
+            })
+            .as_object()
+            .unwrap(),
+            &context,
+            &cache,
+            secret,
+        )
+        .unwrap();
+        assert!(by_object_ref.diagnostics.is_empty());
+        let by_cursor = inspect_meta_navigation_with_cache(
+            json!({"cursor": serde_json::to_value(cursor).unwrap()})
+                .as_object()
+                .unwrap(),
+            &context,
+            &cache,
+            secret,
+        )
+        .unwrap();
+        assert!(by_cursor.diagnostics.is_empty());
+        assert_eq!(cached.diagnostics.len(), 1);
+        std::fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn oversized_cached_navigation_outer_metadata_returns_resource_limit() {
+        let (context, path) = fixture(
+            "2.20",
+            "<Attribute><Properties><Name>Code</Name></Properties></Attribute>",
+        );
+        let binding = resolve_object_path_binding(&path, &context).unwrap();
+        let navigation = inspect_source_path(&binding, &context).unwrap();
+        let snapshot = navigation.snapshot.as_ref().unwrap().clone();
+        let oversized = "x".repeat(
+            SNAPSHOT_CACHE_MAX_SEMANTIC_STRING_BYTES
+                .checked_add(1)
+                .unwrap(),
+        );
+
+        let scope_error = CachedNavigation::new(
+            oversized.clone(),
+            snapshot.source_id.clone(),
+            snapshot.revision.clone(),
+            navigation.clone(),
+            DEFAULT_SNAPSHOT_CACHE_LIMITS,
+        )
+        .err()
+        .expect("oversized cache scope must reject before serialization");
+        assert_eq!(scope_error.kind, SourceAdapterErrorKind::ResourceLimit);
+
+        let source_id = SourceId::new(oversized.clone()).unwrap();
+        let source_error = CachedNavigation::new(
+            "outer-source-id".to_string(),
+            source_id,
+            snapshot.revision.clone(),
+            navigation.clone(),
+            DEFAULT_SNAPSHOT_CACHE_LIMITS,
+        )
+        .err()
+        .expect("oversized cache source id must reject before serialization");
+        assert_eq!(source_error.kind, SourceAdapterErrorKind::ResourceLimit);
+
+        let revision =
+            crate::domain::source_adapters::SourceRevision::new(oversized.clone()).unwrap();
+        let revision_error = CachedNavigation::new(
+            "outer-revision".to_string(),
+            snapshot.source_id.clone(),
+            revision,
+            navigation.clone(),
+            DEFAULT_SNAPSHOT_CACHE_LIMITS,
+        )
+        .err()
+        .expect("oversized cache revision must reject before serialization");
+        assert_eq!(revision_error.kind, SourceAdapterErrorKind::ResourceLimit);
+
+        let mut adapter_navigation = navigation;
+        adapter_navigation.snapshot.as_mut().unwrap().adapter_id = oversized;
+        let adapter_error = CachedNavigation::new(
+            "outer-adapter-id".to_string(),
+            snapshot.source_id,
+            snapshot.revision,
+            adapter_navigation,
+            DEFAULT_SNAPSHOT_CACHE_LIMITS,
+        )
+        .err()
+        .expect("oversized adapter metadata must reject before serialization");
+        assert_eq!(adapter_error.kind, SourceAdapterErrorKind::ResourceLimit);
         std::fs::remove_dir_all(context.workspace_root).unwrap();
     }
 
