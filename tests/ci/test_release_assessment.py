@@ -40,15 +40,23 @@ from __future__ import annotations
 import json
 import sys
 
-message = json.loads(sys.stdin.readline())
-for response_id in {json.dumps(response_ids)}:
-    print(json.dumps({{
-        "jsonrpc": "2.0",
-        "id": response_id,
-        "result": {{"content": [{{"type": "text", "text": "ok"}}]}},
-    }}), flush=True)
-for _raw in sys.stdin:
-    pass
+sent_responses = False
+for raw in sys.stdin:
+    message = json.loads(raw)
+    if message.get("method") == "initialize":
+        print(json.dumps({{
+            "jsonrpc": "2.0",
+            "id": message["id"],
+            "result": {{"serverInfo": {{"name": "unica"}}}},
+        }}), flush=True)
+    elif "id" in message and not sent_responses:
+        for response_id in {json.dumps(response_ids)}:
+            print(json.dumps({{
+                "jsonrpc": "2.0",
+                "id": response_id,
+                "result": {{"content": [{{"type": "text", "text": "ok"}}]}},
+            }}), flush=True)
+        sent_responses = True
 """,
             encoding="utf-8",
         )
@@ -77,8 +85,11 @@ def respond(message):
     print(json.dumps(response), flush=True)
 
 for raw in sys.stdin:
+    message = json.loads(raw)
+    if "id" not in message:
+        continue
     print(json.dumps({"jsonrpc": "2.0", "method": "notifications/progress", "params": {}}), flush=True)
-    worker = threading.Thread(target=respond, args=(json.loads(raw),))
+    worker = threading.Thread(target=respond, args=(message,))
     worker.start()
     workers.append(worker)
 
@@ -113,6 +124,8 @@ TOOLS = [
 
 for raw in sys.stdin:
     message = json.loads(raw)
+    if "id" not in message:
+        continue
     method = message.get("method")
     response = {"jsonrpc": "2.0", "id": message.get("id")}
     if method == "initialize":

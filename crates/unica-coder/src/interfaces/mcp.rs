@@ -10,8 +10,8 @@ use crate::application::{input_schema_for_tool, ToolSpec, UnicaApplication};
 use crate::domain::cancellation::CancellationToken;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ContentBlock, ErrorCode, ErrorData, Implementation,
-    InitializeResult, ListToolsResult, PaginatedRequestParams, ProtocolVersion,
-    ServerCapabilities, ServerInfo, Tool,
+    InitializeResult, ListToolsResult, PaginatedRequestParams, ProtocolVersion, ServerCapabilities,
+    ServerInfo, Tool,
 };
 use rmcp::service::{RequestContext, ServerInitializeError};
 use rmcp::{RoleServer, ServerHandler, ServiceExt};
@@ -209,7 +209,10 @@ impl InFlightRegistry {
 
     #[cfg(test)]
     fn running(&self) -> usize {
-        self.state.lock().map(|state| state.running.len()).unwrap_or(0)
+        self.state
+            .lock()
+            .map(|state| state.running.len())
+            .unwrap_or(0)
     }
 
     fn cancel_all(&self) {
