@@ -10,7 +10,7 @@
 > **Связанные спецификации:**
 > - Корневая структура конфигурации — [1c-configuration-spec.md](1c-configuration-spec.md)
 > - Объекты метаданных — [1c-config-objects-spec.md](1c-config-objects-spec.md)
-> - Сводный индекс — [1c-specs-index.md](1c-specs-index.md)
+> - Сводный индекс — [format-index.md](format-index.md)
 
 ---
 

@@ -698,9 +698,13 @@ class PackageUnicaPluginTests(unittest.TestCase):
         module = load_package_module()
         repo_root = Path(__file__).resolve().parents[2]
         plugin_src = repo_root / "plugins" / "unica"
-        # Any backticked path to another document; the slash separates a link
-        # from a bare filename mentioned as prose.
-        pattern = re.compile(r"`([^`\s]*/[^`\s]*\.md)`")
+        # Both ways a document points at another one: a backticked path, where
+        # the slash separates a link from a bare filename mentioned as prose,
+        # and a markdown link, where the target is a path either way.
+        patterns = (
+            re.compile(r"`([^`\s]*/[^`\s]*\.md)`"),
+            re.compile(r"\]\((?!\w+:)([^)\s#]+\.md)(?:#[^)\s]*)?\)"),
+        )
 
         with tempfile.TemporaryDirectory() as tmp:
             destination = Path(tmp) / "unica"
@@ -709,7 +713,8 @@ class PackageUnicaPluginTests(unittest.TestCase):
             checked = 0
             for doc in sorted(destination.rglob("*.md")):
                 relative_doc = doc.relative_to(destination)
-                for link in pattern.findall(doc.read_text(encoding="utf-8")):
+                text = doc.read_text(encoding="utf-8")
+                for link in [m for p in patterns for m in p.findall(text)]:
                     checked += 1
                     # The package has no repository root and no knowable
                     # plugin root, so a link only survives packaging when it

@@ -6,9 +6,17 @@ import unittest
 from pathlib import Path
 
 
-# Any backticked path to another document. The slash is what separates a link
-# from a bare filename mentioned as prose (`SKILL.md`, `README.md`).
-DOCUMENT_LINK_PATTERN = re.compile(r"`([^`\s]*/[^`\s]*\.md)`")
+# Both ways a document points at another one: a backticked path, where the
+# slash separates a link from a bare filename mentioned as prose (`SKILL.md`),
+# and a markdown link, where the target is a path whether it has a slash or not.
+DOCUMENT_LINK_PATTERNS = (
+    re.compile(r"`([^`\s]*/[^`\s]*\.md)`"),
+    re.compile(r"\]\((?!\w+:)([^)\s#]+\.md)(?:#[^)\s]*)?\)"),
+)
+
+
+def document_links(text: str) -> list[str]:
+    return [match for pattern in DOCUMENT_LINK_PATTERNS for match in pattern.findall(text)]
 
 
 IN_SCOPE_TOOLS = {
@@ -1499,12 +1507,10 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         seen = 0
         for doc in sorted(roots):
             text = doc.read_text(encoding="utf-8")
-            for match in DOCUMENT_LINK_PATTERN.findall(text):
+            for match in document_links(text):
                 seen += 1
                 with self.subTest(doc=doc.relative_to(self.repo_root()), reference=match):
                     self.assertTrue((doc.parent / match).is_file())
-
-        self.assertGreater(seen, 0)
 
         self.assertGreater(seen, 0)
 
