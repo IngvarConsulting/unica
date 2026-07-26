@@ -80,7 +80,8 @@ metadata_kind_registry! {
     "IntegrationService" => { directory: "IntegrationServices", display_name_ru: "Сервисы интеграции", config_dump_prefix: None, config_dump_module_suffix: None },
 }
 
-pub(crate) const METADATA_KIND_TAGS: &[&str] = LEGACY_TOP_LEVEL_METADATA_CLASSES;
+pub(crate) const METADATA_KIND_TAGS: &[&str] =
+    unica_adapter_platform_xml::PlatformXmlAdapterFactory::legacy_metadata_classes();
 
 pub(crate) fn metadata_kind(tag: &str) -> Option<&'static MetadataKind> {
     METADATA_KINDS.iter().find(|kind| kind.tag == tag)
@@ -193,4 +194,3 @@ mod tests {
         assert_eq!(metadata_kind("SyntheticMetadata"), None);
     }
 }
-use crate::infrastructure::source_adapters::platform_xml::schema::LEGACY_TOP_LEVEL_METADATA_CLASSES;

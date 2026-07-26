@@ -2,8 +2,8 @@
 
 use crate::application::operation_descriptors::SUBSYSTEM_PATH;
 use crate::application::AdapterOutcome;
-use crate::domain::identifiers::is_1c_identifier;
 use crate::domain::format_profile::{classify_root_version, FormatCompatibility};
+use crate::domain::identifiers::is_1c_identifier;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform_xml_owner::root_version_literal;
 use roxmltree::Document;

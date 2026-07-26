@@ -1675,6 +1675,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
+name = "unica-adapter-platform-xml"
+version = "0.10.0"
+dependencies = [
+ "quick-xml",
+ "roxmltree",
+ "serde",
+ "serde_json",
+ "sha2",
+ "unica-format-core",
+ "uuid",
+]
+
+[[package]]
 name = "unica-bootstrap"
 version = "0.10.0"
 dependencies = [
@@ -1709,6 +1722,7 @@ dependencies = [
  "sha2",
  "syntax",
  "tokio",
+ "unica-adapter-platform-xml",
  "unica-format-core",
  "ureq",
  "uuid",

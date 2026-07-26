@@ -10,11 +10,9 @@ use crate::infrastructure::native_operations::common::{
     support_root_uuid,
 };
 use crate::infrastructure::native_operations::{meta, template};
-use crate::infrastructure::source_adapters::platform_xml::support::{
-    read_support_facts, EffectiveSupportRule,
-};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
+use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SupportGuardMode {
@@ -39,54 +37,50 @@ pub(crate) fn support_guard_violation(
         .canonicalize()
         .unwrap_or_else(|_| target_path.to_path_buf());
     let config_dir = find_support_config_dir(&target_path)?;
-    let facts = read_support_facts(&config_dir.join("Ext").join("ParentConfigurations.bin"));
     let object_uuid = support_object_uuid_for_path(&target_path)
         .or_else(|| support_root_uuid(&config_dir.join("Configuration.xml")));
-    let effective = facts.effective_rule_for(object_uuid.as_deref().unwrap_or(""));
-    if effective == EffectiveSupportRule::Unreadable {
-        let error = facts
-            .parse_error()
-            .expect("unreadable facts carry a parse error");
-        let location = error
-            .offset
-            .map(|offset| format!(" at byte {offset}"))
-            .unwrap_or_default();
-        return Some(SupportGuardViolation {
+    let decision = PlatformXmlAdapterFactory::support_decision(
+        &config_dir.join("Ext").join("ParentConfigurations.bin"),
+        object_uuid.as_deref().unwrap_or(""),
+    );
+    let (effective, authorability) = match decision {
+        Ok(decision) => decision,
+        Err((context, offset)) => {
+            let location = offset
+                .map(|offset| format!(" at byte {offset}"))
+                .unwrap_or_default();
+            return Some(SupportGuardViolation {
                 code: "support-state-unreadable",
                 reason: format!(
                     "не удалось прочитать состояние поддержки (ParentConfigurations.bin): {}{}; безопасность правки не подтверждена",
-                    error.context,
+                    context,
                     location,
                 ),
                 target_path,
                 config_dir,
             });
-    }
+        }
+    };
     if requirement == SupportGuardRequirement::Removed {
         return match effective {
-            EffectiveSupportRule::Removed => None,
-            EffectiveSupportRule::ConfigurationReadOnly => Some(SupportGuardViolation {
+            "removed" => None,
+            "configuration_read_only" => Some(SupportGuardViolation {
                 code: "capability-off",
                 reason: "возможность изменения конфигурации выключена (вся конфигурация read-only)"
                     .to_string(),
                 target_path,
                 config_dir,
             }),
-            EffectiveSupportRule::Locked
-            | EffectiveSupportRule::Editable
-            | EffectiveSupportRule::Absent
-            | EffectiveSupportRule::UnknownReadOnly => Some(SupportGuardViolation {
+            "locked" | "editable" | "absent" | "unknown_read_only" => Some(SupportGuardViolation {
                 code: "not-removed",
                 reason: "объект не снят с поддержки; удаление сломает обновления".to_string(),
                 target_path,
                 config_dir,
             }),
-            EffectiveSupportRule::Unreadable => {
-                unreachable!("unreadable returns before requirement evaluation")
-            }
+            _ => unreachable!("support decision labels are closed"),
         };
     }
-    match effective.authorability() {
+    match authorability {
         Authorability::Authorable => None,
         Authorability::ConfigurationReadOnly => Some(SupportGuardViolation {
             code: "capability-off",

@@ -116,21 +116,15 @@ pub(crate) fn child_metadata_class_profile(
 
 #[cfg(test)]
 mod scalar_tests {
-    use crate::infrastructure::{
-        metadata_kinds::{METADATA_KINDS, METADATA_KIND_TAGS},
-        source_adapters::platform_xml::schema::LEGACY_TOP_LEVEL_METADATA_CLASSES,
-    };
+    use super::LEGACY_TOP_LEVEL_METADATA_CLASSES;
 
     #[test]
-    fn legacy_metadata_kind_mapping_uses_the_shared_top_level_class_source() {
-        assert_eq!(METADATA_KIND_TAGS, LEGACY_TOP_LEVEL_METADATA_CLASSES);
-        assert_eq!(
-            METADATA_KINDS
-                .iter()
-                .map(|kind| kind.tag)
-                .collect::<Vec<_>>(),
-            LEGACY_TOP_LEVEL_METADATA_CLASSES,
-        );
+    fn legacy_metadata_classes_are_unique() {
+        let classes = LEGACY_TOP_LEVEL_METADATA_CLASSES
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(classes.len(), LEGACY_TOP_LEVEL_METADATA_CLASSES.len());
     }
 }
 use std::collections::{BTreeMap, BTreeSet};

@@ -36,7 +36,6 @@ use crate::infrastructure::platform_xml_owner::{
     PlatformXmlOwnerProvenance,
 };
 use crate::infrastructure::project_sources::discover_project_source_map;
-use crate::infrastructure::source_adapters::platform_xml::support::read_support_facts;
 use roxmltree::Document;
 use serde::Serialize;
 use serde_json::{json, Map, Value};

@@ -2,25 +2,22 @@ use std::collections::BTreeSet;
 
 use uuid::Uuid;
 
-use crate::{
-    domain::source_adapters::{
-        FormatVersion, SnapshotEvidence, SourceAdapterError, SourceAdapterErrorKind, SourceBinding,
-        SourceDescriptor, SourceFamily,
+use super::{
+    provider::PlatformXmlProvider,
+    schema::{
+        child_metadata_class_profile, metadata_class_profile, MetadataClassProfile,
+        MetadataClassRole, METADATA_NAMESPACE_2_20, ROOT_STRUCTURAL_CHILDREN,
     },
-    infrastructure::source_adapters::{
-        platform_xml::{
-            provider::PlatformXmlProvider,
-            schema::{
-                child_metadata_class_profile, metadata_class_profile, MetadataClassProfile,
-                MetadataClassRole, METADATA_NAMESPACE_2_20, ROOT_STRUCTURAL_CHILDREN,
-            },
-            xml::{parse_bounded_xml_document, BoundedXmlError},
-            PlatformXmlCapturedSession,
-        },
-        CapturedSourceSession, ProbeOutcome, SourceInput, SourceProbe,
-    },
+    xml::{parse_bounded_xml_document, BoundedXmlError},
+    ProbeOutcome,
+};
+use crate::domain::source_adapters::{
+    FormatVersion, SnapshotEvidence, SourceAdapterError, SourceAdapterErrorKind, SourceBinding,
+    SourceDescriptor, SourceFamily,
 };
 
+#[cfg(test)]
+use super::SourceInput;
 #[cfg(test)]
 use crate::domain::source_adapters::source_id_for_configured_source_set;
 
@@ -236,34 +233,12 @@ fn structural_child_name<'a, 'input>(
     Ok(child.tag_name().name())
 }
 
-impl SourceProbe for PlatformXmlProbe {
-    fn source_family(&self) -> SourceFamily {
-        SourceFamily::PlatformXml
-    }
-
-    fn probe(
-        &self,
-        _input: &SourceInput,
-        session: &dyn CapturedSourceSession,
-    ) -> Result<ProbeOutcome, SourceAdapterError> {
-        if session.source_family() != SourceFamily::PlatformXml {
-            return Ok(ProbeOutcome::NoMatch);
-        }
-        let session = session
-            .as_any()
-            .downcast_ref::<PlatformXmlCapturedSession>()
-            .ok_or_else(|| {
-                SourceAdapterError::new(
-                    SourceAdapterErrorKind::SnapshotInconsistent,
-                    "captured session declares Platform XML but has a different payload type",
-                )
-            })?;
-        self.probe_provider(
-            session.provider(),
-            session.descriptor_key(),
-            session.binding(),
-        )
-    }
+pub(super) fn probe_provider(
+    provider: &PlatformXmlProvider,
+    descriptor_key: &str,
+    binding: &SourceBinding,
+) -> Result<ProbeOutcome, SourceAdapterError> {
+    PlatformXmlProbe::new().probe_provider(provider, descriptor_key, binding)
 }
 
 fn unavailable(message: &str) -> SourceAdapterError {
@@ -289,9 +264,7 @@ mod tests {
     use super::PlatformXmlProbe;
     use crate::{
         domain::source_adapters::{FormatVersion, SourceAdapterErrorKind, SourceFamily},
-        infrastructure::source_adapters::{
-            platform_xml::schema::METADATA_CLASS_PROFILES, ProbeOutcome, SourceInput,
-        },
+        versions::v2_20::{schema::METADATA_CLASS_PROFILES, ProbeOutcome, SourceInput},
     };
 
     static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);

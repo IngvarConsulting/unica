@@ -776,9 +776,7 @@ mod tests {
             "<DataType xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\">{body}</DataType>"
         );
         let document = Document::parse(&xml).expect("test type XML");
-        crate::infrastructure::source_adapters::platform_xml::schema::parse_type_description_2_20(
-            document.root_element(),
-        )
+        crate::versions::v2_20::schema::parse_type_description_2_20(document.root_element())
     }
 
     #[test]
@@ -918,7 +916,7 @@ mod tests {
 
     #[test]
     fn fill_value_uses_exact_native_scalar_annotation_not_text() {
-        use crate::infrastructure::source_adapters::platform_xml::native_model::NativeScalarType;
+        use crate::versions::v2_20::native_model::NativeScalarType;
 
         let mut decimal = document_fixture();
         decimal.properties.insert(
@@ -982,9 +980,7 @@ mod tests {
 
     #[test]
     fn empty_annotated_fill_value_preserves_string_but_not_invalid_decimal() {
-        use crate::infrastructure::source_adapters::platform_xml::native_model::{
-            NativeScalarAnnotationIssue, NativeScalarType,
-        };
+        use crate::versions::v2_20::native_model::{NativeScalarAnnotationIssue, NativeScalarType};
 
         let mut string = document_fixture();
         string.properties.insert(
@@ -1030,7 +1026,7 @@ mod tests {
 
     #[test]
     fn fill_value_accepts_only_lossless_decimal_or_string_annotations() {
-        use crate::infrastructure::source_adapters::platform_xml::native_model::NativeScalarType;
+        use crate::versions::v2_20::native_model::NativeScalarType;
 
         let mut root = document_fixture();
         root.properties.insert(
@@ -1082,7 +1078,7 @@ mod tests {
 
     #[test]
     fn malformed_decimal_and_local_scalar_failure_remain_property_local() {
-        use crate::infrastructure::source_adapters::platform_xml::native_model::NativeScalarAnnotationIssue;
+        use crate::versions::v2_20::native_model::NativeScalarAnnotationIssue;
 
         let mut root = document_fixture();
         root.properties.insert(
@@ -1196,7 +1192,7 @@ mod tests {
 
     #[test]
     fn support_capability_comes_from_immutable_provider_snapshot_bytes() {
-        use crate::infrastructure::source_adapters::platform_xml::provider::PlatformXmlProvider;
+        use crate::versions::v2_20::provider::PlatformXmlProvider;
 
         let root = std::env::temp_dir().join(format!(
             "unica-platform-xml-projector-support-{}",

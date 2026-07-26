@@ -17,7 +17,7 @@ use crate::{
             SourceFamily, SourceSnapshot,
         },
     },
-    infrastructure::source_adapters::{ProbeOutcome, SourceInput},
+    versions::v2_20::{ProbeOutcome, SourceInput},
 };
 
 use super::{
@@ -598,9 +598,7 @@ fn decode_properties(
             ));
         }
         let (value, provenance) =
-            if crate::infrastructure::source_adapters::platform_xml::schema::is_type_property_2_20(
-                &canonical_id,
-            ) {
+            if crate::versions::v2_20::schema::is_type_property_2_20(&canonical_id) {
                 (
                     NativePropertyValue::TypeSet(parse_type_description_2_20(property)?),
                     NativePropertyProvenance::Explicit,
@@ -1866,14 +1864,14 @@ mod tests {
             decoded.root.properties["FillValue"].value,
             NativePropertyValue::AnnotatedScalar {
                 value: "0".to_string(),
-                type_annotation: crate::infrastructure::source_adapters::platform_xml::native_model::NativeScalarType::Decimal,
+                type_annotation: crate::versions::v2_20::native_model::NativeScalarType::Decimal,
             },
         );
     }
 
     #[test]
     fn scalar_annotation_failures_are_local_and_do_not_stop_siblings() {
-        use crate::infrastructure::source_adapters::platform_xml::native_model::NativeScalarAnnotationIssue;
+        use crate::versions::v2_20::native_model::NativeScalarAnnotationIssue;
 
         let fixture = document_fixture(
             r#"<Properties><Name>Shipment</Name><FillValue xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="unknown:decimal">0</FillValue><Description>Still projected</Description></Properties><ChildObjects><Attribute><Properties><Name>Number</Name></Properties></Attribute></ChildObjects>"#,
@@ -1896,7 +1894,7 @@ mod tests {
 
     #[test]
     fn scalar_annotation_rejects_alien_or_conflicting_qnames_locally() {
-        use crate::infrastructure::source_adapters::platform_xml::native_model::NativeScalarAnnotationIssue;
+        use crate::versions::v2_20::native_model::NativeScalarAnnotationIssue;
 
         let alien = document_fixture(
             r#"<Properties><Name>Shipment</Name><FillValue xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="urn:alien" xsi:type="xs:decimal">0</FillValue></Properties>"#,
@@ -1955,9 +1953,7 @@ mod tests {
 
     #[test]
     fn scalar_annotations_classify_empty_values_before_absence() {
-        use crate::infrastructure::source_adapters::platform_xml::native_model::{
-            NativeScalarAnnotationIssue, NativeScalarType,
-        };
+        use crate::versions::v2_20::native_model::{NativeScalarAnnotationIssue, NativeScalarType};
 
         let string = document_fixture(
             r#"<Properties><Name>Shipment</Name><FillValue xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:x="http://www.w3.org/2001/XMLSchema" xsi:type="x:string"></FillValue><Description>Sibling</Description></Properties>"#,
@@ -2067,10 +2063,9 @@ mod tests {
         let xml = metadata_document(&format!("<ChildObjects>{children}</ChildObjects>"));
         assert!(xml.len() < super::super::provider::MAX_CAPTURED_FILE_BYTES);
         let fixture = fixture("Shipment.xml", &[("Shipment.xml", xml)]);
-        let navigation =
-            crate::infrastructure::source_adapters::platform_xml::PlatformXmlReadAdapter::new()
-                .inspect_provider(&fixture.provider, &fixture.descriptor)
-                .unwrap();
+        let navigation = crate::versions::v2_20::PlatformXmlReadAdapter::new()
+            .inspect_provider(&fixture.provider, &fixture.descriptor)
+            .unwrap();
         assert_eq!(navigation.nodes.len(), MAX_NAVIGATION_NODES);
     }
 

@@ -6,16 +6,13 @@ use crate::domain::format_profile::{
     classify_root_version, ExportFormatVersion, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
 };
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::source_adapters::platform_xml::support::{
-    read_support_facts, read_support_facts_bytes, EffectiveSupportRule, SupportFacts, SupportRule,
-    SupportSourceState, SupportVendor,
-};
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
 
 use super::compile_transaction::CompileTransaction;
 use super::single_file_publisher::{publish, PublishMode, PublishRequest};
@@ -2278,121 +2275,19 @@ pub(crate) fn support_state_lines_for_configuration(
         config_path.parent().unwrap_or_else(|| Path::new(""))
     };
     let bin_path = config_dir.join("Ext").join("ParentConfigurations.bin");
-    let facts = read_support_facts(&bin_path);
-    match facts.source {
-        SupportSourceState::Absent => {
-            return vec![if is_extension {
-                "Поддержка:      расширение (CFE), правки свободны".to_string()
-            } else {
-                "Поддержка:      не на поддержке (своя конфигурация)".to_string()
-            }];
-        }
-        SupportSourceState::Unreadable { .. } => {
-            return vec![
-                "Поддержка:      состояние ParentConfigurations.bin не удалось прочитать — правки не подтверждены"
-                    .to_string(),
-            ];
-        }
-        SupportSourceState::Removed => {
-            return vec!["Поддержка:      снята с поддержки полностью".to_string()];
-        }
-        SupportSourceState::Parsed => {}
-    }
-    let global_editing_enabled = facts
-        .global_editing_enabled()
-        .expect("parsed support facts have a global editing flag");
-    if !global_editing_enabled {
-        return vec![
-            "Поддержка:      на поддержке".to_string(),
-            "  Возможность изменения: выключена — вся конфигурация read-only (правки заблокированы)"
-                .to_string(),
-            format!("  Конфигураций поставщика: {}", facts.vendors().len()),
-        ];
-    }
-    let counts = facts.rule_counts();
-    let mut lines = vec!["Поддержка:      на поддержке".to_string()];
-    lines.push("  Возможность изменения: включена".to_string());
-    lines.push(format!(
-        "  Объектов: на замке {} / редактируется {} / снято {}",
-        counts[0], counts[1], counts[2]
-    ));
-    lines.push(format!(
-        "  Конфигураций поставщика: {}",
-        facts.vendors().len()
-    ));
-    if facts.vendors().len() > 1 {
-        for vendor in facts.vendors() {
-            lines.push(format!(
-                "  Поставщик: {} — {} {}",
-                vendor.vendor, vendor.name, vendor.version
-            ));
-        }
-    }
-    lines
+    PlatformXmlAdapterFactory::support_summary_lines(&bin_path, is_extension)
 }
 
 pub(crate) fn support_status_for_path(target_path: &Path) -> String {
     let Some(config_dir) = find_support_config_dir(target_path) else {
         return "не на поддержке".to_string();
     };
-    let facts = read_support_facts(&config_dir.join("Ext").join("ParentConfigurations.bin"));
     let object_uuid = support_object_uuid_for_path(target_path)
         .or_else(|| support_root_uuid(&config_dir.join("Configuration.xml")));
-    match facts.effective_rule_for(object_uuid.as_deref().unwrap_or("")) {
-        EffectiveSupportRule::Absent => "не на поддержке".to_string(),
-        EffectiveSupportRule::Removed => "снято с поддержки (правки свободны)".to_string(),
-        EffectiveSupportRule::Editable => "редактируется с сохранением поддержки".to_string(),
-        EffectiveSupportRule::Locked => "на замке — прямая правка сломает обновления; дорабатывай через cfe-* либо включи редактирование объекта".to_string(),
-        EffectiveSupportRule::ConfigurationReadOnly => "конфигурация read-only (возможность изменения выключена) — правки невозможны без включения".to_string(),
-        EffectiveSupportRule::UnknownReadOnly => "состояние нескольких поставщиков нельзя однозначно применить — правки не подтверждены".to_string(),
-        EffectiveSupportRule::Unreadable => "состояние поддержки не удалось прочитать — правки не подтверждены".to_string(),
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct SupportState {
-    global_editing_enabled: bool,
-    vendor_count: usize,
-    removed: bool,
-    counts: [usize; 3],
-    object_rules: HashMap<String, u8>,
-    vendors: Vec<SupportVendor>,
-}
-
-impl SupportState {
-    fn object_rule(&self, object_uuid: &str) -> Option<u8> {
-        self.object_rules
-            .get(&object_uuid.to_ascii_lowercase())
-            .copied()
-    }
-
-    pub(crate) fn global_editing_enabled(&self) -> bool {
-        self.global_editing_enabled
-    }
-
-    pub(crate) fn removed(&self) -> bool {
-        self.removed
-    }
-}
-
-pub(crate) fn read_support_state(bin_path: &Path) -> Option<SupportState> {
-    let facts = read_support_facts(bin_path);
-    let removed = matches!(facts.source, SupportSourceState::Removed);
-    if !removed && !matches!(facts.source, SupportSourceState::Parsed) {
-        return None;
-    }
-    Some(SupportState {
-        global_editing_enabled: facts.global_editing_enabled().unwrap_or(true),
-        vendor_count: facts.vendors().len(),
-        removed,
-        counts: facts.rule_counts(),
-        object_rules: facts
-            .object_rules
-            .iter()
-            .map(|(uuid, rule)| (uuid.clone(), rule.flag()))
-            .collect(),
-        vendors: facts.vendors().to_vec(),
-    })
+    PlatformXmlAdapterFactory::support_status(
+        &config_dir.join("Ext").join("ParentConfigurations.bin"),
+        object_uuid.as_deref().unwrap_or(""),
+    )
 }
 
 /*
@@ -2503,16 +2398,7 @@ pub(crate) fn support_root_uuid_from_bytes(raw: &[u8]) -> Option<String> {
 }
 
 pub(crate) fn parse_support_header(text: &str) -> Option<(u8, usize)> {
-    let facts = read_support_facts_bytes(Some(text.as_bytes()));
-    if !matches!(facts.source, SupportSourceState::Parsed) {
-        return None;
-    }
-    let global_flag = if facts.global_editing_enabled()? {
-        0
-    } else {
-        1
-    };
-    Some((global_flag, facts.vendors().len()))
+    PlatformXmlAdapterFactory::support_header(text)
 }
 
 pub(crate) fn extract_xml_attr(text: &str, element: &str, attr: &str) -> Option<String> {

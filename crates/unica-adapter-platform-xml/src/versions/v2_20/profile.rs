@@ -1,25 +1,24 @@
 use std::cmp::Ordering;
 use std::fmt;
-use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FormatProfile {
+pub(crate) struct FormatProfile {
     pub platform_line: &'static str,
     pub export_format: &'static str,
 }
 
-pub const ACTIVE_FORMAT_PROFILE: FormatProfile = FormatProfile {
-    platform_line: PlatformXmlAdapterFactory::platform_line(),
-    export_format: PlatformXmlAdapterFactory::export_format(),
+pub(crate) const ACTIVE_FORMAT_PROFILE: FormatProfile = FormatProfile {
+    platform_line: "8.3.27",
+    export_format: "2.20",
 };
 
 #[derive(Debug, Clone)]
-pub struct ExportFormatVersion {
+pub(crate) struct ExportFormatVersion {
     components: Vec<u32>,
 }
 
 impl ExportFormatVersion {
-    pub fn parse(raw: &str) -> Result<Self, FormatVersionError> {
+    pub(crate) fn parse(raw: &str) -> Result<Self, FormatVersionError> {
         if raw.is_empty() {
             return Err(FormatVersionError::new(raw));
         }
@@ -81,20 +80,20 @@ impl fmt::Display for ExportFormatVersion {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FormatCompatibility {
+pub(crate) enum FormatCompatibility {
     Older { actual: ExportFormatVersion },
     Supported { actual: ExportFormatVersion },
     Newer { actual: ExportFormatVersion },
 }
 
 impl FormatCompatibility {
-    pub fn actual(&self) -> &ExportFormatVersion {
+    pub(crate) fn actual(&self) -> &ExportFormatVersion {
         match self {
             Self::Older { actual } | Self::Supported { actual } | Self::Newer { actual } => actual,
         }
     }
 
-    pub fn label(&self) -> &'static str {
+    pub(crate) fn label(&self) -> &'static str {
         match self {
             Self::Older { .. } => "older",
             Self::Supported { .. } => "supported",
@@ -104,7 +103,7 @@ impl FormatCompatibility {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FormatVersionError {
+pub(crate) struct FormatVersionError {
     raw: String,
 }
 
@@ -115,7 +114,7 @@ impl FormatVersionError {
         }
     }
 
-    pub fn code(&self) -> &'static str {
+    pub(crate) fn code(&self) -> &'static str {
         "formatVersionInvalid"
     }
 }
@@ -128,7 +127,9 @@ impl fmt::Display for FormatVersionError {
 
 impl std::error::Error for FormatVersionError {}
 
-pub fn classify_root_version(raw: Option<&str>) -> Result<FormatCompatibility, FormatVersionError> {
+pub(crate) fn classify_root_version(
+    raw: Option<&str>,
+) -> Result<FormatCompatibility, FormatVersionError> {
     let raw = raw.unwrap_or("1.0");
     let actual = ExportFormatVersion::parse(raw)?;
     let target = ExportFormatVersion::parse(ACTIVE_FORMAT_PROFILE.export_format)
