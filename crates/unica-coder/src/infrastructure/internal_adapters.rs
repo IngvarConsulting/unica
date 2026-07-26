@@ -6969,6 +6969,36 @@ source-set:
     }
 
     #[test]
+    fn diagnostics_mcp_adapter_accepts_absolute_path_inside_source_dir() {
+        let context = temp_context("diagnostics-absolute-inside");
+        let path = context
+            .cwd
+            .join("CommonModules/SmokeModule/Ext/Module.bsl")
+            .display()
+            .to_string();
+        let runner = RecordingBslMcpRunner {
+            commands: RefCell::new(Vec::new()),
+            output: BslMcpOutput {
+                result_text: "{\"action\":\"file\",\"findings\":[]}".to_string(),
+                stderr: String::new(),
+            },
+        };
+        let mut args = Map::new();
+        args.insert("mode".to_string(), json!("file"));
+        args.insert("path".to_string(), json!(path));
+
+        let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
+            .invoke("unica.code.diagnostics", &args, &context, false)
+            .unwrap();
+
+        assert!(outcome.ok);
+        let commands = runner.commands.borrow();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].tool_args["path"], path);
+        cleanup_context(&context);
+    }
+
+    #[test]
     fn diagnostics_mcp_adapter_rejects_paths_outside_source_dir() {
         let context = temp_context("diagnostics-path-containment");
         fs::create_dir_all(context.workspace_root.join("src")).unwrap();
