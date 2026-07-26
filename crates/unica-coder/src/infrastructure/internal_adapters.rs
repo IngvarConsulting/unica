@@ -1931,12 +1931,12 @@ impl<'a> CodeNavigationAdapter<'a> {
         context: &WorkspaceContext,
         cancellation: &CancellationToken,
     ) -> Result<AdapterOutcome, String> {
-        let candidates = index_path_candidates(context, args, "path")?;
         let readiness = self.rlm_readiness(context, args, cancellation);
         let db_path = match readiness {
             IndexReadiness::Ready { db_path } => db_path,
             other => return Ok(outline_index_unavailable_outcome(tool_name, other)),
         };
+        let candidates = index_path_candidates(context, args, "path")?;
         let include_methods = args
             .get("includeMethods")
             .and_then(Value::as_bool)
@@ -6168,6 +6168,74 @@ mod tests {
         assert!(!outcome.ok);
         assert!(outcome.stdout.is_none());
         assert!(outcome.errors[0].starts_with("index_unavailable:"));
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn code_outline_adapter_reports_invalid_source_dir_as_stable_failure() {
+        let context = temp_context("outline-invalid-source-dir");
+        let index = FakeIndexRunner::default();
+        let grep = FakeProcessRunner {
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+            },
+        };
+        let mut args = Map::new();
+        args.insert(
+            "path".to_string(),
+            json!("CommonModules/SmokeModule/Ext/Module.bsl"),
+        );
+        args.insert("sourceDir".to_string(), json!("../outside"));
+
+        let outcome = CodeNavigationAdapter::with_runners(&index, &grep)
+            .invoke("unica.code.outline", &args, &context, false)
+            .unwrap();
+
+        assert!(!outcome.ok);
+        assert!(outcome.warnings.is_empty());
+        assert_eq!(outcome.errors.len(), 1);
+        assert!(outcome.errors[0].starts_with("invalid_source_root:"));
+        assert!(outcome.stdout.is_none());
+        assert!(index.commands.borrow().is_empty());
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn code_outline_adapter_reports_cancellation_before_index_work() {
+        let context = temp_context("outline-cancelled");
+        let index = FakeIndexRunner::default();
+        let grep = FakeProcessRunner {
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+            },
+        };
+        let mut args = Map::new();
+        args.insert(
+            "path".to_string(),
+            json!("CommonModules/SmokeModule/Ext/Module.bsl"),
+        );
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        let outcome = CodeNavigationAdapter::with_runners(&index, &grep)
+            .invoke_cancellable("unica.code.outline", &args, &context, false, &cancellation)
+            .unwrap();
+
+        assert!(!outcome.ok);
+        assert!(outcome.errors[0].starts_with(CANCELLED_PREFIX));
+        assert!(index.commands.borrow().is_empty());
         cleanup_context(&context);
     }
 
