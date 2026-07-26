@@ -3851,8 +3851,8 @@ fn meta_info_native_lines(
     if mode != "overview" {
         for property in target.properties.values() {
             let value = match &property.value {
-                crate::infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue::Scalar(value)
-                | crate::infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue::AnnotatedScalar { value, .. } => value.clone(),
+                crate::infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue::Scalar(value) => value.clone(),
+                crate::infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue::AnnotatedScalar { .. } => "<typed>".to_string(),
                 crate::infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue::RawXml(value) => value.clone(),
                 crate::infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue::Absent => "<absent>".to_string(),
                 crate::infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue::UnresolvedScalar { .. } => "<unresolved>".to_string(),
@@ -3909,6 +3909,46 @@ mod native_legacy_rendering_tests {
         assert!(rendered.contains("FillValue: <unresolved>"));
         assert!(!rendered.contains("1e1000"));
         assert!(!rendered.contains("xsi:type"));
+    }
+
+    #[test]
+    fn decoded_rejected_annotated_decimal_is_never_rendered_as_raw_legacy_value() {
+        use std::fs;
+
+        use crate::infrastructure::source_adapters::{
+            platform_xml::{decoder, native_model::{NativePropertyValue, NativeScalarType}},
+            SourceInput,
+        };
+
+        let root = std::env::temp_dir().join(format!(
+            "unica-meta-legacy-annotated-scalar-{}",
+            std::process::id(),
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let descriptor = root.join("Shipment.xml");
+        fs::write(
+            &descriptor,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document uuid="11111111-1111-1111-1111-111111111111"><Properties><Name>Shipment</Name><FillValue xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" xsi:type="xs:decimal">1e1000</FillValue></Properties></Document></MetaDataObject>"#,
+        )
+        .unwrap();
+        let decoded = decoder::decode_path(&SourceInput {
+            workspace_root: root.clone(),
+            target: descriptor,
+            configured_source_set: None,
+        })
+        .unwrap();
+        assert_eq!(
+            decoded.root.properties["FillValue"].value,
+            NativePropertyValue::AnnotatedScalar {
+                value: "1e1000".to_string(),
+                type_annotation: NativeScalarType::Decimal,
+            },
+        );
+
+        let rendered = meta_info_native_lines(&decoded.root, "", "full").unwrap().join("\n");
+        assert!(rendered.contains("FillValue: <typed>"));
+        assert!(!rendered.contains("1e1000"));
+        let _ = fs::remove_dir_all(root);
     }
 }
 

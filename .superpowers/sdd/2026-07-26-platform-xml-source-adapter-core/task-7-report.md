@@ -154,3 +154,23 @@
 ### Concerns
 
 - The bounded grammar intentionally rejects declared qualifier groups that carry no validated information. Future platform grammar variants must be added as explicit certified groups rather than treated as empty/defaulted state.
+## Fix Round 5
+
+### RED
+
+- Legacy native renderer emitted `AnnotatedScalar.value` directly, although the scalar had not yet passed the bounded property-schema/projector lexical validation. A real decoded `xs:decimal` value `1e1000` reproduced the disclosure.
+
+### GREEN
+
+- Legacy renderer emits fixed `<typed>` for every `AnnotatedScalar`; it does not duplicate incomplete semantic lexical validation and cannot expose the annotation value. `UnresolvedScalar` remains `<unresolved>`.
+- Integration-style regression creates a real Platform XML fixture with `<FillValue xsi:type="xs:decimal">1e1000</FillValue>`, decodes it through `decoder::decode_path`, verifies the native typed evidence, then asserts legacy output contains no rejected lexical text.
+
+### Tests
+
+- `cargo test -p unica-coder source_adapters::platform_xml::decoder::tests -- --nocapture` -- 27 passed.
+- `cargo test -p unica-coder native_operations::meta::native_legacy_rendering_tests -- --nocapture` -- 2 passed.
+- `cargo test -p unica-coder source_adapters::platform_xml::projector::tests -- --nocapture` -- 19 passed.
+
+### Concerns
+
+- Legacy typed markers intentionally sacrifice scalar display detail until the semantic projector has supplied validated canonical values. This is required to prevent pre-validation lexical disclosure; Task 8 remains the separate public-surface migration.
