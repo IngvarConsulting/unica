@@ -459,6 +459,7 @@ mod tests {
                     code: "probe_evidence".to_string(),
                     message: descriptor.probe_evidence.join(","),
                 }],
+                relation_index: Vec::new(),
             })
         }
     }

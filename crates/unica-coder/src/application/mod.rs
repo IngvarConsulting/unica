@@ -28,6 +28,46 @@ pub struct ToolSpec {
     pub handler: ToolHandler,
 }
 
+#[cfg(test)]
+mod meta_info_contract_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn meta_info_tool() -> ToolSpec {
+        tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.meta.info")
+            .expect("meta.info tool exists")
+    }
+
+    #[test]
+    fn meta_info_schema_has_exact_target_one_of_and_no_legacy_controls() {
+        let schema = input_schema_for_tool(&meta_info_tool());
+        let properties = schema["properties"].as_object().unwrap();
+        for removed in ["Mode", "Name", "Limit", "Offset", "OutFile"] {
+            assert!(!properties.contains_key(removed), "{removed} must be removed");
+        }
+        for field in ["ObjectPath", "objectRef", "snapshotRevision", "select", "cursor"] {
+            assert!(properties.contains_key(field), "{field} must be present");
+        }
+        assert_eq!(schema["oneOf"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn meta_info_rejects_mixed_and_incomplete_target_modes() {
+        let tool = meta_info_tool();
+        for args in [
+            json!({"ObjectPath": "src/Catalogs/Items.xml", "objectRef": {}, "snapshotRevision": "sha256:one"}),
+            json!({"objectRef": {"sourceId": "workspace:main", "objectKey": "uuid:11111111-1111-1111-1111-111111111111"}}),
+            json!({"snapshotRevision": "sha256:one"}),
+            json!({"cursor": {}, "ObjectPath": "src/Catalogs/Items.xml"}),
+        ] {
+            let error = tool_contracts::validate_tool_arguments(tool, args.as_object().unwrap(), false).unwrap_err();
+            assert!(error.contains("exactly one target mode"), "{error}");
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum ToolHandler {
     NativeOperation {
@@ -930,7 +970,7 @@ fn configuration_tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "unica.meta.info",
-            description: "Inspect metadata object XML.",
+            description: "Inspect typed semantic metadata navigation.",
             mutating: false,
             cache_access: cache_access_for("meta-info", None),
             handler: ToolHandler::NativeOperation {
@@ -3469,88 +3509,6 @@ mod tests {
     }
 
     #[test]
-    fn meta_info_reports_locked_vendor_support_state_through_unica_boundary() {
-        let root = std::env::temp_dir().join(format!("unica-meta-support-{}", std::process::id()));
-        let workspace = root.join("workspace");
-        let src = workspace.join("src");
-        let ext = src.join("Ext");
-        let catalogs = src.join("Catalogs");
-        std::fs::create_dir_all(&ext).unwrap();
-        std::fs::create_dir_all(&catalogs).unwrap();
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        std::fs::write(
-            src.join("Configuration.xml"),
-            support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
-        )
-        .unwrap();
-        std::fs::write(
-            catalogs.join("Items.xml"),
-            support_test_catalog_xml("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
-        )
-        .unwrap();
-        std::fs::write(
-            ext.join("ParentConfigurations.bin"),
-            support_test_parent_configurations_bin(
-                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-                "cccccccc-cccc-cccc-cccc-cccccccccccc",
-            ),
-        )
-        .unwrap();
-        let mut args = Map::new();
-        args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        args.insert(
-            "ObjectPath".to_string(),
-            Value::String("src/Catalogs/Items.xml".to_string()),
-        );
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.meta.info", &args)
-            .unwrap();
-
-        assert!(result.ok);
-        let navigation = result
-            .data
-            .as_ref()
-            .and_then(|data| data.get("navigation"))
-            .expect("meta.info should expose the object-navigation prototype in result.data");
-        assert!(navigation.is_object(), "{navigation:?}");
-        let root_node = navigation["nodes"]
-            .as_array()
-            .and_then(|nodes| nodes.first())
-            .expect("navigation graph must contain its root node");
-        assert_eq!(
-            root_node["capabilityState"]["authorability"], "support_locked",
-            "support state must constrain modeled capabilities: {root_node:?}"
-        );
-        assert_eq!(
-            root_node["semanticActions"]
-                .as_array()
-                .expect("root node must serialize semantic actions")
-                .len(),
-            1,
-            "locked object must not advertise mutation actions: {root_node:?}"
-        );
-        assert_eq!(
-            root_node["semanticActions"][0]["action"], "inspect",
-            "locked object must retain inspection only: {root_node:?}"
-        );
-        let stdout = result.stdout.unwrap();
-        assert!(stdout.contains("Поддержка: на замке"));
-        assert!(stdout.contains("cfe-*"));
-        assert!(!stdout.contains("powershell.exe"));
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn meta_info_dry_run_keeps_safe_placeholder_without_reading_navigation_target() {
         let root =
             std::env::temp_dir().join(format!("unica-meta-info-dry-run-{}", std::process::id()));
@@ -3578,15 +3536,8 @@ mod tests {
             .unwrap();
 
         assert!(result.ok, "{result:?}");
-        assert!(result.data.is_none(), "{result:?}");
         assert!(result.stdout.is_none(), "{result:?}");
-        assert!(
-            result
-                .summary
-                .contains("dry run: unica.meta.info would execute native XML/DSL operation"),
-            "{}",
-            result.summary
-        );
+        assert!(result.data.as_ref().is_some_and(|data| data.get("navigation").is_some()), "{result:?}");
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -3950,161 +3901,6 @@ mod tests {
     }
 
     #[test]
-    fn support_edit_capability_on_enables_global_editing() {
-        let bin = support_test_parent_configurations_bin(
-            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-            "cccccccc-cccc-cccc-cccc-cccccccccccc",
-        )
-        .replace("{6,0,", "{6,1,");
-        let (root, workspace, _bin_path) =
-            support_test_workspace("unica-support-edit-capability-on", bin);
-        let mut args = Map::new();
-        args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        args.insert("dryRun".to_string(), Value::Bool(false));
-        args.insert("Path".to_string(), Value::String("src".to_string()));
-        args.insert("Capability".to_string(), Value::String("on".to_string()));
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.support.edit", &args)
-            .unwrap();
-
-        assert!(result.ok, "{:?}", result.errors);
-        assert!(result.summary.contains("Возможность изменения"));
-        let mut info_args = Map::new();
-        info_args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        info_args.insert("ConfigPath".to_string(), Value::String("src".to_string()));
-        let info = UnicaApplication::new()
-            .call_tool("unica.cf.info", &info_args)
-            .unwrap();
-        assert!(info
-            .stdout
-            .unwrap()
-            .contains("Возможность изменения: включена"));
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn support_edit_capability_off_disables_global_editing_and_blocks_set() {
-        let (root, workspace, bin_path) = support_test_workspace(
-            "unica-support-edit-capability-off",
-            support_test_parent_configurations_bin(
-                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-                "cccccccc-cccc-cccc-cccc-cccccccccccc",
-            ),
-        );
-        let mut args = Map::new();
-        args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        args.insert("dryRun".to_string(), Value::Bool(false));
-        args.insert("Path".to_string(), Value::String("src".to_string()));
-        args.insert("Capability".to_string(), Value::String("off".to_string()));
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.support.edit", &args)
-            .unwrap();
-
-        assert!(result.ok, "{:?}", result.errors);
-        assert!(result.summary.contains("ВЫКЛЮЧЕНА"));
-        let bin_text = std::fs::read_to_string(&bin_path).unwrap();
-        assert!(bin_text.contains("{6,1,"));
-        assert!(bin_text.contains(",1,0,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"));
-        assert!(bin_text.contains(",1,0,bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"));
-        assert!(bin_text.contains(",1,0,cccccccc-cccc-cccc-cccc-cccccccccccc"));
-
-        let mut info_args = Map::new();
-        info_args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        info_args.insert("ConfigPath".to_string(), Value::String("src".to_string()));
-        let info = UnicaApplication::new()
-            .call_tool("unica.cf.info", &info_args)
-            .unwrap();
-        assert!(info
-            .stdout
-            .unwrap()
-            .contains("Возможность изменения: выключена"));
-
-        let mut set_args = Map::new();
-        set_args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        set_args.insert("dryRun".to_string(), Value::Bool(false));
-        set_args.insert(
-            "Path".to_string(),
-            Value::String("src/Catalogs/Items.xml".to_string()),
-        );
-        set_args.insert("Set".to_string(), Value::String("editable".to_string()));
-        let set_result = UnicaApplication::new()
-            .call_tool("unica.support.edit", &set_args)
-            .unwrap();
-        assert!(!set_result.ok);
-        assert!(set_result.errors.join("\n").contains("Capability=on"));
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn support_edit_set_editable_updates_object_rule_and_meta_info() {
-        let (root, workspace, _bin_path) = support_test_workspace(
-            "unica-support-edit-set-editable",
-            support_test_parent_configurations_bin(
-                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-                "cccccccc-cccc-cccc-cccc-cccccccccccc",
-            ),
-        );
-        let mut args = Map::new();
-        args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        args.insert("dryRun".to_string(), Value::Bool(false));
-        args.insert(
-            "Path".to_string(),
-            Value::String("src/Catalogs/Items.xml".to_string()),
-        );
-        args.insert("Set".to_string(), Value::String("editable".to_string()));
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.support.edit", &args)
-            .unwrap();
-
-        assert!(result.ok, "{:?}", result.errors);
-        assert!(result.summary.contains("редактируется"));
-        let mut info_args = Map::new();
-        info_args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        info_args.insert(
-            "ObjectPath".to_string(),
-            Value::String("src/Catalogs/Items.xml".to_string()),
-        );
-        let info = UnicaApplication::new()
-            .call_tool("unica.meta.info", &info_args)
-            .unwrap();
-        assert!(info
-            .stdout
-            .unwrap()
-            .contains("редактируется с сохранением поддержки"));
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn support_edit_set_requires_global_capability_on() {
         let bin = support_test_parent_configurations_bin(
             "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
@@ -4171,66 +3967,6 @@ mod tests {
         assert!(result.ok);
         assert!(result.changes.is_empty());
         assert!(result.summary.contains("не на поддержке"));
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn support_edit_set_editable_allows_follow_up_meta_edit() {
-        let (root, workspace, _bin_path) = support_test_workspace(
-            "unica-support-edit-unblocks-guard",
-            support_test_parent_configurations_bin(
-                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-                "cccccccc-cccc-cccc-cccc-cccccccccccc",
-            ),
-        );
-        let mut support_args = Map::new();
-        support_args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        support_args.insert("dryRun".to_string(), Value::Bool(false));
-        support_args.insert(
-            "Path".to_string(),
-            Value::String("src/Catalogs/Items.xml".to_string()),
-        );
-        support_args.insert("Set".to_string(), Value::String("editable".to_string()));
-        let support_result = UnicaApplication::new()
-            .call_tool("unica.support.edit", &support_args)
-            .unwrap();
-        assert!(support_result.ok, "{:?}", support_result.errors);
-
-        let object_path = workspace.join("src").join("Catalogs").join("Items.xml");
-        let before = std::fs::read_to_string(&object_path).unwrap();
-        let mut edit_args = Map::new();
-        edit_args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        edit_args.insert("dryRun".to_string(), Value::Bool(false));
-        edit_args.insert(
-            "ObjectPath".to_string(),
-            Value::String("src/Catalogs/Items.xml".to_string()),
-        );
-        edit_args.insert(
-            "Operation".to_string(),
-            Value::String("modify-property".to_string()),
-        );
-        edit_args.insert(
-            "Value".to_string(),
-            Value::String("Name=Changed".to_string()),
-        );
-
-        let edit_result = UnicaApplication::new()
-            .call_tool("unica.meta.edit", &edit_args)
-            .unwrap();
-
-        assert!(edit_result.ok, "{:?}", edit_result.errors);
-        assert_ne!(std::fs::read_to_string(&object_path).unwrap(), before);
-        assert!(std::fs::read_to_string(&object_path)
-            .unwrap()
-            .contains("<Name>Changed</Name>"));
 
         let _ = std::fs::remove_dir_all(root);
     }

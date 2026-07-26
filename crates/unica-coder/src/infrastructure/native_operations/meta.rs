@@ -3731,594 +3731,378 @@ pub(crate) fn meta_validate_forbidden_properties(md_type: &str) -> Option<&'stat
     }
 }
 
-/// Native `meta-info` result together with the optional semantic-navigation
-/// projection. The projection is kept separate from the legacy text output so
-/// callers that only consume stdout retain their current contract.
-pub(crate) struct MetaInfoNavigationResult {
-    pub(crate) outcome: AdapterOutcome,
-    pub(crate) navigation: Option<NavigationGraph>,
-}
-
-pub(crate) fn analyze_meta_info(
+/// The public `meta.info` path is a semantic navigation query.  It never
+/// renders XML-derived text and never synthesizes source identity from a path.
+pub(crate) fn inspect_meta_navigation(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
-    analyze_meta_info_with_navigation(args, context).outcome
+) -> Result<crate::domain::navigation::NavigationEnvelope, String> {
+    let result = inspect_meta_navigation_inner(args, context);
+    Ok(match result {
+        Ok(navigation) => navigation,
+        Err(error) => crate::domain::navigation::NavigationEnvelope::unavailable(error),
+    })
 }
 
-pub(crate) fn analyze_meta_info_with_navigation(
+#[derive(Clone)]
+enum MetaNavigationTarget {
+    ObjectPath(String),
+    ObjectRef {
+        source_id: SourceId,
+        object_key: ObjectKey,
+        snapshot_revision: crate::domain::source_adapters::SourceRevision,
+    },
+    Cursor(Value),
+}
+
+fn inspect_meta_navigation_inner(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> MetaInfoNavigationResult {
-    let result = (|| -> Result<(String, Option<PathBuf>, PathBuf, NavigationGraph), String> {
-        let raw_path = required_path(
-            args,
-            &["objectPath", "ObjectPath", "path", "Path"],
-            "ObjectPath",
-        )?;
-        let object_path = resolve_meta_info_path(absolutize(raw_path, &context.cwd))?;
-        let source_set = navigation_source_set(&object_path, context);
-        let configured_source_set = (!source_set.starts_with("ad-hoc:")).then_some(source_set);
-        let input = crate::infrastructure::source_adapters::SourceInput {
-            workspace_root: context.workspace_root.clone(),
-            target: object_path.clone(),
-            configured_source_set,
-        };
-        let native =
-            crate::infrastructure::source_adapters::platform_xml::decoder::decode_path(&input)
-                .map_err(|error| format!("[ERROR] {}", error.message))?;
-        let mode = string_arg(args, &["mode", "Mode"]).unwrap_or("overview");
-        let drill_name = string_arg(args, &["name", "Name"]).unwrap_or("");
-        let out_file =
-            path_arg(args, &["outFile", "OutFile"]).map(|path| absolutize(path, &context.cwd));
-        let navigation =
-            project_native_platform_xml_navigation(&native, &object_path, context);
-        let mut lines = meta_info_native_lines(&native.root, drill_name, mode)?;
-        if drill_name.is_empty() {
-            lines.insert(
-                1,
-                format!("Поддержка: {}", support_status_for_path(&object_path)),
-            );
-        }
-        let output_text = meta_info_paginate(lines, args);
-        let stdout = if let Some(out_file) = &out_file {
-            write_utf8_bom(out_file, &output_text)?;
-            format!("Output written to {}\n", out_file.display())
-        } else {
-            format!("{output_text}\n")
-        };
-
-        Ok((stdout, out_file, object_path, navigation))
-    })();
-
-    match result {
-        Ok((stdout, out_file, artifact, navigation)) => {
-            let mut artifacts = vec![artifact.display().to_string()];
-            if let Some(out_file) = out_file {
-                artifacts.push(out_file.display().to_string());
+) -> Result<crate::domain::navigation::NavigationEnvelope, SourceAdapterError> {
+    let target = parse_meta_navigation_target(args)?;
+    let (mut navigation, target_ref, selection, cursor) = match target {
+        MetaNavigationTarget::ObjectPath(path) => {
+            let object_path = resolve_meta_info_path(absolutize(PathBuf::from(path), &context.cwd))
+                .map_err(|_| source_unavailable("metadata target cannot be resolved"))?;
+            let source_set = configured_source_set_for_path(&object_path, context)?;
+            let navigation = inspect_source_path(object_path, source_set, context)?;
+            if matches!(navigation.status, crate::domain::navigation::NavigationStatus::Unavailable) {
+                return Ok(navigation);
             }
-            MetaInfoNavigationResult {
-                outcome: AdapterOutcome {
-                    ok: true,
-                    summary: "unica.meta.info completed with native metadata analyzer".to_string(),
-                    changes: Vec::new(),
-                    warnings: Vec::new(),
-                    errors: Vec::new(),
-                    artifacts,
-                    stdout: Some(stdout),
-                    stderr: Some(String::new()),
-                    command: None,
-                },
-                navigation: Some(navigation),
-            }
+            let target_ref = object_path_target(&navigation)?;
+            let selection = parse_navigation_selection(args.get("select"))?;
+            (navigation, target_ref, selection, None)
         }
-        Err(error) => MetaInfoNavigationResult {
-            outcome: AdapterOutcome {
-                ok: false,
-                summary: "unica.meta.info failed in native metadata analyzer".to_string(),
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: vec![error.clone()],
-                artifacts: Vec::new(),
-                stdout: Some(format!("{error}\n")),
-                stderr: Some(String::new()),
-                command: None,
-            },
-            navigation: None,
-        },
-    }
-}
-
-/// Project one already-parsed Platform XML metadata object into the semantic
-/// navigation prototype. This adapter deliberately keeps filesystem layout
-/// private: paths are used only to resolve declared backing content and never
-/// become part of [`ObjectRef`] identity.
-fn meta_info_native_lines(
-    root: &crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
-    drill_name: &str,
-    mode: &str,
-) -> Result<Vec<String>, String> {
-    let target = if drill_name.is_empty() {
-        root
-    } else {
-        resolve_native_node(root, drill_name)
-            .map_err(|error| format!("[ERROR] {}: {}", error.code(), error.message))?
-    };
-    let mut lines = vec![format!(
-        "{}: {}",
-        target.class.canonical_name, target.name
-    )];
-    if mode != "overview" {
-        for property in target.properties.values() {
-            let value = match &property.value {
-                crate::infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue::Scalar(value) => value.clone(),
-                crate::infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue::AnnotatedScalar { .. } => "<typed>".to_string(),
-                crate::infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue::RawXml(value) => value.clone(),
-                crate::infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue::Absent => "<absent>".to_string(),
-                crate::infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue::UnresolvedScalar { .. } => "<unresolved>".to_string(),
-                crate::infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue::Unresolved => "<unresolved>".to_string(),
+        MetaNavigationTarget::ObjectRef { source_id, object_key, snapshot_revision } => {
+            let selection = parse_navigation_selection(args.get("select"))?;
+            let (navigation, target_ref) = inspect_bound_object(
+                &source_id,
+                &object_key,
+                &snapshot_revision,
+                context,
+            )?;
+            (navigation, target_ref, selection, None)
+        }
+        MetaNavigationTarget::Cursor(value) => {
+            let source_id = cursor_source_id(&value)?;
+            let selection = match args.get("select") {
+                Some(value) => parse_navigation_selection(Some(value))?,
+                None => parse_navigation_selection(value.get("selection"))?,
             };
-            lines.push(format!("{}: {value}", property.canonical_id));
-        }
-    }
-    for child in &target.children {
-        lines.push(format!("{}: {}", child.class.canonical_name, child.name));
-    }
-    Ok(lines)
-}
-
-#[cfg(test)]
-mod native_legacy_rendering_tests {
-    use std::collections::BTreeMap;
-
-    use super::meta_info_native_lines;
-    use crate::infrastructure::source_adapters::platform_xml::{
-        native_model::{
-            NativeMetadataClass, NativeMetadataNode, NativeNodeBacking, NativeNodeState,
-            NativeProperty, NativePropertyProvenance, NativePropertyValue,
-            NativeScalarAnnotationIssue,
-        },
-        schema::MetadataClassRole,
-    };
-
-    #[test]
-    fn unresolved_scalar_is_rendered_as_a_non_raw_marker() {
-        let root = NativeMetadataNode {
-            class: NativeMetadataClass {
-                canonical_name: "Document",
-                role: MetadataClassRole::TopLevelObject,
-            },
-            uuid: None,
-            name: "Order".to_string(),
-            state: NativeNodeState::ResolvedInline,
-            properties: BTreeMap::from([(
-                "FillValue".to_string(),
-                NativeProperty {
-                    canonical_id: "FillValue".to_string(),
-                    value: NativePropertyValue::UnresolvedScalar {
-                        issue: NativeScalarAnnotationIssue::InvalidLexical,
-                    },
-                    provenance: NativePropertyProvenance::Unresolved,
+            let target_key = cursor_target_key(&value)?;
+            let requested_revision = cursor_snapshot_revision(&value)?;
+            let (navigation, target_ref) = inspect_bound_object(
+                &source_id,
+                &target_key,
+                &requested_revision,
+                context,
+            )?;
+            let snapshot = navigation.snapshot.as_ref().ok_or_else(|| {
+                source_unavailable("navigation cursor source has no truthful snapshot")
+            })?;
+            let cursor = crate::domain::navigation::NavigationCursor::decode(
+                value,
+                &snapshot.revision,
+                &selection,
+                |source_id, target, relation| {
+                    source_id == &target_ref.source_id
+                        && target == &target_ref.object_key
+                        && navigation.relation_index.iter().any(|candidate| {
+                            &candidate.relation_ref.relation_key == relation
+                        })
                 },
-            )]),
-            children: Vec::new(),
-            backing: NativeNodeBacking::None,
-        };
-
-        let rendered = meta_info_native_lines(&root, "", "full").unwrap().join("\n");
-        assert!(rendered.contains("FillValue: <unresolved>"));
-        assert!(!rendered.contains("1e1000"));
-        assert!(!rendered.contains("xsi:type"));
-    }
-
-    #[test]
-    fn decoded_rejected_annotated_decimal_is_never_rendered_as_raw_legacy_value() {
-        use std::fs;
-
-        use crate::infrastructure::source_adapters::{
-            platform_xml::{decoder, native_model::{NativePropertyValue, NativeScalarType}},
-            SourceInput,
-        };
-
-        let root = std::env::temp_dir().join(format!(
-            "unica-meta-legacy-annotated-scalar-{}",
-            std::process::id(),
-        ));
-        fs::create_dir_all(&root).unwrap();
-        let descriptor = root.join("Shipment.xml");
-        fs::write(
-            &descriptor,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document uuid="11111111-1111-1111-1111-111111111111"><Properties><Name>Shipment</Name><FillValue xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" xsi:type="xs:decimal">1e1000</FillValue></Properties></Document></MetaDataObject>"#,
-        )
-        .unwrap();
-        let decoded = decoder::decode_path(&SourceInput {
-            workspace_root: root.clone(),
-            target: descriptor,
-            configured_source_set: None,
-        })
-        .unwrap();
-        assert_eq!(
-            decoded.root.properties["FillValue"].value,
-            NativePropertyValue::AnnotatedScalar {
-                value: "1e1000".to_string(),
-                type_annotation: NativeScalarType::Decimal,
-            },
-        );
-
-        let rendered = meta_info_native_lines(&decoded.root, "", "full").unwrap().join("\n");
-        assert!(rendered.contains("FillValue: <typed>"));
-        assert!(!rendered.contains("1e1000"));
-        let _ = fs::remove_dir_all(root);
-    }
+            )?;
+            (navigation, target_ref, selection, Some(cursor))
+        }
+    };
+    materialize_navigation_pages(&mut navigation, target_ref, selection, cursor)?;
+    Ok(navigation)
 }
 
-fn resolve_native_node<'a>(
-    root: &'a crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
-    selector: &str,
-) -> Result<
-    &'a crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
-    SourceAdapterError,
-> {
-    if let Some(raw_uuid) = selector.strip_prefix("uuid:") {
-        let uuid = uuid::Uuid::parse_str(raw_uuid).map_err(|_| {
-            SourceAdapterError::new(
-                SourceAdapterErrorKind::ProjectionAmbiguous,
-                "native metadata ObjectKey UUID is invalid",
-            )
-        })?;
-        let mut matches = Vec::new();
-        collect_native_matches(root, &mut matches, &|node| node.uuid == Some(uuid));
-        return unique_native_match(matches, selector);
-    }
-    if selector.contains('/') || selector.contains(':') {
-        return resolve_qualified_native_node(root, selector);
-    }
-
-    let mut matches = Vec::new();
-    collect_native_matches(root, &mut matches, &|node| node.name == selector);
-    unique_native_match(matches, selector)
-}
-
-fn collect_native_matches<'a, F>(
-    node: &'a crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
-    matches: &mut Vec<
-        &'a crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
-    >,
-    predicate: &F,
-) where
-    F: Fn(
-        &crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
-    ) -> bool,
-{
-    if predicate(node) {
-        matches.push(node);
-    }
-    for child in &node.children {
-        collect_native_matches(child, matches, predicate);
-    }
-}
-
-fn unique_native_match<'a>(
-    matches: Vec<
-        &'a crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
-    >,
-    selector: &str,
-) -> Result<
-    &'a crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
-    SourceAdapterError,
-> {
-    match matches.as_slice() {
-        [node] => Ok(*node),
-        [] => Err(SourceAdapterError::new(
-            SourceAdapterErrorKind::SourceUnavailable,
-            format!("native metadata node `{selector}` was not found"),
-        )),
+fn parse_meta_navigation_target(args: &Map<String, Value>) -> Result<MetaNavigationTarget, SourceAdapterError> {
+    let object_path = args.get("ObjectPath").and_then(Value::as_str).filter(|value| !value.trim().is_empty());
+    let object_ref = args.get("objectRef");
+    let snapshot_revision = args.get("snapshotRevision").and_then(Value::as_str).filter(|value| !value.trim().is_empty());
+    let cursor = args.get("cursor");
+    match (object_path, object_ref, snapshot_revision, cursor) {
+        (Some(path), None, None, None) => Ok(MetaNavigationTarget::ObjectPath(path.to_string())),
+        (None, Some(object_ref), Some(revision), None) => Ok(MetaNavigationTarget::ObjectRef {
+            source_id: object_ref_source_id(object_ref)?,
+            object_key: object_ref_key(object_ref)?,
+            snapshot_revision: crate::domain::source_adapters::SourceRevision::new(revision)?,
+        }),
+        (None, None, None, Some(cursor)) if cursor.is_object() => Ok(MetaNavigationTarget::Cursor(cursor.clone())),
         _ => Err(SourceAdapterError::new(
             SourceAdapterErrorKind::ProjectionAmbiguous,
-            format!("native metadata selector `{selector}` matches multiple nodes"),
+            "meta.info requires exactly one target mode",
         )),
     }
 }
 
-fn resolve_qualified_native_node<'a>(
-    root: &'a crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
-    selector: &str,
-) -> Result<
-    &'a crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
-    SourceAdapterError,
-> {
-    let mut segments = selector.split('/');
-    let first = segments.next().ok_or_else(|| {
-        SourceAdapterError::new(
-            SourceAdapterErrorKind::ProjectionAmbiguous,
-            "native metadata qualified selector is empty",
-        )
-    })?;
-    let (class, name) = qualified_native_segment(first)?;
-    if root.class.canonical_name != class || root.name != name {
-        return Err(SourceAdapterError::new(
-            SourceAdapterErrorKind::SourceUnavailable,
-            format!("native metadata qualified root `{first}` was not found"),
-        ));
-    }
-
-    let mut current = root;
-    for segment in segments {
-        let (class, name) = qualified_native_segment(segment)?;
-        let matches = current
-            .children
-            .iter()
-            .filter(|node| node.class.canonical_name == class && node.name == name)
-            .collect::<Vec<_>>();
-        current = unique_native_match(matches, segment)?;
-    }
-    Ok(current)
+fn object_ref_source_id(value: &Value) -> Result<SourceId, SourceAdapterError> {
+    SourceId::new(value.get("sourceId").and_then(Value::as_str).ok_or_else(|| {
+        SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "objectRef has no valid sourceId")
+    })?)
 }
 
-fn qualified_native_segment(segment: &str) -> Result<(&str, &str), SourceAdapterError> {
-    let (class, name) = segment.split_once(':').ok_or_else(|| {
-        SourceAdapterError::new(
-            SourceAdapterErrorKind::ProjectionAmbiguous,
-            format!("native metadata qualified segment `{segment}` has no class"),
-        )
-    })?;
-    if class.is_empty() || name.is_empty() {
-        return Err(SourceAdapterError::new(
-            SourceAdapterErrorKind::ProjectionAmbiguous,
-            format!("native metadata qualified segment `{segment}` is incomplete"),
-        ));
-    }
-    Ok((class, name))
+fn object_ref_key(value: &Value) -> Result<ObjectKey, SourceAdapterError> {
+    ObjectKey::new(value.get("objectKey").and_then(Value::as_str).ok_or_else(|| {
+        SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "objectRef has no valid objectKey")
+    })?)
 }
 
-fn project_native_platform_xml_navigation(
-    snapshot: &crate::infrastructure::source_adapters::platform_xml::native_model::PlatformXmlNativeSnapshot,
-    object_path: &Path,
-    _context: &WorkspaceContext,
-) -> NavigationGraph {
-    let root_owner_capability = CapabilityState::new(
-        ResolutionState::Resolved,
-        navigation_authorability(object_path),
-    );
-    let root_capability_state =
-        native_node_capability(&snapshot.root, root_owner_capability, None);
-    let root_reference = native_object_ref(
-        &snapshot.source.source_id,
-        None,
-        &snapshot.root,
-    );
-    let mut nodes = vec![NavigationNode::new(
-        root_reference.clone(),
-        root_capability_state,
-    )];
-    let mut edges = Vec::new();
-    let aggregate_root = object_path.parent().unwrap_or_else(|| Path::new(""));
-    project_native_children(
-        &snapshot.root,
-        &root_reference,
-        root_capability_state,
-        aggregate_root,
-        &mut nodes,
-        &mut edges,
-    );
-    NavigationGraph::new(Representation::PlatformXml, root_reference, nodes, edges)
+fn cursor_source_id(value: &Value) -> Result<SourceId, SourceAdapterError> {
+    SourceId::new(value.get("sourceId").and_then(Value::as_str).ok_or_else(|| {
+        SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor has no valid sourceId")
+    })?)
 }
 
-fn project_native_children(
-    owner: &crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
-    owner_reference: &ObjectRef,
-    owner_capability: CapabilityState,
-    aggregate_root: &Path,
-    nodes: &mut Vec<NavigationNode>,
-    edges: &mut Vec<NavigationEdge>,
-) {
-    for child in &owner.children {
-        let reference = native_object_ref(
-            &owner_reference.source_id,
-            Some(owner_reference),
-            child,
-        );
-        let capability =
-            native_node_capability(child, owner_capability, Some(aggregate_root));
-        edges.push(NavigationEdge::new(
-            owner_reference.clone(),
-            reference.clone(),
-            RelationKind::Contains,
-            capability,
-        ));
-        nodes.push(NavigationNode::new(reference.clone(), capability));
-        project_native_children(
-            child,
-            &reference,
-            capability,
-            aggregate_root,
-            nodes,
-            edges,
-        );
-    }
+fn cursor_target_key(value: &Value) -> Result<ObjectKey, SourceAdapterError> {
+    ObjectKey::new(value.get("target").and_then(Value::as_str).ok_or_else(|| {
+        SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor has no valid target")
+    })?)
 }
 
-fn native_node_capability(
-    node: &crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
-    owner_capability: CapabilityState,
-    aggregate_root: Option<&Path>,
-) -> CapabilityState {
-    use crate::infrastructure::source_adapters::platform_xml::native_model::NativeNodeState;
-
-    match &node.state {
-        NativeNodeState::ResolvedInline | NativeNodeState::ResolvedRegistration { .. } => {
-            let authorability = aggregate_root
-                .and_then(|root| registered_descriptor_path(node, root))
-                .map(|path| navigation_authorability(&path))
-                .unwrap_or(owner_capability.authorability);
-            CapabilityState::new(ResolutionState::Resolved, authorability)
-        }
-        NativeNodeState::UnresolvedRegistration { .. } => CapabilityState::new(
-            ResolutionState::Unresolved,
-            Authorability::UnknownReadOnly,
-        ),
-    }
-}
-
-fn registered_descriptor_path(
-    node: &crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
-    aggregate_root: &Path,
-) -> Option<PathBuf> {
-    use crate::infrastructure::source_adapters::platform_xml::native_model::{
-        NativeEvidenceState, NativeNodeBacking,
-    };
-
-    let relative_key = match &node.backing {
-        NativeNodeBacking::Form(form)
-            if form.descriptor.state == NativeEvidenceState::Validated =>
-        {
-            &form.descriptor.relative_key
-        }
-        NativeNodeBacking::Template(template)
-            if template.descriptor.state == NativeEvidenceState::Validated =>
-        {
-            &template.descriptor.relative_key
-        }
-        _ => return None,
-    };
-    Some(aggregate_root.join(relative_key))
-}
-
-fn native_object_ref(
-    source_id: &SourceId,
-    parent: Option<&ObjectRef>,
-    node: &crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
-) -> ObjectRef {
-    let (object_key, identity_strength) = if let Some(uuid) = node.uuid {
-        (
-            ObjectKey::new(format!("uuid:{uuid}"))
-                .expect("UUID-backed native object key is opaque"),
-            IdentityStrength::Persistent,
-        )
-    } else {
-        let parent_key = parent
-            .map(|parent| parent.object_key.as_str())
-            .unwrap_or("root");
-        (
-            navigation_semantic_object_key(&[
-                parent_key,
-                node.class.canonical_name,
-                node.name.as_str(),
-            ]),
-            IdentityStrength::Derived,
-        )
-    };
-    ObjectRef::new(
-        source_id.clone(),
-        object_key,
-        identity_strength,
-        native_node_kind(node),
-        node.name.clone(),
+fn cursor_snapshot_revision(value: &Value) -> Result<crate::domain::source_adapters::SourceRevision, SourceAdapterError> {
+    crate::domain::source_adapters::SourceRevision::new(
+        value.get("snapshotRevision").and_then(Value::as_str).ok_or_else(|| {
+            SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor has no valid snapshotRevision")
+        })?,
     )
 }
 
-fn native_node_kind(
-    node: &crate::infrastructure::source_adapters::platform_xml::native_model::NativeMetadataNode,
-) -> NodeKind {
-    use crate::infrastructure::source_adapters::platform_xml::schema::MetadataClassRole;
-    match node.class.role {
-        MetadataClassRole::Configuration | MetadataClassRole::TopLevelObject => {
-            NodeKind::metadata_object(node.class.canonical_name)
-        }
-        MetadataClassRole::Attribute => NodeKind::Attribute,
-        MetadataClassRole::TabularSection => NodeKind::TabularSection,
-        MetadataClassRole::Form => NodeKind::Form,
-        MetadataClassRole::Command => NodeKind::Command,
-        MetadataClassRole::Template => {
-            let template_type = match &node.backing {
-                crate::infrastructure::source_adapters::platform_xml::native_model::NativeNodeBacking::Template(template) => match &template.descriptor_type {
-                    crate::infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue::Scalar(value) => Some(value.clone()),
-                    _ => None,
-                },
-                _ => None,
-            };
-            NodeKind::Template { template_type }
-        }
-    }
+fn configured_source_set_for_path(path: &Path, context: &WorkspaceContext) -> Result<String, SourceAdapterError> {
+    let source_map = discover_project_source_map(&context.workspace_root)
+        .map_err(|_| source_unavailable("project source map cannot be resolved"))?;
+    let normalized_path = normalize_navigation_path(path);
+    source_map
+        .source_sets
+        .into_iter()
+        .filter(|source_set| normalized_path.starts_with(normalize_navigation_path(&context.workspace_root.join(&source_set.path))))
+        .max_by_key(|source_set| source_set.path.len())
+        .map(|source_set| source_set.name)
+        .ok_or_else(|| source_unavailable("metadata target is not in a configured source set"))
 }
 
-fn navigation_semantic_object_key(parts: &[&str]) -> ObjectKey {
-    let mut digest = Sha256::new();
-    digest.update(b"unica.navigation.object.v1\0");
-    for part in parts {
-        digest.update(part.as_bytes());
-        digest.update([0]);
-    }
-    ObjectKey::new(format!("semantic:{:x}", digest.finalize()))
-        .expect("hash-derived navigation object key is opaque")
-}
-
-fn navigation_authorability(object_path: &Path) -> Authorability {
-    let Some(config_dir) = find_support_config_dir(object_path) else {
-        return Authorability::Authorable;
-    };
-    let facts = read_support_facts(&config_dir.join("Ext").join("ParentConfigurations.bin"));
-    let object_uuid = support_object_uuid_for_path(object_path)
-        .or_else(|| support_root_uuid(&config_dir.join("Configuration.xml")));
-    facts
-        .effective_rule_for(object_uuid.as_deref().unwrap_or(""))
-        .authorability()
-}
-
-fn navigation_source_set(object_path: &Path, context: &WorkspaceContext) -> String {
-    let object_path = navigation_normalize_lexical(object_path);
-    discover_project_source_map(&context.workspace_root)
-        .ok()
-        .and_then(|source_map| {
-            source_map
-                .source_sets
-                .into_iter()
-                .filter(|source_set| {
-                    let source_root = navigation_normalize_lexical(
-                        &context.workspace_root.join(&source_set.path),
-                    );
-                    object_path.starts_with(source_root)
-                })
-                .max_by_key(|source_set| {
-                    context
-                        .workspace_root
-                        .join(&source_set.path)
-                        .components()
-                        .count()
-                })
-                .map(|source_set| source_set.name)
+fn configured_source_root(source_id: &SourceId, context: &WorkspaceContext) -> Result<(String, PathBuf), SourceAdapterError> {
+    let source_map = discover_project_source_map(&context.workspace_root)
+        .map_err(|_| source_unavailable("project source map cannot be resolved"))?;
+    source_map
+        .source_sets
+        .into_iter()
+        .find_map(|source_set| {
+            let expected = SourceId::new(format!("workspace:{}", source_set.name)).ok()?;
+            (expected == *source_id).then(|| (source_set.name, context.workspace_root.join(source_set.path)))
         })
-        // The `meta.info` reader also works for ad-hoc XML outside a configured
-        // source-set. Its public identity contains an opaque digest, never a path.
-        .unwrap_or_else(|| navigation_ad_hoc_source_set(&object_path, &context.workspace_root))
+        .ok_or_else(|| source_unavailable("navigation source is unavailable from the project source map"))
 }
 
-fn navigation_ad_hoc_source_set(object_path: &Path, workspace_root: &Path) -> String {
-    let workspace_root = navigation_normalize_lexical(workspace_root);
-    let scope = format!(
-        "unica.navigation.ad-hoc.v1\0{}\0{}",
-        workspace_root.display(),
-        object_path.display()
-    );
-    let digest = Sha256::digest(scope.as_bytes())
+fn inspect_source_path(
+    target: PathBuf,
+    configured_source_set: String,
+    context: &WorkspaceContext,
+) -> Result<crate::domain::navigation::NavigationEnvelope, SourceAdapterError> {
+    crate::infrastructure::source_adapters::registry::BuiltInSourceAdapterRegistry::new().inspect(
+        crate::infrastructure::source_adapters::SourceInput {
+            workspace_root: context.workspace_root.clone(),
+            target,
+            configured_source_set: Some(configured_source_set),
+        },
+    )
+}
+
+fn inspect_bound_object(
+    source_id: &SourceId,
+    object_key: &ObjectKey,
+    expected_revision: &crate::domain::source_adapters::SourceRevision,
+    context: &WorkspaceContext,
+) -> Result<(crate::domain::navigation::NavigationEnvelope, ObjectRef), SourceAdapterError> {
+    let (source_set, source_root) = configured_source_root(source_id, context)?;
+    let mut candidates = Vec::new();
+    collect_source_xml_files(&source_root, &mut candidates)?;
+    let mut saw_target = false;
+    for candidate in candidates {
+        let navigation = inspect_source_path(candidate, source_set.clone(), context)?;
+        let Some(target) = navigation.nodes.iter().find(|node| {
+            node.object_ref.source_id == *source_id && node.object_ref.object_key == *object_key
+        }).map(|node| node.object_ref.clone()) else {
+            continue;
+        };
+        saw_target = true;
+        if navigation.snapshot.as_ref().is_some_and(|snapshot| snapshot.revision == *expected_revision) {
+            return Ok((navigation, target));
+        }
+    }
+    if saw_target {
+        Err(SourceAdapterError::new(
+            SourceAdapterErrorKind::SnapshotStale,
+            "navigation target snapshot revision is stale",
+        ))
+    } else {
+        Err(source_unavailable("navigation target cannot be re-resolved in the configured source"))
+    }
+}
+
+fn collect_source_xml_files(root: &Path, files: &mut Vec<PathBuf>) -> Result<(), SourceAdapterError> {
+    const MAX_XML_CANDIDATES: usize = 2048;
+    if files.len() >= MAX_XML_CANDIDATES {
+        return Err(source_unavailable("configured source exceeds the bounded navigation resolver"));
+    }
+    let entries = fs::read_dir(root).map_err(|_| source_unavailable("configured source cannot be read"))?;
+    for entry in entries {
+        let entry = entry.map_err(|_| source_unavailable("configured source cannot be read"))?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_source_xml_files(&path, files)?;
+        } else if path.extension().and_then(|extension| extension.to_str()).is_some_and(|extension| extension.eq_ignore_ascii_case("xml")) {
+            files.push(path);
+            if files.len() >= MAX_XML_CANDIDATES {
+                return Err(source_unavailable("configured source exceeds the bounded navigation resolver"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn object_path_target(
+    navigation: &crate::domain::navigation::NavigationEnvelope,
+) -> Result<ObjectRef, SourceAdapterError> {
+    let root = navigation.root.as_ref().ok_or_else(|| source_unavailable("navigation has no root"))?;
+    navigation
+        .relation_index
         .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    format!("ad-hoc:{digest}")
+        .find(|relation| relation.source == *root)
+        .map(|relation| relation.target.clone())
+        .or_else(|| navigation.nodes.first().map(|node| node.object_ref.clone()))
+        .ok_or_else(|| source_unavailable("navigation has no metadata object"))
 }
 
-fn navigation_normalize_lexical(path: &Path) -> PathBuf {
+fn parse_navigation_selection(value: Option<&Value>) -> Result<crate::domain::navigation::NavigationSelection, SourceAdapterError> {
+    use crate::domain::navigation::{FacetSelection, NavigationSelection, PropertySelection, RelationSelection};
+    let Some(value) = value else {
+        return Ok(NavigationSelection {
+            properties: PropertySelection::All,
+            facets: FacetSelection::Summary,
+            relations: vec![RelationSelection::new("children", None)?],
+        });
+    };
+    let object = value.as_object().ok_or_else(|| SourceAdapterError::new(
+        SourceAdapterErrorKind::DecodeCorrupted,
+        "select must be an object",
+    ))?;
+    let properties = match object.get("properties") {
+        None => PropertySelection::All,
+        Some(Value::String(value)) if value == "all" => PropertySelection::All,
+        Some(Value::Array(values)) => PropertySelection::Named(values.iter().map(|value| {
+            value.as_str().map(str::to_string).ok_or_else(|| SourceAdapterError::new(
+                SourceAdapterErrorKind::DecodeCorrupted,
+                "select.properties values must be strings",
+            ))
+        }).collect::<Result<_, _>>()?),
+        _ => return Err(SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "select.properties is invalid")),
+    };
+    let facets = match object.get("facets").and_then(Value::as_str).unwrap_or("summary") {
+        "none" => FacetSelection::None,
+        "summary" => FacetSelection::Summary,
+        "full" => FacetSelection::Full,
+        _ => return Err(SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "select.facets is invalid")),
+    };
+    let relations = match object.get("relations") {
+        None => vec![RelationSelection::new("children", None)?],
+        Some(Value::Array(relations)) => relations.iter().map(|relation| {
+            let relation = relation.as_object().ok_or_else(|| SourceAdapterError::new(
+                SourceAdapterErrorKind::DecodeCorrupted,
+                "select.relations items must be objects",
+            ))?;
+            let role = relation.get("role").and_then(Value::as_str).ok_or_else(|| SourceAdapterError::new(
+                SourceAdapterErrorKind::DecodeCorrupted,
+                "select.relations item has no role",
+            ))?;
+            let page_size = match relation.get("pageSize") {
+                None => None,
+                Some(value) => Some(u16::try_from(value.as_u64().ok_or_else(|| SourceAdapterError::new(
+                    SourceAdapterErrorKind::DecodeCorrupted,
+                    "select.relations pageSize is invalid",
+                ))?).map_err(|_| SourceAdapterError::new(
+                    SourceAdapterErrorKind::DecodeCorrupted,
+                    "select.relations pageSize is invalid",
+                ))?),
+            };
+            RelationSelection::new(role, page_size)
+        }).collect::<Result<Vec<_>, _>>()?,
+        _ => return Err(SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "select.relations is invalid")),
+    };
+    Ok(NavigationSelection { properties, facets, relations })
+}
+
+fn materialize_navigation_pages(
+    navigation: &mut crate::domain::navigation::NavigationEnvelope,
+    target: ObjectRef,
+    selection: crate::domain::navigation::NavigationSelection,
+    cursor: Option<crate::domain::navigation::NavigationCursor>,
+) -> Result<(), SourceAdapterError> {
+    use crate::domain::navigation::{NavigationRelationPage, RelationKind};
+    let snapshot = navigation.snapshot.clone().ok_or_else(|| source_unavailable("ready navigation has no snapshot"))?;
+    let original_nodes = navigation.nodes.clone();
+    let original_relations = navigation.relation_index.clone();
+    let target_node = original_nodes.iter().find(|node| node.object_ref == target).cloned().ok_or_else(|| {
+        source_unavailable("navigation target cannot be re-resolved")
+    })?;
+    let mut pages = Vec::new();
+    for relation_selection in &selection.relations {
+        let matching = original_relations.iter().filter(|relation| {
+            relation.source == target
+                && matches!(relation.kind, RelationKind::Contains)
+                && relation_role_matches(&relation_selection.role, &relation.target.kind)
+        }).collect::<Vec<_>>();
+        let Some(first) = matching.first() else { continue; };
+        let start = cursor.as_ref().filter(|cursor| cursor.relation == first.relation_ref.relation_key)
+            .map(|cursor| cursor.next_position as usize).unwrap_or(0);
+        let end = (start + relation_selection.page_size as usize).min(matching.len());
+        let items = matching[start.min(matching.len())..end].iter().map(|relation| {
+            original_nodes.iter().find(|node| node.object_ref == relation.target).cloned().ok_or_else(|| {
+                SourceAdapterError::new(SourceAdapterErrorKind::IdentityCollision, "relation target has no navigation node")
+            })
+        }).collect::<Result<Vec<_>, _>>()?;
+        let next_cursor = (end < matching.len()).then(|| crate::domain::navigation::NavigationCursor::issue(
+            snapshot.source_id.clone(), snapshot.revision.clone(), target.object_key.clone(),
+            first.relation_ref.clone(), selection.clone(), end as u64,
+        )).transpose()?;
+        pages.push(NavigationRelationPage { relation: first.relation_ref.clone(), items, next_cursor });
+    }
+    navigation.root = Some(target);
+    navigation.nodes = vec![target_node];
+    navigation.relation_index = original_relations;
+    navigation.relations = pages;
+    Ok(())
+}
+
+fn relation_role_matches(role: &str, kind: &NodeKind) -> bool {
+    match role {
+        "children" | "contains" => true,
+        "attributes" => matches!(kind, NodeKind::Attribute),
+        "tabularSections" => matches!(kind, NodeKind::TabularSection),
+        "forms" => matches!(kind, NodeKind::Form),
+        "commands" => matches!(kind, NodeKind::Command),
+        "templates" => matches!(kind, NodeKind::Template { .. }),
+        _ => false,
+    }
+}
+
+fn normalize_navigation_path(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
         match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
+            Component::CurDir => {},
+            Component::ParentDir => { normalized.pop(); },
             _ => normalized.push(component.as_os_str()),
         }
     }
     normalized
+}
+
+fn source_unavailable(message: &str) -> SourceAdapterError {
+    SourceAdapterError::new(SourceAdapterErrorKind::SourceUnavailable, message)
 }
 
 pub(crate) fn resolve_meta_info_path(mut object_path: PathBuf) -> Result<PathBuf, String> {
@@ -13205,7 +12989,6 @@ pub(crate) fn invoke_read(
     context: &WorkspaceContext,
 ) -> Option<Result<AdapterOutcome, String>> {
     match operation {
-        "meta-info" => Some(Ok(analyze_meta_info(args, context))),
         "meta-validate" => Some(Ok(validate_meta(args, context))),
         _ => None,
     }
@@ -13228,560 +13011,136 @@ pub(crate) fn invoke_mutation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
 
-    static NEXT_SOURCE_FIXTURE: AtomicU64 = AtomicU64::new(0);
+    static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
     #[test]
-    fn meta_adapter_decodes_recursive_native_tree_before_navigation_projection() {
-        let (context, object_path) = fixture(
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
-  <Document uuid="11111111-1111-1111-1111-111111111111">
-    <Properties><Name>Shipment</Name></Properties>
-    <ChildObjects>
-      <TabularSection>
-        <Properties><Name>Lines</Name></Properties>
-        <ChildObjects>
-          <Attribute><Properties><Name>Sku</Name></Properties></Attribute>
-        </ChildObjects>
-      </TabularSection>
-    </ChildObjects>
-  </Document>
-</MetaDataObject>"#,
-        );
-        let args = json!({"objectPath": object_path})
-            .as_object()
-            .unwrap()
-            .clone();
-
-        let result = analyze_meta_info_with_navigation(&args, &context);
-
-        assert!(result.outcome.ok, "{:?}", result.outcome.errors);
-        let graph = result.navigation.unwrap();
-        assert_eq!(
-            graph
-                .nodes
-                .iter()
-                .map(|node| node.reference.display_name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["Shipment", "Lines", "Sku"]
-        );
-        fs::remove_dir_all(&context.workspace_root).unwrap();
+    fn meta_info_returns_ready_navigation_for_platform_xml_2_20() {
+        let (context, path) = fixture("2.20", "<Attribute><Properties><Name>Code</Name></Properties></Attribute>");
+        let result = inspect_meta_navigation(&json!({"ObjectPath": path}).as_object().unwrap().clone(), &context).unwrap();
+        assert!(matches!(result.status, crate::domain::navigation::NavigationStatus::Available));
+        assert_eq!(result.schema_version, "1");
+        assert!(result.root.is_some());
+        assert!(!result.nodes.is_empty());
+        std::fs::remove_dir_all(context.workspace_root).unwrap();
     }
 
     #[test]
-    fn meta_adapter_rejects_invalid_root_through_decoder() {
-        let (context, object_path) = fixture(
-            r#"<MetaDataObject version="2.20"><Document><Properties><Name>Shipment</Name></Properties></Document></MetaDataObject>"#,
-        );
-        let args = json!({"objectPath": object_path})
-            .as_object()
-            .unwrap()
-            .clone();
-
-        let result = analyze_meta_info_with_navigation(&args, &context);
-
-        assert!(!result.outcome.ok);
-        assert!(result.outcome.errors[0].contains("Platform XML"));
-        fs::remove_dir_all(&context.workspace_root).unwrap();
+    fn unsupported_version_returns_only_navigation_unavailability() {
+        let (context, path) = fixture("2.19", "");
+        let result = inspect_meta_navigation(&json!({"ObjectPath": path}).as_object().unwrap().clone(), &context).unwrap();
+        assert!(matches!(result.status, crate::domain::navigation::NavigationStatus::Unavailable));
+        assert_eq!(result.diagnostics[0].code, "format_unsupported");
+        let serialized = serde_json::to_value(result).unwrap();
+        assert!(serialized.get("graph").is_none());
+        assert!(serialized["root"].is_null() || serialized.get("root").is_none());
+        assert!(serialized["nodes"].as_array().unwrap().is_empty());
+        assert!(serialized["relations"].as_array().unwrap().is_empty());
+        std::fs::remove_dir_all(context.workspace_root).unwrap();
     }
 
     #[test]
-    fn meta_adapter_rejects_ambiguous_bare_child_lookup() {
-        let (context, object_path) = fixture(
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
-  <Document uuid="11111111-1111-1111-1111-111111111111">
-    <Properties><Name>Shipment</Name></Properties>
-    <ChildObjects>
-      <TabularSection uuid="22222222-2222-2222-2222-222222222222">
-        <Properties><Name>First</Name></Properties>
-        <ChildObjects>
-          <Attribute uuid="44444444-4444-4444-4444-444444444444">
-            <Properties><Name>Code</Name><Comment>first</Comment></Properties>
-          </Attribute>
-        </ChildObjects>
-      </TabularSection>
-      <TabularSection uuid="33333333-3333-3333-3333-333333333333">
-        <Properties><Name>Second</Name></Properties>
-        <ChildObjects>
-          <Attribute uuid="55555555-5555-5555-5555-555555555555">
-            <Properties><Name>Code</Name><Comment>second</Comment></Properties>
-          </Attribute>
-        </ChildObjects>
-      </TabularSection>
-    </ChildObjects>
-  </Document>
-</MetaDataObject>"#,
-        );
-        let args = json!({"objectPath": object_path, "name": "Code"})
-            .as_object()
-            .unwrap()
-            .clone();
-
-        let result = analyze_meta_info_with_navigation(&args, &context);
-
-        assert!(!result.outcome.ok);
-        assert!(result.outcome.errors[0].contains("projection_ambiguous"));
-        fs::remove_dir_all(&context.workspace_root).unwrap();
+    fn project_map_failure_is_not_replaced_with_ad_hoc_identity() {
+        let root = std::env::temp_dir().join(format!("unica-meta-map-{}", NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)));
+        std::fs::create_dir_all(&root).unwrap();
+        let context = WorkspaceContext { cwd: root.clone(), workspace_root: root.clone(), cache_root: root.join(".build/unica"), workspace_epoch: 1 };
+        let result = inspect_meta_navigation(&json!({"ObjectPath": "missing.xml"}).as_object().unwrap().clone(), &context).unwrap();
+        assert!(matches!(result.status, crate::domain::navigation::NavigationStatus::Unavailable));
+        assert_eq!(result.diagnostics[0].code, "source_unavailable");
+        assert!(!serde_json::to_string(&result).unwrap().contains("ad-hoc:"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn meta_adapter_resolves_canonical_qualified_child_lookup() {
-        let (context, object_path) = fixture(
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
-  <Document uuid="11111111-1111-1111-1111-111111111111">
-    <Properties><Name>Shipment</Name></Properties>
-    <ChildObjects>
-      <TabularSection uuid="22222222-2222-2222-2222-222222222222">
-        <Properties><Name>First</Name></Properties>
-        <ChildObjects>
-          <Attribute uuid="44444444-4444-4444-4444-444444444444">
-            <Properties><Name>Code</Name><Comment>first</Comment></Properties>
-          </Attribute>
-        </ChildObjects>
-      </TabularSection>
-      <TabularSection uuid="33333333-3333-3333-3333-333333333333">
-        <Properties><Name>Second</Name></Properties>
-        <ChildObjects>
-          <Attribute uuid="55555555-5555-5555-5555-555555555555">
-            <Properties><Name>Code</Name><Comment>second</Comment></Properties>
-          </Attribute>
-        </ChildObjects>
-      </TabularSection>
-    </ChildObjects>
-  </Document>
-</MetaDataObject>"#,
-        );
-        let args = json!({
-            "objectPath": object_path,
-            "name": "Document:Shipment/TabularSection:Second/Attribute:Code",
-            "mode": "full"
-        })
-        .as_object()
-        .unwrap()
-        .clone();
-
-        let result = analyze_meta_info_with_navigation(&args, &context);
-
-        assert!(result.outcome.ok, "{:?}", result.outcome.errors);
-        assert!(result.outcome.stdout.unwrap().contains("Comment: second"));
-        fs::remove_dir_all(&context.workspace_root).unwrap();
+    fn meta_info_relation_cursor_preserves_child_nodes_and_changes_page() {
+        let (context, path) = fixture("2.20", r#"
+            <Attribute uuid="22222222-2222-2222-2222-222222222222"><Properties><Name>Code</Name></Properties></Attribute>
+            <Attribute uuid="33333333-3333-3333-3333-333333333333"><Properties><Name>Description</Name></Properties></Attribute>
+        "#);
+        let first = inspect_meta_navigation(&json!({
+            "ObjectPath": path,
+            "select": {"relations": [{"role": "attributes", "pageSize": 1}]}
+        }).as_object().unwrap().clone(), &context).unwrap();
+        let first_page = &first.relations[0];
+        assert_eq!(first_page.items.len(), 1);
+        assert_eq!(first_page.items[0].object_ref.display_name, "Code");
+        assert!(!first_page.items[0].properties.is_empty());
+        let cursor = serde_json::to_value(first_page.next_cursor.clone().unwrap()).unwrap();
+        let second = inspect_meta_navigation(&json!({"cursor": cursor}).as_object().unwrap().clone(), &context).unwrap();
+        let second_page = &second.relations[0];
+        assert_eq!(second_page.items.len(), 1);
+        assert_ne!(first_page.items[0].object_ref, second_page.items[0].object_ref);
+        assert_eq!(second_page.items[0].object_ref.display_name, "Description");
+        std::fs::remove_dir_all(context.workspace_root).unwrap();
     }
 
     #[test]
-    fn unresolved_registration_serializes_blocked_non_authorable_capability() {
-        let (context, object_path) = configuration_fixture(
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
-  <Configuration uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa">
-    <Properties><Name>Configuration</Name></Properties>
-    <ChildObjects>
-      <Document uuid="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb">Shipment</Document>
-    </ChildObjects>
-  </Configuration>
-</MetaDataObject>"#,
-        );
-        let args = json!({"objectPath": object_path})
-            .as_object()
-            .unwrap()
-            .clone();
-
-        let result = analyze_meta_info_with_navigation(&args, &context);
-
-        assert!(result.outcome.ok, "{:?}", result.outcome.errors);
-        let graph = result.navigation.unwrap();
-        let unresolved = graph
-            .nodes
-            .iter()
-            .find(|node| node.reference.display_name == "Shipment")
-            .unwrap();
-        assert_eq!(
-            unresolved.capability_state.resolution_state,
-            ResolutionState::Unresolved
-        );
-        assert_eq!(
-            unresolved.capability_state.authorability,
-            Authorability::UnknownReadOnly
-        );
-        let serialized = serde_json::to_value(unresolved).unwrap().to_string();
-        assert!(serialized.contains("\"resolutionState\":\"unresolved\""));
-        assert!(serialized.contains("\"authorability\":\"unknown_read_only\""));
-        assert!(!serialized.contains("edit_properties"));
-        fs::remove_dir_all(&context.workspace_root).unwrap();
-    }
-
-    #[test]
-    fn configured_source_set_identity_survives_lexical_path_aliases() {
-        let (context, _object_path) = source_set_fixture("src/cf", document_source(""));
-        fs::create_dir_all(context.workspace_root.join("src/other")).unwrap();
-        let aliased = context
-            .workspace_root
-            .join("src/other/../cf/Documents/Shipment.xml");
-
-        let graph = analyze_fixture_graph(&context, &aliased);
-
-        assert_eq!(
-            graph.root.source_id,
-            SourceId::new("workspace:main").unwrap()
-        );
-        assert_eq!(
-            graph.root.object_key.as_str(),
-            "uuid:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
-        );
-        fs::remove_dir_all(&context.workspace_root).unwrap();
-    }
-
-    #[test]
-    fn support_locked_object_is_read_only_through_meta_adapter() {
-        let (context, object_path) = source_set_fixture(
-            "src",
-            document_source(
-                "<Attribute><Properties><Name>Number</Name></Properties></Attribute>",
-            ),
-        );
-        write_fixture_file(
-            &context
-                .workspace_root
-                .join("src/Ext/ParentConfigurations.bin"),
-            &locked_support_bin(
-                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-            ),
-        );
-
-        let graph = analyze_fixture_graph(&context, &object_path);
-
-        assert!(graph.nodes.iter().all(|node| {
-            node.capability_state.authorability == Authorability::SupportLocked
-                && only_inspect(node)
-        }));
-        assert!(graph.edges.iter().all(|edge| {
-            edge.capability_state.authorability == Authorability::SupportLocked
-                && edge
-                    .semantic_actions()
-                    .iter()
-                    .all(|action| action.action == SemanticActionKind::Inspect)
-        }));
-        fs::remove_dir_all(&context.workspace_root).unwrap();
-    }
-
-    #[test]
-    fn global_support_disable_is_configuration_read_only_through_meta_adapter() {
-        let (context, object_path) = source_set_fixture(
-            "src",
-            document_source(
-                "<Attribute><Properties><Name>Number</Name></Properties></Attribute>",
-            ),
-        );
-        write_fixture_file(
-            &context
-                .workspace_root
-                .join("src/Ext/ParentConfigurations.bin"),
-            &locked_support_bin(
-                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-            )
-            .replace("{6,0,", "{6,1,"),
-        );
-
-        let graph = analyze_fixture_graph(&context, &object_path);
-
-        assert!(graph.nodes.iter().all(|node| {
-            node.capability_state.authorability == Authorability::ConfigurationReadOnly
-                && only_inspect(node)
-        }));
-        assert!(graph.edges.iter().all(|edge| {
-            edge.capability_state.authorability == Authorability::ConfigurationReadOnly
-        }));
-        fs::remove_dir_all(&context.workspace_root).unwrap();
-    }
-
-    #[test]
-    fn configuration_lock_overrides_an_editable_object_through_meta_adapter() {
-        let (context, object_path) = source_set_fixture("src", document_source(""));
-        write_fixture_file(
-            &context
-                .workspace_root
-                .join("src/Ext/ParentConfigurations.bin"),
-            &locked_support_bin(
-                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-            )
-            .replace(
-                "0,0,bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-                "0,1,bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-            ),
-        );
-
-        let graph = analyze_fixture_graph(&context, &object_path);
-
-        assert!(graph.nodes.iter().all(|node| {
-            node.capability_state.authorability == Authorability::SupportLocked
-        }));
-        fs::remove_dir_all(&context.workspace_root).unwrap();
-    }
-
-    #[test]
-    fn registered_descriptor_support_controls_child_authorability() {
-        let (context, object_path) = source_set_fixture(
-            "src",
-            document_source("<Form>ItemForm</Form><Template>Print</Template>"),
-        );
-        write_fixture_file(
-            &context
-                .workspace_root
-                .join("src/Documents/Shipment/Forms/ItemForm.xml"),
-            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"><Form uuid=\"cccccccc-cccc-cccc-cccc-cccccccccccc\"><Properties><Name>ItemForm</Name></Properties></Form></MetaDataObject>",
-        );
-        write_fixture_file(
-            &context
-                .workspace_root
-                .join("src/Documents/Shipment/Forms/ItemForm/Ext/Form.xml"),
-            "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\"/>",
-        );
-        write_fixture_file(
-            &context
-                .workspace_root
-                .join("src/Documents/Shipment/Templates/Print.xml"),
-            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"><Template uuid=\"dddddddd-dddd-dddd-dddd-dddddddddddd\"><Properties><Name>Print</Name><TemplateType>SpreadsheetDocument</TemplateType></Properties></Template></MetaDataObject>",
-        );
-        write_fixture_file(
-            &context
-                .workspace_root
-                .join("src/Documents/Shipment/Templates/Print/Ext/Template.xml"),
-            "<SpreadsheetDocument xmlns=\"http://v8.1c.ru/spreadsheet/document\"/>",
-        );
-        write_fixture_file(
-            &context
-                .workspace_root
-                .join("src/Ext/ParentConfigurations.bin"),
-            &support_bin_with_locked_objects(&[
-                "cccccccc-cccc-cccc-cccc-cccccccccccc",
-                "dddddddd-dddd-dddd-dddd-dddddddddddd",
-            ]),
-        );
-
-        let graph = analyze_fixture_graph(&context, &object_path);
-
-        let root = graph
-            .nodes
-            .iter()
-            .find(|node| node.reference.display_name == "Shipment")
-            .unwrap();
-        assert_eq!(
-            root.capability_state.authorability,
-            Authorability::Authorable
-        );
-        for child_name in ["ItemForm", "Print"] {
-            let child = graph
-                .nodes
-                .iter()
-                .find(|node| node.reference.display_name == child_name)
-                .unwrap();
-            assert_eq!(
-                child.capability_state.authorability,
-                Authorability::SupportLocked
-            );
-            assert!(only_inspect(child));
-        }
-        fs::remove_dir_all(&context.workspace_root).unwrap();
-    }
-
-    #[test]
-    fn malformed_support_state_fails_closed_through_meta_adapter() {
-        let (context, object_path) = source_set_fixture(
-            "src",
-            document_source(
-                "<Attribute><Properties><Name>Number</Name></Properties></Attribute>",
-            ),
-        );
-        write_fixture_file(
-            &context
-                .workspace_root
-                .join("src/Ext/ParentConfigurations.bin"),
-            "this ParentConfigurations.bin is malformed and intentionally longer than 32 bytes",
-        );
-
-        let graph = analyze_fixture_graph(&context, &object_path);
-
-        assert!(graph.nodes.iter().all(|node| {
-            node.capability_state.authorability == Authorability::UnknownSupportState
-                && only_inspect(node)
-        }));
-        assert!(graph.edges.iter().all(|edge| {
-            edge.capability_state.authorability == Authorability::UnknownSupportState
-        }));
-        fs::remove_dir_all(&context.workspace_root).unwrap();
-    }
-
-    #[test]
-    fn ad_hoc_source_identity_is_opaque_stable_and_path_free() {
-        let (context, _) = source_set_fixture("src", document_source(""));
-        let first_path = context.workspace_root.join("scratch-one/Shipment.xml");
-        let second_path = context.workspace_root.join("scratch-two/Shipment.xml");
-        let first_xml = document_source("");
-        let second_xml = first_xml.replace(
-            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-            "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
-        );
-        write_fixture_file(&first_path, &first_xml);
-        write_fixture_file(&second_path, &second_xml);
-
-        let first = analyze_fixture_graph(&context, &first_path);
-        let second = analyze_fixture_graph(&context, &second_path);
-        let first_again = analyze_fixture_graph(&context, &first_path);
-
-        assert_ne!(first.root.source_id, second.root.source_id);
-        assert_eq!(first.root.source_id, first_again.root.source_id);
+    fn every_target_mode_is_path_free() {
+        let (context, path) = fixture("2.20", r#"<Attribute><Properties><Name>Code</Name></Properties></Attribute><Attribute><Properties><Name>Description</Name></Properties></Attribute>"#);
+        let first = inspect_meta_navigation(&json!({
+            "ObjectPath": path,
+            "select": {"relations": [{"role": "attributes", "pageSize": 1}]}
+        }).as_object().unwrap().clone(), &context).unwrap();
         let serialized = serde_json::to_string(&first).unwrap();
-        assert!(!serialized.contains(&first_path.display().to_string()));
-        assert!(!serialized.contains("scratch-one"));
-        fs::remove_dir_all(&context.workspace_root).unwrap();
+        assert!(!serialized.contains(&context.workspace_root.display().to_string()));
+        let root = first.root.clone().unwrap();
+        let snapshot = first.snapshot.clone().unwrap();
+        let by_ref = inspect_meta_navigation(&json!({
+            "objectRef": {"sourceId": root.source_id.as_str(), "objectKey": root.object_key.as_str()},
+            "snapshotRevision": serde_json::to_value(&snapshot.revision).unwrap(),
+        }).as_object().unwrap().clone(), &context).unwrap();
+        assert!(!serde_json::to_string(&by_ref).unwrap().contains(&context.workspace_root.display().to_string()));
+        let cursor = serde_json::to_value(first.relations[0].next_cursor.clone().unwrap()).unwrap();
+        let by_cursor = inspect_meta_navigation(&json!({"cursor": cursor}).as_object().unwrap().clone(), &context).unwrap();
+        assert!(!serde_json::to_string(&by_cursor).unwrap().contains(&context.workspace_root.display().to_string()));
+        std::fs::remove_dir_all(context.workspace_root).unwrap();
     }
 
-    fn analyze_fixture_graph(
-        context: &WorkspaceContext,
-        object_path: &Path,
-    ) -> NavigationGraph {
-        let args = json!({"objectPath": object_path})
-            .as_object()
-            .unwrap()
-            .clone();
-        let result = analyze_meta_info_with_navigation(&args, context);
-        assert!(result.outcome.ok, "{:?}", result.outcome.errors);
-        result.navigation.unwrap()
+    #[test]
+    fn tampered_cursor_is_structured_unavailable() {
+        let (context, path) = fixture("2.20", r#"<Attribute><Properties><Name>Code</Name></Properties></Attribute><Attribute><Properties><Name>Description</Name></Properties></Attribute>"#);
+        let first = inspect_meta_navigation(&json!({
+            "ObjectPath": path,
+            "select": {"relations": [{"role": "attributes", "pageSize": 1}]}
+        }).as_object().unwrap().clone(), &context).unwrap();
+        let mut cursor = serde_json::to_value(first.relations[0].next_cursor.clone().unwrap()).unwrap();
+        cursor["nextPosition"] = json!(99);
+        let result = inspect_meta_navigation(&json!({"cursor": cursor}).as_object().unwrap().clone(), &context).unwrap();
+        assert!(matches!(result.status, crate::domain::navigation::NavigationStatus::Unavailable));
+        assert_eq!(result.diagnostics[0].code, "decode_corrupted");
+        std::fs::remove_dir_all(context.workspace_root).unwrap();
     }
 
-    fn only_inspect(node: &NavigationNode) -> bool {
-        node.semantic_actions().len() == 1
-            && node.semantic_actions()[0].action == SemanticActionKind::Inspect
+    #[test]
+    fn relation_page_size_rejects_values_above_the_contract_bound() {
+        let error = parse_navigation_selection(Some(&json!({
+            "relations": [{"role": "attributes", "pageSize": 101}]
+        }))).unwrap_err();
+        assert_eq!(error.code(), "projection_ambiguous");
     }
 
-    fn source_set_fixture(
-        source_path: &str,
-        xml: String,
-    ) -> (WorkspaceContext, PathBuf) {
-        let root = std::env::temp_dir().join(format!(
-            "unica-meta-restored-contract-{}-{}",
-            std::process::id(),
-            NEXT_SOURCE_FIXTURE.fetch_add(1, Ordering::Relaxed),
-        ));
-        let object_path = root
-            .join(source_path)
-            .join("Documents/Shipment.xml");
-        write_fixture_file(&object_path, &xml);
-        write_fixture_file(
-            &root.join(source_path).join("Configuration.xml"),
-            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><Configuration uuid=\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\"><Properties><Name>Configuration</Name></Properties></Configuration></MetaDataObject>",
-        );
-        write_fixture_file(
-            &root.join("v8project.yaml"),
-            &format!(
-                "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: {source_path}\n"
-            ),
-        );
-        (
-            WorkspaceContext {
-                cwd: root.clone(),
-                workspace_root: root.clone(),
-                cache_root: root.join(".build/unica"),
-                workspace_epoch: 1,
-            },
-            object_path,
-        )
+    #[test]
+    fn meta_info_skill_describes_typed_navigation_only() {
+        let skill = include_str!("../../../../../plugins/unica/skills/meta-info/SKILL.md");
+        assert!(skill.contains("data.navigation"));
+        assert!(skill.contains("valueState"));
+        assert!(skill.contains("nextCursor"));
+        assert!(!skill.contains("stdout"));
+        for removed in ["`Mode`", "`Name`", "`Limit`", "`Offset`", "`OutFile`"] {
+            assert!(!skill.contains(removed), "{removed} must be removed");
+        }
     }
 
-    fn write_fixture_file(path: &Path, text: &str) {
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, text).unwrap();
-    }
-
-    fn document_source(children: &str) -> String {
-        format!(
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
-  <Document uuid="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb">
-    <Properties><Name>Shipment</Name></Properties>
-    <ChildObjects>{children}</ChildObjects>
-  </Document>
-</MetaDataObject>"#
-        )
-    }
-
-    fn locked_support_bin(config_uuid: &str, object_uuid: &str) -> String {
-        format!(
-            "\u{feff}{{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"VendorConf\",3,1,0,{config_uuid},{config_uuid},0,0,{object_uuid},{object_uuid},2,0,cccccccc-cccc-cccc-cccc-cccccccccccc,cccccccc-cccc-cccc-cccc-cccccccccccc}}"
-        )
-    }
-
-    fn support_bin_with_locked_objects(locked_objects: &[&str]) -> String {
-        let object_rules = locked_objects
-            .iter()
-            .map(|uuid| format!("0,0,{uuid},{uuid}"))
-            .collect::<Vec<_>>()
-            .join(",");
-        format!(
-            "\u{feff}{{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"VendorConf\",3,1,{object_rules}}}"
-        )
-    }
-
-    fn configuration_fixture(xml: &str) -> (WorkspaceContext, PathBuf) {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "unica-meta-native-configuration-{}-{nanos}",
-            std::process::id()
-        ));
-        let object_path = root.join("src/Configuration.xml");
-        fs::create_dir_all(object_path.parent().unwrap()).unwrap();
-        fs::write(&object_path, xml).unwrap();
-        fs::write(
-            root.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        (
-            WorkspaceContext {
-                cwd: root.clone(),
-                workspace_root: root.clone(),
-                cache_root: root.join(".build/unica"),
-                workspace_epoch: 1,
-            },
-            object_path,
-        )
-    }
-
-    fn fixture(xml: &str) -> (WorkspaceContext, PathBuf) {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "unica-meta-native-decoder-{}-{nanos}",
-            std::process::id()
-        ));
-        let object_path = root.join("src/Documents/Shipment.xml");
-        fs::create_dir_all(object_path.parent().unwrap()).unwrap();
-        fs::write(&object_path, xml).unwrap();
-        fs::write(
-            root.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        fs::write(
-            root.join("src/Configuration.xml"),
-            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><Configuration uuid=\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\"><Properties><Name>Configuration</Name></Properties></Configuration></MetaDataObject>",
-        )
-        .unwrap();
-        (
-            WorkspaceContext {
-                cwd: root.clone(),
-                workspace_root: root.clone(),
-                cache_root: root.join(".build/unica"),
-                workspace_epoch: 1,
-            },
-            object_path,
-        )
+    fn fixture(version: &str, children: &str) -> (WorkspaceContext, PathBuf) {
+        let root = std::env::temp_dir().join(format!("unica-meta-navigation-{}-{}", std::process::id(), NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)));
+        let src = root.join("src");
+        let path = src.join("Catalogs/Items.xml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(root.join("v8project.yaml"), "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n").unwrap();
+        std::fs::write(src.join("Configuration.xml"), format!(r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="{version}"><Configuration uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"><Properties><Name>Configuration</Name></Properties></Configuration></MetaDataObject>"#)).unwrap();
+        std::fs::write(&path, format!(r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="{version}"><Catalog uuid="11111111-1111-1111-1111-111111111111"><Properties><Name>Items</Name></Properties><ChildObjects>{children}</ChildObjects></Catalog></MetaDataObject>"#)).unwrap();
+        (WorkspaceContext { cwd: root.clone(), workspace_root: root.clone(), cache_root: root.join(".build/unica"), workspace_epoch: 1 }, path)
     }
 }

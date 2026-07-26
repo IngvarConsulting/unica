@@ -779,7 +779,11 @@ impl Serialize for NavigationGraph {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum NavigationStatus { Available, Unavailable }
+pub(crate) enum NavigationStatus {
+    #[serde(rename = "ready")]
+    Available,
+    Unavailable,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -798,7 +802,7 @@ impl From<SourceAdapterError> for SourceAdapterDiagnostic {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct NavigationRelationPage {
     pub(crate) relation: RelationRef,
-    pub(crate) nodes: Vec<NavigationNode>,
+    pub(crate) items: Vec<NavigationNode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) next_cursor: Option<NavigationCursor>,
 }
@@ -813,13 +817,15 @@ pub(crate) struct NavigationEnvelope {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) root: Option<ObjectRef>,
     pub(crate) nodes: Vec<NavigationNode>,
-    pub(crate) relations: Vec<SemanticRelation>,
+    pub(crate) relations: Vec<NavigationRelationPage>,
     pub(crate) diagnostics: Vec<SourceAdapterDiagnostic>,
+    #[serde(skip)]
+    pub(crate) relation_index: Vec<SemanticRelation>,
 }
 
 impl NavigationEnvelope {
     pub(crate) fn unavailable(error: SourceAdapterError) -> Self {
-        Self { schema_version: "1".to_string(), status: NavigationStatus::Unavailable, snapshot: None, root: None, nodes: Vec::new(), relations: Vec::new(), diagnostics: vec![error.into()] }
+        Self { schema_version: "1".to_string(), status: NavigationStatus::Unavailable, snapshot: None, root: None, nodes: Vec::new(), relations: Vec::new(), diagnostics: vec![error.into()], relation_index: Vec::new() }
     }
 
     pub(crate) fn node_named(&self, kind: NodeKind, name: &str) -> Option<&NavigationNode> {
@@ -829,7 +835,7 @@ impl NavigationEnvelope {
     }
 
     pub(crate) fn owning_relation(&self, object: &ObjectRef) -> Option<&SemanticRelation> {
-        self.relations.iter().find(|relation| {
+        self.relation_index.iter().find(|relation| {
             matches!(relation.kind, RelationKind::Contains) && relation.target == *object
         })
     }
@@ -1056,7 +1062,9 @@ pub(crate) struct NavigationCursor {
     pub(crate) snapshot_revision: SourceRevision,
     pub(crate) target: ObjectKey,
     pub(crate) relation: RelationKey,
+    pub(crate) selection: NavigationSelection,
     pub(crate) selection_hash: String,
+    pub(crate) integrity_hash: String,
     pub(crate) next_position: u64,
 }
 
@@ -1074,13 +1082,24 @@ impl NavigationCursor {
         if source_id != relation.source_id {
             return Err(SourceAdapterError::new(SourceAdapterErrorKind::SourceUnavailable, "navigation cursor relation belongs to another source"));
         }
+        let selection_hash = normalized_selection_hash(&selection)?;
+        let integrity_hash = cursor_integrity_hash(
+            &source_id,
+            &snapshot_revision,
+            &target,
+            &relation.relation_key,
+            &selection_hash,
+            next_position,
+        )?;
         Ok(Self {
             schema_version: Self::SCHEMA_VERSION,
             source_id,
             snapshot_revision,
             target,
             relation: relation.relation_key,
-            selection_hash: normalized_selection_hash(&selection)?,
+            selection_hash,
+            integrity_hash,
+            selection,
             next_position,
         })
     }
@@ -1130,13 +1149,41 @@ impl NavigationCursor {
             SourceAdapterErrorKind::DecodeCorrupted,
             "navigation cursor has no valid nextPosition",
         ))?;
-        let cursor = Self { schema_version: Self::SCHEMA_VERSION, source_id, snapshot_revision, target, relation, selection_hash, next_position };
+        let integrity_hash = string("integrityHash")?.to_string();
+        let cursor = Self { schema_version: Self::SCHEMA_VERSION, source_id, snapshot_revision, target, relation, selection: expected_selection.clone(), selection_hash, integrity_hash, next_position };
+        if cursor.integrity_hash != cursor_integrity_hash(
+            &cursor.source_id,
+            &cursor.snapshot_revision,
+            &cursor.target,
+            &cursor.relation,
+            &cursor.selection_hash,
+            cursor.next_position,
+        )? {
+            return Err(SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor integrityHash is invalid"));
+        }
         cursor.resume(current_revision)?;
         if !re_resolve(&cursor.source_id, &cursor.target, &cursor.relation) {
             return Err(SourceAdapterError::new(SourceAdapterErrorKind::SourceUnavailable, "navigation cursor target or relation cannot be re-resolved"));
         }
         Ok(cursor)
     }
+}
+
+fn cursor_integrity_hash(
+    source_id: &SourceId,
+    snapshot_revision: &SourceRevision,
+    target: &ObjectKey,
+    relation: &RelationKey,
+    selection_hash: &str,
+    next_position: u64,
+) -> Result<String, SourceAdapterError> {
+    let canonical = serde_json::to_vec(&(source_id, snapshot_revision, target, relation, selection_hash, next_position)).map_err(|error| {
+        SourceAdapterError::new(SourceAdapterErrorKind::ProjectionAmbiguous, format!("cannot serialize navigation cursor: {error}"))
+    })?;
+    let mut digest = Sha256::new();
+    digest.update(b"unica.navigation.cursor.v1\0");
+    digest.update(canonical);
+    Ok(format!("sha256:{:x}", digest.finalize()))
 }
 
 fn normalized_selection_hash(selection: &NavigationSelection) -> Result<String, SourceAdapterError> {

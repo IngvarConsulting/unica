@@ -159,9 +159,9 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
     ),
     descriptor(
         "meta-info",
-        OBJECT_PATH_REQUIRED,
-        OUT_FILE,
-        OBJECT_PATH,
+        EMPTY,
+        EMPTY,
+        EMPTY,
         None,
     ),
     descriptor(

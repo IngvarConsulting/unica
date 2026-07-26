@@ -16,14 +16,11 @@ impl NativeOperationAdapter {
         dry_run: bool,
         mutating: bool,
     ) -> Result<NativeOperationResult, String> {
-        if !mutating && !dry_run && operation == "meta-info" {
-            let execution = meta::analyze_meta_info_with_navigation(args, context);
-            let data = execution
-                .navigation
-                .map(|navigation| json!({ "navigation": navigation }));
+        if !mutating && operation == "meta-info" {
+            let navigation = meta::inspect_meta_navigation(args, context)?;
             return Ok(NativeOperationResult {
-                adapter: execution.outcome,
-                data,
+                adapter: AdapterOutcome::ok("semantic metadata navigation inspected"),
+                data: Some(json!({ "navigation": navigation })),
             });
         }
 

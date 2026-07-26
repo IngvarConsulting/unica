@@ -231,6 +231,13 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
 ];
 
 const EXTERNAL_INIT_ARGS: &[&str] = &["FormName", "Name", "OutputDir", "Synonym"];
+const META_INFO_ARGS: &[&str] = &[
+    "ObjectPath",
+    "objectRef",
+    "snapshotRevision",
+    "select",
+    "cursor",
+];
 
 const BUILD_ARGS: &[&str] = &[
     "config",
@@ -583,6 +590,19 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
             {"required": ["definition"]}
         ]);
     }
+    if tool.name == "unica.meta.info" {
+        schema["oneOf"] = json!([
+            {"required": ["ObjectPath"], "not": {"anyOf": [
+                {"required": ["objectRef"]}, {"required": ["snapshotRevision"]}, {"required": ["cursor"]}
+            ]}},
+            {"required": ["objectRef", "snapshotRevision"], "not": {"anyOf": [
+                {"required": ["ObjectPath"]}, {"required": ["cursor"]}
+            ]}},
+            {"required": ["cursor"], "not": {"anyOf": [
+                {"required": ["ObjectPath"]}, {"required": ["objectRef"]}, {"required": ["snapshotRevision"]}
+            ]}}
+        ]);
+    }
     schema
 }
 
@@ -617,6 +637,7 @@ pub fn validate_tool_arguments(
     validate_template_add_arguments(tool, args)?;
     validate_support_arguments(tool, args, dry_run)?;
     validate_external_init_arguments(tool, args)?;
+    validate_meta_info_arguments(tool, args)?;
 
     if !dry_run || is_external_init_tool(tool) {
         for required in required_args(&tool) {
@@ -626,6 +647,23 @@ pub fn validate_tool_arguments(
         }
     }
 
+    Ok(())
+}
+
+fn validate_meta_info_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Result<(), String> {
+    if tool.name != "unica.meta.info" {
+        return Ok(());
+    }
+    let object_path = args.contains_key("ObjectPath");
+    let object_ref = args.contains_key("objectRef");
+    let revision = args.contains_key("snapshotRevision");
+    let cursor = args.contains_key("cursor");
+    let valid = (object_path && !object_ref && !revision && !cursor)
+        || (!object_path && object_ref && revision && !cursor)
+        || (!object_path && !object_ref && !revision && cursor);
+    if !valid {
+        return Err("unica.meta.info requires exactly one target mode: ObjectPath, objectRef + snapshotRevision, or cursor".to_string());
+    }
     Ok(())
 }
 
@@ -1307,6 +1345,7 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
 fn native_args_for(operation: &str) -> &'static [&'static str] {
     match operation {
         "epf-init" | "erf-init" => EXTERNAL_INIT_ARGS,
+        "meta-info" => META_INFO_ARGS,
         _ => NATIVE_XML_DSL_ARGS,
     }
 }
@@ -1487,6 +1526,13 @@ fn property_schema(name: &str) -> Value {
 }
 
 fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
+    if tool.name == "unica.meta.info" {
+        return match name {
+            "ObjectPath" | "snapshotRevision" => json!({ "type": "string", "minLength": 1 }),
+            "objectRef" | "select" | "cursor" => json!({ "type": "object" }),
+            _ => property_schema(name),
+        };
+    }
     if tool.name == "unica.code.patch" {
         return match name {
             "operation" => json!({ "type": "string", "enum": ["insert"] }),

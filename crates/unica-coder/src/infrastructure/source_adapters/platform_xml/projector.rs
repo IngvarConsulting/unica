@@ -231,8 +231,9 @@ impl<'a> GraphBuilder<'a> {
             snapshot: Some(self.native.source.clone()),
             root: Some(root),
             nodes: self.nodes,
-            relations: self.relations,
+            relations: Vec::new(),
             diagnostics: Vec::new(),
+            relation_index: self.relations,
         })
     }
 }
