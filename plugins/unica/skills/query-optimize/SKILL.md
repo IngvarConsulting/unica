@@ -19,7 +19,7 @@ description: "Оптимизация запросов 1С и СКД. Испол�
 4. Run `unica.code.diagnostics` with `mode=file` when analyzer diagnostics can reveal unreachable code, unresolved calls, or type issues around the query.
 5. Inspect metadata with `unica.meta.profile` when the query is tied to an exact object and you need object modules, subscriptions, roles, functional options, or predefined items. Use `unica.meta.info` for XML-level registers, dimensions, resources, реквизиты, tabular sections, and indexes implied by the platform object type.
 6. Inspect DCS with `unica.dcs.info` when the query lives in a data composition schema.
-7. Search standards with `unica.standards.search` for platform-specific query rules before making a risky rewrite.
+7. Search `unica.standards.search` only for `development-standard` query rules. Exact platform query semantics require a `platform-help` source; if public MCP `unica` does not expose one, report the contract gap before making a platform-dependent rewrite.
 8. Read `references/platform/db-performance.md` when performance depends on DBMS behavior, locks, indexes, temp storage, WAL, TEMPDB, or large table statistics.
 9. Optimize one cause at a time: filters before joins, virtual table parameters, temporary table materialization, repeated queries in loops, dot dereference expansion, unbounded selections, and unnecessary totals.
 10. Verify syntax with `unica.runtime.execute` and ask for real trace/log evidence when performance depends on data volume.

@@ -62,9 +62,12 @@ methods behave as they did in an older release.
 6. When environments or candidate modes differ, present the result as a
    matrix.
 
-Use `unica.standards.search` and `unica.standards.explain` for the platform
-contract. Inspect project metadata and code through the relevant public
-`unica.*` tools.
+`unica.standards.search` and `unica.standards.explain` cover development
+standards, not the platform contract. An exact compatibility boundary requires
+a `platform-help` source for the target version. Until public MCP `unica`
+exposes that source, report a `platform-help contract gap` instead of
+substituting a standards result. Inspect project metadata and code through the
+relevant public `unica.*` tools.
 
 BSP code is corroborating implementation evidence: it can show how a carefully
 maintained library resolves platform and compatibility versions in practice.

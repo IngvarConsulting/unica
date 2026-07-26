@@ -42,7 +42,7 @@ When comments disable diagnostics over a line or range, treat the exact marker a
 - Extract literal codes or ids from the comment: АПК, EDT, BSL LS, analyzer rule names, numeric or mnemonic ids.
 - Use `unica.standards.explain` with all extracted codes. If v8std does not resolve a code, search with `unica.standards.search` using the code plus nearby diagnostic text.
 - Explain why the отключение exists only when the code, surrounding range, and standard support the reason. If the reason is absent, say that the suppression is not justified in the source.
-- Prefer narrowing the disabled range or fixing the code. Keep suppression only when the standard or platform limitation makes the diagnostic intentionally false-positive.
+- Prefer narrowing the disabled range or fixing the code. Keep suppression only when `development-standard` evidence, a verified `platform-help` source, or a runtime reproduction proves the diagnostic intentionally false-positive. Do not infer a platform limitation from `unica.standards.*`.
 
 ## MCP examples
 
