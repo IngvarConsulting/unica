@@ -4017,81 +4017,528 @@ fn serialized_bytes_with_limit<T: Serialize>(
     Ok(writer.bytes)
 }
 
+#[derive(Default)]
+struct NavigationValidationStats {
+    max_active_depth: usize,
+}
+
+impl NavigationValidationStats {
+    fn observe(&mut self, depth: usize) -> Result<(), SourceAdapterError> {
+        let active_depth = depth
+            .checked_add(1)
+            .ok_or_else(|| resource_limit("navigation validation depth cannot be represented"))?;
+        self.max_active_depth = self.max_active_depth.max(active_depth);
+        Ok(())
+    }
+}
+
 fn validate_navigation_cache_payload(
     navigation: &crate::domain::navigation::NavigationEnvelope,
     limits: SnapshotCacheLimits,
 ) -> Result<(), SourceAdapterError> {
-    if navigation.nodes.len() > limits.max_nodes {
+    let page_item_count = navigation
+        .relations
+        .iter()
+        .try_fold(0usize, |count, page| {
+            count.checked_add(page.items.len()).ok_or_else(|| {
+                resource_limit("navigation relation pages have too many nodes for continuation")
+            })
+        })?;
+    let node_count = navigation
+        .nodes
+        .len()
+        .checked_add(page_item_count)
+        .ok_or_else(|| resource_limit("navigation node count cannot be represented"))?;
+    if node_count > limits.max_nodes {
         return Err(resource_limit(
             "navigation snapshot has too many nodes for continuation",
         ));
     }
-    if navigation.relation_index.len() > limits.max_relations {
+    let relation_count = navigation
+        .relation_index
+        .len()
+        .checked_add(navigation.relations.len())
+        .ok_or_else(|| resource_limit("navigation relation count cannot be represented"))?;
+    if relation_count > limits.max_relations {
         return Err(resource_limit(
             "navigation snapshot has too many relations for continuation",
         ));
     }
+
+    let mut stats = NavigationValidationStats::default();
     validate_semantic_string(&navigation.schema_version, limits.max_semantic_string_bytes)?;
+    validate_navigation_status(navigation.status)?;
     if let Some(snapshot) = &navigation.snapshot {
-        validate_source_snapshot_strings(snapshot, limits.max_semantic_string_bytes)?;
+        validate_source_snapshot(snapshot, limits.max_semantic_string_bytes)?;
     }
     if let Some(root) = &navigation.root {
-        validate_object_ref_strings(root, limits.max_semantic_string_bytes)?;
+        validate_object_ref(root, limits.max_semantic_string_bytes)?;
     }
     for node in &navigation.nodes {
-        if node.properties.len() > limits.max_properties_per_node {
-            return Err(resource_limit(
-                "navigation node has too many properties for continuation",
-            ));
-        }
-        validate_object_ref_strings(&node.object_ref, limits.max_semantic_string_bytes)?;
-        validate_object_ref_strings(&node.reference, limits.max_semantic_string_bytes)?;
-        for (name, property) in &node.properties {
-            validate_semantic_string(name, limits.max_semantic_string_bytes)?;
-            validate_property_type_strings(&property.value_type, limits.max_semantic_string_bytes)?;
-            if let Some(value) = &property.value {
-                validate_property_value(value, limits, 0)?;
-            }
-            serialized_bytes_with_limit(property, limits.max_property_bytes)?;
-            if let Some(value) = &property.value {
-                serialized_bytes_with_limit(value, limits.max_property_value_bytes)?;
-            }
-        }
+        validate_navigation_node(node, limits, &mut stats)?;
+    }
+    for page in &navigation.relations {
+        validate_navigation_relation_page(page, limits, &mut stats)?;
     }
     for relation in &navigation.relation_index {
-        validate_semantic_relation_strings(relation, limits.max_semantic_string_bytes)?;
+        validate_semantic_relation(relation, limits.max_semantic_string_bytes)?;
     }
     for diagnostic in &navigation.diagnostics {
-        validate_semantic_string(&diagnostic.code, limits.max_semantic_string_bytes)?;
-        validate_semantic_string(&diagnostic.message, limits.max_semantic_string_bytes)?;
+        validate_source_adapter_diagnostic(diagnostic, limits)?;
     }
     Ok(())
 }
 
-fn validate_object_ref_strings(
-    reference: &ObjectRef,
-    limit: usize,
-) -> Result<(), SourceAdapterError> {
-    validate_semantic_string(reference.source_id.as_str(), limit)?;
-    validate_semantic_string(reference.object_key.as_str(), limit)?;
-    validate_semantic_string(&reference.display_name, limit)
+#[cfg(test)]
+fn property_value_validation_max_active_depth(
+    value: &crate::domain::navigation::PropertyValue,
+    limits: SnapshotCacheLimits,
+) -> Result<usize, SourceAdapterError> {
+    let mut stats = NavigationValidationStats::default();
+    validate_property_value(value, limits, 0, &mut stats)?;
+    Ok(stats.max_active_depth)
 }
 
-fn validate_source_snapshot_strings(
+fn validate_navigation_node(
+    node: &NavigationNode,
+    limits: SnapshotCacheLimits,
+    stats: &mut NavigationValidationStats,
+) -> Result<(), SourceAdapterError> {
+    if node.properties.len() > limits.max_properties_per_node {
+        return Err(resource_limit(
+            "navigation node has too many properties for continuation",
+        ));
+    }
+    validate_object_ref(&node.object_ref, limits.max_semantic_string_bytes)?;
+    validate_object_ref(&node.reference, limits.max_semantic_string_bytes)?;
+    validate_capability_state(node.capability_state)?;
+    validate_capability_vector(&node.capability)?;
+    validate_action_profile(node.action_profile)?;
+    validate_navigation_facet_visibility(node.facet_visibility)?;
+    for (name, property) in &node.properties {
+        validate_semantic_string(name, limits.max_semantic_string_bytes)?;
+        validate_semantic_property(property, limits, stats)?;
+    }
+    for descriptor in &node.semantic_actions {
+        validate_semantic_action_descriptor(descriptor)?;
+    }
+    for action in &node.actions {
+        validate_semantic_action(action, limits.max_semantic_string_bytes)?;
+    }
+    Ok(())
+}
+
+fn validate_semantic_property(
+    property: &crate::domain::navigation::SemanticProperty,
+    limits: SnapshotCacheLimits,
+    stats: &mut NavigationValidationStats,
+) -> Result<(), SourceAdapterError> {
+    validate_property_type(&property.value_type, limits.max_semantic_string_bytes)?;
+    validate_property_value_state(property.value_state)?;
+    validate_property_provenance(property.provenance)?;
+    validate_property_capability(property.capability)?;
+    if let Some(value) = &property.value {
+        validate_property_value(value, limits, 0, stats)?;
+    }
+    serialized_bytes_with_limit(property, limits.max_property_bytes)?;
+    if let Some(value) = &property.value {
+        serialized_bytes_with_limit(value, limits.max_property_value_bytes)?;
+    }
+    Ok(())
+}
+
+fn validate_navigation_relation_page(
+    page: &crate::domain::navigation::NavigationRelationPage,
+    limits: SnapshotCacheLimits,
+    stats: &mut NavigationValidationStats,
+) -> Result<(), SourceAdapterError> {
+    validate_relation_group_ref(&page.relation, limits.max_semantic_string_bytes)?;
+    for item in &page.items {
+        validate_navigation_node(item, limits, stats)?;
+    }
+    if let Some(cursor) = &page.next_cursor {
+        validate_navigation_cursor(cursor, limits.max_semantic_string_bytes)?;
+    }
+    Ok(())
+}
+
+fn validate_navigation_cursor(
+    cursor: &crate::domain::navigation::NavigationCursor,
+    limit: usize,
+) -> Result<(), SourceAdapterError> {
+    validate_semantic_string(cursor.source_id.as_str(), limit)?;
+    validate_semantic_string(cursor.snapshot_revision.as_str(), limit)?;
+    validate_semantic_string(cursor.target.as_str(), limit)?;
+    validate_semantic_string(cursor.relation.as_str(), limit)?;
+    validate_relation_role(cursor.relation_role)?;
+    validate_relation_kind(cursor.relation_kind)?;
+    validate_navigation_selection(&cursor.selection, limit)?;
+    validate_semantic_string(&cursor.selection_hash, limit)?;
+    validate_semantic_string(&cursor.auth_tag, limit)?;
+    let _ = cursor.schema_version;
+    let _ = cursor.next_position;
+    Ok(())
+}
+
+fn validate_navigation_selection(
+    selection: &crate::domain::navigation::NavigationSelection,
+    limit: usize,
+) -> Result<(), SourceAdapterError> {
+    match &selection.properties {
+        crate::domain::navigation::PropertySelection::All => {}
+        crate::domain::navigation::PropertySelection::Named(names) => {
+            for name in names {
+                validate_semantic_string(name, limit)?;
+            }
+        }
+    }
+    match selection.facets {
+        crate::domain::navigation::FacetSelection::None
+        | crate::domain::navigation::FacetSelection::Summary
+        | crate::domain::navigation::FacetSelection::Full => {}
+    }
+    for relation in &selection.relations {
+        validate_relation_kind(relation.kind)?;
+        validate_relation_role(relation.role)?;
+        let _ = relation.page_size;
+    }
+    Ok(())
+}
+
+fn validate_source_adapter_diagnostic(
+    diagnostic: &crate::domain::navigation::SourceAdapterDiagnostic,
+    limits: SnapshotCacheLimits,
+) -> Result<(), SourceAdapterError> {
+    validate_semantic_string(&diagnostic.code, limits.max_semantic_string_bytes)?;
+    validate_semantic_string(&diagnostic.message, limits.max_semantic_string_bytes)?;
+    if let Some(details) = &diagnostic.details {
+        validate_json_value(details, limits, 0)?;
+    }
+    Ok(())
+}
+
+fn validate_json_value(
+    value: &serde_json::Value,
+    limits: SnapshotCacheLimits,
+    depth: usize,
+) -> Result<(), SourceAdapterError> {
+    match value {
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
+        serde_json::Value::String(value) => {
+            validate_semantic_string(value, limits.max_semantic_string_bytes)?;
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                validate_json_value_child(value, limits, depth)?;
+            }
+        }
+        serde_json::Value::Object(values) => {
+            for (name, value) in values {
+                validate_semantic_string(name, limits.max_semantic_string_bytes)?;
+                validate_json_value_child(value, limits, depth)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_json_value_child(
+    value: &serde_json::Value,
+    limits: SnapshotCacheLimits,
+    parent_depth: usize,
+) -> Result<(), SourceAdapterError> {
+    let depth = validation_child_depth(parent_depth, limits)?;
+    validate_json_value(value, limits, depth)
+}
+
+fn validate_source_snapshot(
     snapshot: &crate::domain::source_adapters::SourceSnapshot,
     limit: usize,
 ) -> Result<(), SourceAdapterError> {
     validate_semantic_string(snapshot.source_id.as_str(), limit)?;
     validate_semantic_string(snapshot.revision.as_str(), limit)?;
-    validate_semantic_string(&snapshot.adapter_id, limit)
+    validate_semantic_string(&snapshot.adapter_id, limit)?;
+    match snapshot.consistency {
+        crate::domain::source_adapters::SnapshotConsistency::Consistent
+        | crate::domain::source_adapters::SnapshotConsistency::Partial
+        | crate::domain::source_adapters::SnapshotConsistency::Changed
+        | crate::domain::source_adapters::SnapshotConsistency::Unverifiable => {}
+    }
+    Ok(())
 }
 
-fn validate_property_type_strings(
+fn validate_object_ref(reference: &ObjectRef, limit: usize) -> Result<(), SourceAdapterError> {
+    validate_semantic_string(reference.source_id.as_str(), limit)?;
+    validate_semantic_string(reference.object_key.as_str(), limit)?;
+    validate_node_kind(&reference.kind, limit)?;
+    validate_semantic_string(&reference.display_name, limit)?;
+    match reference.identity_strength {
+        crate::domain::navigation::IdentityStrength::Persistent
+        | crate::domain::navigation::IdentityStrength::Derived
+        | crate::domain::navigation::IdentityStrength::SnapshotOnly => {}
+    }
+    Ok(())
+}
+
+fn validate_node_kind(
+    kind: &crate::domain::navigation::NodeKind,
+    limit: usize,
+) -> Result<(), SourceAdapterError> {
+    match kind {
+        crate::domain::navigation::NodeKind::MetadataObject { metadata_type } => {
+            validate_semantic_string(metadata_type, limit)?;
+        }
+        crate::domain::navigation::NodeKind::Template { template_type } => {
+            if let Some(template_type) = template_type {
+                validate_semantic_string(template_type, limit)?;
+            }
+        }
+        crate::domain::navigation::NodeKind::SourceRoot
+        | crate::domain::navigation::NodeKind::Document
+        | crate::domain::navigation::NodeKind::Attribute
+        | crate::domain::navigation::NodeKind::TabularSection
+        | crate::domain::navigation::NodeKind::Command
+        | crate::domain::navigation::NodeKind::Form
+        | crate::domain::navigation::NodeKind::FormAttribute
+        | crate::domain::navigation::NodeKind::FormCommand
+        | crate::domain::navigation::NodeKind::FormElement => {}
+    }
+    Ok(())
+}
+
+fn validate_capability_state(
+    state: crate::domain::navigation::CapabilityState,
+) -> Result<(), SourceAdapterError> {
+    match state.resolution_state {
+        crate::domain::navigation::ResolutionState::Resolved
+        | crate::domain::navigation::ResolutionState::Unresolved => {}
+    }
+    validate_authorability(state.authorability)
+}
+
+fn validate_capability_vector(
+    capability: &crate::domain::navigation::CapabilityVector,
+) -> Result<(), SourceAdapterError> {
+    match capability.resolution {
+        crate::domain::navigation::ResolutionState::Resolved
+        | crate::domain::navigation::ResolutionState::Unresolved => {}
+    }
+    match capability.identity {
+        crate::domain::navigation::IdentityStrength::Persistent
+        | crate::domain::navigation::IdentityStrength::Derived
+        | crate::domain::navigation::IdentityStrength::SnapshotOnly => {}
+    }
+    match capability.consistency {
+        crate::domain::source_adapters::SnapshotConsistency::Consistent
+        | crate::domain::source_adapters::SnapshotConsistency::Partial
+        | crate::domain::source_adapters::SnapshotConsistency::Changed
+        | crate::domain::source_adapters::SnapshotConsistency::Unverifiable => {}
+    }
+    match capability.coverage {
+        crate::domain::navigation::CoverageState::Complete
+        | crate::domain::navigation::CoverageState::Partial
+        | crate::domain::navigation::CoverageState::Unknown => {}
+    }
+    match capability.format {
+        crate::domain::navigation::FormatCompatibility::Compatible
+        | crate::domain::navigation::FormatCompatibility::Incompatible
+        | crate::domain::navigation::FormatCompatibility::Unknown => {}
+    }
+    match capability.source_access {
+        crate::domain::source_adapters::SourceAccess::ReadOnly
+        | crate::domain::source_adapters::SourceAccess::ReadWrite => {}
+    }
+    validate_authorability(capability.authorability)
+}
+
+fn validate_authorability(
+    authorability: crate::domain::navigation::Authorability,
+) -> Result<(), SourceAdapterError> {
+    match authorability {
+        crate::domain::navigation::Authorability::Authorable
+        | crate::domain::navigation::Authorability::SupportLocked
+        | crate::domain::navigation::Authorability::ConfigurationReadOnly
+        | crate::domain::navigation::Authorability::UnknownSupportState
+        | crate::domain::navigation::Authorability::UnknownReadOnly
+        | crate::domain::navigation::Authorability::DerivedReadOnly => {}
+    }
+    Ok(())
+}
+
+fn validate_action_profile(
+    profile: crate::domain::navigation::ActionProfile,
+) -> Result<(), SourceAdapterError> {
+    match profile {
+        crate::domain::navigation::ActionProfile::DocumentMetadataObject
+        | crate::domain::navigation::ActionProfile::GenericMetadataObject
+        | crate::domain::navigation::ActionProfile::Form
+        | crate::domain::navigation::ActionProfile::FormElement
+        | crate::domain::navigation::ActionProfile::TabularSection
+        | crate::domain::navigation::ActionProfile::MxlTemplate
+        | crate::domain::navigation::ActionProfile::UnmodeledTemplate
+        | crate::domain::navigation::ActionProfile::UnmodeledChild => {}
+    }
+    Ok(())
+}
+
+fn validate_navigation_facet_visibility(
+    visibility: crate::domain::navigation::NavigationFacetVisibility,
+) -> Result<(), SourceAdapterError> {
+    match visibility {
+        crate::domain::navigation::NavigationFacetVisibility::Full
+        | crate::domain::navigation::NavigationFacetVisibility::Summary
+        | crate::domain::navigation::NavigationFacetVisibility::None => {}
+    }
+    Ok(())
+}
+
+fn validate_semantic_action_descriptor(
+    descriptor: &crate::domain::navigation::SemanticActionDescriptor,
+) -> Result<(), SourceAdapterError> {
+    validate_semantic_action_kind(descriptor.action)?;
+    match descriptor.execution_policy {
+        crate::domain::navigation::ActionExecutionPolicy::ReadOnly
+        | crate::domain::navigation::ActionExecutionPolicy::AtomicNodeMutation
+        | crate::domain::navigation::ActionExecutionPolicy::AtomicRelationMutation => {}
+    }
+    Ok(())
+}
+
+fn validate_semantic_action(
+    action: &crate::domain::navigation::SemanticAction,
+    limit: usize,
+) -> Result<(), SourceAdapterError> {
+    validate_semantic_action_kind(action.kind)?;
+    if let Some(target) = &action.target {
+        validate_object_ref(target, limit)?;
+    }
+    if let Some(owning_relation) = &action.owning_relation {
+        validate_relation_ref(owning_relation, limit)?;
+    }
+    match action.availability {
+        crate::domain::navigation::ActionAvailability::Modeled
+        | crate::domain::navigation::ActionAvailability::Executable
+        | crate::domain::navigation::ActionAvailability::Blocked => {}
+    }
+    for reason in &action.blocking_reasons {
+        match reason {
+            crate::domain::navigation::CapabilityBlockReason::ResolutionUnresolved
+            | crate::domain::navigation::CapabilityBlockReason::IdentitySnapshotOnly
+            | crate::domain::navigation::CapabilityBlockReason::SnapshotInconsistent
+            | crate::domain::navigation::CapabilityBlockReason::CoverageIncomplete
+            | crate::domain::navigation::CapabilityBlockReason::FormatIncompatible
+            | crate::domain::navigation::CapabilityBlockReason::SourceReadOnly
+            | crate::domain::navigation::CapabilityBlockReason::NotAuthorable
+            | crate::domain::navigation::CapabilityBlockReason::OwningRelationMissing
+            | crate::domain::navigation::CapabilityBlockReason::OperationBindingInvalid => {}
+        }
+    }
+    if let Some(binding) = &action.operation_binding {
+        validate_semantic_string(&binding.tool, limit)?;
+        validate_semantic_string(&binding.schema_version, limit)?;
+    }
+    match action.atomicity {
+        crate::domain::navigation::Atomicity::SingleFileAtomicReplace
+        | crate::domain::navigation::Atomicity::AggregateSwapWithRecovery
+        | crate::domain::navigation::Atomicity::BackendTransaction
+        | crate::domain::navigation::Atomicity::ReadOnly => {}
+    }
+    Ok(())
+}
+
+fn validate_semantic_action_kind(
+    kind: crate::domain::navigation::SemanticActionKind,
+) -> Result<(), SourceAdapterError> {
+    match kind {
+        crate::domain::navigation::SemanticActionKind::Inspect
+        | crate::domain::navigation::SemanticActionKind::EditProperties
+        | crate::domain::navigation::SemanticActionKind::Clone
+        | crate::domain::navigation::SemanticActionKind::Remove
+        | crate::domain::navigation::SemanticActionKind::AddAttribute
+        | crate::domain::navigation::SemanticActionKind::AddTabularSection
+        | crate::domain::navigation::SemanticActionKind::AddForm
+        | crate::domain::navigation::SemanticActionKind::AddMxl
+        | crate::domain::navigation::SemanticActionKind::AddCommand
+        | crate::domain::navigation::SemanticActionKind::AddFormAttribute
+        | crate::domain::navigation::SemanticActionKind::AddFormCommand
+        | crate::domain::navigation::SemanticActionKind::AddFormElement
+        | crate::domain::navigation::SemanticActionKind::Move
+        | crate::domain::navigation::SemanticActionKind::BindData
+        | crate::domain::navigation::SemanticActionKind::RebindData
+        | crate::domain::navigation::SemanticActionKind::UnbindData
+        | crate::domain::navigation::SemanticActionKind::BindCommand
+        | crate::domain::navigation::SemanticActionKind::RebindCommand
+        | crate::domain::navigation::SemanticActionKind::UnbindCommand
+        | crate::domain::navigation::SemanticActionKind::CreateHandler
+        | crate::domain::navigation::SemanticActionKind::EditMxl => {}
+    }
+    Ok(())
+}
+
+fn validate_property_type(
     value_type: &crate::domain::navigation::PropertyType,
     limit: usize,
 ) -> Result<(), SourceAdapterError> {
-    if let crate::domain::navigation::PropertyType::Enum { enum_type } = value_type {
-        validate_semantic_string(enum_type, limit)?;
+    match value_type {
+        crate::domain::navigation::PropertyType::Enum { enum_type } => {
+            validate_semantic_string(enum_type, limit)?;
+        }
+        crate::domain::navigation::PropertyType::Boolean
+        | crate::domain::navigation::PropertyType::Integer
+        | crate::domain::navigation::PropertyType::Decimal
+        | crate::domain::navigation::PropertyType::String
+        | crate::domain::navigation::PropertyType::LocalizedString
+        | crate::domain::navigation::PropertyType::Uuid
+        | crate::domain::navigation::PropertyType::Date
+        | crate::domain::navigation::PropertyType::TypeSet
+        | crate::domain::navigation::PropertyType::ObjectRef
+        | crate::domain::navigation::PropertyType::List
+        | crate::domain::navigation::PropertyType::Structure
+        | crate::domain::navigation::PropertyType::Null
+        | crate::domain::navigation::PropertyType::Unknown => {}
+    }
+    Ok(())
+}
+
+fn validate_property_value_state(
+    state: crate::domain::navigation::PropertyValueState,
+) -> Result<(), SourceAdapterError> {
+    match state {
+        crate::domain::navigation::PropertyValueState::Explicit
+        | crate::domain::navigation::PropertyValueState::Defaulted
+        | crate::domain::navigation::PropertyValueState::Inherited
+        | crate::domain::navigation::PropertyValueState::Computed
+        | crate::domain::navigation::PropertyValueState::Absent
+        | crate::domain::navigation::PropertyValueState::Unresolved => {}
+    }
+    Ok(())
+}
+
+fn validate_property_provenance(
+    provenance: crate::domain::navigation::PropertyProvenance,
+) -> Result<(), SourceAdapterError> {
+    match provenance {
+        crate::domain::navigation::PropertyProvenance::ProjectorDefault { profile } => {
+            match profile {
+                crate::domain::navigation::ProjectorProfile::PlatformXmlV1
+                | crate::domain::navigation::ProjectorProfile::EdtV1 => {}
+            }
+        }
+        crate::domain::navigation::PropertyProvenance::Descriptor
+        | crate::domain::navigation::PropertyProvenance::Inherited
+        | crate::domain::navigation::PropertyProvenance::Computed
+        | crate::domain::navigation::PropertyProvenance::Unknown => {}
+    }
+    Ok(())
+}
+
+fn validate_property_capability(
+    capability: crate::domain::navigation::PropertyCapability,
+) -> Result<(), SourceAdapterError> {
+    match capability {
+        crate::domain::navigation::PropertyCapability::ReadOnly
+        | crate::domain::navigation::PropertyCapability::Authorable
+        | crate::domain::navigation::PropertyCapability::Unknown => {}
     }
     Ok(())
 }
@@ -4100,9 +4547,11 @@ fn validate_property_value(
     value: &crate::domain::navigation::PropertyValue,
     limits: SnapshotCacheLimits,
     depth: usize,
+    stats: &mut NavigationValidationStats,
 ) -> Result<(), SourceAdapterError> {
     use crate::domain::navigation::{PropertyValue, TypeVariant};
 
+    stats.observe(depth)?;
     match value {
         PropertyValue::Decimal(value)
         | PropertyValue::String(value)
@@ -4123,7 +4572,7 @@ fn validate_property_value(
                         validate_semantic_string(kind, limits.max_semantic_string_bytes)?;
                         for (name, value) in qualifiers {
                             validate_semantic_string(name, limits.max_semantic_string_bytes)?;
-                            validate_property_value_child(value, limits, depth)?;
+                            validate_property_value_child(value, limits, depth, stats)?;
                         }
                     }
                     TypeVariant::Reference { target } | TypeVariant::Enumeration { target } => {
@@ -4133,17 +4582,17 @@ fn validate_property_value(
             }
         }
         PropertyValue::ObjectRef(reference) => {
-            validate_object_ref_strings(reference, limits.max_semantic_string_bytes)?;
+            validate_object_ref(reference, limits.max_semantic_string_bytes)?;
         }
         PropertyValue::List(nested) => {
             for value in nested {
-                validate_property_value_child(value, limits, depth)?;
+                validate_property_value_child(value, limits, depth, stats)?;
             }
         }
         PropertyValue::Structure(nested) => {
             for (name, value) in nested {
                 validate_semantic_string(name, limits.max_semantic_string_bytes)?;
-                validate_property_value_child(value, limits, depth)?;
+                validate_property_value_child(value, limits, depth, stats)?;
             }
         }
         PropertyValue::Unknown { summary } => {
@@ -4161,29 +4610,97 @@ fn validate_property_value_child(
     value: &crate::domain::navigation::PropertyValue,
     limits: SnapshotCacheLimits,
     parent_depth: usize,
+    stats: &mut NavigationValidationStats,
 ) -> Result<(), SourceAdapterError> {
-    let depth = parent_depth.checked_add(1).ok_or_else(|| {
-        resource_limit("navigation property value nesting depth cannot be represented")
-    })?;
-    if depth > limits.max_property_value_depth {
-        return Err(resource_limit(
-            "navigation property value exceeds continuation cache nesting limit",
-        ));
-    }
-    validate_property_value(value, limits, depth)
+    let depth = validation_child_depth(parent_depth, limits)?;
+    validate_property_value(value, limits, depth, stats)
 }
 
-fn validate_semantic_relation_strings(
+fn validation_child_depth(
+    parent_depth: usize,
+    limits: SnapshotCacheLimits,
+) -> Result<usize, SourceAdapterError> {
+    let depth = parent_depth
+        .checked_add(1)
+        .ok_or_else(|| resource_limit("navigation validation depth cannot be represented"))?;
+    if depth > limits.max_property_value_depth {
+        return Err(resource_limit(
+            "navigation value exceeds continuation cache nesting limit",
+        ));
+    }
+    Ok(depth)
+}
+
+fn validate_semantic_relation(
     relation: &crate::domain::navigation::SemanticRelation,
     limit: usize,
 ) -> Result<(), SourceAdapterError> {
-    validate_semantic_string(relation.relation_ref.source_id.as_str(), limit)?;
-    validate_semantic_string(relation.relation_ref.relation_key.as_str(), limit)?;
-    validate_semantic_string(relation.group_ref.source_id.as_str(), limit)?;
-    validate_semantic_string(relation.group_ref.group_key.as_str(), limit)?;
-    validate_object_ref_strings(&relation.group_ref.owner, limit)?;
-    validate_object_ref_strings(&relation.source, limit)?;
-    validate_object_ref_strings(&relation.target, limit)
+    validate_relation_ref(&relation.relation_ref, limit)?;
+    validate_relation_group_ref(&relation.group_ref, limit)?;
+    match relation.identity_strength {
+        crate::domain::navigation::IdentityStrength::Persistent
+        | crate::domain::navigation::IdentityStrength::Derived
+        | crate::domain::navigation::IdentityStrength::SnapshotOnly => {}
+    }
+    validate_relation_kind(relation.kind)?;
+    validate_relation_role(relation.role)?;
+    validate_object_ref(&relation.source, limit)?;
+    validate_object_ref(&relation.target, limit)?;
+    validate_capability_vector(&relation.capability)
+}
+
+fn validate_relation_ref(
+    relation: &crate::domain::navigation::RelationRef,
+    limit: usize,
+) -> Result<(), SourceAdapterError> {
+    validate_semantic_string(relation.source_id.as_str(), limit)?;
+    validate_semantic_string(relation.relation_key.as_str(), limit)?;
+    validate_relation_kind(relation.kind)
+}
+
+fn validate_relation_group_ref(
+    relation: &crate::domain::navigation::RelationGroupRef,
+    limit: usize,
+) -> Result<(), SourceAdapterError> {
+    validate_semantic_string(relation.source_id.as_str(), limit)?;
+    validate_semantic_string(relation.group_key.as_str(), limit)?;
+    validate_object_ref(&relation.owner, limit)?;
+    validate_relation_role(relation.role)?;
+    validate_relation_kind(relation.kind)
+}
+
+fn validate_relation_kind(
+    kind: crate::domain::navigation::RelationKind,
+) -> Result<(), SourceAdapterError> {
+    match kind {
+        crate::domain::navigation::RelationKind::Contains
+        | crate::domain::navigation::RelationKind::References => {}
+    }
+    Ok(())
+}
+
+fn validate_relation_role(
+    role: crate::domain::navigation::RelationRole,
+) -> Result<(), SourceAdapterError> {
+    match role {
+        crate::domain::navigation::RelationRole::Children
+        | crate::domain::navigation::RelationRole::Attributes
+        | crate::domain::navigation::RelationRole::TabularSections
+        | crate::domain::navigation::RelationRole::Forms
+        | crate::domain::navigation::RelationRole::Commands
+        | crate::domain::navigation::RelationRole::Templates => {}
+    }
+    Ok(())
+}
+
+fn validate_navigation_status(
+    status: crate::domain::navigation::NavigationStatus,
+) -> Result<(), SourceAdapterError> {
+    match status {
+        crate::domain::navigation::NavigationStatus::Available
+        | crate::domain::navigation::NavigationStatus::Unavailable => {}
+    }
+    Ok(())
 }
 
 fn validate_semantic_string(value: &str, limit: usize) -> Result<(), SourceAdapterError> {
@@ -14919,15 +15436,21 @@ mod tests {
         );
         let binding = resolve_object_path_binding(&path, &context).unwrap();
         let mut navigation = inspect_source_path(&binding, &context).unwrap();
+        let shallow = crate::domain::navigation::PropertyValue::List(vec![
+            crate::domain::navigation::PropertyValue::Null;
+            100_000
+        ]);
+        assert_eq!(
+            property_value_validation_max_active_depth(&shallow, DEFAULT_SNAPSHOT_CACHE_LIMITS)
+                .unwrap(),
+            2
+        );
         navigation
             .nodes
             .iter_mut()
             .find_map(|node| node.properties.values_mut().next())
             .unwrap()
-            .value = Some(crate::domain::navigation::PropertyValue::List(vec![
-            crate::domain::navigation::PropertyValue::Null;
-            100_000
-        ]));
+            .value = Some(shallow);
         let snapshot = navigation.snapshot.as_ref().unwrap().clone();
         let entry = CachedNavigation::new(
             "broad-shallow-value".to_string(),
@@ -14945,7 +15468,7 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_snapshot_metadata_and_diagnostics_over_semantic_string_limit_are_cacheable() {
+    fn aggregate_source_snapshot_over_semantic_string_limit_is_cacheable() {
         let (context, path) = fixture(
             "2.20",
             "<Attribute><Properties><Name>Code</Name></Properties></Attribute>",
@@ -14953,17 +15476,23 @@ mod tests {
         let binding = resolve_object_path_binding(&path, &context).unwrap();
         let mut navigation = inspect_source_path(&binding, &context).unwrap();
         let individual = "x".repeat(300 * 1024);
-        navigation.snapshot.as_mut().unwrap().adapter_id = individual.clone();
-        navigation.diagnostics = vec![
-            crate::domain::navigation::SourceAdapterDiagnostic {
-                code: "first".to_string(),
-                message: individual.clone(),
-            },
-            crate::domain::navigation::SourceAdapterDiagnostic {
-                code: "second".to_string(),
-                message: individual,
-            },
-        ];
+        let source_snapshot = navigation.snapshot.as_mut().unwrap();
+        source_snapshot.adapter_id = individual.clone();
+        source_snapshot.revision =
+            crate::domain::source_adapters::SourceRevision::new(individual).unwrap();
+        navigation.diagnostics = vec![crate::domain::navigation::SourceAdapterDiagnostic {
+            code: "diagnostic".to_string(),
+            message: "separate from snapshot aggregate size".to_string(),
+            details: None,
+        }];
+        assert!(
+            serialized_bytes_with_limit(
+                navigation.snapshot.as_ref().unwrap(),
+                SNAPSHOT_CACHE_MAX_SNAPSHOT_BYTES,
+            )
+            .unwrap()
+                > SNAPSHOT_CACHE_MAX_SEMANTIC_STRING_BYTES
+        );
         let snapshot = navigation.snapshot.as_ref().unwrap().clone();
         let entry = CachedNavigation::new(
             "aggregate-snapshot-metadata".to_string(),
@@ -15053,6 +15582,156 @@ mod tests {
         assert_resource_limit_unavailable(
             &crate::domain::navigation::NavigationEnvelope::unavailable(error),
         );
+        std::fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn relation_page_only_depth_limit_returns_resource_limit_without_serializing_page_items() {
+        let (context, path) = fixture(
+            "2.20",
+            "<Attribute><Properties><Name>Code</Name></Properties></Attribute>",
+        );
+        let binding = resolve_object_path_binding(&path, &context).unwrap();
+        let mut navigation = inspect_source_path(&binding, &context).unwrap();
+        let relation = navigation.relation_index.first().unwrap().group_ref.clone();
+        let mut item = navigation
+            .nodes
+            .iter()
+            .find(|node| !node.properties.is_empty())
+            .cloned()
+            .unwrap();
+        let mut value = crate::domain::navigation::PropertyValue::String("leaf".to_string());
+        for _ in 0..SNAPSHOT_CACHE_MAX_PROPERTY_VALUE_DEPTH
+            .checked_add(1)
+            .unwrap()
+        {
+            value = crate::domain::navigation::PropertyValue::List(vec![value]);
+        }
+        item.properties.values_mut().next().unwrap().value = Some(value);
+        navigation
+            .relations
+            .push(crate::domain::navigation::NavigationRelationPage {
+                relation,
+                items: vec![item],
+                next_cursor: None,
+            });
+        let snapshot = navigation.snapshot.as_ref().unwrap().clone();
+        let error = CachedNavigation::new(
+            "relation-page-depth-limit".to_string(),
+            snapshot.source_id,
+            snapshot.revision,
+            navigation,
+            DEFAULT_SNAPSHOT_CACHE_LIMITS,
+        )
+        .err()
+        .expect("relation page item depth limit must reject cache retention");
+        assert_eq!(error.kind, SourceAdapterErrorKind::ResourceLimit);
+        assert_resource_limit_unavailable(
+            &crate::domain::navigation::NavigationEnvelope::unavailable(error),
+        );
+        std::fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn oversized_object_ref_kind_payload_returns_resource_limit() {
+        let (context, path) = fixture(
+            "2.20",
+            "<Attribute><Properties><Name>Code</Name></Properties></Attribute>",
+        );
+        let binding = resolve_object_path_binding(&path, &context).unwrap();
+        let mut navigation = inspect_source_path(&binding, &context).unwrap();
+        navigation.nodes.first_mut().unwrap().object_ref.kind =
+            crate::domain::navigation::NodeKind::MetadataObject {
+                metadata_type: "x".repeat(
+                    SNAPSHOT_CACHE_MAX_SEMANTIC_STRING_BYTES
+                        .checked_add(1)
+                        .unwrap(),
+                ),
+            };
+        let snapshot = navigation.snapshot.as_ref().unwrap().clone();
+        let error = CachedNavigation::new(
+            "object-ref-kind-limit".to_string(),
+            snapshot.source_id,
+            snapshot.revision,
+            navigation,
+            DEFAULT_SNAPSHOT_CACHE_LIMITS,
+        )
+        .err()
+        .expect("object ref kind payload must reject cache retention");
+        assert_eq!(error.kind, SourceAdapterErrorKind::ResourceLimit);
+        std::fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn oversized_action_operation_binding_returns_resource_limit() {
+        let (context, path) = fixture(
+            "2.20",
+            "<Attribute><Properties><Name>Code</Name></Properties></Attribute>",
+        );
+        let binding = resolve_object_path_binding(&path, &context).unwrap();
+        let mut navigation = inspect_source_path(&binding, &context).unwrap();
+        navigation.nodes.first_mut().unwrap().actions.push(
+            crate::domain::navigation::SemanticAction {
+                kind: crate::domain::navigation::SemanticActionKind::Inspect,
+                target: None,
+                owning_relation: None,
+                availability: crate::domain::navigation::ActionAvailability::Modeled,
+                blocking_reasons: Vec::new(),
+                operation_binding: Some(crate::domain::navigation::OperationBinding {
+                    tool: "x".repeat(
+                        SNAPSHOT_CACHE_MAX_SEMANTIC_STRING_BYTES
+                            .checked_add(1)
+                            .unwrap(),
+                    ),
+                    schema_version: "1".to_string(),
+                }),
+                atomicity: crate::domain::navigation::Atomicity::ReadOnly,
+            },
+        );
+        let snapshot = navigation.snapshot.as_ref().unwrap().clone();
+        let error = CachedNavigation::new(
+            "action-binding-limit".to_string(),
+            snapshot.source_id,
+            snapshot.revision,
+            navigation,
+            DEFAULT_SNAPSHOT_CACHE_LIMITS,
+        )
+        .err()
+        .expect("action binding payload must reject cache retention");
+        assert_eq!(error.kind, SourceAdapterErrorKind::ResourceLimit);
+        std::fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn oversized_diagnostic_detail_returns_resource_limit() {
+        let (context, path) = fixture(
+            "2.20",
+            "<Attribute><Properties><Name>Code</Name></Properties></Attribute>",
+        );
+        let binding = resolve_object_path_binding(&path, &context).unwrap();
+        let mut navigation = inspect_source_path(&binding, &context).unwrap();
+        navigation.diagnostics = vec![crate::domain::navigation::SourceAdapterDiagnostic {
+            code: "diagnostic".to_string(),
+            message: "detail payload is validated before cache serialization".to_string(),
+            details: Some(json!({
+                "detail": "x".repeat(
+                    SNAPSHOT_CACHE_MAX_SEMANTIC_STRING_BYTES
+                        .checked_add(1)
+                        .unwrap(),
+                )
+            })),
+        }];
+        let snapshot = navigation.snapshot.as_ref().unwrap().clone();
+        let error = CachedNavigation::new(
+            "diagnostic-detail-limit".to_string(),
+            snapshot.source_id,
+            snapshot.revision,
+            navigation,
+            DEFAULT_SNAPSHOT_CACHE_LIMITS,
+        )
+        .err()
+        .expect("diagnostic detail payload must reject cache retention");
+        assert_eq!(error.kind, SourceAdapterErrorKind::ResourceLimit);
         std::fs::remove_dir_all(context.workspace_root).unwrap();
     }
 

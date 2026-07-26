@@ -1009,6 +1009,8 @@ pub(crate) enum NavigationStatus {
 pub(crate) struct SourceAdapterDiagnostic {
     pub(crate) code: String,
     pub(crate) message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) details: Option<serde_json::Value>,
 }
 
 impl From<SourceAdapterError> for SourceAdapterDiagnostic {
@@ -1016,6 +1018,7 @@ impl From<SourceAdapterError> for SourceAdapterDiagnostic {
         Self {
             code: error.code().to_string(),
             message: error.message,
+            details: None,
         }
     }
 }

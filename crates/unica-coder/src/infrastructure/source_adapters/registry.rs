@@ -712,6 +712,7 @@ mod tests {
                 diagnostics: vec![SourceAdapterDiagnostic {
                     code: "probe_evidence".to_string(),
                     message: descriptor.probe_evidence.join(","),
+                    details: None,
                 }],
                 relation_index: Vec::new(),
             })
