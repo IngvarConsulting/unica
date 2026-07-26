@@ -1,32 +1,32 @@
 //! JSON navigation contracts for semantic 1C metadata projections.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::{Display, Formatter};
+use std::str::FromStr;
 
-use hmac::{Hmac, Mac};
 use serde::{ser::SerializeStruct, Serialize, Serializer};
 use sha2::{Digest, Sha256};
-use uuid::Uuid;
 
-use super::navigation_limits::{
+use crate::limits::{
     MAX_NAVIGATION_PROPERTY_SELECTORS, MAX_NAVIGATION_RELATION_SELECTORS,
     MAX_NAVIGATION_SELECTOR_STRING_BYTES,
 };
-use super::source_adapters::{
+use crate::source::{
     SnapshotConsistency, SourceAccess, SourceAdapterError, SourceAdapterErrorKind, SourceId,
     SourceRevision, SourceSnapshot,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct ObjectKey(String);
+pub struct ObjectKey(String);
 
 impl ObjectKey {
-    pub(crate) fn new(raw: impl Into<String>) -> Result<Self, SourceAdapterError> {
+    pub fn new(raw: impl Into<String>) -> Result<Self, SourceAdapterError> {
         let raw = raw.into();
         validate_opaque_key(&raw, "object key")?;
         Ok(Self(raw))
     }
 
-    pub(crate) fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         &self.0
     }
 }
@@ -41,16 +41,16 @@ impl Serialize for ObjectKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct RelationKey(String);
+pub struct RelationKey(String);
 
 impl RelationKey {
-    pub(crate) fn new(raw: impl Into<String>) -> Result<Self, SourceAdapterError> {
+    pub fn new(raw: impl Into<String>) -> Result<Self, SourceAdapterError> {
         let raw = raw.into();
         validate_opaque_key(&raw, "relation key")?;
         Ok(Self(raw))
     }
 
-    pub(crate) fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         &self.0
     }
 }
@@ -84,31 +84,31 @@ fn validate_opaque_key(raw: &str, name: &str) -> Result<(), SourceAdapterError> 
 /// Stability of a semantic key supplied by an adapter.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum IdentityStrength {
+pub enum IdentityStrength {
     Persistent,
     Derived,
     SnapshotOnly,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ObjectIdentity {
-    pub(crate) source_id: SourceId,
-    pub(crate) object_key: ObjectKey,
+pub struct ObjectIdentity {
+    pub source_id: SourceId,
+    pub object_key: ObjectKey,
 }
 
 /// A path-free, versioned semantic object reference.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ObjectRef {
-    pub(crate) source_id: SourceId,
-    pub(crate) object_key: ObjectKey,
-    pub(crate) identity_strength: IdentityStrength,
-    pub(crate) kind: NodeKind,
-    pub(crate) display_name: String,
+pub struct ObjectRef {
+    pub source_id: SourceId,
+    pub object_key: ObjectKey,
+    pub identity_strength: IdentityStrength,
+    pub kind: NodeKind,
+    pub display_name: String,
 }
 
 impl ObjectRef {
-    pub(crate) fn new(
+    pub fn new(
         source_id: SourceId,
         object_key: ObjectKey,
         identity_strength: IdentityStrength,
@@ -124,7 +124,7 @@ impl ObjectRef {
         }
     }
 
-    pub(crate) fn identity(&self) -> ObjectIdentity {
+    pub fn identity(&self) -> ObjectIdentity {
         ObjectIdentity {
             source_id: self.source_id.clone(),
             object_key: self.object_key.clone(),
@@ -144,7 +144,7 @@ impl Eq for ObjectRef {}
 /// encoded here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case", rename_all_fields = "camelCase")]
-pub(crate) enum NodeKind {
+pub enum NodeKind {
     SourceRoot,
     Document,
     MetadataObject {
@@ -164,7 +164,7 @@ pub(crate) enum NodeKind {
 }
 
 impl NodeKind {
-    pub(crate) fn metadata_object(metadata_type: impl Into<String>) -> Self {
+    pub fn metadata_object(metadata_type: impl Into<String>) -> Self {
         Self::MetadataObject {
             metadata_type: metadata_type.into(),
         }
@@ -173,21 +173,21 @@ impl NodeKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum Representation {
+pub enum Representation {
     PlatformXml,
     Edt,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum ResolutionState {
+pub enum ResolutionState {
     Resolved,
     Unresolved,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum Authorability {
+pub enum Authorability {
     Authorable,
     SupportLocked,
     ConfigurationReadOnly,
@@ -199,7 +199,7 @@ pub(crate) enum Authorability {
 /// Compatibility state of the source format with the selected adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum FormatCompatibility {
+pub enum FormatCompatibility {
     Compatible,
     Incompatible,
     Unknown,
@@ -207,7 +207,7 @@ pub(crate) enum FormatCompatibility {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum CoverageState {
+pub enum CoverageState {
     Complete,
     Partial,
     Unknown,
@@ -215,7 +215,7 @@ pub(crate) enum CoverageState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum CapabilityBlockReason {
+pub enum CapabilityBlockReason {
     ResolutionUnresolved,
     IdentitySnapshotOnly,
     SnapshotInconsistent,
@@ -230,18 +230,18 @@ pub(crate) enum CapabilityBlockReason {
 /// All preconditions that must hold before a semantic mutation can execute.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct CapabilityVector {
-    pub(crate) resolution: ResolutionState,
-    pub(crate) identity: IdentityStrength,
-    pub(crate) consistency: SnapshotConsistency,
-    pub(crate) coverage: CoverageState,
-    pub(crate) format: FormatCompatibility,
-    pub(crate) source_access: SourceAccess,
-    pub(crate) authorability: Authorability,
+pub struct CapabilityVector {
+    pub resolution: ResolutionState,
+    pub identity: IdentityStrength,
+    pub consistency: SnapshotConsistency,
+    pub coverage: CoverageState,
+    pub format: FormatCompatibility,
+    pub source_access: SourceAccess,
+    pub authorability: Authorability,
 }
 
 impl CapabilityVector {
-    pub(crate) const fn permits_mutation(&self) -> bool {
+    pub const fn permits_mutation(&self) -> bool {
         matches!(self.resolution, ResolutionState::Resolved)
             && !matches!(self.identity, IdentityStrength::SnapshotOnly)
             && matches!(self.consistency, SnapshotConsistency::Consistent)
@@ -251,7 +251,7 @@ impl CapabilityVector {
             && matches!(self.authorability, Authorability::Authorable)
     }
 
-    pub(crate) fn blocking_reasons(&self) -> Vec<CapabilityBlockReason> {
+    pub fn blocking_reasons(&self) -> Vec<CapabilityBlockReason> {
         let mut reasons = Vec::new();
         if !matches!(self.resolution, ResolutionState::Resolved) {
             reasons.push(CapabilityBlockReason::ResolutionUnresolved);
@@ -281,27 +281,24 @@ impl CapabilityVector {
 /// Compatibility view retained for the Task 8 projection migration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct CapabilityState {
-    pub(crate) resolution_state: ResolutionState,
-    pub(crate) authorability: Authorability,
+pub struct CapabilityState {
+    pub resolution_state: ResolutionState,
+    pub authorability: Authorability,
 }
 
 impl CapabilityState {
-    pub(crate) const fn new(
-        resolution_state: ResolutionState,
-        authorability: Authorability,
-    ) -> Self {
+    pub const fn new(resolution_state: ResolutionState, authorability: Authorability) -> Self {
         Self {
             resolution_state,
             authorability,
         }
     }
 
-    pub(crate) const fn resolved_authorable() -> Self {
+    pub const fn resolved_authorable() -> Self {
         Self::new(ResolutionState::Resolved, Authorability::Authorable)
     }
 
-    pub(crate) const fn is_resolved_authorable(self) -> bool {
+    pub const fn is_resolved_authorable(self) -> bool {
         matches!(self.resolution_state, ResolutionState::Resolved)
             && matches!(self.authorability, Authorability::Authorable)
     }
@@ -309,7 +306,7 @@ impl CapabilityState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum RelationKind {
+pub enum RelationKind {
     Contains,
     References,
 }
@@ -317,7 +314,7 @@ pub(crate) enum RelationKind {
 /// Closed, versioned ownership roles assigned by a certified projector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum RelationRole {
+pub enum RelationRole {
     Children,
     Attributes,
     TabularSections,
@@ -327,7 +324,7 @@ pub(crate) enum RelationRole {
 }
 
 impl RelationRole {
-    pub(crate) fn parse(value: &str) -> Result<Self, SourceAdapterError> {
+    pub fn parse(value: &str) -> Result<Self, SourceAdapterError> {
         match value {
             "children" => Ok(Self::Children),
             "attributes" => Ok(Self::Attributes),
@@ -345,40 +342,40 @@ impl RelationRole {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct RelationRef {
-    pub(crate) source_id: SourceId,
-    pub(crate) relation_key: RelationKey,
-    pub(crate) kind: RelationKind,
+pub struct RelationRef {
+    pub source_id: SourceId,
+    pub relation_key: RelationKey,
+    pub kind: RelationKind,
 }
 
 /// Page identity for the exact owner/role/kind aggregate, distinct from edge identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct RelationGroupRef {
-    pub(crate) source_id: SourceId,
-    pub(crate) group_key: RelationKey,
-    pub(crate) owner: ObjectRef,
-    pub(crate) role: RelationRole,
-    pub(crate) kind: RelationKind,
+pub struct RelationGroupRef {
+    pub source_id: SourceId,
+    pub group_key: RelationKey,
+    pub owner: ObjectRef,
+    pub role: RelationRole,
+    pub kind: RelationKind,
 }
 
 /// A semantic relation is an independently addressable aggregate.  Its source
 /// and target are opaque semantic references, never native locations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct SemanticRelation {
-    pub(crate) relation_ref: RelationRef,
-    pub(crate) group_ref: RelationGroupRef,
-    pub(crate) identity_strength: IdentityStrength,
-    pub(crate) kind: RelationKind,
-    pub(crate) role: RelationRole,
-    pub(crate) source: ObjectRef,
-    pub(crate) target: ObjectRef,
-    pub(crate) capability: CapabilityVector,
+pub struct SemanticRelation {
+    pub relation_ref: RelationRef,
+    pub group_ref: RelationGroupRef,
+    pub identity_strength: IdentityStrength,
+    pub kind: RelationKind,
+    pub role: RelationRole,
+    pub source: ObjectRef,
+    pub target: ObjectRef,
+    pub capability: CapabilityVector,
 }
 
 impl RelationRef {
-    pub(crate) fn new(
+    pub fn new(
         source_id: SourceId,
         relation_key: impl Into<String>,
         kind: RelationKind,
@@ -392,7 +389,7 @@ impl RelationRef {
 }
 
 impl RelationGroupRef {
-    pub(crate) fn new(
+    pub fn new(
         source_id: SourceId,
         owner: ObjectRef,
         role: RelationRole,
@@ -420,7 +417,7 @@ impl RelationGroupRef {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum ActionAvailability {
+pub enum ActionAvailability {
     Modeled,
     Executable,
     Blocked,
@@ -428,7 +425,7 @@ pub(crate) enum ActionAvailability {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum Atomicity {
+pub enum Atomicity {
     SingleFileAtomicReplace,
     AggregateSwapWithRecovery,
     BackendTransaction,
@@ -437,13 +434,13 @@ pub(crate) enum Atomicity {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct OperationBinding {
-    pub(crate) tool: String,
-    pub(crate) schema_version: String,
+pub struct OperationBinding {
+    pub tool: String,
+    pub schema_version: String,
 }
 
 impl OperationBinding {
-    pub(crate) fn is_valid(&self) -> bool {
+    pub fn is_valid(&self) -> bool {
         self.tool.starts_with("unica.")
             && self.tool.len() > "unica.".len()
             && !self.tool.chars().any(char::is_control)
@@ -454,7 +451,7 @@ impl OperationBinding {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum SemanticActionKind {
+pub enum SemanticActionKind {
     Inspect,
     EditProperties,
     Clone,
@@ -478,25 +475,25 @@ pub(crate) enum SemanticActionKind {
     EditMxl,
 }
 
-pub(crate) type ActionKind = SemanticActionKind;
+pub type ActionKind = SemanticActionKind;
 
 /// A capability-qualified semantic action, independent from a particular MCP
 /// transport. Mutation actions are only executable with every capability
 /// precondition and an explicit native operation binding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct SemanticAction {
-    pub(crate) kind: SemanticActionKind,
-    pub(crate) target: Option<ObjectRef>,
-    pub(crate) owning_relation: Option<RelationRef>,
-    pub(crate) availability: ActionAvailability,
-    pub(crate) blocking_reasons: Vec<CapabilityBlockReason>,
-    pub(crate) operation_binding: Option<OperationBinding>,
-    pub(crate) atomicity: Atomicity,
+pub struct SemanticAction {
+    pub kind: SemanticActionKind,
+    pub target: Option<ObjectRef>,
+    pub owning_relation: Option<RelationRef>,
+    pub availability: ActionAvailability,
+    pub blocking_reasons: Vec<CapabilityBlockReason>,
+    pub operation_binding: Option<OperationBinding>,
+    pub atomicity: Atomicity,
 }
 
 impl SemanticAction {
-    pub(crate) fn modeled_clone(target: ObjectRef, owning_relation: Option<RelationRef>) -> Self {
+    pub fn modeled_clone(target: ObjectRef, owning_relation: Option<RelationRef>) -> Self {
         let mut blocking_reasons = Vec::new();
         if !owning_relation.as_ref().is_some_and(|relation| {
             relation.source_id == target.source_id
@@ -519,7 +516,7 @@ impl SemanticAction {
         }
     }
 
-    pub(crate) fn mutation(
+    pub fn mutation(
         kind: SemanticActionKind,
         target: ObjectRef,
         capability: CapabilityVector,
@@ -565,33 +562,33 @@ impl SemanticAction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum ActionExecutionPolicy {
+pub enum ActionExecutionPolicy {
     ReadOnly,
     AtomicNodeMutation,
     AtomicRelationMutation,
 }
 
 impl ActionExecutionPolicy {
-    pub(crate) const fn is_mutation(self) -> bool {
+    pub const fn is_mutation(self) -> bool {
         matches!(
             self,
             Self::AtomicNodeMutation | Self::AtomicRelationMutation
         )
     }
 
-    pub(crate) const fn validates_before_commit(self) -> bool {
+    pub const fn validates_before_commit(self) -> bool {
         self.is_mutation()
     }
-    pub(crate) const fn allows_cross_action_changeset(self) -> bool {
+    pub const fn allows_cross_action_changeset(self) -> bool {
         false
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct SemanticActionDescriptor {
-    pub(crate) action: SemanticActionKind,
-    pub(crate) execution_policy: ActionExecutionPolicy,
+pub struct SemanticActionDescriptor {
+    pub action: SemanticActionKind,
+    pub execution_policy: ActionExecutionPolicy,
 }
 
 impl SemanticActionDescriptor {
@@ -617,7 +614,7 @@ impl SemanticActionDescriptor {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum ActionProfile {
+pub enum ActionProfile {
     DocumentMetadataObject,
     GenericMetadataObject,
     Form,
@@ -628,7 +625,7 @@ pub(crate) enum ActionProfile {
     UnmodeledChild,
 }
 
-pub(crate) fn action_profile_for(kind: &NodeKind) -> ActionProfile {
+pub fn action_profile_for(kind: &NodeKind) -> ActionProfile {
     match kind {
         NodeKind::Document => ActionProfile::DocumentMetadataObject,
         NodeKind::MetadataObject { metadata_type } if metadata_type == "Document" => {
@@ -651,7 +648,7 @@ pub(crate) fn action_profile_for(kind: &NodeKind) -> ActionProfile {
     }
 }
 
-pub(crate) fn semantic_actions_for(
+pub fn semantic_actions_for(
     kind: &NodeKind,
     capability_state: CapabilityState,
 ) -> Vec<SemanticActionDescriptor> {
@@ -703,7 +700,7 @@ pub(crate) fn semantic_actions_for(
     }
 }
 
-pub(crate) fn semantic_actions_for_relation(
+pub fn semantic_actions_for_relation(
     from_kind: &NodeKind,
     to_kind: &NodeKind,
     relation: RelationKind,
@@ -742,27 +739,27 @@ pub(crate) fn semantic_actions_for_relation(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum NavigationFacetVisibility {
+pub enum NavigationFacetVisibility {
     Full,
     Summary,
     None,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct NavigationNode {
-    pub(crate) object_ref: ObjectRef,
-    pub(crate) reference: ObjectRef,
-    pub(crate) capability_state: CapabilityState,
-    pub(crate) capability: CapabilityVector,
-    pub(crate) properties: BTreeMap<String, SemanticProperty>,
-    pub(crate) action_profile: ActionProfile,
-    pub(crate) semantic_actions: Vec<SemanticActionDescriptor>,
-    pub(crate) actions: Vec<SemanticAction>,
-    pub(crate) facet_visibility: NavigationFacetVisibility,
+pub struct NavigationNode {
+    pub object_ref: ObjectRef,
+    pub reference: ObjectRef,
+    pub capability_state: CapabilityState,
+    pub capability: CapabilityVector,
+    pub properties: BTreeMap<String, SemanticProperty>,
+    pub action_profile: ActionProfile,
+    pub semantic_actions: Vec<SemanticActionDescriptor>,
+    pub actions: Vec<SemanticAction>,
+    pub facet_visibility: NavigationFacetVisibility,
 }
 
 impl NavigationNode {
-    pub(crate) fn new(reference: ObjectRef, capability_state: CapabilityState) -> Self {
+    pub fn new(reference: ObjectRef, capability_state: CapabilityState) -> Self {
         let action_profile = action_profile_for(&reference.kind);
         let semantic_actions = semantic_actions_for(&reference.kind, capability_state);
         let capability = CapabilityVector {
@@ -786,7 +783,7 @@ impl NavigationNode {
             facet_visibility: NavigationFacetVisibility::Full,
         }
     }
-    pub(crate) fn semantic_actions(&self) -> &[SemanticActionDescriptor] {
+    pub fn semantic_actions(&self) -> &[SemanticActionDescriptor] {
         &self.semantic_actions
     }
 }
@@ -825,16 +822,16 @@ impl Serialize for NavigationNode {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct NavigationEdge {
-    pub(crate) from: ObjectRef,
-    pub(crate) to: ObjectRef,
-    pub(crate) relation: RelationKind,
-    pub(crate) capability_state: CapabilityState,
+pub struct NavigationEdge {
+    pub from: ObjectRef,
+    pub to: ObjectRef,
+    pub relation: RelationKind,
+    pub capability_state: CapabilityState,
     semantic_actions: Vec<SemanticActionDescriptor>,
 }
 
 impl NavigationEdge {
-    pub(crate) fn new(
+    pub fn new(
         from: ObjectRef,
         to: ObjectRef,
         relation: RelationKind,
@@ -850,31 +847,31 @@ impl NavigationEdge {
             semantic_actions,
         }
     }
-    pub(crate) fn semantic_actions(&self) -> &[SemanticActionDescriptor] {
+    pub fn semantic_actions(&self) -> &[SemanticActionDescriptor] {
         &self.semantic_actions
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum ActionSemantics {
+pub enum ActionSemantics {
     ModeledCapabilities,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct NavigationGraph {
-    pub(crate) prototype_version: u32,
+pub struct NavigationGraph {
+    pub prototype_version: u32,
     prototype: bool,
     action_semantics: ActionSemantics,
-    pub(crate) representation: Representation,
-    pub(crate) root: ObjectRef,
-    pub(crate) nodes: Vec<NavigationNode>,
-    pub(crate) edges: Vec<NavigationEdge>,
+    pub representation: Representation,
+    pub root: ObjectRef,
+    pub nodes: Vec<NavigationNode>,
+    pub edges: Vec<NavigationEdge>,
 }
 
 impl NavigationGraph {
-    pub(crate) const PROTOTYPE_VERSION: u32 = 1;
-    pub(crate) fn new(
+    pub const PROTOTYPE_VERSION: u32 = 1;
+    pub fn new(
         representation: Representation,
         root: ObjectRef,
         nodes: Vec<NavigationNode>,
@@ -890,10 +887,10 @@ impl NavigationGraph {
             edges,
         }
     }
-    pub(crate) const fn is_prototype(&self) -> bool {
+    pub const fn is_prototype(&self) -> bool {
         self.prototype
     }
-    pub(crate) const fn action_semantics(&self) -> ActionSemantics {
+    pub const fn action_semantics(&self) -> ActionSemantics {
         self.action_semantics
     }
 }
@@ -1002,7 +999,7 @@ impl Serialize for NavigationGraph {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum NavigationStatus {
+pub enum NavigationStatus {
     #[serde(rename = "ready")]
     Available,
     Unavailable,
@@ -1010,11 +1007,11 @@ pub(crate) enum NavigationStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct SourceAdapterDiagnostic {
-    pub(crate) code: String,
-    pub(crate) message: String,
+pub struct SourceAdapterDiagnostic {
+    pub code: String,
+    pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) details: Option<serde_json::Value>,
+    pub details: Option<serde_json::Value>,
 }
 
 impl From<SourceAdapterError> for SourceAdapterDiagnostic {
@@ -1029,29 +1026,29 @@ impl From<SourceAdapterError> for SourceAdapterDiagnostic {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct NavigationRelationPage {
-    pub(crate) relation: RelationGroupRef,
-    pub(crate) items: Vec<NavigationNode>,
+pub struct NavigationRelationPage {
+    pub relation: RelationGroupRef,
+    pub items: Vec<NavigationNode>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) next_cursor: Option<NavigationCursor>,
+    pub next_cursor: Option<NavigationCursor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct NavigationEnvelope {
-    pub(crate) schema_version: String,
-    pub(crate) status: NavigationStatus,
-    pub(crate) snapshot: Option<SourceSnapshot>,
-    pub(crate) root: Option<ObjectRef>,
-    pub(crate) nodes: Vec<NavigationNode>,
-    pub(crate) relations: Vec<NavigationRelationPage>,
-    pub(crate) diagnostics: Vec<SourceAdapterDiagnostic>,
+pub struct NavigationEnvelope {
+    pub schema_version: String,
+    pub status: NavigationStatus,
+    pub snapshot: Option<SourceSnapshot>,
+    pub root: Option<ObjectRef>,
+    pub nodes: Vec<NavigationNode>,
+    pub relations: Vec<NavigationRelationPage>,
+    pub diagnostics: Vec<SourceAdapterDiagnostic>,
     #[serde(skip)]
-    pub(crate) relation_index: std::sync::Arc<Vec<SemanticRelation>>,
+    pub relation_index: std::sync::Arc<Vec<SemanticRelation>>,
 }
 
 impl NavigationEnvelope {
-    pub(crate) fn unavailable(error: SourceAdapterError) -> Self {
+    pub fn unavailable(error: SourceAdapterError) -> Self {
         Self {
             schema_version: "1".to_string(),
             status: NavigationStatus::Unavailable,
@@ -1064,19 +1061,19 @@ impl NavigationEnvelope {
         }
     }
 
-    pub(crate) fn node_named(&self, kind: NodeKind, name: &str) -> Option<&NavigationNode> {
+    pub fn node_named(&self, kind: NodeKind, name: &str) -> Option<&NavigationNode> {
         self.nodes
             .iter()
             .find(|node| node.object_ref.kind == kind && node.object_ref.display_name == name)
     }
 
-    pub(crate) fn owning_relation(&self, object: &ObjectRef) -> Option<&SemanticRelation> {
+    pub fn owning_relation(&self, object: &ObjectRef) -> Option<&SemanticRelation> {
         self.relation_index.iter().find(|relation| {
             matches!(relation.kind, RelationKind::Contains) && relation.target == *object
         })
     }
 
-    pub(crate) fn action(&self, kind: ActionKind, name: &str) -> Option<&SemanticAction> {
+    pub fn action(&self, kind: ActionKind, name: &str) -> Option<&SemanticAction> {
         self.nodes
             .iter()
             .find(|node| node.object_ref.display_name == name)
@@ -1086,7 +1083,7 @@ impl NavigationEnvelope {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum PropertyType {
+pub enum PropertyType {
     Boolean,
     Integer,
     Decimal,
@@ -1105,15 +1102,15 @@ pub(crate) enum PropertyType {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct TypeSetValue {
-    pub(crate) variants: Vec<TypeVariant>,
+pub struct TypeSetValue {
+    pub variants: Vec<TypeVariant>,
 }
 
 /// A 1C type description normalized for consumers.  XML type expressions are
 /// adapter-private evidence and never the canonical property value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum TypeVariant {
+pub enum TypeVariant {
     Primitive {
         kind: String,
         qualifiers: BTreeMap<String, PropertyValue>,
@@ -1127,13 +1124,13 @@ pub(crate) enum TypeVariant {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum PropertyValue {
+pub enum PropertyValue {
     Boolean(bool),
     Integer(i64),
     Decimal(String),
     String(String),
     LocalizedString(BTreeMap<String, String>),
-    Uuid(Uuid),
+    Uuid(UuidValue),
     EnumSymbol(String),
     Date(String),
     TypeSet(TypeSetValue),
@@ -1142,6 +1139,61 @@ pub(crate) enum PropertyValue {
     Structure(BTreeMap<String, PropertyValue>),
     Null,
     Unknown { summary: String },
+}
+
+/// Parser-independent UUID value used by neutral semantic properties.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub struct UuidValue(String);
+
+impl UuidValue {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl FromStr for UuidValue {
+    type Err = SourceAdapterError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        let raw = raw.strip_prefix("urn:uuid:").unwrap_or(raw);
+        let raw = raw
+            .strip_prefix('{')
+            .and_then(|value| value.strip_suffix('}'))
+            .unwrap_or(raw);
+        let valid_shape = (raw.len() == 32 && raw.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            || (raw.len() == 36
+                && raw.bytes().enumerate().all(|(index, byte)| {
+                    if matches!(index, 8 | 13 | 18 | 23) {
+                        byte == b'-'
+                    } else {
+                        byte.is_ascii_hexdigit()
+                    }
+                }));
+        if !valid_shape {
+            return Err(SourceAdapterError::new(
+                SourceAdapterErrorKind::ProjectionAmbiguous,
+                "invalid UUID value",
+            ));
+        }
+        let compact = raw.bytes().filter(|byte| *byte != b'-').collect::<Vec<_>>();
+        let compact = String::from_utf8(compact)
+            .expect("ASCII hexadecimal UUID validation guarantees UTF-8")
+            .to_ascii_lowercase();
+        Ok(Self(format!(
+            "{}-{}-{}-{}-{}",
+            &compact[0..8],
+            &compact[8..12],
+            &compact[12..16],
+            &compact[16..20],
+            &compact[20..32],
+        )))
+    }
+}
+
+impl Display for UuidValue {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
 }
 
 impl Serialize for PropertyValue {
@@ -1174,7 +1226,7 @@ impl Serialize for PropertyValue {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum PropertyValueState {
+pub enum PropertyValueState {
     Explicit,
     Defaulted,
     Inherited,
@@ -1185,14 +1237,14 @@ pub(crate) enum PropertyValueState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum ProjectorProfile {
+pub enum ProjectorProfile {
     PlatformXmlV1,
     EdtV1,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum PropertyProvenance {
+pub enum PropertyProvenance {
     Descriptor,
     ProjectorDefault { profile: ProjectorProfile },
     Inherited,
@@ -1202,7 +1254,7 @@ pub(crate) enum PropertyProvenance {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum PropertyCapability {
+pub enum PropertyCapability {
     ReadOnly,
     Authorable,
     Unknown,
@@ -1210,18 +1262,18 @@ pub(crate) enum PropertyCapability {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct SemanticProperty {
+pub struct SemanticProperty {
     #[serde(rename = "type")]
-    pub(crate) value_type: PropertyType,
-    pub(crate) value_state: PropertyValueState,
+    pub value_type: PropertyType,
+    pub value_state: PropertyValueState,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) value: Option<PropertyValue>,
-    pub(crate) provenance: PropertyProvenance,
-    pub(crate) capability: PropertyCapability,
+    pub value: Option<PropertyValue>,
+    pub provenance: PropertyProvenance,
+    pub capability: PropertyCapability,
 }
 
 impl SemanticProperty {
-    pub(crate) fn explicit(
+    pub fn explicit(
         value_type: PropertyType,
         value: PropertyValue,
         provenance: PropertyProvenance,
@@ -1241,7 +1293,7 @@ impl SemanticProperty {
         })
     }
 
-    pub(crate) fn absent(value_type: PropertyType, provenance: PropertyProvenance) -> Self {
+    pub fn absent(value_type: PropertyType, provenance: PropertyProvenance) -> Self {
         Self {
             value_type,
             value_state: PropertyValueState::Absent,
@@ -1251,7 +1303,7 @@ impl SemanticProperty {
         }
     }
 
-    pub(crate) fn unresolved(value_type: PropertyType, provenance: PropertyProvenance) -> Self {
+    pub fn unresolved(value_type: PropertyType, provenance: PropertyProvenance) -> Self {
         Self {
             value_type,
             value_state: PropertyValueState::Unresolved,
@@ -1261,7 +1313,7 @@ impl SemanticProperty {
         }
     }
 
-    pub(crate) fn defaulted(
+    pub fn defaulted(
         value_type: PropertyType,
         value: PropertyValue,
         projector_profile: ProjectorProfile,
@@ -1309,7 +1361,7 @@ fn property_value_matches(value_type: &PropertyType, value: &PropertyValue) -> b
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum NavigationTarget {
+pub enum NavigationTarget {
     ObjectPath(String),
     ObjectRef {
         object_ref: ObjectRef,
@@ -1320,29 +1372,29 @@ pub(crate) enum NavigationTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct NavigationQuery {
-    pub(crate) target: NavigationTarget,
-    pub(crate) select: NavigationSelection,
+pub struct NavigationQuery {
+    pub target: NavigationTarget,
+    pub select: NavigationSelection,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct NavigationSelection {
-    pub(crate) properties: PropertySelection,
-    pub(crate) facets: FacetSelection,
-    pub(crate) relations: Vec<RelationSelection>,
+pub struct NavigationSelection {
+    pub properties: PropertySelection,
+    pub facets: FacetSelection,
+    pub relations: Vec<RelationSelection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum PropertySelection {
+pub enum PropertySelection {
     All,
     Named(BTreeSet<String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum FacetSelection {
+pub enum FacetSelection {
     None,
     Summary,
     Full,
@@ -1350,17 +1402,14 @@ pub(crate) enum FacetSelection {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct RelationSelection {
-    pub(crate) kind: RelationKind,
-    pub(crate) role: RelationRole,
-    pub(crate) page_size: u16,
+pub struct RelationSelection {
+    pub kind: RelationKind,
+    pub role: RelationRole,
+    pub page_size: u16,
 }
 
 impl RelationSelection {
-    pub(crate) fn new(
-        role: impl AsRef<str>,
-        page_size: Option<u16>,
-    ) -> Result<Self, SourceAdapterError> {
+    pub fn new(role: impl AsRef<str>, page_size: Option<u16>) -> Result<Self, SourceAdapterError> {
         let role = RelationRole::parse(role.as_ref())?;
         let page_size = page_size.unwrap_or(25);
         if page_size == 0 || page_size > 100 {
@@ -1380,7 +1429,7 @@ impl RelationSelection {
 /// Produces the sole canonical selection representation used for runtime
 /// paging, cursor payloads, and selection hashes. Raw omitted kinds are
 /// represented as `Contains` before this function is called.
-pub(crate) fn normalize_navigation_selection(
+pub fn normalize_navigation_selection(
     mut selection: NavigationSelection,
 ) -> Result<NavigationSelection, SourceAdapterError> {
     if let PropertySelection::Named(names) = &selection.properties {
@@ -1432,24 +1481,24 @@ pub(crate) fn normalize_navigation_selection(
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct NavigationCursor {
-    pub(crate) schema_version: u16,
-    pub(crate) source_id: SourceId,
-    pub(crate) snapshot_revision: SourceRevision,
-    pub(crate) target: ObjectKey,
-    pub(crate) relation: RelationKey,
-    pub(crate) relation_role: RelationRole,
-    pub(crate) relation_kind: RelationKind,
-    pub(crate) selection: NavigationSelection,
-    pub(crate) selection_hash: String,
-    pub(crate) auth_tag: String,
-    pub(crate) next_position: u64,
+pub struct NavigationCursor {
+    pub schema_version: u16,
+    pub source_id: SourceId,
+    pub snapshot_revision: SourceRevision,
+    pub target: ObjectKey,
+    pub relation: RelationKey,
+    pub relation_role: RelationRole,
+    pub relation_kind: RelationKind,
+    pub selection: NavigationSelection,
+    pub selection_hash: String,
+    pub auth_tag: String,
+    pub next_position: u64,
 }
 
 impl NavigationCursor {
-    pub(crate) const SCHEMA_VERSION: u16 = 1;
+    pub const SCHEMA_VERSION: u16 = 1;
 
-    pub(crate) fn issue(
+    pub fn issue(
         secret: &[u8],
         source_id: SourceId,
         snapshot_revision: SourceRevision,
@@ -1483,10 +1532,7 @@ impl NavigationCursor {
         Ok(cursor)
     }
 
-    pub(crate) fn resume(
-        &self,
-        current_revision: &SourceRevision,
-    ) -> Result<(), SourceAdapterError> {
+    pub fn resume(&self, current_revision: &SourceRevision) -> Result<(), SourceAdapterError> {
         if &self.snapshot_revision != current_revision {
             return Err(SourceAdapterError::new(
                 SourceAdapterErrorKind::SnapshotStale,
@@ -1496,7 +1542,7 @@ impl NavigationCursor {
         Ok(())
     }
 
-    pub(crate) fn decode<F>(
+    pub fn decode<F>(
         value: serde_json::Value,
         secret: &[u8],
         current_revision: &SourceRevision,
@@ -1510,13 +1556,13 @@ impl NavigationCursor {
         Self::decode_authenticated(&value, current_revision, expected_selection, re_resolve)
     }
 
-    pub(crate) fn authenticate(
+    pub fn authenticate(
         value: &serde_json::Value,
         secret: &[u8],
     ) -> Result<(), SourceAdapterError> {
         let parts = cursor_wire_parts(value)?;
         let tag = hex_decode(parts.auth_tag)?;
-        let mac = cursor_mac_parts(
+        let expected_tag = cursor_mac_parts(
             secret,
             parts.schema_version,
             parts.source_id,
@@ -1528,15 +1574,17 @@ impl NavigationCursor {
             parts.selection_hash,
             parts.next_position,
         )?;
-        mac.verify_slice(&tag).map_err(|_| {
-            SourceAdapterError::new(
+        if constant_time_eq(&expected_tag, &tag) {
+            Ok(())
+        } else {
+            Err(SourceAdapterError::new(
                 SourceAdapterErrorKind::DecodeCorrupted,
                 "navigation cursor authentication failed",
-            )
-        })
+            ))
+        }
     }
 
-    pub(crate) fn decode_authenticated<F>(
+    pub fn decode_authenticated<F>(
         value: &serde_json::Value,
         current_revision: &SourceRevision,
         expected_selection: &NavigationSelection,
@@ -1602,10 +1650,7 @@ impl NavigationCursor {
     }
 }
 
-fn cursor_mac(
-    secret: &[u8],
-    cursor: &NavigationCursor,
-) -> Result<Hmac<Sha256>, SourceAdapterError> {
+fn cursor_mac(secret: &[u8], cursor: &NavigationCursor) -> Result<[u8; 32], SourceAdapterError> {
     cursor_mac_parts(
         secret,
         cursor.schema_version,
@@ -1644,13 +1689,7 @@ fn cursor_mac_parts(
     relation_kind: &str,
     selection_hash: &str,
     next_position: u64,
-) -> Result<Hmac<Sha256>, SourceAdapterError> {
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret).map_err(|_| {
-        SourceAdapterError::new(
-            SourceAdapterErrorKind::DecodeCorrupted,
-            "navigation cursor key is invalid",
-        )
-    })?;
+) -> Result<[u8; 32], SourceAdapterError> {
     let canonical = serde_json::to_vec(&CursorAuthClaims {
         schema_version,
         source_id,
@@ -1668,9 +1707,51 @@ fn cursor_mac_parts(
             format!("cannot serialize navigation cursor: {error}"),
         )
     })?;
-    mac.update(b"unica.navigation.cursor.auth.v2\0");
-    mac.update(&canonical);
-    Ok(mac)
+    let mut message =
+        Vec::with_capacity(b"unica.navigation.cursor.auth.v2\0".len() + canonical.len());
+    message.extend_from_slice(b"unica.navigation.cursor.auth.v2\0");
+    message.extend_from_slice(&canonical);
+    Ok(hmac_sha256(secret, &message))
+}
+
+fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
+    const BLOCK_BYTES: usize = 64;
+
+    let mut key_block = [0_u8; BLOCK_BYTES];
+    if key.len() > BLOCK_BYTES {
+        key_block[..32].copy_from_slice(&Sha256::digest(key));
+    } else {
+        key_block[..key.len()].copy_from_slice(key);
+    }
+
+    let mut inner_pad = [0x36_u8; BLOCK_BYTES];
+    let mut outer_pad = [0x5c_u8; BLOCK_BYTES];
+    for index in 0..BLOCK_BYTES {
+        inner_pad[index] ^= key_block[index];
+        outer_pad[index] ^= key_block[index];
+    }
+
+    let mut inner = Sha256::new();
+    inner.update(inner_pad);
+    inner.update(message);
+    let inner_digest = inner.finalize();
+
+    let mut outer = Sha256::new();
+    outer.update(outer_pad);
+    outer.update(inner_digest);
+    outer.finalize().into()
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right)
+        .fold(0_u8, |difference, (left, right)| {
+            difference | (left ^ right)
+        })
+        == 0
 }
 
 struct CursorWireParts<'a> {
@@ -1773,9 +1854,7 @@ fn relation_kind_token(kind: RelationKind) -> &'static str {
 }
 
 fn cursor_auth_tag(secret: &[u8], cursor: &NavigationCursor) -> Result<String, SourceAdapterError> {
-    Ok(hex_encode(
-        &cursor_mac(secret, cursor)?.finalize().into_bytes(),
-    ))
+    Ok(hex_encode(&cursor_mac(secret, cursor)?))
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -1802,7 +1881,7 @@ fn hex_decode(value: &str) -> Result<Vec<u8>, SourceAdapterError> {
         .collect()
 }
 
-pub(crate) fn normalized_selection_hash(
+pub fn normalized_selection_hash(
     selection: &NavigationSelection,
 ) -> Result<String, SourceAdapterError> {
     let normalized = normalize_navigation_selection(selection.clone())?;
@@ -1873,6 +1952,21 @@ mod tests {
             facets: FacetSelection::Summary,
             relations: vec![RelationSelection::new("attributes", Some(25)).unwrap()],
         }
+    }
+
+    #[test]
+    fn uuid_values_normalize_supported_forms_and_reject_misplaced_hyphens() {
+        let value = UuidValue::from_str("{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}").unwrap();
+        assert_eq!(value.as_str(), "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+        assert!(UuidValue::from_str("aaaaaaaa-bbbbcccc-dddd-eeee-eeeeeeee").is_err());
+    }
+
+    #[test]
+    fn hmac_sha256_matches_rfc_4231_case_one() {
+        assert_eq!(
+            hex_encode(&hmac_sha256(&[0x0b; 20], b"Hi There")),
+            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
+        );
     }
 
     #[test]

@@ -1,5 +1,9 @@
 [workspace]
-members = ["crates/unica-bootstrap", "crates/unica-coder"]
+members = [
+  "crates/unica-bootstrap",
+  "crates/unica-coder",
+  "crates/unica-format-core",
+]
 resolver = "2"
 
 [workspace.package]
@@ -31,6 +35,7 @@ tar = "0.4"
 roxmltree = "0.20"
 quick-xml = "0.37"
 rusqlite = { version = "0.32", features = ["bundled"] }
+unica-format-core = { path = "crates/unica-format-core" }
 ureq = { version = "2.12", features = ["json"] }
 uuid = { version = "1", features = ["v4"] }
 windows-sys = { version = "0.59", features = [

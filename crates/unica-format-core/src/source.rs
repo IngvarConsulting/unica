@@ -1,14 +1,90 @@
 use std::collections::BTreeSet;
 use std::fmt::{Display, Formatter};
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+/// Physical locations authorized by the host for one source operation.
+///
+/// This is an inert value object: the core crate never reads or writes these
+/// paths. Adapters may use it without depending on a host-specific workspace
+/// context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceLocation {
+    workspace_root: PathBuf,
+    source_root: PathBuf,
+    target: PathBuf,
+}
+
+impl SourceLocation {
+    pub fn new(workspace_root: PathBuf, source_root: PathBuf, target: PathBuf) -> Self {
+        Self {
+            workspace_root,
+            source_root,
+            target,
+        }
+    }
+
+    pub fn workspace_root(&self) -> &Path {
+        &self.workspace_root
+    }
+
+    pub fn source_root(&self) -> &Path {
+        &self.source_root
+    }
+
+    pub fn target(&self) -> &Path {
+        &self.target
+    }
+}
+
+/// Format-neutral source declaration plus its host-authorized locations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceContext {
+    location: SourceLocation,
+    configured_source_set: Option<String>,
+    declared_family: SourceFamily,
+    declared_format: Option<FormatVersion>,
+}
+
+impl SourceContext {
+    pub fn new(
+        location: SourceLocation,
+        configured_source_set: Option<String>,
+        declared_family: SourceFamily,
+        declared_format: Option<FormatVersion>,
+    ) -> Self {
+        Self {
+            location,
+            configured_source_set,
+            declared_family,
+            declared_format,
+        }
+    }
+
+    pub fn location(&self) -> &SourceLocation {
+        &self.location
+    }
+
+    pub fn configured_source_set(&self) -> Option<&str> {
+        self.configured_source_set.as_deref()
+    }
+
+    pub fn declared_family(&self) -> &SourceFamily {
+        &self.declared_family
+    }
+
+    pub fn declared_format(&self) -> Option<&FormatVersion> {
+        self.declared_format.as_ref()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct FormatVersion(Vec<u32>);
+pub struct FormatVersion(Vec<u32>);
 
 impl FormatVersion {
-    pub(crate) fn parse(raw: &str) -> Result<Self, SourceAdapterError> {
+    pub fn parse(raw: &str) -> Result<Self, SourceAdapterError> {
         let parts = raw
             .split('.')
             .map(str::parse::<u32>)
@@ -52,27 +128,27 @@ impl Serialize for FormatVersion {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct FormatRange {
-    pub(crate) min_inclusive: FormatVersion,
-    pub(crate) max_inclusive: FormatVersion,
+pub struct FormatRange {
+    pub min_inclusive: FormatVersion,
+    pub max_inclusive: FormatVersion,
 }
 
 impl FormatRange {
-    pub(crate) fn exact(version: FormatVersion) -> Self {
+    pub fn exact(version: FormatVersion) -> Self {
         Self {
             min_inclusive: version.clone(),
             max_inclusive: version,
         }
     }
 
-    pub(crate) fn contains(&self, version: &FormatVersion) -> bool {
+    pub fn contains(&self, version: &FormatVersion) -> bool {
         self.min_inclusive <= *version && *version <= self.max_inclusive
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum SourceFamily {
+pub enum SourceFamily {
     PlatformXml,
     Edt,
     Cf,
@@ -81,7 +157,7 @@ pub(crate) enum SourceFamily {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum SnapshotConsistency {
+pub enum SnapshotConsistency {
     Consistent,
     Partial,
     Changed,
@@ -90,7 +166,7 @@ pub(crate) enum SnapshotConsistency {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum AdapterMaturity {
+pub enum AdapterMaturity {
     Experimental,
     ProbeComplete,
     ReadCompatible,
@@ -100,27 +176,27 @@ pub(crate) enum AdapterMaturity {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum SourceAccess {
+pub enum SourceAccess {
     ReadOnly,
     ReadWrite,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SourceId(String);
+pub struct SourceId(String);
 
 impl SourceId {
-    pub(crate) fn new(raw: impl Into<String>) -> Result<Self, SourceAdapterError> {
+    pub fn new(raw: impl Into<String>) -> Result<Self, SourceAdapterError> {
         let raw = raw.into();
         validate_source_value(&raw, "source id")?;
         Ok(Self(raw))
     }
 
-    pub(crate) fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         &self.0
     }
 }
 
-pub(crate) fn source_id_for_configured_source_set(
+pub fn source_id_for_configured_source_set(
     source_set: &str,
 ) -> Result<SourceId, SourceAdapterError> {
     if source_set.is_empty() {
@@ -156,16 +232,16 @@ impl Serialize for SourceId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SourceRevision(String);
+pub struct SourceRevision(String);
 
 impl SourceRevision {
-    pub(crate) fn new(raw: impl Into<String>) -> Result<Self, SourceAdapterError> {
+    pub fn new(raw: impl Into<String>) -> Result<Self, SourceAdapterError> {
         let raw = raw.into();
         validate_source_value(&raw, "source revision")?;
         Ok(Self(raw))
     }
 
-    pub(crate) fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         &self.0
     }
 }
@@ -180,10 +256,10 @@ impl Serialize for SourceRevision {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct TargetIdentity(String);
+pub struct TargetIdentity(String);
 
 impl TargetIdentity {
-    pub(crate) fn from_normalized_relative_path(path: &str) -> Result<Self, SourceAdapterError> {
+    pub fn from_normalized_relative_path(path: &str) -> Result<Self, SourceAdapterError> {
         if path.is_empty()
             || path.chars().any(char::is_control)
             || path.contains('\\')
@@ -203,22 +279,22 @@ impl TargetIdentity {
         Ok(Self(format!("target:sha256:{:x}", digest.finalize())))
     }
 
-    pub(crate) fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         &self.0
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct SourceBinding {
-    pub(crate) source_id: SourceId,
-    pub(crate) family: SourceFamily,
-    pub(crate) format: Option<FormatVersion>,
-    pub(crate) target_identity: TargetIdentity,
-    pub(crate) revision: SourceRevision,
+pub struct SourceBinding {
+    pub source_id: SourceId,
+    pub family: SourceFamily,
+    pub format: Option<FormatVersion>,
+    pub target_identity: TargetIdentity,
+    pub revision: SourceRevision,
 }
 
 impl SourceBinding {
-    pub(crate) fn new(
+    pub fn new(
         source_id: SourceId,
         family: SourceFamily,
         format: Option<FormatVersion>,
@@ -247,49 +323,49 @@ fn validate_source_value(raw: &str, value_name: &str) -> Result<(), SourceAdapte
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct SnapshotEvidence {
-    pub(crate) revision: SourceRevision,
-    pub(crate) root_descriptor_digest: String,
+pub struct SnapshotEvidence {
+    pub revision: SourceRevision,
+    pub root_descriptor_digest: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct SourceDescriptor {
-    pub(crate) source_id: SourceId,
-    pub(crate) family: SourceFamily,
-    pub(crate) format_version: FormatVersion,
-    pub(crate) producer_version: Option<FormatVersion>,
-    pub(crate) detected_features: BTreeSet<String>,
-    pub(crate) probe_evidence: Vec<String>,
+pub struct SourceDescriptor {
+    pub source_id: SourceId,
+    pub family: SourceFamily,
+    pub format_version: FormatVersion,
+    pub producer_version: Option<FormatVersion>,
+    pub detected_features: BTreeSet<String>,
+    pub probe_evidence: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) snapshot_evidence: Option<SnapshotEvidence>,
+    pub snapshot_evidence: Option<SnapshotEvidence>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct SourceSnapshot {
-    pub(crate) source_id: SourceId,
-    pub(crate) revision: SourceRevision,
-    pub(crate) consistency: SnapshotConsistency,
-    pub(crate) adapter_id: String,
+pub struct SourceSnapshot {
+    pub source_id: SourceId,
+    pub revision: SourceRevision,
+    pub consistency: SnapshotConsistency,
+    pub adapter_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct AdapterManifest {
-    pub(crate) adapter_id: &'static str,
-    pub(crate) adapter_version: &'static str,
-    pub(crate) source_family: SourceFamily,
-    pub(crate) supported_formats: Vec<FormatRange>,
-    pub(crate) required_features: BTreeSet<String>,
-    pub(crate) excluded_features: BTreeSet<String>,
-    pub(crate) source_access: SourceAccess,
-    pub(crate) maturity: AdapterMaturity,
+pub struct AdapterManifest {
+    pub adapter_id: &'static str,
+    pub adapter_version: &'static str,
+    pub source_family: SourceFamily,
+    pub supported_formats: Vec<FormatRange>,
+    pub required_features: BTreeSet<String>,
+    pub excluded_features: BTreeSet<String>,
+    pub source_access: SourceAccess,
+    pub maturity: AdapterMaturity,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum SourceAdapterErrorKind {
+pub enum SourceAdapterErrorKind {
     SourceUnavailable,
     ProbeAmbiguous,
     FormatUnsupported,
@@ -307,20 +383,20 @@ pub(crate) enum SourceAdapterErrorKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct SourceAdapterError {
-    pub(crate) kind: SourceAdapterErrorKind,
-    pub(crate) message: String,
+pub struct SourceAdapterError {
+    pub kind: SourceAdapterErrorKind,
+    pub message: String,
 }
 
 impl SourceAdapterError {
-    pub(crate) fn new(kind: SourceAdapterErrorKind, message: impl Into<String>) -> Self {
+    pub fn new(kind: SourceAdapterErrorKind, message: impl Into<String>) -> Self {
         Self {
             kind,
             message: message.into(),
         }
     }
 
-    pub(crate) fn code(&self) -> &'static str {
+    pub fn code(&self) -> &'static str {
         match self.kind {
             SourceAdapterErrorKind::SourceUnavailable => "source_unavailable",
             SourceAdapterErrorKind::ProbeAmbiguous => "probe_ambiguous",
