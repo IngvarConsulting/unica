@@ -694,11 +694,13 @@ class PackageUnicaPluginTests(unittest.TestCase):
             for link in local_license_links:
                 self.assertTrue((destination / link).is_file(), link)
 
-    def test_documented_reference_resources_are_packaged(self) -> None:
+    def test_documented_resources_are_packaged(self) -> None:
         module = load_package_module()
         repo_root = Path(__file__).resolve().parents[2]
         plugin_src = repo_root / "plugins" / "unica"
-        pattern = re.compile(r"`((?:\.\./)*references/[^`]+?\.md)`")
+        # Any backticked path to another document; the slash separates a link
+        # from a bare filename mentioned as prose.
+        pattern = re.compile(r"`([^`\s]*/[^`\s]*\.md)`")
 
         with tempfile.TemporaryDirectory() as tmp:
             destination = Path(tmp) / "unica"
@@ -709,13 +711,11 @@ class PackageUnicaPluginTests(unittest.TestCase):
                 relative_doc = doc.relative_to(destination)
                 for link in pattern.findall(doc.read_text(encoding="utf-8")):
                     checked += 1
-                    # Skill prose resolves from its own directory; the
-                    # `references/` tree links from the plugin root.
-                    candidates = [doc.parent / link]
-                    if relative_doc.parts[0] != "skills":
-                        candidates.append(destination / link)
+                    # The package has no repository root and no knowable
+                    # plugin root, so a link only survives packaging when it
+                    # resolves from the document that carries it.
                     self.assertTrue(
-                        any(candidate.is_file() for candidate in candidates),
+                        (doc.parent / link).is_file(),
                         f"{relative_doc}: {link}",
                     )
 

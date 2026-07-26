@@ -6,10 +6,9 @@ import unittest
 from pathlib import Path
 
 
-# Documented reference links, in both the plugin-root-relative form used inside
-# the `references/` tree and the doc-relative `../../references/...` form skills
-# must use.
-REFERENCE_LINK_PATTERN = re.compile(r"`((?:\.\./)*references/[^`]+?\.md)`")
+# Any backticked path to another document. The slash is what separates a link
+# from a bare filename mentioned as prose (`SKILL.md`, `README.md`).
+DOCUMENT_LINK_PATTERN = re.compile(r"`([^`\s]*/[^`\s]*\.md)`")
 
 
 IN_SCOPE_TOOLS = {
@@ -1483,38 +1482,29 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                     with self.subTest(path=path.relative_to(self.repo_root()), pattern=pattern):
                         self.assertIsNone(re.search(pattern, text, flags=re.I))
 
-    def test_documented_reference_paths_exist(self) -> None:
+    def test_documented_paths_resolve_from_the_document_that_carries_them(self) -> None:
+        """A documented link is only unambiguous when it is document-relative.
+
+        The reader of a skill or reference doc has that doc's directory as its
+        only stable anchor: the repository root is absent once the plugin is
+        packaged, and the plugin root is not knowable from the prose. So every
+        link resolves from its own document, and nothing resolves from a root.
+        """
         roots = [
             self.repo_root() / "README.md",
             self.repo_root() / "plugins" / "unica" / "README.md",
-            *self.skill_root().glob("*/SKILL.md"),
+            *self.skill_root().glob("*/**/*.md"),
             *self.reference_root().rglob("*.md"),
         ]
-        for doc in roots:
-            text = doc.read_text(encoding="utf-8")
-            for match in REFERENCE_LINK_PATTERN.findall(text):
-                with self.subTest(doc=doc.relative_to(self.repo_root()), reference=match):
-                    local_target = doc.parent / match
-                    plugin_target = self.repo_root() / "plugins" / "unica" / match
-                    self.assertTrue(local_target.is_file() or plugin_target.is_file())
-
-    def test_skill_reference_paths_resolve_from_the_skill_directory(self) -> None:
-        """Skill prose is read with the skill directory as the working root.
-
-        A bare `references/...` link therefore points inside the skill itself,
-        not at the plugin-root `references/` tree, so every link a skill doc
-        carries has to resolve from that doc's own directory.
-        """
-        docs = sorted(self.skill_root().glob("*/**/*.md"))
-        self.assertTrue(docs)
-
         seen = 0
-        for doc in docs:
+        for doc in sorted(roots):
             text = doc.read_text(encoding="utf-8")
-            for match in REFERENCE_LINK_PATTERN.findall(text):
+            for match in DOCUMENT_LINK_PATTERN.findall(text):
                 seen += 1
-                with self.subTest(doc=doc.relative_to(self.skill_root()), reference=match):
+                with self.subTest(doc=doc.relative_to(self.repo_root()), reference=match):
                     self.assertTrue((doc.parent / match).is_file())
+
+        self.assertGreater(seen, 0)
 
         self.assertGreater(seen, 0)
 

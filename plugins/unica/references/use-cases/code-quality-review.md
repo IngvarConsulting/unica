@@ -31,7 +31,7 @@ with object-specific info tools, source search, syntax checks, and focused tests
 
 ## Related references
 
-- `references/platform/development-standards.md`
-- `references/platform/platform-solutions.md`
-- `references/use-cases/forms-ui.md`
-- `references/use-cases/rights-access.md`
+- `../platform/development-standards.md`
+- `../platform/platform-solutions.md`
+- `forms-ui.md`
+- `rights-access.md`
