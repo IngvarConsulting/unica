@@ -31,3 +31,12 @@ Date: 2026-07-26
 ### Commit
 
 - `fix: preflight XML depth before DOM allocation`
+
+### Empty-element depth correction
+
+- The streaming reader initially counted only `Event::Start`. `Event::Empty` now validates `current_depth + 1` against the same limit without changing the open-element depth.
+- The unit boundary accepts a self-closing leaf at effective depth 64 and rejects depth 65 as `resource_limit` through the common helper before DOM parsing. Root and companion malformed-depth fixtures now reach the excess depth via `Leaf/>`, so they exercise the empty-element branch.
+
+### Commit
+
+- `fix: bound empty XML elements before DOM allocation`

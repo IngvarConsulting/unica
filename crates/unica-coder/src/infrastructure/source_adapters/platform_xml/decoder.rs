@@ -539,23 +539,15 @@ fn preflight_xml_nesting(xml: &str, malformed_message: &str) -> Result<(), Sourc
     loop {
         match reader.read_event() {
             Ok(Event::Start(_)) => {
-                depth = depth.checked_add(1).ok_or_else(|| {
-                    error(
-                        SourceAdapterErrorKind::ResourceLimit,
-                        "Platform XML nesting depth overflow",
-                    )
-                })?;
-                if depth > MAX_NAVIGATION_NESTING_DEPTH {
-                    return Err(error(
-                        SourceAdapterErrorKind::ResourceLimit,
-                        "Platform XML nesting depth exceeds navigation limit",
-                    ));
-                }
+                depth = increment_xml_depth(depth)?;
             }
             Ok(Event::End(_)) => {
                 depth = depth
                     .checked_sub(1)
                     .ok_or_else(|| corrupted(malformed_message))?;
+            }
+            Ok(Event::Empty(_)) => {
+                let _ = increment_xml_depth(depth)?;
             }
             Ok(Event::Eof) => break,
             Ok(_) => {}
@@ -567,6 +559,22 @@ fn preflight_xml_nesting(xml: &str, malformed_message: &str) -> Result<(), Sourc
     } else {
         Err(corrupted(malformed_message))
     }
+}
+
+fn increment_xml_depth(depth: usize) -> Result<usize, SourceAdapterError> {
+    let next_depth = depth.checked_add(1).ok_or_else(|| {
+        error(
+            SourceAdapterErrorKind::ResourceLimit,
+            "Platform XML nesting depth overflow",
+        )
+    })?;
+    if next_depth > MAX_NAVIGATION_NESTING_DEPTH {
+        return Err(error(
+            SourceAdapterErrorKind::ResourceLimit,
+            "Platform XML nesting depth exceeds navigation limit",
+        ));
+    }
+    Ok(next_depth)
 }
 
 fn single_metadata_class<'a, 'input>(
@@ -1483,6 +1491,26 @@ mod tests {
     }
 
     #[test]
+    fn streaming_xml_depth_preflight_bounds_empty_elements_before_dom_parse() {
+        let at_limit = nested_empty_leaf_xml(MAX_NAVIGATION_NESTING_DEPTH - 1, true);
+        assert!(super::parse_bounded_xml_document(
+            at_limit.as_bytes(),
+            "invalid UTF-8",
+            "malformed XML",
+        )
+        .is_ok());
+
+        let over_limit = nested_empty_leaf_xml(MAX_NAVIGATION_NESTING_DEPTH, false);
+        let error = super::parse_bounded_xml_document(
+            over_limit.as_bytes(),
+            "invalid UTF-8",
+            "malformed XML",
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, SourceAdapterErrorKind::ResourceLimit);
+    }
+
+    #[test]
     fn companion_metadata_class_max_plus_one_stops_without_collecting_all_classes() {
         let mut classes = String::new();
         for _ in 0..=MAX_NAVIGATION_NODES {
@@ -2177,8 +2205,23 @@ mod tests {
 
     fn deeply_nested_unclosed_xml(root: &str, namespace: &str) -> String {
         let mut xml = format!("<{root} xmlns=\"{namespace}\">");
-        for _ in 0..MAX_NAVIGATION_NESTING_DEPTH {
+        for _ in 1..MAX_NAVIGATION_NESTING_DEPTH {
             xml.push_str("<Nested>");
+        }
+        xml.push_str("<Leaf/>");
+        xml
+    }
+
+    fn nested_empty_leaf_xml(container_depth: usize, close_containers: bool) -> String {
+        let mut xml = String::new();
+        for _ in 0..container_depth {
+            xml.push_str("<Container>");
+        }
+        xml.push_str("<Leaf/>");
+        if close_containers {
+            for _ in 0..container_depth {
+                xml.push_str("</Container>");
+            }
         }
         xml
     }
