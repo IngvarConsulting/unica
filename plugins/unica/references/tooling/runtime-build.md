@@ -126,9 +126,20 @@
 > Ниже приведён низкоуровневый синтаксис платформы, а не рекомендуемый путь
 > Unica. Не направляй incremental/partial/CDFI-only команды прямо в
 > Git-visible source root: они допустимы только во временный private staging,
-> принадлежащий runtime-слою. Пока `alkoleft/v8-runner-rust#30` не реализован,
-> applied-вызовы Unica разрешают только явный `mode=full`; остальные режимы
-> доступны лишь как `dryRun=true` preview.
+> принадлежащий runtime-слою. Синхронный applied `mode=full` для DESIGNER
+> configuration/extension проходит через внешний private stage Unica:
+> платформа независимо фиксируется на exact 8.3.27.x, XML проверяется на raw
+> `version="2.20"` до целой публикации. Async full и external source-set пока
+> preview-only. Неполные режимы дополнительно не имеют безопасного merge receipt.
+> На Windows applied full dump пока fail-closed: owner-only ACL и handle-safe
+> no-clobber публикация каталогов ещё не реализованы; preview остаётся
+> read-only. Поддерживаемый POSIX-маршрут проверяет физические DESIGNER-маркеры,
+> exact sibling `ibcmd --version` и отделяет secret-bearing effective config от
+> сохраняемого recovery. Установка платформы должна целиком принадлежать root,
+> не иметь group/world write, ACL и ссылок и быть неизменяемой для запускающего
+> non-root пользователя. Пользовательская установка отклоняется до `ibcmd` и
+> `v8-runner`; ACL-доказательство поддержано на macOS/Linux, прочие Unix
+> fail-closed.
 
 **Полная выгрузка** — все объекты конфигурации:
 ```
@@ -310,13 +321,16 @@ EPF/ERF workflows в packaged Unica plugin идут через `v8-runner` и MC
       "operation": "dump",
       "cwd": "<workspace>",
       "sourceSet": "external-processors",
-      "mode": "full"
+      "mode": "full",
+      "dryRun": true
     }
   }
 }
 ```
 
 Для выгрузки внешних отчетов используй `sourceSet: "external-reports"`.
+Сейчас это только preview: applied external dump блокируется до появления
+такой же проверяемой private-stage публикации, как для configuration/extension.
 
 ### Загрузка XML-исходников в базу
 
@@ -338,7 +352,7 @@ EPF/ERF workflows в packaged Unica plugin идут через `v8-runner` и MC
 
 ### Примечания
 
-- `operation=load` предназначен для `.cf` и `.cfe`; `.epf` и `.erf` проходят через `build`, `dump` и `make` external source-set.
+- `operation=load` предназначен для `.cf` и `.cfe`; `.epf` и `.erf` проходят через `build` и `make` external source-set, а `dump` external source-set пока доступен только с `dryRun=true`.
 - Внешние source-set должны быть объявлены в `v8project.yaml` с типами `EXTERNAL_DATA_PROCESSORS` или `EXTERNAL_REPORTS`.
 - Dump требует базу с конфигурацией, содержащей используемые типы. Dump в пустой базе может потерять ссылочные типы (`CatalogRef.XXX` превращается в `xs:string`).
 - Категории колонок регистров (Dimension/Resource/Attribute) зависят от Form.xml и конфигурации базы; при round-trip через неподходящую базу привязки полей формы могут не сохраниться.
@@ -399,12 +413,17 @@ Legitimate metadata descriptor (включая external EPF/ERF) объекта 
 
 Платформа предоставляет параметры для использования вспомогательного CDFI при
 сравнении, но управление приватным CDFI для пары `source-set + ИБ` относится к
-runtime-слою. До реализации private state и shadow publication в
-`alkoleft/v8-runner-rust#30` Unica разрешает применяемый `dump` только с
-`mode=full`. `mode=incremental|partial` доступен лишь с `dryRun=true`: для
-DESIGNER закреплённый runner пишет эти режимы прямо в рабочий source root; EDT
-публикует итог через staging, но ни один путь не возвращает точные processed
-paths/hashes и не выполняет divergence-safe merge.
+runtime-слою. Синхронный applied `mode=full` для DESIGNER
+configuration/extension безопасно оборачивается Unica: выбранный source-set
+перенаправляется во внешний private stage, платформа проверяется как exact
+8.3.27.x, а version-bearing XML roots — как raw `2.20`; только затем целое
+дерево публикуется с проверкой preimage и rollback. До реализации private state
+и shadow publication в `alkoleft/v8-runner-rust#30`
+`mode=incremental|partial` остаётся preview-only: закреплённый runner не
+возвращает точные processed paths/hashes и не выполняет divergence-safe merge.
+Applied-маршрут принимает только системную root-owned установку платформы,
+неизменяемую для вызывающего non-root пользователя; user-owned install не
+исполняется.
 
 ## Переменные окружения
 

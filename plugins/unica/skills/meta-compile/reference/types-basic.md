@@ -77,6 +77,13 @@ RegisterRecords — массив строк: `"AccumulationRegister.Продаж
 
 `valueType` принимает shorthand типа: `"String(100)"`, `"Number(15,2)"`, `"Boolean"`, `"CatalogRef.Валюты"`.
 
+В профиле 8.3.27 `String` принимает целую длину `0..=1024`, а `Number` —
+целые `digits` `0..=38` и `fraction` `0..=digits`. `ValueStorage` сериализуется
+как `v8:ValueStorage` и не объединяется с другими типами.
+Повтор одного платформенного типа запрещён. Конфигурационные ссылки внутри
+составного типа сохраняют входной порядок: канонический порядок платформа
+вычисляет по `GeneratedType/xr:TypeId`, которого нет у автономного writer.
+
 ```json
 { "type": "Constant", "name": "ОсновнаяВалюта", "valueType": "CatalogRef.Валюты" }
 ```

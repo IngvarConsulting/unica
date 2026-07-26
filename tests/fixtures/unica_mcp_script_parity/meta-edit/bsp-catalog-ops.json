@@ -5,7 +5,7 @@
         "name": "ParityCode",
         "type": "String(12)",
         "synonym": "Parity code",
-        "fillChecking": "ShowWarning",
+        "fillChecking": "ShowError",
         "indexing": "Index",
         "after": "НаименованиеПолное"
       }

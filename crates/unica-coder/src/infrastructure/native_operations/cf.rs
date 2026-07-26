@@ -1,10 +1,14 @@
 #![allow(dead_code, unused_imports)]
 
 use crate::application::AdapterOutcome;
+use crate::domain::format_profile::{
+    classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
+};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::{
     metadata_kind, metadata_kind_by_directory, metadata_kind_index, METADATA_KIND_TAGS,
 };
+use crate::infrastructure::platform_xml_owner::root_version_literal;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -14,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::common::*;
+use super::compile_transaction::CompileTransaction;
 use super::single_file_publisher::{publish, PublishEffect, PublishMode, PublishRequest};
 use super::{
     cfe::*, dcs::*, form::*, interface::*, meta::*, mxl::*, role::*, subsystem::*, template::*,
@@ -38,7 +43,6 @@ pub(crate) struct CfValidationReporter {
 pub(crate) struct CfValidationRun {
     pub(crate) ok: bool,
     pub(crate) stdout: String,
-    pub(crate) out_file: Option<PathBuf>,
     pub(crate) artifact: PathBuf,
     pub(crate) errors: Vec<String>,
 }
@@ -109,46 +113,56 @@ impl CfValidationReporter {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CfValidationScope {
+    Full,
+    OwnerShape,
+}
+
 pub(crate) fn validate_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
+    validate_cf_with_scope(args, context, CfValidationScope::Full)
+}
+
+pub(crate) fn validate_cf_owner_path(
+    path: &Path,
+    context: &WorkspaceContext,
+) -> Result<(), String> {
+    let args = Map::from_iter([(
+        "ConfigPath".to_string(),
+        Value::String(path.display().to_string()),
+    )]);
+    let outcome = validate_cf_with_scope(&args, context, CfValidationScope::OwnerShape);
+    if outcome.ok {
+        Ok(())
+    } else if outcome.errors.is_empty() {
+        Err(outcome.summary)
+    } else {
+        Err(outcome.errors.join("; "))
+    }
+}
+
+fn validate_cf_with_scope(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+    scope: CfValidationScope,
+) -> AdapterOutcome {
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
     const XR_NS: &str = "http://v8.1c.ru/8.3/xcf/readable";
     const HP_NS: &str = "http://v8.1c.ru/8.3/xcf/extrnprops";
 
     let result = (|| -> Result<CfValidationRun, String> {
-        let raw_path = required_path(
-            args,
-            &["configPath", "ConfigPath", "path", "Path"],
-            "ConfigPath",
-        )?;
-        let mut config_path = absolutize(raw_path, &context.cwd);
-        if config_path.is_dir() {
-            let candidate = config_path.join("Configuration.xml");
-            if candidate.exists() {
-                config_path = candidate;
-            } else {
-                return Err(format!(
-                    "[ERROR] No Configuration.xml found in directory: {}",
-                    config_path.display()
-                ));
-            }
-        }
-        if !config_path.exists() {
-            return Err(format!("[ERROR] File not found: {}", config_path.display()));
-        }
-        let resolved_path = config_path
-            .canonicalize()
-            .unwrap_or_else(|_| config_path.clone());
+        let resolved_path = resolve_cf_read_config_path(args, context)?;
         let config_dir = resolved_path.parent().unwrap_or(context.cwd.as_path());
-        let out_file =
-            path_arg(args, &["outFile", "OutFile"]).map(|path| absolutize(path, &context.cwd));
         let detailed = bool_arg(args, &["detailed", "Detailed"]);
+        let owner_shape_only = scope == CfValidationScope::OwnerShape;
         let max_errors = int_arg(args, &["maxErrors", "MaxErrors"])
             .and_then(|value| usize::try_from(value).ok())
             .filter(|value| *value > 0)
             .unwrap_or(30);
 
         let text = read_utf8_sig(&resolved_path)?;
-        let doc = match Document::parse(text.trim_start_matches('\u{feff}')) {
+        let source = text.trim_start_matches('\u{feff}');
+        let doc = match Document::parse(source) {
             Ok(doc) => doc,
             Err(err) => {
                 let mut report = CfValidationReporter::new(max_errors, detailed);
@@ -158,7 +172,6 @@ pub(crate) fn validate_cf(args: &Map<String, Value>, context: &WorkspaceContext)
                 return Ok(CfValidationRun {
                     ok,
                     stdout,
-                    out_file,
                     artifact: resolved_path,
                     errors,
                 });
@@ -178,7 +191,6 @@ pub(crate) fn validate_cf(args: &Map<String, Value>, context: &WorkspaceContext)
             return Ok(CfValidationRun {
                 ok,
                 stdout,
-                out_file,
                 artifact: resolved_path,
                 errors,
             });
@@ -189,14 +201,13 @@ pub(crate) fn validate_cf(args: &Map<String, Value>, context: &WorkspaceContext)
             ));
             check1_ok = false;
         }
-        let version = root.attribute("version").unwrap_or("");
-        if version.is_empty() {
-            report.warn("1. Missing version attribute on MetaDataObject");
-        } else if !matches!(version, "2.17" | "2.20" | "2.21") {
-            report.warn(format!(
-                "1. Unusual version '{version}' (expected 2.17, 2.20 or 2.21)"
-            ));
+        let version_literal = root_version_literal(source, root);
+        match classify_root_version(version_literal.as_deref()) {
+            Ok(FormatCompatibility::Supported { .. }) => report.ok("Export format: 2.20"),
+            Ok(compatibility) => report.warn(format_compatibility_warning(&compatibility)),
+            Err(error) => report.error(error.to_string()),
         }
+        let version = version_literal.as_deref().unwrap_or("");
 
         let Some(cfg_node) = root
             .children()
@@ -207,7 +218,6 @@ pub(crate) fn validate_cf(args: &Map<String, Value>, context: &WorkspaceContext)
             return Ok(CfValidationRun {
                 ok,
                 stdout,
-                out_file,
                 artifact: resolved_path,
                 errors,
             });
@@ -247,7 +257,6 @@ pub(crate) fn validate_cf(args: &Map<String, Value>, context: &WorkspaceContext)
             return Ok(CfValidationRun {
                 ok,
                 stdout,
-                out_file,
                 artifact: resolved_path,
                 errors,
             });
@@ -318,7 +327,6 @@ pub(crate) fn validate_cf(args: &Map<String, Value>, context: &WorkspaceContext)
             return Ok(CfValidationRun {
                 ok,
                 stdout,
-                out_file,
                 artifact: resolved_path,
                 errors,
             });
@@ -377,9 +385,26 @@ pub(crate) fn validate_cf(args: &Map<String, Value>, context: &WorkspaceContext)
                     enum_checked += 1;
                 }
             }
+            let mut boolean_checked = 0usize;
+            for property in cf_validate_boolean_properties() {
+                let Some(property_node) = props_node
+                    .children()
+                    .find(|node| role_info_element(*node, property, Some(MD_NS)))
+                else {
+                    continue;
+                };
+                let value = property_node.text().unwrap_or("");
+                if !matches!(value, "true" | "false") {
+                    report.error(format!(
+                        "4. Property '{property}' has invalid boolean value '{value}'; expected one of: true, false"
+                    ));
+                    check4_ok = false;
+                }
+                boolean_checked += 1;
+            }
             if check4_ok {
                 report.ok(format!(
-                    "4. Property values: {enum_checked} enum properties checked"
+                    "4. Property values: {enum_checked} enum and {boolean_checked} boolean properties checked"
                 ));
             }
         } else {
@@ -391,7 +416,6 @@ pub(crate) fn validate_cf(args: &Map<String, Value>, context: &WorkspaceContext)
             return Ok(CfValidationRun {
                 ok,
                 stdout,
-                out_file,
                 artifact: resolved_path,
                 errors,
             });
@@ -543,7 +567,6 @@ pub(crate) fn validate_cf(args: &Map<String, Value>, context: &WorkspaceContext)
             return Ok(CfValidationRun {
                 ok,
                 stdout,
-                out_file,
                 artifact: resolved_path,
                 errors,
             });
@@ -552,7 +575,7 @@ pub(crate) fn validate_cf(args: &Map<String, Value>, context: &WorkspaceContext)
         let mut form_refs_checked = 0usize;
         let mut form_ref_errors = Vec::new();
         let home_page = config_dir.join("Ext").join("HomePageWorkArea.xml");
-        if home_page.is_file() {
+        if !owner_shape_only && home_page.is_file() {
             match read_utf8_sig(&home_page) {
                 Ok(home_page_text) => {
                     match Document::parse(home_page_text.trim_start_matches('\u{feff}')) {
@@ -611,54 +634,27 @@ pub(crate) fn validate_cf(args: &Map<String, Value>, context: &WorkspaceContext)
         Ok(CfValidationRun {
             ok,
             stdout,
-            out_file,
             artifact: resolved_path,
             errors,
         })
     })();
 
     match result {
-        Ok(run) => {
-            let mut stdout = run.stdout.clone();
-            let mut artifacts = vec![run.artifact.display().to_string()];
-            if let Some(out_file) = &run.out_file {
-                match write_utf8_bom(out_file, &run.stdout) {
-                    Ok(()) => {
-                        stdout.push_str(&format!("Written to: {}\n", out_file.display()));
-                        artifacts.push(out_file.display().to_string());
-                    }
-                    Err(error) => {
-                        return AdapterOutcome {
-                            ok: false,
-                            summary: "unica.cf.validate failed in native configuration validator"
-                                .to_string(),
-                            changes: Vec::new(),
-                            warnings: Vec::new(),
-                            errors: vec![error.clone()],
-                            artifacts,
-                            stdout: None,
-                            stderr: Some(format!("{error}\n")),
-                            command: None,
-                        };
-                    }
-                }
-            }
-            AdapterOutcome {
-                ok: run.ok,
-                summary: if run.ok {
-                    "unica.cf.validate completed with native configuration validator".to_string()
-                } else {
-                    "unica.cf.validate failed in native configuration validator".to_string()
-                },
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: run.errors,
-                artifacts,
-                stdout: Some(stdout),
-                stderr: Some(String::new()),
-                command: None,
-            }
-        }
+        Ok(run) => AdapterOutcome {
+            ok: run.ok,
+            summary: if run.ok {
+                "unica.cf.validate completed with native configuration validator".to_string()
+            } else {
+                "unica.cf.validate failed in native configuration validator".to_string()
+            },
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: run.errors,
+            artifacts: vec![run.artifact.display().to_string()],
+            stdout: Some(run.stdout),
+            stderr: Some(String::new()),
+            command: None,
+        },
         Err(error) => AdapterOutcome {
             ok: false,
             summary: "unica.cf.validate failed in native configuration validator".to_string(),
@@ -742,6 +738,14 @@ pub(crate) fn cf_validate_enum_properties() -> &'static [&'static str] {
     ]
 }
 
+pub(crate) fn cf_validate_boolean_properties() -> &'static [&'static str] {
+    &[
+        "IncludeHelpInContents",
+        "UseManagedFormInOrdinaryApplication",
+        "UseOrdinaryFormInManagedApplication",
+    ]
+}
+
 pub(crate) fn cf_validate_enum_allowed(property: &str) -> &'static [&'static str] {
     const COMPAT: &[&str] = &[
         "DontUse",
@@ -775,8 +779,6 @@ pub(crate) fn cf_validate_enum_allowed(property: &str) -> &'static [&'static str
         "Version8_3_25",
         "Version8_3_26",
         "Version8_3_27",
-        "Version8_3_28",
-        "Version8_5_1",
     ];
     match property {
         "ConfigurationExtensionCompatibilityMode" | "CompatibilityMode" => COMPAT,
@@ -792,10 +794,6 @@ pub(crate) fn cf_validate_enum_allowed(property: &str) -> &'static [&'static str
             "Version8_2EnableTaxi",
             "Taxi",
             "TaxiEnableVersion8_2",
-            "TaxiEnableVersion8_5",
-            "Version8_5EnableTaxi",
-            "Version8_5",
-            "Version8_3_24",
         ],
         "DatabaseTablespacesUseMode" => &["DontUse", "Use"],
         "MainClientApplicationWindowMode" => &["Normal", "Fullscreen", "Kiosk"],
@@ -874,27 +872,8 @@ pub(crate) fn analyze_cf_info(
 ) -> AdapterOutcome {
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
-    let result = (|| -> Result<(String, Option<PathBuf>, PathBuf), String> {
-        let raw_path = required_path(
-            args,
-            &["configPath", "ConfigPath", "path", "Path"],
-            "ConfigPath",
-        )?;
-        let mut config_path = absolutize(raw_path, &context.cwd);
-        if config_path.is_dir() {
-            let candidate = config_path.join("Configuration.xml");
-            if candidate.is_file() {
-                config_path = candidate;
-            } else {
-                return Err(format!(
-                    "[ERROR] No Configuration.xml found in directory: {}",
-                    config_path.display()
-                ));
-            }
-        }
-        if !config_path.is_file() {
-            return Err(format!("[ERROR] File not found: {}", config_path.display()));
-        }
+    let result = (|| -> Result<(String, PathBuf), String> {
+        let config_path = resolve_cf_read_config_path(args, context)?;
 
         let text = fs::read_to_string(&config_path)
             .map_err(|err| format!("failed to read {}: {err}", config_path.display()))?;
@@ -921,8 +900,6 @@ pub(crate) fn analyze_cf_info(
 
         let mode = string_arg(args, &["mode", "Mode"]).unwrap_or("overview");
         let section = string_arg(args, &["section", "Section", "name", "Name"]).unwrap_or("");
-        let out_file =
-            path_arg(args, &["outFile", "OutFile"]).map(|path| absolutize(path, &context.cwd));
 
         let version = root.attribute("version").unwrap_or("");
         let cfg_name = cf_prop_text(props, "Name");
@@ -1045,33 +1022,21 @@ pub(crate) fn analyze_cf_info(
         }
 
         let result_text = cf_paginate(lines, args);
-        let mut stdout = format!("{result_text}\n");
-        if let Some(out_file) = &out_file {
-            write_utf8_bom(out_file, &result_text)?;
-            stdout.push_str(&format!("\nWritten to: {}\n", out_file.display()));
-        }
-
-        Ok((stdout, out_file, config_path))
+        Ok((format!("{result_text}\n"), config_path))
     })();
 
     match result {
-        Ok((stdout, out_file, artifact)) => {
-            let mut artifacts = vec![artifact.display().to_string()];
-            if let Some(out_file) = out_file {
-                artifacts.push(out_file.display().to_string());
-            }
-            AdapterOutcome {
-                ok: true,
-                summary: "unica.cf.info completed with native configuration analyzer".to_string(),
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: Vec::new(),
-                artifacts,
-                stdout: Some(stdout),
-                stderr: Some(String::new()),
-                command: None,
-            }
-        }
+        Ok((stdout, artifact)) => AdapterOutcome {
+            ok: true,
+            summary: "unica.cf.info completed with native configuration analyzer".to_string(),
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: Vec::new(),
+            artifacts: vec![artifact.display().to_string()],
+            stdout: Some(stdout),
+            stderr: Some(String::new()),
+            command: None,
+        },
         Err(error) => AdapterOutcome {
             ok: false,
             summary: "unica.cf.info failed in native configuration analyzer".to_string(),
@@ -1398,21 +1363,42 @@ pub(crate) fn cf_read_home_page(config_dir: &Path) -> Option<CfHomePageLayout> {
     let template = child_text(root, "WorkingAreaTemplate", Some(CF_HP_NS))
         .trim()
         .to_string();
+    let columns = root
+        .children()
+        .filter(|node| role_info_element(*node, "Column", Some(CF_HP_NS)))
+        .collect::<Vec<_>>();
+    let (left, right) = if columns.is_empty() {
+        // Read-only inspection still supports pre-2.20 dumps. Mutations are guarded
+        // separately and always rewrite the active 2.20 Column sequence.
+        (
+            cf_home_page_named_column(root, "LeftColumn"),
+            cf_home_page_named_column(root, "RightColumn"),
+        )
+    } else {
+        (
+            cf_home_page_items(columns.first().copied()),
+            cf_home_page_items(columns.get(1).copied()),
+        )
+    };
     Some(CfHomePageLayout {
         template,
-        left: cf_home_page_column(root, "LeftColumn"),
-        right: cf_home_page_column(root, "RightColumn"),
+        left,
+        right,
     })
 }
 
-pub(crate) fn cf_home_page_column(
+pub(crate) fn cf_home_page_named_column(
     root: roxmltree::Node<'_, '_>,
     column_name: &str,
 ) -> Vec<CfHomePageItem> {
-    let Some(column) = root
+    let column = root
         .children()
-        .find(|node| role_info_element(*node, column_name, Some(CF_HP_NS)))
-    else {
+        .find(|node| role_info_element(*node, column_name, Some(CF_HP_NS)));
+    cf_home_page_items(column)
+}
+
+pub(crate) fn cf_home_page_items(column: Option<roxmltree::Node<'_, '_>>) -> Vec<CfHomePageItem> {
+    let Some(column) = column else {
         return Vec::new();
     };
     column
@@ -1723,6 +1709,135 @@ mod metadata_kind_consumer_tests {
     use std::collections::HashSet;
 
     #[test]
+    fn cf_edit_home_page_uses_active_format() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-home-page-format-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let plan = cf_edit_set_home_page(&json!({"template": "OneColumn"}), &root).unwrap();
+        let xml = String::from_utf8(plan.bytes).unwrap();
+        let document = Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
+
+        assert_eq!(
+            document.root_element().attribute("version"),
+            Some(crate::domain::format_profile::ACTIVE_FORMAT_PROFILE.export_format)
+        );
+        let columns = document
+            .root_element()
+            .children()
+            .filter(|node| role_info_element(*node, "Column", Some(CF_HP_NS)))
+            .collect::<Vec<_>>();
+        assert_eq!(columns.len(), 1, "{xml}");
+        assert!(
+            !document.root_element().children().any(|node| {
+                role_info_element(node, "LeftColumn", Some(CF_HP_NS))
+                    || role_info_element(node, "RightColumn", Some(CF_HP_NS))
+            }),
+            "{xml}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cf_edit_home_page_maps_two_named_columns_for_roundtrip_reading() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-home-page-columns-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let plan = cf_edit_set_home_page(
+            &json!({
+                "template": "TwoColumnsEqualWidth",
+                "left": ["CommonForm.Left"],
+                "right": ["CommonForm.Right"]
+            }),
+            &root,
+        )
+        .unwrap();
+        let xml = String::from_utf8(plan.bytes.clone()).unwrap();
+        let document = Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
+        let columns = document
+            .root_element()
+            .children()
+            .filter(|node| role_info_element(*node, "Column", Some(CF_HP_NS)))
+            .collect::<Vec<_>>();
+        assert!(columns.is_empty(), "{xml}");
+        assert!(document
+            .root_element()
+            .children()
+            .any(|node| role_info_element(node, "LeftColumn", Some(CF_HP_NS))));
+        assert!(document
+            .root_element()
+            .children()
+            .any(|node| role_info_element(node, "RightColumn", Some(CF_HP_NS))));
+
+        fs::create_dir_all(plan.path.parent().unwrap()).unwrap();
+        fs::write(&plan.path, plan.bytes).unwrap();
+        let layout = cf_read_home_page(&root).unwrap();
+        assert_eq!(layout.left.len(), 1, "{xml}");
+        assert_eq!(layout.left[0].form, "CommonForm.Left");
+        assert_eq!(layout.right.len(), 1, "{xml}");
+        assert_eq!(layout.right[0].form, "CommonForm.Right");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cf_init_emits_active_format_for_configuration_and_language() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-cf-init-format-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        let outcome = create_configuration_scaffold(
+            &json!({"Name": "FormatProfile", "OutputDir": "src"})
+                .as_object()
+                .unwrap()
+                .clone(),
+            &context,
+        );
+
+        assert!(outcome.ok, "{:?}", outcome.errors);
+        for path in [
+            root.join("src/Configuration.xml"),
+            root.join("src/Languages/Русский.xml"),
+        ] {
+            let generated = fs::read_to_string(&path).unwrap();
+            assert!(
+                generated.contains(r#"version="2.20""#),
+                "{}:\n{generated}",
+                path.display()
+            );
+            assert!(
+                !generated.contains(r#"version="2.17""#),
+                "{}:\n{generated}",
+                path.display()
+            );
+        }
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn cf_consumers_share_the_canonical_metadata_kind_order() {
         let validate_kinds = cf_validate_child_object_types();
 
@@ -1910,13 +2025,23 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
         }
         let obj_name = cf_edit_config_name(&text)?;
 
-        let operations = cf_edit_operations(args, &context.cwd, operation, definition_file)?;
+        let mut transaction = CompileTransaction::new();
+        let operations = cf_edit_operations_guarded(
+            args,
+            &context.cwd,
+            operation,
+            definition_file,
+            &mut transaction,
+        )?;
         cf_edit_validate_child_object_kinds(&operations)?;
+        let format_dependencies =
+            cf_edit_format_dependency_paths_for_operations(&config_path, &operations)?;
         let mut add_count = 0usize;
         let mut remove_count = 0usize;
         let mut modify_count = 0usize;
         let mut stdout = format!("[INFO] Configuration: {obj_name}\n");
         let mut artifacts = vec![config_path.clone()];
+        let mut external_files = BTreeMap::<PathBuf, Vec<u8>>::new();
         let mut config_changed = false;
 
         for (op_name, op_value) in operations {
@@ -1935,6 +2060,7 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                         }
                         let prop_name = item[..eq_idx].trim();
                         let prop_value = item[eq_idx + 1..].trim();
+                        cf_edit_validate_property_value(prop_name, prop_value)?;
                         let replacement = if cf_edit_ml_properties().contains(&prop_name) {
                             cf_edit_ml_property_xml(prop_name, prop_value)
                         } else {
@@ -2054,13 +2180,17 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                     config_changed = true;
                 }
                 "set-panels" => {
-                    let path = cf_edit_set_panels(&op_value, &config_dir)?;
+                    let plan = cf_edit_set_panels(&op_value, &config_dir)?;
+                    let path = plan.path.clone();
+                    external_files.insert(plan.path, plan.bytes);
                     modify_count += 1;
                     stdout.push_str(&format!("[INFO] Wrote panel layout: {}\n", path.display()));
                     artifacts.push(path);
                 }
                 "set-home-page" => {
-                    let path = cf_edit_set_home_page(&op_value, &config_dir)?;
+                    let plan = cf_edit_set_home_page(&op_value, &config_dir)?;
+                    let path = plan.path.clone();
+                    external_files.insert(plan.path, plan.bytes);
                     modify_count += 1;
                     stdout.push_str(&format!(
                         "[INFO] Wrote home page layout: {}\n",
@@ -2073,52 +2203,66 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
         }
 
         let mut config_updated = false;
-        let mut warnings = Vec::new();
+        for (path, bytes) in external_files {
+            transaction.create_or_replace_bytes(path, bytes)?;
+        }
         if config_changed {
             let replacement =
                 utf8_bom_bytes(&cf_edit_serialized_text(&text, &source_snapshot.text));
-            let report = publish(PublishRequest {
-                target: &config_path,
-                replacement: &replacement,
-                mode: PublishMode::ReplaceExisting {
-                    expected_preimage: &source_snapshot.raw,
-                },
+            transaction.replace_bytes(&config_path, &source_snapshot.raw, replacement)?;
+        } else {
+            guard_exact_preimage_if_unprotected(
+                &mut transaction,
+                &config_path,
+                &source_snapshot.raw,
+            )?;
+        }
+        guard_active_format_dependencies(
+            &mut transaction,
+            &format_dependencies
+                .iter()
+                .map(PathBuf::as_path)
+                .collect::<Vec<_>>(),
+            context,
+        )?;
+        let show_validation_output = !bool_arg(args, &["noValidate", "NoValidate"]);
+        let mut validation_stdout = None;
+        let validate_args = Map::from_iter([(
+            "ConfigPath".to_string(),
+            Value::String(config_path.display().to_string()),
+        )]);
+        let report = transaction
+            .commit_with_post_validation(|| {
+                let outcome = validate_cf(&validate_args, context);
+                if show_validation_output {
+                    validation_stdout = outcome.stdout.clone();
+                }
+                if outcome.ok {
+                    Ok(())
+                } else {
+                    let detail = if outcome.errors.is_empty() {
+                        outcome
+                            .stdout
+                            .unwrap_or_else(|| "validation returned no diagnostics".to_string())
+                    } else {
+                        outcome.errors.join("; ")
+                    };
+                    Err(format!("cf validation failed: {detail}"))
+                }
             })
-            .map_err(|error| error.to_string())?;
-            warnings.extend(
-                report
-                    .cleanup_warnings
-                    .into_iter()
-                    .map(|warning| warning.to_string()),
-            );
-            match report.effect {
-                PublishEffect::Replaced => {
-                    config_updated = true;
-                    stdout.push_str(&format!("[INFO] Saved: {}\n", config_path.display()));
-                }
-                PublishEffect::Unchanged => {
-                    stdout.push_str("[INFO] No Configuration.xml changes\n");
-                }
-                PublishEffect::Created => {
-                    return Err(format!(
-                        "internal invariant violated: replace-existing publication created {}",
-                        config_path.display()
-                    ));
-                }
-            }
+            .map_err(cf_edit_transaction_error)?;
+        let warnings = report.cleanup_warnings;
+        if config_changed && report.updated.contains(&config_path) {
+            config_updated = true;
+            stdout.push_str(&format!("[INFO] Saved: {}\n", config_path.display()));
         } else {
             stdout.push_str("[INFO] No Configuration.xml changes\n");
         }
 
-        if !bool_arg(args, &["noValidate", "NoValidate"]) {
+        if show_validation_output {
             stdout.push('\n');
             stdout.push_str("--- Running cf-validate ---\n");
-            let mut validate_args = Map::new();
-            validate_args.insert(
-                "ConfigPath".to_string(),
-                Value::String(config_path.display().to_string()),
-            );
-            if let Some(validate_stdout) = validate_cf(&validate_args, context).stdout {
+            if let Some(validate_stdout) = validation_stdout {
                 stdout.push_str(&validate_stdout);
             }
         }
@@ -2184,6 +2328,672 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
     }
 }
 
+fn cf_edit_transaction_error(error: String) -> String {
+    const STALE_REGISTRATION: &str = "registration target changed after planning: ";
+    error
+        .strip_prefix(STALE_REGISTRATION)
+        .map_or(error.clone(), |path| {
+            format!("publication target differs from the expected preimage: {path}")
+        })
+}
+
+#[cfg(test)]
+mod cf_edit_transaction_tests {
+    use super::super::compile_transaction::{with_commit_failpoint, CommitFailpoint};
+    use super::super::single_file_publisher::with_before_commit_hook;
+    use super::*;
+    use crate::application::UnicaApplication;
+
+    const BOOLEAN_PROPERTIES: &[&str] = &[
+        "IncludeHelpInContents",
+        "UseManagedFormInOrdinaryApplication",
+        "UseOrdinaryFormInManagedApplication",
+    ];
+
+    struct BooleanEditFixture {
+        root: PathBuf,
+        context: WorkspaceContext,
+        config_path: PathBuf,
+    }
+
+    impl BooleanEditFixture {
+        fn new(label: &str) -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "unica-cf-edit-{label}-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            fs::create_dir_all(&root).unwrap();
+            let context = WorkspaceContext {
+                cwd: root.clone(),
+                workspace_root: root.clone(),
+                cache_root: root.join(".build/unica"),
+                workspace_epoch: 0,
+            };
+            let init = create_configuration_scaffold(
+                &json!({"Name": "Demo", "OutputDir": "src"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                &context,
+            );
+            assert!(init.ok, "{init:?}");
+            let config_path = root.join("src/Configuration.xml");
+            Self {
+                root,
+                context,
+                config_path,
+            }
+        }
+
+        fn edit_boolean(&self, property: &str, value: &str) -> AdapterOutcome {
+            edit_cf(
+                &Map::from_iter([
+                    ("ConfigPath".to_string(), json!("src")),
+                    ("Operation".to_string(), json!("modify-property")),
+                    ("Value".to_string(), json!(format!("{property}={value}"))),
+                    ("NoValidate".to_string(), json!(true)),
+                ]),
+                &self.context,
+            )
+        }
+    }
+
+    impl Drop for BooleanEditFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn transaction_test_configuration() -> Vec<u8> {
+        utf8_bom_bytes(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
+  <Configuration uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa">
+    <InternalInfo/>
+    <Properties>
+      <Name>Demo</Name>
+      <Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Demo</v8:content></v8:item></Synonym>
+      <Version>1.0</Version>
+      <DefaultLanguage>Language.Русский</DefaultLanguage>
+    </Properties>
+    <ChildObjects><Language>Русский</Language></ChildObjects>
+  </Configuration>
+</MetaDataObject>"#,
+        )
+    }
+
+    #[test]
+    fn cf_edit_post_write_validation_failure_rolls_back_config_and_external_files() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-cf-edit-transaction-rollback-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        fs::create_dir_all(&src).unwrap();
+        let config_path = src.join("Configuration.xml");
+        let config_before = transaction_test_configuration();
+        fs::write(&config_path, &config_before).unwrap();
+        let definition_path = workspace.join("combined.json");
+        fs::write(
+            &definition_path,
+            serde_json::to_vec(&json!([
+                {"operation": "modify-property", "value": "Version=2.0"},
+                {"operation": "set-panels", "value": {"top": ["open"]}},
+                {"operation": "set-home-page", "value": {"template": "OneColumn"}}
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+        let definition_before = fs::read(&definition_path).unwrap();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 0,
+        };
+        let args = Map::from_iter([
+            ("ConfigPath".to_string(), json!("src")),
+            (
+                "DefinitionFile".to_string(),
+                json!(definition_path.display().to_string()),
+            ),
+            ("NoValidate".to_string(), json!(true)),
+        ]);
+
+        let outcome = with_commit_failpoint(CommitFailpoint::PostWriteValidation, || {
+            edit_cf(&args, &context)
+        });
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("post-write validation"),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&config_path).unwrap(), config_before);
+        assert_eq!(fs::read(&definition_path).unwrap(), definition_before);
+        assert!(!src.join("Ext").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cf_edit_external_only_change_rejects_concurrent_format_owner_change() {
+        let fixture = BooleanEditFixture::new("external-owner-guard");
+        let config_before = fs::read(&fixture.config_path).unwrap();
+        let concurrent_config = String::from_utf8(config_before)
+            .unwrap()
+            .replacen(r#"version="2.20""#, r#"version="2.21""#, 1)
+            .into_bytes();
+        let interface_path = fixture
+            .config_path
+            .parent()
+            .unwrap()
+            .join("Ext/ClientApplicationInterface.xml");
+        let interface_before = fs::read(&interface_path).unwrap();
+        let owner_for_hook = fixture.config_path.clone();
+        let concurrent_for_hook = concurrent_config.clone();
+        let args = Map::from_iter([
+            ("ConfigPath".to_string(), json!("src")),
+            ("Operation".to_string(), json!("set-panels")),
+            ("Value".to_string(), json!(r#"{"top":["sections"]}"#)),
+            ("NoValidate".to_string(), json!(true)),
+        ]);
+
+        let outcome = with_before_commit_hook(
+            move |_| fs::write(&owner_for_hook, concurrent_for_hook).unwrap(),
+            || edit_cf(&args, &fixture.context),
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("read guard"),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&fixture.config_path).unwrap(), concurrent_config);
+        assert_eq!(fs::read(&interface_path).unwrap(), interface_before);
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        assert!(outcome.artifacts.is_empty(), "{outcome:?}");
+    }
+
+    #[test]
+    fn cf_edit_home_page_prioritizes_newer_target_over_older_configuration() {
+        let fixture = BooleanEditFixture::new("home-page-format-priority");
+        let older_config = fs::read_to_string(&fixture.config_path).unwrap().replacen(
+            r#"version="2.20""#,
+            r#"version="2.19""#,
+            1,
+        );
+        fs::write(&fixture.config_path, &older_config).unwrap();
+        let config_dir = fixture.config_path.parent().unwrap();
+        let home_page_path = config_dir.join("Ext/HomePageWorkArea.xml");
+        let newer_home_page = String::from_utf8(
+            cf_edit_set_home_page(&json!({"template": "OneColumn"}), config_dir)
+                .unwrap()
+                .bytes,
+        )
+        .unwrap()
+        .replacen(r#"version="2.20""#, r#"version="2.21""#, 1);
+        fs::write(&home_page_path, &newer_home_page).unwrap();
+        let config_before = fs::read(&fixture.config_path).unwrap();
+        let home_page_before = fs::read(&home_page_path).unwrap();
+        let args = Map::from_iter([
+            ("ConfigPath".to_string(), json!("src")),
+            ("Operation".to_string(), json!("set-home-page")),
+            (
+                "Value".to_string(),
+                json!(r#"{"template":"TwoColumnsEqualWidth"}"#),
+            ),
+            ("NoValidate".to_string(), json!(true)),
+        ]);
+
+        let outcome = edit_cf(&args, &fixture.context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        let diagnostics = outcome.errors.join("\n");
+        assert!(diagnostics.contains("2.21"), "{diagnostics}");
+        assert!(diagnostics.contains("1C 8.5"), "{diagnostics}");
+        assert!(
+            !diagnostics.contains("older than supported"),
+            "{diagnostics}"
+        );
+        assert_eq!(fs::read(&fixture.config_path).unwrap(), config_before);
+        assert_eq!(fs::read(&home_page_path).unwrap(), home_page_before);
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        assert!(outcome.artifacts.is_empty(), "{outcome:?}");
+    }
+
+    #[test]
+    fn cf_edit_real_validation_failure_rolls_back_config_and_external_files() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-cf-edit-real-validation-rollback-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 0,
+        };
+        let init = create_configuration_scaffold(
+            &json!({"Name": "Demo", "OutputDir": "src"})
+                .as_object()
+                .unwrap()
+                .clone(),
+            &context,
+        );
+        assert!(init.ok, "{init:?}");
+
+        let config_path = root.join("src/Configuration.xml");
+        let interface_path = root.join("src/Ext/ClientApplicationInterface.xml");
+        let config_before = fs::read(&config_path).unwrap();
+        let interface_before = fs::read(&interface_path).unwrap();
+        let definition_path = root.join("invalid-combined.json");
+        fs::write(
+            &definition_path,
+            serde_json::to_vec(&json!([
+                {
+                    "operation": "modify-property",
+                    "value": "DefaultLanguage="
+                },
+                {"operation": "set-panels", "value": {"top": ["sections"]}}
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+        let args = Map::from_iter([
+            ("ConfigPath".to_string(), json!("src")),
+            (
+                "DefinitionFile".to_string(),
+                json!(definition_path.display().to_string()),
+            ),
+            ("NoValidate".to_string(), json!(false)),
+        ]);
+
+        let outcome = edit_cf(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .join("\n")
+                .contains("DefaultLanguage is missing or empty"),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&config_path).unwrap(), config_before);
+        assert_eq!(fs::read(&interface_path).unwrap(), interface_before);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cf_edit_rejects_noncanonical_boolean_scalars_without_mutating_configuration() {
+        let fixture = BooleanEditFixture::new("boolean-preflight");
+        let original = fs::read(&fixture.config_path).unwrap();
+
+        for property in BOOLEAN_PROPERTIES {
+            let malicious = format!("</{property}><Injected>true</Injected>");
+            for invalid in ["", "banana", "TRUE", "1", malicious.as_str()] {
+                let outcome = fixture.edit_boolean(property, invalid);
+
+                assert!(!outcome.ok, "{property}={invalid:?}: {outcome:?}");
+                let errors = outcome.errors.join("\n");
+                assert!(errors.contains(property), "{outcome:?}");
+                assert!(errors.contains("8.3.27"), "{outcome:?}");
+                assert!(errors.contains("true"), "{outcome:?}");
+                assert!(errors.contains("false"), "{outcome:?}");
+                assert_eq!(
+                    fs::read(&fixture.config_path).unwrap(),
+                    original,
+                    "{property}={invalid:?}"
+                );
+                assert!(outcome.changes.is_empty(), "{outcome:?}");
+                assert!(outcome.artifacts.is_empty(), "{outcome:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn cf_edit_accepts_canonical_true_and_false_for_every_boolean_scalar() {
+        let fixture = BooleanEditFixture::new("boolean-canonical");
+
+        for property in BOOLEAN_PROPERTIES {
+            for value in ["true", "false"] {
+                let outcome = fixture.edit_boolean(property, value);
+
+                assert!(outcome.ok, "{property}={value}: {outcome:?}");
+                let xml = fs::read_to_string(&fixture.config_path).unwrap();
+                assert!(
+                    xml.contains(&format!("<{property}>{value}</{property}>")),
+                    "{property}={value}: {xml}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cf_validate_and_unrelated_edit_reject_existing_noncanonical_boolean_without_byte_changes() {
+        let fixture = BooleanEditFixture::new("boolean-existing-invalid");
+        let canonical_bytes = fs::read(&fixture.config_path).unwrap();
+        let canonical_text = String::from_utf8(canonical_bytes.clone()).unwrap();
+
+        for property in BOOLEAN_PROPERTIES {
+            let invalid_text = canonical_text.replacen(
+                &format!("<{property}>false</{property}>"),
+                &format!("<{property}>banana</{property}>"),
+                1,
+            );
+            assert_ne!(invalid_text, canonical_text, "missing fixture {property}");
+            let invalid_bytes = invalid_text.into_bytes();
+            fs::write(&fixture.config_path, &invalid_bytes).unwrap();
+
+            let validate = validate_cf(
+                &Map::from_iter([("ConfigPath".to_string(), json!("src"))]),
+                &fixture.context,
+            );
+            assert!(!validate.ok, "{property}: {validate:?}");
+            let validate_errors = validate.errors.join("\n");
+            assert!(validate_errors.contains(property), "{validate:?}");
+            assert!(validate_errors.contains("banana"), "{validate:?}");
+            assert!(validate_errors.contains("true"), "{validate:?}");
+            assert!(validate_errors.contains("false"), "{validate:?}");
+
+            let edit = edit_cf(
+                &Map::from_iter([
+                    ("ConfigPath".to_string(), json!("src")),
+                    ("Operation".to_string(), json!("modify-property")),
+                    ("Value".to_string(), json!("Version=2.0")),
+                    ("NoValidate".to_string(), json!(false)),
+                ]),
+                &fixture.context,
+            );
+            assert!(!edit.ok, "{property}: {edit:?}");
+            assert!(edit.errors.join("\n").contains(property), "{edit:?}");
+            assert_eq!(
+                fs::read(&fixture.config_path).unwrap(),
+                invalid_bytes,
+                "{property}"
+            );
+
+            fs::write(&fixture.config_path, &canonical_bytes).unwrap();
+        }
+    }
+
+    #[test]
+    fn cf_edit_no_validate_suppresses_output_but_not_source_contract_validation() {
+        for (label, canonical, invalid, property) in [
+            (
+                "boolean",
+                "<IncludeHelpInContents>false</IncludeHelpInContents>",
+                "<IncludeHelpInContents>banana</IncludeHelpInContents>",
+                "IncludeHelpInContents",
+            ),
+            (
+                "enum",
+                "<DefaultRunMode>ManagedApplication</DefaultRunMode>",
+                "<DefaultRunMode>DefinitelyInvalid</DefaultRunMode>",
+                "DefaultRunMode",
+            ),
+        ] {
+            let fixture = BooleanEditFixture::new(&format!("no-validate-{label}"));
+            let canonical_bytes = fs::read(&fixture.config_path).unwrap();
+            let canonical_text = String::from_utf8(canonical_bytes).unwrap();
+            let invalid_text = canonical_text.replacen(canonical, invalid, 1);
+            assert_ne!(invalid_text, canonical_text, "missing fixture {property}");
+            let invalid_bytes = invalid_text.into_bytes();
+            fs::write(&fixture.config_path, &invalid_bytes).unwrap();
+
+            let outcome = edit_cf(
+                &Map::from_iter([
+                    ("ConfigPath".to_string(), json!("src")),
+                    ("Operation".to_string(), json!("modify-property")),
+                    ("Value".to_string(), json!("Version=2.0")),
+                    ("NoValidate".to_string(), json!(true)),
+                ]),
+                &fixture.context,
+            );
+
+            assert!(!outcome.ok, "{property}: {outcome:?}");
+            assert!(outcome.errors.join("\n").contains(property), "{outcome:?}");
+            assert_eq!(fs::read(&fixture.config_path).unwrap(), invalid_bytes);
+            assert!(outcome.changes.is_empty(), "{outcome:?}");
+            assert!(outcome.artifacts.is_empty(), "{outcome:?}");
+        }
+
+        let fixture = BooleanEditFixture::new("no-validate-valid");
+        let outcome = edit_cf(
+            &Map::from_iter([
+                ("ConfigPath".to_string(), json!("src")),
+                ("Operation".to_string(), json!("modify-property")),
+                ("Value".to_string(), json!("Version=2.0")),
+                ("NoValidate".to_string(), json!(true)),
+            ]),
+            &fixture.context,
+        );
+
+        assert!(outcome.ok, "{outcome:?}");
+        assert!(
+            !outcome
+                .stdout
+                .as_deref()
+                .unwrap_or_default()
+                .contains("--- Running cf-validate ---"),
+            "{outcome:?}"
+        );
+    }
+
+    #[test]
+    fn public_cf_edit_set_home_page_rejects_noncanonical_nested_scalars_without_writes() {
+        let cases = [
+            (
+                "visibility-string",
+                json!({"form": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "visibility": "false"}),
+                "visibility",
+            ),
+            (
+                "visibility-number",
+                json!({"form": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "visibility": 1}),
+                "visibility",
+            ),
+            (
+                "visibility-array",
+                json!({"form": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "visibility": [false]}),
+                "visibility",
+            ),
+            (
+                "visibility-object",
+                json!({"form": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "visibility": {"value": false}}),
+                "visibility",
+            ),
+            (
+                "role-string",
+                json!({"form": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "roles": {"Role.Reader": "false"}}),
+                "roles.Role.Reader",
+            ),
+            (
+                "role-number",
+                json!({"form": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "roles": {"Role.Reader": 0}}),
+                "roles.Role.Reader",
+            ),
+            (
+                "role-array",
+                json!({"form": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "roles": {"Role.Reader": [false]}}),
+                "roles.Role.Reader",
+            ),
+            (
+                "role-object",
+                json!({"form": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "roles": {"Role.Reader": {"value": false}}}),
+                "roles.Role.Reader",
+            ),
+            (
+                "roles-container-array",
+                json!({"form": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "roles": []}),
+                "roles",
+            ),
+            (
+                "height-string",
+                json!({"form": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "height": "25"}),
+                "height",
+            ),
+            (
+                "height-fraction",
+                json!({"form": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "height": 2.5}),
+                "height",
+            ),
+        ];
+
+        for (label, item, expected_error) in cases {
+            let fixture = BooleanEditFixture::new(&format!("home-page-{label}"));
+            let definition_path = fixture.root.join("invalid-home-page.json");
+            fs::write(
+                &definition_path,
+                serde_json::to_vec(&json!([{
+                    "operation": "set-home-page",
+                    "value": {
+                        "template": "OneColumn",
+                        "left": [item]
+                    }
+                }]))
+                .unwrap(),
+            )
+            .unwrap();
+            let config_before = fs::read(&fixture.config_path).unwrap();
+            let interface_path = fixture.root.join("src/Ext/ClientApplicationInterface.xml");
+            let interface_before = fs::read(&interface_path).unwrap();
+            let definition_before = fs::read(&definition_path).unwrap();
+
+            let args = Map::from_iter([
+                ("cwd".to_string(), json!(fixture.root.display().to_string())),
+                ("dryRun".to_string(), json!(false)),
+                ("ConfigPath".to_string(), json!("src")),
+                (
+                    "DefinitionFile".to_string(),
+                    json!(definition_path.display().to_string()),
+                ),
+                ("NoValidate".to_string(), json!(true)),
+            ]);
+
+            let result = UnicaApplication::new()
+                .call_tool("unica.cf.edit", &args)
+                .unwrap();
+
+            assert!(!result.ok, "{label}: {result:?}");
+            assert!(
+                result.errors.join("\n").contains(expected_error),
+                "{label}: {result:?}"
+            );
+            assert_eq!(
+                fs::read(&fixture.config_path).unwrap(),
+                config_before,
+                "{label}"
+            );
+            assert_eq!(
+                fs::read(&interface_path).unwrap(),
+                interface_before,
+                "{label}"
+            );
+            assert_eq!(
+                fs::read(&definition_path).unwrap(),
+                definition_before,
+                "{label}"
+            );
+            assert!(
+                !fixture.root.join("src/Ext/HomePageWorkArea.xml").exists(),
+                "{label}: {result:?}"
+            );
+            assert!(result.changes.is_empty(), "{label}: {result:?}");
+            assert!(result.artifacts.is_empty(), "{label}: {result:?}");
+        }
+    }
+
+    #[test]
+    fn cf_edit_rejects_invalid_core_enum_even_when_optional_validation_is_disabled() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-cf-edit-core-enum-preflight-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 0,
+        };
+        let init = create_configuration_scaffold(
+            &json!({"Name": "Demo", "OutputDir": "src"})
+                .as_object()
+                .unwrap()
+                .clone(),
+            &context,
+        );
+        assert!(init.ok, "{init:?}");
+        let config_path = root.join("src/Configuration.xml");
+        let before = fs::read(&config_path).unwrap();
+        for (property, value) in [
+            ("DefaultRunMode", "DefinitelyInvalid"),
+            ("CompatibilityMode", "Version8_3_28"),
+            ("CompatibilityMode", "Version8_5_1"),
+            ("ConfigurationExtensionCompatibilityMode", "Version8_3_28"),
+            ("InterfaceCompatibilityMode", "TaxiEnableVersion8_5"),
+            ("InterfaceCompatibilityMode", "Version8_5EnableTaxi"),
+            ("InterfaceCompatibilityMode", "Version8_5"),
+            ("InterfaceCompatibilityMode", "Version8_3_24"),
+        ] {
+            let args = Map::from_iter([
+                ("ConfigPath".to_string(), json!("src")),
+                ("Operation".to_string(), json!("modify-property")),
+                ("Value".to_string(), json!(format!("{property}={value}"))),
+                ("NoValidate".to_string(), json!(true)),
+            ]);
+
+            let outcome = edit_cf(&args, &context);
+
+            assert!(!outcome.ok, "{property}={value}: {outcome:?}");
+            assert!(
+                outcome.errors.join("\n").contains(property),
+                "{property}={value}: {outcome:?}"
+            );
+            assert_eq!(
+                fs::read(&config_path).unwrap(),
+                before,
+                "{property}={value}"
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cf_edit_child_object_parser_rejects_unsafe_metadata_names() {
+        for value in ["Catalog.../Outside", "Catalog.Bad:Name"] {
+            let error = cf_edit_parse_child_object(value).unwrap_err();
+            assert!(error.contains("XML NCName"), "{value}: {error}");
+            assert!(error.contains("path component"), "{value}: {error}");
+        }
+        assert!(cf_edit_parse_child_object("Catalog.")
+            .unwrap_err()
+            .contains("expected 'Type.Name'"));
+        assert_eq!(
+            cf_edit_parse_child_object("Catalog.Товары").unwrap(),
+            ("Catalog", "Товары")
+        );
+    }
+}
+
 pub(crate) fn cf_edit_operations(
     args: &Map<String, Value>,
     cwd: &Path,
@@ -2196,24 +3006,7 @@ pub(crate) fn cf_edit_operations(
             .map_err(|err| format!("failed to read {}: {err}", definition_file.display()))?;
         let parsed: Value = serde_json::from_str(text.trim_start_matches('\u{feff}'))
             .map_err(|err| format!("failed to parse {}: {err}", definition_file.display()))?;
-        let items = match parsed {
-            Value::Array(items) => items,
-            other => vec![other],
-        };
-        let mut operations = Vec::new();
-        for item in items {
-            let op_name = item
-                .get("operation")
-                .and_then(Value::as_str)
-                .unwrap_or(operation.unwrap_or(""))
-                .to_string();
-            let value = item
-                .get("value")
-                .cloned()
-                .unwrap_or_else(|| Value::String(String::new()));
-            operations.push((op_name, value));
-        }
-        Ok(operations)
+        Ok(cf_edit_operations_from_value(parsed, operation))
     } else {
         Ok(vec![(
             operation.unwrap_or("").to_string(),
@@ -2224,6 +3017,129 @@ pub(crate) fn cf_edit_operations(
             ),
         )])
     }
+}
+
+fn cf_edit_operations_guarded(
+    args: &Map<String, Value>,
+    cwd: &Path,
+    operation: Option<&str>,
+    definition_file: Option<PathBuf>,
+    transaction: &mut CompileTransaction,
+) -> Result<Vec<(String, Value)>, String> {
+    if let Some(definition_file) = definition_file {
+        let definition_file = absolutize(definition_file, cwd);
+        let parsed = FileBackedJson::read(&definition_file, |err| {
+            format!("failed to parse {}: {err}", definition_file.display())
+        })?
+        .bind_to(transaction)?;
+        Ok(cf_edit_operations_from_value(parsed, operation))
+    } else {
+        cf_edit_operations(args, cwd, operation, None)
+    }
+}
+
+fn cf_edit_operations_from_value(parsed: Value, operation: Option<&str>) -> Vec<(String, Value)> {
+    let items = match parsed {
+        Value::Array(items) => items,
+        other => vec![other],
+    };
+    items
+        .into_iter()
+        .map(|item| {
+            let op_name = item
+                .get("operation")
+                .and_then(Value::as_str)
+                .unwrap_or(operation.unwrap_or(""))
+                .to_string();
+            let value = item
+                .get("value")
+                .cloned()
+                .unwrap_or_else(|| Value::String(String::new()));
+            (op_name, value)
+        })
+        .collect()
+}
+
+pub(crate) fn cf_edit_format_dependency_paths(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<Vec<PathBuf>, String> {
+    let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
+    let operation = string_arg(args, &["operation", "Operation"]);
+    if definition_file.is_some() && operation.is_some() {
+        return Err("Cannot use both -DefinitionFile and -Operation".to_string());
+    }
+    if definition_file.is_none() && operation.is_none() {
+        return Err("Either -DefinitionFile or -Operation is required".to_string());
+    }
+    let config_path = resolve_cf_edit_config_path(args, context)?;
+    let operations = cf_edit_operations(args, &context.cwd, operation, definition_file)?;
+    cf_edit_validate_child_object_kinds(&operations)?;
+    cf_edit_format_dependency_paths_for_operations(&config_path, &operations)
+}
+
+pub(crate) fn cf_read_format_dependency_paths(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+    operation: &str,
+) -> Result<Vec<PathBuf>, String> {
+    let config_path = resolve_cf_read_config_path(args, context)?;
+    let config_dir = config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    let mut paths = vec![config_path];
+    match operation {
+        "cf-validate" => {
+            paths.push(config_dir.join("Ext/HomePageWorkArea.xml"));
+        }
+        "cf-info" => {
+            let mode = string_arg(args, &["mode", "Mode"]).unwrap_or("overview");
+            let section = string_arg(args, &["section", "Section", "name", "Name"]).unwrap_or("");
+            if section == "home-page" || mode == "full" {
+                paths.push(config_dir.join("Ext/HomePageWorkArea.xml"));
+            }
+            if section != "home-page" && mode == "full" {
+                paths.push(config_dir.join("Ext/ClientApplicationInterface.xml"));
+            }
+        }
+        _ => {}
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+fn cf_edit_format_dependency_paths_for_operations(
+    config_path: &Path,
+    operations: &[(String, Value)],
+) -> Result<Vec<PathBuf>, String> {
+    let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
+    // Every cf.edit run performs validate_cf after publication. That validator
+    // reads HomePageWorkArea.xml when present, so it is a real dependency even
+    // for operations that do not write the home-page layout themselves.
+    let mut paths = vec![
+        config_path.to_path_buf(),
+        config_dir.join("Ext").join("HomePageWorkArea.xml"),
+    ];
+    for (operation, value) in operations {
+        if operation == "add-childObject" {
+            for item in cf_edit_batch_value(value) {
+                let (type_name, object_name) = cf_edit_parse_child_object(&item)?;
+                let type_dir = cf_validate_child_type_dir(type_name)
+                    .ok_or_else(|| format!("Unknown type '{type_name}'"))?;
+                paths.push(
+                    config_dir
+                        .join(type_dir)
+                        .join(object_name)
+                        .with_extension("xml"),
+                );
+            }
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
 }
 
 pub(crate) fn cf_edit_validate_child_object_kinds(
@@ -2250,7 +3166,36 @@ pub(crate) fn cf_edit_parse_child_object(item: &str) -> Result<(&str, &str), Str
     if type_name.is_empty() || object_name.is_empty() {
         return Err(format!("Invalid format '{item}', expected 'Type.Name'"));
     }
+    let mut components = Path::new(object_name).components();
+    let is_single_path_component = matches!(
+        components.next(),
+        Some(std::path::Component::Normal(component))
+            if component == std::ffi::OsStr::new(object_name)
+    ) && components.next().is_none();
+    if !form_is_xml_ncname(object_name) || !is_single_path_component {
+        return Err(format!(
+            "object name must be a valid Unicode XML NCName and a single path component: {object_name:?}"
+        ));
+    }
     Ok((type_name, object_name))
+}
+
+fn cf_edit_validate_property_value(prop_name: &str, value: &str) -> Result<(), String> {
+    let allowed: &[&str] = if cf_validate_boolean_properties().contains(&prop_name) {
+        &["true", "false"]
+    } else if cf_validate_enum_properties().contains(&prop_name) {
+        cf_validate_enum_allowed(prop_name)
+    } else {
+        return Ok(());
+    };
+    if allowed.contains(&value) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Property '{prop_name}' value '{value}' is not valid for 8.3.27; expected one of: {}",
+            allowed.join(", ")
+        ))
+    }
 }
 
 pub(crate) fn cf_edit_batch_value(value: &Value) -> Vec<String> {
@@ -2756,7 +3701,15 @@ pub(crate) fn cf_edit_element_range(text: &str, tag: &str) -> Option<CfEditEleme
     None
 }
 
-pub(crate) fn cf_edit_set_panels(value: &Value, config_dir: &Path) -> Result<PathBuf, String> {
+pub(crate) struct CfEditExternalFilePlan {
+    pub(crate) path: PathBuf,
+    pub(crate) bytes: Vec<u8>,
+}
+
+pub(crate) fn cf_edit_set_panels(
+    value: &Value,
+    config_dir: &Path,
+) -> Result<CfEditExternalFilePlan, String> {
     let layout = cf_edit_json_object(value, "set-panels value must be valid JSON object")?;
     if layout.is_empty() {
         return Err("set-panels value must be non-empty object".to_string());
@@ -2807,12 +3760,10 @@ pub(crate) fn cf_edit_set_panels(value: &Value, config_dir: &Path) -> Result<Pat
          {body_block}{declarations}\r\n\
          </ClientApplicationInterface>"
     );
-    let ext_dir = config_dir.join("Ext");
-    fs::create_dir_all(&ext_dir)
-        .map_err(|err| format!("failed to create {}: {err}", ext_dir.display()))?;
-    let path = ext_dir.join("ClientApplicationInterface.xml");
-    write_utf8_bom(&path, &cai_xml)?;
-    Ok(path)
+    Ok(CfEditExternalFilePlan {
+        path: config_dir.join("Ext/ClientApplicationInterface.xml"),
+        bytes: utf8_bom_bytes(&cai_xml),
+    })
 }
 
 pub(crate) fn cf_edit_panel_entry_xml(entry: &Value, indent: &str) -> Result<String, String> {
@@ -2874,7 +3825,10 @@ pub(crate) fn cf_edit_panel_uuid(alias: &str) -> Option<&'static str> {
     }
 }
 
-pub(crate) fn cf_edit_set_home_page(value: &Value, config_dir: &Path) -> Result<PathBuf, String> {
+pub(crate) fn cf_edit_set_home_page(
+    value: &Value,
+    config_dir: &Path,
+) -> Result<CfEditExternalFilePlan, String> {
     let layout = cf_edit_json_object(value, "set-home-page value must be valid JSON object")?;
     if layout.is_empty() {
         return Err("set-home-page value must be non-empty object".to_string());
@@ -2905,25 +3859,28 @@ pub(crate) fn cf_edit_set_home_page(value: &Value, config_dir: &Path) -> Result<
     if template == "OneColumn" && right_items.is_some_and(cf_edit_truthy_value) {
         return Err("Template 'OneColumn' cannot have items in 'right' column".to_string());
     }
-    let left_xml = cf_edit_home_page_column_xml("LeftColumn", left_items)?;
-    let right_xml = cf_edit_home_page_column_xml("RightColumn", right_items)?;
+    let columns_xml = if template == "OneColumn" {
+        cf_edit_home_page_column_xml("Column", left_items)?
+    } else {
+        let left_xml = cf_edit_home_page_column_xml("LeftColumn", left_items)?;
+        let right_xml = cf_edit_home_page_column_xml("RightColumn", right_items)?;
+        format!("{left_xml}\r\n{right_xml}")
+    };
     let hp_xml = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n\
          <HomePageWorkArea xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" \
          xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" \
          xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" \
-         xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.17\">\r\n\
+         xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"{format_version}\">\r\n\
          \t<WorkingAreaTemplate>{template}</WorkingAreaTemplate>\r\n\
-         {left_xml}\r\n\
-         {right_xml}\r\n\
-         </HomePageWorkArea>"
+         {columns_xml}\r\n\
+         </HomePageWorkArea>",
+        format_version = ACTIVE_FORMAT_PROFILE.export_format
     );
-    let ext_dir = config_dir.join("Ext");
-    fs::create_dir_all(&ext_dir)
-        .map_err(|err| format!("failed to create {}: {err}", ext_dir.display()))?;
-    let path = ext_dir.join("HomePageWorkArea.xml");
-    write_utf8_bom(&path, &hp_xml)?;
-    Ok(path)
+    Ok(CfEditExternalFilePlan {
+        path: config_dir.join("Ext/HomePageWorkArea.xml"),
+        bytes: utf8_bom_bytes(&hp_xml),
+    })
 }
 
 pub(crate) fn cf_edit_home_page_column_xml(
@@ -2956,18 +3913,36 @@ pub(crate) fn cf_edit_home_page_item_xml(entry: &Value, indent: &str) -> Result<
         let form_raw = cf_edit_object_field(obj, &["form", "Form"])
             .and_then(Value::as_str)
             .ok_or_else(|| format!("Home page item: 'form' is required, got: {entry}"))?;
-        let height = cf_edit_object_field(obj, &["height", "Height"])
-            .and_then(cf_edit_i64_value)
-            .unwrap_or(10);
-        let common = cf_edit_object_field(obj, &["visibility", "Visibility"])
-            .map(cf_edit_truthy_value)
-            .unwrap_or(true);
-        (
-            cf_edit_normalize_form_ref(form_raw),
-            height,
-            common,
-            obj.get("roles"),
-        )
+        let height = match cf_edit_object_field(obj, &["height", "Height"]) {
+            None => 10,
+            Some(Value::Number(value)) => value.as_i64().ok_or_else(|| {
+                format!("Home page item height must be a JSON integer when provided, got: {value}")
+            })?,
+            Some(value) => {
+                return Err(format!(
+                    "Home page item height must be a JSON integer when provided, got: {value}"
+                ));
+            }
+        };
+        let common = match cf_edit_object_field(obj, &["visibility", "Visibility"]) {
+            None => true,
+            Some(Value::Bool(value)) => *value,
+            Some(value) => {
+                return Err(format!(
+                    "Home page item visibility must be a JSON boolean true or false, got: {value}"
+                ));
+            }
+        };
+        let roles = match obj.get("roles") {
+            None => None,
+            Some(Value::Object(roles)) => Some(roles),
+            Some(value) => {
+                return Err(format!(
+                    "Home page item roles must be a JSON object of role names to boolean values, got: {value}"
+                ));
+            }
+        };
+        (cf_edit_normalize_form_ref(form_raw), height, common, roles)
     } else {
         return Err(format!(
             "Home page item must be string or object, got: {entry}"
@@ -2975,8 +3950,13 @@ pub(crate) fn cf_edit_home_page_item_xml(entry: &Value, indent: &str) -> Result<
     };
 
     let mut vis_parts = vec![format!("{indent}\t\t<xr:Common>{common}</xr:Common>")];
-    if let Some(roles) = roles.and_then(Value::as_object) {
+    if let Some(roles) = roles {
         for (role_name, value) in roles {
+            let value = value.as_bool().ok_or_else(|| {
+                format!(
+                    "Home page item roles.{role_name} must be a JSON boolean true or false, got: {value}"
+                )
+            })?;
             let role_name = if role_name.starts_with("Role.") || cf_edit_uuid_like(role_name) {
                 role_name.clone()
             } else {
@@ -2985,7 +3965,7 @@ pub(crate) fn cf_edit_home_page_item_xml(entry: &Value, indent: &str) -> Result<
             vis_parts.push(format!(
                 "{indent}\t\t<xr:Value name=\"{}\">{}</xr:Value>",
                 escape_xml(&role_name),
-                cf_edit_truthy_value(value)
+                value
             ));
         }
     }
@@ -3139,6 +4119,31 @@ pub(crate) fn cf_edit_uuid_like(value: &str) -> bool {
             .all(|(part, len)| part.len() == len && part.chars().all(|ch| ch.is_ascii_hexdigit()))
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct CfInitPlannedXml {
+    pub(crate) output_dir: PathBuf,
+    pub(crate) configuration: PathBuf,
+    pub(crate) language: PathBuf,
+    pub(crate) client_application_interface: PathBuf,
+}
+
+pub(crate) fn cf_init_planned_xml(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> CfInitPlannedXml {
+    let output_dir = output_dir_arg(args, context, &["outputDir", "OutputDir"], "src");
+    CfInitPlannedXml {
+        configuration: output_dir.join("Configuration.xml"),
+        language: output_dir.join("Languages/Русский.xml"),
+        client_application_interface: output_dir.join("Ext/ClientApplicationInterface.xml"),
+        output_dir,
+    }
+}
+
+pub(crate) fn cf_init_post_validation_dependency_paths(planned: &CfInitPlannedXml) -> Vec<PathBuf> {
+    vec![planned.output_dir.join("Ext/HomePageWorkArea.xml")]
+}
+
 pub(crate) fn create_configuration_scaffold(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -3158,28 +4163,24 @@ pub(crate) fn create_configuration_scaffold(
         };
     }
     let synonym = string_arg(args, &["synonym", "Synonym"]).unwrap_or(name);
-    let out_dir = output_dir_arg(args, context, &["outputDir", "OutputDir"], "src");
-    let config = out_dir.join("Configuration.xml");
-    let languages = out_dir.join("Languages");
-    let language = languages.join("Русский.xml");
-    let ext = out_dir.join("Ext");
-    let cai = ext.join("ClientApplicationInterface.xml");
+    let planned = cf_init_planned_xml(args, context);
+    let post_validation_dependencies = cf_init_post_validation_dependency_paths(&planned);
+    let out_dir = planned.output_dir;
+    let config = planned.configuration;
+    let language = planned.language;
+    let cai = planned.client_application_interface;
+    let compatibility =
+        string_arg(args, &["compatibilityMode", "CompatibilityMode"]).unwrap_or("Version8_3_27");
 
-    let write_result = (|| -> Result<(), String> {
-        if config.exists() {
-            return Err(format!(
-                "Configuration.xml already exists: {}",
-                config.display()
-            ));
-        }
+    let write_result = (|| -> Result<Vec<String>, String> {
+        cf_edit_validate_property_value("CompatibilityMode", compatibility)?;
 
-        let uuid_cfg = stable_uuid(0);
+        let uuid_cfg = uuid::Uuid::new_v4().to_string();
         let uuid_lang = stable_uuid(1);
         let contained_object_ids = (2..9).map(stable_uuid).collect::<Vec<_>>();
         let open_panel_inst = stable_uuid(9);
         let sections_panel_inst = stable_uuid(10);
-        let compatibility = string_arg(args, &["compatibilityMode", "CompatibilityMode"])
-            .unwrap_or("Version8_3_24");
+        let compatibility_xml = escape_xml(compatibility);
         let vendor_xml = string_arg(args, &["vendor", "Vendor"])
             .map(escape_xml)
             .unwrap_or_default();
@@ -3192,17 +4193,11 @@ pub(crate) fn create_configuration_scaffold(
         );
         let mobile_xml = mobile_functionality_xml();
         let contained_objects = contained_objects_xml(&contained_object_ids);
+        let format_version = ACTIVE_FORMAT_PROFILE.export_format;
 
-        fs::create_dir_all(&languages)
-            .map_err(|err| format!("failed to create {}: {err}", languages.display()))?;
-        fs::create_dir_all(&ext)
-            .map_err(|err| format!("failed to create {}: {err}", ext.display()))?;
-
-        write_utf8_bom(
-            &config,
-            &format!(
-                r#"<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.17">
+        let config_xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="{format_version}">
 	<Configuration uuid="{uuid_cfg}">
 		<InternalInfo>
 {contained_objects}		</InternalInfo>
@@ -3211,7 +4206,7 @@ pub(crate) fn create_configuration_scaffold(
 			<Synonym>{synonym_xml}</Synonym>
 			<Comment/>
 			<NamePrefix/>
-			<ConfigurationExtensionCompatibilityMode>{compatibility}</ConfigurationExtensionCompatibilityMode>
+			<ConfigurationExtensionCompatibilityMode>{compatibility_xml}</ConfigurationExtensionCompatibilityMode>
 			<DefaultRunMode>ManagedApplication</DefaultRunMode>
 			<UsePurposes>
 				<v8:Value xsi:type="app:ApplicationUsePurpose">PlatformApplication</v8:Value>
@@ -3263,7 +4258,7 @@ pub(crate) fn create_configuration_scaffold(
 			<SynchronousPlatformExtensionAndAddInCallUseMode>DontUse</SynchronousPlatformExtensionAndAddInCallUseMode>
 			<InterfaceCompatibilityMode>TaxiEnableVersion8_2</InterfaceCompatibilityMode>
 			<DatabaseTablespacesUseMode>DontUse</DatabaseTablespacesUseMode>
-			<CompatibilityMode>{compatibility}</CompatibilityMode>
+			<CompatibilityMode>{compatibility_xml}</CompatibilityMode>
 			<DefaultConstantsForm/>
 		</Properties>
 		<ChildObjects>
@@ -3271,14 +4266,11 @@ pub(crate) fn create_configuration_scaffold(
 		</ChildObjects>
 	</Configuration>
 </MetaDataObject>"#,
-                name = escape_xml(name),
-            ),
-        )?;
-        write_utf8_bom(
-            &language,
-            &format!(
-                r#"<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.17">
+            name = escape_xml(name),
+        );
+        let language_xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="{format_version}">
 	<Language uuid="{uuid_lang}">
 		<Properties>
 			<Name>Русский</Name>
@@ -3293,12 +4285,9 @@ pub(crate) fn create_configuration_scaffold(
 		</Properties>
 	</Language>
 </MetaDataObject>"#
-            ),
-        )?;
-        write_utf8_bom(
-            &cai,
-            &format!(
-                r#"<?xml version="1.0" encoding="UTF-8"?>
+        );
+        let cai_xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
 <ClientApplicationInterface xmlns="http://v8.1c.ru/8.2/managed-application/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="InterfaceLayouter">
 	<top>
 		<panel id="{open_panel_inst}">
@@ -3316,13 +4305,79 @@ pub(crate) fn create_configuration_scaffold(
 	<panelDef id="cbab57f2-a0f3-4f0a-89ea-4cb19570ab75"/>
 	<panelDef id="b2735bd3-d822-4430-ba59-c9e869693b24"/>
 </ClientApplicationInterface>"#
-            ),
+        );
+
+        let mut transaction = CompileTransaction::new();
+        let mut post_validation_preimages = Vec::new();
+        for path in &post_validation_dependencies {
+            match fs::symlink_metadata(path) {
+                Ok(metadata)
+                    if crate::infrastructure::platform::filesystem::
+                        metadata_is_link_or_reparse_point(&metadata) =>
+                {
+                    return Err(format!(
+                        "cf.init validation dependency must not be a symbolic link or reparse point: {}",
+                        path.display()
+                    ));
+                }
+                Ok(metadata) if metadata.is_file() => {
+                    let preimage = fs::read(path).map_err(|error| {
+                        format!(
+                            "failed to read cf.init validation dependency {}: {error}",
+                            path.display()
+                        )
+                    })?;
+                    post_validation_preimages.push((path.clone(), preimage));
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!(
+                        "failed to inspect cf.init validation dependency {}: {error}",
+                        path.display()
+                    ));
+                }
+            }
+        }
+        transaction.create_utf8_bom_text(&config, &config_xml)?;
+        transaction.create_utf8_bom_text(&language, &language_xml)?;
+        transaction.create_utf8_bom_text(&cai, &cai_xml)?;
+        for (path, preimage) in &post_validation_preimages {
+            guard_exact_preimage_if_unprotected(&mut transaction, path, preimage)?;
+        }
+        guard_active_format_dependencies(
+            &mut transaction,
+            &post_validation_preimages
+                .iter()
+                .map(|(path, _)| path.as_path())
+                .collect::<Vec<_>>(),
+            context,
         )?;
-        Ok(())
+        guard_active_format_containing_owner_for_new_output(&mut transaction, &out_dir, context)?;
+
+        let validate_args = Map::from_iter([(
+            "ConfigPath".to_string(),
+            Value::String(config.display().to_string()),
+        )]);
+        let report = transaction.commit_with_post_validation(|| {
+            let outcome = validate_cf(&validate_args, context);
+            if outcome.ok {
+                return Ok(());
+            }
+            let detail = if outcome.errors.is_empty() {
+                outcome
+                    .stdout
+                    .unwrap_or_else(|| "validation returned no diagnostics".to_string())
+            } else {
+                outcome.errors.join("; ")
+            };
+            Err(format!("cf validation failed: {detail}"))
+        })?;
+        Ok(report.cleanup_warnings)
     })();
 
     match write_result {
-        Ok(()) => AdapterOutcome {
+        Ok(warnings) => AdapterOutcome {
             ok: true,
             summary: "unica.cf.init completed with native XML scaffold writer".to_string(),
             changes: vec![
@@ -3330,7 +4385,7 @@ pub(crate) fn create_configuration_scaffold(
                 format!("created {}", language.display()),
                 format!("created {}", cai.display()),
             ],
-            warnings: Vec::new(),
+            warnings,
             errors: Vec::new(),
             artifacts: vec![
                 config.display().to_string(),
@@ -3358,6 +4413,249 @@ pub(crate) fn create_configuration_scaffold(
             stderr: Some(format!("{error}\n")),
             command: None,
         },
+    }
+}
+
+#[cfg(test)]
+mod cf_init_transaction_tests {
+    use super::super::compile_transaction::{with_commit_failpoint, CommitFailpoint};
+    use super::super::single_file_publisher::with_before_commit_hook;
+    use super::*;
+
+    fn init_test_context(label: &str) -> (PathBuf, WorkspaceContext) {
+        let root = std::env::temp_dir().join(format!(
+            "unica-cf-init-{label}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 0,
+        };
+        (root, context)
+    }
+
+    fn init_args(name: &str, compatibility: Option<&str>) -> Map<String, Value> {
+        let mut args = Map::from_iter([
+            ("Name".to_string(), json!(name)),
+            ("OutputDir".to_string(), json!("src")),
+        ]);
+        if let Some(compatibility) = compatibility {
+            args.insert("CompatibilityMode".to_string(), json!(compatibility));
+        }
+        args
+    }
+
+    fn assert_scaffold_absent(root: &Path) {
+        for relative in [
+            "src/Configuration.xml",
+            "src/Languages/Русский.xml",
+            "src/Ext/ClientApplicationInterface.xml",
+        ] {
+            assert!(!root.join(relative).exists(), "unexpected {relative}");
+        }
+    }
+
+    #[test]
+    fn cf_init_rejects_invalid_and_malicious_compatibility_mode_before_writing() {
+        for compatibility in [
+            "DefinitelyInvalid",
+            "</CompatibilityMode><Injected>true</Injected>",
+            "Version8_3_28",
+            "Version8_5_1",
+        ] {
+            let (root, context) = init_test_context("compatibility-preflight");
+
+            let outcome =
+                create_configuration_scaffold(&init_args("Demo", Some(compatibility)), &context);
+
+            assert!(!outcome.ok, "{compatibility}: {outcome:?}");
+            let errors = outcome.errors.join("\n");
+            assert!(errors.contains("CompatibilityMode"), "{outcome:?}");
+            assert!(errors.contains("8.3.27"), "{outcome:?}");
+            assert!(errors.contains(compatibility), "{outcome:?}");
+            assert!(outcome.changes.is_empty(), "{outcome:?}");
+            assert!(outcome.artifacts.is_empty(), "{outcome:?}");
+            assert_scaffold_absent(&root);
+            assert!(!root.join("src").exists(), "{outcome:?}");
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn cf_init_refuses_each_partial_preexisting_scaffold_without_overwrite() {
+        for relative in [
+            "src/Languages/Русский.xml",
+            "src/Ext/ClientApplicationInterface.xml",
+        ] {
+            let (root, context) = init_test_context("partial-scaffold");
+            let existing = root.join(relative);
+            fs::create_dir_all(existing.parent().unwrap()).unwrap();
+            let sentinel = format!("sentinel:{relative}").into_bytes();
+            fs::write(&existing, &sentinel).unwrap();
+
+            let outcome = create_configuration_scaffold(&init_args("Demo", None), &context);
+
+            assert!(!outcome.ok, "{relative}: {outcome:?}");
+            let existing_display =
+                crate::infrastructure::platform::testing::path_text_for_test(&existing);
+            let errors = crate::infrastructure::platform::testing::normalize_path_text_for_test(
+                &outcome.errors.join("\n"),
+            );
+            assert!(
+                errors.contains(&existing_display),
+                "{relative}: {outcome:?}"
+            );
+            assert_eq!(fs::read(&existing).unwrap(), sentinel, "{relative}");
+            assert!(!root.join("src/Configuration.xml").exists(), "{outcome:?}");
+            let other = if relative.contains("Languages") {
+                root.join("src/Ext/ClientApplicationInterface.xml")
+            } else {
+                root.join("src/Languages/Русский.xml")
+            };
+            assert!(!other.exists(), "{outcome:?}");
+            assert!(outcome.changes.is_empty(), "{outcome:?}");
+            assert!(outcome.artifacts.is_empty(), "{outcome:?}");
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn cf_init_refuses_newer_existing_post_validation_dependency_before_writing() {
+        let (root, context) = init_test_context("newer-home-page");
+        let home_page = root.join("src/Ext/HomePageWorkArea.xml");
+        fs::create_dir_all(home_page.parent().unwrap()).unwrap();
+        let source =
+            r#"<HomePageWorkArea xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.21"/>"#;
+        fs::write(&home_page, source).unwrap();
+
+        let outcome = create_configuration_scaffold(&init_args("Demo", None), &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .join("\n")
+                .contains("newer than supported 2.20"),
+            "{outcome:?}"
+        );
+        assert_scaffold_absent(&root);
+        assert_eq!(fs::read_to_string(&home_page).unwrap(), source);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cf_init_binds_existing_post_validation_dependency_preimage() {
+        let (root, context) = init_test_context("home-page-race");
+        let home_page = root.join("src/Ext/HomePageWorkArea.xml");
+        fs::create_dir_all(home_page.parent().unwrap()).unwrap();
+        fs::write(
+            &home_page,
+            r#"<HomePageWorkArea xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"/>"#,
+        )
+        .unwrap();
+        let concurrent = r#"<HomePageWorkArea xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"><!-- concurrent --></HomePageWorkArea>"#;
+        let home_page_for_hook = home_page.clone();
+
+        let outcome = with_before_commit_hook(
+            move |_| fs::write(&home_page_for_hook, concurrent).unwrap(),
+            || create_configuration_scaffold(&init_args("Demo", None), &context),
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("read guard"),
+            "{outcome:?}"
+        );
+        assert_scaffold_absent(&root);
+        assert_eq!(fs::read_to_string(&home_page).unwrap(), concurrent);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cf_init_late_transaction_failpoint_rolls_back_all_created_files_and_directories() {
+        let (root, context) = init_test_context("late-failpoint");
+
+        let outcome = with_commit_failpoint(CommitFailpoint::PostWriteValidation, || {
+            create_configuration_scaffold(&init_args("Demo", None), &context)
+        });
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("post-write validation"),
+            "{outcome:?}"
+        );
+        assert_scaffold_absent(&root);
+        assert!(!root.join("src").exists(), "{outcome:?}");
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        assert!(outcome.artifacts.is_empty(), "{outcome:?}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cf_init_reauthorizes_containing_owner_immediately_before_publication() {
+        let (root, context) = init_test_context("owner-race");
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        let owner = root.join("src/Configuration.xml");
+        fs::write(
+            &owner,
+            br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration/></MetaDataObject>"#,
+        )
+        .unwrap();
+        let concurrent_owner = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Configuration/></MetaDataObject>"#.to_vec();
+        let owner_for_hook = owner.clone();
+        let args = Map::from_iter([
+            ("Name".to_string(), json!("Nested")),
+            ("OutputDir".to_string(), json!("src/nested")),
+        ]);
+
+        let outcome = with_before_commit_hook(
+            move |_| fs::write(&owner_for_hook, &concurrent_owner).unwrap(),
+            || create_configuration_scaffold(&args, &context),
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("changed after planning"),
+            "{outcome:?}"
+        );
+        assert!(fs::read_to_string(&owner)
+            .unwrap()
+            .contains(r#"version="2.21""#));
+        assert!(!root.join("src/nested").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cf_init_real_post_validation_failure_rolls_back_complete_scaffold() {
+        let (root, context) = init_test_context("real-validation");
+
+        let outcome = create_configuration_scaffold(&init_args("Invalid Name", None), &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .join("\n")
+                .contains("not a valid 1C identifier"),
+            "{outcome:?}"
+        );
+        assert_scaffold_absent(&root);
+        assert!(!root.join("src").exists(), "{outcome:?}");
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        assert!(outcome.artifacts.is_empty(), "{outcome:?}");
+        fs::remove_dir_all(root).unwrap();
     }
 }
 
@@ -3400,6 +4698,7 @@ pub(crate) fn mobile_functionality_xml() -> String {
         ("Geofences", "false"),
         ("IncomingShareRequests", "false"),
         ("AllIncomingShareRequestsTypesProcessing", "false"),
+        ("TextToSpeech", "false"),
     ];
 
     let mut xml = String::new();

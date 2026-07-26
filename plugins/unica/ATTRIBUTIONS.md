@@ -26,7 +26,7 @@ skills — в [`provenance/skill-upstreams.json`](provenance/skill-upstreams.jso
 
 - Репозиторий: [itrous/bsl-analyzer](https://github.com/itrous/bsl-analyzer)
 - Автор: [BSL Analyzer Contributors](https://github.com/itrous/bsl-analyzer/graphs/contributors)
-- Закреплённая версия: `0.2.55`, commit `5a02bb44dedaf29e0e29af1f740279d279199854`
+- Закреплённая версия: `0.2.62`, commit `9a6cb15d60c0381dce6a3b5e536434adb12da89b`
 - Лицензия: [LGPL-3.0-or-later](third-party/licenses/bsl-analyzer/LICENSE-LGPL)
 - Дополнительные условия и происхождение: [NOTICE](third-party/licenses/bsl-analyzer/NOTICE)
 
@@ -106,6 +106,35 @@ Unica благодарит Nick Shirokov за практические опер�
 skills принадлежат Unica. На указанном baseline лицензия не опубликована,
 поэтому Unica не заявляет право на распространение материалов этого проекта и
 не включает его в цепочку лицензий поставки.
+
+### 1C Design Guide
+
+<!-- unica-attribution: upstream 1c-design-guide -->
+
+- Репозиторий: [Oxotka/1CDesignGuide](https://github.com/Oxotka/1CDesignGuide)
+- Автор: [Nikita Aripov](https://github.com/Oxotka)
+- Проверенный baseline: `edc05eaf5c191250a184b0e185006bf4b412f7a5`
+- Лицензия: [MIT](third-party/licenses/1c-design-guide/LICENSE)
+
+Unica адаптирует применимые рекомендации по UX форм из 1C Design Guide для
+`form-patterns`; адаптированная инструкция остаётся в составе Unica и работает
+только с типизированными инструментами `unica.form.*`.
+
+### Шаблоны новых объектов 1С
+
+<!-- unica-attribution: upstream templates-new-object-1c -->
+
+- Репозиторий: [Oxotka/TemplatesNewObject1C](https://github.com/Oxotka/TemplatesNewObject1C)
+- Автор: [Nikita Aripov](https://github.com/Oxotka)
+- Проверенный baseline: `751a51610d97079b77df71b780c3110ec7507558`
+- Лицензия: [MIT](third-party/licenses/templates-new-object-1c/LICENSE)
+
+Unica адаптирует из чек-листа TemplatesNewObject1C соглашения по именам,
+синонимам, представлениям, проверке заполнения, длине кода справочников и
+командному интерфейсу регистров сведений в reference `metadata-conventions`.
+Исходный чек-лист подготовлен для «1С:Бухгалтерии предприятия» и предупреждает
+о возможных отличиях других конфигураций; перечисленные пункты осознанно приняты
+как общие проектные соглашения Unica; это не требования платформы.
 
 ### v8-runner-rust как источник runtime-контракта
 

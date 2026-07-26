@@ -21,7 +21,8 @@
   "commands": [
     {
       "name": "Refresh",
-      "title": "Refresh"
+      "title": "Refresh",
+      "action": "Refresh"
     }
   ]
 }

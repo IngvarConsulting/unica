@@ -28,7 +28,7 @@ allowed-tools:
 | `OutputDir` | Каталог для создания (default: `src`) |
 | `Version` | Версия конфигурации |
 | `Vendor` | Поставщик |
-| `CompatibilityMode` | Режим совместимости (default: `Version8_3_24`) |
+| `CompatibilityMode` | Режим совместимости (default: `Version8_3_27`) |
 
 ```json
 {

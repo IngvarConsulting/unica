@@ -1,7 +1,9 @@
 # Спецификация формата XML объектов метаданных конфигурации 1С
 
+> Активный контракт Unica: платформа `8.3.27`, формат выгрузки `2.20`.
+
 Формат: XML-выгрузка конфигурации 1С:Предприятие 8.3 (Конфигуратор → Конфигурация → Выгрузить конфигурацию в файлы).
-Версии формата: `2.17` (платформа 8.3.20–8.3.24), `2.20` (платформа 8.3.27+).
+Текущие инструкции и XML-примеры ниже относятся к активному формату `2.20`; прежний формат описан только в явно помеченной исторической справке.
 
 Источники: выгрузки ERP 2, Бухгалтерия предприятия (платформы 8.3.20, 8.3.24, 8.3.27).
 
@@ -148,12 +150,12 @@ Platform-generated CDFI sidecar `ConfigDumpInfo.xml` с корнем
     xmlns:v8ui="http://v8.1c.ru/8.1/data/ui"
     xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web"
     xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows"
-    xmlns:xen="http://v8.3/xcf/enums"
-    xmlns:xpr="http://v8.3/xcf/predef"
-    xmlns:xr="http://v8.3/xcf/readable"
+    xmlns:xen="http://v8.1c.ru/8.3/xcf/enums"
+    xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef"
+    xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"
     xmlns:xs="http://www.w3.org/2001/XMLSchema"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-    version="2.17">
+    version="2.20">
 
     <Catalog uuid="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
         <InternalInfo> ... </InternalInfo>
@@ -171,12 +173,12 @@ Platform-generated CDFI sidecar `ConfigDumpInfo.xml` с корнем
 | *(default)* | `http://v8.1c.ru/8.3/MDClasses` | Основное пространство классов метаданных |
 | `v8` | `http://v8.1c.ru/8.1/data/core` | Базовые типы данных (Type, item, lang, content) |
 | `cfg` | `http://v8.1c.ru/8.1/data/enterprise/current-config` | Ссылки на объекты текущей конфигурации |
-| `xr` | `http://v8.3/xcf/readable` | Человекочитаемый формат (GeneratedType, StandardAttribute) |
+| `xr` | `http://v8.1c.ru/8.3/xcf/readable` | Человекочитаемый формат (GeneratedType, StandardAttribute) |
 | `xsi` | `http://www.w3.org/2001/XMLSchema-instance` | Типы атрибутов (`xsi:type`, `xsi:nil`) |
 | `xs` | `http://www.w3.org/2001/XMLSchema` | Типы XML Schema (`xs:string`, `xs:boolean`, ...) |
 | `app` | `http://v8.1c.ru/8.2/managed-application/core` | Ядро управляемого приложения (ChoiceParameters) |
-| `xen` | `http://v8.3/xcf/enums` | Перечисления формата |
-| `xpr` | `http://v8.3/xcf/predef` | Предопределённые типы |
+| `xen` | `http://v8.1c.ru/8.3/xcf/enums` | Перечисления формата |
+| `xpr` | `http://v8.1c.ru/8.3/xcf/predef` | Предопределённые типы |
 
 ### 2.3. Элемент типа объекта
 
@@ -564,7 +566,7 @@ Platform-generated CDFI sidecar `ConfigDumpInfo.xml` с корнем
 |---|---|---|
 | `name` | атрибут | Имя стандартного реквизита |
 | `LinkByType` | элемент | Связь по типу (обычно пустой) |
-| `FillChecking` | enum | `DontCheck` \| `ShowWarning` \| `ShowError` |
+| `FillChecking` | enum | `DontCheck` \| `ShowError` (контракт 8.3.27; `ShowWarning` в XDTO 8.3.27 отсутствует) |
 | `MultiLine` | boolean | Многострочное поле |
 | `FillFromFillingValue` | boolean | Заполнять из значения заполнения |
 | `CreateOnInput` | enum | `Auto` \| `Use` \| `DontUse` |
@@ -881,16 +883,27 @@ XML-элемент: `<Catalog>`. Категория InternalInfo: CatalogObject,
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
-<PredefinedData xmlns="http://v8.1c.ru/8.3/MDClasses" ...>
-    <Item>
+<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef"
+    xmlns:v8="http://v8.1c.ru/8.1/data/core"
+    xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"
+    xmlns:xs="http://www.w3.org/2001/XMLSchema"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:type="CatalogPredefinedItems" version="2.20">
+    <Item id="c7d2e6fc-3824-4b56-b4be-ae6be4944c0e">
         <Name>ОсновнаяВалюта</Name>
-        <Description>Рубль</Description>
         <Code>643</Code>
+        <Description>Рубль</Description>
         <IsFolder>false</IsFolder>
         <!-- значения реквизитов -->
     </Item>
 </PredefinedData>
 ```
+
+Корень — `PredefinedData` в пространстве имён `http://v8.1c.ru/8.3/xcf/predef`
+(не `MDClasses`), с обязательным `version="2.20"`. `xsi:type` зависит от вида
+владельца: на выгрузках 8.3.27.2074 подтверждены `CatalogPredefinedItems` и
+`PlanOfCharacteristicKindPredefinedItems`. Расширения используют тот же корень —
+см. [1c-extension-spec.md § 8](1c-extension-spec.md).
 
 ---
 
@@ -1264,7 +1277,11 @@ XML-элемент: `<ExchangePlan>`.
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
-<ExchangePlanContent xmlns="http://v8.1c.ru/8.3/MDClasses" ...>
+<ExchangePlanContent xmlns="http://v8.1c.ru/8.3/xcf/extrnprops"
+        xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"
+        xmlns:xs="http://www.w3.org/2001/XMLSchema"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        version="2.20">
     <Item>
         <Metadata>Catalog.Контрагенты</Metadata>
         <AutoRecord>Allow</AutoRecord>       <!-- Allow | Deny -->
@@ -1702,6 +1719,7 @@ XML-элемент: `<WebService>`. Трёхуровневая вложенно�
 
 ---
 
+<!-- legacy-format-reference:start -->
 ## 26. Различия версий платформы
 
 ### 26.1. Версия 2.17 → 2.20
@@ -1741,6 +1759,7 @@ XML-элемент: `<WebService>`. Трёхуровневая вложенно�
 - Именование файлов и каталогов **без изменений**
 
 ---
+<!-- legacy-format-reference:end -->
 
 ## 27. Сводная таблица: свойства по типам объектов
 

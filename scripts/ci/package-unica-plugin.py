@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assemble a Codex marketplace package from built Unica tool artifacts."""
+"""Assemble Codex and Claude marketplace packages from built Unica tool artifacts."""
 
 from __future__ import annotations
 
@@ -14,6 +14,12 @@ from pathlib import Path
 
 PLUGIN_ID = "unica"
 DISPLAY_NAME = "Unica"
+# One plugin directory serves both hosts. Each host reads its own manifest
+# directory and ignores the other, and the single `.mcp.json` launcher resolves
+# the plugin root from whichever host variable is present, so the package ships
+# one copy of the bootstrap matrix instead of one per host.
+HOST_MANIFEST_DIRS = {"codex": ".codex-plugin", "claude": ".claude-plugin"}
+CLAUDE_MARKETPLACE_PATH = Path(".claude-plugin") / "marketplace.json"
 SOURCE_PACKAGE_IGNORES = {"bin", ".DS_Store", "__pycache__", ".pytest_cache"}
 DISALLOWED_ARCHIVE_PARTS = {".build", "dist", "__pycache__", ".pytest_cache"}
 SUPPORTED_TARGETS = {
@@ -198,6 +204,21 @@ def load_tool_bundles(
     return grouped, bin_roots
 
 
+def read_release_version(plugin_src: Path) -> str:
+    """Return the release version both host manifests agree on."""
+    versions = {}
+    for host, manifest_dir in HOST_MANIFEST_DIRS.items():
+        manifest_path = plugin_src / manifest_dir / "plugin.json"
+        if not manifest_path.is_file():
+            raise SystemExit(f"plugin source is missing the {host} manifest: {manifest_path}")
+        versions[host] = json.loads(manifest_path.read_text(encoding="utf-8"))["version"]
+    distinct = set(versions.values())
+    if len(distinct) != 1:
+        detail = ", ".join(f"{host}={version}" for host, version in sorted(versions.items()))
+        raise SystemExit(f"host manifests disagree on the release version: {detail}")
+    return distinct.pop()
+
+
 def write_manifest(plugin_dir: Path, grouped_tools: dict[str, dict], lock_file: Path) -> None:
     lock_path = lock_file.resolve()
     manifest = {
@@ -219,6 +240,21 @@ def write_manifest(plugin_dir: Path, grouped_tools: dict[str, dict], lock_file: 
     path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+# One launcher, both hosts. Claude Code rewrites `${CLAUDE_PLUGIN_ROOT}` in the
+# alias before the shell sees it, so `root` is already absolute there; Codex
+# leaves the token alone, the shell expands it to the empty string, and the
+# original `$PWD/${GIT_PREFIX:-}` resolution takes over unchanged.
+PACKAGED_MCP_ALIAS = (
+    'alias.unica-bootstrap=!f() { root="${CLAUDE_PLUGIN_ROOT}"; '
+    '[ -n "$root" ] || root="$PWD/${GIT_PREFIX:-}"; '
+    'exec sh "${root%/}/bootstrap/launch.sh" "${root%/}"; }; f'
+)
+# Claude Code keeps `${CLAUDE_PLUGIN_DATA}` across plugin updates, unlike the
+# plugin root. Hosts that do not substitute the token pass it through literally,
+# and the bootstrap discards any value that still contains `${`.
+PACKAGED_MCP_CACHE_DIR = "${CLAUDE_PLUGIN_DATA}/runtimes"
+
+
 def write_packaged_mcp_launcher(
     plugin_dir: Path, _grouped_tools: dict[str, dict] | None = None
 ) -> None:
@@ -226,33 +262,113 @@ def write_packaged_mcp_launcher(
     mcp = json.loads(mcp_path.read_text(encoding="utf-8"))
     server = mcp["mcpServers"]["unica"]
     server["command"] = "git"
-    server["args"] = [
-        "-c",
-        (
-            'alias.unica-bootstrap=!f() { root="$PWD/${GIT_PREFIX:-}"; '
-            'exec sh "${root}bootstrap/launch.sh" "$root"; }; f'
-        ),
-        "unica-bootstrap",
-    ]
+    server["args"] = ["-c", PACKAGED_MCP_ALIAS, "unica-bootstrap"]
     server["cwd"] = "."
+    server["env"] = {"UNICA_RUNTIME_CACHE_DIR": PACKAGED_MCP_CACHE_DIR}
     server["note"] = (
         "Single public Unica stdio MCP orchestrator. The public Git package enters "
-        "through a command-scoped Git shell alias, selects a native bootstrap for "
-        "the host, verifies the pinned runtime, and transparently launches unica."
+        "through a command-scoped Git shell alias, resolves the plugin root from the "
+        "host, selects a native bootstrap, verifies the pinned runtime, and "
+        "transparently launches unica."
     )
     mcp_path.write_text(json.dumps(mcp, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def write_local_debug_mcp_launcher(plugin_dir: Path, target: str) -> None:
+def assert_host_manifests_present(plugin_dir: Path) -> None:
+    """Both hosts must find their manifest in the shared plugin directory."""
+    for host, manifest_dir in sorted(HOST_MANIFEST_DIRS.items()):
+        manifest = plugin_dir / manifest_dir / "plugin.json"
+        if not manifest.is_file():
+            raise SystemExit(f"package is missing the {host} manifest: {manifest}")
+
+
+def claude_plugin_source(*, release_tag: str) -> dict:
+    """Pin the Claude catalog to the same immutable tag as the Codex catalog.
+
+    `git-subdir` is what keeps ADR-0008 intact for Claude: the catalog on the
+    marketplace default branch keeps naming the previous tag until a promotion
+    PR moves it, so staged bytes are never served. The trade-off is a floor on
+    the supported Claude Code version, because older clients reject the source
+    type; a relative `./plugins/unica` source would load everywhere but would
+    follow the marketplace branch instead of a tag.
+    """
+    return {
+        "source": "git-subdir",
+        "url": "https://github.com/IngvarConsulting/unica-marketplace.git",
+        "path": f"./plugins/{PLUGIN_ID}",
+        "ref": release_tag,
+    }
+
+
+def write_claude_marketplace(plugin_dir: Path, dest_path: Path, *, source: dict | str) -> None:
+    """Derive the Claude catalog from the packaged manifest.
+
+    Unlike the Codex catalog there is no hand-maintained source file: every field
+    Claude Code reads is already in `.claude-plugin/plugin.json`, so deriving it
+    here removes a contract that could drift from the manifest.
+    """
+    manifest = json.loads(
+        (plugin_dir / HOST_MANIFEST_DIRS["claude"] / "plugin.json").read_text(encoding="utf-8")
+    )
+    author = manifest.get("author", {})
+    if not author.get("name"):
+        raise SystemExit("Claude plugin manifest must declare author.name")
+    # Named up front so a manifest missing one fails with the field rather than a
+    # KeyError from whichever line happened to reach it first.
+    missing = [
+        key
+        for key in ("description", "homepage", "repository", "license", "keywords", "version")
+        if not manifest.get(key)
+    ]
+    if missing:
+        raise SystemExit(f"Claude plugin manifest is missing: {', '.join(missing)}")
+
+    # Only fields every supported Claude Code release accepts: newer optional
+    # keys such as displayName are rejected outright by older clients rather
+    # than ignored, which would make the whole catalog unloadable for them.
+    entry = {
+        "name": PLUGIN_ID,
+        "source": source,
+        "description": manifest["description"],
+        "version": manifest["version"],
+        "author": author,
+        "homepage": manifest["homepage"],
+        "repository": manifest["repository"],
+        "license": manifest["license"],
+        "keywords": manifest["keywords"],
+        "category": "Coding",
+    }
+    catalog = {
+        "name": PLUGIN_ID,
+        "owner": {"name": author["name"]},
+        # Current releases read the description from either place; older ones
+        # only look under metadata, so that is where it goes.
+        "metadata": {"description": manifest["description"]},
+        "plugins": [entry],
+    }
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    dest_path.write_text(json.dumps(catalog, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def write_local_debug_mcp_launcher(plugin_dir: Path, target: str, *, host: str = "codex") -> None:
     if target not in SUPPORTED_TARGETS:
         raise SystemExit(f"unsupported local debug target: {target}")
+    if host not in HOST_MANIFEST_DIRS:
+        raise SystemExit(f"unknown package host: {host}")
     executable = "unica.exe" if target == "win-x64" else "unica"
     mcp_path = plugin_dir / ".mcp.json"
     mcp = json.loads(mcp_path.read_text(encoding="utf-8"))
     server = mcp["mcpServers"]["unica"]
-    server["command"] = f"./bin/{target}/{executable}"
-    server["args"] = []
-    server["cwd"] = "."
+    if host == "claude":
+        # Claude Code does not run plugin servers from the plugin root, so the
+        # binary is addressed absolutely instead of through cwd.
+        server["command"] = "${CLAUDE_PLUGIN_ROOT}/bin/" + f"{target}/{executable}"
+        server["args"] = []
+        server.pop("cwd", None)
+    else:
+        server["command"] = f"./bin/{target}/{executable}"
+        server["args"] = []
+        server["cwd"] = "."
     server["note"] = "Development-only current-host Unica MCP binary."
     mcp_path.write_text(json.dumps(mcp, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
@@ -448,21 +564,24 @@ def package_local_debug(
     out_dir: Path,
     marketplace_name: str,
     target: str,
+    host: str = "codex",
 ) -> None:
     plugin_src = repo_root / "plugins" / "unica"
     marketplace_src = repo_root / ".agents" / "plugins" / "marketplace.json"
     marketplace_dir = out_dir / "marketplace"
     shutil.rmtree(marketplace_dir, ignore_errors=True)
-    plugin_dst = marketplace_dir / "plugins" / "unica"
+    plugin_dst = marketplace_dir / "plugins" / PLUGIN_ID
     copy_tracked_plugin_source(repo_root, plugin_src, plugin_dst)
+    assert_host_manifests_present(plugin_dst)
 
-    marketplace_dst = marketplace_dir / ".agents" / "plugins"
-    marketplace_dst.mkdir(parents=True, exist_ok=True)
-    write_official_marketplace(
-        marketplace_src,
-        marketplace_dst / "marketplace.json",
-        marketplace_name=marketplace_name,
-    )
+    if host == "codex":
+        marketplace_dst = marketplace_dir / ".agents" / "plugins"
+        marketplace_dst.mkdir(parents=True, exist_ok=True)
+        write_official_marketplace(
+            marketplace_src,
+            marketplace_dst / "marketplace.json",
+            marketplace_name=marketplace_name,
+        )
 
     lock = load_lock(lock_file)
     grouped_tools, bin_roots = load_tool_bundles(
@@ -476,7 +595,13 @@ def package_local_debug(
         if source.is_dir():
             copy_binary_tree(source, plugin_dst / "bin" / target)
     write_manifest(plugin_dst, grouped_tools, lock_file)
-    write_local_debug_mcp_launcher(plugin_dst, target)
+    write_local_debug_mcp_launcher(plugin_dst, target, host=host)
+    if host == "claude":
+        write_claude_marketplace(
+            plugin_dst,
+            marketplace_dir / CLAUDE_MARKETPLACE_PATH,
+            source=f"./plugins/{PLUGIN_ID}",
+        )
     assert_archive_clean(marketplace_dir)
 
 
@@ -488,6 +613,7 @@ def main() -> None:
     parser.add_argument("--release-tag")
     parser.add_argument("--source-commit")
     parser.add_argument("--local-debug-target")
+    parser.add_argument("--local-debug-host", default="codex", choices=sorted(HOST_MANIFEST_DIRS))
     parser.add_argument("--tools-root", type=Path)
     parser.add_argument("--lock-file", type=Path, default=Path("plugins/unica/third-party/tools.lock.json"))
     parser.add_argument("--marketplace-name", default="unica-dev")
@@ -506,6 +632,7 @@ def main() -> None:
             out_dir=args.out_dir.resolve(),
             marketplace_name=args.marketplace_name,
             target=args.local_debug_target,
+            host=args.local_debug_host,
         )
         return
 
@@ -528,25 +655,18 @@ def main() -> None:
     if not marketplace_src.exists():
         raise SystemExit(f"marketplace source not found: {marketplace_src}")
 
-    plugin_json = json.loads((plugin_src / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
-    version = plugin_json["version"]
+    version = read_release_version(plugin_src)
     metadata = load_runtime_metadata(args.runtime_metadata_root.resolve(), plugin_version=version)
+    bootstrap_root = args.bootstrap_root.resolve()
 
     marketplace_dir = args.out_dir / "marketplace"
     shutil.rmtree(marketplace_dir, ignore_errors=True)
     marketplace_dir.mkdir(parents=True, exist_ok=True)
-    plugin_dst = marketplace_dir / "plugins" / "unica"
+
+    plugin_dst = marketplace_dir / "plugins" / PLUGIN_ID
     copy_tracked_plugin_source(repo_root, plugin_src, plugin_dst)
-
-    marketplace_dst = marketplace_dir / ".agents" / "plugins"
-    marketplace_dst.mkdir(parents=True, exist_ok=True)
-    write_public_marketplace(
-        marketplace_src,
-        marketplace_dst / "marketplace.json",
-        release_tag=args.release_tag,
-    )
-
-    copy_bootstrap_matrix(args.bootstrap_root.resolve(), plugin_dst)
+    assert_host_manifests_present(plugin_dst)
+    copy_bootstrap_matrix(bootstrap_root, plugin_dst)
     write_release_runtime_manifest(
         plugin_dst,
         metadata,
@@ -556,10 +676,25 @@ def main() -> None:
     )
     write_packaged_mcp_launcher(plugin_dst)
 
+    marketplace_dst = marketplace_dir / ".agents" / "plugins"
+    marketplace_dst.mkdir(parents=True, exist_ok=True)
+    write_public_marketplace(
+        marketplace_src,
+        marketplace_dst / "marketplace.json",
+        release_tag=args.release_tag,
+    )
+    write_claude_marketplace(
+        plugin_dst,
+        marketplace_dir / CLAUDE_MARKETPLACE_PATH,
+        source=claude_plugin_source(release_tag=args.release_tag),
+    )
+
     json.loads((plugin_dst / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    json.loads((plugin_dst / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
     json.loads((plugin_dst / ".mcp.json").read_text(encoding="utf-8"))
     json.loads((plugin_dst / "runtime-manifest.json").read_text(encoding="utf-8"))
     json.loads((marketplace_dst / "marketplace.json").read_text(encoding="utf-8"))
+    json.loads((marketplace_dir / CLAUDE_MARKETPLACE_PATH).read_text(encoding="utf-8"))
     assert_archive_clean(marketplace_dir)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)

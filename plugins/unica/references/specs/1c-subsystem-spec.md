@@ -1,7 +1,9 @@
 # Спецификация формата XML подсистем и командного интерфейса 1С
 
+> Активный контракт Unica: платформа `8.3.27`, формат выгрузки `2.20`.
+
 Формат: XML-выгрузка конфигурации 1С:Предприятие 8.3 (Конфигуратор → Конфигурация → Выгрузить конфигурацию в файлы).
-Версии формата: `2.17` (платформа 8.3.20–8.3.24), `2.20` (платформа 8.3.27+).
+Текущие инструкции и XML-примеры относятся к формату `2.20`; прежний формат упоминается только в исторической справке.
 
 Источники: выгрузки Бухгалтерия предприятия (платформы 8.3.20, 8.3.24, 8.3.27), ERP 2 (8.3.24).
 
@@ -101,7 +103,7 @@ Ext/
     xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"
     xmlns:xs="http://www.w3.org/2001/XMLSchema"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-    version="2.17">
+    version="2.20">
 ```
 
 ### 2.2. Командный интерфейс (CommandInterface.xml)
@@ -114,7 +116,7 @@ Ext/
     xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"
     xmlns:xs="http://www.w3.org/2001/XMLSchema"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-    version="2.17">
+    version="2.20">
 ```
 
 ---
@@ -125,7 +127,7 @@ Ext/
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="..." version="2.17">
+<MetaDataObject xmlns="..." version="2.20">
     <Subsystem uuid="<UUID>">
         <Properties>
             <Name>ИмяПодсистемы</Name>
@@ -311,7 +313,7 @@ Ext/
     xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"
     xmlns:xs="http://www.w3.org/2001/XMLSchema"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-    version="2.17">
+    version="2.20">
     <CommandsVisibility>...</CommandsVisibility>       <!-- опционально -->
     <CommandsPlacement>...</CommandsPlacement>          <!-- опционально -->
     <CommandsOrder>...</CommandsOrder>                  <!-- опционально -->
@@ -334,7 +336,7 @@ Ext/
 Содержит только порядок подсистем верхнего уровня:
 
 ```xml
-<CommandInterface xmlns="..." version="2.17">
+<CommandInterface xmlns="..." version="2.20">
     <SubsystemsOrder>
         <Subsystem>Subsystem.Руководителю</Subsystem>
         <Subsystem>Subsystem.БанкИКасса</Subsystem>
@@ -473,7 +475,7 @@ CommandGroups/
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="..." version="2.17">
+<MetaDataObject xmlns="..." version="2.20">
     <CommandGroup uuid="<UUID>">
         <Properties>
             <Name>Документы</Name>
@@ -534,7 +536,7 @@ CommandGroups/
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="..." version="2.17">
+<MetaDataObject xmlns="..." version="2.20">
     <CommandGroup uuid="774911fc-5b94-4ac7-8923-fd317727c671">
         <Properties>
             <Name>Документы</Name>
@@ -558,7 +560,7 @@ CommandGroups/
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="..." version="2.17">
+<MetaDataObject xmlns="..." version="2.20">
     <CommandGroup uuid="ac39b903-0c60-417e-a50f-49ed375424f5">
         <Properties>
             <Name>Печать</Name>
@@ -613,7 +615,7 @@ CommonCommands/
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="..." version="2.17">
+<MetaDataObject xmlns="..." version="2.20">
     <CommonCommand uuid="<UUID>">
         <Properties>
             <Name>АнализСчета</Name>
@@ -881,9 +883,10 @@ CommandGroup.<ИмяГруппы>
 
 ---
 
+<!-- legacy-format-reference:start -->
 ## 10. Различия версий формата
 
-| Аспект | `2.17` (8.3.20–8.3.24) | `2.20` (8.3.27+) |
+| Аспект | `2.17` (8.3.20–8.3.24) | `2.20` (исследовано на 8.3.27) |
 |---|---|---|
 | Атрибут `version` | `2.17` | `2.20` |
 | BOM (UTF-8 BOM) | Нет | Да (EF BB BF) |
@@ -891,7 +894,9 @@ CommandGroup.<ИмяГруппы>
 | Набор свойств подсистемы | Идентичный | Идентичный |
 | Секции CommandInterface | Идентичные | Идентичные |
 
-> Между версиями `2.17` и `2.20` структурных различий в формате подсистем и командного интерфейса не обнаружено. Меняется только атрибут `version` и наличие BOM.
+> Между исследованными версиями `2.17` и `2.20` структурных различий в формате подсистем и командного интерфейса не обнаружено. Это историческое наблюдение по образцам, а не разрешение генерировать прежний формат.
+
+<!-- legacy-format-reference:end -->
 
 ---
 
@@ -906,7 +911,7 @@ CommandGroup.<ИмяГруппы>
     xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"
     xmlns:xs="http://www.w3.org/2001/XMLSchema"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-    version="2.17">
+    version="2.20">
     <Subsystem uuid="2885099a-00f4-481b-8469-faee8a208e7c">
         <Properties>
             <Name>Продажи</Name>
@@ -950,7 +955,7 @@ CommandGroup.<ИмяГруппы>
     xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"
     xmlns:xs="http://www.w3.org/2001/XMLSchema"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-    version="2.17">
+    version="2.20">
     <CommandsVisibility>
         <Command name="Report.Продажи.Command.ПродажиПоКонтрагентам">
             <Visibility>
@@ -1010,7 +1015,7 @@ CommandGroup.<ИмяГруппы>
     xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"
     xmlns:xs="http://www.w3.org/2001/XMLSchema"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-    version="2.17">
+    version="2.20">
     <SubsystemsOrder>
         <Subsystem>Subsystem.Руководителю</Subsystem>
         <Subsystem>Subsystem.БанкИКасса</Subsystem>

@@ -20,6 +20,8 @@ Use these standards during BSL implementation, review, and refactoring.
 
 ## Naming And Comments
 
+- See `metadata-conventions.md` for object naming, synonym, representation, and
+  fill-check conventions.
 - Use project-local naming conventions when present.
 - Add comments for non-obvious platform constraints and integration decisions,
   not for trivial assignments.

@@ -1,0 +1,126 @@
+{
+  "profile": "1c-8.3.27-export-2.20",
+  "exportVersion": "2.20",
+  "runtime": {
+    "sha256": "e7539a02520cf7bd73585d80b038c2c95078aac281d3700842a5f3a1f3c0c204",
+    "formatVersion": 1,
+    "platformVersion": "8.3.27.2074",
+    "summary": {
+      "packages": 56,
+      "namespaces": 56,
+      "success": 56,
+      "schemas": 56,
+      "errors": 0
+    },
+    "knownCompileFailures": {
+      "0049.xsd": "runtime export contains an xs:restriction without base",
+      "0056.xsd": "runtime export depends on external W3C xml.xsd"
+    },
+    "knownExternalImports": [
+      {
+        "file": "schemas/0056.xsd",
+        "namespace": "http://www.w3.org/XML/1998/namespace",
+        "schemaLocation": "http://www.w3.org/2001/xml.xsd"
+      }
+    ]
+  },
+  "edt": {
+    "sha256": "a0c13bbff0527503c23cde14fb10f07742223c6e7d85bf9f06a753cfcc3707b8",
+    "symbolicName": "com._1c.g5.v8.dt.platform_v8.3.27",
+    "version": "1.0.300.v202603181342",
+    "entries": {
+      "backend": "resources/v8.3.27/xdto/backend.xdto",
+      "managedForm": "resources/v8.3.27/xdto/mngbase.xdto"
+    },
+    "declarations": {
+      "metadata": {
+        "entry": "backend",
+        "tokens": ["targetNamespace=\"http://v8.1c.ru/8.3/MDClasses\"", "name=\"MetaDataObject\""]
+      },
+      "managedForm": {
+        "entry": "managedForm",
+        "tokens": ["targetNamespace=\"http://v8.1c.ru/8.3/xcf/logform\"", "name=\"Form\""]
+      },
+      "extrnprops": {
+        "entry": "backend",
+        "tokens": ["targetNamespace=\"http://v8.1c.ru/8.3/xcf/extrnprops\"", "name=\"CommandInterface\"", "name=\"Help\"", "name=\"ExchangePlanContent\"", "name=\"HomePageWorkArea\""]
+      }
+    }
+  },
+  "families": {
+    "{http://v8.1c.ru/8.1/data-composition-system/schema}DataCompositionSchema": {
+      "id": "dcs",
+      "coverage": "strict",
+      "schemaNamespace": "http://v8.1c.ru/8.1/data-composition-system/schema",
+      "wrapperType": "DataCompositionSchema",
+      "wrapper": "dcs-root-alias",
+      "version": "owner"
+    },
+    "{http://v8.1c.ru/8.2/roles}Rights": {
+      "id": "roles",
+      "coverage": "strict",
+      "schemaNamespace": "http://v8.1c.ru/8.2/roles",
+      "wrapperType": "Rights",
+      "wrapper": "roles-global-element",
+      "version": "root"
+    },
+    "{http://v8.1c.ru/8.2/data/spreadsheet}document": {
+      "id": "mxl",
+      "coverage": "known-schema-incompatibility",
+      "version": "owner"
+    },
+    "{http://v8.1c.ru/8.2/managed-application/core}ClientApplicationInterface": {
+      "id": "client-application-interface",
+      "coverage": "known-schema-incompatibility",
+      "version": "owner"
+    },
+    "{http://v8.1c.ru/8.3/MDClasses}MetaDataObject": {
+      "id": "metadata",
+      "coverage": "not-covered",
+      "version": "root",
+      "edtDeclaration": "metadata",
+      "sourceSetOwner": true,
+      "sourceSetOwnerTypes": [
+        "Configuration",
+        "ConfigurationExtension",
+        "ExternalDataProcessor",
+        "ExternalReport"
+      ]
+    },
+    "{http://v8.1c.ru/8.3/xcf/scheme}GraphicalSchema": {
+      "id": "flowchart",
+      "coverage": "not-covered",
+      "version": "root"
+    },
+    "{http://v8.1c.ru/8.3/xcf/logform}Form": {
+      "id": "managed-form",
+      "coverage": "not-covered",
+      "version": "root",
+      "edtDeclaration": "managedForm"
+    },
+    "{http://v8.1c.ru/8.3/xcf/extrnprops}CommandInterface": {
+      "id": "command-interface",
+      "coverage": "not-covered",
+      "version": "root",
+      "edtDeclaration": "extrnprops"
+    },
+    "{http://v8.1c.ru/8.3/xcf/extrnprops}Help": {
+      "id": "help",
+      "coverage": "not-covered",
+      "version": "root",
+      "edtDeclaration": "extrnprops"
+    },
+    "{http://v8.1c.ru/8.3/xcf/extrnprops}ExchangePlanContent": {
+      "id": "exchange-plan-content",
+      "coverage": "not-covered",
+      "version": "root",
+      "edtDeclaration": "extrnprops"
+    },
+    "{http://v8.1c.ru/8.3/xcf/extrnprops}HomePageWorkArea": {
+      "id": "home-page-work-area",
+      "coverage": "not-covered",
+      "version": "root",
+      "edtDeclaration": "extrnprops"
+    }
+  }
+}

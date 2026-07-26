@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -39,15 +40,55 @@ from __future__ import annotations
 import json
 import sys
 
-message = json.loads(sys.stdin.readline())
-for response_id in {json.dumps(response_ids)}:
-    print(json.dumps({{
-        "jsonrpc": "2.0",
-        "id": response_id,
-        "result": {{"content": [{{"type": "text", "text": "ok"}}]}},
-    }}), flush=True)
+for raw in sys.stdin:
+    message = json.loads(raw)
+    if message.get("method") == "initialize":
+        print(json.dumps({{
+            "jsonrpc": "2.0",
+            "id": message["id"],
+            "result": {{"serverInfo": {{"name": "unica"}}}},
+        }}), flush=True)
+        continue
+    if "id" not in message:
+        continue
+    for response_id in {json.dumps(response_ids)}:
+        print(json.dumps({{
+            "jsonrpc": "2.0",
+            "id": response_id,
+            "result": {{"content": [{{"type": "text", "text": "ok"}}]}},
+        }}), flush=True)
+    break
 for _raw in sys.stdin:
     pass
+""",
+            encoding="utf-8",
+        )
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+
+    def write_handshake_error_mcp(self, path: Path) -> None:
+        path.write_text(
+            """#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import sys
+
+for raw in sys.stdin:
+    message = json.loads(raw)
+    if message.get("method") == "initialize":
+        print(json.dumps({
+            "jsonrpc": "2.0",
+            "id": message["id"],
+            "error": {"code": -32001, "message": "initialize rejected"},
+        }), flush=True)
+        continue
+    if "id" not in message:
+        continue
+    print(json.dumps({
+        "jsonrpc": "2.0",
+        "id": message["id"],
+        "result": {"content": [{"type": "text", "text": "ok"}]},
+    }), flush=True)
 """,
             encoding="utf-8",
         )
@@ -76,8 +117,18 @@ def respond(message):
     print(json.dumps(response), flush=True)
 
 for raw in sys.stdin:
+    message = json.loads(raw)
+    if message.get("method") == "initialize":
+        print(json.dumps({
+            "jsonrpc": "2.0",
+            "id": message["id"],
+            "result": {"serverInfo": {"name": "unica"}},
+        }), flush=True)
+        continue
+    if "id" not in message:
+        continue
     print(json.dumps({"jsonrpc": "2.0", "method": "notifications/progress", "params": {}}), flush=True)
-    worker = threading.Thread(target=respond, args=(json.loads(raw),))
+    worker = threading.Thread(target=respond, args=(message,))
     worker.start()
     workers.append(worker)
 
@@ -113,6 +164,8 @@ TOOLS = [
 for raw in sys.stdin:
     message = json.loads(raw)
     method = message.get("method")
+    if "id" not in message:
+        continue
     response = {"jsonrpc": "2.0", "id": message.get("id")}
     if method == "initialize":
         response["result"] = {"serverInfo": {"name": "unica"}}
@@ -212,6 +265,32 @@ for raw in sys.stdin:
             self.assertEqual(returncode, 0, stderr)
             self.assertEqual(len(responses), 1)
             self.assertNotIn("error", responses[0])
+
+    def test_mcp_client_surfaces_injected_handshake_error(self) -> None:
+        module = load_assessment_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_mcp = root / ("run-unica.py" if os.name == "nt" else "run-unica")
+            self.write_handshake_error_mcp(fake_mcp)
+
+            responses, _duration_ms, _stdout, stderr, returncode = module.call_mcp(
+                fake_mcp,
+                [module.tool_call_message(1, "unica.cf.info", {})],
+                cwd=root,
+                cache_dir=root / "cache",
+                timeout_seconds=2,
+            )
+
+            self.assertEqual(returncode, 0, stderr)
+            self.assertTrue(
+                any(
+                    response.get("error", {}).get("message")
+                    == "MCP handshake failed: initialize rejected"
+                    for response in responses
+                ),
+                responses,
+            )
 
     def test_mcp_client_rejects_unexpected_response_id(self) -> None:
         module = load_assessment_module()
@@ -462,10 +541,15 @@ for raw in sys.stdin:
                 / "Ext"
             ).mkdir(parents=True)
             (src / "Roles" / "ПолныеПрава" / "Ext").mkdir(parents=True)
+            (src / "Languages").mkdir(parents=True)
             (src / ".build").mkdir(parents=True)
             (src / ".build" / "bsl-search.db").write_bytes(b"cache")
             (src / "Configuration.xml").write_text("<MetaDataObject/>", encoding="utf-8")
             (src / "Catalogs" / "Партнеры.xml").write_text("<MetaDataObject/>", encoding="utf-8")
+            (src / "Languages" / "Русский.xml").write_text(
+                "<MetaDataObject/>",
+                encoding="utf-8",
+            )
             (src / "Catalogs" / "Партнеры" / "Forms" / "ФормаЭлемента" / "Ext" / "Form.xml").write_text(
                 "<Form/>", encoding="utf-8"
             )
@@ -500,10 +584,226 @@ for raw in sys.stdin:
             harvested = sorted(path.relative_to(out).as_posix() for path in out.rglob("*") if path.is_file())
             self.assertIn("manifest.json", harvested)
             self.assertIn("cf/Configuration.xml", harvested)
+            self.assertIn("meta/Languages/Русский.xml", harvested)
             self.assertTrue(any(path.startswith("forms/") and path.endswith("/Form.xml") for path in harvested))
             self.assertTrue(any(path.startswith("dcs/") and path.endswith("/Template.xml") for path in harvested))
             self.assertTrue(any(path.startswith("roles/") and path.endswith("/Rights.xml") for path in harvested))
             self.assertFalse(any(".build" in path or path.endswith(".db") for path in harvested))
+
+    def test_bsp_parity_harvest_projects_profile_without_changing_byte_envelope(self) -> None:
+        module = load_bsp_harvest_module()
+
+        source_payload = (
+            b'\xef\xbb\xbf<?xml version="1.0" encoding="UTF-8"?>\r\n'
+            b'<MetaDataObject version="2.21">\r\n'
+            b"\t<ConfigurationExtensionCompatibilityMode>"
+            b"Version8_5_1"
+            b"</ConfigurationExtensionCompatibilityMode>\r\n"
+            b"\t<InterfaceCompatibilityMode>"
+            b"Version8_5EnableTaxi"
+            b"</InterfaceCompatibilityMode>\r\n"
+            b"\t<CompatibilityMode>"
+            b"Version8_5_1"
+            b"</CompatibilityMode>\r\n"
+            b'\t<Nested version="2.21"/>\r\n'
+            b"</MetaDataObject>"
+        )
+        expected_payload = (
+            b'\xef\xbb\xbf<?xml version="1.0" encoding="UTF-8"?>\r\n'
+            b'<MetaDataObject version="2.20">\r\n'
+            b"\t<ConfigurationExtensionCompatibilityMode>"
+            b"Version8_3_24"
+            b"</ConfigurationExtensionCompatibilityMode>\r\n"
+            b"\t<InterfaceCompatibilityMode>"
+            b"Taxi"
+            b"</InterfaceCompatibilityMode>\r\n"
+            b"\t<CompatibilityMode>"
+            b"Version8_3_24"
+            b"</CompatibilityMode>\r\n"
+            b'\t<Nested version="2.21"/>\r\n'
+            b"</MetaDataObject>"
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bsp = root / "bsp"
+            src = bsp / "src" / "cf"
+            src.mkdir(parents=True)
+            (src / "Configuration.xml").write_bytes(source_payload)
+            out = root / "fixtures"
+
+            manifest = module.harvest(
+                bsp_root=bsp,
+                out_root=out,
+                bsp_ref="test-ref",
+                bsp_commit="abc123",
+                recipe="bsp-2.21-to-2.20-v1",
+            )
+            repeated = module.harvest(
+                bsp_root=bsp,
+                out_root=out,
+                bsp_ref="test-ref",
+                bsp_commit="abc123",
+                recipe="bsp-2.21-to-2.20-v1",
+            )
+            target_payload = (out / "cf" / "Configuration.xml").read_bytes()
+
+        self.assertEqual(manifest, repeated)
+        self.assertEqual(manifest["schemaVersion"], 2)
+        self.assertEqual(
+            manifest["derivation"],
+            {
+                "exportFormat": "2.20",
+                "kind": "profile-projection",
+                "platformLine": "8.3.27",
+                "recipe": "bsp-2.21-to-2.20-v1",
+            },
+        )
+        self.assertEqual(target_payload, expected_payload)
+        self.assertTrue(target_payload.startswith(b"\xef\xbb\xbf"))
+        self.assertEqual(target_payload.count(b"\r\n"), source_payload.count(b"\r\n"))
+        self.assertFalse(target_payload.endswith((b"\r", b"\n")))
+        self.assertIn(b'<Nested version="2.21"/>', target_payload)
+
+        entry = manifest["files"][0]
+        self.assertEqual(
+            set(entry),
+            {
+                "category",
+                "harvestedSha256",
+                "harvestedSize",
+                "sha256",
+                "size",
+                "source",
+                "target",
+            },
+        )
+        self.assertEqual(entry["harvestedSize"], len(source_payload))
+        self.assertEqual(entry["harvestedSha256"], hashlib.sha256(source_payload).hexdigest())
+        self.assertEqual(entry["size"], len(expected_payload))
+        self.assertEqual(entry["sha256"], hashlib.sha256(expected_payload).hexdigest())
+
+    def test_bsp_parity_harvest_keeps_selected_report_template_pair_outside_dcs_limit(self) -> None:
+        module = load_bsp_harvest_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bsp = root / "bsp"
+            src = bsp / "src" / "cf"
+            report_templates = src / "Reports" / "Анализ" / "Templates"
+            report_content = report_templates / "Основная" / "Ext"
+            report_content.mkdir(parents=True)
+            (src / "Reports" / "Анализ.xml").write_text("<MetaDataObject/>", encoding="utf-8")
+            (report_templates / "Основная.xml").write_text("<MetaDataObject/>", encoding="utf-8")
+            (report_content / "Template.xml").write_text(
+                "<DataCompositionSchema/>",
+                encoding="utf-8",
+            )
+            for index in range(3):
+                dcs_content = (
+                    src
+                    / "Catalogs"
+                    / f"Источник{index}"
+                    / "Templates"
+                    / f"Схема{index}"
+                    / "Ext"
+                )
+                dcs_content.mkdir(parents=True)
+                (dcs_content / "Template.xml").write_text(
+                    "<DataCompositionSchema/>",
+                    encoding="utf-8",
+                )
+
+            out = root / "fixtures"
+            manifest = module.harvest(
+                bsp_root=bsp,
+                out_root=out,
+                bsp_ref="test-ref",
+                bsp_commit="abc123",
+            )
+
+        by_target = {entry["target"]: entry for entry in manifest["files"]}
+        report_descriptor = "meta/Reports/Анализ.xml"
+        template_descriptor = "meta/Reports/Анализ/Templates/Основная.xml"
+        template_content = "meta/Reports/Анализ/Templates/Основная/Ext/Template.xml"
+        self.assertIn(report_descriptor, by_target)
+        self.assertIn(template_descriptor, by_target)
+        self.assertIn(template_content, by_target)
+        self.assertEqual(by_target[template_descriptor]["category"], "meta")
+        self.assertEqual(by_target[template_content]["category"], "meta")
+        self.assertEqual(
+            sum(entry["category"] == "dcs" for entry in manifest["files"]),
+            3,
+        )
+
+    def test_bsp_parity_harvest_profile_recipe_rejects_unknown_source_version(self) -> None:
+        module = load_bsp_harvest_module()
+
+        source_payload = (
+            b'<MetaDataObject version="2.22">'
+            b"<ConfigurationExtensionCompatibilityMode>"
+            b"Version8_5_1"
+            b"</ConfigurationExtensionCompatibilityMode>"
+            b"<InterfaceCompatibilityMode>"
+            b"Version8_5EnableTaxi"
+            b"</InterfaceCompatibilityMode>"
+            b"<CompatibilityMode>"
+            b"Version8_5_1"
+            b"</CompatibilityMode>"
+            b"</MetaDataObject>"
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bsp = root / "bsp"
+            src = bsp / "src" / "cf"
+            src.mkdir(parents=True)
+            (src / "Configuration.xml").write_bytes(source_payload)
+            out = root / "fixtures"
+
+            with self.assertRaisesRegex(ValueError, "unsupported root export version"):
+                module.harvest(
+                    bsp_root=bsp,
+                    out_root=out,
+                    bsp_ref="test-ref",
+                    bsp_commit="abc123",
+                    recipe="bsp-2.21-to-2.20-v1",
+                )
+
+            self.assertFalse(out.exists())
+
+    def test_bsp_parity_harvest_profile_recipe_requires_each_configuration_token(self) -> None:
+        module = load_bsp_harvest_module()
+
+        source_payload = (
+            b'<MetaDataObject version="2.21">'
+            b"<ConfigurationExtensionCompatibilityMode>"
+            b"Version8_5_1"
+            b"</ConfigurationExtensionCompatibilityMode>"
+            b"<CompatibilityMode>"
+            b"Version8_5_1"
+            b"</CompatibilityMode>"
+            b"</MetaDataObject>"
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bsp = root / "bsp"
+            src = bsp / "src" / "cf"
+            src.mkdir(parents=True)
+            (src / "Configuration.xml").write_bytes(source_payload)
+            out = root / "fixtures"
+
+            with self.assertRaisesRegex(ValueError, "InterfaceCompatibilityMode"):
+                module.harvest(
+                    bsp_root=bsp,
+                    out_root=out,
+                    bsp_ref="test-ref",
+                    bsp_commit="abc123",
+                    recipe="bsp-2.21-to-2.20-v1",
+                )
+
+            self.assertFalse(out.exists())
 
     def test_bsp_parity_harvest_rejects_dangerous_out_root_and_leaves_sentinel(self) -> None:
         module = load_bsp_harvest_module()

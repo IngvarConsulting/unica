@@ -134,7 +134,7 @@ class EvaluateCiGateTests(unittest.TestCase):
         }
 
         manual_evaluation = module.evaluate_gate("workflow_dispatch", "refs/heads/main", outputs, manual)
-        tag_evaluation = module.evaluate_gate("push", "refs/tags/v0.8.1", outputs, tag)
+        tag_evaluation = module.evaluate_gate("push", "refs/tags/v0.9.1", outputs, tag)
 
         self.assertTrue(manual_evaluation.ok)
         self.assertEqual("full", manual_evaluation.contour)
@@ -153,7 +153,7 @@ class EvaluateCiGateTests(unittest.TestCase):
 
         evaluation = module.evaluate_gate(
             "workflow_dispatch",
-            "refs/tags/v0.8.1",
+            "refs/tags/v0.9.1",
             outputs,
             results,
         )

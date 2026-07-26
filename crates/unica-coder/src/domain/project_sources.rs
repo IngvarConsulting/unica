@@ -60,6 +60,10 @@ pub(crate) fn config_dump_info_xml_kind(bytes: &[u8]) -> ConfigDumpInfoXmlKind {
     if bytes.len() as u64 > MAX_RESERVED_EXTERNAL_DESCRIPTOR_BYTES {
         return ConfigDumpInfoXmlKind::Other;
     }
+    classify_already_read_config_dump_info_xml(bytes)
+}
+
+pub(crate) fn classify_already_read_config_dump_info_xml(bytes: &[u8]) -> ConfigDumpInfoXmlKind {
     let Ok(xml) = std::str::from_utf8(bytes) else {
         return ConfigDumpInfoXmlKind::Other;
     };

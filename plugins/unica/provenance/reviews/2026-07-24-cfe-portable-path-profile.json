@@ -1,0 +1,968 @@
+{
+  "schemaVersion": 1,
+  "upstreamId": "cc-1c-skills",
+  "reviewId": "2026-07-24-cfe-portable-path-profile",
+  "reviewStatus": "reviewed",
+  "targetRef": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e",
+  "targetCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e",
+  "upstreamCache": ".build/skill-upstreams/cc-1c-skills",
+  "candidatePath": ".build/donor-parity-refresh/2026-07-24-cfe-portable-path-profile/candidate",
+  "selectedSkills": [
+    "cfe-borrow"
+  ],
+  "selectedCaseScopes": [
+    "cfe-borrow"
+  ],
+  "affectedSkills": [
+    "cf-init",
+    "cfe-borrow",
+    "cfe-init",
+    "cfe-validate",
+    "form-add",
+    "form-compile",
+    "meta-compile"
+  ],
+  "previousCommits": {
+    "cf-init": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e",
+    "cfe-borrow": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e",
+    "cfe-init": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e",
+    "cfe-validate": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e",
+    "dcs-compile": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e",
+    "dcs-validate": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e",
+    "form-add": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e",
+    "form-compile": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e",
+    "form-validate": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e",
+    "meta-compile": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e",
+    "meta-validate": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e"
+  },
+  "changedPaths": [],
+  "addedCases": [],
+  "removedCases": [],
+  "changedCases": [
+    "cfe-borrow/catalog",
+    "cfe-borrow/common-module",
+    "cfe-borrow/document",
+    "cfe-borrow/enum",
+    "cfe-borrow/form-bindings",
+    "cfe-borrow/multiple-objects"
+  ],
+  "unchangedCases": [
+    "form-compile-from-object/accumreg-list-simple",
+    "form-compile-from-object/catalog-item-simple",
+    "form-compile-from-object/catalog-list-simple",
+    "form-compile-from-object/ccoct-item-simple",
+    "form-compile-from-object/chartofaccounts-item-simple",
+    "form-compile-from-object/chartofaccounts-list-simple",
+    "form-compile-from-object/document-item-medium",
+    "form-compile-from-object/document-list-medium",
+    "form-compile-from-object/exchangeplan-item-simple",
+    "form-compile-from-object/inforeg-list-periodic",
+    "form-compile-from-object/inforeg-record-nonperiodic",
+    "form-compile-from-object/inforeg-record-periodic",
+    "form-compile/additional-columns",
+    "form-compile/attributes-types",
+    "form-compile/auto-cmd-bar",
+    "form-compile/button-group",
+    "form-compile/calendar",
+    "form-compile/catalog-form",
+    "form-compile/chart-fields",
+    "form-compile/chart-gantt-settings",
+    "form-compile/chart-settings",
+    "form-compile/collapsible-control-representation",
+    "form-compile/column-group",
+    "form-compile/commands",
+    "form-compile/dup-command-names",
+    "form-compile/dup-element-names",
+    "form-compile/dynamic-list-form",
+    "form-compile/dynamic-list-parameters",
+    "form-compile/element-appearance",
+    "form-compile/events",
+    "form-compile/file-dialog",
+    "form-compile/groups",
+    "form-compile/guard-deny",
+    "form-compile/input-fields",
+    "form-compile/minimal",
+    "form-compile/namespace-collision-ok",
+    "form-compile/pages",
+    "form-compile/picture-field",
+    "form-compile/radio-auto-enum",
+    "form-compile/radio-synonyms",
+    "form-compile/radio-tumbler-strings",
+    "form-compile/special-fields",
+    "form-compile/synonyms",
+    "form-compile/table",
+    "form-compile/text-edit-flag",
+    "meta-compile/accounting-register",
+    "meta-compile/accumulation-register",
+    "meta-compile/batch",
+    "meta-compile/business-process",
+    "meta-compile/calculation-register",
+    "meta-compile/catalog-attr-choice-params",
+    "meta-compile/catalog-attr-fillvalue",
+    "meta-compile/catalog-attr-ml",
+    "meta-compile/catalog-attr-props",
+    "meta-compile/catalog-attr-reserved-name",
+    "meta-compile/catalog-attr-typeset-linkbytype",
+    "meta-compile/catalog-basic",
+    "meta-compile/catalog-characteristics",
+    "meta-compile/catalog-command",
+    "meta-compile/catalog-command-groups",
+    "meta-compile/catalog-hierarchical",
+    "meta-compile/catalog-inputbystring-datalock",
+    "meta-compile/catalog-minimal",
+    "meta-compile/catalog-mixed-types",
+    "meta-compile/catalog-object-props",
+    "meta-compile/catalog-predefined",
+    "meta-compile/catalog-standard-attributes",
+    "meta-compile/catalog-stdattr-custom",
+    "meta-compile/catalog-tabparts",
+    "meta-compile/catalog-ts-linenumber",
+    "meta-compile/chart-of-accounts",
+    "meta-compile/chart-of-calculation-types",
+    "meta-compile/chart-of-characteristic-types",
+    "meta-compile/command-group",
+    "meta-compile/common-attribute",
+    "meta-compile/common-command",
+    "meta-compile/common-form",
+    "meta-compile/common-module",
+    "meta-compile/common-module-client",
+    "meta-compile/common-picture",
+    "meta-compile/common-template",
+    "meta-compile/constant",
+    "meta-compile/constant-full",
+    "meta-compile/data-processor",
+    "meta-compile/data-processor-full",
+    "meta-compile/defined-type",
+    "meta-compile/defined-type-full",
+    "meta-compile/document-basic",
+    "meta-compile/document-full",
+    "meta-compile/document-journal",
+    "meta-compile/document-journal-full",
+    "meta-compile/document-multiple-tabparts",
+    "meta-compile/document-numerator",
+    "meta-compile/enum",
+    "meta-compile/enum-full",
+    "meta-compile/error-command-nav-param",
+    "meta-compile/error-command-no-group",
+    "meta-compile/error-empty-name",
+    "meta-compile/error-unknown-type",
+    "meta-compile/event-subscription",
+    "meta-compile/event-subscription-sources",
+    "meta-compile/exchange-plan",
+    "meta-compile/exchange-plan-content",
+    "meta-compile/filter-criterion",
+    "meta-compile/functional-option",
+    "meta-compile/functional-options-parameter",
+    "meta-compile/guard-deny-root",
+    "meta-compile/http-service",
+    "meta-compile/information-register",
+    "meta-compile/report",
+    "meta-compile/report-full",
+    "meta-compile/scheduled-job",
+    "meta-compile/sequence",
+    "meta-compile/session-parameter",
+    "meta-compile/settings-storage",
+    "meta-compile/task",
+    "meta-compile/web-service",
+    "meta-compile/ws-reference",
+    "skd-compile/auto-data-parameters",
+    "skd-compile/available-values-and-folders",
+    "skd-compile/calc-object-name-restrict-string",
+    "skd-compile/calc-shorthand-extended",
+    "skd-compile/calculated-fields",
+    "skd-compile/decimal-qualifier-defaults",
+    "skd-compile/empty-param-values",
+    "skd-compile/field-appearance-and-presentation",
+    "skd-compile/field-multi-type",
+    "skd-compile/field-restrictions",
+    "skd-compile/full-example",
+    "skd-compile/grouping-and-totals",
+    "skd-compile/guard-deny",
+    "skd-compile/horizontal-merge",
+    "skd-compile/minimal",
+    "skd-compile/multi-lang-title",
+    "skd-compile/multiple-datasets",
+    "skd-compile/orgroup-string-items",
+    "skd-compile/parameter-title-presentation-synonyms",
+    "skd-compile/parameter-value-list",
+    "skd-compile/simple-query",
+    "skd-compile/structure-chart",
+    "skd-compile/structure-object-form",
+    "skd-compile/structure-object-group-no-selection",
+    "skd-compile/structure-table-pivot",
+    "skd-compile/userestriction-object-form",
+    "skd-compile/with-filters",
+    "skd-compile/with-parameters"
+  ],
+  "carriedRelations": [
+    "form-compile-from-object/accumreg-list-simple",
+    "form-compile-from-object/catalog-item-simple",
+    "form-compile-from-object/catalog-list-simple",
+    "form-compile-from-object/ccoct-item-simple",
+    "form-compile-from-object/chartofaccounts-item-simple",
+    "form-compile-from-object/chartofaccounts-list-simple",
+    "form-compile-from-object/document-item-medium",
+    "form-compile-from-object/document-list-medium",
+    "form-compile-from-object/exchangeplan-item-simple",
+    "form-compile-from-object/inforeg-list-periodic",
+    "form-compile-from-object/inforeg-record-nonperiodic",
+    "form-compile-from-object/inforeg-record-periodic",
+    "form-compile/additional-columns",
+    "form-compile/attributes-types",
+    "form-compile/auto-cmd-bar",
+    "form-compile/button-group",
+    "form-compile/calendar",
+    "form-compile/catalog-form",
+    "form-compile/chart-fields",
+    "form-compile/chart-gantt-settings",
+    "form-compile/chart-settings",
+    "form-compile/collapsible-control-representation",
+    "form-compile/column-group",
+    "form-compile/commands",
+    "form-compile/dup-command-names",
+    "form-compile/dup-element-names",
+    "form-compile/dynamic-list-form",
+    "form-compile/dynamic-list-parameters",
+    "form-compile/element-appearance",
+    "form-compile/events",
+    "form-compile/file-dialog",
+    "form-compile/groups",
+    "form-compile/guard-deny",
+    "form-compile/input-fields",
+    "form-compile/minimal",
+    "form-compile/namespace-collision-ok",
+    "form-compile/pages",
+    "form-compile/picture-field",
+    "form-compile/radio-auto-enum",
+    "form-compile/radio-synonyms",
+    "form-compile/radio-tumbler-strings",
+    "form-compile/special-fields",
+    "form-compile/synonyms",
+    "form-compile/table",
+    "form-compile/text-edit-flag",
+    "meta-compile/accounting-register",
+    "meta-compile/accumulation-register",
+    "meta-compile/batch",
+    "meta-compile/business-process",
+    "meta-compile/calculation-register",
+    "meta-compile/catalog-attr-choice-params",
+    "meta-compile/catalog-attr-fillvalue",
+    "meta-compile/catalog-attr-ml",
+    "meta-compile/catalog-attr-props",
+    "meta-compile/catalog-attr-reserved-name",
+    "meta-compile/catalog-attr-typeset-linkbytype",
+    "meta-compile/catalog-basic",
+    "meta-compile/catalog-characteristics",
+    "meta-compile/catalog-command",
+    "meta-compile/catalog-command-groups",
+    "meta-compile/catalog-hierarchical",
+    "meta-compile/catalog-inputbystring-datalock",
+    "meta-compile/catalog-minimal",
+    "meta-compile/catalog-mixed-types",
+    "meta-compile/catalog-object-props",
+    "meta-compile/catalog-predefined",
+    "meta-compile/catalog-standard-attributes",
+    "meta-compile/catalog-stdattr-custom",
+    "meta-compile/catalog-tabparts",
+    "meta-compile/catalog-ts-linenumber",
+    "meta-compile/chart-of-accounts",
+    "meta-compile/chart-of-calculation-types",
+    "meta-compile/chart-of-characteristic-types",
+    "meta-compile/command-group",
+    "meta-compile/common-attribute",
+    "meta-compile/common-command",
+    "meta-compile/common-form",
+    "meta-compile/common-module",
+    "meta-compile/common-module-client",
+    "meta-compile/common-picture",
+    "meta-compile/common-template",
+    "meta-compile/constant",
+    "meta-compile/constant-full",
+    "meta-compile/data-processor",
+    "meta-compile/data-processor-full",
+    "meta-compile/defined-type",
+    "meta-compile/defined-type-full",
+    "meta-compile/document-basic",
+    "meta-compile/document-full",
+    "meta-compile/document-journal",
+    "meta-compile/document-journal-full",
+    "meta-compile/document-multiple-tabparts",
+    "meta-compile/document-numerator",
+    "meta-compile/enum",
+    "meta-compile/enum-full",
+    "meta-compile/error-command-nav-param",
+    "meta-compile/error-command-no-group",
+    "meta-compile/error-empty-name",
+    "meta-compile/error-unknown-type",
+    "meta-compile/event-subscription",
+    "meta-compile/event-subscription-sources",
+    "meta-compile/exchange-plan",
+    "meta-compile/exchange-plan-content",
+    "meta-compile/filter-criterion",
+    "meta-compile/functional-option",
+    "meta-compile/functional-options-parameter",
+    "meta-compile/guard-deny-root",
+    "meta-compile/http-service",
+    "meta-compile/information-register",
+    "meta-compile/report",
+    "meta-compile/report-full",
+    "meta-compile/scheduled-job",
+    "meta-compile/sequence",
+    "meta-compile/session-parameter",
+    "meta-compile/settings-storage",
+    "meta-compile/task",
+    "meta-compile/web-service",
+    "meta-compile/ws-reference",
+    "skd-compile/auto-data-parameters",
+    "skd-compile/available-values-and-folders",
+    "skd-compile/calc-object-name-restrict-string",
+    "skd-compile/calc-shorthand-extended",
+    "skd-compile/calculated-fields",
+    "skd-compile/decimal-qualifier-defaults",
+    "skd-compile/empty-param-values",
+    "skd-compile/field-appearance-and-presentation",
+    "skd-compile/field-multi-type",
+    "skd-compile/field-restrictions",
+    "skd-compile/full-example",
+    "skd-compile/grouping-and-totals",
+    "skd-compile/guard-deny",
+    "skd-compile/horizontal-merge",
+    "skd-compile/minimal",
+    "skd-compile/multi-lang-title",
+    "skd-compile/multiple-datasets",
+    "skd-compile/orgroup-string-items",
+    "skd-compile/parameter-title-presentation-synonyms",
+    "skd-compile/parameter-value-list",
+    "skd-compile/simple-query",
+    "skd-compile/structure-chart",
+    "skd-compile/structure-object-form",
+    "skd-compile/structure-object-group-no-selection",
+    "skd-compile/structure-table-pivot",
+    "skd-compile/userestriction-object-form",
+    "skd-compile/with-filters",
+    "skd-compile/with-parameters"
+  ],
+  "needsReview": [
+    "cfe-borrow/catalog",
+    "cfe-borrow/common-module",
+    "cfe-borrow/document",
+    "cfe-borrow/enum",
+    "cfe-borrow/form-bindings",
+    "cfe-borrow/multiple-objects"
+  ],
+  "caseDecisions": {
+    "form-compile-from-object/accumreg-list-simple": {
+      "status": "carried"
+    },
+    "form-compile-from-object/catalog-item-simple": {
+      "status": "carried"
+    },
+    "form-compile-from-object/catalog-list-simple": {
+      "status": "carried"
+    },
+    "form-compile-from-object/ccoct-item-simple": {
+      "status": "carried"
+    },
+    "form-compile-from-object/chartofaccounts-item-simple": {
+      "status": "carried"
+    },
+    "form-compile-from-object/chartofaccounts-list-simple": {
+      "status": "carried"
+    },
+    "form-compile-from-object/document-item-medium": {
+      "status": "carried"
+    },
+    "form-compile-from-object/document-list-medium": {
+      "status": "carried"
+    },
+    "form-compile-from-object/exchangeplan-item-simple": {
+      "status": "carried"
+    },
+    "form-compile-from-object/inforeg-list-periodic": {
+      "status": "carried"
+    },
+    "form-compile-from-object/inforeg-record-nonperiodic": {
+      "status": "carried"
+    },
+    "form-compile-from-object/inforeg-record-periodic": {
+      "status": "carried"
+    },
+    "form-compile/additional-columns": {
+      "status": "carried"
+    },
+    "form-compile/attributes-types": {
+      "status": "carried"
+    },
+    "form-compile/auto-cmd-bar": {
+      "status": "carried"
+    },
+    "form-compile/button-group": {
+      "status": "carried"
+    },
+    "form-compile/calendar": {
+      "status": "carried"
+    },
+    "form-compile/catalog-form": {
+      "status": "carried"
+    },
+    "form-compile/chart-fields": {
+      "status": "carried"
+    },
+    "form-compile/chart-gantt-settings": {
+      "status": "carried"
+    },
+    "form-compile/chart-settings": {
+      "status": "carried"
+    },
+    "form-compile/collapsible-control-representation": {
+      "status": "carried"
+    },
+    "form-compile/column-group": {
+      "status": "carried"
+    },
+    "form-compile/commands": {
+      "status": "carried"
+    },
+    "form-compile/dup-command-names": {
+      "status": "carried"
+    },
+    "form-compile/dup-element-names": {
+      "status": "carried"
+    },
+    "form-compile/dynamic-list-form": {
+      "status": "carried"
+    },
+    "form-compile/dynamic-list-parameters": {
+      "status": "carried"
+    },
+    "form-compile/element-appearance": {
+      "status": "carried"
+    },
+    "form-compile/events": {
+      "status": "carried"
+    },
+    "form-compile/file-dialog": {
+      "status": "carried"
+    },
+    "form-compile/groups": {
+      "status": "carried"
+    },
+    "form-compile/guard-deny": {
+      "status": "carried"
+    },
+    "form-compile/input-fields": {
+      "status": "carried"
+    },
+    "form-compile/minimal": {
+      "status": "carried"
+    },
+    "form-compile/namespace-collision-ok": {
+      "status": "carried"
+    },
+    "form-compile/pages": {
+      "status": "carried"
+    },
+    "form-compile/picture-field": {
+      "status": "carried"
+    },
+    "form-compile/radio-auto-enum": {
+      "status": "carried"
+    },
+    "form-compile/radio-synonyms": {
+      "status": "carried"
+    },
+    "form-compile/radio-tumbler-strings": {
+      "status": "carried"
+    },
+    "form-compile/special-fields": {
+      "status": "carried"
+    },
+    "form-compile/synonyms": {
+      "status": "carried"
+    },
+    "form-compile/table": {
+      "status": "carried"
+    },
+    "form-compile/text-edit-flag": {
+      "status": "carried"
+    },
+    "meta-compile/accounting-register": {
+      "status": "carried"
+    },
+    "meta-compile/accumulation-register": {
+      "status": "carried"
+    },
+    "meta-compile/batch": {
+      "status": "carried"
+    },
+    "meta-compile/business-process": {
+      "status": "carried"
+    },
+    "meta-compile/calculation-register": {
+      "status": "carried"
+    },
+    "meta-compile/catalog-attr-choice-params": {
+      "status": "carried"
+    },
+    "meta-compile/catalog-attr-fillvalue": {
+      "status": "carried"
+    },
+    "meta-compile/catalog-attr-ml": {
+      "status": "carried"
+    },
+    "meta-compile/catalog-attr-props": {
+      "status": "carried"
+    },
+    "meta-compile/catalog-attr-reserved-name": {
+      "status": "carried"
+    },
+    "meta-compile/catalog-attr-typeset-linkbytype": {
+      "status": "carried"
+    },
+    "meta-compile/catalog-basic": {
+      "status": "carried"
+    },
+    "meta-compile/catalog-characteristics": {
+      "status": "carried"
+    },
+    "meta-compile/catalog-command": {
+      "status": "carried"
+    },
+    "meta-compile/catalog-command-groups": {
+      "status": "carried"
+    },
+    "meta-compile/catalog-hierarchical": {
+      "status": "carried"
+    },
+    "meta-compile/catalog-inputbystring-datalock": {
+      "status": "carried"
+    },
+    "meta-compile/catalog-minimal": {
+      "status": "carried"
+    },
+    "meta-compile/catalog-mixed-types": {
+      "status": "carried"
+    },
+    "meta-compile/catalog-object-props": {
+      "status": "carried"
+    },
+    "meta-compile/catalog-predefined": {
+      "status": "carried"
+    },
+    "meta-compile/catalog-standard-attributes": {
+      "status": "carried"
+    },
+    "meta-compile/catalog-stdattr-custom": {
+      "status": "carried"
+    },
+    "meta-compile/catalog-tabparts": {
+      "status": "carried"
+    },
+    "meta-compile/catalog-ts-linenumber": {
+      "status": "carried"
+    },
+    "meta-compile/chart-of-accounts": {
+      "status": "carried"
+    },
+    "meta-compile/chart-of-calculation-types": {
+      "status": "carried"
+    },
+    "meta-compile/chart-of-characteristic-types": {
+      "status": "carried"
+    },
+    "meta-compile/command-group": {
+      "status": "carried"
+    },
+    "meta-compile/common-attribute": {
+      "status": "carried"
+    },
+    "meta-compile/common-command": {
+      "status": "carried"
+    },
+    "meta-compile/common-form": {
+      "status": "carried"
+    },
+    "meta-compile/common-module": {
+      "status": "carried"
+    },
+    "meta-compile/common-module-client": {
+      "status": "carried"
+    },
+    "meta-compile/common-picture": {
+      "status": "carried"
+    },
+    "meta-compile/common-template": {
+      "status": "carried"
+    },
+    "meta-compile/constant": {
+      "status": "carried"
+    },
+    "meta-compile/constant-full": {
+      "status": "carried"
+    },
+    "meta-compile/data-processor": {
+      "status": "carried"
+    },
+    "meta-compile/data-processor-full": {
+      "status": "carried"
+    },
+    "meta-compile/defined-type": {
+      "status": "carried"
+    },
+    "meta-compile/defined-type-full": {
+      "status": "carried"
+    },
+    "meta-compile/document-basic": {
+      "status": "carried"
+    },
+    "meta-compile/document-full": {
+      "status": "carried"
+    },
+    "meta-compile/document-journal": {
+      "status": "carried"
+    },
+    "meta-compile/document-journal-full": {
+      "status": "carried"
+    },
+    "meta-compile/document-multiple-tabparts": {
+      "status": "carried"
+    },
+    "meta-compile/document-numerator": {
+      "status": "carried"
+    },
+    "meta-compile/enum": {
+      "status": "carried"
+    },
+    "meta-compile/enum-full": {
+      "status": "carried"
+    },
+    "meta-compile/error-command-nav-param": {
+      "status": "carried"
+    },
+    "meta-compile/error-command-no-group": {
+      "status": "carried"
+    },
+    "meta-compile/error-empty-name": {
+      "status": "carried"
+    },
+    "meta-compile/error-unknown-type": {
+      "status": "carried"
+    },
+    "meta-compile/event-subscription": {
+      "status": "carried"
+    },
+    "meta-compile/event-subscription-sources": {
+      "status": "carried"
+    },
+    "meta-compile/exchange-plan": {
+      "status": "carried"
+    },
+    "meta-compile/exchange-plan-content": {
+      "status": "carried"
+    },
+    "meta-compile/filter-criterion": {
+      "status": "carried"
+    },
+    "meta-compile/functional-option": {
+      "status": "carried"
+    },
+    "meta-compile/functional-options-parameter": {
+      "status": "carried"
+    },
+    "meta-compile/guard-deny-root": {
+      "status": "carried"
+    },
+    "meta-compile/http-service": {
+      "status": "carried"
+    },
+    "meta-compile/information-register": {
+      "status": "carried"
+    },
+    "meta-compile/report": {
+      "status": "carried"
+    },
+    "meta-compile/report-full": {
+      "status": "carried"
+    },
+    "meta-compile/scheduled-job": {
+      "status": "carried"
+    },
+    "meta-compile/sequence": {
+      "status": "carried"
+    },
+    "meta-compile/session-parameter": {
+      "status": "carried"
+    },
+    "meta-compile/settings-storage": {
+      "status": "carried"
+    },
+    "meta-compile/task": {
+      "status": "carried"
+    },
+    "meta-compile/web-service": {
+      "status": "carried"
+    },
+    "meta-compile/ws-reference": {
+      "status": "carried"
+    },
+    "skd-compile/auto-data-parameters": {
+      "status": "carried"
+    },
+    "skd-compile/available-values-and-folders": {
+      "status": "carried"
+    },
+    "skd-compile/calc-object-name-restrict-string": {
+      "status": "carried"
+    },
+    "skd-compile/calc-shorthand-extended": {
+      "status": "carried"
+    },
+    "skd-compile/calculated-fields": {
+      "status": "carried"
+    },
+    "skd-compile/decimal-qualifier-defaults": {
+      "status": "carried"
+    },
+    "skd-compile/empty-param-values": {
+      "status": "carried"
+    },
+    "skd-compile/field-appearance-and-presentation": {
+      "status": "carried"
+    },
+    "skd-compile/field-multi-type": {
+      "status": "carried"
+    },
+    "skd-compile/field-restrictions": {
+      "status": "carried"
+    },
+    "skd-compile/full-example": {
+      "status": "carried"
+    },
+    "skd-compile/grouping-and-totals": {
+      "status": "carried"
+    },
+    "skd-compile/guard-deny": {
+      "status": "carried"
+    },
+    "skd-compile/horizontal-merge": {
+      "status": "carried"
+    },
+    "skd-compile/minimal": {
+      "status": "carried"
+    },
+    "skd-compile/multi-lang-title": {
+      "status": "carried"
+    },
+    "skd-compile/multiple-datasets": {
+      "status": "carried"
+    },
+    "skd-compile/orgroup-string-items": {
+      "status": "carried"
+    },
+    "skd-compile/parameter-title-presentation-synonyms": {
+      "status": "carried"
+    },
+    "skd-compile/parameter-value-list": {
+      "status": "carried"
+    },
+    "skd-compile/simple-query": {
+      "status": "carried"
+    },
+    "skd-compile/structure-chart": {
+      "status": "carried"
+    },
+    "skd-compile/structure-object-form": {
+      "status": "carried"
+    },
+    "skd-compile/structure-object-group-no-selection": {
+      "status": "carried"
+    },
+    "skd-compile/structure-table-pivot": {
+      "status": "carried"
+    },
+    "skd-compile/userestriction-object-form": {
+      "status": "carried"
+    },
+    "skd-compile/with-filters": {
+      "status": "carried"
+    },
+    "skd-compile/with-parameters": {
+      "status": "carried"
+    },
+    "cfe-borrow/catalog": {
+      "status": "reviewed",
+      "relation": {
+        "caseId": "cfe-borrow/catalog",
+        "contentDigest": "e60d6bb56d2ed9fc5334bb9a058aa463b389c6f6a803559eb334da7cb364a0d5",
+        "evidence": [
+          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+          "crates/unica-coder/src/infrastructure/native_operations/cfe.rs"
+        ],
+        "observation": {
+          "donorExpectedFiles": {},
+          "donorOk": true,
+          "donorStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+          "donorStdoutSha256": "51db76853c60fb9e84f24629e03ef5458c2c546d8d278a001579338b1fbb1b75",
+          "donorWorkspaceSha256": "8b56d412bfcaff45737ae521d68ce7a48a89916e9b0ebe8a24fef9d251b33f5e",
+          "mismatchKind": "snapshot_diff",
+          "unicaExpectedFiles": {},
+          "unicaOk": true,
+          "unicaStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+          "unicaStdoutSha256": "51db76853c60fb9e84f24629e03ef5458c2c546d8d278a001579338b1fbb1b75",
+          "unicaWorkspaceSha256": "0f1bfbc19ab224b06d46172ca0782cb8767215792e1790bd310bf31d30b7d779"
+        },
+        "observationFingerprint": "0dae045203bc10d29ec2fde33c9170eab40974fa7eca24397d5060fe22d36861",
+        "reason": "Both implementations complete, but Unica intentionally emits its fixed 8.3.27 / export 2.20 native representation instead of treating donor bytes as the platform oracle; the exact observed difference remains review-bound.",
+        "relation": "intentional_divergence"
+      }
+    },
+    "cfe-borrow/common-module": {
+      "status": "reviewed",
+      "relation": {
+        "caseId": "cfe-borrow/common-module",
+        "contentDigest": "b9eebf5fd001bb4c16781619413bc3cbdef664cc26af50d738a92745a24afb1a",
+        "evidence": [
+          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+          "crates/unica-coder/src/infrastructure/native_operations/cfe.rs"
+        ],
+        "observation": {
+          "donorExpectedFiles": {},
+          "donorOk": true,
+          "donorStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+          "donorStdoutSha256": "aff8a39f7235ad8682260c328107e7de9dec9c712c4224fa67fb37798c987edb",
+          "donorWorkspaceSha256": "bc690d05aa2145ee6f4a7b8ba4b380a4ce95154a0b212c6260aaf463a2bb01ac",
+          "mismatchKind": "snapshot_diff",
+          "unicaExpectedFiles": {},
+          "unicaOk": true,
+          "unicaStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+          "unicaStdoutSha256": "aff8a39f7235ad8682260c328107e7de9dec9c712c4224fa67fb37798c987edb",
+          "unicaWorkspaceSha256": "b9120f0d6c5f8236bbcd35e4ae24600a057f27934ff198d7cfb5eaca4241a4b7"
+        },
+        "observationFingerprint": "7c684b5e9431f7e2b9d8638c31d1d22d98d2691a5a5b089a5ef5fc71b64620c7",
+        "reason": "Both implementations complete, but Unica intentionally emits its fixed 8.3.27 / export 2.20 native representation instead of treating donor bytes as the platform oracle; the exact observed difference remains review-bound.",
+        "relation": "intentional_divergence"
+      }
+    },
+    "cfe-borrow/document": {
+      "status": "reviewed",
+      "relation": {
+        "caseId": "cfe-borrow/document",
+        "contentDigest": "848e56d06e73ed75d978602b2fd39750b57d616cb5bf9b560a98d4225b498f97",
+        "evidence": [
+          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+          "crates/unica-coder/src/infrastructure/native_operations/cfe.rs"
+        ],
+        "observation": {
+          "donorExpectedFiles": {},
+          "donorOk": true,
+          "donorStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+          "donorStdoutSha256": "86c59d01d2a26c03b889e09584abc41379b5663d495c822ab399cb123f5594d4",
+          "donorWorkspaceSha256": "00df7941c09d7315edbc7de6d27e5ed0ff63d0f99d030705d5e7af74d666be90",
+          "mismatchKind": "snapshot_diff",
+          "unicaExpectedFiles": {},
+          "unicaOk": true,
+          "unicaStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+          "unicaStdoutSha256": "86c59d01d2a26c03b889e09584abc41379b5663d495c822ab399cb123f5594d4",
+          "unicaWorkspaceSha256": "c81ad710d095dc5496ad4760b5b08eef077868c066ee99733bd4b08be0d141a5"
+        },
+        "observationFingerprint": "13c83da3322c30c0e09e5e58aa2b826ba154fa92ca6807a8aeddb48dc519aa06",
+        "reason": "Both implementations complete, but Unica intentionally emits its fixed 8.3.27 / export 2.20 native representation instead of treating donor bytes as the platform oracle; the exact observed difference remains review-bound.",
+        "relation": "intentional_divergence"
+      }
+    },
+    "cfe-borrow/enum": {
+      "status": "reviewed",
+      "relation": {
+        "caseId": "cfe-borrow/enum",
+        "contentDigest": "ff0f727e6500a6d4087c45fbbaa038d4b713744c1abfd8fa9cf3f1c2d5d864e2",
+        "evidence": [
+          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+          "crates/unica-coder/src/infrastructure/native_operations/cfe.rs"
+        ],
+        "observation": {
+          "donorExpectedFiles": {},
+          "donorOk": true,
+          "donorStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+          "donorStdoutSha256": "7a0c02228827627e79327584ff6e40bc80a81966f58aed404ec9cd80aa23c9c0",
+          "donorWorkspaceSha256": "2e479bc62897c51e417494a158d756ca1c9ec055bc7639ac144c14e7e70c44b5",
+          "mismatchKind": "snapshot_diff",
+          "unicaExpectedFiles": {},
+          "unicaOk": true,
+          "unicaStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+          "unicaStdoutSha256": "7a0c02228827627e79327584ff6e40bc80a81966f58aed404ec9cd80aa23c9c0",
+          "unicaWorkspaceSha256": "8a5a0b6d7e635a6aa3e4cfaffad5d6f0913d6d89ddcae4fa52d1a5fc25ee625f"
+        },
+        "observationFingerprint": "6326aae1d593374de3a04880f005208b2532408b69ed1cedb86abb9b359a981a",
+        "reason": "Both implementations complete, but Unica intentionally emits its fixed 8.3.27 / export 2.20 native representation instead of treating donor bytes as the platform oracle; the exact observed difference remains review-bound.",
+        "relation": "intentional_divergence"
+      }
+    },
+    "cfe-borrow/form-bindings": {
+      "status": "reviewed",
+      "relation": {
+        "caseId": "cfe-borrow/form-bindings",
+        "contentDigest": "b916cc30e3ae7feb4ca909ef305971fa76da800ed6a94fdf7f2f5df12cfd21d4",
+        "evidence": [
+          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+          "crates/unica-coder/src/infrastructure/native_operations/cfe.rs"
+        ],
+        "observation": {
+          "donorExpectedFiles": {},
+          "donorOk": true,
+          "donorStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+          "donorStdoutSha256": "d44d0a64b7d6ef05d1f69b8a01829fbd7dbc939d97a0db0e193999e17c5fc1ba",
+          "donorWorkspaceSha256": "eb4413d575cb71ed40c7b27042d191db7d560369a5295f395e604e4080886cc4",
+          "mismatchKind": "stdout_mismatch_snapshot_diff",
+          "unicaExpectedFiles": {},
+          "unicaOk": true,
+          "unicaStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+          "unicaStdoutSha256": "7cdb4e7f800947be6f057aae21fead17d113f6715b4db02b1412a442ec5fc178",
+          "unicaWorkspaceSha256": "37d54fd123e43f80d7e6dccdc6f242e7157d32a3ba33d44cfa3b0cb4e297cbf1"
+        },
+        "observationFingerprint": "7a83912082367a7dec35c2aca3288d8839cda4dbf632fd81dc1c5223dcf6d6fb",
+        "reason": "Both implementations complete, but Unica intentionally emits its fixed 8.3.27 / export 2.20 native representation instead of treating donor bytes as the platform oracle; the exact observed difference remains review-bound.",
+        "relation": "intentional_divergence"
+      }
+    },
+    "cfe-borrow/multiple-objects": {
+      "status": "reviewed",
+      "relation": {
+        "caseId": "cfe-borrow/multiple-objects",
+        "contentDigest": "9553cd9afeaf4e27f5cb3777362930284110c472b2a13b8445dff4c894f5d01f",
+        "evidence": [
+          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+          "crates/unica-coder/src/infrastructure/native_operations/cfe.rs"
+        ],
+        "observation": {
+          "donorExpectedFiles": {},
+          "donorOk": true,
+          "donorStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+          "donorStdoutSha256": "2c894927c72d625fc9d23aed7295b84afbdecee109f89a85fc423ea51c8e4a6a",
+          "donorWorkspaceSha256": "ea458264cdbfa939b0fcb858b3d05b7cc0a33b50adb2f4d24e54201026ec3885",
+          "mismatchKind": "snapshot_diff",
+          "unicaExpectedFiles": {},
+          "unicaOk": true,
+          "unicaStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+          "unicaStdoutSha256": "2c894927c72d625fc9d23aed7295b84afbdecee109f89a85fc423ea51c8e4a6a",
+          "unicaWorkspaceSha256": "225da94193e953987556a61eab93582c4ca8825e01a79e0c687c31bd5ee5d6fa"
+        },
+        "observationFingerprint": "3580a715af21d43ad1a8d4f66b4850892bd67a840a85893481d870fd6804dffe",
+        "reason": "Both implementations complete, but Unica intentionally emits its fixed 8.3.27 / export 2.20 native representation instead of treating donor bytes as the platform oracle; the exact observed difference remains review-bound.",
+        "relation": "intentional_divergence"
+      }
+    }
+  },
+  "acceptedBaselineSha256": "bfa5cc6956db5ff2a0a5dc0c53bf7764683d11f5eeca3a47f65f31e674093ad8",
+  "acceptedRelationsSha256": "a1e3eb68524035717cdcd5e92d4a8f4cebd7ddc3bb84116da696c49137f486fb",
+  "acceptedProvenanceSha256": "fef61e832feb2f4364ff869c481ba8a66193057d3132ed31d2daafb9902131b8",
+  "candidateBaselineSha256": "91d033db3b80676629147c31b22519cc93279f22c415e4310915435bc6ed3c86",
+  "candidateProvenanceSha256": "fef61e832feb2f4364ff869c481ba8a66193057d3132ed31d2daafb9902131b8",
+  "candidateSnapshotSha256": "12b10374c6779ad6b3a1d9c16303b372eeb9654bae61d34f254e565fd9ef1677",
+  "applied": true
+}

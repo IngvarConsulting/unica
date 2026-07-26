@@ -1,7 +1,9 @@
 # Спецификация XML-формата выгрузки внешнего отчёта 1С
 
+> Активный контракт Unica: платформа `8.3.27`, формат выгрузки `2.20`.
+
 Формат: XML-выгрузка внешнего отчёта (ExternalReport) из конфигуратора 1С:Предприятие 8.3.
-Версия формата: `2.17`.
+Версия формата: `2.20`.
 
 > **Связь с другими спецификациями**:
 > - Структура каталогов, пространства имён, формат форм и макетов — идентичны [спецификации внешней обработки (EPF)](1c-epf-spec.md).
@@ -49,7 +51,7 @@
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="..." version="2.17">
+<MetaDataObject xmlns="..." version="2.20">
     <ExternalReport uuid="<UUID>">
         <InternalInfo>
             <xr:ContainedObject>
@@ -285,7 +287,7 @@
 Форма для отображения результата отчёта.
 
 ```xml
-<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" ... version="2.17">
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" ... version="2.20">
     <CommandBarLocation>None</CommandBarLocation>
     <ReportResult>Результат</ReportResult>
     <DetailsData>ДанныеРасшифровки</DetailsData>
@@ -357,7 +359,7 @@
 Форма настроек отчёта для пользователя.
 
 ```xml
-<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" ... version="2.17">
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" ... version="2.20">
     <CommandBarLocation>Bottom</CommandBarLocation>
     <VerticalScroll>useIfNecessary</VerticalScroll>
     <ReportFormType>Settings</ReportFormType>
@@ -390,7 +392,7 @@
 Форма для настройки варианта отчёта (структуры, группировок, фильтров).
 
 ```xml
-<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" ... version="2.17">
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" ... version="2.20">
     <CommandBarLocation>Bottom</CommandBarLocation>
     <CollapseItemsByImportanceVariant>DontUse</CollapseItemsByImportanceVariant>
     <ReportFormType>Variant</ReportFormType>
@@ -548,7 +550,7 @@
     xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"
     xmlns:xs="http://www.w3.org/2001/XMLSchema"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-    version="2.17">
+    version="2.20">
     <ExternalReport uuid="b38bc179-9b8a-4eb3-9422-96c6eded1ac3">
         <InternalInfo>
             <xr:ContainedObject>

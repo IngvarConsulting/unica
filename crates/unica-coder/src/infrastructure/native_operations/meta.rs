@@ -1,6 +1,10 @@
 #![allow(dead_code, unused_imports)]
 
+use crate::application::operation_descriptors::OBJECT_PATH;
 use crate::application::{AdapterOutcome, SupportGuardRequirement};
+use crate::domain::format_profile::{
+    classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
+};
 use crate::domain::identifiers::is_1c_identifier;
 use crate::domain::navigation::{
     Authorability, CapabilityState, IdentityStrength, NavigationEdge, NavigationGraph,
@@ -27,6 +31,10 @@ use crate::domain::source_adapters::{
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::metadata_kind;
+use crate::infrastructure::platform_xml_owner::{
+    resolve_platform_xml_owners_with_provenance, root_version_literal, PlatformXmlOwnerKind,
+    PlatformXmlOwnerProvenance,
+};
 use crate::infrastructure::project_sources::discover_project_source_map;
 use crate::infrastructure::source_adapters::platform_xml::support::read_support_facts;
 use roxmltree::Document;
@@ -35,17 +43,194 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, ErrorKind, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use super::common::*;
-use super::compile_transaction::{CompileTransaction, RegistrationStatus};
+use super::compile_transaction::{
+    CompileTransaction, DirectoryTopologyEntry, DirectoryTopologyEntryKind, RegistrationStatus,
+};
+use super::meta_validation_context::{
+    inspect_meta_validation_reads, meta_validate_registrar_document_scan,
+    meta_validate_types_with_list_presentation, MetaValidationOwnerKind,
+};
 use super::{
     cf::*, cfe::*, dcs::*, form::*, interface::*, mxl::*, role::*, subsystem::*, template::*,
 };
 
 const NAVIGATION_MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
+#[cfg(test)]
+type MetaCompileAfterOwnerValidationHook = Box<dyn FnOnce(&Path)>;
+
+#[cfg(test)]
+type MetaCompileAfterFormatPlanHook = Box<dyn FnOnce()>;
+
+#[cfg(test)]
+type MetaEditAfterLineNumberLengthPolicyHook = Box<dyn FnOnce()>;
+
+#[cfg(test)]
+type MetaRemoveSubsystemChildInspectionHook = Box<dyn FnOnce(&Path)>;
+
+#[cfg(test)]
+thread_local! {
+    static META_COMPILE_AFTER_OWNER_VALIDATION_HOOK:
+        std::cell::RefCell<Option<MetaCompileAfterOwnerValidationHook>> =
+        const { std::cell::RefCell::new(None) };
+    static META_COMPILE_AFTER_FORMAT_PLAN_HOOK:
+        std::cell::RefCell<Option<MetaCompileAfterFormatPlanHook>> =
+        const { std::cell::RefCell::new(None) };
+    static META_EDIT_AFTER_LINE_NUMBER_LENGTH_POLICY_HOOK:
+        std::cell::RefCell<Option<MetaEditAfterLineNumberLengthPolicyHook>> =
+        const { std::cell::RefCell::new(None) };
+    static META_REMOVE_FORCED_REPARSE_PATHS:
+        std::cell::RefCell<HashSet<PathBuf>> =
+        std::cell::RefCell::new(HashSet::new());
+    static META_REMOVE_SUBSYSTEM_CHILD_INSPECTION_HOOK:
+        std::cell::RefCell<Option<MetaRemoveSubsystemChildInspectionHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn with_meta_compile_after_owner_validation_hook<T>(
+    hook: impl FnOnce(&Path) + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<MetaCompileAfterOwnerValidationHook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            META_COMPILE_AFTER_OWNER_VALIDATION_HOOK.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+
+    let previous =
+        META_COMPILE_AFTER_OWNER_VALIDATION_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(test)]
+fn run_meta_compile_after_owner_validation_hook(path: &Path) {
+    if let Some(hook) =
+        META_COMPILE_AFTER_OWNER_VALIDATION_HOOK.with(|slot| slot.borrow_mut().take())
+    {
+        hook(path);
+    }
+}
+
+#[cfg(test)]
+fn with_meta_compile_after_format_plan_hook<T>(
+    hook: impl FnOnce() + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<MetaCompileAfterFormatPlanHook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            META_COMPILE_AFTER_FORMAT_PLAN_HOOK.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+
+    let previous =
+        META_COMPILE_AFTER_FORMAT_PLAN_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(test)]
+fn run_meta_compile_after_format_plan_hook() {
+    if let Some(hook) = META_COMPILE_AFTER_FORMAT_PLAN_HOOK.with(|slot| slot.borrow_mut().take()) {
+        hook();
+    }
+}
+
+#[cfg(test)]
+fn with_meta_edit_after_line_number_length_policy_hook<T>(
+    hook: impl FnOnce() + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<MetaEditAfterLineNumberLengthPolicyHook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            META_EDIT_AFTER_LINE_NUMBER_LENGTH_POLICY_HOOK.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+
+    let previous = META_EDIT_AFTER_LINE_NUMBER_LENGTH_POLICY_HOOK
+        .with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(test)]
+fn run_meta_edit_after_line_number_length_policy_hook() {
+    if let Some(hook) =
+        META_EDIT_AFTER_LINE_NUMBER_LENGTH_POLICY_HOOK.with(|slot| slot.borrow_mut().take())
+    {
+        hook();
+    }
+}
+
+#[cfg(test)]
+fn with_meta_remove_forced_reparse_paths<T>(
+    paths: impl IntoIterator<Item = PathBuf>,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(HashSet<PathBuf>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            META_REMOVE_FORCED_REPARSE_PATHS.with(|slot| {
+                slot.replace(std::mem::take(&mut self.0));
+            });
+        }
+    }
+
+    let paths = paths.into_iter().collect();
+    let previous = META_REMOVE_FORCED_REPARSE_PATHS.with(|slot| slot.replace(paths));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(test)]
+fn force_meta_remove_reparse_path(path: impl Into<PathBuf>) {
+    META_REMOVE_FORCED_REPARSE_PATHS.with(|slot| {
+        slot.borrow_mut().insert(path.into());
+    });
+}
+
+#[cfg(test)]
+fn with_before_meta_remove_subsystem_child_inspection_hook<T>(
+    hook: impl FnOnce(&Path) + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<MetaRemoveSubsystemChildInspectionHook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            META_REMOVE_SUBSYSTEM_CHILD_INSPECTION_HOOK.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+
+    let previous =
+        META_REMOVE_SUBSYSTEM_CHILD_INSPECTION_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(test)]
+fn run_before_meta_remove_subsystem_child_inspection_hook(path: &Path) {
+    if let Some(hook) =
+        META_REMOVE_SUBSYSTEM_CHILD_INSPECTION_HOOK.with(|slot| slot.borrow_mut().take())
+    {
+        hook(path);
+    }
+}
 
 pub(crate) fn fresh_meta_compile_uuid() -> String {
     uuid::Uuid::new_v4().to_string()
@@ -79,6 +264,171 @@ mod enum_contract_tests {
             normalize_meta_enum_value("HierarchyItemsOnly"),
             "HierarchyOfItems"
         );
+    }
+
+    #[test]
+    fn meta_compile_rejects_values_outside_exact_8_3_27_enum_contracts() {
+        let cases = [
+            (
+                "Catalog",
+                json!({"subordinationUse": "Sideways"}),
+                "SubordinationUse",
+            ),
+            (
+                "Catalog",
+                json!({"codeSeries": "WholeChartOfAccounts"}),
+                "CatalogCodeSeries",
+            ),
+            (
+                "ChartOfAccounts",
+                json!({"codeSeries": "WholeCatalog"}),
+                "ChartOfAccountsCodeSeries",
+            ),
+            (
+                "ChartOfCharacteristicTypes",
+                json!({"codeSeries": "WholeCatalog"}),
+                "CharacteristicTypeCodeSeries",
+            ),
+            (
+                "ExchangePlan",
+                json!({"choiceMode": "DialogOnly"}),
+                "ChoiceMode",
+            ),
+            (
+                "Document",
+                json!({"numberPeriodicity": "Second"}),
+                "DocumentNumberPeriodicity",
+            ),
+            (
+                "BusinessProcess",
+                json!({"numberPeriodicity": "Second"}),
+                "BusinessProcessNumberPeriodicity",
+            ),
+            (
+                "CalculationRegister",
+                json!({"periodicity": "Nonperiodical"}),
+                "CalculationRegisterPeriodicity",
+            ),
+            (
+                "ChartOfCharacteristicTypes",
+                json!({"predefinedDataUpdate": "Manual"}),
+                "PredefinedDataUpdate",
+            ),
+            (
+                "HTTPService",
+                json!({
+                    "urlTemplates": {
+                        "Items": {"methods": {"Fetch": "FETCH"}}
+                    }
+                }),
+                "HTTPMethod",
+            ),
+            (
+                "WebService",
+                json!({
+                    "operations": {
+                        "Ping": {
+                            "parameters": {
+                                "Text": {"type": "xs:string", "direction": "Sideways"}
+                            }
+                        }
+                    }
+                }),
+                "TransferDirection",
+            ),
+            (
+                "Catalog",
+                json!({
+                    "attributes": [{
+                        "name": "Value",
+                        "type": "String(10)",
+                        "fillChecking": "ShowWarning"
+                    }]
+                }),
+                "FillChecking",
+            ),
+        ];
+
+        for (object_type, definition, expected_property) in cases {
+            let error = meta_compile_object_xml(
+                definition.as_object().unwrap(),
+                object_type,
+                "ContractProbe",
+                "2.20",
+            )
+            .unwrap_err();
+
+            assert!(error.contains(expected_property), "{object_type}: {error}");
+            assert!(error.contains("8.3.27"), "{object_type}: {error}");
+        }
+    }
+
+    #[test]
+    fn meta_compile_accepts_exact_8_3_27_context_specific_values_and_aliases() {
+        let cases: [(&str, Value, &[&str]); 8] = [
+            (
+                "Catalog",
+                json!({"subordinationUse": "ToFoldersAndItems", "codeSeries": "WithinOwnerSubordination", "choiceMode": "FromForm"}),
+                &[
+                    "<SubordinationUse>ToFoldersAndItems</SubordinationUse>",
+                    "<CodeSeries>WithinOwnerSubordination</CodeSeries>",
+                    "<ChoiceMode>FromForm</ChoiceMode>",
+                ],
+            ),
+            (
+                "ChartOfAccounts",
+                json!({"codeSeries": "WithinSubordination"}),
+                &["<CodeSeries>WithinSubordination</CodeSeries>"],
+            ),
+            (
+                "ChartOfCharacteristicTypes",
+                json!({"codeSeries": "WholeCharacteristicKind", "choiceMode": "QuickChoice", "predefinedDataUpdate": "DontAutoUpdate"}),
+                &[
+                    "<CodeSeries>WholeCharacteristicKind</CodeSeries>",
+                    "<ChoiceMode>QuickChoice</ChoiceMode>",
+                    "<PredefinedDataUpdate>DontAutoUpdate</PredefinedDataUpdate>",
+                ],
+            ),
+            (
+                "Document",
+                json!({"numberPeriodicity": "Daily"}),
+                &["<NumberPeriodicity>Day</NumberPeriodicity>"],
+            ),
+            (
+                "BusinessProcess",
+                json!({"numberPeriodicity": "Quarterly"}),
+                &["<NumberPeriodicity>Quarter</NumberPeriodicity>"],
+            ),
+            (
+                "CalculationRegister",
+                json!({"periodicity": "Yearly"}),
+                &["<Periodicity>Year</Periodicity>"],
+            ),
+            (
+                "HTTPService",
+                json!({"urlTemplates": {"Items": {"methods": {"Lock": "LOCK"}}}}),
+                &["<HTTPMethod>LOCK</HTTPMethod>"],
+            ),
+            (
+                "WebService",
+                json!({"operations": {"Ping": {"parameters": {"Text": {"type": "xs:string", "direction": "InOut"}}}}}),
+                &["<TransferDirection>InOut</TransferDirection>"],
+            ),
+        ];
+
+        for (object_type, definition, expected_fragments) in cases {
+            let xml = meta_compile_object_xml(
+                definition.as_object().unwrap(),
+                object_type,
+                "ContractProbe",
+                "2.20",
+            )
+            .unwrap_or_else(|error| panic!("{object_type}: {error}"))
+            .0;
+            for expected in expected_fragments {
+                assert!(xml.contains(expected), "{object_type}: missing {expected}");
+            }
+        }
     }
 }
 
@@ -244,13 +594,1462 @@ mod registration_tests {
 }
 
 #[cfg(test)]
+mod owner_contract_tests {
+    use super::*;
+    use crate::application::UnicaApplication;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_context(name: &str) -> WorkspaceContext {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("unica-meta-owner-{name}-{nanos}"));
+        fs::create_dir_all(&root).unwrap();
+        WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        }
+    }
+
+    fn create_valid_configuration(context: &WorkspaceContext) -> PathBuf {
+        let args = Map::from_iter([
+            ("Name".to_string(), json!("OwnerContract")),
+            ("OutputDir".to_string(), json!("src")),
+        ]);
+        let outcome = create_configuration_scaffold(&args, context);
+        assert!(outcome.ok, "{outcome:?}");
+        context.cwd.join("src/Configuration.xml")
+    }
+
+    fn compile_catalog(context: &WorkspaceContext, name: &str) -> AdapterOutcome {
+        let definition_path = context.cwd.join(format!("{name}.json"));
+        fs::write(
+            &definition_path,
+            serde_json::to_vec(&json!({"type": "Catalog", "name": name})).unwrap(),
+        )
+        .unwrap();
+        let args = Map::from_iter([
+            (
+                "JsonPath".to_string(),
+                json!(definition_path.display().to_string()),
+            ),
+            ("OutputDir".to_string(), json!("src")),
+        ]);
+        compile_meta(&args, context)
+    }
+
+    fn seed_event_handlers(context: &WorkspaceContext) {
+        let definition_path = context.cwd.join("event-handlers.json");
+        fs::write(
+            &definition_path,
+            serde_json::to_vec_pretty(&json!({
+                "type": "CommonModule",
+                "name": "EventHandlers",
+                "context": "server"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let args = Map::from_iter([
+            (
+                "JsonPath".to_string(),
+                json!(definition_path.display().to_string()),
+            ),
+            ("OutputDir".to_string(), json!("src")),
+        ]);
+        let outcome = compile_meta(&args, context);
+        assert!(outcome.ok, "{outcome:?}");
+        fs::write(
+            context
+                .cwd
+                .join("src/CommonModules/EventHandlers/Ext/Module.bsl"),
+            "Procedure OnBeforeWrite(Source, Cancel) Export\nEndProcedure\n",
+        )
+        .unwrap();
+    }
+
+    fn compile_subsystem_for_catalog(
+        context: &WorkspaceContext,
+        subsystem_name: &str,
+        catalog_name: &str,
+    ) -> AdapterOutcome {
+        let definition = json!({
+            "name": subsystem_name,
+            "content": [format!("Catalog.{catalog_name}")]
+        });
+        let args = Map::from_iter([
+            ("OutputDir".to_string(), json!("src")),
+            ("Value".to_string(), json!(definition.to_string())),
+        ]);
+        compile_subsystem(&args, context)
+    }
+
+    fn make_configuration_enum_invalid(path: &Path) -> Vec<u8> {
+        let original = fs::read(path).unwrap();
+        let text = String::from_utf8(original).unwrap();
+        let invalid = text.replacen(
+            "<ConfigurationExtensionCompatibilityMode>Version8_3_27</ConfigurationExtensionCompatibilityMode>",
+            "<ConfigurationExtensionCompatibilityMode>Bogus</ConfigurationExtensionCompatibilityMode>",
+            1,
+        );
+        assert_ne!(invalid, text);
+        fs::write(path, invalid.as_bytes()).unwrap();
+        invalid.into_bytes()
+    }
+
+    #[test]
+    fn meta_compile_rejects_invalid_configuration_owner_without_creating_object() {
+        let context = temp_context("compile-invalid-configuration");
+        let config_path = create_valid_configuration(&context);
+        let invalid_owner = make_configuration_enum_invalid(&config_path);
+
+        let outcome = compile_catalog(&context, "RejectedCatalog");
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .join("\n")
+                .contains("ConfigurationExtensionCompatibilityMode"),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&config_path).unwrap(), invalid_owner);
+        assert!(!context
+            .cwd
+            .join("src/Catalogs/RejectedCatalog.xml")
+            .exists());
+        assert!(!context.cwd.join("src/Catalogs/RejectedCatalog").exists());
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn public_meta_compile_rejects_event_subscription_with_missing_source_object() {
+        let context = temp_context("compile-event-subscription-missing-source");
+        fs::write(
+            context.cwd.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let config_path = create_valid_configuration(&context);
+        seed_event_handlers(&context);
+        let configuration_before = fs::read(&config_path).unwrap();
+        let definition_path = context.cwd.join("event-subscription.json");
+        fs::write(
+            &definition_path,
+            serde_json::to_vec_pretty(&json!({
+                "type": "EventSubscription",
+                "name": "MissingCatalogSubscription",
+                "source": ["CatalogObject.MissingCatalog"],
+                "event": "BeforeWrite",
+                "handler": "EventHandlers.OnBeforeWrite"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let args = Map::from_iter([
+            ("cwd".to_string(), json!(context.cwd.display().to_string())),
+            ("dryRun".to_string(), json!(false)),
+            (
+                "JsonPath".to_string(),
+                json!(definition_path.display().to_string()),
+            ),
+            ("OutputDir".to_string(), json!("src")),
+        ]);
+
+        let outcome = UnicaApplication::new()
+            .call_tool("unica.meta.compile", &args)
+            .unwrap();
+
+        assert!(!outcome.ok, "{outcome:?}");
+        let diagnostics = outcome.errors.join("\n").replace('\\', "/");
+        assert!(
+            diagnostics.contains("EventSubscription")
+                && diagnostics.contains("CatalogObject.MissingCatalog")
+                && diagnostics.contains("Catalogs/MissingCatalog.xml"),
+            "{diagnostics}"
+        );
+        assert_eq!(fs::read(&config_path).unwrap(), configuration_before);
+        assert!(!context
+            .cwd
+            .join("src/EventSubscriptions/MissingCatalogSubscription.xml")
+            .exists());
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn meta_compile_accepts_event_subscription_source_created_later_in_same_batch() {
+        let context = temp_context("compile-event-subscription-forward-batch-source");
+        create_valid_configuration(&context);
+        seed_event_handlers(&context);
+        let definition_path = context.cwd.join("event-subscription-batch.json");
+        fs::write(
+            &definition_path,
+            serde_json::to_vec_pretty(&json!([
+                {
+                    "type": "EventSubscription",
+                    "name": "BatchCatalogSubscription",
+                    "source": ["CatalogObject.BatchCatalog"],
+                    "event": "BeforeWrite",
+                    "handler": "EventHandlers.OnBeforeWrite"
+                },
+                {
+                    "type": "Catalog",
+                    "name": "BatchCatalog"
+                }
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+        let args = Map::from_iter([
+            (
+                "JsonPath".to_string(),
+                json!(definition_path.display().to_string()),
+            ),
+            ("OutputDir".to_string(), json!("src")),
+        ]);
+
+        let outcome = compile_meta(&args, &context);
+
+        assert!(outcome.ok, "{outcome:?}");
+        assert!(context
+            .cwd
+            .join("src/EventSubscriptions/BatchCatalogSubscription.xml")
+            .is_file());
+        assert!(context.cwd.join("src/Catalogs/BatchCatalog.xml").is_file());
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn public_meta_compile_prioritizes_newer_existing_target_over_older_configuration() {
+        let context = temp_context("public-compile-existing-newer-target");
+        fs::write(
+            context.cwd.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let config_path = create_valid_configuration(&context);
+        let older_configuration = fs::read_to_string(&config_path)
+            .unwrap()
+            .replacen(r#"version="2.20""#, r#"version="2.19""#, 1)
+            .into_bytes();
+        fs::write(&config_path, &older_configuration).unwrap();
+
+        let target_path = context.cwd.join("src/Catalogs/ExistingCatalog.xml");
+        fs::create_dir_all(target_path.parent().unwrap()).unwrap();
+        let newer_target = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Catalog/></MetaDataObject>"#.to_vec();
+        fs::write(&target_path, &newer_target).unwrap();
+        let definition_path = context.cwd.join("catalog.json");
+        let definition =
+            serde_json::to_vec_pretty(&json!({"type": "Catalog", "name": "ExistingCatalog"}))
+                .unwrap();
+        fs::write(&definition_path, &definition).unwrap();
+        let args = Map::from_iter([
+            ("cwd".to_string(), json!(context.cwd.display().to_string())),
+            ("dryRun".to_string(), json!(false)),
+            (
+                "JsonPath".to_string(),
+                json!(definition_path.display().to_string()),
+            ),
+            ("OutputDir".to_string(), json!("src")),
+        ]);
+
+        let outcome = UnicaApplication::new()
+            .call_tool("unica.meta.compile", &args)
+            .unwrap();
+
+        assert!(!outcome.ok, "{outcome:?}");
+        let diagnostic = &outcome.diagnostics.as_ref().unwrap()["formatCompatibility"];
+        assert_eq!(diagnostic["code"], "platformVersionUnsupported");
+        assert_eq!(diagnostic["actualFormat"], "2.21");
+        let warning = outcome.warnings.join("\n");
+        assert!(warning.contains("1С 8.5"), "{warning}");
+        assert!(!warning.contains("миграц"), "{warning}");
+        assert!(!warning.contains("повторно выгруз"), "{warning}");
+        assert!(!warning.contains("re-export"), "{warning}");
+        assert_eq!(fs::read(&config_path).unwrap(), older_configuration);
+        assert_eq!(fs::read(&target_path).unwrap(), newer_target);
+        assert_eq!(fs::read(&definition_path).unwrap(), definition);
+        assert!(!context.cwd.join("src/Catalogs/ExistingCatalog").exists());
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        assert!(outcome.artifacts.is_empty(), "{outcome:?}");
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn public_meta_compile_rejects_newer_partial_exchange_plan_target_without_mutation() {
+        let context = temp_context("public-compile-partial-exchange-plan-target");
+        fs::write(
+            context.cwd.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let config_path = create_valid_configuration(&context);
+        let configuration = fs::read(&config_path).unwrap();
+
+        let object_dir = context.cwd.join("src/ExchangePlans/PartialExchangePlan");
+        let descriptor_path = object_dir.with_extension("xml");
+        let object_module_path = object_dir.join("Ext/ObjectModule.bsl");
+        let content_path = object_dir.join("Ext/Content.xml");
+        fs::create_dir_all(content_path.parent().unwrap()).unwrap();
+        let newer_content = br#"<?xml version="1.0" encoding="UTF-8"?>
+<ExchangePlanContent xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.21"/>
+"#
+        .to_vec();
+        fs::write(&content_path, &newer_content).unwrap();
+
+        let definition_path = context.cwd.join("exchange-plan.json");
+        let definition = serde_json::to_vec_pretty(
+            &json!({"type": "ExchangePlan", "name": "PartialExchangePlan"}),
+        )
+        .unwrap();
+        fs::write(&definition_path, &definition).unwrap();
+        let args = Map::from_iter([
+            ("cwd".to_string(), json!(context.cwd.display().to_string())),
+            ("dryRun".to_string(), json!(false)),
+            (
+                "JsonPath".to_string(),
+                json!(definition_path.display().to_string()),
+            ),
+            ("OutputDir".to_string(), json!("src")),
+        ]);
+
+        assert!(!descriptor_path.exists());
+        assert!(!object_module_path.exists());
+        let outcome = UnicaApplication::new()
+            .call_tool("unica.meta.compile", &args)
+            .unwrap();
+
+        assert!(!outcome.ok, "{outcome:?}");
+        let diagnostic = &outcome.diagnostics.as_ref().unwrap()["formatCompatibility"];
+        assert_eq!(diagnostic["code"], "platformVersionUnsupported");
+        assert_eq!(diagnostic["actualFormat"], "2.21");
+        assert_eq!(fs::read(&config_path).unwrap(), configuration);
+        assert_eq!(fs::read(&content_path).unwrap(), newer_content);
+        assert_eq!(fs::read(&definition_path).unwrap(), definition);
+        assert!(!descriptor_path.exists());
+        assert!(!object_module_path.exists());
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        assert!(outcome.artifacts.is_empty(), "{outcome:?}");
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn meta_compile_rejects_configuration_replaced_after_owner_validation() {
+        let context = temp_context("compile-detached-owner-race");
+        let config_path = create_valid_configuration(&context);
+        let original = fs::read(&config_path).unwrap();
+        let concurrent = String::from_utf8(original.clone())
+            .unwrap()
+            .replacen(
+                "<Name>OwnerContract</Name>",
+                "<Name>ConcurrentOwner</Name>",
+                1,
+            )
+            .into_bytes();
+        assert_ne!(concurrent, original);
+        let config_for_hook = config_path.clone();
+        let concurrent_for_hook = concurrent.clone();
+
+        let outcome = with_meta_compile_after_owner_validation_hook(
+            move |_| fs::write(&config_for_hook, &concurrent_for_hook).unwrap(),
+            || compile_catalog(&context, "RaceCatalog"),
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("changed while planning"),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&config_path).unwrap(), concurrent);
+        assert!(!context.cwd.join("src/Catalogs/RaceCatalog.xml").exists());
+        assert!(!context.cwd.join("src/Catalogs/RaceCatalog").exists());
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn meta_compile_rejects_newer_partial_extra_created_after_format_plan() {
+        let context = temp_context("compile-partial-extra-race");
+        let config_path = create_valid_configuration(&context);
+        let config_before = fs::read(&config_path).unwrap();
+        let definition_path = context.cwd.join("exchange-plan-race.json");
+        fs::write(
+            &definition_path,
+            serde_json::to_vec(&json!({
+                "type": "ExchangePlan",
+                "name": "RacePlan"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let descriptor = context.cwd.join("src/ExchangePlans/RacePlan.xml");
+        let content = context
+            .cwd
+            .join("src/ExchangePlans/RacePlan/Ext/Content.xml");
+        let newer =
+            br#"<ExchangePlanContent xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.21"/>"#
+                .to_vec();
+        let content_for_hook = content.clone();
+        let newer_for_hook = newer.clone();
+        let args = Map::from_iter([
+            (
+                "JsonPath".to_string(),
+                json!(definition_path.display().to_string()),
+            ),
+            ("OutputDir".to_string(), json!("src")),
+        ]);
+
+        let outcome = with_meta_compile_after_format_plan_hook(
+            move || {
+                fs::create_dir_all(content_for_hook.parent().unwrap()).unwrap();
+                fs::write(&content_for_hook, &newer_for_hook).unwrap();
+            },
+            || compile_meta(&args, &context),
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(outcome.errors.join("\n").contains("2.21"), "{outcome:?}");
+        assert_eq!(fs::read(&config_path).unwrap(), config_before);
+        assert_eq!(fs::read(&content).unwrap(), newer);
+        assert!(!descriptor.exists());
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn meta_remove_rejects_invalid_configuration_owner_without_deleting_object() {
+        let context = temp_context("remove-invalid-configuration");
+        let config_path = create_valid_configuration(&context);
+        let compiled = compile_catalog(&context, "ProtectedCatalog");
+        assert!(compiled.ok, "{compiled:?}");
+        let object_path = context.cwd.join("src/Catalogs/ProtectedCatalog.xml");
+        let object_before = fs::read(&object_path).unwrap();
+        let invalid_owner = make_configuration_enum_invalid(&config_path);
+        let args = Map::from_iter([
+            ("ConfigDir".to_string(), json!("src")),
+            ("Object".to_string(), json!("Catalog.ProtectedCatalog")),
+            ("Force".to_string(), json!(true)),
+        ]);
+
+        let outcome = remove_metadata_object(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        let diagnostics = format!(
+            "{}\n{}",
+            outcome.errors.join("\n"),
+            outcome.stdout.unwrap_or_default()
+        );
+        assert!(
+            diagnostics.contains("ConfigurationExtensionCompatibilityMode"),
+            "{diagnostics}"
+        );
+        assert_eq!(fs::read(&config_path).unwrap(), invalid_owner);
+        assert_eq!(fs::read(&object_path).unwrap(), object_before);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn public_meta_remove_rejects_newer_reference_scan_xml_without_mutation() {
+        let context = temp_context("remove-newer-reference-scan");
+        let config_path = create_valid_configuration(&context);
+        let compiled = compile_catalog(&context, "ProtectedCatalog");
+        assert!(compiled.ok, "{compiled:?}");
+        let object_path = context.cwd.join("src/Catalogs/ProtectedCatalog.xml");
+        let reference_path = context.cwd.join("src/Documents/NewerReader.xml");
+        fs::create_dir_all(reference_path.parent().unwrap()).unwrap();
+        let newer = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Document/></MetaDataObject>"#.to_vec();
+        fs::write(&reference_path, &newer).unwrap();
+        let config_before = fs::read(&config_path).unwrap();
+        let object_before = fs::read(&object_path).unwrap();
+        let args = Map::from_iter([
+            ("cwd".to_string(), json!(context.cwd.display().to_string())),
+            ("ConfigDir".to_string(), json!("src")),
+            ("Object".to_string(), json!("Catalog.ProtectedCatalog")),
+            ("Force".to_string(), json!(true)),
+            ("dryRun".to_string(), json!(false)),
+        ]);
+
+        let outcome = UnicaApplication::new()
+            .call_tool("unica.meta.remove", &args)
+            .unwrap();
+
+        assert!(!outcome.ok, "{outcome:?}");
+        let diagnostic = &outcome
+            .diagnostics
+            .as_ref()
+            .unwrap_or_else(|| panic!("{outcome:?}"))["formatCompatibility"];
+        assert_eq!(diagnostic["actualFormat"], "2.21");
+        assert_eq!(fs::read(&config_path).unwrap(), config_before);
+        assert_eq!(fs::read(&object_path).unwrap(), object_before);
+        assert_eq!(fs::read(&reference_path).unwrap(), newer);
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        assert!(outcome.artifacts.is_empty(), "{outcome:?}");
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn meta_remove_rejects_invalid_subsystem_owner_without_mutating_any_owner() {
+        let context = temp_context("remove-invalid-subsystem");
+        let config_path = create_valid_configuration(&context);
+        let compiled = compile_catalog(&context, "ProtectedBySubsystem");
+        assert!(compiled.ok, "{compiled:?}");
+        let subsystem =
+            compile_subsystem_for_catalog(&context, "RemovalScope", "ProtectedBySubsystem");
+        assert!(subsystem.ok, "{subsystem:?}");
+        let object_path = context.cwd.join("src/Catalogs/ProtectedBySubsystem.xml");
+        let subsystem_path = context.cwd.join("src/Subsystems/RemovalScope.xml");
+        let source = fs::read_to_string(&subsystem_path).unwrap();
+        let invalid_subsystem = source.replacen(
+            "<IncludeHelpInContents>true</IncludeHelpInContents>",
+            "<IncludeHelpInContents>banana</IncludeHelpInContents>",
+            1,
+        );
+        assert_ne!(invalid_subsystem, source);
+        fs::write(&subsystem_path, invalid_subsystem.as_bytes()).unwrap();
+        let config_before = fs::read(&config_path).unwrap();
+        let object_before = fs::read(&object_path).unwrap();
+        let subsystem_before = fs::read(&subsystem_path).unwrap();
+        let args = Map::from_iter([
+            ("ConfigDir".to_string(), json!("src")),
+            ("Object".to_string(), json!("Catalog.ProtectedBySubsystem")),
+            ("Force".to_string(), json!(true)),
+        ]);
+
+        let outcome = remove_metadata_object(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        let diagnostics = format!(
+            "{}\n{}",
+            outcome.errors.join("\n"),
+            outcome.stdout.unwrap_or_default()
+        );
+        assert!(
+            diagnostics.contains("IncludeHelpInContents"),
+            "{diagnostics}"
+        );
+        assert!(diagnostics.contains("banana"), "{diagnostics}");
+        assert_eq!(fs::read(&config_path).unwrap(), config_before);
+        assert_eq!(fs::read(&object_path).unwrap(), object_before);
+        assert_eq!(fs::read(&subsystem_path).unwrap(), subsystem_before);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+}
+
+#[cfg(test)]
+mod remove_tests {
+    use super::super::compile_transaction::{with_commit_failpoint, CommitFailpoint};
+    use super::super::single_file_publisher::with_before_commit_hook;
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_context(name: &str) -> WorkspaceContext {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("unica-meta-remove-{name}-{nanos}"));
+        fs::create_dir_all(&root).unwrap();
+        WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build").join("unica"),
+            workspace_epoch: 1,
+        }
+    }
+
+    fn remove_args(config_dir: &Path, object: &str, force: bool) -> Map<String, Value> {
+        let mut args = Map::new();
+        args.insert(
+            "ConfigDir".to_string(),
+            Value::String(config_dir.display().to_string()),
+        );
+        args.insert("Object".to_string(), Value::String(object.to_string()));
+        args.insert("Force".to_string(), Value::Bool(force));
+        args
+    }
+
+    fn configuration_bytes(object_name: &str) -> Vec<u8> {
+        utf8_bom_bytes(&format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><Configuration><ChildObjects><Catalog>{object_name}</Catalog></ChildObjects></Configuration></MetaDataObject>\r\n"
+        ))
+    }
+
+    fn initialized_config_with_catalog(
+        context: &WorkspaceContext,
+        object_name: &str,
+    ) -> (PathBuf, PathBuf) {
+        let config_dir = context.cwd.join("src");
+        let init = create_configuration_scaffold(
+            &Map::from_iter([
+                ("Name".to_string(), json!("RemoveReferenceGuard")),
+                (
+                    "OutputDir".to_string(),
+                    json!(config_dir.display().to_string()),
+                ),
+            ]),
+            context,
+        );
+        assert!(init.ok, "{init:?}");
+        let config_path = config_dir.join("Configuration.xml");
+        let mut registration = CompileTransaction::new();
+        assert_eq!(
+            registration
+                .register_canonical_child(&config_path, "Catalog", object_name)
+                .unwrap(),
+            RegistrationStatus::Added
+        );
+        registration.commit().unwrap();
+        (config_dir, config_path)
+    }
+
+    #[test]
+    fn meta_remove_rejects_unsafe_name_before_inspecting_config_directory() {
+        let context = temp_context("unsafe-before-config");
+        let missing_config = context.cwd.join("missing-config");
+
+        for object in ["Catalog.../Victim", "Catalog.Bad&Name"] {
+            let outcome =
+                remove_metadata_object(&remove_args(&missing_config, object, false), &context);
+
+            assert!(!outcome.ok, "{object}: {outcome:?}");
+            let error = outcome.errors.join("\n");
+            assert!(error.contains("Unicode XML NCName"), "{object}: {error}");
+            assert!(error.contains("single path component"), "{object}: {error}");
+            assert!(
+                !error.contains("Config directory not found"),
+                "{object}: {error}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn meta_remove_rejects_unsafe_names_without_mutating_workspace() {
+        for (case_name, object, candidate) in [
+            ("traversal", "Catalog.../Victim", "Victim.xml"),
+            ("xml-name", "Catalog.Bad&Name", "Catalogs/Bad&Name.xml"),
+        ] {
+            let context = temp_context(case_name);
+            let config_dir = context.cwd.join("src");
+            fs::create_dir_all(config_dir.join("Catalogs")).unwrap();
+            let config_path = config_dir.join("Configuration.xml");
+            let config_before = configuration_bytes("SafeObject");
+            fs::write(&config_path, &config_before).unwrap();
+            let candidate_path = config_dir.join(candidate);
+            if let Some(parent) = candidate_path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            let candidate_before = b"candidate-before".to_vec();
+            fs::write(&candidate_path, &candidate_before).unwrap();
+
+            let outcome = remove_metadata_object(&remove_args(&config_dir, object, true), &context);
+
+            assert!(!outcome.ok, "{object}: {outcome:?}");
+            assert_eq!(fs::read(&config_path).unwrap(), config_before, "{object}");
+            assert_eq!(
+                fs::read(&candidate_path).unwrap(),
+                candidate_before,
+                "{object}"
+            );
+            let _ = fs::remove_dir_all(&context.cwd);
+        }
+    }
+
+    #[test]
+    fn meta_remove_removes_the_last_empty_type_collection_directory() {
+        let context = temp_context("remove-last-type-collection");
+        let config_dir = context.cwd.join("src");
+        let init = create_configuration_scaffold(
+            &Map::from_iter([
+                ("Name".to_string(), json!("RemoveLastTypeCollection")),
+                (
+                    "OutputDir".to_string(),
+                    json!(config_dir.display().to_string()),
+                ),
+            ]),
+            &context,
+        );
+        assert!(init.ok, "{init:?}");
+        let config_path = config_dir.join("Configuration.xml");
+        let mut registration = CompileTransaction::new();
+        registration
+            .register_canonical_child(&config_path, "Catalog", "Victim")
+            .unwrap();
+        registration.commit().unwrap();
+        let catalogs = config_dir.join("Catalogs");
+        fs::create_dir_all(&catalogs).unwrap();
+        fs::write(
+            catalogs.join("Victim.xml"),
+            utf8_bom_bytes(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><Catalog><Properties><Name>Victim</Name></Properties><ChildObjects/></Catalog></MetaDataObject>\n",
+            ),
+        )
+        .unwrap();
+
+        let outcome =
+            remove_metadata_object(&remove_args(&config_dir, "Catalog.Victim", true), &context);
+
+        assert!(outcome.ok, "{outcome:?}");
+        assert!(
+            !catalogs.exists(),
+            "the platform removes an empty metadata type collection"
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn meta_remove_post_write_failure_restores_all_owners_and_payloads() {
+        let context = temp_context("atomic-rollback");
+        let config_dir = context.cwd.join("src");
+        let init = create_configuration_scaffold(
+            &Map::from_iter([
+                ("Name".to_string(), json!("AtomicRollback")),
+                (
+                    "OutputDir".to_string(),
+                    json!(config_dir.display().to_string()),
+                ),
+            ]),
+            &context,
+        );
+        assert!(init.ok, "{init:?}");
+        let catalogs = config_dir.join("Catalogs");
+        let object_xml = catalogs.join("Victim.xml");
+        let object_dir = catalogs.join("Victim");
+        let module = object_dir.join("Ext/ObjectModule.bsl");
+        let subsystem = config_dir.join("Subsystems/Main.xml");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        fs::create_dir_all(subsystem.parent().unwrap()).unwrap();
+
+        let config_path = config_dir.join("Configuration.xml");
+        let mut registration = CompileTransaction::new();
+        assert_eq!(
+            registration
+                .register_canonical_child(&config_path, "Catalog", "Victim")
+                .unwrap(),
+            RegistrationStatus::Added
+        );
+        registration.commit().unwrap();
+        let subsystem_outcome = compile_subsystem(
+            &Map::from_iter([
+                (
+                    "OutputDir".to_string(),
+                    json!(config_dir.display().to_string()),
+                ),
+                (
+                    "Value".to_string(),
+                    json!(json!({
+                        "name": "Main",
+                        "content": ["Catalog.Victim"]
+                    })
+                    .to_string()),
+                ),
+            ]),
+            &context,
+        );
+        assert!(subsystem_outcome.ok, "{subsystem_outcome:?}");
+        let config_before = fs::read(&config_path).unwrap();
+        let subsystem_before = fs::read(&subsystem).unwrap();
+        let object_before = utf8_bom_bytes(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><Catalog><Properties><Name>Victim</Name></Properties><ChildObjects/></Catalog></MetaDataObject>\n",
+        );
+        let module_before = b"// object module before\r\n".to_vec();
+        fs::write(&object_xml, &object_before).unwrap();
+        fs::write(&module, &module_before).unwrap();
+
+        let outcome = with_commit_failpoint(CommitFailpoint::PostWriteValidation, || {
+            remove_metadata_object(&remove_args(&config_dir, "Catalog.Victim", true), &context)
+        });
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("post-write validation"),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&config_path).unwrap(), config_before);
+        assert_eq!(fs::read(&subsystem).unwrap(), subsystem_before);
+        assert_eq!(fs::read(&object_xml).unwrap(), object_before);
+        assert_eq!(fs::read(&module).unwrap(), module_before);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn meta_remove_rejects_newer_xml_anywhere_in_removed_tree_without_mutation() {
+        let context = temp_context("newer-removed-tree");
+        let config_dir = context.cwd.join("src");
+        let init = create_configuration_scaffold(
+            &Map::from_iter([
+                ("Name".to_string(), json!("NewerRemovedTree")),
+                (
+                    "OutputDir".to_string(),
+                    json!(config_dir.display().to_string()),
+                ),
+            ]),
+            &context,
+        );
+        assert!(init.ok, "{init:?}");
+        let config_path = config_dir.join("Configuration.xml");
+        let mut registration = CompileTransaction::new();
+        registration
+            .register_canonical_child(&config_path, "Catalog", "Victim")
+            .unwrap();
+        registration.commit().unwrap();
+
+        let object_path = config_dir.join("Catalogs/Victim.xml");
+        let nested_form = config_dir.join("Catalogs/Victim/Forms/Main/Ext/Form.xml");
+        fs::create_dir_all(nested_form.parent().unwrap()).unwrap();
+        fs::write(
+            &object_path,
+            br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.19"><Catalog/></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            &nested_form,
+            br#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.21"/>"#,
+        )
+        .unwrap();
+        let config_before = fs::read(&config_path).unwrap();
+        let object_before = fs::read(&object_path).unwrap();
+        let nested_before = fs::read(&nested_form).unwrap();
+
+        let outcome =
+            remove_metadata_object(&remove_args(&config_dir, "Catalog.Victim", true), &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        let diagnostics = outcome.errors.join("\n");
+        assert!(diagnostics.contains("2.21"), "{diagnostics}");
+        assert!(diagnostics.contains("1C 8.5"), "{diagnostics}");
+        assert!(
+            !diagnostics.contains("older than supported"),
+            "{diagnostics}"
+        );
+        assert_eq!(fs::read(&config_path).unwrap(), config_before);
+        assert_eq!(fs::read(&object_path).unwrap(), object_before);
+        assert_eq!(fs::read(&nested_form).unwrap(), nested_before);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn meta_remove_rolls_back_if_scanned_xml_changes_during_publication() {
+        let context = temp_context("reference-xml-race");
+        let config_dir = context.cwd.join("src");
+        let init = create_configuration_scaffold(
+            &Map::from_iter([
+                ("Name".to_string(), json!("ReferenceRace")),
+                (
+                    "OutputDir".to_string(),
+                    json!(config_dir.display().to_string()),
+                ),
+            ]),
+            &context,
+        );
+        assert!(init.ok, "{init:?}");
+        fs::create_dir_all(config_dir.join("Catalogs")).unwrap();
+        fs::create_dir_all(config_dir.join("Documents")).unwrap();
+        let config_path = config_dir.join("Configuration.xml");
+        let object_path = config_dir.join("Catalogs/Victim.xml");
+        let reference_path = config_dir.join("Documents/Reader.xml");
+        let mut registration = CompileTransaction::new();
+        assert_eq!(
+            registration
+                .register_canonical_child(&config_path, "Catalog", "Victim")
+                .unwrap(),
+            RegistrationStatus::Added
+        );
+        registration.commit().unwrap();
+        let config_before = fs::read(&config_path).unwrap();
+        let object_before = utf8_bom_bytes(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Victim</Name></Properties><ChildObjects/></Catalog></MetaDataObject>
+"#,
+        );
+        let reference_before = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document><Properties><Name>Reader</Name><Comment>before</Comment></Properties><ChildObjects/></Document></MetaDataObject>"#.to_vec();
+        let reference_concurrent = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document><Properties><Name>Reader</Name><Comment>concurrent</Comment></Properties><ChildObjects/></Document></MetaDataObject>"#.to_vec();
+        fs::write(&object_path, &object_before).unwrap();
+        fs::write(&reference_path, &reference_before).unwrap();
+        let reference_for_hook = reference_path.clone();
+        let concurrent_for_hook = reference_concurrent.clone();
+
+        let outcome = with_before_commit_hook(
+            move |_| fs::write(&reference_for_hook, &concurrent_for_hook).unwrap(),
+            || remove_metadata_object(&remove_args(&config_dir, "Catalog.Victim", true), &context),
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("read guard"),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&config_path).unwrap(), config_before);
+        assert_eq!(fs::read(&object_path).unwrap(), object_before);
+        assert_eq!(fs::read(&reference_path).unwrap(), reference_concurrent);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn meta_remove_rejects_payload_directory_that_appears_after_absent_probe() {
+        let context = temp_context("late-payload-directory");
+        let (config_dir, config_path) = initialized_config_with_catalog(&context, "Victim");
+        fs::create_dir_all(config_dir.join("Catalogs")).unwrap();
+        let config_before = fs::read(&config_path).unwrap();
+        let object_path = config_dir.join("Catalogs/Victim.xml");
+        let object_before = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Victim</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#.to_vec();
+        let sibling_path = config_dir.join("Catalogs/Sibling.xml");
+        let sibling_before = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Sibling</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#.to_vec();
+        fs::write(&object_path, &object_before).unwrap();
+        fs::write(&sibling_path, &sibling_before).unwrap();
+        let late_module = config_dir.join("Catalogs/Victim/Ext/ObjectModule.bsl");
+        let late_module_for_hook = late_module.clone();
+
+        let outcome = with_before_commit_hook(
+            move |_| {
+                fs::create_dir_all(late_module_for_hook.parent().unwrap()).unwrap();
+                fs::write(&late_module_for_hook, b"// late payload\r\n").unwrap();
+            },
+            || remove_metadata_object(&remove_args(&config_dir, "Catalog.Victim", false), &context),
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("pair member"),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&config_path).unwrap(), config_before);
+        assert_eq!(fs::read(&object_path).unwrap(), object_before);
+        assert_eq!(fs::read(&sibling_path).unwrap(), sibling_before);
+        assert_eq!(fs::read(&late_module).unwrap(), b"// late payload\r\n");
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn meta_remove_rejects_descriptor_that_appears_after_absent_probe() {
+        let context = temp_context("late-descriptor");
+        let (config_dir, config_path) = initialized_config_with_catalog(&context, "Victim");
+        let object_dir = config_dir.join("Catalogs/Victim");
+        fs::create_dir_all(object_dir.join("Ext")).unwrap();
+        let config_before = fs::read(&config_path).unwrap();
+        let module_path = object_dir.join("Ext/ObjectModule.bsl");
+        let module_before = b"// victim payload\r\n".to_vec();
+        let sibling_path = config_dir.join("Catalogs/Sibling.xml");
+        let sibling_before = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Sibling</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#.to_vec();
+        fs::write(&module_path, &module_before).unwrap();
+        fs::write(&sibling_path, &sibling_before).unwrap();
+        let late_descriptor = config_dir.join("Catalogs/Victim.xml");
+        let late_descriptor_bytes = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Victim</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#.to_vec();
+        let descriptor_for_hook = late_descriptor.clone();
+        let descriptor_bytes_for_hook = late_descriptor_bytes.clone();
+
+        let outcome = with_before_commit_hook(
+            move |_| fs::write(&descriptor_for_hook, &descriptor_bytes_for_hook).unwrap(),
+            || remove_metadata_object(&remove_args(&config_dir, "Catalog.Victim", false), &context),
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("pair member"),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&config_path).unwrap(), config_before);
+        assert_eq!(fs::read(&module_path).unwrap(), module_before);
+        assert_eq!(fs::read(&sibling_path).unwrap(), sibling_before);
+        assert_eq!(fs::read(&late_descriptor).unwrap(), late_descriptor_bytes);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn meta_remove_rolls_back_if_scanned_bsl_changes_during_publication() {
+        let context = temp_context("reference-bsl-race");
+        let (config_dir, config_path) = initialized_config_with_catalog(&context, "Victim");
+        fs::create_dir_all(config_dir.join("Catalogs")).unwrap();
+        let config_before = fs::read(&config_path).unwrap();
+        let object_path = config_dir.join("Catalogs/Victim.xml");
+        let object_before = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Victim</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#.to_vec();
+        let reader_module = config_dir.join("CommonModules/Reader/Ext/Module.bsl");
+        let reader_before = b"// no references\r\n".to_vec();
+        let reader_concurrent = b"Value = Catalogs.Victim.FindByCode(Code);\r\n".to_vec();
+        fs::create_dir_all(reader_module.parent().unwrap()).unwrap();
+        fs::write(&object_path, &object_before).unwrap();
+        fs::write(&reader_module, &reader_before).unwrap();
+        let reader_for_hook = reader_module.clone();
+        let concurrent_for_hook = reader_concurrent.clone();
+
+        let outcome = with_before_commit_hook(
+            move |_| fs::write(&reader_for_hook, &concurrent_for_hook).unwrap(),
+            || remove_metadata_object(&remove_args(&config_dir, "Catalog.Victim", false), &context),
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("read guard"),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&config_path).unwrap(), config_before);
+        assert_eq!(fs::read(&object_path).unwrap(), object_before);
+        assert_eq!(fs::read(&reader_module).unwrap(), reader_concurrent);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn meta_remove_rolls_back_if_reference_scan_topology_changes_during_publication() {
+        let context = temp_context("reference-topology-race");
+        let (config_dir, config_path) = initialized_config_with_catalog(&context, "Victim");
+        fs::create_dir_all(config_dir.join("Catalogs")).unwrap();
+        fs::create_dir_all(config_dir.join("CommonModules")).unwrap();
+        let config_before = fs::read(&config_path).unwrap();
+        let object_path = config_dir.join("Catalogs/Victim.xml");
+        let object_before = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Victim</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#.to_vec();
+        fs::write(&object_path, &object_before).unwrap();
+        let late_module = config_dir.join("CommonModules/LateReader/Ext/Module.bsl");
+        let late_module_for_hook = late_module.clone();
+
+        let outcome = with_before_commit_hook(
+            move |_| {
+                fs::create_dir_all(late_module_for_hook.parent().unwrap()).unwrap();
+                fs::write(
+                    &late_module_for_hook,
+                    b"Value = Catalogs.Victim.FindByCode(Code);\r\n",
+                )
+                .unwrap();
+            },
+            || remove_metadata_object(&remove_args(&config_dir, "Catalog.Victim", false), &context),
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .join("\n")
+                .contains("directory membership guard"),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&config_path).unwrap(), config_before);
+        assert_eq!(fs::read(&object_path).unwrap(), object_before);
+        assert!(late_module.is_file());
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn meta_remove_rolls_back_if_reference_scan_entry_changes_from_file_to_directory() {
+        let context = temp_context("reference-entry-kind-race");
+        let (config_dir, config_path) = initialized_config_with_catalog(&context, "Victim");
+        fs::create_dir_all(config_dir.join("Catalogs")).unwrap();
+        let common_modules = config_dir.join("CommonModules");
+        fs::create_dir_all(&common_modules).unwrap();
+        let config_before = fs::read(&config_path).unwrap();
+        let object_path = config_dir.join("Catalogs/Victim.xml");
+        let object_before = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Victim</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#.to_vec();
+        fs::write(&object_path, &object_before).unwrap();
+        let topology_entry = common_modules.join("LateReader");
+        fs::write(&topology_entry, b"irrelevant regular file").unwrap();
+        let late_module = topology_entry.join("Ext/Module.bsl");
+        let topology_entry_for_hook = topology_entry.clone();
+        let late_module_for_hook = late_module.clone();
+
+        let outcome = with_before_commit_hook(
+            move |_| {
+                fs::remove_file(&topology_entry_for_hook).unwrap();
+                fs::create_dir_all(late_module_for_hook.parent().unwrap()).unwrap();
+                fs::write(
+                    &late_module_for_hook,
+                    b"Value = Catalogs.Victim.FindByCode(Code);\r\n",
+                )
+                .unwrap();
+            },
+            || remove_metadata_object(&remove_args(&config_dir, "Catalog.Victim", false), &context),
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .join("\n")
+                .contains("directory membership guard"),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&config_path).unwrap(), config_before);
+        assert_eq!(fs::read(&object_path).unwrap(), object_before);
+        assert!(late_module.is_file());
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn meta_remove_fails_closed_when_reference_bsl_is_not_utf8() {
+        let context = temp_context("invalid-reference-bsl");
+        let (config_dir, config_path) = initialized_config_with_catalog(&context, "Victim");
+        fs::create_dir_all(config_dir.join("Catalogs")).unwrap();
+        let config_before = fs::read(&config_path).unwrap();
+        let object_path = config_dir.join("Catalogs/Victim.xml");
+        let object_before = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Victim</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#.to_vec();
+        let invalid_module = config_dir.join("CommonModules/Unreadable/Ext/Module.bsl");
+        let invalid_bytes = vec![0xff, 0xfe, 0xfd];
+        fs::create_dir_all(invalid_module.parent().unwrap()).unwrap();
+        fs::write(&object_path, &object_before).unwrap();
+        fs::write(&invalid_module, &invalid_bytes).unwrap();
+
+        let outcome =
+            remove_metadata_object(&remove_args(&config_dir, "Catalog.Victim", false), &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("not valid UTF-8"),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&config_path).unwrap(), config_before);
+        assert_eq!(fs::read(&object_path).unwrap(), object_before);
+        assert_eq!(fs::read(&invalid_module).unwrap(), invalid_bytes);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn meta_remove_fails_closed_on_reference_scan_symlink() {
+        let context = temp_context("reference-symlink");
+        let (config_dir, config_path) = initialized_config_with_catalog(&context, "Victim");
+        fs::create_dir_all(config_dir.join("Catalogs")).unwrap();
+        let config_before = fs::read(&config_path).unwrap();
+        let object_path = config_dir.join("Catalogs/Victim.xml");
+        let object_before = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Victim</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#.to_vec();
+        fs::write(&object_path, &object_before).unwrap();
+        let dangling_link = config_dir.join("CommonModules");
+        crate::infrastructure::platform::filesystem::create_test_directory_link(
+            &config_dir.join("missing-reference-tree"),
+            &dangling_link,
+        )
+        .unwrap();
+
+        let outcome =
+            remove_metadata_object(&remove_args(&config_dir, "Catalog.Victim", false), &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("symbolic link"),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&config_path).unwrap(), config_before);
+        assert_eq!(fs::read(&object_path).unwrap(), object_before);
+        assert!(fs::symlink_metadata(&dangling_link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn meta_remove_rejects_payload_directory_symlink_before_traversal() {
+        let context = temp_context("payload-directory-symlink");
+        let (config_dir, config_path) = initialized_config_with_catalog(&context, "Victim");
+        let catalogs = config_dir.join("Catalogs");
+        fs::create_dir_all(&catalogs).unwrap();
+        let object_path = catalogs.join("Victim.xml");
+        let object_before = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Victim</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#.to_vec();
+        fs::write(&object_path, &object_before).unwrap();
+        let external = context.cwd.join("external-payload");
+        let external_marker = external.join("must-not-be-traversed.txt");
+        fs::create_dir_all(&external).unwrap();
+        fs::write(&external_marker, b"external").unwrap();
+        let payload_link = catalogs.join("Victim");
+        crate::infrastructure::platform::filesystem::create_test_directory_link(
+            &external,
+            &payload_link,
+        )
+        .unwrap();
+        let config_before = fs::read(&config_path).unwrap();
+
+        let outcome =
+            remove_metadata_object(&remove_args(&config_dir, "Catalog.Victim", false), &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        let error = outcome.errors.join("\n");
+        assert!(
+            error.contains(
+                "metadata payload directory must not be a symbolic link or reparse point"
+            ),
+            "{error}"
+        );
+        assert!(
+            !error.contains("reference scan entry"),
+            "payload link must be rejected by preflight, before the reference scanner: {error}"
+        );
+        assert_eq!(fs::read(&config_path).unwrap(), config_before);
+        assert_eq!(fs::read(&object_path).unwrap(), object_before);
+        assert_eq!(fs::read(&external_marker).unwrap(), b"external");
+        assert!(fs::symlink_metadata(&payload_link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn reference_scan_entry_budget_stops_incrementally_at_a_test_limit() {
+        let context = temp_context("reference-entry-budget");
+        let root = context.cwd.join("scan");
+        fs::create_dir(&root).unwrap();
+        for name in ["A.xml", "B.xml", "C.xml"] {
+            fs::write(root.join(name), b"<Root/>").unwrap();
+        }
+        let mut visited_directories = std::collections::HashSet::new();
+        let mut visited_entries = 0usize;
+
+        let result = metadata_files_recursive_bounded(
+            &root,
+            0,
+            MetaRemoveTraversalLimits {
+                max_depth: 4,
+                max_entries: 1,
+            },
+            &mut visited_directories,
+            &mut visited_entries,
+        );
+        let error = match result {
+            Ok(_) => panic!("the injected one-entry budget must stop the scan"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("maximum of 1 entries"), "{error}");
+        assert_eq!(
+            visited_entries, 1,
+            "the scanner must stop before retaining or inspecting entries beyond the budget"
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn reference_scan_depth_budget_stops_before_recursive_descent() {
+        let context = temp_context("reference-depth-budget");
+        let root = context.cwd.join("scan");
+        fs::create_dir_all(root.join("Level1/Level2")).unwrap();
+        fs::write(root.join("Level1/Level2/deep.xml"), b"<Root/>").unwrap();
+
+        let result = metadata_files_recursive_with_limits(
+            &root,
+            MetaRemoveTraversalLimits {
+                max_depth: 1,
+                max_entries: 8,
+            },
+        );
+        let error = match result {
+            Ok(_) => panic!("the injected depth budget must reject the deeper directory"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("maximum depth of 1"), "{error}");
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn reference_scan_rejects_a_direct_symlink_before_any_recursive_descent() {
+        let context = temp_context("reference-symlink-before-recursion");
+        let root = context.cwd.join("scan");
+        fs::create_dir_all(root.join("A-directory")).unwrap();
+        crate::infrastructure::platform::filesystem::create_test_directory_link(
+            &context.cwd.join("external"),
+            &root.join("Z-symlink-directory"),
+        )
+        .unwrap();
+
+        let result = metadata_files_recursive_with_limits(
+            &root,
+            MetaRemoveTraversalLimits {
+                max_depth: 0,
+                max_entries: 8,
+            },
+        );
+        let error = match result {
+            Ok(_) => {
+                panic!("a direct symlink must fail before descending into the regular directory")
+            }
+            Err(error) => error,
+        };
+
+        assert!(error.contains("symbolic link or reparse point"), "{error}");
+        assert!(
+            !error.contains("maximum depth"),
+            "direct symlink rejection must retain precedence over recursive depth failure: {error}"
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    fn subsystem_descriptor_bytes(name: &str) -> Vec<u8> {
+        format!(
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><Subsystem><Properties><Name>{name}</Name></Properties><ChildObjects><Content/></ChildObjects></Subsystem></MetaDataObject>"
+        )
+        .into_bytes()
+    }
+
+    fn plan_subsystem_replacements_for_test(root: &Path) -> Result<(), String> {
+        let mut replacements = Vec::new();
+        let mut descriptor_reads = Vec::new();
+        plan_meta_remove_subsystem_replacements(
+            root,
+            "Catalog.Victim",
+            &mut replacements,
+            &mut descriptor_reads,
+        )
+    }
+
+    fn plan_subsystem_replacements_with_limits_for_test(
+        root: &Path,
+        limits: MetaRemoveTraversalLimits,
+    ) -> (Result<(), String>, usize) {
+        let mut replacements = Vec::new();
+        let mut descriptor_reads = Vec::new();
+        let mut visited_directories = HashSet::new();
+        let mut visited_entries = 0usize;
+        let result = plan_meta_remove_subsystem_replacements_bounded(
+            root,
+            "Catalog.Victim",
+            &mut replacements,
+            &mut descriptor_reads,
+            0,
+            limits,
+            &mut visited_directories,
+            &mut visited_entries,
+        );
+        (result, visited_entries)
+    }
+
+    #[test]
+    fn subsystem_planner_rejects_forced_reparse_at_every_inspection_point() {
+        for point in ["root", "entry", "child"] {
+            let context = temp_context(&format!("subsystem-reparse-{point}"));
+            let root = context.cwd.join("Subsystems");
+            let descriptor = root.join("Parent.xml");
+            let child = root.join("Parent/Subsystems");
+            fs::create_dir_all(&child).unwrap();
+            fs::write(&descriptor, subsystem_descriptor_bytes("Parent")).unwrap();
+            let forced = match point {
+                "root" => root.clone(),
+                "entry" => descriptor.clone(),
+                "child" => child.clone(),
+                _ => unreachable!(),
+            };
+
+            let error = with_meta_remove_forced_reparse_paths([forced], || {
+                plan_subsystem_replacements_for_test(&root)
+            })
+            .expect_err("every subsystem planner inspection point must fail closed on reparse");
+
+            assert!(
+                error.contains("symbolic link or reparse point"),
+                "{point}: {error}"
+            );
+            let _ = fs::remove_dir_all(&context.cwd);
+        }
+    }
+
+    #[test]
+    fn subsystem_planner_rejects_reparse_injected_at_child_inspection_window() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let context = temp_context("subsystem-reparse-race");
+        let root = context.cwd.join("Subsystems");
+        let descriptor = root.join("Parent.xml");
+        let child = root.join("Parent/Subsystems");
+        fs::create_dir_all(&child).unwrap();
+        fs::write(&descriptor, subsystem_descriptor_bytes("Parent")).unwrap();
+        let expected_child = child.clone();
+        let injected = Rc::new(Cell::new(false));
+        let injected_for_hook = Rc::clone(&injected);
+
+        let error = with_meta_remove_forced_reparse_paths(Vec::new(), || {
+            with_before_meta_remove_subsystem_child_inspection_hook(
+                move |inspected| {
+                    assert_eq!(inspected, expected_child);
+                    injected_for_hook.set(true);
+                    force_meta_remove_reparse_path(inspected.to_path_buf());
+                },
+                || plan_subsystem_replacements_for_test(&root),
+            )
+        })
+        .expect_err("a reparse injected at the child inspection window must fail closed");
+
+        assert!(
+            injected.get(),
+            "test hook must cover the child inspection window"
+        );
+        assert!(error.contains("symbolic link or reparse point"), "{error}");
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn subsystem_planner_rejects_descent_beyond_meta_remove_depth_budget() {
+        let context = temp_context("subsystem-depth-budget");
+        let mut directory = context.cwd.join("Subsystems");
+        fs::create_dir_all(&directory).unwrap();
+        for depth in 0..=1 {
+            let name = format!("Nested{depth}");
+            fs::write(
+                directory.join(format!("{name}.xml")),
+                subsystem_descriptor_bytes(&name),
+            )
+            .unwrap();
+            directory = directory.join(name).join("Subsystems");
+            fs::create_dir_all(&directory).unwrap();
+        }
+
+        let (result, _) = plan_subsystem_replacements_with_limits_for_test(
+            &context.cwd.join("Subsystems"),
+            MetaRemoveTraversalLimits {
+                max_depth: 1,
+                max_entries: 8,
+            },
+        );
+        let error = result
+            .expect_err("subsystem recursion beyond the meta.remove depth budget must fail closed");
+
+        assert!(
+            error.contains("subsystem traversal exceeded the maximum depth"),
+            "{error}"
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn subsystem_planner_stops_before_retaining_entries_beyond_meta_remove_budget() {
+        let context = temp_context("subsystem-entry-budget");
+        let root = context.cwd.join("Subsystems");
+        fs::create_dir(&root).unwrap();
+        for name in ["A.txt", "B.txt"] {
+            fs::write(root.join(name), b"not a subsystem descriptor").unwrap();
+        }
+
+        let (result, visited_entries) = plan_subsystem_replacements_with_limits_for_test(
+            &root,
+            MetaRemoveTraversalLimits {
+                max_depth: 4,
+                max_entries: 1,
+            },
+        );
+        let error = result
+            .expect_err("subsystem traversal must stop before retaining entries beyond the budget");
+
+        assert!(
+            error.contains("subsystem traversal exceeded the maximum of 1 entries"),
+            "{error}"
+        );
+        assert_eq!(
+            visited_entries, 1,
+            "the subsystem planner must stop before retaining or inspecting entries beyond the budget"
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+}
+
+#[cfg(test)]
 mod edit_tests {
     use super::*;
     use crate::application::UnicaApplication;
     use crate::domain::workspace::WorkspaceContext;
-    use serde_json::{json, Map};
+    use crate::infrastructure::native_operations::compile_transaction::{
+        with_commit_failpoint, CommitFailpoint,
+    };
+    use crate::infrastructure::native_operations::single_file_publisher::with_before_commit_hook;
+    use serde_json::{json, Map, Value};
     use std::fs;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_context(name: &str) -> WorkspaceContext {
@@ -273,6 +2072,50 @@ mod edit_tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, content).unwrap();
+    }
+
+    fn canonical_path(path: &Path) -> PathBuf {
+        crate::infrastructure::source_roots::normalize_path_identity(path).unwrap()
+    }
+
+    const TEST_MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
+    const TEST_V8_NS: &str = "http://v8.1c.ru/8.1/data/core";
+    const TEST_XR_NS: &str = "http://v8.1c.ru/8.3/xcf/readable";
+
+    fn write_owner(
+        source_dir: &Path,
+        object_type: &str,
+        object_name: &str,
+        languages: &[&str],
+    ) -> PathBuf {
+        fs::create_dir_all(source_dir.join("Languages")).unwrap();
+        let language_nodes = languages
+            .iter()
+            .map(|name| format!("<Language>{name}</Language>"))
+            .collect::<String>();
+        let configuration = format!(
+            r#"<MetaDataObject xmlns="{TEST_MD_NS}" version="2.20">
+<Configuration uuid="11111111-1111-4111-8111-111111111111">
+<Properties><Name>Owner</Name></Properties>
+<ChildObjects>{language_nodes}<{object_type}>{object_name}</{object_type}></ChildObjects>
+</Configuration></MetaDataObject>"#
+        );
+        fs::write(source_dir.join("Configuration.xml"), configuration).unwrap();
+        source_dir.to_path_buf()
+    }
+
+    fn meta_validate_args(path: &Path) -> Map<String, Value> {
+        Map::from_iter([
+            (
+                "ObjectPath".to_string(),
+                Value::String(path.display().to_string()),
+            ),
+            ("Detailed".to_string(), Value::Bool(true)),
+        ])
+    }
+
+    fn sample_meta_named(object_type: &str, object_name: &str) -> String {
+        sample_meta_object_xml(object_type, object_name, "", "\t\t<ChildObjects/>")
     }
 
     fn sample_document_xml(register_records: &str) -> String {
@@ -409,6 +2252,55 @@ mod edit_tests {
         )
     }
 
+    fn sample_object_with_line_number_length(
+        object_type: &str,
+        line_number_length: &str,
+    ) -> String {
+        sample_meta_object_xml(
+            object_type,
+            "SampleObject",
+            "",
+            &format!(
+                "\t\t<ChildObjects>
+\t\t\t<TabularSection uuid=\"22222222-2222-4222-8222-222222222222\">
+\t\t\t\t<Properties>
+\t\t\t\t\t<Name>SampleItems</Name>
+\t\t\t\t\t<Synonym/>
+\t\t\t\t\t<Comment/>
+\t\t\t\t\t<ToolTip/>
+\t\t\t\t\t<FillChecking>DontCheck</FillChecking>
+\t\t\t\t\t<LineNumberLength>{line_number_length}</LineNumberLength>
+\t\t\t\t</Properties>
+\t\t\t\t<ChildObjects/>
+\t\t\t</TabularSection>
+\t\t</ChildObjects>"
+            ),
+        )
+    }
+
+    fn write_owner_with_compatibility(
+        source_dir: &Path,
+        object_type: &str,
+        object_name: &str,
+        compatibility_mode: &str,
+    ) {
+        fs::create_dir_all(source_dir).unwrap();
+        write_file(
+            &source_dir.join("Configuration.xml"),
+            &format!(
+                r#"<MetaDataObject xmlns="{TEST_MD_NS}" version="2.20">
+<Configuration uuid="11111111-1111-4111-8111-111111111111">
+<Properties>
+<Name>Owner</Name>
+<CompatibilityMode>{compatibility_mode}</CompatibilityMode>
+</Properties>
+<ChildObjects><{object_type}>{object_name}</{object_type}></ChildObjects>
+</Configuration>
+</MetaDataObject>"#
+            ),
+        );
+    }
+
     fn register_record_args(object_path: &Path) -> Map<String, Value> {
         let mut args = Map::new();
         args.insert(
@@ -447,6 +2339,570 @@ mod edit_tests {
         args
     }
 
+    fn sample_catalog_with_autonumbering(value: &str) -> String {
+        sample_catalog_xml().replace(
+            "\t\t\t<Owners/>",
+            &format!("\t\t\t<Autonumbering>{value}</Autonumbering>\n\t\t\t<Owners/>"),
+        )
+    }
+
+    fn boolean_contract_cases() -> &'static [(&'static str, &'static [&'static str])] {
+        &[
+            (
+                "AccountingFlag",
+                &[
+                    "PasswordMode",
+                    "MarkNegatives",
+                    "MultiLine",
+                    "ExtendedEdit",
+                    "FillFromFillingValue",
+                ],
+            ),
+            (
+                "AccountingRegister",
+                &[
+                    "UseStandardCommands",
+                    "IncludeHelpInContents",
+                    "Correspondence",
+                    "EnableTotalsSplitting",
+                ],
+            ),
+            (
+                "AccumulationRegister",
+                &[
+                    "UseStandardCommands",
+                    "IncludeHelpInContents",
+                    "EnableTotalsSplitting",
+                ],
+            ),
+            (
+                "AddressingAttribute",
+                &[
+                    "PasswordMode",
+                    "MarkNegatives",
+                    "MultiLine",
+                    "ExtendedEdit",
+                    "FillFromFillingValue",
+                ],
+            ),
+            (
+                "Attribute",
+                &[
+                    "PasswordMode",
+                    "MarkNegatives",
+                    "MultiLine",
+                    "ExtendedEdit",
+                    "FillFromFillingValue",
+                ],
+            ),
+            (
+                "BusinessProcess",
+                &[
+                    "UseStandardCommands",
+                    "CheckUnique",
+                    "Autonumbering",
+                    "CreateTaskInPrivilegedMode",
+                    "IncludeHelpInContents",
+                    "UpdateDataHistoryImmediatelyAfterWrite",
+                    "ExecuteAfterWriteDataHistoryVersionProcessing",
+                ],
+            ),
+            (
+                "CalculationRegister",
+                &[
+                    "UseStandardCommands",
+                    "ActionPeriod",
+                    "BasePeriod",
+                    "IncludeHelpInContents",
+                ],
+            ),
+            (
+                "Catalog",
+                &[
+                    "Hierarchical",
+                    "LimitLevelCount",
+                    "FoldersOnTop",
+                    "UseStandardCommands",
+                    "CheckUnique",
+                    "Autonumbering",
+                    "QuickChoice",
+                    "IncludeHelpInContents",
+                    "UpdateDataHistoryImmediatelyAfterWrite",
+                    "ExecuteAfterWriteDataHistoryVersionProcessing",
+                ],
+            ),
+            (
+                "ChartOfAccounts",
+                &[
+                    "UseStandardCommands",
+                    "IncludeHelpInContents",
+                    "CheckUnique",
+                    "QuickChoice",
+                    "AutoOrderByCode",
+                    "UpdateDataHistoryImmediatelyAfterWrite",
+                    "ExecuteAfterWriteDataHistoryVersionProcessing",
+                ],
+            ),
+            (
+                "ChartOfCalculationTypes",
+                &[
+                    "UseStandardCommands",
+                    "QuickChoice",
+                    "ActionPeriodUse",
+                    "IncludeHelpInContents",
+                    "UpdateDataHistoryImmediatelyAfterWrite",
+                    "ExecuteAfterWriteDataHistoryVersionProcessing",
+                ],
+            ),
+            (
+                "ChartOfCharacteristicTypes",
+                &[
+                    "UseStandardCommands",
+                    "IncludeHelpInContents",
+                    "Hierarchical",
+                    "FoldersOnTop",
+                    "CheckUnique",
+                    "Autonumbering",
+                    "QuickChoice",
+                    "UpdateDataHistoryImmediatelyAfterWrite",
+                    "ExecuteAfterWriteDataHistoryVersionProcessing",
+                ],
+            ),
+            ("Command", &["ModifiesData"]),
+            (
+                "CommonModule",
+                &[
+                    "Global",
+                    "ClientManagedApplication",
+                    "Server",
+                    "ExternalConnection",
+                    "ClientOrdinaryApplication",
+                    "Client",
+                    "ServerCall",
+                    "Privileged",
+                ],
+            ),
+            (
+                "Constant",
+                &[
+                    "UseStandardCommands",
+                    "PasswordMode",
+                    "MarkNegatives",
+                    "MultiLine",
+                    "ExtendedEdit",
+                    "UpdateDataHistoryImmediatelyAfterWrite",
+                    "ExecuteAfterWriteDataHistoryVersionProcessing",
+                ],
+            ),
+            (
+                "DataProcessor",
+                &["UseStandardCommands", "IncludeHelpInContents"],
+            ),
+            (
+                "Dimension",
+                &[
+                    "PasswordMode",
+                    "MarkNegatives",
+                    "MultiLine",
+                    "ExtendedEdit",
+                    "DenyIncompleteValues",
+                    "BaseDimension",
+                    "UseInTotals",
+                    "FillFromFillingValue",
+                    "Master",
+                    "MainFilter",
+                    "Balance",
+                ],
+            ),
+            (
+                "DocumentJournal",
+                &["UseStandardCommands", "IncludeHelpInContents"],
+            ),
+            (
+                "Document",
+                &[
+                    "UseStandardCommands",
+                    "CheckUnique",
+                    "Autonumbering",
+                    "PostInPrivilegedMode",
+                    "UnpostInPrivilegedMode",
+                    "IncludeHelpInContents",
+                    "UpdateDataHistoryImmediatelyAfterWrite",
+                    "ExecuteAfterWriteDataHistoryVersionProcessing",
+                ],
+            ),
+            ("Enum", &["UseStandardCommands", "QuickChoice"]),
+            (
+                "ExchangePlan",
+                &[
+                    "UseStandardCommands",
+                    "QuickChoice",
+                    "DistributedInfoBase",
+                    "IncludeConfigurationExtensions",
+                    "IncludeHelpInContents",
+                    "UpdateDataHistoryImmediatelyAfterWrite",
+                    "ExecuteAfterWriteDataHistoryVersionProcessing",
+                ],
+            ),
+            (
+                "ExtDimensionAccountingFlag",
+                &[
+                    "PasswordMode",
+                    "MarkNegatives",
+                    "MultiLine",
+                    "ExtendedEdit",
+                    "FillFromFillingValue",
+                ],
+            ),
+            (
+                "InformationRegister",
+                &[
+                    "UseStandardCommands",
+                    "MainFilterOnPeriod",
+                    "IncludeHelpInContents",
+                    "EnableTotalsSliceFirst",
+                    "EnableTotalsSliceLast",
+                    "UpdateDataHistoryImmediatelyAfterWrite",
+                    "ExecuteAfterWriteDataHistoryVersionProcessing",
+                ],
+            ),
+            ("Operation", &["Nillable", "Transactioned"]),
+            ("Parameter", &["Nillable"]),
+            ("Report", &["UseStandardCommands", "IncludeHelpInContents"]),
+            (
+                "Resource",
+                &[
+                    "PasswordMode",
+                    "MarkNegatives",
+                    "MultiLine",
+                    "ExtendedEdit",
+                    "Balance",
+                    "FillFromFillingValue",
+                ],
+            ),
+            ("ScheduledJob", &["Use", "Predefined"]),
+            (
+                "Task",
+                &[
+                    "UseStandardCommands",
+                    "CheckUnique",
+                    "Autonumbering",
+                    "IncludeHelpInContents",
+                    "UpdateDataHistoryImmediatelyAfterWrite",
+                    "ExecuteAfterWriteDataHistoryVersionProcessing",
+                ],
+            ),
+        ]
+    }
+
+    fn sample_with_invalid_boolean_node(node_type: &str, property: &str) -> String {
+        if META_COMPILE_SUPPORTED_TYPES.contains(&node_type) {
+            return sample_meta_object_xml(
+                node_type,
+                "BooleanProbe",
+                &format!("\t\t\t<{property}>banana</{property}>"),
+                "\t\t<ChildObjects/>",
+            );
+        }
+
+        let (root_type, child) = match node_type {
+            "AccountingFlag" | "ExtDimensionAccountingFlag" => ("ChartOfAccounts", node_type),
+            "AddressingAttribute" => ("Task", node_type),
+            "Dimension" | "Resource" => ("InformationRegister", node_type),
+            "Operation" | "Parameter" => ("WebService", node_type),
+            _ => ("Catalog", node_type),
+        };
+        let invalid_child = format!(
+            "\t\t\t<{child}>\n\t\t\t\t<Properties>\n\t\t\t\t\t<Name>BooleanChild</Name>\n\t\t\t\t\t<Comment/>\n\t\t\t\t\t<{property}>banana</{property}>\n\t\t\t\t</Properties>\n\t\t\t\t<ChildObjects/>\n\t\t\t</{child}>"
+        );
+        sample_meta_object_xml(
+            root_type,
+            "BooleanProbe",
+            "",
+            &format!("\t\t<ChildObjects>\n{invalid_child}\n\t\t</ChildObjects>"),
+        )
+    }
+
+    #[test]
+    fn edit_meta_rejects_invalid_boolean_inline_without_writing() {
+        let context = temp_context("invalid-boolean-inline");
+        let object_path = context.cwd.join("Catalogs/BooleanProbe.xml");
+        let original = sample_catalog_with_autonumbering("true");
+
+        for invalid in ["banana", "1", "0", "yes"] {
+            write_file(&object_path, &original);
+            let before = fs::read(&object_path).unwrap();
+            let outcome = edit_meta(
+                &meta_edit_args(
+                    &object_path,
+                    "modify-property",
+                    &format!("Autonumbering={invalid}"),
+                ),
+                &context,
+            );
+
+            assert!(!outcome.ok, "{invalid}: {outcome:?}");
+            assert!(
+                outcome.errors.iter().any(|error| {
+                    error.contains("Autonumbering")
+                        && error.contains("xs:boolean")
+                        && error.contains("8.3.27")
+                }),
+                "{invalid}: {:?}",
+                outcome.errors
+            );
+            assert_eq!(fs::read(&object_path).unwrap(), before, "{invalid}");
+        }
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_rejects_invalid_boolean_definition_map_without_writing() {
+        let context = temp_context("invalid-boolean-definition");
+        let object_path = context.cwd.join("Catalogs/BooleanProbe.xml");
+        let definition_path = context.cwd.join("edit.json");
+        write_file(&object_path, &sample_catalog_with_autonumbering("true"));
+        write_file(
+            &definition_path,
+            &json!({"modify": {"properties": {"Autonumbering": "banana"}}}).to_string(),
+        );
+        let before = fs::read(&object_path).unwrap();
+
+        let outcome = edit_meta(
+            &meta_edit_definition_args(&object_path, &definition_path),
+            &context,
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.iter().any(|error| {
+                error.contains("Autonumbering")
+                    && error.contains("xs:boolean")
+                    && error.contains("8.3.27")
+            }),
+            "{:?}",
+            outcome.errors
+        );
+        assert_eq!(fs::read(&object_path).unwrap(), before);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_normalizes_valid_boolean_values_to_canonical_xml() {
+        let context = temp_context("valid-boolean-canonical");
+        let object_path = context.cwd.join("Catalogs/BooleanProbe.xml");
+        let definition_path = context.cwd.join("edit.json");
+
+        for (raw, expected) in [("TRUE", "true"), ("false", "false")] {
+            write_file(&object_path, &sample_catalog_with_autonumbering("true"));
+            let outcome = edit_meta(
+                &meta_edit_args(
+                    &object_path,
+                    "modify-property",
+                    &format!("Autonumbering={raw}"),
+                ),
+                &context,
+            );
+            let updated = fs::read_to_string(&object_path).unwrap();
+            assert!(outcome.ok, "{raw}: {outcome:?}");
+            assert!(
+                updated.contains(&format!("<Autonumbering>{expected}</Autonumbering>")),
+                "{raw}: {updated}"
+            );
+        }
+
+        for (raw, expected) in [(true, "true"), (false, "false")] {
+            write_file(&object_path, &sample_catalog_with_autonumbering("false"));
+            write_file(
+                &definition_path,
+                &json!({"modify": {"properties": {"Autonumbering": raw}}}).to_string(),
+            );
+            let outcome = edit_meta(
+                &meta_edit_definition_args(&object_path, &definition_path),
+                &context,
+            );
+            let updated = fs::read_to_string(&object_path).unwrap();
+            assert!(outcome.ok, "{raw}: {outcome:?}");
+            assert!(
+                updated.contains(&format!("<Autonumbering>{expected}</Autonumbering>")),
+                "{raw}: {updated}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_rejects_unrelated_edit_when_existing_boolean_is_invalid() {
+        let context = temp_context("existing-invalid-boolean");
+        let object_path = context.cwd.join("Catalogs/BooleanProbe.xml");
+        write_file(&object_path, &sample_catalog_with_autonumbering("banana"));
+        let before = fs::read(&object_path).unwrap();
+
+        let outcome = edit_meta(
+            &meta_edit_args(&object_path, "modify-property", "Comment=changed"),
+            &context,
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.iter().any(|error| {
+                error.contains("Autonumbering")
+                    && error.contains("xs:boolean")
+                    && error.contains("8.3.27")
+            }),
+            "{:?}",
+            outcome.errors
+        );
+        assert_eq!(fs::read(&object_path).unwrap(), before);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_rejects_unrelated_edit_when_existing_enum_is_invalid() {
+        let context = temp_context("existing-invalid-enum");
+        let object_path = context.cwd.join("Catalogs/EnumProbe.xml");
+        let original = sample_catalog_xml().replace(
+            "\t\t\t<Owners/>",
+            "\t\t\t<HierarchyType>Bogus</HierarchyType>\n\t\t\t<Owners/>",
+        );
+        write_file(&object_path, &original);
+        let before = fs::read(&object_path).unwrap();
+
+        let outcome = edit_meta(
+            &meta_edit_args(&object_path, "modify-property", "Comment=changed"),
+            &context,
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.iter().any(|error| {
+                error.contains("HierarchyType")
+                    && error.contains("Bogus")
+                    && error.contains("8.3.27")
+            }),
+            "{:?}",
+            outcome.errors
+        );
+        assert_eq!(fs::read(&object_path).unwrap(), before);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_checks_existing_child_enum_before_unrelated_edit() {
+        let context = temp_context("existing-invalid-child-enum");
+        let object_path = context.cwd.join("Documents/EnumProbe.xml");
+        let attribute = sample_attribute(
+            "ProbeAttribute",
+            "\t\t\t\t\t<Type>\n\t\t\t\t\t\t<v8:Type>xs:string</v8:Type>\n\t\t\t\t\t</Type>",
+            "\t\t\t\t\t<FillValue xsi:type=\"xs:string\"/>",
+        )
+        .replace(
+            "<FillChecking>DontCheck</FillChecking>",
+            "<FillChecking>ShowWarning</FillChecking>",
+        );
+        write_file(
+            &object_path,
+            &sample_document_with_child_objects(&attribute),
+        );
+        let before = fs::read(&object_path).unwrap();
+
+        let outcome = edit_meta(
+            &meta_edit_args(&object_path, "modify-property", "Comment=changed"),
+            &context,
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.iter().any(|error| {
+                error.contains("Attribute.FillChecking")
+                    && error.contains("ShowWarning")
+                    && error.contains("8.3.27")
+            }),
+            "{:?}",
+            outcome.errors
+        );
+        assert_eq!(fs::read(&object_path).unwrap(), before);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_checks_every_relevant_boolean_object_and_child_property() {
+        let context = temp_context("boolean-contract-table");
+        let object_path = context.cwd.join("BooleanProbe.xml");
+
+        for (node_type, properties) in boolean_contract_cases() {
+            for property in *properties {
+                write_file(
+                    &object_path,
+                    &sample_with_invalid_boolean_node(node_type, property),
+                );
+                let before = fs::read(&object_path).unwrap();
+                let outcome = edit_meta(
+                    &meta_edit_args(&object_path, "modify-property", "Comment=changed"),
+                    &context,
+                );
+
+                assert!(!outcome.ok, "{node_type}.{property}: {outcome:?}");
+                assert!(
+                    outcome.errors.iter().any(|error| {
+                        error.contains(node_type)
+                            && error.contains(property)
+                            && error.contains("xs:boolean")
+                    }),
+                    "{node_type}.{property}: {:?}",
+                    outcome.errors
+                );
+                assert_eq!(
+                    fs::read(&object_path).unwrap(),
+                    before,
+                    "{node_type}.{property}"
+                );
+            }
+        }
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_does_not_classify_text_or_attribute_use_as_boolean() {
+        let context = temp_context("boolean-name-collisions");
+        let catalog_path = context.cwd.join("Catalogs/BooleanProbe.xml");
+        write_file(&catalog_path, &sample_catalog_with_autonumbering("true"));
+
+        let text_outcome = edit_meta(
+            &meta_edit_args(&catalog_path, "modify-property", "Comment=TRUE"),
+            &context,
+        );
+        assert!(text_outcome.ok, "{text_outcome:?}");
+        assert!(fs::read_to_string(&catalog_path)
+            .unwrap()
+            .contains("<Comment>TRUE</Comment>"));
+
+        let document_path = context.cwd.join("Documents/BooleanProbe.xml");
+        let document = sample_document_with_child_objects(&sample_attribute(
+            "ProbeAttribute",
+            "\t\t\t\t\t<Type>\n\t\t\t\t\t\t<v8:Type>xs:string</v8:Type>\n\t\t\t\t\t</Type>",
+            "\t\t\t\t\t<FillValue xsi:type=\"xs:string\"/>",
+        ));
+        write_file(&document_path, &document);
+        let use_outcome = edit_meta(
+            &meta_edit_args(
+                &document_path,
+                "modify-attribute",
+                "ProbeAttribute: use=ForItem",
+            ),
+            &context,
+        );
+        assert!(use_outcome.ok, "{use_outcome:?}");
+        assert!(fs::read_to_string(&document_path)
+            .unwrap()
+            .contains("<Use>ForItem</Use>"));
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
     #[test]
     fn edit_meta_modify_property_comment_replaces_self_closing_object_comment() {
         let context = temp_context("modify-property-comment-self-closing");
@@ -465,6 +2921,66 @@ mod edit_tests {
         assert!(!updated.contains("<Comment/>"), "{updated}");
         Document::parse(updated.trim_start_matches('\u{feff}')).unwrap();
 
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn meta_edit_post_write_failure_restores_the_exact_source_bytes() {
+        let context = temp_context("post-write-rollback");
+        let object_path = context.cwd.join("Catalogs").join("SampleContracts.xml");
+        write_file(&object_path, &sample_catalog_xml());
+        let original = fs::read(&object_path).unwrap();
+        let args = meta_edit_args(&object_path, "modify-property", "Comment=UPDATED-COMMENT");
+
+        let outcome = with_commit_failpoint(CommitFailpoint::PostWriteValidation, || {
+            edit_meta(&args, &context)
+        });
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("post-write validation")),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&object_path).unwrap(), original);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn meta_edit_rolls_back_if_format_owner_changes_during_publication() {
+        let context = temp_context("format-owner-race");
+        let source = context.cwd.join("src");
+        let object_path = source.join("Catalogs/SampleContracts.xml");
+        let owner_path = source.join("Configuration.xml");
+        write_file(
+            &context.cwd.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        );
+        write_file(
+            &owner_path,
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><Configuration/></MetaDataObject>",
+        );
+        write_file(&object_path, &sample_catalog_xml());
+        let object_before = fs::read(&object_path).unwrap();
+        let concurrent_owner = b"<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.21\"><Configuration/></MetaDataObject>".to_vec();
+        let owner_for_hook = owner_path.clone();
+        let owner_bytes_for_hook = concurrent_owner.clone();
+        let args = meta_edit_args(&object_path, "modify-property", "Comment=UPDATED-COMMENT");
+
+        let outcome = with_before_commit_hook(
+            move |_| fs::write(&owner_for_hook, &owner_bytes_for_hook).unwrap(),
+            || edit_meta(&args, &context),
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("read guard"),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&object_path).unwrap(), object_before);
+        assert_eq!(fs::read(&owner_path).unwrap(), concurrent_owner);
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
@@ -542,6 +3058,63 @@ mod edit_tests {
             .as_deref()
             .unwrap_or_default()
             .contains("No changes"));
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_rejects_unknown_scalar_property_without_writing() {
+        let context = temp_context("modify-property-unknown-scalar");
+        let object_path = context.cwd.join("Catalogs").join("SampleContracts.xml");
+        write_file(&object_path, &sample_catalog_xml());
+        let before = fs::read(&object_path).unwrap();
+
+        let outcome = edit_meta(
+            &meta_edit_args(&object_path, "modify-property", "Bogus=x"),
+            &context,
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("Bogus") && error.contains("does not exist")),
+            "{outcome:?}"
+        );
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        assert_eq!(fs::read(&object_path).unwrap(), before);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_rejects_invalid_known_enum_without_writing() {
+        let context = temp_context("modify-property-invalid-enum");
+        let object_path = context.cwd.join("Catalogs").join("SampleContracts.xml");
+        let xml = sample_catalog_xml().replace(
+            "\t\t\t<Owners/>",
+            "\t\t\t<HierarchyType>HierarchyFoldersAndItems</HierarchyType>\n\t\t\t<Owners/>",
+        );
+        write_file(&object_path, &xml);
+        let before = fs::read(&object_path).unwrap();
+
+        let outcome = edit_meta(
+            &meta_edit_args(&object_path, "modify-property", "HierarchyType=Bogus"),
+            &context,
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.iter().any(|error| {
+                error.contains("HierarchyType")
+                    && error.contains("Bogus")
+                    && error.contains("8.3.27")
+            }),
+            "{outcome:?}"
+        );
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        assert_eq!(fs::read(&object_path).unwrap(), before);
 
         let _ = fs::remove_dir_all(&context.cwd);
     }
@@ -683,6 +3256,52 @@ mod edit_tests {
         Document::parse(updated.trim_start_matches('\u{feff}')).unwrap();
 
         let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_omits_line_number_length_for_external_tabular_sections() {
+        for object_type in ["ExternalReport", "ExternalDataProcessor"] {
+            let context = temp_context(&format!(
+                "add-unbounded-tabular-section-{}",
+                object_type.to_ascii_lowercase()
+            ));
+            let object_path = context.cwd.join(format!("{object_type}.xml"));
+            write_file(
+                &object_path,
+                &sample_meta_named(object_type, "SampleExternalObject"),
+            );
+
+            let outcome = edit_meta(
+                &meta_edit_args(
+                    &object_path,
+                    "add-ts",
+                    "SampleItems: SampleValue: String(100)",
+                ),
+                &context,
+            );
+
+            assert!(outcome.ok, "{object_type}: {outcome:?}");
+            let updated = fs::read_to_string(&object_path).unwrap();
+            let document = Document::parse(updated.trim_start_matches('\u{feff}')).unwrap();
+            let section = document
+                .descendants()
+                .find(|node| {
+                    node.is_element()
+                        && node.tag_name().name() == "TabularSection"
+                        && meta_info_child(*node, "Properties")
+                            .and_then(|properties| meta_info_child_text(properties, "Name"))
+                            .as_deref()
+                            == Some("SampleItems")
+                })
+                .expect("SampleItems tabular section");
+            let properties = meta_info_child(section, "Properties").unwrap();
+            assert!(
+                meta_info_child(properties, "LineNumberLength").is_none(),
+                "{object_type}: {updated}"
+            );
+
+            let _ = fs::remove_dir_all(&context.cwd);
+        }
     }
 
     #[test]
@@ -969,6 +3588,416 @@ mod edit_tests {
     }
 
     #[test]
+    fn edit_meta_modifies_line_number_length_without_reformatting_xml() {
+        let context = temp_context("modify-line-number-length");
+        let source_dir = context.cwd.join("src");
+        write_owner_with_compatibility(&source_dir, "Document", "SampleObject", "Version8_3_27");
+        let object_path = source_dir.join("Documents").join("SampleObject.xml");
+        let original = format!(
+            "\u{feff}{}",
+            sample_object_with_line_number_length("Document", "5").replace('\n', "\r\n")
+        );
+        write_file(&object_path, &original);
+
+        let outcome = edit_meta(
+            &meta_edit_args(&object_path, "modify-ts", "SampleItems: lineNumberLength=9"),
+            &context,
+        );
+
+        assert!(outcome.ok, "{outcome:?}");
+        let updated = fs::read_to_string(&object_path).unwrap();
+        assert_eq!(
+            updated,
+            original.replace(
+                "<LineNumberLength>5</LineNumberLength>",
+                "<LineNumberLength>9</LineNumberLength>"
+            )
+        );
+        assert!(updated.starts_with('\u{feff}'));
+        assert!(updated.contains("\r\n"));
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_definition_file_modifies_line_number_length() {
+        let context = temp_context("definition-line-number-length");
+        let source_dir = context.cwd.join("src");
+        write_owner_with_compatibility(&source_dir, "Document", "SampleObject", "Version8_3_27");
+        let object_path = source_dir.join("Documents").join("SampleObject.xml");
+        let definition_path = context.cwd.join("meta-edit.json");
+        write_file(
+            &object_path,
+            &sample_object_with_line_number_length("Document", "5"),
+        );
+        write_file(
+            &definition_path,
+            r#"{
+  "modify": {
+    "tabularSections": {
+      "SampleItems": {
+        "lineNumberLength": 9
+      }
+    }
+  }
+}"#,
+        );
+
+        let outcome = edit_meta(
+            &meta_edit_definition_args(&object_path, &definition_path),
+            &context,
+        );
+
+        assert!(outcome.ok, "{outcome:?}");
+        assert!(fs::read_to_string(&object_path)
+            .unwrap()
+            .contains("<LineNumberLength>9</LineNumberLength>"));
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_accepts_line_number_length_key_aliases() {
+        let context = temp_context("line-number-length-aliases");
+        let source_dir = context.cwd.join("src");
+        write_owner_with_compatibility(&source_dir, "Document", "SampleObject", "Version8_3_27");
+        let object_path = source_dir.join("Documents").join("SampleObject.xml");
+        let original = sample_object_with_line_number_length("Document", "5");
+
+        for key in [
+            "lineNumberLength",
+            "line_number_length",
+            "line-number-length",
+        ] {
+            write_file(&object_path, &original);
+            let outcome = edit_meta(
+                &meta_edit_args(&object_path, "modify-ts", &format!("SampleItems: {key}=9")),
+                &context,
+            );
+
+            assert!(outcome.ok, "{key}: {outcome:?}");
+            assert!(
+                fs::read_to_string(&object_path)
+                    .unwrap()
+                    .contains("<LineNumberLength>9</LineNumberLength>"),
+                "{key}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_rejects_invalid_line_number_length_without_writing() {
+        let context = temp_context("invalid-line-number-length");
+        let source_dir = context.cwd.join("src");
+        write_owner_with_compatibility(&source_dir, "Document", "SampleObject", "Version8_3_27");
+        let object_path = source_dir.join("Documents").join("SampleObject.xml");
+        let original = sample_object_with_line_number_length("Document", "5");
+
+        for value in ["", "4", "10", "5.5", "text", "-1"] {
+            write_file(&object_path, &original);
+            let before = fs::read(&object_path).unwrap();
+            let outcome = edit_meta(
+                &meta_edit_args(
+                    &object_path,
+                    "modify-ts",
+                    &format!("SampleItems: lineNumberLength={value}"),
+                ),
+                &context,
+            );
+
+            assert!(!outcome.ok, "{value}: {outcome:?}");
+            assert!(
+                outcome.errors.iter().any(|error| {
+                    error.contains("LineNumberLength")
+                        && error.contains("integer")
+                        && error.contains("5..=9")
+                }),
+                "{value}: {:?}",
+                outcome.errors
+            );
+            assert_eq!(fs::read(&object_path).unwrap(), before, "{value}");
+        }
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_rejects_line_number_length_for_unbounded_tabular_sections() {
+        for object_type in [
+            "Report",
+            "DataProcessor",
+            "ExternalReport",
+            "ExternalDataProcessor",
+        ] {
+            let context = temp_context(&format!(
+                "line-number-length-{}",
+                object_type.to_ascii_lowercase()
+            ));
+            let object_path = if let Some(directory) = meta_compile_type_plural(object_type) {
+                let source_dir = context.cwd.join("src");
+                write_owner_with_compatibility(
+                    &source_dir,
+                    object_type,
+                    "SampleObject",
+                    "Version8_3_27",
+                );
+                source_dir.join(directory).join("SampleObject.xml")
+            } else {
+                context.cwd.join(format!("{object_type}.xml"))
+            };
+            let original = sample_object_with_line_number_length(object_type, "5");
+            write_file(&object_path, &original);
+            let before = fs::read(&object_path).unwrap();
+
+            let outcome = edit_meta(
+                &meta_edit_args(&object_path, "modify-ts", "SampleItems: lineNumberLength=9"),
+                &context,
+            );
+
+            assert!(!outcome.ok, "{object_type}: {outcome:?}");
+            assert!(
+                outcome.errors.iter().any(|error| {
+                    error.contains("LineNumberLength") && error.contains("not applicable")
+                }),
+                "{object_type}: {:?}",
+                outcome.errors
+            );
+            assert_eq!(fs::read(&object_path).unwrap(), before, "{object_type}");
+
+            let _ = fs::remove_dir_all(&context.cwd);
+        }
+    }
+
+    #[test]
+    fn edit_meta_rejects_line_number_length_fixed_by_compatibility_mode() {
+        let context = temp_context("fixed-line-number-length");
+        let source_dir = context.cwd.join("src");
+        write_owner_with_compatibility(&source_dir, "Document", "SampleObject", "Version8_3_26");
+        let object_path = source_dir.join("Documents").join("SampleObject.xml");
+        let original = sample_object_with_line_number_length("Document", "5");
+        write_file(&object_path, &original);
+        let before = fs::read(&object_path).unwrap();
+
+        let outcome = edit_meta(
+            &meta_edit_args(&object_path, "modify-ts", "SampleItems: lineNumberLength=9"),
+            &context,
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.iter().any(|error| {
+                error.contains("LineNumberLength")
+                    && error.contains("fixed at 5")
+                    && error.contains("Version8_3_26")
+            }),
+            "{:?}",
+            outcome.errors
+        );
+        assert_eq!(fs::read(&object_path).unwrap(), before);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn line_number_length_policy_covers_supported_compatibility_generations() {
+        for fixed in [
+            "Version8_1",
+            "Version8_2_13",
+            "Version8_3_1",
+            "Version8_3_25",
+            "Version8_3_26",
+        ] {
+            assert!(
+                matches!(
+                    meta_edit_line_number_length_policy_from_mode(fixed),
+                    MetaEditLineNumberLengthPolicy::FixedFive
+                ),
+                "{fixed}"
+            );
+        }
+        for editable in ["DontUse", "Version8_3_27"] {
+            assert!(
+                matches!(
+                    meta_edit_line_number_length_policy_from_mode(editable),
+                    MetaEditLineNumberLengthPolicy::Editable
+                ),
+                "{editable}"
+            );
+        }
+        assert!(matches!(
+            meta_edit_line_number_length_policy_from_mode("Bogus"),
+            MetaEditLineNumberLengthPolicy::UnknownCompatibility
+        ));
+    }
+
+    #[test]
+    fn line_number_length_policy_uses_effective_platform_version() {
+        for (mode, platform_line) in [
+            ("DontUse", "8.3.27"),
+            ("DontUse", "8.5.4"),
+            ("Version8_3_27", "8.5.4"),
+        ] {
+            assert!(
+                matches!(
+                    meta_edit_line_number_length_policy_for_platform(mode, platform_line),
+                    MetaEditLineNumberLengthPolicy::Editable
+                ),
+                "{mode} on {platform_line}"
+            );
+        }
+
+        for (mode, platform_line) in [("DontUse", "8.3.26"), ("Version8_3_24", "8.5.4")] {
+            assert!(
+                matches!(
+                    meta_edit_line_number_length_policy_for_platform(mode, platform_line),
+                    MetaEditLineNumberLengthPolicy::FixedFive
+                ),
+                "{mode} on {platform_line}"
+            );
+        }
+
+        for platform_line in ["8.3.27.2074", "invalid"] {
+            assert!(
+                matches!(
+                    meta_edit_line_number_length_policy_for_platform("DontUse", platform_line),
+                    MetaEditLineNumberLengthPolicy::UnknownCompatibility
+                ),
+                "{platform_line}"
+            );
+        }
+    }
+
+    #[test]
+    fn line_number_length_policy_rejects_unsupported_future_mode() {
+        for unsupported in ["Version8_5_1", "Version999_0_0"] {
+            assert!(
+                matches!(
+                    meta_edit_line_number_length_policy_from_mode(unsupported),
+                    MetaEditLineNumberLengthPolicy::UnknownCompatibility
+                ),
+                "{unsupported}"
+            );
+        }
+    }
+
+    #[test]
+    fn edit_meta_rejects_source_map_remap_after_line_number_length_authorization() {
+        let context = temp_context("line-number-length-source-map-race");
+        let project_map = context.cwd.join("v8project.yaml");
+        let source_dir = context.cwd.join("src");
+        write_file(
+            &project_map,
+            "format: DESIGNER\nsource-set:\n  - name: configuration\n    type: CONFIGURATION\n    path: src\n",
+        );
+        write_owner_with_compatibility(&source_dir, "Document", "SampleObject", "Version8_3_27");
+        write_owner_with_compatibility(
+            &source_dir.join("Documents"),
+            "Document",
+            "SampleObject",
+            "Version8_3_26",
+        );
+        let object_path = source_dir.join("Documents").join("SampleObject.xml");
+        let original = sample_object_with_line_number_length("Document", "5");
+        write_file(&object_path, &original);
+        let before = fs::read(&object_path).unwrap();
+        let project_map_for_hook = project_map.clone();
+
+        let outcome = with_meta_edit_after_line_number_length_policy_hook(
+            move || {
+                fs::write(
+                    project_map_for_hook,
+                    "format: DESIGNER\nsource-set:\n  - name: remapped\n    type: CONFIGURATION\n    path: src/Documents\n",
+                )
+                .unwrap();
+            },
+            || {
+                edit_meta(
+                    &meta_edit_args(&object_path, "modify-ts", "SampleItems: lineNumberLength=9"),
+                    &context,
+                )
+            },
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("v8project.yaml") && error.contains("changed")),
+            "{:?}",
+            outcome.errors
+        );
+        assert_eq!(fs::read(&object_path).unwrap(), before);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn line_number_length_owner_policy_is_requested_only_for_matching_changes() {
+        assert!(meta_edit_inline_requests_line_number_length(
+            "modify-ts",
+            "Items: line-number-length=9"
+        ));
+        assert!(!meta_edit_inline_requests_line_number_length(
+            "modify-ts",
+            "Items: synonym=lineNumberLength"
+        ));
+        assert!(!meta_edit_inline_requests_line_number_length(
+            "modify-attribute",
+            "LineNumberLength: synonym=Length"
+        ));
+
+        assert!(meta_edit_definition_requests_line_number_length(&json!({
+            "modify": {
+                "tabularSections": {
+                    "Items": {"line_number_length": 9}
+                }
+            }
+        })));
+        assert!(!meta_edit_definition_requests_line_number_length(&json!({
+            "modify": {
+                "tabularSections": {
+                    "Items": {
+                        "modify": {
+                            "LineNumberLength": {"synonym": "Length"}
+                        }
+                    }
+                }
+            }
+        })));
+    }
+
+    #[test]
+    fn edit_meta_rejects_line_number_length_without_compatibility_context() {
+        let context = temp_context("unknown-line-number-length-compatibility");
+        let object_path = context.cwd.join("Documents").join("SampleObject.xml");
+        let original = sample_object_with_line_number_length("Document", "5");
+        write_file(&object_path, &original);
+        let before = fs::read(&object_path).unwrap();
+
+        let outcome = edit_meta(
+            &meta_edit_args(&object_path, "modify-ts", "SampleItems: lineNumberLength=9"),
+            &context,
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.iter().any(|error| {
+                error.contains("LineNumberLength")
+                    && error.contains("CompatibilityMode")
+                    && error.contains("cannot be determined")
+            }),
+            "{:?}",
+            outcome.errors
+        );
+        assert_eq!(fs::read(&object_path).unwrap(), before);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
     fn edit_meta_adds_register_dimensions_and_resources() {
         let context = temp_context("add-register-fields");
         let object_path = context
@@ -1036,6 +4065,109 @@ mod edit_tests {
         assert!(updated.contains("<Command uuid="));
         assert!(updated.contains("<Representation>Auto</Representation>"));
         Document::parse(updated.trim_start_matches('\u{feff}')).unwrap();
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_rejects_invalid_enum_column_and_simple_child_names_without_writing() {
+        let context = temp_context("invalid-added-child-names");
+        let enum_path = context.cwd.join("Enums").join("SampleStatuses.xml");
+        let journal_path = context
+            .cwd
+            .join("DocumentJournals")
+            .join("SampleJournal.xml");
+        let document_path = context.cwd.join("Documents").join("SampleDocument.xml");
+
+        for (path, original, operation, value) in [
+            (&enum_path, sample_enum_xml(), "add-enumValue", "Bad Name"),
+            (&enum_path, sample_enum_xml(), "add-form", "Bad Name"),
+            (&enum_path, sample_enum_xml(), "add-template", "Bad Name"),
+            (&enum_path, sample_enum_xml(), "add-command", "Bad Name"),
+            (
+                &document_path,
+                sample_document_xml("<RegisterRecords/>"),
+                "add-ts",
+                "Bad Name",
+            ),
+            (
+                &journal_path,
+                sample_document_journal_xml(),
+                "add-column",
+                "Bad Name: DocumentRef.SampleDocument",
+            ),
+        ] {
+            write_file(path, &original);
+            let before = fs::read(path).unwrap();
+
+            let outcome = edit_meta(&meta_edit_args(path, operation, value), &context);
+
+            assert!(!outcome.ok, "{operation}: {outcome:?}");
+            assert!(
+                outcome.errors.iter().any(|error| {
+                    error.contains("Bad Name") && error.contains("valid 1C identifier")
+                }),
+                "{operation}: {:?}",
+                outcome.errors
+            );
+            assert!(outcome.changes.is_empty(), "{operation}: {outcome:?}");
+            assert_eq!(fs::read(path).unwrap(), before, "{operation}");
+        }
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_rejects_every_invalid_name_rename_before_mutating_xml() {
+        let targets = [
+            MetaEditModifyTarget::Attribute {
+                fill_value_allowed: true,
+            },
+            MetaEditModifyTarget::RegisterField,
+            MetaEditModifyTarget::EnumValue,
+            MetaEditModifyTarget::Column,
+            MetaEditModifyTarget::TabularSection {
+                line_number_length: MetaEditLineNumberLengthPolicy::Editable,
+            },
+        ];
+
+        for target in targets {
+            let mut xml = "<Properties><Name>ValidName</Name></Properties>".to_string();
+            let before = xml.clone();
+            let length = xml.len();
+
+            let error =
+                meta_edit_modify_properties_range(&mut xml, 0..length, "name=Bad Name", target)
+                    .unwrap_err();
+
+            assert!(error.contains("Bad Name"), "{error}");
+            assert!(error.contains("valid 1C identifier"), "{error}");
+            assert_eq!(xml, before);
+        }
+    }
+
+    #[test]
+    fn edit_meta_rejects_invalid_object_name_rename_without_writing() {
+        let context = temp_context("invalid-object-rename");
+        let object_path = context.cwd.join("Catalogs").join("SampleContracts.xml");
+        write_file(&object_path, &sample_catalog_xml());
+        let before = fs::read(&object_path).unwrap();
+
+        let outcome = edit_meta(
+            &meta_edit_args(&object_path, "modify-property", "Name=Bad Name"),
+            &context,
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.iter().any(|error| {
+                error.contains("Bad Name") && error.contains("valid 1C identifier")
+            }),
+            "{:?}",
+            outcome.errors
+        );
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        assert_eq!(fs::read(&object_path).unwrap(), before);
 
         let _ = fs::remove_dir_all(&context.cwd);
     }
@@ -1214,6 +4346,35 @@ mod edit_tests {
         assert!(updated.contains("<v8:Digits>10</v8:Digits>"));
         assert!(!updated.contains(";; SampleWeight"));
         Document::parse(updated.trim_start_matches('\u{feff}')).unwrap();
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_rejects_invalid_type_expressions_without_writing() {
+        let context = temp_context("invalid-type-expression");
+        let object_path = context.cwd.join("Documents").join("SamplePackingList.xml");
+        let original = sample_document_with_child_objects(&sample_attribute(
+            "Value",
+            "\t\t\t\t\t<Type>\n\t\t\t\t\t\t<v8:Type>xs:string</v8:Type>\n\t\t\t\t\t</Type>",
+            "\t\t\t\t\t<FillValue xsi:type=\"xs:string\"/>",
+        ));
+
+        for (operation, value) in [
+            ("add-attribute", "Broken: String(foo)"),
+            ("modify-attribute", "Value: type=Number(x,2)"),
+        ] {
+            write_file(&object_path, &original);
+            let outcome = edit_meta(&meta_edit_args(&object_path, operation, value), &context);
+
+            assert!(!outcome.ok, "{operation}: {:?}", outcome.stdout);
+            assert!(
+                outcome.errors.iter().any(|error| error.contains("8.3.27")),
+                "{operation}: {:?}",
+                outcome.errors
+            );
+            assert_eq!(fs::read_to_string(&object_path).unwrap(), original);
+        }
 
         let _ = fs::remove_dir_all(&context.cwd);
     }
@@ -1614,6 +4775,668 @@ mod edit_tests {
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
+    fn validate_stdout_with_synonym(test_name: &str, synonym_xml: &str) -> String {
+        let context = temp_context(test_name);
+        let object_path = context.cwd.join("Documents").join("SampleShipment.xml");
+        let xml = sample_document_xml("<RegisterRecords/>").replace("<Synonym/>", synonym_xml);
+        write_owner(&context.cwd, "Document", "SampleShipment", &["Русский"]);
+        write_language_fixture(&context, "Русский", "ru");
+        write_file(&object_path, &xml);
+
+        let mut args = serde_json::Map::new();
+        args.insert(
+            "ObjectPath".to_string(),
+            json!(object_path.to_string_lossy().to_string()),
+        );
+        let outcome = validate_meta(&args, &context);
+        let stdout = outcome.stdout.clone().unwrap_or_default();
+
+        let _ = fs::remove_dir_all(&context.cwd);
+        stdout
+    }
+
+    fn localized_text(items: &[(&str, &str)]) -> String {
+        items
+            .iter()
+            .map(|(language, content)| {
+                format!(
+                    "<v8:item><v8:lang>{language}</v8:lang><v8:content>{content}</v8:content></v8:item>"
+                )
+            })
+            .collect::<String>()
+    }
+
+    fn write_language_fixture(context: &WorkspaceContext, name: &str, code: &str) {
+        write_file(
+            &context.cwd.join("Languages").join(format!("{name}.xml")),
+            &sample_language_named(name, code),
+        );
+    }
+
+    fn sample_language_named(name: &str, code: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Language uuid="22222222-2222-4222-8222-222222222222">
+    <Properties>
+      <Name>{name}</Name>
+      <Synonym/>
+      <Comment/>
+      <LanguageCode>{code}</LanguageCode>
+    </Properties>
+  </Language>
+</MetaDataObject>
+"#
+        )
+    }
+
+    fn validate_registered_object(
+        object_type: &str,
+        object_name: &str,
+        object_xml: &str,
+        languages: &[(&str, &str)],
+    ) -> AdapterOutcome {
+        let context = temp_context(&format!("registered-{object_type}-{object_name}"));
+        let language_names = languages.iter().map(|(name, _)| *name).collect::<Vec<_>>();
+        let src = write_owner(
+            &context.cwd.join("src"),
+            object_type,
+            object_name,
+            &language_names,
+        );
+        for (name, code) in languages {
+            write_file(
+                &src.join("Languages").join(format!("{name}.xml")),
+                &sample_language_named(name, code),
+            );
+        }
+        let object = src
+            .join(format!("{object_type}s"))
+            .join(format!("{object_name}.xml"));
+        write_file(&object, object_xml);
+        let outcome = validate_meta(&meta_validate_args(&object), &context);
+        let _ = fs::remove_dir_all(&context.cwd);
+        outcome
+    }
+
+    fn outcome_text(outcome: &AdapterOutcome) -> String {
+        format!(
+            "{}\n{}\n{}",
+            outcome.stdout.clone().unwrap_or_default(),
+            outcome.warnings.join("\n"),
+            outcome.errors.join("\n")
+        )
+    }
+
+    fn localized_property(name: &str, values: &[(&str, &str)]) -> String {
+        let items = values
+            .iter()
+            .map(|(language, content)| {
+                format!(
+                    "<v8:item><v8:lang>{language}</v8:lang>\
+                     <v8:content>{content}</v8:content></v8:item>"
+                )
+            })
+            .collect::<String>();
+        format!("<{name}>{items}</{name}>")
+    }
+
+    fn sample_common_module_named(name: &str, synonyms: &[(&str, &str)]) -> String {
+        let synonym = localized_property("Synonym", synonyms);
+        format!(
+            r#"<MetaDataObject xmlns="{TEST_MD_NS}" xmlns:v8="{TEST_V8_NS}" version="2.20">
+<CommonModule uuid="33333333-3333-4333-8333-333333333333">
+<Properties><Name>{name}</Name>{synonym}<Comment/></Properties>
+<ChildObjects/>
+</CommonModule></MetaDataObject>"#
+        )
+    }
+
+    fn sample_enum_with_presentations(
+        name: &str,
+        synonyms: &[(&str, &str)],
+        list_presentations: &[(&str, &str)],
+    ) -> String {
+        let synonym = localized_property("Synonym", synonyms);
+        let list_presentation = localized_property("ListPresentation", list_presentations);
+        format!(
+            r#"<MetaDataObject xmlns="{TEST_MD_NS}" xmlns:v8="{TEST_V8_NS}"
+ xmlns:xr="{TEST_XR_NS}" version="2.20">
+<Enum uuid="44444444-4444-4444-8444-444444444444">
+<InternalInfo>
+<xr:GeneratedType name="EnumRef.{name}" category="Ref">
+<xr:TypeId>55555555-5555-4555-8555-555555555551</xr:TypeId>
+<xr:ValueId>55555555-5555-4555-8555-555555555552</xr:ValueId>
+</xr:GeneratedType>
+<xr:GeneratedType name="EnumManager.{name}" category="Manager">
+<xr:TypeId>55555555-5555-4555-8555-555555555553</xr:TypeId>
+<xr:ValueId>55555555-5555-4555-8555-555555555554</xr:ValueId>
+</xr:GeneratedType>
+<xr:GeneratedType name="EnumList.{name}" category="List">
+<xr:TypeId>55555555-5555-4555-8555-555555555555</xr:TypeId>
+<xr:ValueId>55555555-5555-4555-8555-555555555556</xr:ValueId>
+</xr:GeneratedType>
+</InternalInfo>
+<Properties><Name>{name}</Name>{synonym}<Comment/>
+{list_presentation}</Properties>
+<ChildObjects/>
+</Enum></MetaDataObject>"#
+        )
+    }
+
+    fn validate_stdout_with_presentations(
+        test_name: &str,
+        synonym_items: &[(&str, &str)],
+        list_presentation_items: &[(&str, &str)],
+        configured_languages: &[(&str, &str)],
+    ) -> String {
+        assert!(
+            !configured_languages.is_empty(),
+            "presentation validation requires an explicit language profile"
+        );
+        let context = temp_context(test_name);
+        let object_path = context.cwd.join("Documents").join("SampleShipment.xml");
+        let synonym = format!("<Synonym>{}</Synonym>", localized_text(synonym_items));
+        let list_presentation = format!(
+            "<ListPresentation>{}</ListPresentation>",
+            localized_text(list_presentation_items)
+        );
+        let xml = sample_document_xml("<RegisterRecords/>")
+            .replace("<Synonym/>", &synonym)
+            .replace("<Comment/>", &format!("<Comment/>{list_presentation}"));
+        let language_names = configured_languages
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>();
+        write_owner(&context.cwd, "Document", "SampleShipment", &language_names);
+        write_file(&object_path, &xml);
+
+        for (name, code) in configured_languages {
+            write_language_fixture(&context, name, code);
+        }
+
+        let mut args = serde_json::Map::new();
+        args.insert(
+            "ObjectPath".to_string(),
+            json!(object_path.to_string_lossy().to_string()),
+        );
+        let stdout = validate_meta(&args, &context).stdout.unwrap_or_default();
+
+        let _ = fs::remove_dir_all(&context.cwd);
+        stdout
+    }
+
+    #[test]
+    fn validate_meta_allows_self_closing_synonym() {
+        let stdout = validate_stdout_with_synonym("validate-empty-synonym", "<Synonym/>");
+        assert!(!stdout.contains("Synonym is empty"), "{stdout}");
+    }
+
+    #[test]
+    fn validate_meta_rejects_non_external_object_without_owner() {
+        let context = temp_context("missing-owner");
+        let object = context.cwd.join("Enums/Detached.xml");
+        write_file(&object, &sample_meta_named("Enum", "Detached"));
+
+        let outcome = validate_meta(&meta_validate_args(&object), &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("Configuration.xml"),
+            "{outcome:?}"
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn validate_meta_rejects_object_missing_from_owner_registration() {
+        let context = temp_context("missing-registration");
+        let src = write_owner(&context.cwd.join("src"), "Enum", "Other", &["Русский"]);
+        let object = src.join("Enums/Detached.xml");
+        write_file(&object, &sample_meta_named("Enum", "Detached"));
+
+        let outcome = validate_meta(&meta_validate_args(&object), &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("not registered"),
+            "{outcome:?}"
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn validate_meta_external_descriptor_ignores_neighbor_configuration() {
+        let context = temp_context("external-owner");
+        write_file(
+            &context.cwd.join("Configuration.xml"),
+            r#"<broken-neighbor version="2.21">"#,
+        );
+        let object = context.cwd.join("tools/Standalone.xml");
+        write_file(
+            &object,
+            &sample_meta_named("ExternalDataProcessor", "Standalone"),
+        );
+
+        let inspection = inspect_meta_validation_reads(&object, &context);
+        let owner = inspection.context.expect("external descriptor owns itself");
+
+        assert_eq!(owner.owner_kind, MetaValidationOwnerKind::External);
+        assert_eq!(inspection.paths, vec![canonical_path(&object)]);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn meta_validation_context_classifies_registered_extension_owner() {
+        let context = temp_context("extension-owner");
+        write_file(
+            &context.cwd.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: extension\n    type: EXTENSION\n    path: extension\n",
+        );
+        let source_dir = write_owner(
+            &context.cwd.join("extension"),
+            "CommonModule",
+            "ExtensionModule",
+            &[],
+        );
+        let object = source_dir.join("CommonModules/ExtensionModule.xml");
+        write_file(
+            &object,
+            &sample_meta_named("CommonModule", "ExtensionModule"),
+        );
+
+        let inspection = inspect_meta_validation_reads(&object, &context);
+        let owner = inspection.context.expect("registered extension owner");
+
+        assert_eq!(owner.owner_kind, MetaValidationOwnerKind::Extension);
+        assert_eq!(
+            inspection.paths,
+            vec![
+                canonical_path(&object),
+                canonical_path(&source_dir.join("Configuration.xml"))
+            ]
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn validate_meta_rejects_list_type_without_registered_languages() {
+        let context = temp_context("missing-language-profile");
+        let src = write_owner(&context.cwd.join("src"), "Enum", "Statuses", &[]);
+        let object = src.join("Enums/Statuses.xml");
+        write_file(&object, &sample_meta_named("Enum", "Statuses"));
+
+        let outcome = validate_meta(&meta_validate_args(&object), &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .join("\n")
+                .contains("has no registered language profile"),
+            "{outcome:?}"
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn meta_validation_reads_missing_registered_language_before_reporting_error() {
+        let context = temp_context("missing-language-file");
+        let src = write_owner(&context.cwd.join("src"), "Enum", "Statuses", &["Russian"]);
+        let object = src.join("Enums/Statuses.xml");
+        write_file(&object, &sample_meta_named("Enum", "Statuses"));
+
+        let inspection = inspect_meta_validation_reads(&object, &context);
+
+        assert_eq!(
+            inspection.paths,
+            vec![
+                canonical_path(&object),
+                canonical_path(&src.join("Configuration.xml")),
+                canonical_path(&src).join("Languages/Russian.xml")
+            ]
+        );
+        let error = inspection
+            .context
+            .expect_err("missing registered language must fail");
+        assert!(
+            error.starts_with("registered language file not found: "),
+            "{error}"
+        );
+        assert!(
+            error.ends_with(&format!(
+                "Languages{}Russian.xml",
+                std::path::MAIN_SEPARATOR
+            )),
+            "{error}"
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn validate_meta_rejects_malformed_registered_language() {
+        let context = temp_context("malformed-language");
+        let src = write_owner(&context.cwd.join("src"), "Enum", "Statuses", &["Russian"]);
+        let object = src.join("Enums/Statuses.xml");
+        let language = src.join("Languages/Russian.xml");
+        write_file(&object, &sample_meta_named("Enum", "Statuses"));
+        write_file(&language, "<broken-language");
+
+        let outcome = validate_meta(&meta_validate_args(&object), &context);
+        let errors = outcome.errors.join("\n");
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(errors.contains("failed to parse"), "{outcome:?}");
+        assert!(
+            errors.contains(&canonical_path(&language).display().to_string()),
+            "{outcome:?}"
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn validate_meta_rejects_empty_registered_language_code() {
+        let context = temp_context("empty-language-code");
+        let src = write_owner(&context.cwd.join("src"), "Enum", "Statuses", &["Russian"]);
+        let object = src.join("Enums/Statuses.xml");
+        let language = src.join("Languages/Russian.xml");
+        write_file(&object, &sample_meta_named("Enum", "Statuses"));
+        write_file(&language, &sample_language_named("Russian", ""));
+
+        let outcome = validate_meta(&meta_validate_args(&object), &context);
+        let errors = outcome.errors.join("\n");
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(errors.contains("empty LanguageCode"), "{outcome:?}");
+        assert!(
+            errors.contains(&canonical_path(&language).display().to_string()),
+            "{outcome:?}"
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn meta_validation_deduplicates_language_codes_in_registration_order() {
+        let context = temp_context("language-code-order");
+        let src = write_owner(
+            &context.cwd.join("src"),
+            "Enum",
+            "Statuses",
+            &["RussianOne", "English", "RussianTwo"],
+        );
+        let object = src.join("Enums/Statuses.xml");
+        write_file(&object, &sample_meta_named("Enum", "Statuses"));
+        for (name, code) in [
+            ("RussianOne", "ru"),
+            ("English", "en"),
+            ("RussianTwo", "ru"),
+        ] {
+            write_file(
+                &src.join("Languages").join(format!("{name}.xml")),
+                &sample_language_named(name, code),
+            );
+        }
+
+        let inspection = inspect_meta_validation_reads(&object, &context);
+        let owner = inspection.context.expect("complete language profile");
+
+        assert_eq!(owner.language_codes, vec!["ru", "en"]);
+        assert_eq!(
+            inspection.paths,
+            vec![
+                canonical_path(&object),
+                canonical_path(&src.join("Configuration.xml")),
+                canonical_path(&src.join("Languages/RussianOne.xml")),
+                canonical_path(&src.join("Languages/English.xml")),
+                canonical_path(&src.join("Languages/RussianTwo.xml")),
+            ]
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn meta_validate_batch_read_set_stably_deduplicates_shared_owner() {
+        let context = temp_context("batch-read-set");
+        let src = context.cwd.join("src");
+        let configuration = src.join("Configuration.xml");
+        let language = src.join("Languages/Russian.xml");
+        let first = src.join("Enums/First.xml");
+        let second = src.join("Enums/Second.xml");
+        write_file(
+            &configuration,
+            &format!(
+                r#"<MetaDataObject xmlns="{TEST_MD_NS}" version="2.20">
+<Configuration uuid="11111111-1111-4111-8111-111111111111">
+<Properties><Name>Owner</Name></Properties>
+<ChildObjects><Language>Russian</Language><Enum>First</Enum><Enum>Second</Enum></ChildObjects>
+</Configuration></MetaDataObject>"#
+            ),
+        );
+        write_file(&language, &sample_language_named("Russian", "ru"));
+        write_file(&first, &sample_meta_named("Enum", "First"));
+        write_file(&second, &sample_meta_named("Enum", "Second"));
+        let args = Map::from_iter([(
+            "ObjectPath".to_string(),
+            Value::String(format!("{}|{}", first.display(), second.display())),
+        )]);
+
+        let dependencies = meta_validate_format_dependency_paths(&args, &context).unwrap();
+
+        assert_eq!(
+            dependencies,
+            vec![
+                canonical_path(&first),
+                canonical_path(&configuration),
+                canonical_path(&language),
+                canonical_path(&second)
+            ]
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn post_write_metadata_owner_shape_does_not_require_workspace_owner() {
+        let context = temp_context("post-write-local");
+        let object = context.cwd.join("CommonModules/Local.xml");
+        write_file(
+            &object,
+            &sample_meta_object_xml("CommonModule", "Local", "", "\t\t<ChildObjects/>"),
+        );
+        write_file(
+            &context.cwd.join("Configuration.xml"),
+            "<malformed-neighbor",
+        );
+
+        validate_metadata_owner_shape_8_3_27(&object, &context, "test")
+            .expect("post-write validation must not read a neighboring owner");
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn validate_meta_accepts_filled_short_synonym() {
+        let synonym = "<Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Отгрузка</v8:content></v8:item></Synonym>";
+        let stdout = validate_stdout_with_synonym("validate-filled-synonym", synonym);
+        assert!(!stdout.contains("Synonym is empty"), "{stdout}");
+        assert!(!stdout.contains("longer than 38 characters"), "{stdout}");
+    }
+
+    #[test]
+    fn validate_meta_warns_on_long_synonym() {
+        let synonym = "<Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Очень длинное наименование для командного интерфейса</v8:content></v8:item></Synonym>";
+        let stdout = validate_stdout_with_synonym("validate-long-synonym", synonym);
+        assert!(stdout.contains("longer than 38 characters"), "{stdout}");
+    }
+
+    #[test]
+    fn validate_meta_allows_empty_synonym() {
+        let stdout = validate_stdout_with_synonym(
+            "validate-empty-synonym-is-allowed",
+            "<Synonym><v8:item><v8:lang>en</v8:lang><v8:content/></v8:item></Synonym>",
+        );
+        assert!(!stdout.contains("Synonym is empty"), "{stdout}");
+    }
+
+    #[test]
+    fn validate_meta_does_not_apply_list_command_limit_to_common_module() {
+        let outcome = validate_registered_object(
+            "CommonModule",
+            "LongModule",
+            &sample_common_module_named(
+                "LongModule",
+                &[(
+                    "ru",
+                    "Очень длинный синоним общего модуля для проверки ограничения",
+                )],
+            ),
+            &[],
+        );
+        let stdout = outcome_text(&outcome);
+
+        assert!(outcome.ok, "{outcome:?}");
+        assert!(!stdout.contains("longer than 38 characters"), "{stdout}");
+    }
+
+    #[test]
+    fn validate_meta_prefers_list_presentation_per_registered_language() {
+        let outcome = validate_registered_object(
+            "Enum",
+            "Status",
+            &sample_enum_with_presentations(
+                "Status",
+                &[
+                    (
+                        "ru",
+                        "Очень длинный синоним для командного интерфейса перечисления",
+                    ),
+                    ("en", "Status"),
+                ],
+                &[("ru", "Статусы")],
+            ),
+            &[("Русский", "ru"), ("English", "en")],
+        );
+        let stdout = outcome_text(&outcome);
+
+        assert!(outcome.ok, "{outcome:?}");
+        assert!(!stdout.contains("language 'ru'"), "{stdout}");
+    }
+
+    #[test]
+    fn validate_meta_uses_synonym_when_registered_language_has_no_list_presentation() {
+        let outcome = validate_registered_object(
+            "Enum",
+            "Status",
+            &sample_enum_with_presentations(
+                "Status",
+                &[(
+                    "en",
+                    "A very long status title intended for the command interface",
+                )],
+                &[("ru", "Статусы")],
+            ),
+            &[("Русский", "ru"), ("English", "en")],
+        );
+        let stdout = outcome_text(&outcome);
+
+        assert!(outcome.ok, "{outcome:?}");
+        assert!(stdout.contains("Synonym"), "{stdout}");
+        assert!(stdout.contains("language 'en'"), "{stdout}");
+    }
+
+    #[test]
+    fn validate_meta_skips_missing_or_empty_text_for_registered_language() {
+        let outcome = validate_registered_object(
+            "Enum",
+            "Status",
+            &sample_enum_with_presentations(
+                "Status",
+                &[("ru", "Статус"), ("en", "")],
+                &[("ru", "Статусы")],
+            ),
+            &[("Русский", "ru"), ("English", "en")],
+        );
+        let stdout = outcome_text(&outcome);
+
+        assert!(outcome.ok, "{outcome:?}");
+        assert!(!stdout.contains("language 'en'"), "{stdout}");
+    }
+
+    #[test]
+    fn validate_meta_checks_every_configured_language() {
+        let stdout = validate_stdout_with_presentations(
+            "validate-every-configured-language",
+            &[
+                ("ru", "Отгрузка"),
+                (
+                    "en",
+                    "A very long shipment title intended for the command interface",
+                ),
+            ],
+            &[],
+            &[("Русский", "ru"), ("English", "en")],
+        );
+        assert!(stdout.contains("language 'en'"), "{stdout}");
+        assert!(stdout.contains("longer than 38 characters"), "{stdout}");
+    }
+
+    #[test]
+    fn validate_meta_prefers_list_presentation_per_language() {
+        let stdout = validate_stdout_with_presentations(
+            "validate-list-presentation-per-language",
+            &[
+                ("ru", "Очень длинное наименование для командного интерфейса"),
+                ("en", "Shipment"),
+            ],
+            &[("ru", "Отгрузки")],
+            &[("Русский", "ru"), ("English", "en")],
+        );
+        assert!(!stdout.contains("language 'ru'"), "{stdout}");
+        assert!(!stdout.contains("longer than 38 characters"), "{stdout}");
+    }
+
+    #[test]
+    fn validate_meta_ignores_unconfigured_translation() {
+        let stdout = validate_stdout_with_presentations(
+            "validate-ignore-unconfigured-language",
+            &[
+                (
+                    "en",
+                    "A very long shipment title intended for the command interface",
+                ),
+                ("ru", "Отгрузка"),
+            ],
+            &[],
+            &[("Русский", "ru")],
+        );
+        assert!(!stdout.contains("longer than 38 characters"), "{stdout}");
+    }
+
+    #[test]
+    fn validate_meta_ignores_non_v8_language_elements() {
+        let xml = sample_document_xml("<RegisterRecords/>")
+            .replace(
+                "xmlns:xsi=",
+                "xmlns:foo=\"urn:unrelated\" xmlns:xsi=",
+            )
+            .replace(
+                "<Synonym/>",
+                "<Synonym><v8:item><foo:lang>en</foo:lang><v8:content>Shipment</v8:content></v8:item></Synonym>",
+            );
+        let document = Document::parse(&xml).unwrap();
+        let type_node = document
+            .root_element()
+            .children()
+            .find(|node| node.is_element())
+            .unwrap();
+        let properties = meta_info_child(type_node, "Properties").unwrap();
+        let synonym = meta_info_child(properties, "Synonym");
+
+        assert_eq!(
+            meta_validate_localized_values(synonym),
+            vec![(None, "Shipment".to_string())]
+        );
+    }
+
     #[test]
     fn edit_meta_rejects_unknown_modify_attribute_key() {
         let context = temp_context("modify-attribute-unknown-key");
@@ -1760,7 +5583,6 @@ pub(crate) struct MetaValidationReporter {
 pub(crate) struct MetaValidationRun {
     pub(crate) ok: bool,
     pub(crate) stdout: String,
-    pub(crate) out_files: Vec<PathBuf>,
     pub(crate) artifacts: Vec<PathBuf>,
     pub(crate) errors: Vec<String>,
 }
@@ -1769,8 +5591,17 @@ pub(crate) struct MetaValidationRun {
 pub(crate) struct MetaValidationOptions {
     pub(crate) detailed: bool,
     pub(crate) max_errors: usize,
-    pub(crate) out_file_label: Option<String>,
-    pub(crate) out_file: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MetaValidationScope {
+    PublicOwnerAware,
+    PostWriteLocal,
+}
+
+struct MetaValidationReferenceInputs {
+    config_dir: Option<PathBuf>,
+    language_codes: Vec<String>,
 }
 
 impl MetaValidationReporter {
@@ -1861,7 +5692,7 @@ pub(crate) fn validate_meta(
             return Err("[ERROR] No ObjectPath values were provided".to_string());
         }
 
-        let options = meta_validation_options(args, context);
+        let options = meta_validation_options(args);
         if paths.len() > 1 {
             meta_validate_batch(paths, &options, context)
         } else {
@@ -1871,12 +5702,11 @@ pub(crate) fn validate_meta(
 
     match result {
         Ok(run) => {
-            let mut artifacts = run
+            let artifacts = run
                 .artifacts
                 .iter()
                 .map(|path| path.display().to_string())
                 .collect::<Vec<_>>();
-            artifacts.extend(run.out_files.iter().map(|path| path.display().to_string()));
             AdapterOutcome {
                 ok: run.ok,
                 summary: if run.ok {
@@ -1907,22 +5737,45 @@ pub(crate) fn validate_meta(
     }
 }
 
-pub(crate) fn meta_validation_options(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> MetaValidationOptions {
-    let out_file_label = string_arg(args, &["outFile", "OutFile"]).map(ToOwned::to_owned);
+pub(crate) fn meta_validation_options(args: &Map<String, Value>) -> MetaValidationOptions {
     MetaValidationOptions {
         detailed: bool_arg(args, &["detailed", "Detailed"]),
         max_errors: int_arg(args, &["maxErrors", "MaxErrors"])
             .and_then(|value| usize::try_from(value).ok())
             .filter(|value| *value > 0)
             .unwrap_or(30),
-        out_file: out_file_label
-            .as_ref()
-            .map(|path| absolutize(PathBuf::from(path), &context.cwd)),
-        out_file_label,
     }
+}
+
+/// Return the platform XML documents whose contents `meta.validate` reads,
+/// including each member of a batch and the registrar documents inspected for
+/// register cross-reference diagnostics.
+pub(crate) fn meta_validate_format_dependency_paths(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<Vec<PathBuf>, String> {
+    let raw_path = required_path(
+        args,
+        &["objectPath", "ObjectPath", "path", "Path"],
+        "ObjectPath",
+    )?;
+    let raw_path_text = raw_path.to_string_lossy();
+    let mut dependencies = Vec::new();
+    for raw in raw_path_text
+        .split('|')
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    {
+        let candidate = absolutize(PathBuf::from(raw), &context.cwd);
+        let object_path = resolve_meta_info_path(candidate.clone()).unwrap_or(candidate);
+        let inspection = inspect_meta_validation_reads(&object_path, context);
+        for path in inspection.paths {
+            if !dependencies.contains(&path) {
+                dependencies.push(path);
+            }
+        }
+    }
+    Ok(dependencies)
 }
 
 pub(crate) fn meta_validate_batch(
@@ -1936,11 +5789,9 @@ pub(crate) fn meta_validate_batch(
     let mut stdout_blocks = Vec::<String>::new();
     let mut errors = Vec::<String>::new();
     let mut artifacts = Vec::<PathBuf>::new();
-    let mut out_files = Vec::<PathBuf>::new();
 
     for path in paths {
-        let item_options = meta_validate_batch_options(options, &path, context);
-        match meta_validate_one(path.clone(), &item_options, context) {
+        match meta_validate_one(path.clone(), options, context) {
             Ok(run) => {
                 if run.ok {
                     passed += 1;
@@ -1949,7 +5800,6 @@ pub(crate) fn meta_validate_batch(
                 }
                 errors.extend(run.errors);
                 artifacts.extend(run.artifacts);
-                out_files.extend(run.out_files);
                 stdout_blocks.push(format!("--- {} ---", path.display()));
                 stdout_blocks.push(run.stdout.trim_end().to_string());
             }
@@ -1971,45 +5821,9 @@ pub(crate) fn meta_validate_batch(
     Ok(MetaValidationRun {
         ok: failed == 0,
         stdout: format!("{}\n", stdout_blocks.join("\n")),
-        out_files,
         artifacts,
         errors,
     })
-}
-
-pub(crate) fn meta_validate_batch_options(
-    options: &MetaValidationOptions,
-    path: &Path,
-    context: &WorkspaceContext,
-) -> MetaValidationOptions {
-    let Some(label) = &options.out_file_label else {
-        return options.clone();
-    };
-    let label_path = PathBuf::from(label);
-    let stem = label_path
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or("meta-validate");
-    let extension = label_path
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| format!(".{value}"))
-        .unwrap_or_default();
-    let object_leaf = path
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or("object");
-    let file_name = format!("{stem}_{object_leaf}{extension}");
-    let item_label = label_path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .map(|parent| parent.join(&file_name))
-        .unwrap_or_else(|| PathBuf::from(&file_name));
-    MetaValidationOptions {
-        out_file: Some(absolutize(item_label.clone(), &context.cwd)),
-        out_file_label: Some(item_label.display().to_string()),
-        ..options.clone()
-    }
 }
 
 pub(crate) fn meta_validate_one(
@@ -2017,28 +5831,43 @@ pub(crate) fn meta_validate_one(
     options: &MetaValidationOptions,
     context: &WorkspaceContext,
 ) -> Result<MetaValidationRun, String> {
+    meta_validate_one_with_scope(
+        raw_path,
+        options,
+        context,
+        MetaValidationScope::PublicOwnerAware,
+    )
+}
+
+fn meta_validate_one_with_scope(
+    raw_path: PathBuf,
+    options: &MetaValidationOptions,
+    context: &WorkspaceContext,
+    scope: MetaValidationScope,
+) -> Result<MetaValidationRun, String> {
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
     let object_path = resolve_meta_info_path(absolutize(raw_path, &context.cwd))?;
     let resolved_path = object_path
         .canonicalize()
         .unwrap_or_else(|_| object_path.clone());
-    let config_dir = meta_validate_config_dir(&resolved_path);
+    let owner_inspection = match scope {
+        MetaValidationScope::PublicOwnerAware => {
+            Some(inspect_meta_validation_reads(&resolved_path, context))
+        }
+        MetaValidationScope::PostWriteLocal => None,
+    };
 
     let text = read_utf8_sig(&resolved_path)?;
-    let doc = match Document::parse(text.trim_start_matches('\u{feff}')) {
+    let source = text.trim_start_matches('\u{feff}');
+    let doc = match Document::parse(source) {
         Ok(doc) => doc,
         Err(err) => {
             let mut report = MetaValidationReporter::new(options.max_errors, options.detailed);
             report.md_type = "(parse failed)".to_string();
             report.obj_name.clear();
             report.error(format!("1. XML parse failed: {err}"));
-            return meta_validate_finish(
-                report,
-                options.out_file.clone(),
-                options.out_file_label.clone(),
-                resolved_path,
-            );
+            return meta_validate_finish(report, resolved_path);
         }
     };
 
@@ -2051,12 +5880,7 @@ pub(crate) fn meta_validate_one(
             "1. Root element is '{}', expected 'MetaDataObject'",
             root.tag_name().name()
         ));
-        return meta_validate_finish(
-            report,
-            options.out_file.clone(),
-            options.out_file_label.clone(),
-            resolved_path,
-        );
+        return meta_validate_finish(report, resolved_path);
     }
 
     let root_ns = root.tag_name().namespace().unwrap_or("");
@@ -2067,14 +5891,13 @@ pub(crate) fn meta_validate_one(
         check1_ok = false;
     }
 
-    let version = root.attribute("version").unwrap_or("");
-    if version.is_empty() {
-        report.warn("1. Missing version attribute on MetaDataObject");
-    } else if !matches!(version, "2.17" | "2.20") {
-        report.warn(format!(
-            "1. Unusual version '{version}' (expected 2.17 or 2.20)"
-        ));
+    let version_literal = root_version_literal(source, root);
+    match classify_root_version(version_literal.as_deref()) {
+        Ok(FormatCompatibility::Supported { .. }) => report.ok("Export format: 2.20"),
+        Ok(compatibility) => report.warn(format_compatibility_warning(&compatibility)),
+        Err(error) => report.error(error.to_string()),
     }
+    let version = version_literal.as_deref().unwrap_or("");
 
     let child_elements = root
         .children()
@@ -2082,12 +5905,7 @@ pub(crate) fn meta_validate_one(
         .collect::<Vec<_>>();
     if child_elements.is_empty() {
         report.error("1. No metadata type element found inside MetaDataObject");
-        return meta_validate_finish(
-            report,
-            options.out_file.clone(),
-            options.out_file_label.clone(),
-            resolved_path,
-        );
+        return meta_validate_finish(report, resolved_path);
     }
     if child_elements.len() > 1 {
         let names = child_elements
@@ -2106,12 +5924,7 @@ pub(crate) fn meta_validate_one(
     report.md_type = md_type.to_string();
     if !meta_validate_valid_types().contains(&md_type) {
         report.error(format!("1. Unrecognized metadata type: {md_type}"));
-        return meta_validate_finish(
-            report,
-            options.out_file.clone(),
-            options.out_file_label.clone(),
-            resolved_path,
-        );
+        return meta_validate_finish(report, resolved_path);
     }
 
     let type_uuid = type_node.attribute("uuid").unwrap_or("");
@@ -2131,193 +5944,166 @@ pub(crate) fn meta_validate_one(
         .unwrap_or_else(|| "(unknown)".to_string());
     report.obj_name = obj_name.clone();
 
+    let reference_inputs = match scope {
+        MetaValidationScope::PublicOwnerAware => {
+            let owner_context = match owner_inspection
+                .expect("public validation always creates owner inspection")
+                .context
+            {
+                Ok(owner_context) => owner_context,
+                Err(error) => {
+                    report.error(format!("1. Owner context: {error}"));
+                    return meta_validate_finish(report, resolved_path);
+                }
+            };
+            let config_dir = match owner_context.owner_kind {
+                MetaValidationOwnerKind::Configuration | MetaValidationOwnerKind::Extension => {
+                    owner_context.owner_path.parent().map(Path::to_path_buf)
+                }
+                MetaValidationOwnerKind::External => None,
+            };
+            MetaValidationReferenceInputs {
+                config_dir,
+                language_codes: owner_context.language_codes,
+            }
+        }
+        MetaValidationScope::PostWriteLocal => MetaValidationReferenceInputs {
+            config_dir: None,
+            language_codes: Vec::new(),
+        },
+    };
+
     if check1_ok {
         report.ok(format!(
             "1. Root structure: MetaDataObject/{md_type}, version {version}"
         ));
     }
     if report.stopped {
-        return meta_validate_finish(
-            report,
-            options.out_file.clone(),
-            options.out_file_label.clone(),
-            resolved_path,
-        );
+        return meta_validate_finish(report, resolved_path);
     }
 
     meta_validate_check_internal_info(&mut report, md_type, type_node, &obj_name);
     if report.stopped {
-        return meta_validate_finish(
-            report,
-            options.out_file.clone(),
-            options.out_file_label.clone(),
-            resolved_path,
-        );
+        return meta_validate_finish(report, resolved_path);
     }
-    meta_validate_check_properties(&mut report, props_node, name_node, &obj_name);
+    meta_validate_check_properties(
+        &mut report,
+        md_type,
+        props_node,
+        name_node,
+        &obj_name,
+        &reference_inputs.language_codes,
+    );
     if report.stopped {
-        return meta_validate_finish(
-            report,
-            options.out_file.clone(),
-            options.out_file_label.clone(),
-            resolved_path,
-        );
+        return meta_validate_finish(report, resolved_path);
     }
     meta_validate_check_property_values(&mut report, props_node);
     if report.stopped {
-        return meta_validate_finish(
-            report,
-            options.out_file.clone(),
-            options.out_file_label.clone(),
-            resolved_path,
-        );
+        return meta_validate_finish(report, resolved_path);
     }
     meta_validate_check_standard_attributes(&mut report, md_type, props_node);
     if report.stopped {
-        return meta_validate_finish(
-            report,
-            options.out_file.clone(),
-            options.out_file_label.clone(),
-            resolved_path,
-        );
+        return meta_validate_finish(report, resolved_path);
     }
 
     let child_obj_node = meta_info_child(type_node, "ChildObjects");
     meta_validate_check_child_objects(&mut report, md_type, child_obj_node);
     if report.stopped {
-        return meta_validate_finish(
-            report,
-            options.out_file.clone(),
-            options.out_file_label.clone(),
-            resolved_path,
-        );
+        return meta_validate_finish(report, resolved_path);
     }
     meta_validate_check_child_elements(&mut report, child_obj_node);
     if report.stopped {
-        return meta_validate_finish(
-            report,
-            options.out_file.clone(),
-            options.out_file_label.clone(),
-            resolved_path,
-        );
+        return meta_validate_finish(report, resolved_path);
     }
     meta_validate_check_reserved_attr_names(&mut report, child_obj_node);
     if report.stopped {
-        return meta_validate_finish(
-            report,
-            options.out_file.clone(),
-            options.out_file_label.clone(),
-            resolved_path,
-        );
+        return meta_validate_finish(report, resolved_path);
     }
     meta_validate_check_uniqueness(&mut report, child_obj_node);
     if report.stopped {
-        return meta_validate_finish(
-            report,
-            options.out_file.clone(),
-            options.out_file_label.clone(),
-            resolved_path,
-        );
+        return meta_validate_finish(report, resolved_path);
     }
     meta_validate_check_tabular_sections(&mut report, child_obj_node);
     if report.stopped {
-        return meta_validate_finish(
-            report,
-            options.out_file.clone(),
-            options.out_file_label.clone(),
-            resolved_path,
-        );
+        return meta_validate_finish(report, resolved_path);
     }
     meta_validate_check_cross_properties(
         &mut report,
         md_type,
         props_node,
         child_obj_node,
-        config_dir.as_deref(),
+        reference_inputs.config_dir.as_deref(),
         &obj_name,
     );
     if report.stopped {
-        return meta_validate_finish(
-            report,
-            options.out_file.clone(),
-            options.out_file_label.clone(),
-            resolved_path,
-        );
+        return meta_validate_finish(report, resolved_path);
     }
     meta_validate_check_services(&mut report, md_type, child_obj_node);
     if report.stopped {
-        return meta_validate_finish(
-            report,
-            options.out_file.clone(),
-            options.out_file_label.clone(),
-            resolved_path,
-        );
+        return meta_validate_finish(report, resolved_path);
     }
     meta_validate_check_forbidden_properties(&mut report, md_type, props_node);
     if report.stopped {
-        return meta_validate_finish(
-            report,
-            options.out_file.clone(),
-            options.out_file_label.clone(),
-            resolved_path,
-        );
+        return meta_validate_finish(report, resolved_path);
     }
-    meta_validate_check_method_reference(&mut report, md_type, props_node, config_dir.as_deref());
+    meta_validate_check_method_reference(
+        &mut report,
+        md_type,
+        props_node,
+        reference_inputs.config_dir.as_deref(),
+    );
     if report.stopped {
-        return meta_validate_finish(
-            report,
-            options.out_file.clone(),
-            options.out_file_label.clone(),
-            resolved_path,
-        );
+        return meta_validate_finish(report, resolved_path);
     }
     meta_validate_check_document_journal_columns(&mut report, md_type, child_obj_node);
 
-    meta_validate_finish(
-        report,
-        options.out_file.clone(),
-        options.out_file_label.clone(),
-        resolved_path,
-    )
+    meta_validate_finish(report, resolved_path)
 }
 
 pub(crate) fn meta_validate_finish(
     report: MetaValidationReporter,
-    out_file: Option<PathBuf>,
-    out_file_label: Option<String>,
     artifact: PathBuf,
 ) -> Result<MetaValidationRun, String> {
     let (ok, result_text, errors) = report.finalize();
-    let stdout = if let Some(out_file) = &out_file {
-        write_utf8_bom(out_file, &result_text)?;
-        let label = out_file_label
-            .as_deref()
-            .unwrap_or_else(|| out_file.to_str().unwrap_or(""));
-        format!("{result_text}\nWritten to: {label}\n")
-    } else {
-        format!("{result_text}\n")
-    };
     Ok(MetaValidationRun {
         ok,
-        stdout,
-        out_files: out_file.into_iter().collect(),
+        stdout: format!("{result_text}\n"),
         artifacts: vec![artifact],
         errors,
     })
 }
 
-pub(crate) fn meta_validate_config_dir(resolved_path: &Path) -> Option<PathBuf> {
-    let mut probe = resolved_path.parent();
-    for _ in 0..4 {
-        let Some(dir) = probe else {
-            break;
-        };
-        if dir.join("Configuration.xml").exists() {
-            return Some(dir.to_path_buf());
-        }
-        probe = dir.parent();
-    }
-    None
+pub(crate) fn meta_validate_localized_values(
+    node: Option<roxmltree::Node<'_, '_>>,
+) -> Vec<(Option<String>, String)> {
+    const V8_CORE_NS: &str = "http://v8.1c.ru/8.1/data/core";
+
+    let Some(node) = node else {
+        return Vec::new();
+    };
+    node.children()
+        .filter(|child| {
+            child.is_element()
+                && child.tag_name().name() == "item"
+                && child.tag_name().namespace() == Some(V8_CORE_NS)
+        })
+        .filter_map(|item| {
+            let child_text = |name| {
+                item.children()
+                    .find(|child| {
+                        child.is_element()
+                            && child.tag_name().name() == name
+                            && child.tag_name().namespace() == Some(V8_CORE_NS)
+                    })
+                    .map(meta_info_inner_text)
+            };
+            let language = child_text("lang")
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty());
+            let text = child_text("content").unwrap_or_default();
+            (!text.trim().is_empty()).then_some((language, text))
+        })
+        .collect()
 }
 
 pub(crate) fn meta_validate_check_internal_info(
@@ -2426,9 +6212,11 @@ pub(crate) fn meta_validate_check_internal_info(
 
 pub(crate) fn meta_validate_check_properties(
     report: &mut MetaValidationReporter,
+    md_type: &str,
     props_node: Option<roxmltree::Node<'_, '_>>,
     name_node: Option<roxmltree::Node<'_, '_>>,
     obj_name: &str,
+    configured_language_codes: &[String],
 ) {
     let Some(props_node) = props_node else {
         report.error("3. Properties block missing");
@@ -2452,11 +6240,12 @@ pub(crate) fn meta_validate_check_properties(
             ));
         }
     }
-    let syn_present = meta_info_child(props_node, "Synonym")
-        .and_then(|node| meta_info_child(node, "item"))
-        .and_then(|node| meta_info_child(node, "content"))
-        .map(meta_info_inner_text)
-        .is_some_and(|value| !value.is_empty());
+    let synonym_values = meta_validate_localized_values(meta_info_child(props_node, "Synonym"));
+    let syn_present = !synonym_values.is_empty();
+
+    if meta_validate_types_with_list_presentation().contains(&md_type) {
+        meta_validate_check_command_texts(report, props_node, configured_language_codes);
+    }
     if check_ok {
         let syn_info = if syn_present {
             "Synonym present"
@@ -2465,6 +6254,59 @@ pub(crate) fn meta_validate_check_properties(
         };
         report.ok(format!("3. Properties: Name=\"{obj_name}\", {syn_info}"));
     }
+}
+
+fn meta_validate_check_command_texts(
+    report: &mut MetaValidationReporter,
+    props_node: roxmltree::Node<'_, '_>,
+    language_codes: &[String],
+) {
+    let synonyms = meta_validate_localized_values(meta_info_child(props_node, "Synonym"));
+    let lists = meta_validate_localized_values(meta_info_child(props_node, "ListPresentation"));
+
+    for language_code in language_codes {
+        let list_values = lists
+            .iter()
+            .filter(|(language, text)| {
+                language.as_deref() == Some(language_code.as_str()) && !text.trim().is_empty()
+            })
+            .collect::<Vec<_>>();
+        let selected = if list_values.is_empty() {
+            synonyms
+                .iter()
+                .filter(|(language, text)| {
+                    language.as_deref() == Some(language_code.as_str()) && !text.trim().is_empty()
+                })
+                .map(|(_, text)| ("Synonym", text))
+                .collect::<Vec<_>>()
+        } else {
+            list_values
+                .into_iter()
+                .map(|(_, text)| ("ListPresentation", text))
+                .collect::<Vec<_>>()
+        };
+        for (source, text) in selected {
+            meta_validate_warn_long_command_text(report, source, text, Some(language_code));
+        }
+    }
+}
+
+fn meta_validate_warn_long_command_text(
+    report: &mut MetaValidationReporter,
+    source: &str,
+    text: &str,
+    language: Option<&String>,
+) {
+    let length = text.chars().count();
+    if length <= 38 {
+        return;
+    }
+    let language_suffix = language
+        .map(|language| format!(", language '{language}'"))
+        .unwrap_or_default();
+    report.warn(format!(
+        "3. Properties: {source} '{text}' is longer than 38 characters ({length}) for the command interface{language_suffix}"
+    ));
 }
 
 pub(crate) fn meta_validate_check_property_values(
@@ -3050,24 +6892,10 @@ pub(crate) fn meta_validate_check_register_registrar(
     };
     let docs_dir = config_dir.join("Documents");
     let reg_ref = format!("{md_type}.{obj_name}");
-    let mut has_registrar = false;
-    if docs_dir.is_dir() {
-        if let Ok(entries) = fs::read_dir(&docs_dir) {
-            for entry in entries.filter_map(Result::ok) {
-                let path = entry.path();
-                if path.extension().and_then(|ext| ext.to_str()) != Some("xml") || !path.is_file() {
-                    continue;
-                }
-                if read_utf8_sig(&path)
-                    .map(|content| content.contains(&reg_ref))
-                    .unwrap_or(false)
-                {
-                    has_registrar = true;
-                    break;
-                }
-            }
-        }
-    }
+    let has_registrar = docs_dir.is_dir()
+        && meta_validate_registrar_document_scan(&docs_dir, &reg_ref)
+            .map(|(_, found)| found)
+            .unwrap_or(false);
     if !has_registrar {
         report.warn(format!(
             "10. {md_type}: no registrar document found (none references '{reg_ref}' in RegisterRecords)"
@@ -3347,6 +7175,8 @@ pub(crate) fn meta_validate_valid_types() -> &'static [&'static str] {
         "DocumentJournal",
         "Report",
         "DataProcessor",
+        "ExternalReport",
+        "ExternalDataProcessor",
         "CommonModule",
         "ScheduledJob",
         "EventSubscription",
@@ -3437,6 +7267,7 @@ pub(crate) fn meta_validate_generated_categories(md_type: &str) -> Option<&'stat
         "Task" | "ExchangePlan" => Some(&["Object", "Ref", "Selection", "List", "Manager"]),
         "DocumentJournal" => Some(&["Selection", "List", "Manager"]),
         "Report" | "DataProcessor" => Some(&["Object", "Manager"]),
+        "ExternalReport" | "ExternalDataProcessor" => Some(&["Object"]),
         "DefinedType" => Some(&["DefinedType"]),
         _ => None,
     }
@@ -3482,33 +7313,40 @@ pub(crate) fn meta_validate_standard_attributes(md_type: &str) -> Option<&'stati
         "Enum" => Some(&["Order", "Ref"]),
         "InformationRegister" => Some(&["Active", "LineNumber", "Recorder", "Period"]),
         "AccumulationRegister" => {
-            Some(&["Active", "LineNumber", "Recorder", "Period", "RecordType"])
+            Some(&["RecordType", "Active", "LineNumber", "Recorder", "Period"])
         }
-        "AccountingRegister" => Some(&["Active", "Period", "Recorder", "LineNumber", "Account"]),
-        "CalculationRegister" => Some(&[
+        "AccountingRegister" => Some(&[
+            "Account",
+            "RecordType",
             "Active",
-            "Recorder",
             "LineNumber",
+            "Recorder",
+            "Period",
+        ]),
+        "CalculationRegister" => Some(&[
             "RegistrationPeriod",
-            "CalculationType",
             "ReversingEntry",
-            "ActionPeriod",
-            "BegOfActionPeriod",
-            "EndOfActionPeriod",
-            "BegOfBasePeriod",
+            "Active",
             "EndOfBasePeriod",
+            "BegOfBasePeriod",
+            "EndOfActionPeriod",
+            "BegOfActionPeriod",
+            "ActionPeriod",
+            "CalculationType",
+            "LineNumber",
+            "Recorder",
         ]),
         "ChartOfAccounts" => Some(&[
             "PredefinedDataName",
-            "Predefined",
-            "Ref",
-            "DeletionMark",
+            "Order",
+            "OffBalance",
+            "Type",
             "Description",
             "Code",
             "Parent",
-            "Order",
-            "Type",
-            "OffBalance",
+            "Predefined",
+            "DeletionMark",
+            "Ref",
         ]),
         "ChartOfCharacteristicTypes" => Some(&[
             "PredefinedDataName",
@@ -3526,9 +7364,9 @@ pub(crate) fn meta_validate_standard_attributes(md_type: &str) -> Option<&'stati
             "Predefined",
             "Ref",
             "DeletionMark",
+            "ActionPeriodIsBasic",
             "Description",
             "Code",
-            "ActionPeriodIsBasic",
         ]),
         "BusinessProcess" => Some(&[
             "Ref",
@@ -3592,7 +7430,11 @@ pub(crate) fn meta_validate_child_rules(md_type: &str) -> Option<&'static [&'sta
         | "ChartOfCalculationTypes"
         | "BusinessProcess"
         | "Report"
-        | "DataProcessor" => Some(&["Attribute", "TabularSection", "Form", "Template", "Command"]),
+        | "DataProcessor"
+        | "ExternalReport"
+        | "ExternalDataProcessor" => {
+            Some(&["Attribute", "TabularSection", "Form", "Template", "Command"])
+        }
         "ChartOfAccounts" => Some(&[
             "Attribute",
             "TabularSection",
@@ -3681,7 +7523,7 @@ pub(crate) fn meta_validate_property_values() -> &'static [(&'static str, &'stat
             &["DontUse", "DuringRequest", "DuringSession"],
         ),
         ("ReuseSessions", &["DontUse", "AutoUse"]),
-        ("FillChecking", &["DontCheck", "ShowError", "ShowWarning"]),
+        ("FillChecking", &["DontCheck", "ShowError"]),
         (
             "Indexing",
             &["DontIndex", "Index", "IndexWithAdditionalOrder"],
@@ -3691,6 +7533,67 @@ pub(crate) fn meta_validate_property_values() -> &'static [(&'static str, &'stat
             "DependenceOnCalculationTypes",
             &["DontUse", "OnActionPeriod"],
         ),
+        (
+            "SubordinationUse",
+            &["ToFolders", "ToFoldersAndItems", "ToItems"],
+        ),
+        (
+            "CatalogCodeSeries",
+            &[
+                "WholeCatalog",
+                "WithinOwnerSubordination",
+                "WithinSubordination",
+            ],
+        ),
+        (
+            "ChartOfAccountsCodeSeries",
+            &["WholeChartOfAccounts", "WithinSubordination"],
+        ),
+        (
+            "CharacteristicTypeCodeSeries",
+            &["WholeCharacteristicKind", "WithinSubordination"],
+        ),
+        ("ChoiceMode", &["BothWays", "FromForm", "QuickChoice"]),
+        (
+            "DocumentNumberPeriodicity",
+            &["Day", "Month", "Nonperiodical", "Quarter", "Year"],
+        ),
+        (
+            "BusinessProcessNumberPeriodicity",
+            &["Day", "Month", "Nonperiodical", "Quarter", "Year"],
+        ),
+        (
+            "CalculationRegisterPeriodicity",
+            &["Day", "Month", "Quarter", "Year"],
+        ),
+        (
+            "PredefinedDataUpdate",
+            &["Auto", "AutoUpdate", "DontAutoUpdate"],
+        ),
+        (
+            "HTTPMethod",
+            &[
+                "Any",
+                "CONNECT",
+                "COPY",
+                "DELETE",
+                "GET",
+                "HEAD",
+                "LOCK",
+                "MERGE",
+                "MKCOL",
+                "MOVE",
+                "OPTIONS",
+                "PATCH",
+                "POST",
+                "PROPFIND",
+                "PROPPATCH",
+                "PUT",
+                "TRACE",
+                "UNLOCK",
+            ],
+        ),
+        ("TransferDirection", &["In", "InOut", "Out"]),
     ]
 }
 
@@ -6080,16 +9983,18 @@ pub(crate) fn resolve_meta_info_path(mut object_path: PathBuf) -> Result<PathBuf
         } else if sibling.is_file() {
             object_path = sibling;
         } else {
-            let xml_file = fs::read_dir(&object_path)
+            let mut xml_files = fs::read_dir(&object_path)
                 .map_err(|err| format!("failed to read {}: {err}", object_path.display()))?
                 .filter_map(Result::ok)
                 .map(|entry| entry.path())
-                .find(|path| {
+                .filter(|path| {
                     path.extension()
                         .and_then(|ext| ext.to_str())
                         .is_some_and(|ext| ext.eq_ignore_ascii_case("xml"))
-                });
-            if let Some(xml_file) = xml_file {
+                })
+                .collect::<Vec<_>>();
+            xml_files.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+            if let Some(xml_file) = xml_files.into_iter().next() {
                 object_path = xml_file;
             } else {
                 return Err(format!(
@@ -7671,6 +11576,13 @@ pub(crate) struct MetaRemoveError {
     pub(crate) message: String,
 }
 
+struct MetaRemoveSuccess {
+    stdout: String,
+    changes: Vec<String>,
+    artifacts: Vec<String>,
+    warnings: Vec<String>,
+}
+
 pub(crate) fn meta_remove_stdout_error(message: String) -> MetaRemoveError {
     MetaRemoveError {
         stdout: format!("{message}\n"),
@@ -7679,15 +11591,476 @@ pub(crate) fn meta_remove_stdout_error(message: String) -> MetaRemoveError {
     }
 }
 
+fn validate_meta_remove_object_name(name: &str) -> Result<(), String> {
+    let mut components = Path::new(name).components();
+    let is_single_path_component = matches!(
+        components.next(),
+        Some(std::path::Component::Normal(component))
+            if component == std::ffi::OsStr::new(name)
+    ) && components.next().is_none();
+
+    if form_is_xml_ncname(name) && is_single_path_component {
+        Ok(())
+    } else {
+        Err(format!(
+            "Object name must be a valid Unicode XML NCName and a single path component: {name:?}"
+        ))
+    }
+}
+
+struct MetaRemoveSubsystemReplacement {
+    path: PathBuf,
+    original: Vec<u8>,
+    replacement: Vec<u8>,
+    subsystem_name: String,
+    removed_references: usize,
+}
+
+struct MetaRemoveTextRead {
+    path: PathBuf,
+    raw: Vec<u8>,
+    text: String,
+}
+
+struct MetaRemoveReferenceScan {
+    references: Vec<MetaRemoveReference>,
+    reads: Vec<MetaRemoveTextRead>,
+    directory_reads: Vec<MetaRemoveDirectoryRead>,
+}
+
+struct MetaRemoveDirectoryRead {
+    path: PathBuf,
+    direct_entries: Vec<DirectoryTopologyEntry>,
+}
+
+struct MetaRemoveTraversal {
+    files: Vec<PathBuf>,
+    directories: Vec<MetaRemoveDirectoryRead>,
+}
+
+const META_REMOVE_MAX_TRAVERSAL_DEPTH: usize = 256;
+const META_REMOVE_MAX_TRAVERSAL_ENTRIES: usize = 1_000_000;
+
+#[derive(Clone, Copy)]
+struct MetaRemoveTraversalLimits {
+    max_depth: usize,
+    max_entries: usize,
+}
+
+fn remove_subsystem_content_items(
+    xml_text: &str,
+    qualified_object_name: &str,
+) -> Result<(String, usize), String> {
+    const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
+    let document = Document::parse(xml_text.trim_start_matches('\u{feff}'))
+        .map_err(|error| format!("XML parse error: {error}"))?;
+    let content = document
+        .descendants()
+        .find(|node| role_info_element(*node, "Content", Some(MD_NS)));
+    let Some(content) = content else {
+        return Ok((xml_text.to_string(), 0));
+    };
+    let mut ranges = content
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == "Item")
+        .filter(|node| {
+            node.text()
+                .is_some_and(|text| text.trim() == qualified_object_name)
+        })
+        .map(|node| node.range())
+        .collect::<Vec<_>>();
+    if ranges.is_empty() {
+        return Ok((xml_text.to_string(), 0));
+    }
+    ranges.sort_by_key(|range| range.start);
+    let removed = ranges.len();
+    let mut updated = xml_text.to_string();
+    for range in ranges.into_iter().rev() {
+        let line_start = updated[..range.start]
+            .rfind('\n')
+            .map_or(0, |index| index + 1);
+        let leading_is_indent = updated[line_start..range.start]
+            .chars()
+            .all(|character| matches!(character, ' ' | '\t' | '\r'));
+        let removal = if leading_is_indent && updated[range.end..].starts_with("\r\n") {
+            line_start..range.end + 2
+        } else if leading_is_indent && updated[range.end..].starts_with('\n') {
+            line_start..range.end + 1
+        } else {
+            range
+        };
+        updated.replace_range(removal, "");
+    }
+    Ok((updated, removed))
+}
+
+fn meta_remove_path_is_link_or_reparse_point(_path: &Path, metadata: &fs::Metadata) -> bool {
+    if crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point(metadata) {
+        return true;
+    }
+    #[cfg(test)]
+    {
+        META_REMOVE_FORCED_REPARSE_PATHS.with(|slot| slot.borrow().contains(_path))
+    }
+    #[cfg(not(test))]
+    false
+}
+
+fn require_meta_remove_real_path(
+    path: &Path,
+    metadata: &fs::Metadata,
+    role: &str,
+) -> Result<(), String> {
+    if meta_remove_path_is_link_or_reparse_point(path, metadata) {
+        Err(format!(
+            "{role} must not be a symbolic link or reparse point: {}",
+            path.display()
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn plan_meta_remove_subsystem_replacements(
+    dir: &Path,
+    qualified_object_name: &str,
+    replacements: &mut Vec<MetaRemoveSubsystemReplacement>,
+    descriptor_reads: &mut Vec<MetaRemoveTextRead>,
+) -> Result<(), String> {
+    let mut visited_directories = HashSet::new();
+    let mut visited_entries = 0usize;
+    plan_meta_remove_subsystem_replacements_bounded(
+        dir,
+        qualified_object_name,
+        replacements,
+        descriptor_reads,
+        0,
+        MetaRemoveTraversalLimits {
+            max_depth: META_REMOVE_MAX_TRAVERSAL_DEPTH,
+            max_entries: META_REMOVE_MAX_TRAVERSAL_ENTRIES,
+        },
+        &mut visited_directories,
+        &mut visited_entries,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn plan_meta_remove_subsystem_replacements_bounded(
+    dir: &Path,
+    qualified_object_name: &str,
+    replacements: &mut Vec<MetaRemoveSubsystemReplacement>,
+    descriptor_reads: &mut Vec<MetaRemoveTextRead>,
+    depth: usize,
+    limits: MetaRemoveTraversalLimits,
+    visited_directories: &mut HashSet<PathBuf>,
+    visited_entries: &mut usize,
+) -> Result<(), String> {
+    if depth > limits.max_depth {
+        return Err(format!(
+            "subsystem traversal exceeded the maximum depth of {}: {}",
+            limits.max_depth,
+            dir.display()
+        ));
+    }
+    let dir_metadata = fs::symlink_metadata(dir)
+        .map_err(|err| format!("failed to inspect {}: {err}", dir.display()))?;
+    require_meta_remove_real_path(dir, &dir_metadata, "subsystem directory")?;
+    if !dir_metadata.is_dir() {
+        return Err(format!(
+            "subsystem path is not a directory: {}",
+            dir.display()
+        ));
+    }
+
+    let directory_identity = fs::canonicalize(dir).map_err(|err| {
+        format!(
+            "failed to resolve subsystem directory identity {}: {err}",
+            dir.display()
+        )
+    })?;
+    if !visited_directories.insert(directory_identity) {
+        return Err(format!(
+            "subsystem traversal directory cycle or duplicate identity detected before traversal: {}",
+            dir.display()
+        ));
+    }
+
+    let directory_entries =
+        fs::read_dir(dir).map_err(|err| format!("failed to read {}: {err}", dir.display()))?;
+    let mut entries = Vec::new();
+    for entry in directory_entries {
+        let entry =
+            entry.map_err(|err| format!("failed to read an entry in {}: {err}", dir.display()))?;
+        if *visited_entries >= limits.max_entries {
+            return Err(format!(
+                "subsystem traversal exceeded the maximum of {} entries: {}",
+                limits.max_entries,
+                dir.display()
+            ));
+        }
+        *visited_entries += 1;
+        entries.push(entry);
+    }
+    entries.sort_by_key(|entry| entry.file_name());
+
+    let mut descriptors = Vec::new();
+    for entry in entries {
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|err| format!("failed to inspect {}: {err}", path.display()))?;
+        require_meta_remove_real_path(&path, &metadata, "subsystem entry")?;
+        if !metadata.is_dir() && !metadata.is_file() {
+            return Err(format!(
+                "subsystem entry has an unsupported filesystem type: {}",
+                path.display()
+            ));
+        }
+        let is_xml = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("xml"));
+        if is_xml && metadata.is_file() {
+            descriptors.push(path);
+        }
+    }
+
+    for path in descriptors {
+        let snapshot = read_utf8_sig_snapshot(&path)?;
+        let subsystem_name = first_tag_text_in_xml(&snapshot.text, "Name")
+            .unwrap_or_else(|| file_stem_string(&path));
+        let (updated, removed_references) =
+            remove_subsystem_content_items(&snapshot.text, qualified_object_name)?;
+        descriptor_reads.push(MetaRemoveTextRead {
+            path: path.clone(),
+            raw: snapshot.raw.clone(),
+            text: snapshot.text.clone(),
+        });
+
+        let child_dir = path
+            .parent()
+            .unwrap_or(dir)
+            .join(file_stem_string(&path))
+            .join("Subsystems");
+        if removed_references > 0 {
+            replacements.push(MetaRemoveSubsystemReplacement {
+                path: path.clone(),
+                original: snapshot.raw,
+                replacement: utf8_bom_bytes(&ensure_trailing_newline(updated)),
+                subsystem_name,
+                removed_references,
+            });
+        }
+
+        #[cfg(test)]
+        run_before_meta_remove_subsystem_child_inspection_hook(&child_dir);
+        match fs::symlink_metadata(&child_dir) {
+            Ok(metadata) => {
+                require_meta_remove_real_path(&child_dir, &metadata, "subsystem directory")?;
+                if metadata.is_dir() {
+                    if depth >= limits.max_depth {
+                        return Err(format!(
+                            "subsystem traversal exceeded the maximum depth of {}: {}",
+                            limits.max_depth,
+                            child_dir.display()
+                        ));
+                    }
+                    plan_meta_remove_subsystem_replacements_bounded(
+                        &child_dir,
+                        qualified_object_name,
+                        replacements,
+                        descriptor_reads,
+                        depth + 1,
+                        limits,
+                        visited_directories,
+                        visited_entries,
+                    )?;
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(format!("failed to inspect {}: {err}", child_dir.display()));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn meta_remove_subsystem_dependency_paths(
+    dir: &Path,
+    qualified_object_name: &str,
+) -> Result<Vec<PathBuf>, String> {
+    let mut replacements = Vec::new();
+    let mut descriptor_reads = Vec::new();
+    plan_meta_remove_subsystem_replacements(
+        dir,
+        qualified_object_name,
+        &mut replacements,
+        &mut descriptor_reads,
+    )?;
+    let descriptors = replacements
+        .into_iter()
+        .map(|replacement| replacement.path)
+        .collect::<Vec<_>>();
+    let descriptor_refs = descriptors.iter().map(PathBuf::as_path).collect::<Vec<_>>();
+    let mut dependencies = descriptor_reads
+        .into_iter()
+        .map(|read| read.path)
+        .collect::<Vec<_>>();
+    dependencies.extend(subsystem_validation_format_dependency_paths(
+        &descriptor_refs,
+    ));
+    dependencies.sort();
+    dependencies.dedup();
+    Ok(dependencies)
+}
+
+fn validate_meta_remove_post_state(
+    config_xml: &Path,
+    obj_type: &str,
+    obj_name: &str,
+    subsystem_paths: &[PathBuf],
+    removed_paths: &[PathBuf],
+    paired_paths: Option<(&Path, &Path)>,
+) -> Result<(), String> {
+    let config_text = read_utf8_sig(config_xml)?;
+    if remove_metadata_child_text_with_flag(&config_text, obj_type, obj_name).1 {
+        return Err(format!(
+            "post-write validation found <{obj_type}>{obj_name}</{obj_type}> in {}",
+            config_xml.display()
+        ));
+    }
+
+    let qualified_object_name = format!("{obj_type}.{obj_name}");
+    for path in subsystem_paths {
+        let text = read_utf8_sig(path)?;
+        if remove_subsystem_content_items(&text, &qualified_object_name)?.1 > 0 {
+            return Err(format!(
+                "post-write validation found {qualified_object_name} in {}",
+                path.display()
+            ));
+        }
+    }
+
+    for path in removed_paths {
+        match fs::symlink_metadata(path) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(_) => {
+                return Err(format!(
+                    "post-write validation found removal target still present: {}",
+                    path.display()
+                ));
+            }
+            Err(err) => {
+                return Err(format!(
+                    "post-write validation failed to inspect {}: {err}",
+                    path.display()
+                ));
+            }
+        }
+    }
+
+    if let Some((descriptor, payload)) = paired_paths {
+        for path in [descriptor, payload] {
+            match fs::symlink_metadata(path) {
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Ok(_) => {
+                    return Err(format!(
+                        "post-write validation found removed metadata pair member still present: {}",
+                        path.display()
+                    ));
+                }
+                Err(err) => {
+                    return Err(format!(
+                        "post-write validation failed to inspect metadata pair member {}: {err}",
+                        path.display()
+                    ));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn meta_remove_descriptor_exists(path: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!(
+            "failed to inspect metadata descriptor {}: {error}",
+            path.display()
+        )),
+        Ok(metadata)
+            if crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point(
+                &metadata,
+            ) =>
+        {
+            Err(format!(
+                "metadata descriptor must not be a symbolic link or reparse point: {}",
+                path.display()
+            ))
+        }
+        Ok(metadata) if metadata.is_file() => Ok(true),
+        Ok(_) => Err(format!(
+            "metadata descriptor is not a regular file: {}",
+            path.display()
+        )),
+    }
+}
+
+fn meta_remove_payload_file_count(path: &Path) -> Result<Option<usize>, String> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!(
+            "failed to inspect metadata payload directory {}: {error}",
+            path.display()
+        )),
+        Ok(metadata)
+            if crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point(
+                &metadata,
+            ) =>
+        {
+            Err(format!(
+                "metadata payload directory must not be a symbolic link or reparse point: {}",
+                path.display()
+            ))
+        }
+        Ok(metadata) if metadata.is_dir() => Ok(Some(metadata_files_recursive(path)?.files.len())),
+        Ok(_) => Err(format!(
+            "metadata payload path is not a directory: {}",
+            path.display()
+        )),
+    }
+}
+
 pub(crate) fn remove_metadata_object(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    let result = (|| -> Result<(String, Vec<String>, Vec<String>), MetaRemoveError> {
+    let result = (|| -> Result<MetaRemoveSuccess, MetaRemoveError> {
         let config_dir_raw = required_string(args, &["configDir", "ConfigDir"], "ConfigDir")
             .map_err(|err| meta_remove_stdout_error(format!("[ERROR] {err}")))?;
         let object = required_string(args, &["object", "Object"], "Object")
             .map_err(|err| meta_remove_stdout_error(format!("[ERROR] {err}")))?;
+
+        let Some((obj_type, obj_name)) = object.split_once('.') else {
+            return Err(meta_remove_stdout_error(format!(
+                "[ERROR] Invalid object format '{object}'. Expected: Type.Name (e.g. Catalog.Товары)"
+            )));
+        };
+        if obj_type.is_empty() || obj_name.is_empty() {
+            return Err(meta_remove_stdout_error(format!(
+                "[ERROR] Invalid object format '{object}'. Expected: Type.Name (e.g. Catalog.Товары)"
+            )));
+        }
+        validate_meta_remove_object_name(obj_name)
+            .map_err(|err| meta_remove_stdout_error(format!("[ERROR] {err}")))?;
+        let Some(type_plural) = meta_remove_type_plural(obj_type) else {
+            return Err(meta_remove_stdout_error(format!(
+                "[ERROR] Unknown type '{obj_type}'. Supported: {}",
+                meta_remove_supported_types().join(", ")
+            )));
+        };
 
         let config_dir_display = PathBuf::from(config_dir_raw);
         let config_dir = absolutize(config_dir_display.clone(), &context.cwd);
@@ -7705,23 +12078,8 @@ pub(crate) fn remove_metadata_object(
                 config_dir.display()
             )));
         }
-
-        let Some((obj_type, obj_name)) = object.split_once('.') else {
-            return Err(meta_remove_stdout_error(format!(
-                "[ERROR] Invalid object format '{object}'. Expected: Type.Name (e.g. Catalog.Товары)"
-            )));
-        };
-        if obj_type.is_empty() || obj_name.is_empty() {
-            return Err(meta_remove_stdout_error(format!(
-                "[ERROR] Invalid object format '{object}'. Expected: Type.Name (e.g. Catalog.Товары)"
-            )));
-        }
-        let Some(type_plural) = meta_remove_type_plural(obj_type) else {
-            return Err(meta_remove_stdout_error(format!(
-                "[ERROR] Unknown type '{obj_type}'. Supported: {}",
-                meta_remove_supported_types().join(", ")
-            )));
-        };
+        require_meta_configuration_owner_validation(&config_xml, context, "meta.remove")
+            .map_err(meta_remove_stdout_error)?;
 
         let dry_run = bool_arg(args, &["DryRun"]);
         let keep_files = bool_arg(args, &["KeepFiles", "keepFiles"]);
@@ -7730,8 +12088,10 @@ pub(crate) fn remove_metadata_object(
         let type_dir = config_dir.join(type_plural);
         let obj_xml = type_dir.join(format!("{obj_name}.xml"));
         let obj_dir = type_dir.join(obj_name);
-        let has_xml = obj_xml.is_file();
-        let has_dir = obj_dir.is_dir();
+        let has_xml = meta_remove_descriptor_exists(&obj_xml).map_err(meta_remove_stdout_error)?;
+        let payload_file_count =
+            meta_remove_payload_file_count(&obj_dir).map_err(meta_remove_stdout_error)?;
+        let has_dir = payload_file_count.is_some();
 
         let mut stdout = String::new();
         stdout.push_str(&format!("=== meta-remove: {obj_type}.{obj_name} ===\n\n"));
@@ -7742,9 +12102,11 @@ pub(crate) fn remove_metadata_object(
         let mut changes = Vec::new();
         let mut artifacts = vec![config_xml.display().to_string()];
         let mut actions = 0usize;
+        let config_snapshot =
+            read_utf8_sig_snapshot(&config_xml).map_err(meta_remove_stdout_error)?;
 
         if !has_xml && !has_dir {
-            if !metadata_object_registered(&config_xml, obj_type, obj_name) {
+            if !remove_metadata_child_text_with_flag(&config_snapshot.text, obj_type, obj_name).1 {
                 stdout.push_str(&format!(
                     "[ERROR] Object not found: {type_plural}/{obj_name}.xml and not registered in Configuration.xml\n"
                 ));
@@ -7764,7 +12126,8 @@ pub(crate) fn remove_metadata_object(
                 artifacts.push(obj_xml.display().to_string());
             }
             if has_dir {
-                let file_count = count_files_recursive(&obj_dir);
+                let file_count = payload_file_count
+                    .expect("existing metadata payload directory must have a safe file count");
                 stdout.push_str(&format!(
                     "[FOUND] {type_plural}/{obj_name}/ ({file_count} files)\n"
                 ));
@@ -7774,7 +12137,7 @@ pub(crate) fn remove_metadata_object(
 
         stdout.push('\n');
         stdout.push_str("--- Reference check ---\n");
-        let references = meta_remove_references(
+        let reference_scan = meta_remove_reference_scan(
             &config_dir,
             obj_type,
             obj_name,
@@ -7783,7 +12146,9 @@ pub(crate) fn remove_metadata_object(
             &obj_dir,
             has_xml,
             has_dir,
-        );
+        )
+        .map_err(meta_remove_stdout_error)?;
+        let references = &reference_scan.references;
         if references.is_empty() {
             stdout.push_str("[OK]    No references found\n");
         } else {
@@ -7814,19 +12179,26 @@ pub(crate) fn remove_metadata_object(
             stdout.push_str("[WARN]  -Force specified, proceeding despite references\n");
         }
 
+        let mut transaction = CompileTransaction::new();
+
         stdout.push('\n');
         stdout.push_str("--- Configuration.xml ---\n");
-        let config_text = read_utf8_sig(&config_xml).map_err(meta_remove_stdout_error)?;
         let (next_config_text, removed_from_config) =
-            remove_metadata_child_text_with_flag(&config_text, obj_type, obj_name);
+            remove_metadata_child_text_with_flag(&config_snapshot.text, obj_type, obj_name);
+        let config_replacement = if removed_from_config {
+            utf8_bom_bytes(&ensure_trailing_newline(next_config_text))
+        } else {
+            config_snapshot.raw.clone()
+        };
+        transaction
+            .replace_bytes(config_xml.clone(), &config_snapshot.raw, config_replacement)
+            .map_err(meta_remove_stdout_error)?;
         if removed_from_config {
             stdout.push_str(&format!(
                 "[OK]    Removed <{obj_type}>{obj_name}</{obj_type}> from ChildObjects\n"
             ));
             actions += 1;
             if !dry_run {
-                write_utf8_bom(&config_xml, &ensure_trailing_newline(next_config_text))
-                    .map_err(meta_remove_stdout_error)?;
                 stdout.push_str("[OK]    Configuration.xml saved\n");
                 changes.push(format!("updated {}", config_xml.display()));
             }
@@ -7840,17 +12212,37 @@ pub(crate) fn remove_metadata_object(
         stdout.push_str("--- Subsystems ---\n");
         let subsystems_dir = config_dir.join("Subsystems");
         let mut subsystems_cleaned = 0usize;
+        let mut subsystem_replacements = Vec::new();
+        let mut subsystem_descriptor_reads = Vec::new();
         if subsystems_dir.is_dir() {
-            remove_object_from_subsystems(
+            plan_meta_remove_subsystem_replacements(
                 &subsystems_dir,
-                obj_type,
-                obj_name,
-                dry_run,
-                &mut stdout,
-                &mut subsystems_cleaned,
-                &mut changes,
+                &format!("{obj_type}.{obj_name}"),
+                &mut subsystem_replacements,
+                &mut subsystem_descriptor_reads,
             )
             .map_err(meta_remove_stdout_error)?;
+            for replacement in &subsystem_replacements {
+                validate_metadata_owner_shape_8_3_27(&replacement.path, context, "meta.remove")
+                    .map_err(meta_remove_stdout_error)?;
+                for _ in 0..replacement.removed_references {
+                    stdout.push_str(&format!(
+                        "[OK]    Removed from subsystem '{}'\n",
+                        replacement.subsystem_name
+                    ));
+                }
+                subsystems_cleaned += replacement.removed_references;
+                transaction
+                    .replace_bytes(
+                        replacement.path.clone(),
+                        &replacement.original,
+                        replacement.replacement.clone(),
+                    )
+                    .map_err(meta_remove_stdout_error)?;
+                if !dry_run {
+                    changes.push(format!("updated {}", replacement.path.display()));
+                }
+            }
             if subsystems_cleaned == 0 {
                 stdout.push_str("[OK]    Not referenced in any subsystem\n");
             }
@@ -7860,42 +12252,86 @@ pub(crate) fn remove_metadata_object(
 
         stdout.push('\n');
         stdout.push_str("--- Files ---\n");
+        let mut removed_paths = Vec::new();
         if !keep_files {
-            if has_dir && !dry_run {
-                fs::remove_dir_all(&obj_dir).map_err(|err| {
-                    meta_remove_stdout_error(format!(
-                        "failed to remove {}: {err}",
-                        obj_dir.display()
-                    ))
-                })?;
-                stdout.push_str(&format!(
-                    "[OK]    Deleted directory: {type_plural}/{obj_name}/\n"
-                ));
-                changes.push(format!("removed directory {}", obj_dir.display()));
-                actions += 1;
-            } else if has_dir {
-                stdout.push_str(&format!(
-                    "[DRY]   Would delete directory: {type_plural}/{obj_name}/\n"
-                ));
+            let mut type_collection_targets = Vec::new();
+            if has_xml {
+                type_collection_targets.push(obj_xml.as_path());
+            }
+            if has_dir {
+                type_collection_targets.push(obj_dir.as_path());
+            }
+            let remove_type_collection = !type_collection_targets.is_empty()
+                && transaction
+                    .remove_directory_if_only_direct_entries(
+                        &type_dir,
+                        type_collection_targets
+                            .iter()
+                            .map(|path| {
+                                path.file_name()
+                                    .expect("metadata collection target must have a file name")
+                                    .to_os_string()
+                            })
+                            .collect(),
+                    )
+                    .map_err(meta_remove_stdout_error)?;
+
+            if remove_type_collection {
+                removed_paths.push(type_dir.clone());
+                if !dry_run {
+                    changes.push(format!(
+                        "removed empty collection directory {}",
+                        type_dir.display()
+                    ));
+                }
+            } else {
+                if has_dir {
+                    transaction
+                        .remove_path(obj_dir.clone())
+                        .map_err(meta_remove_stdout_error)?;
+                    removed_paths.push(obj_dir.clone());
+                } else {
+                    transaction
+                        .guard_path_absent(obj_dir.clone())
+                        .map_err(meta_remove_stdout_error)?;
+                }
+                if has_xml {
+                    transaction
+                        .remove_path(obj_xml.clone())
+                        .map_err(meta_remove_stdout_error)?;
+                    removed_paths.push(obj_xml.clone());
+                } else {
+                    transaction
+                        .guard_path_absent(obj_xml.clone())
+                        .map_err(meta_remove_stdout_error)?;
+                }
+            }
+
+            if has_dir {
+                if dry_run {
+                    stdout.push_str(&format!(
+                        "[DRY]   Would delete directory: {type_plural}/{obj_name}/\n"
+                    ));
+                } else {
+                    stdout.push_str(&format!(
+                        "[OK]    Deleted directory: {type_plural}/{obj_name}/\n"
+                    ));
+                    changes.push(format!("removed directory {}", obj_dir.display()));
+                }
                 actions += 1;
             }
 
-            if has_xml && !dry_run {
-                fs::remove_file(&obj_xml).map_err(|err| {
-                    meta_remove_stdout_error(format!(
-                        "failed to remove {}: {err}",
-                        obj_xml.display()
-                    ))
-                })?;
-                stdout.push_str(&format!(
-                    "[OK]    Deleted file: {type_plural}/{obj_name}.xml\n"
-                ));
-                changes.push(format!("removed file {}", obj_xml.display()));
-                actions += 1;
-            } else if has_xml {
-                stdout.push_str(&format!(
-                    "[DRY]   Would delete file: {type_plural}/{obj_name}.xml\n"
-                ));
+            if has_xml {
+                if dry_run {
+                    stdout.push_str(&format!(
+                        "[DRY]   Would delete file: {type_plural}/{obj_name}.xml\n"
+                    ));
+                } else {
+                    stdout.push_str(&format!(
+                        "[OK]    Deleted file: {type_plural}/{obj_name}.xml\n"
+                    ));
+                    changes.push(format!("removed file {}", obj_xml.display()));
+                }
                 actions += 1;
             }
 
@@ -7905,6 +12341,114 @@ pub(crate) fn remove_metadata_object(
         } else {
             stdout.push_str("[SKIP]  File deletion skipped (-KeepFiles)\n");
         }
+
+        let warnings = if dry_run {
+            Vec::new()
+        } else {
+            for read in reference_scan
+                .reads
+                .iter()
+                .chain(subsystem_descriptor_reads.iter())
+            {
+                transaction
+                    .guard_or_verify_exact_preimage(&read.path, &read.raw)
+                    .map_err(meta_remove_stdout_error)?;
+            }
+            let mut dependency_paths = vec![config_xml.clone()];
+            dependency_paths.extend(
+                reference_scan
+                    .reads
+                    .iter()
+                    .filter(|read| {
+                        read.path
+                            .extension()
+                            .and_then(|extension| extension.to_str())
+                            .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+                    })
+                    .map(|read| read.path.clone()),
+            );
+            dependency_paths.extend(
+                subsystem_descriptor_reads
+                    .iter()
+                    .map(|read| read.path.clone()),
+            );
+            let subsystem_descriptors = subsystem_replacements
+                .iter()
+                .map(|replacement| replacement.path.as_path())
+                .collect::<Vec<_>>();
+            let subsystem_format_dependencies =
+                subsystem_validation_format_dependency_paths(&subsystem_descriptors);
+            dependency_paths.extend(subsystem_format_dependencies);
+            dependency_paths.sort();
+            dependency_paths.dedup();
+            let dependencies = dependency_paths
+                .iter()
+                .map(PathBuf::as_path)
+                .collect::<Vec<_>>();
+            let mut trees = Vec::new();
+            if has_xml {
+                trees.push(obj_xml.as_path());
+            }
+            if has_dir {
+                trees.push(obj_dir.as_path());
+            }
+            guard_active_format_dependencies_and_xml_trees(
+                &mut transaction,
+                &dependencies,
+                &trees,
+                context,
+            )
+            .map_err(meta_remove_stdout_error)?;
+            for directory_read in &reference_scan.directory_reads {
+                if removed_paths
+                    .iter()
+                    .any(|removed| directory_read.path.starts_with(removed))
+                {
+                    continue;
+                }
+                transaction
+                    .guard_or_verify_directory_topology(
+                        directory_read.path.clone(),
+                        directory_read.direct_entries.clone(),
+                    )
+                    .map_err(meta_remove_stdout_error)?;
+            }
+            let validation_config_xml = config_xml.clone();
+            let validation_obj_type = obj_type.to_string();
+            let validation_obj_name = obj_name.to_string();
+            let validation_subsystem_paths = subsystem_replacements
+                .iter()
+                .map(|replacement| replacement.path.clone())
+                .collect::<Vec<_>>();
+            let validation_removed_paths = removed_paths.clone();
+            let validation_obj_xml = obj_xml.clone();
+            let validation_obj_dir = obj_dir.clone();
+            let validate_pair_absent = !keep_files;
+            transaction
+                .commit_with_post_validation(move || {
+                    require_meta_configuration_owner_validation(
+                        &validation_config_xml,
+                        context,
+                        "meta.remove",
+                    )?;
+                    for path in &validation_subsystem_paths {
+                        validate_metadata_owner_shape_8_3_27(path, context, "meta.remove")?;
+                    }
+                    validate_meta_remove_post_state(
+                        &validation_config_xml,
+                        &validation_obj_type,
+                        &validation_obj_name,
+                        &validation_subsystem_paths,
+                        &validation_removed_paths,
+                        validate_pair_absent.then_some((
+                            validation_obj_xml.as_path(),
+                            validation_obj_dir.as_path(),
+                        )),
+                    )
+                })
+                .map_err(meta_remove_stdout_error)?
+                .cleanup_warnings
+        };
 
         stdout.push('\n');
         let total_actions = actions + subsystems_cleaned;
@@ -7918,18 +12462,23 @@ pub(crate) fn remove_metadata_object(
             ));
         }
 
-        Ok((stdout, changes, artifacts))
+        Ok(MetaRemoveSuccess {
+            stdout,
+            changes,
+            artifacts,
+            warnings,
+        })
     })();
 
     match result {
-        Ok((stdout, changes, artifacts)) => AdapterOutcome {
+        Ok(success) => AdapterOutcome {
             ok: true,
             summary: "unica.meta.remove completed with native metadata remover".to_string(),
-            changes,
-            warnings: Vec::new(),
+            changes: success.changes,
+            warnings: success.warnings,
             errors: Vec::new(),
-            artifacts,
-            stdout: Some(stdout),
+            artifacts: success.artifacts,
+            stdout: Some(success.stdout),
             stderr: Some(String::new()),
             command: None,
         },
@@ -8056,7 +12605,7 @@ pub(crate) fn metadata_object_registered(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn meta_remove_references(
+fn meta_remove_reference_scan(
     config_dir: &Path,
     obj_type: &str,
     obj_name: &str,
@@ -8065,13 +12614,14 @@ pub(crate) fn meta_remove_references(
     obj_dir: &Path,
     has_xml: bool,
     has_dir: bool,
-) -> Vec<MetaRemoveReference> {
+) -> Result<MetaRemoveReferenceScan, String> {
     let patterns = meta_remove_search_patterns(obj_type, obj_name, type_plural);
     let mut references = Vec::new();
     let mut already_found = HashSet::new();
-    let files = metadata_files_recursive(config_dir);
+    let mut reads = Vec::new();
+    let traversal = metadata_files_recursive(config_dir)?;
 
-    for file in files.iter().filter(|file| {
+    for file in traversal.files.iter().filter(|file| {
         matches!(
             file.extension().and_then(|ext| ext.to_str()).map(str::to_ascii_lowercase),
             Some(ext) if ext == "xml" || ext == "bsl"
@@ -8080,9 +12630,13 @@ pub(crate) fn meta_remove_references(
         if meta_remove_should_skip_file(file, config_dir, obj_xml, obj_dir, has_xml, has_dir) {
             continue;
         }
-        let Ok(content) = read_utf8_sig(file) else {
-            continue;
-        };
+        let snapshot = read_utf8_sig_snapshot(file)?;
+        let content = snapshot.text.clone();
+        reads.push(MetaRemoveTextRead {
+            path: file.clone(),
+            raw: snapshot.raw,
+            text: snapshot.text,
+        });
         let rel = relative_display(file, config_dir);
         for pattern in &patterns {
             if content.contains(pattern) {
@@ -8097,22 +12651,17 @@ pub(crate) fn meta_remove_references(
     }
 
     let type_name_ref = format!("{obj_type}.{obj_name}");
-    for file in files.iter().filter(|file| {
-        file.extension()
+    for read in reads.iter().filter(|read| {
+        read.path
+            .extension()
             .and_then(|ext| ext.to_str())
             .is_some_and(|ext| ext.eq_ignore_ascii_case("xml"))
     }) {
-        if meta_remove_should_skip_file(file, config_dir, obj_xml, obj_dir, has_xml, has_dir) {
-            continue;
-        }
-        let rel = relative_display(file, config_dir);
+        let rel = relative_display(&read.path, config_dir);
         if already_found.contains(&rel) {
             continue;
         }
-        let Ok(content) = read_utf8_sig(file) else {
-            continue;
-        };
-        if content.contains(&type_name_ref) {
+        if read.text.contains(&type_name_ref) {
             references.push(MetaRemoveReference {
                 file: rel,
                 pattern: type_name_ref.clone(),
@@ -8120,25 +12669,215 @@ pub(crate) fn meta_remove_references(
         }
     }
 
-    references
+    Ok(MetaRemoveReferenceScan {
+        references,
+        reads,
+        directory_reads: traversal.directories,
+    })
 }
 
-pub(crate) fn metadata_files_recursive(root: &Path) -> Vec<PathBuf> {
-    let mut result = Vec::new();
-    let Ok(entries) = fs::read_dir(root) else {
-        return result;
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn meta_remove_reference_xml_dependency_paths(
+    config_dir: &Path,
+    obj_xml: &Path,
+    obj_dir: &Path,
+    has_xml: bool,
+    has_dir: bool,
+) -> Result<Vec<PathBuf>, String> {
+    metadata_files_recursive(config_dir)?
+        .files
+        .into_iter()
+        .filter(|file| {
+            file.extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("xml"))
+        })
+        .filter(|file| {
+            !meta_remove_should_skip_file(file, config_dir, obj_xml, obj_dir, has_xml, has_dir)
+        })
+        .map(|file| {
+            read_utf8_sig(&file)?;
+            Ok(file)
+        })
+        .collect()
+}
+
+fn metadata_files_recursive(root: &Path) -> Result<MetaRemoveTraversal, String> {
+    metadata_files_recursive_with_limits(
+        root,
+        MetaRemoveTraversalLimits {
+            max_depth: META_REMOVE_MAX_TRAVERSAL_DEPTH,
+            max_entries: META_REMOVE_MAX_TRAVERSAL_ENTRIES,
+        },
+    )
+}
+
+fn metadata_files_recursive_with_limits(
+    root: &Path,
+    limits: MetaRemoveTraversalLimits,
+) -> Result<MetaRemoveTraversal, String> {
+    let mut visited_directories = HashSet::new();
+    let mut visited_entries = 0usize;
+    metadata_files_recursive_bounded(
+        root,
+        0,
+        limits,
+        &mut visited_directories,
+        &mut visited_entries,
+    )
+}
+
+fn metadata_files_recursive_bounded(
+    root: &Path,
+    depth: usize,
+    limits: MetaRemoveTraversalLimits,
+    visited_directories: &mut HashSet<PathBuf>,
+    visited_entries: &mut usize,
+) -> Result<MetaRemoveTraversal, String> {
+    if depth > limits.max_depth {
+        return Err(format!(
+            "reference scan traversal exceeded the maximum depth of {}: {}",
+            limits.max_depth,
+            root.display()
+        ));
+    }
+    let root_metadata = match fs::symlink_metadata(root) {
+        Ok(metadata) => metadata,
+        // The format guard calls this helper before the operation can render
+        // its normal "Config directory not found" outcome. Preserve that
+        // public error path for an initially absent root, while retaining
+        // fail-closed traversal once a root or child has been observed.
+        Err(error) if depth == 0 && error.kind() == ErrorKind::NotFound => {
+            return Ok(MetaRemoveTraversal {
+                files: Vec::new(),
+                directories: Vec::new(),
+            });
+        }
+        Err(error) => {
+            return Err(format!(
+                "failed to inspect reference scan root {}: {error}",
+                root.display()
+            ));
+        }
     };
-    let mut entries = entries.filter_map(Result::ok).collect::<Vec<_>>();
+    if crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point(
+        &root_metadata,
+    ) {
+        return Err(format!(
+            "reference scan directory must not be a symbolic link or reparse point: {}",
+            root.display()
+        ));
+    }
+    if !root_metadata.is_dir() {
+        return Err(format!(
+            "reference scan root is not a directory: {}",
+            root.display()
+        ));
+    }
+    let directory_identity = fs::canonicalize(root).map_err(|error| {
+        format!(
+            "failed to resolve reference scan directory identity {}: {error}",
+            root.display()
+        )
+    })?;
+    if !visited_directories.insert(directory_identity) {
+        return Err(format!(
+            "reference scan directory cycle or duplicate identity detected before traversal: {}",
+            root.display()
+        ));
+    }
+
+    let directory_entries = fs::read_dir(root).map_err(|error| {
+        format!(
+            "failed to read reference scan directory {}: {error}",
+            root.display()
+        )
+    })?;
+    let mut entries = Vec::new();
+    for entry in directory_entries {
+        let entry = entry.map_err(|error| {
+            format!(
+                "failed to read an entry in reference scan directory {}: {error}",
+                root.display()
+            )
+        })?;
+        if *visited_entries >= limits.max_entries {
+            return Err(format!(
+                "reference scan traversal exceeded the maximum of {} entries: {}",
+                limits.max_entries,
+                root.display()
+            ));
+        }
+        *visited_entries += 1;
+        entries.push(entry);
+    }
     entries.sort_by_key(|entry| entry.file_name());
+    let mut inspected_entries = Vec::with_capacity(entries.len());
     for entry in entries {
         let path = entry.path();
-        if path.is_dir() {
-            result.extend(metadata_files_recursive(&path));
-        } else if path.is_file() {
-            result.push(path);
+        let metadata = fs::symlink_metadata(&path).map_err(|error| {
+            format!(
+                "failed to inspect reference scan entry {}: {error}",
+                path.display()
+            )
+        })?;
+        if crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point(&metadata)
+        {
+            return Err(format!(
+                "reference scan entry must not be a symbolic link or reparse point: {}",
+                path.display()
+            ));
+        }
+        let kind = if metadata.is_dir() {
+            DirectoryTopologyEntryKind::Directory
+        } else if metadata.is_file() {
+            DirectoryTopologyEntryKind::File
+        } else {
+            return Err(format!(
+                "reference scan entry has an unsupported filesystem type: {}",
+                path.display()
+            ));
+        };
+        inspected_entries.push((path, entry.file_name(), kind));
+    }
+    let direct_entries = inspected_entries
+        .iter()
+        .map(|(_, name, kind)| DirectoryTopologyEntry {
+            name: name.clone(),
+            kind: *kind,
+        })
+        .collect();
+    let mut result = MetaRemoveTraversal {
+        files: Vec::new(),
+        directories: vec![MetaRemoveDirectoryRead {
+            path: root.to_path_buf(),
+            direct_entries,
+        }],
+    };
+
+    for (path, _, kind) in inspected_entries {
+        if kind == DirectoryTopologyEntryKind::Directory {
+            if depth >= limits.max_depth {
+                return Err(format!(
+                    "reference scan traversal exceeded the maximum depth of {}: {}",
+                    limits.max_depth,
+                    path.display()
+                ));
+            }
+            let nested = metadata_files_recursive_bounded(
+                &path,
+                depth + 1,
+                limits,
+                visited_directories,
+                visited_entries,
+            )?;
+            result.files.extend(nested.files);
+            result.directories.extend(nested.directories);
+        } else {
+            result.files.push(path);
         }
     }
-    result
+    Ok(result)
 }
 
 pub(crate) fn meta_remove_should_skip_file(
@@ -8347,38 +13086,276 @@ pub(crate) fn meta_compile_extra_ext_files(
         "ExchangePlan" => vec![(
             "Content.xml",
             format!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<ExchangePlanContent xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" version=\"{format_version}\"/>\r\n"
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<ExchangePlanContent xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"{format_version}\"/>\r\n"
             ),
         )],
         "BusinessProcess" => vec![(
             "Flowchart.xml",
             format!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<Flowchart xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"{format_version}\"/>\r\n"
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n\
+<GraphicalSchema xmlns=\"http://v8.1c.ru/8.3/xcf/scheme\" xmlns:sch=\"http://v8.1c.ru/8.2/data/graphscheme\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"{format_version}\">\r\n\
+\t<BackColor>style:FieldBackColor</BackColor>\r\n\
+\t<GridEnabled>true</GridEnabled>\r\n\
+\t<DrawGridMode>Lines</DrawGridMode>\r\n\
+\t<GridHorizontalStep>20</GridHorizontalStep>\r\n\
+\t<GridVerticalStep>20</GridVerticalStep>\r\n\
+\t<PrintParameters>\r\n\
+\t\t<TopMargin>10</TopMargin>\r\n\
+\t\t<LeftMargin>10</LeftMargin>\r\n\
+\t\t<BottomMargin>10</BottomMargin>\r\n\
+\t\t<RightMargin>10</RightMargin>\r\n\
+\t\t<BlackAndWhite>false</BlackAndWhite>\r\n\
+\t\t<FitPageMode>Auto</FitPageMode>\r\n\
+\t</PrintParameters>\r\n\
+\t<Items/>\r\n\
+</GraphicalSchema>\r\n"
             ),
         )],
         _ => Vec::new(),
     }
 }
 
+pub(crate) fn meta_compile_format_dependency_paths(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<Vec<PathBuf>, String> {
+    let output_dir_label = string_arg(args, &["outputDir", "OutputDir"])
+        .ok_or_else(|| "missing required OutputDir argument".to_string())?;
+    let output_dir = absolutize(PathBuf::from(output_dir_label), &context.cwd);
+    let definition = read_meta_compile_definition(args, context)?;
+    Ok(meta_compile_definition_format_dependency_paths(
+        &definition,
+        &output_dir,
+    ))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MetaCompileEventSubscriptionDependency {
+    subscription_name: String,
+    subscription_descriptor_path: PathBuf,
+    source_type: String,
+    source_descriptor_path: PathBuf,
+}
+
+fn meta_compile_event_subscription_dependencies(
+    definition: &Value,
+    output_dir: &Path,
+) -> Vec<MetaCompileEventSubscriptionDependency> {
+    let definitions = definition
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_else(|| std::slice::from_ref(definition));
+    let mut dependencies = Vec::new();
+    for definition in definitions {
+        let Some(object) = definition.as_object() else {
+            continue;
+        };
+        let Some(raw_type) = object
+            .get("type")
+            .or_else(|| object.get("objectType"))
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        if normalize_meta_object_type(raw_type) != "EventSubscription" {
+            continue;
+        }
+        let Some(subscription_name) = object.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        if validate_meta_compile_name("metadata object", subscription_name).is_err() {
+            continue;
+        }
+        let subscription_descriptor_path = output_dir
+            .join("EventSubscriptions")
+            .join(format!("{subscription_name}.xml"));
+        for raw_source in meta_compile_string_list(object.get("source")) {
+            for source_type in raw_source
+                .split('+')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                let resolved = resolve_meta_type(source_type);
+                if validate_meta_resolved_type(source_type, &resolved).is_err() {
+                    continue;
+                }
+                let Some((prefix, source_name)) = resolved.split_once('.') else {
+                    continue;
+                };
+                let source_name = source_name.to_string();
+                let source_object_type = match prefix {
+                    "CatalogRef" | "CatalogObject" => "Catalog",
+                    "DocumentRef" | "DocumentObject" => "Document",
+                    "EnumRef" => "Enum",
+                    "ChartOfAccountsRef" | "ChartOfAccountsObject" => "ChartOfAccounts",
+                    "ChartOfCharacteristicTypesRef" | "ChartOfCharacteristicTypesObject" => {
+                        "ChartOfCharacteristicTypes"
+                    }
+                    "ChartOfCalculationTypesRef" | "ChartOfCalculationTypesObject" => {
+                        "ChartOfCalculationTypes"
+                    }
+                    "ExchangePlanRef" | "ExchangePlanObject" => "ExchangePlan",
+                    "BusinessProcessRef" | "BusinessProcessObject" => "BusinessProcess",
+                    "TaskRef" | "TaskObject" => "Task",
+                    "ReportObject" => "Report",
+                    "DataProcessorObject" => "DataProcessor",
+                    "DefinedType" => "DefinedType",
+                    _ => continue,
+                };
+                let Some(source_directory) =
+                    metadata_kind(source_object_type).map(|kind| kind.directory)
+                else {
+                    continue;
+                };
+                dependencies.push(MetaCompileEventSubscriptionDependency {
+                    subscription_name: subscription_name.to_string(),
+                    subscription_descriptor_path: subscription_descriptor_path.clone(),
+                    source_type: resolved,
+                    source_descriptor_path: output_dir
+                        .join(source_directory)
+                        .join(format!("{source_name}.xml")),
+                });
+            }
+        }
+    }
+    dependencies
+}
+
+fn validate_meta_compile_event_subscription_dependencies(
+    dependencies: &[MetaCompileEventSubscriptionDependency],
+    transaction: &CompileTransaction,
+) -> Result<(), String> {
+    let planned_creates = transaction
+        .planned_created_paths()
+        .into_iter()
+        .collect::<HashSet<_>>();
+    for dependency in dependencies {
+        if !planned_creates.contains(&dependency.subscription_descriptor_path)
+            || planned_creates.contains(&dependency.source_descriptor_path)
+        {
+            continue;
+        }
+        match fs::symlink_metadata(&dependency.source_descriptor_path) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+                return Err(format!(
+                    "EventSubscription '{}' source type '{}' requires a regular metadata descriptor at {}",
+                    dependency.subscription_name,
+                    dependency.source_type,
+                    dependency.source_descriptor_path.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(format!(
+                    "EventSubscription '{}' source type '{}' requires an existing or same-batch metadata descriptor at {}; 1C 8.3.27 rejects unknown source types",
+                    dependency.subscription_name,
+                    dependency.source_type,
+                    dependency.source_descriptor_path.display()
+                ));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "failed to inspect EventSubscription '{}' source type '{}' descriptor {}: {error}",
+                    dependency.subscription_name,
+                    dependency.source_type,
+                    dependency.source_descriptor_path.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn meta_compile_definition_format_dependency_paths(
+    definition: &Value,
+    output_dir: &Path,
+) -> Vec<PathBuf> {
+    let definitions = definition
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_else(|| std::slice::from_ref(definition));
+    let mut paths = vec![output_dir.join("Configuration.xml")];
+    for definition in definitions {
+        let Some(object) = definition.as_object() else {
+            continue;
+        };
+        let Some(raw_type) = object
+            .get("type")
+            .or_else(|| object.get("objectType"))
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        let Some(name) = object.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        if validate_meta_compile_name("metadata object", name).is_err() {
+            continue;
+        }
+        let object_type = normalize_meta_object_type(raw_type);
+        let Some(type_dir) = meta_compile_type_plural(&object_type) else {
+            continue;
+        };
+        let target = output_dir.join(type_dir).join(name);
+        let descriptor = target.with_extension("xml");
+        let descriptor_exists = descriptor.is_file();
+        paths.push(descriptor);
+        if descriptor_exists {
+            continue;
+        }
+        let ext_dir = target.join("Ext");
+        for (file_name, _) in meta_compile_extra_ext_files(&object_type, "") {
+            let path = ext_dir.join(file_name);
+            if path.is_file() {
+                paths.push(path);
+            }
+        }
+    }
+    paths.extend(
+        meta_compile_event_subscription_dependencies(definition, output_dir)
+            .into_iter()
+            .map(|dependency| dependency.source_descriptor_path),
+    );
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
 pub(crate) fn compile_meta(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    let write_result = plan_meta_compile(args, context).and_then(|(stdout, transaction)| {
-        let report = transaction.commit()?;
-        let mut changes = report
-            .created
-            .iter()
-            .map(|path| format!("created {}", path.display()))
-            .collect::<Vec<_>>();
-        changes.extend(
-            report
-                .updated
+    let write_result = plan_meta_compile(args, context).and_then(
+        |(stdout, mut transaction, validation_paths, config_owner, format_dependencies)| {
+            let format_dependencies = format_dependencies
                 .iter()
-                .map(|path| format!("updated {}", path.display())),
-        );
-        Ok((stdout, report.created, changes, report.cleanup_warnings))
-    });
+                .map(PathBuf::as_path)
+                .collect::<Vec<_>>();
+            guard_active_format_dependencies(&mut transaction, &format_dependencies, context)?;
+            let report = transaction.commit_with_post_validation(|| {
+                if let Some(config_owner) = config_owner.as_deref() {
+                    require_meta_configuration_owner_validation(
+                        config_owner,
+                        context,
+                        "meta.compile",
+                    )?;
+                }
+                validate_meta_compile_post_state(&validation_paths, context)
+            })?;
+            let mut changes = report
+                .created
+                .iter()
+                .map(|path| format!("created {}", path.display()))
+                .collect::<Vec<_>>();
+            changes.extend(
+                report
+                    .updated
+                    .iter()
+                    .map(|path| format!("updated {}", path.display())),
+            );
+            Ok((stdout, report.created, changes, report.cleanup_warnings))
+        },
+    );
 
     match write_result {
         Ok((stdout, artifacts, changes, warnings)) => AdapterOutcome {
@@ -8413,7 +13390,8 @@ pub(crate) fn preview_meta_compile(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<AdapterOutcome, String> {
-    let (_stdout, transaction) = plan_meta_compile(args, context)?;
+    let (_stdout, transaction, _validation_paths, _config_owner, _format_dependencies) =
+        plan_meta_compile(args, context)?;
     Ok(AdapterOutcome {
         ok: true,
         summary: "dry run: unica.meta.compile planned native metadata compilation".to_string(),
@@ -8427,15 +13405,78 @@ pub(crate) fn preview_meta_compile(
     })
 }
 
+type MetaCompilePlan = (
+    String,
+    CompileTransaction,
+    Vec<PathBuf>,
+    Option<PathBuf>,
+    Vec<PathBuf>,
+);
+
 fn plan_meta_compile(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Result<(String, CompileTransaction), String> {
-    let json_path_raw = required_path(args, &["jsonPath", "JsonPath"], "JsonPath")?;
+) -> Result<MetaCompilePlan, String> {
     let output_dir_label = string_arg(args, &["outputDir", "OutputDir"])
         .ok_or_else(|| "missing required OutputDir argument".to_string())?
         .to_string();
     let output_dir = absolutize(PathBuf::from(&output_dir_label), &context.cwd);
+    let config_path = output_dir.join("Configuration.xml");
+    let config_owner = if config_path.is_file() {
+        let snapshot = read_utf8_sig_snapshot(&config_path)?;
+        require_meta_configuration_owner_validation(&config_path, context, "meta.compile")?;
+        if fs::read(&config_path)
+            .map_err(|error| format!("failed to read {}: {error}", config_path.display()))?
+            != snapshot.raw
+        {
+            return Err(format!(
+                "Configuration owner changed while planning: {}",
+                config_path.display()
+            ));
+        }
+        #[cfg(test)]
+        run_meta_compile_after_owner_validation_hook(&config_path);
+        Some((config_path, snapshot.raw))
+    } else {
+        None
+    };
+    let mut transaction = CompileTransaction::new();
+    let defn = read_meta_compile_definition_guarded(args, context, &mut transaction)?;
+    let event_subscription_dependencies =
+        meta_compile_event_subscription_dependencies(&defn, &output_dir);
+    let mut format_dependencies =
+        meta_compile_definition_format_dependency_paths(&defn, &output_dir);
+    #[cfg(test)]
+    run_meta_compile_after_format_plan_hook();
+    let (stdout, planned_artifacts) = compile_meta_value(
+        defn,
+        &output_dir_label,
+        &output_dir,
+        context,
+        &mut transaction,
+        &mut format_dependencies,
+    )?;
+    validate_meta_compile_event_subscription_dependencies(
+        &event_subscription_dependencies,
+        &transaction,
+    )?;
+    if let Some((config_owner, expected_preimage)) = &config_owner {
+        transaction.guard_or_verify_exact_preimage(config_owner, expected_preimage)?;
+    }
+    Ok((
+        stdout,
+        transaction,
+        planned_artifacts,
+        config_owner.map(|(path, _)| path),
+        format_dependencies,
+    ))
+}
+
+fn read_meta_compile_definition(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<Value, String> {
+    let json_path_raw = required_path(args, &["jsonPath", "JsonPath"], "JsonPath")?;
     let json_path = absolutize(json_path_raw.clone(), &context.cwd);
     if !json_path.is_file() {
         return Err(format!("File not found: {}", json_path_raw.display()));
@@ -8443,23 +13484,83 @@ fn plan_meta_compile(
 
     let json_text = fs::read_to_string(&json_path)
         .map_err(|err| format!("failed to read {}: {err}", json_path.display()))?;
-    let defn: Value = serde_json::from_str(json_text.trim_start_matches('\u{feff}'))
-        .map_err(|err| format!("failed to parse metadata JSON: {err}"))?;
-    let mut transaction = CompileTransaction::new();
-    let (stdout, _planned_artifacts) =
-        compile_meta_value(defn, &output_dir_label, &output_dir, &mut transaction)?;
-    Ok((stdout, transaction))
+    serde_json::from_str(json_text.trim_start_matches('\u{feff}'))
+        .map_err(|err| format!("failed to parse metadata JSON: {err}"))
+}
+
+fn read_meta_compile_definition_guarded(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+    transaction: &mut CompileTransaction,
+) -> Result<Value, String> {
+    let json_path_raw = required_path(args, &["jsonPath", "JsonPath"], "JsonPath")?;
+    let json_path = absolutize(json_path_raw.clone(), &context.cwd);
+    if !json_path.is_file() {
+        return Err(format!("File not found: {}", json_path_raw.display()));
+    }
+    FileBackedJson::read(&json_path, |err| {
+        format!("failed to parse metadata JSON: {err}")
+    })?
+    .bind_to(transaction)
+}
+
+fn require_meta_configuration_owner_validation(
+    config_path: &Path,
+    context: &WorkspaceContext,
+    operation: &str,
+) -> Result<(), String> {
+    validate_cf_owner_path(config_path, context).map_err(|detail| {
+        format!(
+            "{operation} Configuration owner validation failed for {}: {}",
+            config_path.display(),
+            detail.trim()
+        )
+    })
+}
+
+fn validate_meta_compile_post_state(
+    validation_paths: &[PathBuf],
+    context: &WorkspaceContext,
+) -> Result<(), String> {
+    for path in validation_paths {
+        if path.extension().and_then(|value| value.to_str()) != Some("xml") {
+            continue;
+        }
+        let xml = read_utf8_sig(path)?;
+        let document = Document::parse(xml.trim_start_matches('\u{feff}'))
+            .map_err(|error| format!("XML parse error in {}: {error}", path.display()))?;
+        if document.root_element().tag_name().name() == "MetaDataObject" {
+            validate_metadata_owner_shape_8_3_27(path, context, "meta.compile")?;
+        }
+    }
+    Ok(())
 }
 
 fn compile_meta_value(
     defn: Value,
     output_dir_label: &str,
     output_dir: &Path,
+    context: &WorkspaceContext,
     transaction: &mut CompileTransaction,
+    format_dependencies: &mut Vec<PathBuf>,
 ) -> Result<(String, Vec<PathBuf>), String> {
     match defn {
-        Value::Array(items) => compile_meta_batch(items, output_dir_label, output_dir, transaction),
-        single => compile_meta_object(single, output_dir_label, output_dir, transaction),
+        Value::Array(items) => compile_meta_batch(
+            items,
+            output_dir_label,
+            output_dir,
+            context,
+            transaction,
+            format_dependencies,
+        ),
+        single => compile_meta_object(
+            single,
+            output_dir_label,
+            output_dir,
+            context,
+            transaction,
+            format_dependencies,
+        ),
     }
 }
 
@@ -8467,7 +13568,9 @@ fn compile_meta_batch(
     items: Vec<Value>,
     output_dir_label: &str,
     output_dir: &Path,
+    context: &WorkspaceContext,
     transaction: &mut CompileTransaction,
+    format_dependencies: &mut Vec<PathBuf>,
 ) -> Result<(String, Vec<PathBuf>), String> {
     let total = items.len();
     let mut stdout = String::new();
@@ -8475,7 +13578,14 @@ fn compile_meta_batch(
     let mut failed = Vec::<String>::new();
 
     for (index, item) in items.into_iter().enumerate() {
-        match compile_meta_object(item, output_dir_label, output_dir, transaction) {
+        match compile_meta_object(
+            item,
+            output_dir_label,
+            output_dir,
+            context,
+            transaction,
+            format_dependencies,
+        ) {
             Ok((item_stdout, mut item_artifacts)) => {
                 stdout.push_str(&item_stdout);
                 artifacts.append(&mut item_artifacts);
@@ -8504,7 +13614,9 @@ fn compile_meta_object(
     mut defn: Value,
     output_dir_label: &str,
     output_dir: &Path,
+    context: &WorkspaceContext,
     transaction: &mut CompileTransaction,
+    format_dependencies: &mut Vec<PathBuf>,
 ) -> Result<(String, Vec<PathBuf>), String> {
     if defn.get("type").is_none() {
         if let Some(object_type) = defn.get("objectType").cloned() {
@@ -8533,6 +13645,7 @@ fn compile_meta_object(
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "JSON must have 'name' field".to_string())?;
+    validate_meta_compile_name("metadata object", obj_name)?;
     let type_dir = output_dir.join(type_plural);
     let main_xml_path = type_dir.join(format!("{obj_name}.xml"));
     let obj_sub_dir = type_dir.join(obj_name);
@@ -8562,7 +13675,7 @@ fn compile_meta_object(
             ));
         }
     }
-    let format_version = detect_format_version(output_dir);
+    let format_version = detect_format_version(output_dir, context)?.to_string();
     let (metadata_xml, uid) =
         meta_compile_object_xml(object, &obj_type, obj_name, &format_version)?;
     transaction.create_utf8_bom_text(&main_xml_path, &metadata_xml)?;
@@ -8579,10 +13692,34 @@ fn compile_meta_object(
     }
     for (file_name, content) in meta_compile_extra_ext_files(&obj_type, &format_version) {
         let file_path = ext_dir.join(file_name);
-        if !file_path.is_file() {
-            transaction.create_utf8_bom_text(&file_path, &content)?;
-            modules_created.push(file_path.clone());
-            artifacts.push(file_path.clone());
+        match fs::symlink_metadata(&file_path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                transaction.create_utf8_bom_text(&file_path, &content)?;
+                modules_created.push(file_path.clone());
+                artifacts.push(file_path.clone());
+            }
+            Err(error) => {
+                return Err(format!(
+                    "failed to inspect metadata extra target {}: {error}",
+                    file_path.display()
+                ));
+            }
+            Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+                let snapshot = fs::read(&file_path).map_err(|error| {
+                    format!(
+                        "failed to read metadata extra target {}: {error}",
+                        file_path.display()
+                    )
+                })?;
+                transaction.guard_or_verify_exact_preimage(&file_path, &snapshot)?;
+                format_dependencies.push(file_path);
+            }
+            Ok(_) => {
+                return Err(format!(
+                    "existing metadata extra target is not a regular file: {}",
+                    file_path.display()
+                ));
+            }
         }
     }
 
@@ -8714,6 +13851,8 @@ pub(crate) fn meta_compile_object_xml(
     obj_name: &str,
     format_version: &str,
 ) -> Result<(String, String), String> {
+    validate_meta_compile_name("metadata object", obj_name)?;
+    validate_meta_compile_type_contract(defn, obj_type)?;
     if obj_type == "Catalog" {
         return meta_compile_catalog_xml(defn, obj_name, format_version);
     }
@@ -8725,8 +13864,9 @@ pub(crate) fn meta_compile_object_xml(
     let mut lines = Vec::<String>::new();
     lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
     lines.push(format!(
-        "<MetaDataObject {} version=\"{format_version}\">",
-        meta_xmlns_decl()
+        "<MetaDataObject {} version=\"{}\">",
+        meta_xmlns_decl(),
+        escape_xml(format_version)
     ));
     lines.push(format!("\t<{obj_type} uuid=\"{obj_uuid}\">"));
     emit_meta_internal_info(&mut lines, "\t\t", obj_type, obj_name, &mut next_uuid);
@@ -8805,6 +13945,626 @@ pub(crate) fn meta_compile_object_xml(
     Ok((format!("{}\n", lines.join("\n")), obj_uuid))
 }
 
+fn validate_meta_compile_type_contract(
+    defn: &Map<String, Value>,
+    obj_type: &str,
+) -> Result<(), String> {
+    validate_meta_compile_enum_properties(defn, obj_type)?;
+    for field_name in ["attributes", "dimensions", "resources"] {
+        for attr in meta_compile_attributes(defn.get(field_name)) {
+            validate_meta_compile_attr_type(&attr, field_name)?;
+        }
+    }
+    for section in meta_compile_tabular_sections(defn.get("tabularSections"))? {
+        validate_meta_compile_name("tabularSections", &section.name)?;
+        for attr in section.columns {
+            validate_meta_compile_attr_type(&attr, "tabularSections")?;
+        }
+    }
+    if obj_type == "Task" {
+        for value in meta_compile_value_items(defn.get("addressingAttributes")) {
+            let attr = meta_compile_parse_attr(&value);
+            validate_meta_compile_attr_type(&attr, "addressingAttributes")?;
+        }
+    }
+    if obj_type == "Enum" {
+        for value in meta_compile_enum_values(defn.get("values"))? {
+            validate_meta_compile_name("enum value", &value.name)?;
+        }
+    }
+    if obj_type == "ChartOfAccounts" {
+        for name in meta_compile_named_items(defn.get("accountingFlags")) {
+            validate_meta_compile_name("accounting flag", &name)?;
+        }
+        for name in meta_compile_named_items(defn.get("extDimensionAccountingFlags")) {
+            validate_meta_compile_name("ext-dimension accounting flag", &name)?;
+        }
+    }
+    if obj_type == "DocumentJournal" {
+        for value in meta_compile_value_items(defn.get("columns")) {
+            let name = meta_edit_value_name(&value).unwrap_or_default();
+            validate_meta_compile_name("document journal column", &name)?;
+            if let Some(indexing) = value
+                .as_object()
+                .and_then(|object| object.get("indexing"))
+                .and_then(Value::as_str)
+            {
+                validate_meta_8_3_27_property_value(
+                    "document journal column",
+                    "Indexing",
+                    indexing,
+                )?;
+            }
+        }
+    }
+    if obj_type == "HTTPService" {
+        if let Some(templates) = defn.get("urlTemplates").and_then(Value::as_object) {
+            for (template_name, template_value) in templates {
+                validate_meta_compile_name("URL template", template_name)?;
+                if let Some(methods) = template_value
+                    .as_object()
+                    .and_then(|object| object.get("methods"))
+                    .and_then(Value::as_object)
+                {
+                    for method_name in methods.keys() {
+                        validate_meta_compile_name("HTTP method", method_name)?;
+                    }
+                }
+            }
+        }
+    }
+    if obj_type == "WebService" {
+        if let Some(operations) = defn.get("operations").and_then(Value::as_object) {
+            for (operation_name, operation_value) in operations {
+                validate_meta_compile_name("web service operation", operation_name)?;
+                if let Some(parameters) = operation_value
+                    .as_object()
+                    .and_then(|object| object.get("parameters"))
+                    .and_then(Value::as_object)
+                {
+                    for parameter_name in parameters.keys() {
+                        validate_meta_compile_name("operation parameter", parameter_name)?;
+                    }
+                }
+            }
+        }
+    }
+    if obj_type == "Constant" {
+        let value_type = meta_compile_root_value_type(defn);
+        validate_meta_type_union(std::iter::once(value_type.as_str()))?;
+    }
+    if obj_type == "EventSubscription" {
+        let sources = meta_compile_string_list(defn.get("source"));
+        validate_meta_type_union(sources.iter().map(String::as_str))?;
+    }
+    if matches!(obj_type, "ChartOfCharacteristicTypes" | "DefinedType") {
+        let value_types = meta_compile_value_types(defn);
+        validate_meta_type_union(value_types.iter().map(String::as_str))?;
+    }
+    if obj_type == "ChartOfAccounts" {
+        let max_count = defn
+            .get("maxExtDimensionCount")
+            .and_then(json_i64_value)
+            .unwrap_or(0);
+        let has_type = defn
+            .get("extDimensionTypes")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty());
+        if max_count > 0 && !has_type {
+            return Err(
+                "ChartOfAccounts maxExtDimensionCount > 0 requires non-empty extDimensionTypes on 8.3.27"
+                    .to_string(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_meta_compile_name(context: &str, name: &str) -> Result<(), String> {
+    if is_1c_identifier(name) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{context} name '{name}' is not a valid 1C identifier"
+        ))
+    }
+}
+
+fn validate_meta_compile_enum_properties(
+    defn: &Map<String, Value>,
+    obj_type: &str,
+) -> Result<(), String> {
+    for (field_name, property_name) in [
+        ("codeType", "CodeType"),
+        ("codeAllowedLength", "CodeAllowedLength"),
+        ("numberType", "NumberType"),
+        ("numberAllowedLength", "NumberAllowedLength"),
+        ("posting", "Posting"),
+        ("realTimePosting", "RealTimePosting"),
+        ("registerRecordsDeletion", "RegisterRecordsDeletion"),
+        (
+            "registerRecordsWritingOnPost",
+            "RegisterRecordsWritingOnPost",
+        ),
+        ("dataLockControlMode", "DataLockControlMode"),
+        ("fullTextSearch", "FullTextSearch"),
+        ("defaultPresentation", "DefaultPresentation"),
+        ("hierarchyType", "HierarchyType"),
+        ("editType", "EditType"),
+        ("writeMode", "WriteMode"),
+        ("registerType", "RegisterType"),
+        ("returnValuesReuse", "ReturnValuesReuse"),
+        ("reuseSessions", "ReuseSessions"),
+        (
+            "dependenceOnCalculationTypes",
+            "DependenceOnCalculationTypes",
+        ),
+    ] {
+        validate_meta_compile_enum_field(defn, field_name, property_name)?;
+    }
+    if obj_type == "InformationRegister" {
+        validate_meta_compile_enum_field(defn, "periodicity", "InformationRegisterPeriodicity")?;
+    }
+    match obj_type {
+        "Catalog" => {
+            validate_meta_compile_enum_field(defn, "subordinationUse", "SubordinationUse")?;
+            validate_meta_compile_enum_field(defn, "codeSeries", "CatalogCodeSeries")?;
+            validate_meta_compile_enum_field(defn, "choiceMode", "ChoiceMode")?;
+        }
+        "ChartOfAccounts" => {
+            validate_meta_compile_enum_field(defn, "codeSeries", "ChartOfAccountsCodeSeries")?;
+        }
+        "ChartOfCharacteristicTypes" => {
+            validate_meta_compile_enum_field(defn, "codeSeries", "CharacteristicTypeCodeSeries")?;
+            validate_meta_compile_enum_field(defn, "predefinedDataUpdate", "PredefinedDataUpdate")?;
+            validate_meta_compile_enum_field(defn, "choiceMode", "ChoiceMode")?;
+        }
+        "Document" => {
+            validate_meta_compile_enum_field(
+                defn,
+                "numberPeriodicity",
+                "DocumentNumberPeriodicity",
+            )?;
+        }
+        "BusinessProcess" => {
+            validate_meta_compile_enum_field(
+                defn,
+                "numberPeriodicity",
+                "BusinessProcessNumberPeriodicity",
+            )?;
+        }
+        "CalculationRegister" => {
+            validate_meta_compile_enum_field(
+                defn,
+                "periodicity",
+                "CalculationRegisterPeriodicity",
+            )?;
+        }
+        "ExchangePlan" => {
+            validate_meta_compile_enum_field(defn, "choiceMode", "ChoiceMode")?;
+        }
+        "HTTPService" => validate_meta_compile_http_methods(defn)?,
+        "WebService" => validate_meta_compile_transfer_directions(defn)?,
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_meta_compile_http_methods(defn: &Map<String, Value>) -> Result<(), String> {
+    let Some(templates) = defn.get("urlTemplates").and_then(Value::as_object) else {
+        return Ok(());
+    };
+    for template in templates.values() {
+        let Some(methods) = template
+            .as_object()
+            .and_then(|object| object.get("methods"))
+            .and_then(Value::as_object)
+        else {
+            continue;
+        };
+        for method in methods.values() {
+            let value = method.as_str().ok_or_else(|| {
+                "meta.compile property HTTPMethod must be a string for the fixed 8.3.27 contract"
+                    .to_string()
+            })?;
+            validate_meta_8_3_27_property_value("meta.compile", "HTTPMethod", value)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_meta_compile_transfer_directions(defn: &Map<String, Value>) -> Result<(), String> {
+    let Some(operations) = defn.get("operations").and_then(Value::as_object) else {
+        return Ok(());
+    };
+    for operation in operations.values() {
+        let Some(parameters) = operation
+            .as_object()
+            .and_then(|object| object.get("parameters"))
+            .and_then(Value::as_object)
+        else {
+            continue;
+        };
+        for parameter in parameters.values() {
+            let Some(direction) = parameter
+                .as_object()
+                .and_then(|object| object.get("direction"))
+            else {
+                continue;
+            };
+            let value = direction.as_str().ok_or_else(|| {
+                "meta.compile property TransferDirection must be a string for the fixed 8.3.27 contract"
+                    .to_string()
+            })?;
+            validate_meta_8_3_27_property_value("meta.compile", "TransferDirection", value)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_meta_compile_enum_field(
+    defn: &Map<String, Value>,
+    field_name: &str,
+    property_name: &str,
+) -> Result<(), String> {
+    let Some(value) = defn.get(field_name) else {
+        return Ok(());
+    };
+    let raw_value = value.as_str().ok_or_else(|| {
+        format!(
+            "meta.compile property {property_name} must be a string for the fixed 8.3.27 contract"
+        )
+    })?;
+    validate_meta_8_3_27_property_value("meta.compile", property_name, raw_value)
+}
+
+fn validate_meta_8_3_27_property_value(
+    context: &str,
+    property_name: &str,
+    raw_value: &str,
+) -> Result<(), String> {
+    let Some((_, allowed_values)) = meta_validate_property_values()
+        .iter()
+        .find(|(known_property, _)| *known_property == property_name)
+    else {
+        return Ok(());
+    };
+    let normalized = normalize_meta_enum_value(raw_value);
+    if allowed_values.contains(&normalized.as_str()) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{context} property {property_name} value '{normalized}' is not valid for 8.3.27; expected one of: {}",
+            allowed_values.join(", ")
+        ))
+    }
+}
+
+fn meta_8_3_27_boolean_properties(object_type: &str) -> &'static [&'static str] {
+    match object_type {
+        "AccountingFlag" | "AddressingAttribute" | "Attribute" | "ExtDimensionAccountingFlag" => &[
+            "PasswordMode",
+            "MarkNegatives",
+            "MultiLine",
+            "ExtendedEdit",
+            "FillFromFillingValue",
+        ],
+        "AccountingRegister" => &[
+            "UseStandardCommands",
+            "IncludeHelpInContents",
+            "Correspondence",
+            "EnableTotalsSplitting",
+        ],
+        "AccumulationRegister" => &[
+            "UseStandardCommands",
+            "IncludeHelpInContents",
+            "EnableTotalsSplitting",
+        ],
+        "BusinessProcess" => &[
+            "UseStandardCommands",
+            "CheckUnique",
+            "Autonumbering",
+            "CreateTaskInPrivilegedMode",
+            "IncludeHelpInContents",
+            "UpdateDataHistoryImmediatelyAfterWrite",
+            "ExecuteAfterWriteDataHistoryVersionProcessing",
+        ],
+        "CalculationRegister" => &[
+            "UseStandardCommands",
+            "ActionPeriod",
+            "BasePeriod",
+            "IncludeHelpInContents",
+        ],
+        "Catalog" => &[
+            "Hierarchical",
+            "LimitLevelCount",
+            "FoldersOnTop",
+            "UseStandardCommands",
+            "CheckUnique",
+            "Autonumbering",
+            "QuickChoice",
+            "IncludeHelpInContents",
+            "UpdateDataHistoryImmediatelyAfterWrite",
+            "ExecuteAfterWriteDataHistoryVersionProcessing",
+        ],
+        "ChartOfAccounts" => &[
+            "UseStandardCommands",
+            "IncludeHelpInContents",
+            "CheckUnique",
+            "QuickChoice",
+            "AutoOrderByCode",
+            "UpdateDataHistoryImmediatelyAfterWrite",
+            "ExecuteAfterWriteDataHistoryVersionProcessing",
+        ],
+        "ChartOfCalculationTypes" => &[
+            "UseStandardCommands",
+            "QuickChoice",
+            "ActionPeriodUse",
+            "IncludeHelpInContents",
+            "UpdateDataHistoryImmediatelyAfterWrite",
+            "ExecuteAfterWriteDataHistoryVersionProcessing",
+        ],
+        "ChartOfCharacteristicTypes" => &[
+            "UseStandardCommands",
+            "IncludeHelpInContents",
+            "Hierarchical",
+            "FoldersOnTop",
+            "CheckUnique",
+            "Autonumbering",
+            "QuickChoice",
+            "UpdateDataHistoryImmediatelyAfterWrite",
+            "ExecuteAfterWriteDataHistoryVersionProcessing",
+        ],
+        "Command" => &["ModifiesData"],
+        "CommonModule" => &[
+            "Global",
+            "ClientManagedApplication",
+            "Server",
+            "ExternalConnection",
+            "ClientOrdinaryApplication",
+            "Client",
+            "ServerCall",
+            "Privileged",
+        ],
+        "Constant" => &[
+            "UseStandardCommands",
+            "PasswordMode",
+            "MarkNegatives",
+            "MultiLine",
+            "ExtendedEdit",
+            "UpdateDataHistoryImmediatelyAfterWrite",
+            "ExecuteAfterWriteDataHistoryVersionProcessing",
+        ],
+        "DataProcessor" | "DocumentJournal" | "Report" => {
+            &["UseStandardCommands", "IncludeHelpInContents"]
+        }
+        "Dimension" => &[
+            "PasswordMode",
+            "MarkNegatives",
+            "MultiLine",
+            "ExtendedEdit",
+            "DenyIncompleteValues",
+            "BaseDimension",
+            "UseInTotals",
+            "FillFromFillingValue",
+            "Master",
+            "MainFilter",
+            "Balance",
+        ],
+        "Document" => &[
+            "UseStandardCommands",
+            "CheckUnique",
+            "Autonumbering",
+            "PostInPrivilegedMode",
+            "UnpostInPrivilegedMode",
+            "IncludeHelpInContents",
+            "UpdateDataHistoryImmediatelyAfterWrite",
+            "ExecuteAfterWriteDataHistoryVersionProcessing",
+        ],
+        "Enum" => &["UseStandardCommands", "QuickChoice"],
+        "ExchangePlan" => &[
+            "UseStandardCommands",
+            "QuickChoice",
+            "DistributedInfoBase",
+            "IncludeConfigurationExtensions",
+            "IncludeHelpInContents",
+            "UpdateDataHistoryImmediatelyAfterWrite",
+            "ExecuteAfterWriteDataHistoryVersionProcessing",
+        ],
+        "InformationRegister" => &[
+            "UseStandardCommands",
+            "MainFilterOnPeriod",
+            "IncludeHelpInContents",
+            "EnableTotalsSliceFirst",
+            "EnableTotalsSliceLast",
+            "UpdateDataHistoryImmediatelyAfterWrite",
+            "ExecuteAfterWriteDataHistoryVersionProcessing",
+        ],
+        "Operation" => &["Nillable", "Transactioned"],
+        "Parameter" => &["Nillable"],
+        "Resource" => &[
+            "PasswordMode",
+            "MarkNegatives",
+            "MultiLine",
+            "ExtendedEdit",
+            "Balance",
+            "FillFromFillingValue",
+        ],
+        "ScheduledJob" => &["Use", "Predefined"],
+        "Task" => &[
+            "UseStandardCommands",
+            "CheckUnique",
+            "Autonumbering",
+            "IncludeHelpInContents",
+            "UpdateDataHistoryImmediatelyAfterWrite",
+            "ExecuteAfterWriteDataHistoryVersionProcessing",
+        ],
+        _ => &[],
+    }
+}
+
+fn validate_meta_8_3_27_boolean_property_value(
+    context: &str,
+    object_type: &str,
+    property_name: &str,
+    value: &str,
+) -> Result<(), String> {
+    if !meta_8_3_27_boolean_properties(object_type).contains(&property_name) {
+        return Ok(());
+    }
+    if matches!(value, "true" | "false") {
+        Ok(())
+    } else {
+        Err(format!(
+            "{context} property {object_type}.{property_name} value '{value}' is not a canonical xs:boolean for the fixed 8.3.27 contract; expected true or false"
+        ))
+    }
+}
+
+pub(crate) fn validate_metadata_8_3_27_boolean_contract(
+    xml_text: &str,
+    context: &str,
+) -> Result<(), String> {
+    let document = Document::parse(xml_text.trim_start_matches('\u{feff}'))
+        .map_err(|error| format!("XML parse error: {error}"))?;
+    let root_object = meta_edit_object_node(&document)?;
+    if !meta_validate_valid_types().contains(&root_object.tag_name().name()) {
+        return Ok(());
+    }
+
+    for object in root_object
+        .descendants()
+        .filter(roxmltree::Node::is_element)
+    {
+        let object_type = object.tag_name().name();
+        let boolean_properties = meta_8_3_27_boolean_properties(object_type);
+        if boolean_properties.is_empty() {
+            continue;
+        }
+        let Some(properties) = meta_info_child(object, "Properties") else {
+            continue;
+        };
+        for property in properties.children().filter(roxmltree::Node::is_element) {
+            let property_name = property.tag_name().name();
+            if boolean_properties.contains(&property_name) {
+                validate_meta_8_3_27_boolean_property_value(
+                    context,
+                    object_type,
+                    property_name,
+                    property.text().unwrap_or(""),
+                )?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn validate_metadata_8_3_27_enum_contract(
+    xml_text: &str,
+    context: &str,
+) -> Result<(), String> {
+    let document = Document::parse(xml_text.trim_start_matches('\u{feff}'))
+        .map_err(|error| format!("XML parse error: {error}"))?;
+    let root_object = meta_edit_object_node(&document)?;
+    if !meta_validate_valid_types().contains(&root_object.tag_name().name()) {
+        return Ok(());
+    }
+
+    for object in root_object
+        .descendants()
+        .filter(roxmltree::Node::is_element)
+    {
+        let Some(properties) = meta_info_child(object, "Properties") else {
+            continue;
+        };
+        for (property_name, allowed) in meta_validate_property_values() {
+            let Some(value) =
+                meta_info_child_text(properties, property_name).filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+            if !allowed.contains(&value.as_str()) {
+                return Err(format!(
+                    "{context} property {}.{property_name} value '{value}' is not valid for the fixed 8.3.27 contract; expected one of: {}",
+                    object.tag_name().name(),
+                    allowed.join(", ")
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn validate_metadata_owner_shape_8_3_27(
+    object_path: &Path,
+    workspace: &WorkspaceContext,
+    operation: &str,
+) -> Result<(), String> {
+    let xml_text = read_utf8_sig(object_path)?;
+    let document = Document::parse(xml_text.trim_start_matches('\u{feff}'))
+        .map_err(|error| format!("XML parse error: {error}"))?;
+    let root_object = meta_edit_object_node(&document)?;
+    match root_object.tag_name().name() {
+        "Configuration" => return validate_cf_owner_path(object_path, workspace),
+        "Subsystem" => return validate_subsystem_owner_path(object_path, workspace),
+        _ => {}
+    }
+    validate_metadata_8_3_27_boolean_contract(&xml_text, operation)?;
+    validate_metadata_8_3_27_enum_contract(&xml_text, operation)?;
+
+    let options = MetaValidationOptions {
+        detailed: true,
+        max_errors: 30,
+    };
+    let run = meta_validate_one_with_scope(
+        object_path.to_path_buf(),
+        &options,
+        workspace,
+        MetaValidationScope::PostWriteLocal,
+    )?;
+    if run.ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "{operation} owner metadata validation failed for {}: {}",
+            object_path.display(),
+            run.errors.join("; ")
+        ))
+    }
+}
+
+fn validate_meta_compile_attr_type(attr: &MetaCompileAttr, context: &str) -> Result<(), String> {
+    validate_meta_compile_name(context, &attr.name)?;
+    if !attr.fill_checking.is_empty() {
+        validate_meta_8_3_27_property_value(context, "FillChecking", &attr.fill_checking)?;
+    }
+    if !attr.indexing.is_empty() {
+        validate_meta_8_3_27_property_value(context, "Indexing", &attr.indexing)?;
+    }
+    if attr.type_name.trim().is_empty() {
+        return Ok(());
+    }
+    validate_meta_type_union(std::iter::once(attr.type_name.as_str())).map_err(|error| {
+        format!(
+            "invalid 8.3.27 type for {context} attribute {}: {error}",
+            attr.name
+        )
+    })
+}
+
+fn validate_meta_compile_tabular_section_types(
+    section: &MetaCompileTabularSection,
+    context: &str,
+) -> Result<(), String> {
+    validate_meta_compile_name(context, &section.name)?;
+    for attr in &section.columns {
+        validate_meta_compile_attr_type(attr, context)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn meta_compile_catalog_xml(
     defn: &Map<String, Value>,
     obj_name: &str,
@@ -8821,8 +14581,9 @@ pub(crate) fn meta_compile_catalog_xml(
     let mut lines = Vec::<String>::new();
     lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
     lines.push(format!(
-        "<MetaDataObject {} version=\"{format_version}\">",
-        meta_xmlns_decl()
+        "<MetaDataObject {} version=\"{}\">",
+        meta_xmlns_decl(),
+        escape_xml(format_version)
     ));
     lines.push(format!("\t<Catalog uuid=\"{obj_uuid}\">"));
     emit_meta_internal_info(&mut lines, "\t\t", "Catalog", obj_name, &mut next_uuid);
@@ -8861,41 +14622,43 @@ pub(crate) fn meta_xmlns_decl() -> &'static str {
     "xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:app=\"http://v8.1c.ru/8.2/managed-application/core\" xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\" xmlns:cmi=\"http://v8.1c.ru/8.2/managed-application/cmi\" xmlns:ent=\"http://v8.1c.ru/8.1/data/enterprise\" xmlns:lf=\"http://v8.1c.ru/8.2/managed-application/logform\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\" xmlns:xen=\"http://v8.1c.ru/8.3/xcf/enums\" xmlns:xpr=\"http://v8.1c.ru/8.3/xcf/predef\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""
 }
 
-pub(crate) fn emit_meta_internal_info<F>(
-    lines: &mut Vec<String>,
-    indent: &str,
+pub(crate) fn metadata_generated_types_8_3_27(
     object_type: &str,
-    object_name: &str,
-    next_uuid: &mut F,
-) where
-    F: FnMut() -> String,
-{
-    let generated = match object_type {
-        "Catalog" => vec![
+) -> Option<&'static [(&'static str, &'static str)]> {
+    match object_type {
+        "Catalog" => Some(&[
             ("CatalogObject", "Object"),
             ("CatalogRef", "Ref"),
             ("CatalogSelection", "Selection"),
             ("CatalogList", "List"),
             ("CatalogManager", "Manager"),
-        ],
-        "Document" => vec![
+        ]),
+        "Document" => Some(&[
             ("DocumentObject", "Object"),
             ("DocumentRef", "Ref"),
             ("DocumentSelection", "Selection"),
             ("DocumentList", "List"),
             ("DocumentManager", "Manager"),
-        ],
-        "Enum" => vec![
+        ]),
+        "BusinessProcess" => Some(&[
+            ("BusinessProcessObject", "Object"),
+            ("BusinessProcessRef", "Ref"),
+            ("BusinessProcessSelection", "Selection"),
+            ("BusinessProcessList", "List"),
+            ("BusinessProcessManager", "Manager"),
+            ("BusinessProcessRoutePointRef", "RoutePointRef"),
+        ]),
+        "Enum" => Some(&[
             ("EnumRef", "Ref"),
             ("EnumManager", "Manager"),
             ("EnumList", "List"),
-        ],
-        "Constant" => vec![
+        ]),
+        "Constant" => Some(&[
             ("ConstantManager", "Manager"),
             ("ConstantValueManager", "ValueManager"),
             ("ConstantValueKey", "ValueKey"),
-        ],
-        "InformationRegister" => vec![
+        ]),
+        "InformationRegister" => Some(&[
             ("InformationRegisterRecord", "Record"),
             ("InformationRegisterManager", "Manager"),
             ("InformationRegisterSelection", "Selection"),
@@ -8903,16 +14666,16 @@ pub(crate) fn emit_meta_internal_info<F>(
             ("InformationRegisterRecordSet", "RecordSet"),
             ("InformationRegisterRecordKey", "RecordKey"),
             ("InformationRegisterRecordManager", "RecordManager"),
-        ],
-        "AccumulationRegister" => vec![
+        ]),
+        "AccumulationRegister" => Some(&[
             ("AccumulationRegisterRecord", "Record"),
             ("AccumulationRegisterManager", "Manager"),
             ("AccumulationRegisterSelection", "Selection"),
             ("AccumulationRegisterList", "List"),
             ("AccumulationRegisterRecordSet", "RecordSet"),
             ("AccumulationRegisterRecordKey", "RecordKey"),
-        ],
-        "AccountingRegister" => vec![
+        ]),
+        "AccountingRegister" => Some(&[
             ("AccountingRegisterRecord", "Record"),
             ("AccountingRegisterExtDimensions", "ExtDimensions"),
             ("AccountingRegisterRecordSet", "RecordSet"),
@@ -8920,8 +14683,8 @@ pub(crate) fn emit_meta_internal_info<F>(
             ("AccountingRegisterSelection", "Selection"),
             ("AccountingRegisterList", "List"),
             ("AccountingRegisterManager", "Manager"),
-        ],
-        "CalculationRegister" => vec![
+        ]),
+        "CalculationRegister" => Some(&[
             ("CalculationRegisterRecord", "Record"),
             ("CalculationRegisterManager", "Manager"),
             ("CalculationRegisterSelection", "Selection"),
@@ -8929,8 +14692,8 @@ pub(crate) fn emit_meta_internal_info<F>(
             ("CalculationRegisterRecordSet", "RecordSet"),
             ("CalculationRegisterRecordKey", "RecordKey"),
             ("RecalculationsManager", "Recalcs"),
-        ],
-        "ChartOfAccounts" => vec![
+        ]),
+        "ChartOfAccounts" => Some(&[
             ("ChartOfAccountsObject", "Object"),
             ("ChartOfAccountsRef", "Ref"),
             ("ChartOfAccountsSelection", "Selection"),
@@ -8941,16 +14704,16 @@ pub(crate) fn emit_meta_internal_info<F>(
                 "ChartOfAccountsExtDimensionTypesRow",
                 "ExtDimensionTypesRow",
             ),
-        ],
-        "ChartOfCharacteristicTypes" => vec![
+        ]),
+        "ChartOfCharacteristicTypes" => Some(&[
             ("ChartOfCharacteristicTypesObject", "Object"),
             ("ChartOfCharacteristicTypesRef", "Ref"),
             ("ChartOfCharacteristicTypesSelection", "Selection"),
             ("ChartOfCharacteristicTypesList", "List"),
-            ("ChartOfCharacteristicTypesCharacteristic", "Characteristic"),
+            ("Characteristic", "Characteristic"),
             ("ChartOfCharacteristicTypesManager", "Manager"),
-        ],
-        "ChartOfCalculationTypes" => vec![
+        ]),
+        "ChartOfCalculationTypes" => Some(&[
             ("ChartOfCalculationTypesObject", "Object"),
             ("ChartOfCalculationTypesRef", "Ref"),
             ("ChartOfCalculationTypesSelection", "Selection"),
@@ -8965,41 +14728,77 @@ pub(crate) fn emit_meta_internal_info<F>(
             ("BaseCalculationTypesRow", "BaseCalculationTypesRow"),
             ("LeadingCalculationTypes", "LeadingCalculationTypes"),
             ("LeadingCalculationTypesRow", "LeadingCalculationTypesRow"),
-        ],
-        "BusinessProcess" => vec![
-            ("BusinessProcessObject", "Object"),
-            ("BusinessProcessRef", "Ref"),
-            ("BusinessProcessSelection", "Selection"),
-            ("BusinessProcessList", "List"),
-            ("BusinessProcessManager", "Manager"),
-            ("BusinessProcessRoutePointRef", "RoutePointRef"),
-        ],
-        "Task" => vec![
+        ]),
+        "Report" => Some(&[("ReportObject", "Object"), ("ReportManager", "Manager")]),
+        "DataProcessor" => Some(&[
+            ("DataProcessorObject", "Object"),
+            ("DataProcessorManager", "Manager"),
+        ]),
+        "Task" => Some(&[
             ("TaskObject", "Object"),
             ("TaskRef", "Ref"),
             ("TaskSelection", "Selection"),
             ("TaskList", "List"),
             ("TaskManager", "Manager"),
-        ],
-        "ExchangePlan" => vec![
+        ]),
+        "ExchangePlan" => Some(&[
             ("ExchangePlanObject", "Object"),
             ("ExchangePlanRef", "Ref"),
             ("ExchangePlanSelection", "Selection"),
             ("ExchangePlanList", "List"),
             ("ExchangePlanManager", "Manager"),
-        ],
-        "DocumentJournal" => vec![
+        ]),
+        "DocumentJournal" => Some(&[
             ("DocumentJournalSelection", "Selection"),
             ("DocumentJournalList", "List"),
             ("DocumentJournalManager", "Manager"),
-        ],
-        "Report" => vec![("ReportObject", "Object"), ("ReportManager", "Manager")],
-        "DataProcessor" => vec![
-            ("DataProcessorObject", "Object"),
-            ("DataProcessorManager", "Manager"),
-        ],
-        "DefinedType" => vec![("DefinedType", "DefinedType")],
-        _ => Vec::new(),
+        ]),
+        "FilterCriterion" => Some(&[
+            ("FilterCriterionManager", "Manager"),
+            ("FilterCriterionList", "List"),
+        ]),
+        "SettingsStorage" => Some(&[("SettingsStorageManager", "Manager")]),
+        "Sequence" => Some(&[("SequenceRecordSet", "RecordSet")]),
+        "IntegrationService" => Some(&[("IntegrationServiceManager", "Manager")]),
+        "DefinedType" => Some(&[("DefinedType", "DefinedType")]),
+        "Language"
+        | "Subsystem"
+        | "StyleItem"
+        | "Style"
+        | "CommonPicture"
+        | "SessionParameter"
+        | "Role"
+        | "CommonTemplate"
+        | "CommonModule"
+        | "Bot"
+        | "CommonAttribute"
+        | "XDTOPackage"
+        | "WebService"
+        | "HTTPService"
+        | "WSReference"
+        | "EventSubscription"
+        | "ScheduledJob"
+        | "FunctionalOption"
+        | "FunctionalOptionsParameter"
+        | "CommonCommand"
+        | "CommandGroup"
+        | "CommonForm"
+        | "DocumentNumerator" => Some(&[]),
+        _ => None,
+    }
+}
+
+pub(crate) fn emit_meta_internal_info<F>(
+    lines: &mut Vec<String>,
+    indent: &str,
+    object_type: &str,
+    object_name: &str,
+    next_uuid: &mut F,
+) where
+    F: FnMut() -> String,
+{
+    let Some(generated) = metadata_generated_types_8_3_27(object_type) else {
+        return;
     };
     if generated.is_empty() {
         return;
@@ -9012,8 +14811,10 @@ pub(crate) fn emit_meta_internal_info<F>(
         ));
     }
     for (prefix, category) in generated {
+        let generated_name = escape_xml(&format!("{prefix}.{object_name}"));
         lines.push(format!(
-            "{indent}\t<xr:GeneratedType name=\"{prefix}.{object_name}\" category=\"{category}\">"
+            "{indent}\t<xr:GeneratedType name=\"{generated_name}\" category=\"{}\">",
+            escape_xml(category)
         ));
         lines.push(format!(
             "{indent}\t\t<xr:TypeId>{}</xr:TypeId>",
@@ -9107,10 +14908,12 @@ pub(crate) fn emit_meta_catalog_properties(
     ));
     lines.push(format!("{indent}<InputByString>"));
     lines.push(format!(
-        "{indent}\t<xr:Field>Catalog.{obj_name}.StandardAttribute.Description</xr:Field>"
+        "{indent}\t<xr:Field>{}</xr:Field>",
+        escape_xml(&format!("Catalog.{obj_name}.StandardAttribute.Description"))
     ));
     lines.push(format!(
-        "{indent}\t<xr:Field>Catalog.{obj_name}.StandardAttribute.Code</xr:Field>"
+        "{indent}\t<xr:Field>{}</xr:Field>",
+        escape_xml(&format!("Catalog.{obj_name}.StandardAttribute.Code"))
     ));
     lines.push(format!("{indent}</InputByString>"));
     lines.push(format!(
@@ -9252,9 +15055,6 @@ pub(crate) fn emit_meta_constant_properties(
         "<ChoiceForm/>",
         "<LinkByType/>",
         "<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>",
-        "<DataHistory>DontUse</DataHistory>",
-        "<UpdateDataHistoryImmediatelyAfterWrite>false</UpdateDataHistoryImmediatelyAfterWrite>",
-        "<ExecuteAfterWriteDataHistoryVersionProcessing>false</ExecuteAfterWriteDataHistoryVersionProcessing>",
     ] {
         lines.push(format!("{indent}{line}"));
     }
@@ -9262,6 +15062,13 @@ pub(crate) fn emit_meta_constant_properties(
         "{indent}<DataLockControlMode>{}</DataLockControlMode>",
         meta_enum_prop(defn, "dataLockControlMode", "Automatic")
     ));
+    for line in [
+        "<DataHistory>DontUse</DataHistory>",
+        "<UpdateDataHistoryImmediatelyAfterWrite>false</UpdateDataHistoryImmediatelyAfterWrite>",
+        "<ExecuteAfterWriteDataHistoryVersionProcessing>false</ExecuteAfterWriteDataHistoryVersionProcessing>",
+    ] {
+        lines.push(format!("{indent}{line}"));
+    }
 }
 
 pub(crate) fn emit_meta_document_properties(
@@ -9306,7 +15113,8 @@ pub(crate) fn emit_meta_document_properties(
     lines.push(format!("{indent}<BasedOn/>"));
     lines.push(format!("{indent}<InputByString>"));
     lines.push(format!(
-        "{indent}\t<xr:Field>Document.{obj_name}.StandardAttribute.Number</xr:Field>"
+        "{indent}\t<xr:Field>{}</xr:Field>",
+        escape_xml(&format!("Document.{obj_name}.StandardAttribute.Number"))
     ));
     lines.push(format!("{indent}</InputByString>"));
     for line in [
@@ -9341,9 +15149,11 @@ pub(crate) fn emit_meta_document_properties(
     ));
     lines.push(format!(
         "{indent}<SequenceFilling>{}</SequenceFilling>",
-        defn.get("sequenceFilling")
-            .and_then(Value::as_str)
-            .unwrap_or("AutoFill")
+        escape_xml(
+            defn.get("sequenceFilling")
+                .and_then(Value::as_str)
+                .unwrap_or("AutoFill")
+        )
     ));
     emit_meta_md_object_refs(
         lines,
@@ -9469,8 +15279,9 @@ pub(crate) fn emit_meta_accounting_register_properties(
     lines.push(format!(
         "{indent}<UseStandardCommands>true</UseStandardCommands>"
     ));
-    lines.push(format!("{indent}<DefaultListForm/>"));
-    lines.push(format!("{indent}<AuxiliaryListForm/>"));
+    lines.push(format!(
+        "{indent}<IncludeHelpInContents>false</IncludeHelpInContents>"
+    ));
     emit_meta_optional_text(
         lines,
         indent,
@@ -9488,11 +15299,20 @@ pub(crate) fn emit_meta_accounting_register_properties(
     lines.push(format!(
         "{indent}<PeriodAdjustmentLength>{period_adjustment_length}</PeriodAdjustmentLength>"
     ));
-    lines.push(format!(
-        "{indent}<IncludeHelpInContents>false</IncludeHelpInContents>"
-    ));
+    lines.push(format!("{indent}<DefaultListForm/>"));
+    lines.push(format!("{indent}<AuxiliaryListForm/>"));
     emit_meta_standard_attributes(lines, indent, "AccountingRegister");
-    emit_meta_register_tail(lines, indent, defn);
+    lines.push(format!(
+        "{indent}<DataLockControlMode>{}</DataLockControlMode>",
+        meta_enum_prop(defn, "dataLockControlMode", "Automatic")
+    ));
+    lines.push(format!(
+        "{indent}<EnableTotalsSplitting>false</EnableTotalsSplitting>"
+    ));
+    lines.push(format!(
+        "{indent}<FullTextSearch>{}</FullTextSearch>",
+        meta_enum_prop(defn, "fullTextSearch", "Use")
+    ));
     lines.push(format!("{indent}<ListPresentation/>"));
     lines.push(format!("{indent}<ExtendedListPresentation/>"));
     lines.push(format!("{indent}<Explanation/>"));
@@ -9511,12 +15331,6 @@ pub(crate) fn emit_meta_calculation_register_properties(
     ));
     lines.push(format!("{indent}<DefaultListForm/>"));
     lines.push(format!("{indent}<AuxiliaryListForm/>"));
-    emit_meta_optional_text(
-        lines,
-        indent,
-        "ChartOfCalculationTypes",
-        defn.get("chartOfCalculationTypes").and_then(Value::as_str),
-    );
     lines.push(format!(
         "{indent}<Periodicity>{}</Periodicity>",
         meta_enum_prop(defn, "periodicity", "Month")
@@ -9545,6 +15359,12 @@ pub(crate) fn emit_meta_calculation_register_properties(
         "ScheduleDate",
         defn.get("scheduleDate").and_then(Value::as_str),
     );
+    emit_meta_optional_text(
+        lines,
+        indent,
+        "ChartOfCalculationTypes",
+        defn.get("chartOfCalculationTypes").and_then(Value::as_str),
+    );
     lines.push(format!(
         "{indent}<IncludeHelpInContents>false</IncludeHelpInContents>"
     ));
@@ -9566,16 +15386,20 @@ pub(crate) fn emit_meta_chart_of_accounts_properties(
     lines.push(format!(
         "{indent}<UseStandardCommands>true</UseStandardCommands>"
     ));
-    emit_meta_optional_text(
-        lines,
-        indent,
-        "ExtDimensionTypes",
-        defn.get("extDimensionTypes").and_then(Value::as_str),
-    );
+    lines.push(format!(
+        "{indent}<IncludeHelpInContents>false</IncludeHelpInContents>"
+    ));
+    lines.push(format!("{indent}<BasedOn/>"));
+    let ext_dimension_types = defn
+        .get("extDimensionTypes")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    emit_meta_optional_text(lines, indent, "ExtDimensionTypes", ext_dimension_types);
     let max_ext_dimension_count = defn
         .get("maxExtDimensionCount")
         .and_then(json_i64_value)
-        .unwrap_or(3);
+        .unwrap_or_else(|| if ext_dimension_types.is_some() { 3 } else { 0 });
     lines.push(format!(
         "{indent}<MaxExtDimensionCount>{max_ext_dimension_count}</MaxExtDimensionCount>"
     ));
@@ -9585,7 +15409,96 @@ pub(crate) fn emit_meta_chart_of_accounts_properties(
         "CodeMask",
         defn.get("codeMask").and_then(Value::as_str),
     );
-    emit_meta_code_description_properties(lines, indent, defn, 8, 120, false, false);
+    let code_length = defn.get("codeLength").and_then(json_i64_value).unwrap_or(8);
+    let description_length = defn
+        .get("descriptionLength")
+        .and_then(json_i64_value)
+        .unwrap_or(120);
+    lines.push(format!("{indent}<CodeLength>{code_length}</CodeLength>"));
+    lines.push(format!(
+        "{indent}<DescriptionLength>{description_length}</DescriptionLength>"
+    ));
+    lines.push(format!(
+        "{indent}<CodeSeries>{}</CodeSeries>",
+        meta_enum_prop(defn, "codeSeries", "WholeChartOfAccounts")
+    ));
+    let check_unique = defn.get("checkUnique").and_then(Value::as_bool) == Some(true);
+    lines.push(format!("{indent}<CheckUnique>{check_unique}</CheckUnique>"));
+    lines.push(format!(
+        "{indent}<DefaultPresentation>{}</DefaultPresentation>",
+        meta_enum_prop(defn, "defaultPresentation", "AsDescription")
+    ));
+    emit_meta_standard_attributes(lines, indent, "ChartOfAccounts");
+    lines.push(format!("{indent}<Characteristics/>"));
+    lines.push(format!("{indent}<StandardTabularSections>"));
+    lines.push(format!(
+        "{indent}\t<xr:StandardTabularSection name=\"ExtDimensionTypes\">"
+    ));
+    lines.push(format!("{indent}\t\t<xr:Synonym>"));
+    lines.push(format!("{indent}\t\t\t<v8:item>"));
+    lines.push(format!("{indent}\t\t\t\t<v8:lang/>"));
+    lines.push(format!(
+        "{indent}\t\t\t\t<v8:content>Extra dimension types</v8:content>"
+    ));
+    lines.push(format!("{indent}\t\t\t</v8:item>"));
+    lines.push(format!("{indent}\t\t</xr:Synonym>"));
+    lines.push(format!("{indent}\t\t<xr:Comment/>"));
+    lines.push(format!("{indent}\t\t<xr:ToolTip/>"));
+    lines.push(format!(
+        "{indent}\t\t<xr:FillChecking>DontCheck</xr:FillChecking>"
+    ));
+    lines.push(format!("{indent}\t\t<xr:StandardAttributes>"));
+    for attr in [
+        "TurnoversOnly",
+        "Predefined",
+        "ExtDimensionType",
+        "LineNumber",
+    ] {
+        emit_meta_standard_attribute(
+            lines,
+            &format!("{indent}\t\t\t"),
+            "ChartOfAccounts.ExtDimensionTypes",
+            attr,
+        );
+    }
+    lines.push(format!("{indent}\t\t</xr:StandardAttributes>"));
+    lines.push(format!("{indent}\t</xr:StandardTabularSection>"));
+    lines.push(format!("{indent}</StandardTabularSections>"));
+    lines.push(format!(
+        "{indent}<PredefinedDataUpdate>Auto</PredefinedDataUpdate>"
+    ));
+    lines.push(format!("{indent}<EditType>InDialog</EditType>"));
+    lines.push(format!("{indent}<QuickChoice>false</QuickChoice>"));
+    lines.push(format!("{indent}<ChoiceMode>BothWays</ChoiceMode>"));
+    lines.push(format!("{indent}<InputByString>"));
+    lines.push(format!(
+        "{indent}\t<xr:Field>{}</xr:Field>",
+        escape_xml(&format!(
+            "ChartOfAccounts.{obj_name}.StandardAttribute.Description"
+        ))
+    ));
+    lines.push(format!(
+        "{indent}\t<xr:Field>{}</xr:Field>",
+        escape_xml(&format!(
+            "ChartOfAccounts.{obj_name}.StandardAttribute.Code"
+        ))
+    ));
+    lines.push(format!("{indent}</InputByString>"));
+    for line in [
+        "<SearchStringModeOnInputByString>Begin</SearchStringModeOnInputByString>",
+        "<FullTextSearchOnInputByString>DontUse</FullTextSearchOnInputByString>",
+        "<ChoiceDataGetModeOnInputByString>Directly</ChoiceDataGetModeOnInputByString>",
+        "<CreateOnInput>DontUse</CreateOnInput>",
+        "<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>",
+        "<DefaultObjectForm/>",
+        "<DefaultListForm/>",
+        "<DefaultChoiceForm/>",
+        "<AuxiliaryObjectForm/>",
+        "<AuxiliaryListForm/>",
+        "<AuxiliaryChoiceForm/>",
+    ] {
+        lines.push(format!("{indent}{line}"));
+    }
     let auto_order_by_code = defn.get("autoOrderByCode").and_then(Value::as_bool) != Some(false);
     let order_length = defn
         .get("orderLength")
@@ -9595,25 +15508,27 @@ pub(crate) fn emit_meta_chart_of_accounts_properties(
         "{indent}<AutoOrderByCode>{auto_order_by_code}</AutoOrderByCode>"
     ));
     lines.push(format!("{indent}<OrderLength>{order_length}</OrderLength>"));
-    lines.push(format!("{indent}<EditType>InDialog</EditType>"));
-    emit_meta_standard_attributes(lines, indent, "ChartOfAccounts");
-    lines.push(format!("{indent}<StandardTabularSections>"));
+    lines.push(format!("{indent}<DataLockFields/>"));
     lines.push(format!(
-        "{indent}\t<xr:StandardTabularSection name=\"ExtDimensionTypes\">"
+        "{indent}<DataLockControlMode>{}</DataLockControlMode>",
+        meta_enum_prop(defn, "dataLockControlMode", "Automatic")
     ));
-    lines.push(format!("{indent}\t\t<xr:StandardAttributes>"));
-    for attr in [
-        "TurnoversOnly",
-        "Predefined",
-        "ExtDimensionType",
-        "LineNumber",
+    lines.push(format!(
+        "{indent}<FullTextSearch>{}</FullTextSearch>",
+        meta_enum_prop(defn, "fullTextSearch", "Use")
+    ));
+    for line in [
+        "<DataHistory>DontUse</DataHistory>",
+        "<UpdateDataHistoryImmediatelyAfterWrite>false</UpdateDataHistoryImmediatelyAfterWrite>",
+        "<ExecuteAfterWriteDataHistoryVersionProcessing>false</ExecuteAfterWriteDataHistoryVersionProcessing>",
+        "<ObjectPresentation/>",
+        "<ExtendedObjectPresentation/>",
+        "<ListPresentation/>",
+        "<ExtendedListPresentation/>",
+        "<Explanation/>",
     ] {
-        emit_meta_standard_attribute(lines, &format!("{indent}\t\t\t"), attr);
+        lines.push(format!("{indent}{line}"));
     }
-    lines.push(format!("{indent}\t\t</xr:StandardAttributes>"));
-    lines.push(format!("{indent}\t</xr:StandardTabularSection>"));
-    lines.push(format!("{indent}</StandardTabularSections>"));
-    emit_meta_choice_object_tail(lines, indent, "ChartOfAccounts", obj_name, true);
 }
 
 pub(crate) fn emit_meta_chart_of_characteristic_types_properties(
@@ -9627,7 +15542,9 @@ pub(crate) fn emit_meta_chart_of_characteristic_types_properties(
     lines.push(format!(
         "{indent}<UseStandardCommands>true</UseStandardCommands>"
     ));
-    emit_meta_code_description_properties(lines, indent, defn, 9, 25, true, true);
+    lines.push(format!(
+        "{indent}<IncludeHelpInContents>false</IncludeHelpInContents>"
+    ));
     emit_meta_optional_text(
         lines,
         indent,
@@ -9637,24 +15554,127 @@ pub(crate) fn emit_meta_chart_of_characteristic_types_properties(
     let value_types = meta_compile_value_types(defn);
     if value_types.is_empty() {
         lines.push(format!("{indent}<Type>"));
-        for value_type in ["Boolean", "String(100)", "Number(15,2)", "DateTime"] {
-            emit_meta_type_content(lines, &format!("{indent}\t"), value_type);
-        }
+        emit_meta_type_contents(
+            lines,
+            &format!("{indent}\t"),
+            ["Boolean", "String(100)", "Number(15,2)", "DateTime"],
+        );
         lines.push(format!("{indent}</Type>"));
     } else {
         lines.push(format!("{indent}<Type>"));
-        for value_type in value_types {
-            emit_meta_type_content(lines, &format!("{indent}\t"), &value_type);
-        }
+        emit_meta_type_contents(
+            lines,
+            &format!("{indent}\t"),
+            value_types.iter().map(String::as_str),
+        );
         lines.push(format!("{indent}</Type>"));
     }
     let hierarchical = defn.get("hierarchical").and_then(Value::as_bool) == Some(true);
     lines.push(format!(
         "{indent}<Hierarchical>{hierarchical}</Hierarchical>"
     ));
-    lines.push(format!("{indent}<FoldersOnTop>true</FoldersOnTop>"));
+    let folders_on_top = defn.get("foldersOnTop").and_then(Value::as_bool) != Some(false);
+    lines.push(format!(
+        "{indent}<FoldersOnTop>{folders_on_top}</FoldersOnTop>"
+    ));
+    let code_length = defn.get("codeLength").and_then(json_i64_value).unwrap_or(9);
+    let description_length = defn
+        .get("descriptionLength")
+        .and_then(json_i64_value)
+        .unwrap_or(25);
+    lines.push(format!("{indent}<CodeLength>{code_length}</CodeLength>"));
+    lines.push(format!(
+        "{indent}<CodeAllowedLength>{}</CodeAllowedLength>",
+        meta_enum_prop(defn, "codeAllowedLength", "Variable")
+    ));
+    lines.push(format!(
+        "{indent}<DescriptionLength>{description_length}</DescriptionLength>"
+    ));
+    lines.push(format!(
+        "{indent}<CodeSeries>{}</CodeSeries>",
+        meta_enum_prop(defn, "codeSeries", "WholeCharacteristicKind")
+    ));
+    let check_unique = defn.get("checkUnique").and_then(Value::as_bool) == Some(true);
+    let autonumbering = defn.get("autonumbering").and_then(Value::as_bool) != Some(false);
+    lines.push(format!("{indent}<CheckUnique>{check_unique}</CheckUnique>"));
+    lines.push(format!(
+        "{indent}<Autonumbering>{autonumbering}</Autonumbering>"
+    ));
+    lines.push(format!(
+        "{indent}<DefaultPresentation>{}</DefaultPresentation>",
+        meta_enum_prop(defn, "defaultPresentation", "AsDescription")
+    ));
     emit_meta_standard_attributes(lines, indent, "ChartOfCharacteristicTypes");
-    emit_meta_choice_object_tail(lines, indent, "ChartOfCharacteristicTypes", obj_name, true);
+    lines.push(format!("{indent}<Characteristics/>"));
+    lines.push(format!(
+        "{indent}<PredefinedDataUpdate>{}</PredefinedDataUpdate>",
+        meta_enum_prop(defn, "predefinedDataUpdate", "Auto")
+    ));
+    lines.push(format!(
+        "{indent}<EditType>{}</EditType>",
+        meta_enum_prop(defn, "editType", "InDialog")
+    ));
+    let quick_choice = defn.get("quickChoice").and_then(Value::as_bool) == Some(true);
+    lines.push(format!("{indent}<QuickChoice>{quick_choice}</QuickChoice>"));
+    lines.push(format!(
+        "{indent}<ChoiceMode>{}</ChoiceMode>",
+        meta_enum_prop(defn, "choiceMode", "BothWays")
+    ));
+    lines.push(format!("{indent}<InputByString>"));
+    lines.push(format!(
+        "{indent}\t<xr:Field>{}</xr:Field>",
+        escape_xml(&format!(
+            "ChartOfCharacteristicTypes.{obj_name}.StandardAttribute.Description"
+        ))
+    ));
+    lines.push(format!(
+        "{indent}\t<xr:Field>{}</xr:Field>",
+        escape_xml(&format!(
+            "ChartOfCharacteristicTypes.{obj_name}.StandardAttribute.Code"
+        ))
+    ));
+    lines.push(format!("{indent}</InputByString>"));
+    for line in [
+        "<CreateOnInput>DontUse</CreateOnInput>",
+        "<SearchStringModeOnInputByString>Begin</SearchStringModeOnInputByString>",
+        "<ChoiceDataGetModeOnInputByString>Directly</ChoiceDataGetModeOnInputByString>",
+        "<FullTextSearchOnInputByString>DontUse</FullTextSearchOnInputByString>",
+        "<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>",
+        "<DefaultObjectForm/>",
+        "<DefaultFolderForm/>",
+        "<DefaultListForm/>",
+        "<DefaultChoiceForm/>",
+        "<DefaultFolderChoiceForm/>",
+        "<AuxiliaryObjectForm/>",
+        "<AuxiliaryFolderForm/>",
+        "<AuxiliaryListForm/>",
+        "<AuxiliaryChoiceForm/>",
+        "<AuxiliaryFolderChoiceForm/>",
+        "<BasedOn/>",
+        "<DataLockFields/>",
+    ] {
+        lines.push(format!("{indent}{line}"));
+    }
+    lines.push(format!(
+        "{indent}<DataLockControlMode>{}</DataLockControlMode>",
+        meta_enum_prop(defn, "dataLockControlMode", "Automatic")
+    ));
+    lines.push(format!(
+        "{indent}<FullTextSearch>{}</FullTextSearch>",
+        meta_enum_prop(defn, "fullTextSearch", "Use")
+    ));
+    for line in [
+        "<ObjectPresentation/>",
+        "<ExtendedObjectPresentation/>",
+        "<ListPresentation/>",
+        "<ExtendedListPresentation/>",
+        "<Explanation/>",
+        "<DataHistory>DontUse</DataHistory>",
+        "<UpdateDataHistoryImmediatelyAfterWrite>false</UpdateDataHistoryImmediatelyAfterWrite>",
+        "<ExecuteAfterWriteDataHistoryVersionProcessing>false</ExecuteAfterWriteDataHistoryVersionProcessing>",
+    ] {
+        lines.push(format!("{indent}{line}"));
+    }
 }
 
 pub(crate) fn emit_meta_chart_of_calculation_types_properties(
@@ -9675,6 +15695,9 @@ pub(crate) fn emit_meta_chart_of_calculation_types_properties(
         .unwrap_or(25);
     lines.push(format!("{indent}<CodeLength>{code_length}</CodeLength>"));
     lines.push(format!(
+        "{indent}<DescriptionLength>{description_length}</DescriptionLength>"
+    ));
+    lines.push(format!(
         "{indent}<CodeType>{}</CodeType>",
         meta_enum_prop(defn, "codeType", "String")
     ));
@@ -9683,12 +15706,42 @@ pub(crate) fn emit_meta_chart_of_calculation_types_properties(
         meta_enum_prop(defn, "codeAllowedLength", "Variable")
     ));
     lines.push(format!(
-        "{indent}<DescriptionLength>{description_length}</DescriptionLength>"
-    ));
-    lines.push(format!(
         "{indent}<DefaultPresentation>{}</DefaultPresentation>",
         meta_enum_prop(defn, "defaultPresentation", "AsDescription")
     ));
+    lines.push(format!("{indent}<EditType>InDialog</EditType>"));
+    lines.push(format!("{indent}<QuickChoice>false</QuickChoice>"));
+    lines.push(format!("{indent}<ChoiceMode>BothWays</ChoiceMode>"));
+    lines.push(format!("{indent}<InputByString>"));
+    lines.push(format!(
+        "{indent}\t<xr:Field>{}</xr:Field>",
+        escape_xml(&format!(
+            "ChartOfCalculationTypes.{obj_name}.StandardAttribute.Description"
+        ))
+    ));
+    lines.push(format!(
+        "{indent}\t<xr:Field>{}</xr:Field>",
+        escape_xml(&format!(
+            "ChartOfCalculationTypes.{obj_name}.StandardAttribute.Code"
+        ))
+    ));
+    lines.push(format!("{indent}</InputByString>"));
+    for line in [
+        "<SearchStringModeOnInputByString>Begin</SearchStringModeOnInputByString>",
+        "<FullTextSearchOnInputByString>DontUse</FullTextSearchOnInputByString>",
+        "<ChoiceDataGetModeOnInputByString>Directly</ChoiceDataGetModeOnInputByString>",
+        "<CreateOnInput>DontUse</CreateOnInput>",
+        "<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>",
+        "<DefaultObjectForm/>",
+        "<DefaultListForm/>",
+        "<DefaultChoiceForm/>",
+        "<AuxiliaryObjectForm/>",
+        "<AuxiliaryListForm/>",
+        "<AuxiliaryChoiceForm/>",
+        "<BasedOn/>",
+    ] {
+        lines.push(format!("{indent}{line}"));
+    }
     lines.push(format!(
         "{indent}<DependenceOnCalculationTypes>{}</DependenceOnCalculationTypes>",
         meta_enum_prop(defn, "dependenceOnCalculationTypes", "DontUse")
@@ -9704,7 +15757,34 @@ pub(crate) fn emit_meta_chart_of_calculation_types_properties(
         "{indent}<ActionPeriodUse>{action_period_use}</ActionPeriodUse>"
     ));
     emit_meta_standard_attributes(lines, indent, "ChartOfCalculationTypes");
-    emit_meta_choice_object_tail(lines, indent, "ChartOfCalculationTypes", obj_name, true);
+    lines.push(format!("{indent}<Characteristics/>"));
+    lines.push(format!(
+        "{indent}<PredefinedDataUpdate>Auto</PredefinedDataUpdate>"
+    ));
+    lines.push(format!(
+        "{indent}<IncludeHelpInContents>false</IncludeHelpInContents>"
+    ));
+    lines.push(format!("{indent}<DataLockFields/>"));
+    lines.push(format!(
+        "{indent}<DataLockControlMode>{}</DataLockControlMode>",
+        meta_enum_prop(defn, "dataLockControlMode", "Automatic")
+    ));
+    lines.push(format!(
+        "{indent}<FullTextSearch>{}</FullTextSearch>",
+        meta_enum_prop(defn, "fullTextSearch", "Use")
+    ));
+    for line in [
+        "<ObjectPresentation/>",
+        "<ExtendedObjectPresentation/>",
+        "<ListPresentation/>",
+        "<ExtendedListPresentation/>",
+        "<Explanation/>",
+        "<DataHistory>DontUse</DataHistory>",
+        "<UpdateDataHistoryImmediatelyAfterWrite>false</UpdateDataHistoryImmediatelyAfterWrite>",
+        "<ExecuteAfterWriteDataHistoryVersionProcessing>false</ExecuteAfterWriteDataHistoryVersionProcessing>",
+    ] {
+        lines.push(format!("{indent}{line}"));
+    }
 }
 
 pub(crate) fn emit_meta_business_process_properties(
@@ -9722,16 +15802,94 @@ pub(crate) fn emit_meta_business_process_properties(
         "{indent}<EditType>{}</EditType>",
         meta_enum_prop(defn, "editType", "InDialog")
     ));
-    emit_meta_number_properties(lines, indent, defn, 11);
+    lines.push(format!("{indent}<InputByString>"));
+    lines.push(format!(
+        "{indent}\t<xr:Field>{}</xr:Field>",
+        escape_xml(&format!(
+            "BusinessProcess.{obj_name}.StandardAttribute.Number"
+        ))
+    ));
+    lines.push(format!("{indent}</InputByString>"));
+    for line in [
+        "<CreateOnInput>DontUse</CreateOnInput>",
+        "<SearchStringModeOnInputByString>Begin</SearchStringModeOnInputByString>",
+        "<ChoiceDataGetModeOnInputByString>Directly</ChoiceDataGetModeOnInputByString>",
+        "<FullTextSearchOnInputByString>DontUse</FullTextSearchOnInputByString>",
+        "<DefaultObjectForm/>",
+        "<DefaultListForm/>",
+        "<DefaultChoiceForm/>",
+        "<AuxiliaryObjectForm/>",
+        "<AuxiliaryListForm/>",
+        "<AuxiliaryChoiceForm/>",
+        "<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>",
+    ] {
+        lines.push(format!("{indent}{line}"));
+    }
+    lines.push(format!(
+        "{indent}<NumberType>{}</NumberType>",
+        meta_enum_prop(defn, "numberType", "String")
+    ));
+    let number_length = defn
+        .get("numberLength")
+        .and_then(json_i64_value)
+        .unwrap_or(11);
+    lines.push(format!(
+        "{indent}<NumberLength>{number_length}</NumberLength>"
+    ));
+    lines.push(format!(
+        "{indent}<NumberAllowedLength>{}</NumberAllowedLength>",
+        meta_enum_prop(defn, "numberAllowedLength", "Variable")
+    ));
+    let check_unique = defn.get("checkUnique").and_then(Value::as_bool) != Some(false);
+    lines.push(format!("{indent}<CheckUnique>{check_unique}</CheckUnique>"));
     emit_meta_standard_attributes(lines, indent, "BusinessProcess");
     lines.push(format!("{indent}<Characteristics/>"));
+    let autonumbering = defn.get("autonumbering").and_then(Value::as_bool) != Some(false);
+    lines.push(format!(
+        "{indent}<Autonumbering>{autonumbering}</Autonumbering>"
+    ));
+    lines.push(format!("{indent}<BasedOn/>"));
+    lines.push(format!(
+        "{indent}<NumberPeriodicity>{}</NumberPeriodicity>",
+        meta_enum_prop(defn, "numberPeriodicity", "Nonperiodical")
+    ));
     emit_meta_optional_text(
         lines,
         indent,
         "Task",
         defn.get("task").and_then(Value::as_str),
     );
-    emit_meta_numbered_object_tail(lines, indent, "BusinessProcess", obj_name);
+    let privileged = defn
+        .get("createTaskInPrivilegedMode")
+        .and_then(Value::as_bool)
+        != Some(false);
+    lines.push(format!(
+        "{indent}<CreateTaskInPrivilegedMode>{privileged}</CreateTaskInPrivilegedMode>"
+    ));
+    lines.push(format!("{indent}<DataLockFields/>"));
+    lines.push(format!(
+        "{indent}<DataLockControlMode>{}</DataLockControlMode>",
+        meta_enum_prop(defn, "dataLockControlMode", "Automatic")
+    ));
+    lines.push(format!(
+        "{indent}<IncludeHelpInContents>false</IncludeHelpInContents>"
+    ));
+    lines.push(format!(
+        "{indent}<FullTextSearch>{}</FullTextSearch>",
+        meta_enum_prop(defn, "fullTextSearch", "Use")
+    ));
+    for line in [
+        "<ObjectPresentation/>",
+        "<ExtendedObjectPresentation/>",
+        "<ListPresentation/>",
+        "<ExtendedListPresentation/>",
+        "<Explanation/>",
+        "<DataHistory>DontUse</DataHistory>",
+        "<UpdateDataHistoryImmediatelyAfterWrite>false</UpdateDataHistoryImmediatelyAfterWrite>",
+        "<ExecuteAfterWriteDataHistoryVersionProcessing>false</ExecuteAfterWriteDataHistoryVersionProcessing>",
+    ] {
+        lines.push(format!("{indent}{line}"));
+    }
 }
 
 pub(crate) fn emit_meta_task_properties(
@@ -9748,9 +15906,11 @@ pub(crate) fn emit_meta_task_properties(
     emit_meta_number_properties(lines, indent, defn, 14);
     lines.push(format!(
         "{indent}<TaskNumberAutoPrefix>{}</TaskNumberAutoPrefix>",
-        defn.get("taskNumberAutoPrefix")
-            .and_then(Value::as_str)
-            .unwrap_or("BusinessProcessNumber")
+        escape_xml(
+            defn.get("taskNumberAutoPrefix")
+                .and_then(Value::as_str)
+                .unwrap_or("BusinessProcessNumber")
+        )
     ));
     let description_length = defn
         .get("descriptionLength")
@@ -9777,9 +15937,60 @@ pub(crate) fn emit_meta_task_properties(
         "CurrentPerformer",
         defn.get("currentPerformer").and_then(Value::as_str),
     );
+    lines.push(format!("{indent}<BasedOn/>"));
     emit_meta_standard_attributes(lines, indent, "Task");
     lines.push(format!("{indent}<Characteristics/>"));
-    emit_meta_numbered_object_tail(lines, indent, "Task", obj_name);
+    lines.push(format!(
+        "{indent}<DefaultPresentation>{}</DefaultPresentation>",
+        meta_enum_prop(defn, "defaultPresentation", "AsDescription")
+    ));
+    lines.push(format!(
+        "{indent}<EditType>{}</EditType>",
+        meta_enum_prop(defn, "editType", "InDialog")
+    ));
+    lines.push(format!("{indent}<InputByString>"));
+    lines.push(format!(
+        "{indent}\t<xr:Field>{}</xr:Field>",
+        escape_xml(&format!("Task.{obj_name}.StandardAttribute.Number"))
+    ));
+    lines.push(format!("{indent}</InputByString>"));
+    for line in [
+        "<SearchStringModeOnInputByString>Begin</SearchStringModeOnInputByString>",
+        "<FullTextSearchOnInputByString>DontUse</FullTextSearchOnInputByString>",
+        "<ChoiceDataGetModeOnInputByString>Directly</ChoiceDataGetModeOnInputByString>",
+        "<CreateOnInput>DontUse</CreateOnInput>",
+        "<DefaultObjectForm/>",
+        "<DefaultListForm/>",
+        "<DefaultChoiceForm/>",
+        "<AuxiliaryObjectForm/>",
+        "<AuxiliaryListForm/>",
+        "<AuxiliaryChoiceForm/>",
+        "<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>",
+        "<IncludeHelpInContents>false</IncludeHelpInContents>",
+        "<DataLockFields/>",
+    ] {
+        lines.push(format!("{indent}{line}"));
+    }
+    lines.push(format!(
+        "{indent}<DataLockControlMode>{}</DataLockControlMode>",
+        meta_enum_prop(defn, "dataLockControlMode", "Automatic")
+    ));
+    lines.push(format!(
+        "{indent}<FullTextSearch>{}</FullTextSearch>",
+        meta_enum_prop(defn, "fullTextSearch", "Use")
+    ));
+    for line in [
+        "<ObjectPresentation/>",
+        "<ExtendedObjectPresentation/>",
+        "<ListPresentation/>",
+        "<ExtendedListPresentation/>",
+        "<Explanation/>",
+        "<DataHistory>DontUse</DataHistory>",
+        "<UpdateDataHistoryImmediatelyAfterWrite>false</UpdateDataHistoryImmediatelyAfterWrite>",
+        "<ExecuteAfterWriteDataHistoryVersionProcessing>false</ExecuteAfterWriteDataHistoryVersionProcessing>",
+    ] {
+        lines.push(format!("{indent}{line}"));
+    }
 }
 
 pub(crate) fn emit_meta_exchange_plan_properties(
@@ -9807,10 +16018,47 @@ pub(crate) fn emit_meta_exchange_plan_properties(
         "{indent}<DescriptionLength>{description_length}</DescriptionLength>"
     ));
     lines.push(format!(
-        "{indent}<DefaultPresentation>AsDescription</DefaultPresentation>"
+        "{indent}<DefaultPresentation>{}</DefaultPresentation>",
+        meta_enum_prop(defn, "defaultPresentation", "AsDescription")
     ));
-    lines.push(format!("{indent}<EditType>InDialog</EditType>"));
+    lines.push(format!(
+        "{indent}<EditType>{}</EditType>",
+        meta_enum_prop(defn, "editType", "InDialog")
+    ));
+    let quick_choice = defn.get("quickChoice").and_then(Value::as_bool) == Some(true);
+    lines.push(format!("{indent}<QuickChoice>{quick_choice}</QuickChoice>"));
+    lines.push(format!(
+        "{indent}<ChoiceMode>{}</ChoiceMode>",
+        meta_enum_prop(defn, "choiceMode", "BothWays")
+    ));
+    lines.push(format!("{indent}<InputByString>"));
+    lines.push(format!(
+        "{indent}\t<xr:Field>{}</xr:Field>",
+        escape_xml(&format!(
+            "ExchangePlan.{obj_name}.StandardAttribute.Description"
+        ))
+    ));
+    lines.push(format!(
+        "{indent}\t<xr:Field>{}</xr:Field>",
+        escape_xml(&format!("ExchangePlan.{obj_name}.StandardAttribute.Code"))
+    ));
+    lines.push(format!("{indent}</InputByString>"));
+    for line in [
+        "<SearchStringModeOnInputByString>Begin</SearchStringModeOnInputByString>",
+        "<FullTextSearchOnInputByString>DontUse</FullTextSearchOnInputByString>",
+        "<ChoiceDataGetModeOnInputByString>Directly</ChoiceDataGetModeOnInputByString>",
+        "<DefaultObjectForm/>",
+        "<DefaultListForm/>",
+        "<DefaultChoiceForm/>",
+        "<AuxiliaryObjectForm/>",
+        "<AuxiliaryListForm/>",
+        "<AuxiliaryChoiceForm/>",
+    ] {
+        lines.push(format!("{indent}{line}"));
+    }
     emit_meta_standard_attributes(lines, indent, "ExchangePlan");
+    lines.push(format!("{indent}<Characteristics/>"));
+    lines.push(format!("{indent}<BasedOn/>"));
     let distributed = defn.get("distributedInfoBase").and_then(Value::as_bool) == Some(true);
     let include_ext = defn
         .get("includeConfigurationExtensions")
@@ -9822,7 +16070,34 @@ pub(crate) fn emit_meta_exchange_plan_properties(
     lines.push(format!(
         "{indent}<IncludeConfigurationExtensions>{include_ext}</IncludeConfigurationExtensions>"
     ));
-    emit_meta_choice_object_tail(lines, indent, "ExchangePlan", obj_name, false);
+    for line in [
+        "<CreateOnInput>DontUse</CreateOnInput>",
+        "<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>",
+        "<IncludeHelpInContents>false</IncludeHelpInContents>",
+        "<DataLockFields/>",
+    ] {
+        lines.push(format!("{indent}{line}"));
+    }
+    lines.push(format!(
+        "{indent}<DataLockControlMode>{}</DataLockControlMode>",
+        meta_enum_prop(defn, "dataLockControlMode", "Automatic")
+    ));
+    lines.push(format!(
+        "{indent}<FullTextSearch>{}</FullTextSearch>",
+        meta_enum_prop(defn, "fullTextSearch", "Use")
+    ));
+    for line in [
+        "<ObjectPresentation/>",
+        "<ExtendedObjectPresentation/>",
+        "<ListPresentation/>",
+        "<ExtendedListPresentation/>",
+        "<Explanation/>",
+        "<DataHistory>DontUse</DataHistory>",
+        "<UpdateDataHistoryImmediatelyAfterWrite>false</UpdateDataHistoryImmediatelyAfterWrite>",
+        "<ExecuteAfterWriteDataHistoryVersionProcessing>false</ExecuteAfterWriteDataHistoryVersionProcessing>",
+    ] {
+        lines.push(format!("{indent}{line}"));
+    }
 }
 
 pub(crate) fn emit_meta_document_journal_properties(
@@ -9850,6 +16125,9 @@ pub(crate) fn emit_meta_document_journal_properties(
         "RegisteredDocuments",
         &meta_compile_string_list(defn.get("registeredDocuments")),
     );
+    lines.push(format!(
+        "{indent}<IncludeHelpInContents>false</IncludeHelpInContents>"
+    ));
     emit_meta_standard_attributes(lines, indent, "DocumentJournal");
     lines.push(format!("{indent}<ListPresentation/>"));
     lines.push(format!("{indent}<ExtendedListPresentation/>"));
@@ -9982,9 +16260,11 @@ pub(crate) fn emit_meta_event_subscription_properties(
         lines.push(format!("{indent}<Source/>"));
     } else {
         lines.push(format!("{indent}<Source>"));
-        for source in sources {
-            emit_meta_type_content(lines, &format!("{indent}\t"), &source);
-        }
+        emit_meta_event_subscription_source_type_contents(
+            lines,
+            &format!("{indent}\t"),
+            sources.iter().map(String::as_str),
+        );
         lines.push(format!("{indent}</Source>"));
     }
     lines.push(format!(
@@ -10057,6 +16337,14 @@ pub(crate) fn emit_meta_web_service_properties(
         "XDTOPackages",
         defn.get("xdtoPackages").and_then(Value::as_str),
     );
+    lines.push(format!(
+        "{indent}<DescriptorFileName>{}</DescriptorFileName>",
+        escape_xml(
+            defn.get("descriptorFileName")
+                .and_then(Value::as_str)
+                .unwrap_or("ws1.1cws")
+        )
+    ));
     lines.push(format!(
         "{indent}<ReuseSessions>{}</ReuseSessions>",
         meta_enum_prop(defn, "reuseSessions", "DontUse")
@@ -10166,9 +16454,11 @@ pub(crate) fn emit_meta_defined_type_properties(
         return;
     }
     lines.push(format!("{indent}<Type>"));
-    for value_type in value_types {
-        emit_meta_type_content(lines, &format!("{indent}\t"), &value_type);
-    }
+    emit_meta_type_contents(
+        lines,
+        &format!("{indent}\t"),
+        value_types.iter().map(String::as_str),
+    );
     lines.push(format!("{indent}</Type>"));
 }
 
@@ -10290,7 +16580,8 @@ pub(crate) fn emit_meta_lock_search_presentation_tail(
         "{indent}<DataLockControlMode>Automatic</DataLockControlMode>"
     ));
     lines.push(format!(
-        "{indent}<FullTextSearch>{full_text_search_default}</FullTextSearch>"
+        "{indent}<FullTextSearch>{}</FullTextSearch>",
+        escape_xml(full_text_search_default)
     ));
     for line in [
         "<ObjectPresentation/>",
@@ -10383,10 +16674,14 @@ pub(crate) fn emit_meta_choice_object_tail(
     lines.push(format!("{indent}<ChoiceMode>BothWays</ChoiceMode>"));
     lines.push(format!("{indent}<InputByString>"));
     lines.push(format!(
-        "{indent}\t<xr:Field>{object_type}.{obj_name}.StandardAttribute.Description</xr:Field>"
+        "{indent}\t<xr:Field>{}</xr:Field>",
+        escape_xml(&format!(
+            "{object_type}.{obj_name}.StandardAttribute.Description"
+        ))
     ));
     lines.push(format!(
-        "{indent}\t<xr:Field>{object_type}.{obj_name}.StandardAttribute.Code</xr:Field>"
+        "{indent}\t<xr:Field>{}</xr:Field>",
+        escape_xml(&format!("{object_type}.{obj_name}.StandardAttribute.Code"))
     ));
     lines.push(format!("{indent}</InputByString>"));
     for line in [
@@ -10457,7 +16752,10 @@ pub(crate) fn emit_meta_numbered_object_tail(
     lines.push(format!("{indent}<BasedOn/>"));
     lines.push(format!("{indent}<InputByString>"));
     lines.push(format!(
-        "{indent}\t<xr:Field>{object_type}.{obj_name}.StandardAttribute.Number</xr:Field>"
+        "{indent}\t<xr:Field>{}</xr:Field>",
+        escape_xml(&format!(
+            "{object_type}.{obj_name}.StandardAttribute.Number"
+        ))
     ));
     lines.push(format!("{indent}</InputByString>"));
     for line in [
@@ -10667,25 +16965,48 @@ where
                 return Ok(());
             }
             lines.push(format!("{indent}<ChildObjects>"));
-            for resource in &resources {
-                emit_meta_register_field(
-                    lines,
-                    &format!("{indent}\t"),
-                    "Resource",
-                    resource,
-                    obj_type,
-                    next_uuid,
-                );
-            }
-            for dimension in &dimensions {
-                emit_meta_register_field(
-                    lines,
-                    &format!("{indent}\t"),
-                    "Dimension",
-                    dimension,
-                    obj_type,
-                    next_uuid,
-                );
+            if obj_type == "AccountingRegister" {
+                for dimension in &dimensions {
+                    emit_meta_register_field(
+                        lines,
+                        &format!("{indent}\t"),
+                        "Dimension",
+                        dimension,
+                        obj_type,
+                        next_uuid,
+                    );
+                }
+                for resource in &resources {
+                    emit_meta_register_field(
+                        lines,
+                        &format!("{indent}\t"),
+                        "Resource",
+                        resource,
+                        obj_type,
+                        next_uuid,
+                    );
+                }
+            } else {
+                for resource in &resources {
+                    emit_meta_register_field(
+                        lines,
+                        &format!("{indent}\t"),
+                        "Resource",
+                        resource,
+                        obj_type,
+                        next_uuid,
+                    );
+                }
+                for dimension in &dimensions {
+                    emit_meta_register_field(
+                        lines,
+                        &format!("{indent}\t"),
+                        "Dimension",
+                        dimension,
+                        obj_type,
+                        next_uuid,
+                    );
+                }
             }
             let attr_context = if obj_type == "InformationRegister" {
                 "register-info"
@@ -10820,7 +17141,8 @@ pub(crate) fn emit_meta_register_field<F>(
         "DontCheck"
     };
     lines.push(format!(
-        "{indent}\t\t<FillChecking>{fill_checking}</FillChecking>"
+        "{indent}\t\t<FillChecking>{}</FillChecking>",
+        escape_xml(fill_checking)
     ));
     for line in [
         "<ChoiceFoldersAndItems>Items</ChoiceFoldersAndItems>",
@@ -10833,6 +17155,13 @@ pub(crate) fn emit_meta_register_field<F>(
         "<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>",
     ] {
         lines.push(format!("{indent}\t\t{line}"));
+    }
+    if register_type == "AccountingRegister" {
+        lines.push(format!("{indent}\t\t<Balance>true</Balance>"));
+        lines.push(format!("{indent}\t\t<AccountingFlag/>"));
+        if field_tag == "Resource" {
+            lines.push(format!("{indent}\t\t<ExtDimensionAccountingFlag/>"));
+        }
     }
     if field_tag == "Dimension" {
         if register_type == "InformationRegister" {
@@ -10851,6 +17180,18 @@ pub(crate) fn emit_meta_register_field<F>(
             lines.push(format!(
                 "{indent}\t\t<DenyIncompleteValues>{deny_incomplete}</DenyIncompleteValues>"
             ));
+        } else if register_type == "AccountingRegister" {
+            let deny_incomplete = attr.flags.iter().any(|flag| flag == "denyincomplete");
+            lines.push(format!(
+                "{indent}\t\t<DenyIncompleteValues>{deny_incomplete}</DenyIncompleteValues>"
+            ));
+        } else if register_type == "CalculationRegister" {
+            let deny_incomplete = attr.flags.iter().any(|flag| flag == "denyincomplete");
+            lines.push(format!(
+                "{indent}\t\t<DenyIncompleteValues>{deny_incomplete}</DenyIncompleteValues>"
+            ));
+            lines.push(format!("{indent}\t\t<BaseDimension>false</BaseDimension>"));
+            lines.push(format!("{indent}\t\t<ScheduleLink/>"));
         }
     }
     let indexing = if !attr.indexing.is_empty() {
@@ -10861,7 +17202,10 @@ pub(crate) fn emit_meta_register_field<F>(
         "DontIndex"
     };
     if field_tag == "Dimension" || register_type == "InformationRegister" {
-        lines.push(format!("{indent}\t\t<Indexing>{indexing}</Indexing>"));
+        lines.push(format!(
+            "{indent}\t\t<Indexing>{}</Indexing>",
+            escape_xml(indexing)
+        ));
     }
     lines.push(format!("{indent}\t\t<FullTextSearch>Use</FullTextSearch>"));
     if field_tag == "Dimension" && register_type == "AccumulationRegister" {
@@ -10872,6 +17216,11 @@ pub(crate) fn emit_meta_register_field<F>(
     }
     if register_type == "InformationRegister" {
         lines.push(format!("{indent}\t\t<DataHistory>Use</DataHistory>"));
+        if field_tag == "Dimension" {
+            lines.push(format!(
+                "{indent}\t\t<TypeReductionMode>TransformValues</TypeReductionMode>"
+            ));
+        }
     }
     lines.push(format!("{indent}\t</Properties>"));
     lines.push(format!("{indent}</{field_tag}>"));
@@ -10908,13 +17257,18 @@ pub(crate) fn emit_meta_boolean_child<F>(
         "<ExtendedEdit>false</ExtendedEdit>",
         "<MinValue xsi:nil=\"true\"/>",
         "<MaxValue xsi:nil=\"true\"/>",
+        "<FillFromFillingValue>false</FillFromFillingValue>",
+        "<FillValue xsi:nil=\"true\"/>",
         "<FillChecking>DontCheck</FillChecking>",
+        "<ChoiceFoldersAndItems>Items</ChoiceFoldersAndItems>",
         "<ChoiceParameterLinks/>",
         "<ChoiceParameters/>",
         "<QuickChoice>Auto</QuickChoice>",
+        "<CreateOnInput>Auto</CreateOnInput>",
         "<ChoiceForm/>",
         "<LinkByType/>",
         "<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>",
+        "<DataHistory>Use</DataHistory>",
     ] {
         lines.push(format!("{indent}\t\t{line}"));
     }
@@ -10960,7 +17314,10 @@ pub(crate) fn emit_meta_addressing_attribute<F>(
         .and_then(|object| object.get("indexing"))
         .and_then(Value::as_str)
         .unwrap_or("Index");
-    lines.push(format!("{indent}\t\t<Indexing>{indexing}</Indexing>"));
+    lines.push(format!(
+        "{indent}\t\t<Indexing>{}</Indexing>",
+        escape_xml(indexing)
+    ));
     lines.push(format!("{indent}\t\t<FullTextSearch>Use</FullTextSearch>"));
     lines.push(format!("{indent}\t\t<DataHistory>Use</DataHistory>"));
     lines.push(format!("{indent}\t</Properties>"));
@@ -11002,7 +17359,10 @@ pub(crate) fn emit_meta_column<F>(
     lines.push(format!("{indent}\t\t<Name>{}</Name>", escape_xml(name)));
     emit_meta_mltext(lines, &format!("{indent}\t\t"), "Synonym", &synonym);
     lines.push(format!("{indent}\t\t<Comment/>"));
-    lines.push(format!("{indent}\t\t<Indexing>{indexing}</Indexing>"));
+    lines.push(format!(
+        "{indent}\t\t<Indexing>{}</Indexing>",
+        escape_xml(indexing)
+    ));
     emit_meta_md_object_refs(lines, &format!("{indent}\t\t"), "References", &references);
     lines.push(format!("{indent}\t</Properties>"));
     lines.push(format!("{indent}</Column>"));
@@ -11036,6 +17396,7 @@ pub(crate) fn emit_meta_url_template<F>(
         "Synonym",
         &split_meta_camel_case(name),
     );
+    lines.push(format!("{indent}\t\t<Comment/>"));
     lines.push(format!(
         "{indent}\t\t<Template>{}</Template>",
         escape_xml(&template)
@@ -11088,6 +17449,7 @@ pub(crate) fn emit_meta_http_method<F>(
         "Synonym",
         &split_meta_camel_case(method_name),
     );
+    lines.push(format!("{indent}\t\t<Comment/>"));
     lines.push(format!(
         "{indent}\t\t<HTTPMethod>{}</HTTPMethod>",
         escape_xml(http_method)
@@ -11153,6 +17515,9 @@ pub(crate) fn emit_meta_operation<F>(
         "{indent}\t\t<ProcedureName>{}</ProcedureName>",
         escape_xml(handler)
     ));
+    lines.push(format!(
+        "{indent}\t\t<DataLockControlMode>Managed</DataLockControlMode>"
+    ));
     lines.push(format!("{indent}\t</Properties>"));
     let parameters = object
         .and_then(|object| object.get("parameters"))
@@ -11212,6 +17577,7 @@ pub(crate) fn emit_meta_operation_parameter<F>(
         "Synonym",
         &split_meta_camel_case(name),
     );
+    lines.push(format!("{indent}\t\t<Comment/>"));
     lines.push(format!(
         "{indent}\t\t<XDTOValueType>{}</XDTOValueType>",
         escape_xml(value_type)
@@ -11229,7 +17595,8 @@ pub(crate) fn meta_enum_prop(defn: &Map<String, Value>, field_name: &str, defaul
     defn.get(field_name)
         .and_then(Value::as_str)
         .map(normalize_meta_enum_value)
-        .unwrap_or_else(|| default.to_string())
+        .map(|value| escape_xml(&value))
+        .unwrap_or_else(|| escape_xml(default))
 }
 
 pub(crate) fn normalize_meta_enum_value(value: &str) -> String {
@@ -11270,7 +17637,6 @@ pub(crate) fn normalize_meta_enum_value(value: &str) -> String {
         "ОбаСпособа" => "BothWays",
         "НеПроверять" => "DontCheck",
         "Ошибка" => "ShowError",
-        "Предупреждение" => "ShowWarning",
         "НеИндексировать" => "DontIndex",
         "Индексировать" => "Index",
         "ИндексироватьСДопУпорядочиванием" => {
@@ -11301,80 +17667,88 @@ pub(crate) fn emit_meta_standard_attributes(
         "Document" => vec!["Posted", "Ref", "DeletionMark", "Date", "Number"],
         "Enum" => vec!["Order", "Ref"],
         "InformationRegister" => vec!["Active", "LineNumber", "Recorder", "Period"],
-        "AccumulationRegister" => vec!["Active", "LineNumber", "Recorder", "Period", "RecordType"],
-        "AccountingRegister" => vec!["Active", "Period", "Recorder", "LineNumber", "Account"],
-        "CalculationRegister" => vec![
+        "AccumulationRegister" => vec!["RecordType", "Active", "LineNumber", "Recorder", "Period"],
+        "AccountingRegister" => vec![
+            "Account",
+            "RecordType",
             "Active",
-            "Recorder",
             "LineNumber",
+            "Recorder",
+            "Period",
+        ],
+        "CalculationRegister" => vec![
             "RegistrationPeriod",
-            "CalculationType",
             "ReversingEntry",
-            "ActionPeriod",
-            "BegOfActionPeriod",
-            "EndOfActionPeriod",
-            "BegOfBasePeriod",
+            "Active",
             "EndOfBasePeriod",
+            "BegOfBasePeriod",
+            "EndOfActionPeriod",
+            "BegOfActionPeriod",
+            "ActionPeriod",
+            "CalculationType",
+            "LineNumber",
+            "Recorder",
         ],
         "ChartOfAccounts" => vec![
             "PredefinedDataName",
-            "Predefined",
-            "Ref",
-            "DeletionMark",
+            "Order",
+            "OffBalance",
+            "Type",
             "Description",
             "Code",
             "Parent",
-            "Order",
-            "Type",
-            "OffBalance",
+            "Predefined",
+            "DeletionMark",
+            "Ref",
         ],
         "ChartOfCharacteristicTypes" => vec![
             "PredefinedDataName",
-            "Predefined",
-            "Ref",
-            "DeletionMark",
+            "ValueType",
             "Description",
             "Code",
-            "Parent",
             "IsFolder",
-            "ValueType",
+            "Parent",
+            "Predefined",
+            "DeletionMark",
+            "Ref",
         ],
         "ChartOfCalculationTypes" => vec![
             "PredefinedDataName",
             "Predefined",
             "Ref",
             "DeletionMark",
+            "ActionPeriodIsBasic",
             "Description",
             "Code",
-            "ActionPeriodIsBasic",
         ],
         "BusinessProcess" => vec![
+            "Started",
+            "HeadTask",
+            "Completed",
             "Ref",
             "DeletionMark",
             "Date",
             "Number",
-            "Started",
-            "Completed",
-            "HeadTask",
         ],
         "Task" => vec![
-            "Ref",
-            "DeletionMark",
-            "Date",
-            "Number",
             "Executed",
             "Description",
             "RoutePoint",
             "BusinessProcess",
-        ],
-        "ExchangePlan" => vec![
             "Ref",
             "DeletionMark",
-            "Code",
-            "Description",
+            "Date",
+            "Number",
+        ],
+        "ExchangePlan" => vec![
+            "ExchangeDate",
             "ThisNode",
-            "SentNo",
             "ReceivedNo",
+            "SentNo",
+            "Ref",
+            "DeletionMark",
+            "Description",
+            "Code",
         ],
         "DocumentJournal" => vec!["Type", "Ref", "Date", "Posted", "DeletionMark", "Number"],
         "TabularSection" => vec!["LineNumber"],
@@ -11385,14 +17759,31 @@ pub(crate) fn emit_meta_standard_attributes(
     }
     lines.push(format!("{indent}<StandardAttributes>"));
     for attr in attrs {
-        emit_meta_standard_attribute(lines, &format!("{indent}\t"), attr);
+        emit_meta_standard_attribute(lines, &format!("{indent}\t"), object_type, attr);
     }
     lines.push(format!("{indent}</StandardAttributes>"));
 }
 
-pub(crate) fn emit_meta_standard_attribute(lines: &mut Vec<String>, indent: &str, attr_name: &str) {
+pub(crate) fn meta_standard_attribute_type_reduction_mode(
+    object_type: &str,
+    attr_name: &str,
+) -> Option<&'static str> {
+    if object_type == "Catalog" && attr_name == "Owner" {
+        Some("Deny")
+    } else {
+        Some("TransformValues")
+    }
+}
+
+pub(crate) fn emit_meta_standard_attribute(
+    lines: &mut Vec<String>,
+    indent: &str,
+    object_type: &str,
+    attr_name: &str,
+) {
     lines.push(format!(
-        "{indent}<xr:StandardAttribute name=\"{attr_name}\">"
+        "{indent}<xr:StandardAttribute name=\"{}\">",
+        escape_xml(attr_name)
     ));
     for line in [
         "<xr:LinkByType/>",
@@ -11400,6 +17791,16 @@ pub(crate) fn emit_meta_standard_attribute(lines: &mut Vec<String>, indent: &str
         "<xr:MultiLine>false</xr:MultiLine>",
         "<xr:FillFromFillingValue>false</xr:FillFromFillingValue>",
         "<xr:CreateOnInput>Auto</xr:CreateOnInput>",
+    ] {
+        lines.push(format!("{indent}\t{line}"));
+    }
+    if let Some(mode) = meta_standard_attribute_type_reduction_mode(object_type, attr_name) {
+        lines.push(format!(
+            "{indent}\t<xr:TypeReductionMode>{}</xr:TypeReductionMode>",
+            escape_xml(mode)
+        ));
+    }
+    for line in [
         "<xr:MaxValue xsi:nil=\"true\"/>",
         "<xr:ToolTip/>",
         "<xr:ExtendedEdit>false</xr:ExtendedEdit>",
@@ -11664,7 +18065,8 @@ pub(crate) fn emit_meta_attribute<F>(
         "DontCheck"
     };
     lines.push(format!(
-        "{indent}\t\t<FillChecking>{fill_checking}</FillChecking>"
+        "{indent}\t\t<FillChecking>{}</FillChecking>",
+        escape_xml(fill_checking)
     ));
     for line in [
         "<ChoiceFoldersAndItems>Items</ChoiceFoldersAndItems>",
@@ -11683,7 +18085,8 @@ pub(crate) fn emit_meta_attribute<F>(
         attr.choice_history_on_input.as_str()
     };
     lines.push(format!(
-        "{indent}\t\t<ChoiceHistoryOnInput>{choice_history_on_input}</ChoiceHistoryOnInput>"
+        "{indent}\t\t<ChoiceHistoryOnInput>{}</ChoiceHistoryOnInput>",
+        escape_xml(choice_history_on_input)
     ));
     if context == "catalog" {
         lines.push(format!("{indent}\t\t<Use>ForItem</Use>"));
@@ -11698,7 +18101,10 @@ pub(crate) fn emit_meta_attribute<F>(
         } else {
             "DontIndex"
         };
-        lines.push(format!("{indent}\t\t<Indexing>{indexing}</Indexing>"));
+        lines.push(format!(
+            "{indent}\t\t<Indexing>{}</Indexing>",
+            escape_xml(indexing)
+        ));
         lines.push(format!("{indent}\t\t<FullTextSearch>Use</FullTextSearch>"));
         if !matches!(context, "chart" | "register-other") {
             lines.push(format!("{indent}\t\t<DataHistory>Use</DataHistory>"));
@@ -11721,10 +18127,11 @@ pub(crate) fn emit_meta_tabular_section<F>(
     lines.push(format!("{indent}<TabularSection uuid=\"{}\">", next_uuid()));
     let type_prefix = format!("{object_type}TabularSection");
     let row_prefix = format!("{object_type}TabularSectionRow");
+    let generated_type_name = escape_xml(&format!("{type_prefix}.{object_name}.{}", section.name));
+    let generated_row_name = escape_xml(&format!("{row_prefix}.{object_name}.{}", section.name));
     lines.push(format!("{indent}\t<InternalInfo>"));
     lines.push(format!(
-        "{indent}\t\t<xr:GeneratedType name=\"{type_prefix}.{object_name}.{}\" category=\"TabularSection\">",
-        section.name
+        "{indent}\t\t<xr:GeneratedType name=\"{generated_type_name}\" category=\"TabularSection\">"
     ));
     lines.push(format!(
         "{indent}\t\t\t<xr:TypeId>{}</xr:TypeId>",
@@ -11736,8 +18143,7 @@ pub(crate) fn emit_meta_tabular_section<F>(
     ));
     lines.push(format!("{indent}\t\t</xr:GeneratedType>"));
     lines.push(format!(
-        "{indent}\t\t<xr:GeneratedType name=\"{row_prefix}.{object_name}.{}\" category=\"TabularSectionRow\">",
-        section.name
+        "{indent}\t\t<xr:GeneratedType name=\"{generated_row_name}\" category=\"TabularSectionRow\">"
     ));
     lines.push(format!(
         "{indent}\t\t\t<xr:TypeId>{}</xr:TypeId>",
@@ -11766,6 +18172,11 @@ pub(crate) fn emit_meta_tabular_section<F>(
         "{indent}\t\t<FillChecking>DontCheck</FillChecking>"
     ));
     emit_meta_standard_attributes(lines, &format!("{indent}\t\t"), "TabularSection");
+    if meta_line_number_length_is_applicable(object_type) {
+        lines.push(format!(
+            "{indent}\t\t<LineNumberLength>9</LineNumberLength>"
+        ));
+    }
     if object_type == "Catalog" {
         lines.push(format!("{indent}\t\t<Use>ForItem</Use>"));
     }
@@ -11787,6 +18198,13 @@ pub(crate) fn emit_meta_tabular_section<F>(
     }
     lines.push(format!("{indent}\t</ChildObjects>"));
     lines.push(format!("{indent}</TabularSection>"));
+}
+
+fn meta_line_number_length_is_applicable(object_type: &str) -> bool {
+    !matches!(
+        object_type,
+        "Report" | "DataProcessor" | "ExternalReport" | "ExternalDataProcessor"
+    )
 }
 
 pub(crate) fn emit_meta_mltext(lines: &mut Vec<String>, indent: &str, tag: &str, text: &str) {
@@ -11812,64 +18230,197 @@ pub(crate) fn emit_meta_value_type(lines: &mut Vec<String>, indent: &str, type_n
 }
 
 pub(crate) fn emit_meta_type_content(lines: &mut Vec<String>, indent: &str, type_name: &str) {
-    if type_name.is_empty() {
-        return;
-    }
-    if type_name.contains(" + ") {
-        for part in type_name.split('+').map(str::trim) {
-            emit_meta_type_content(lines, indent, part);
-        }
-        return;
-    }
-    let resolved = resolve_meta_type(type_name);
-    if resolved == "Boolean" {
-        lines.push(format!("{indent}<v8:Type>xs:boolean</v8:Type>"));
-    } else if resolved == "Date" {
-        lines.push(format!("{indent}<v8:Type>xs:dateTime</v8:Type>"));
-        lines.push(format!("{indent}<v8:DateQualifiers>"));
-        lines.push(format!(
-            "{indent}\t<v8:DateFractions>Date</v8:DateFractions>"
-        ));
-        lines.push(format!("{indent}</v8:DateQualifiers>"));
-    } else if resolved == "DateTime" {
-        lines.push(format!("{indent}<v8:Type>xs:dateTime</v8:Type>"));
-        lines.push(format!("{indent}<v8:DateQualifiers>"));
-        lines.push(format!(
-            "{indent}\t<v8:DateFractions>DateTime</v8:DateFractions>"
-        ));
-        lines.push(format!("{indent}</v8:DateQualifiers>"));
-    } else if resolved == "ValueStorage" {
-        lines.push(format!("{indent}<v8:Type>xs:base64Binary</v8:Type>"));
-    } else if let Some(length) = resolved
-        .strip_prefix("String(")
-        .and_then(|rest| rest.strip_suffix(')'))
+    emit_meta_type_contents(lines, indent, std::iter::once(type_name));
+}
+
+pub(crate) fn emit_meta_type_contents<'a>(
+    lines: &mut Vec<String>,
+    indent: &str,
+    type_names: impl IntoIterator<Item = &'a str>,
+) {
+    emit_meta_type_contents_with_string_length(lines, indent, type_names, None);
+}
+
+fn emit_meta_event_subscription_source_type_contents<'a>(
+    lines: &mut Vec<String>,
+    indent: &str,
+    type_names: impl IntoIterator<Item = &'a str>,
+) {
+    // Event sources are type identities, not constrained values. 8.3.27
+    // canonicalizes every string source to the unbounded Length=0 form.
+    emit_meta_type_contents_with_string_length(lines, indent, type_names, Some(0));
+}
+
+fn emit_meta_type_contents_with_string_length<'a>(
+    lines: &mut Vec<String>,
+    indent: &str,
+    type_names: impl IntoIterator<Item = &'a str>,
+    string_length_override: Option<u32>,
+) {
+    let mut resolved_types = type_names
+        .into_iter()
+        .flat_map(|type_name| type_name.split('+'))
+        .map(str::trim)
+        .filter(|type_name| !type_name.is_empty())
+        .map(resolve_meta_type)
+        .collect::<Vec<_>>();
+    // 8.3.27 groups concrete configuration types before primitive types, but
+    // orders configuration types by their xr:TypeId from the surrounding
+    // configuration. This pure serializer has no workspace TypeId index, so
+    // the stable sort deliberately preserves DSL order inside that group.
+    resolved_types.sort_by_key(|resolved| meta_type_platform_group_rank(resolved));
+
+    for resolved in resolved_types
+        .iter()
+        .filter(|resolved| !resolved.starts_with("DefinedType."))
     {
-        lines.push(format!("{indent}<v8:Type>xs:string</v8:Type>"));
-        lines.push(format!("{indent}<v8:StringQualifiers>"));
-        lines.push(format!("{indent}\t<v8:Length>{length}</v8:Length>"));
-        lines.push(format!(
-            "{indent}\t<v8:AllowedLength>Variable</v8:AllowedLength>"
+        emit_meta_type_tag(lines, indent, resolved);
+    }
+    for resolved in resolved_types
+        .iter()
+        .filter(|resolved| resolved.starts_with("DefinedType."))
+    {
+        emit_meta_type_tag(lines, indent, resolved);
+    }
+    for resolved in &resolved_types {
+        emit_meta_number_qualifiers(lines, indent, resolved);
+    }
+    for resolved in &resolved_types {
+        emit_meta_string_qualifiers_with_length(lines, indent, resolved, string_length_override);
+    }
+    for resolved in &resolved_types {
+        emit_meta_date_qualifiers(lines, indent, resolved);
+    }
+}
+
+fn meta_type_platform_group_rank(resolved: &str) -> u8 {
+    let (tag, wire_name) = meta_type_wire_contract(resolved);
+    match (tag, wire_name.as_str()) {
+        ("TypeSet", _) => 6,
+        (_, "xs:boolean") => 1,
+        (_, "xs:string") => 2,
+        (_, "xs:dateTime") => 3,
+        (_, "xs:decimal") => 4,
+        (_, "v8:ValueStorage") => 5,
+        _ => 0,
+    }
+}
+
+fn meta_type_wire_contract(resolved: &str) -> (&'static str, String) {
+    if resolved.starts_with("DefinedType.") {
+        ("TypeSet", format!("cfg:{resolved}"))
+    } else if resolved == "Boolean" {
+        ("Type", "xs:boolean".to_string())
+    } else if matches!(resolved, "Date" | "DateTime") {
+        ("Type", "xs:dateTime".to_string())
+    } else if resolved == "ValueStorage" {
+        ("Type", "v8:ValueStorage".to_string())
+    } else if resolved == "String" || resolved.starts_with("String(") {
+        ("Type", "xs:string".to_string())
+    } else if resolved == "Number" || parse_meta_number_type(resolved).is_some() {
+        ("Type", "xs:decimal".to_string())
+    } else if meta_compile_is_config_type(resolved) {
+        ("Type", format!("cfg:{resolved}"))
+    } else {
+        ("Type", resolved.to_string())
+    }
+}
+
+fn validate_meta_type_union<'a>(
+    type_names: impl IntoIterator<Item = &'a str>,
+) -> Result<(), String> {
+    let mut seen = BTreeMap::<(String, String), String>::new();
+    let mut type_count = 0usize;
+    let mut has_value_storage = false;
+    for raw in type_names {
+        for type_name in raw
+            .split('+')
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+        {
+            let resolved = resolve_meta_type(type_name);
+            validate_meta_resolved_type(type_name, &resolved)?;
+            type_count += 1;
+            has_value_storage |= resolved == "ValueStorage";
+            let (tag, wire_name) = meta_type_wire_contract(&resolved);
+            let key = (tag.to_string(), wire_name.clone());
+            if let Some(previous) = seen.insert(key, type_name.to_string()) {
+                return Err(format!(
+                    "duplicate platform type in valueTypes: {previous} and {type_name} both map to v8:{tag} {wire_name}"
+                ));
+            }
+        }
+    }
+    if has_value_storage && type_count > 1 {
+        return Err(
+            "ValueStorage must be the only platform type in an 8.3.27 type description".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_meta_resolved_type(raw: &str, resolved: &str) -> Result<(), String> {
+    if resolved == "String" {
+        return Ok(());
+    }
+    if resolved.starts_with("String") {
+        if parse_meta_string_type(resolved).is_none() {
+            return Err(format!(
+                "type {raw} is not valid for 8.3.27; expected String or String(integer length 0..=1024)"
+            ));
+        }
+        return Ok(());
+    }
+    if resolved == "Number" {
+        return Ok(());
+    }
+    if resolved.starts_with("Number") {
+        if parse_meta_number_type(resolved).is_none() {
+            return Err(format!(
+                "type {raw} is not valid for 8.3.27; expected Number(integer digits 0..=38, integer fraction 0..=digits[,nonneg])"
+            ));
+        }
+        return Ok(());
+    }
+    if resolved.contains(['(', ')']) {
+        return Err(format!(
+            "type {raw} is not valid for 8.3.27; parameters are supported only for String and Number"
         ));
-        lines.push(format!("{indent}</v8:StringQualifiers>"));
-    } else if resolved == "String" {
-        lines.push(format!("{indent}<v8:Type>xs:string</v8:Type>"));
-        lines.push(format!("{indent}<v8:StringQualifiers>"));
-        lines.push(format!("{indent}\t<v8:Length>10</v8:Length>"));
-        lines.push(format!(
-            "{indent}\t<v8:AllowedLength>Variable</v8:AllowedLength>"
-        ));
-        lines.push(format!("{indent}</v8:StringQualifiers>"));
-    } else if resolved == "Number" {
-        lines.push(format!("{indent}<v8:Type>xs:decimal</v8:Type>"));
-        lines.push(format!("{indent}<v8:NumberQualifiers>"));
-        lines.push(format!("{indent}\t<v8:Digits>10</v8:Digits>"));
-        lines.push(format!(
-            "{indent}\t<v8:FractionDigits>0</v8:FractionDigits>"
-        ));
-        lines.push(format!("{indent}\t<v8:AllowedSign>Any</v8:AllowedSign>"));
-        lines.push(format!("{indent}</v8:NumberQualifiers>"));
-    } else if let Some((digits, fraction, nonnegative)) = parse_meta_number_type(&resolved) {
-        lines.push(format!("{indent}<v8:Type>xs:decimal</v8:Type>"));
+    }
+    if meta_compile_is_config_type(resolved) {
+        let invalid_name = resolved
+            .split_once('.')
+            .is_none_or(|(_, name)| name.trim().is_empty() || name.contains('.'));
+        if invalid_name || !form_is_xml_ncname(resolved) {
+            return Err(format!(
+                "type {raw} is not valid for 8.3.27; configuration type name is not an XML NCName"
+            ));
+        }
+        return Ok(());
+    }
+    if matches!(resolved, "Boolean" | "Date" | "DateTime" | "ValueStorage") {
+        return Ok(());
+    }
+    Err(format!(
+        "type {raw} is not supported by the fixed 8.3.27 metadata DSL"
+    ))
+}
+
+pub(crate) fn emit_meta_type_tag(lines: &mut Vec<String>, indent: &str, resolved: &str) {
+    let (tag, wire_name) = meta_type_wire_contract(resolved);
+    lines.push(format!(
+        "{indent}<v8:{tag}>{}</v8:{tag}>",
+        escape_xml(&wire_name)
+    ));
+}
+
+pub(crate) fn emit_meta_number_qualifiers(lines: &mut Vec<String>, indent: &str, resolved: &str) {
+    let number = if resolved == "Number" {
+        Some((10, 0, false))
+    } else {
+        parse_meta_number_type(resolved)
+    };
+    if let Some((digits, fraction, nonnegative)) = number {
         lines.push(format!("{indent}<v8:NumberQualifiers>"));
         lines.push(format!("{indent}\t<v8:Digits>{digits}</v8:Digits>"));
         lines.push(format!(
@@ -11880,16 +18431,41 @@ pub(crate) fn emit_meta_type_content(lines: &mut Vec<String>, indent: &str, type
             if nonnegative { "Nonnegative" } else { "Any" }
         ));
         lines.push(format!("{indent}</v8:NumberQualifiers>"));
-    } else if meta_compile_is_config_type(&resolved) {
-        lines.push(format!(
-            "{indent}<v8:Type>cfg:{}</v8:Type>",
-            escape_xml(&resolved)
-        ));
+    }
+}
+
+pub(crate) fn emit_meta_string_qualifiers(lines: &mut Vec<String>, indent: &str, resolved: &str) {
+    emit_meta_string_qualifiers_with_length(lines, indent, resolved, None);
+}
+
+fn emit_meta_string_qualifiers_with_length(
+    lines: &mut Vec<String>,
+    indent: &str,
+    resolved: &str,
+    length_override: Option<u32>,
+) {
+    let length = if resolved == "String" {
+        Some(length_override.unwrap_or(10))
     } else {
+        parse_meta_string_type(resolved).map(|length| length_override.unwrap_or(length))
+    };
+    if let Some(length) = length {
+        lines.push(format!("{indent}<v8:StringQualifiers>"));
+        lines.push(format!("{indent}\t<v8:Length>{length}</v8:Length>"));
         lines.push(format!(
-            "{indent}<v8:Type>{}</v8:Type>",
-            escape_xml(&resolved)
+            "{indent}\t<v8:AllowedLength>Variable</v8:AllowedLength>"
         ));
+        lines.push(format!("{indent}</v8:StringQualifiers>"));
+    }
+}
+
+pub(crate) fn emit_meta_date_qualifiers(lines: &mut Vec<String>, indent: &str, resolved: &str) {
+    if matches!(resolved, "Date" | "DateTime") {
+        lines.push(format!("{indent}<v8:DateQualifiers>"));
+        lines.push(format!(
+            "{indent}\t<v8:DateFractions>{resolved}</v8:DateFractions>"
+        ));
+        lines.push(format!("{indent}</v8:DateQualifiers>"));
     }
 }
 
@@ -11970,6 +18546,7 @@ pub(crate) fn meta_type_synonym(value: &str) -> Option<&'static str> {
         "булево" | "boolean" | "bool" => Some("Boolean"),
         "дата" | "date" => Some("Date"),
         "датавремя" | "datetime" => Some("DateTime"),
+        "хранилищезначения" | "valuestorage" => Some("ValueStorage"),
         "справочникссылка" | "catalogref" => Some("CatalogRef"),
         "документссылка" | "documentref" => Some("DocumentRef"),
         "перечислениессылка" | "enumref" => Some("EnumRef"),
@@ -11990,13 +18567,29 @@ pub(crate) fn meta_type_synonym(value: &str) -> Option<&'static str> {
     }
 }
 
-pub(crate) fn parse_meta_number_type(value: &str) -> Option<(&str, &str, bool)> {
-    let rest = value.strip_prefix("Number(")?.strip_suffix(')')?;
-    let parts = rest.split(',').map(str::trim).collect::<Vec<_>>();
-    if parts.len() < 2 {
+pub(crate) fn parse_meta_string_type(value: &str) -> Option<u32> {
+    let rest = value.strip_prefix("String(")?.strip_suffix(')')?.trim();
+    if rest.is_empty() || rest.contains(',') {
         return None;
     }
-    Some((parts[0], parts[1], parts.get(2) == Some(&"nonneg")))
+    rest.parse().ok().filter(|length| *length <= 1024)
+}
+
+pub(crate) fn parse_meta_number_type(value: &str) -> Option<(u32, u32, bool)> {
+    let rest = value.strip_prefix("Number(")?.strip_suffix(')')?;
+    let parts = rest.split(',').map(str::trim).collect::<Vec<_>>();
+    if !matches!(parts.len(), 2 | 3)
+        || parts.iter().any(|part| part.is_empty())
+        || (parts.len() == 3 && parts[2] != "nonneg")
+    {
+        return None;
+    }
+    let digits = parts[0].parse().ok()?;
+    let fraction = parts[1].parse().ok()?;
+    if digits > 38 || fraction > digits {
+        return None;
+    }
+    Some((digits, fraction, parts.len() == 3))
 }
 
 pub(crate) fn split_meta_camel_case(name: &str) -> String {
@@ -12061,8 +18654,21 @@ struct MetaEditSourceFormat {
     eol: MetaEditEol,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum MetaEditLineNumberLengthPolicy {
+    Editable,
+    FixedFive,
+    NotApplicable,
+    UnknownCompatibility,
+}
+
+struct MetaEditLineNumberLengthAuthorization {
+    policy: MetaEditLineNumberLengthPolicy,
+    provenance: Option<PlatformXmlOwnerProvenance>,
+}
+
 pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
-    let edit_result = (|| -> Result<(String, PathBuf, bool), String> {
+    let edit_result = (|| -> Result<(String, PathBuf, bool, Vec<String>), String> {
         let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
         let operation = string_arg(args, &["operation", "Operation"]);
         if definition_file.is_some() && operation.is_some() {
@@ -12071,11 +18677,7 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
         if definition_file.is_none() && operation.is_none() {
             return Err("Either -DefinitionFile or -Operation is required".to_string());
         }
-        let object_path_raw = required_path(
-            args,
-            &["objectPath", "ObjectPath", "path", "Path"],
-            "ObjectPath",
-        )?;
+        let object_path_raw = required_path(args, OBJECT_PATH, "ObjectPath")?;
         let object_path = resolve_meta_edit_object_path(&object_path_raw, &context.cwd)?;
         let value = string_arg(args, &["value", "Value"]).unwrap_or_default();
 
@@ -12091,10 +18693,12 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
             xml_text = xml_text.trim_start_matches('\u{feff}').to_string();
         }
         let (object_type, object_name) = meta_edit_object_identity(&xml_text)?;
+        validate_metadata_8_3_27_enum_contract(&xml_text, "meta.edit")?;
 
         let mut counts = MetaEditCounts::default();
         let mut info_lines = vec![format!("[INFO] Object: {object_type}.{object_name}")];
-        if let Some(definition_file) = definition_file {
+        let mut transaction = CompileTransaction::new();
+        let line_number_length_provenance = if let Some(definition_file) = definition_file {
             let definition_path = absolutize(definition_file.clone(), &context.cwd);
             if !definition_path.exists() {
                 return Err(format!(
@@ -12102,37 +18706,83 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
                     definition_file.display()
                 ));
             }
-            let definition_text = fs::read_to_string(&definition_path)
-                .map_err(|err| format!("failed to read {}: {err}", definition_path.display()))?;
-            let definition: Value =
-                serde_json::from_str(definition_text.trim_start_matches('\u{feff}'))
-                    .map_err(|err| format!("DefinitionFile JSON parse error: {err}"))?;
+            let definition = FileBackedJson::read(&definition_path, |err| {
+                format!("DefinitionFile JSON parse error: {err}")
+            })?
+            .bind_to(&mut transaction)?;
+            let authorization = if meta_edit_definition_requests_line_number_length(&definition) {
+                meta_edit_line_number_length_policy(
+                    &object_type,
+                    &object_path,
+                    context,
+                    &mut transaction,
+                )?
+            } else {
+                MetaEditLineNumberLengthAuthorization {
+                    policy: MetaEditLineNumberLengthPolicy::UnknownCompatibility,
+                    provenance: None,
+                }
+            };
             meta_edit_apply_definition(
                 &mut xml_text,
                 &object_type,
                 &object_name,
                 &definition,
+                authorization.policy,
                 &mut counts,
             )?;
             info_lines.extend(meta_edit_definition_info_lines(&definition));
+            authorization.provenance
         } else {
+            let operation = operation.expect("checked above");
+            let authorization = if meta_edit_inline_requests_line_number_length(operation, value) {
+                meta_edit_line_number_length_policy(
+                    &object_type,
+                    &object_path,
+                    context,
+                    &mut transaction,
+                )?
+            } else {
+                MetaEditLineNumberLengthAuthorization {
+                    policy: MetaEditLineNumberLengthPolicy::UnknownCompatibility,
+                    provenance: None,
+                }
+            };
             meta_edit_apply_inline_operation(
                 &mut xml_text,
                 &object_type,
                 &object_name,
-                operation.expect("checked above"),
+                operation,
                 value,
+                authorization.policy,
                 &mut counts,
             )?;
-        }
+            authorization.provenance
+        };
+
+        #[cfg(test)]
+        run_meta_edit_after_line_number_length_policy_hook();
 
         Document::parse(xml_text.trim_start_matches('\u{feff}'))
             .map_err(|err| format!("XML parse error after meta-edit: {err}"))?;
+        validate_metadata_8_3_27_boolean_contract(&xml_text, "meta.edit")?;
         let serialized_bytes = meta_edit_preserve_source_format(&xml_text, source_format);
         let changed = serialized_bytes != original_bytes;
+        let mut warnings = Vec::new();
         if changed {
-            fs::write(&object_path, &serialized_bytes)
-                .map_err(|err| format!("failed to write {}: {err}", object_path.display()))?;
+            transaction.replace_bytes(&object_path, &original_bytes, serialized_bytes)?;
+            if let Some(provenance) = line_number_length_provenance {
+                provenance.bind_to(&mut transaction)?;
+            }
+            guard_active_format_owner(&mut transaction, &object_path, context)?;
+            let validation_path = object_path.clone();
+            warnings = transaction
+                .commit_with_post_validation(move || {
+                    let published = read_utf8_sig(&validation_path)?;
+                    validate_metadata_8_3_27_boolean_contract(&published, "meta.edit")?;
+                    validate_metadata_8_3_27_enum_contract(&published, "meta.edit")
+                })?
+                .cleanup_warnings;
             info_lines.push(format!("[INFO] Saved: {}", object_path.display()));
         } else {
             counts = MetaEditCounts::default();
@@ -12143,11 +18793,11 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
             info_lines.join("\n"),
             counts.added, counts.removed, counts.modified
         );
-        Ok((stdout, object_path, changed))
+        Ok((stdout, object_path, changed, warnings))
     })();
 
     match edit_result {
-        Ok((stdout, object_path, changed)) => AdapterOutcome {
+        Ok((stdout, object_path, changed, warnings)) => AdapterOutcome {
             ok: true,
             summary: "unica.meta.edit completed with native metadata editor".to_string(),
             changes: if changed {
@@ -12155,7 +18805,7 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
             } else {
                 Vec::new()
             },
-            warnings: Vec::new(),
+            warnings,
             errors: Vec::new(),
             artifacts: vec![object_path.display().to_string()],
             stdout: Some(stdout),
@@ -12284,6 +18934,169 @@ pub(crate) fn meta_edit_object_identity(xml_text: &str) -> Result<(String, Strin
     Ok((object_type, object_name))
 }
 
+fn meta_edit_line_number_length_policy(
+    object_type: &str,
+    object_path: &Path,
+    context: &WorkspaceContext,
+    transaction: &mut CompileTransaction,
+) -> Result<MetaEditLineNumberLengthAuthorization, String> {
+    if !meta_line_number_length_is_applicable(object_type) {
+        return Ok(MetaEditLineNumberLengthAuthorization {
+            policy: MetaEditLineNumberLengthPolicy::NotApplicable,
+            provenance: None,
+        });
+    }
+
+    let resolution = match resolve_platform_xml_owners_with_provenance(object_path, context) {
+        Ok(resolution) => resolution,
+        Err(_) => {
+            return Ok(MetaEditLineNumberLengthAuthorization {
+                policy: MetaEditLineNumberLengthPolicy::UnknownCompatibility,
+                provenance: None,
+            })
+        }
+    };
+    let Some(owner) = resolution.owners.iter().find(|owner| {
+        matches!(
+            owner.kind,
+            PlatformXmlOwnerKind::Configuration | PlatformXmlOwnerKind::Extension
+        )
+    }) else {
+        return Ok(MetaEditLineNumberLengthAuthorization {
+            policy: MetaEditLineNumberLengthPolicy::UnknownCompatibility,
+            provenance: None,
+        });
+    };
+    if owner.path != object_path {
+        transaction.guard_or_verify_exact_preimage(&owner.path, &owner.raw)?;
+    }
+    let property_name = match owner.kind {
+        PlatformXmlOwnerKind::Configuration => "CompatibilityMode",
+        PlatformXmlOwnerKind::Extension => "ConfigurationExtensionCompatibilityMode",
+        _ => unreachable!("configuration-like owners were filtered above"),
+    };
+    let owner_text = std::str::from_utf8(&owner.raw)
+        .map_err(|error| format!("failed to read {}: {error}", owner.path.display()))?;
+    let document = Document::parse(owner_text.trim_start_matches('\u{feff}'))
+        .map_err(|error| format!("failed to parse {}: {error}", owner.path.display()))?;
+    let Some(mode) = document
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name() == property_name)
+        .and_then(|node| node.text())
+        .map(str::trim)
+        .filter(|mode| !mode.is_empty())
+    else {
+        return Ok(MetaEditLineNumberLengthAuthorization {
+            policy: MetaEditLineNumberLengthPolicy::UnknownCompatibility,
+            provenance: None,
+        });
+    };
+
+    Ok(MetaEditLineNumberLengthAuthorization {
+        policy: meta_edit_line_number_length_policy_from_mode(mode),
+        provenance: Some(resolution.provenance),
+    })
+}
+
+pub(crate) fn meta_edit_line_number_length_policy_from_mode(
+    mode: &str,
+) -> MetaEditLineNumberLengthPolicy {
+    meta_edit_line_number_length_policy_for_platform(mode, ACTIVE_FORMAT_PROFILE.platform_line)
+}
+
+pub(crate) fn meta_edit_line_number_length_policy_for_platform(
+    mode: &str,
+    platform_line: &str,
+) -> MetaEditLineNumberLengthPolicy {
+    if !cf_validate_enum_allowed("CompatibilityMode").contains(&mode) {
+        return MetaEditLineNumberLengthPolicy::UnknownCompatibility;
+    }
+    let version = if mode == "DontUse" {
+        meta_edit_parse_platform_line(platform_line)
+    } else {
+        mode.strip_prefix("Version")
+            .and_then(meta_edit_parse_compatibility_version)
+    };
+    match version {
+        Some(version) if version > (8, 3, 26) => MetaEditLineNumberLengthPolicy::Editable,
+        Some(_) => MetaEditLineNumberLengthPolicy::FixedFive,
+        None => MetaEditLineNumberLengthPolicy::UnknownCompatibility,
+    }
+}
+
+pub(crate) fn meta_edit_parse_platform_line(value: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = value.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
+}
+
+pub(crate) fn meta_edit_parse_compatibility_version(value: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = value.split('_');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next().map(str::parse).transpose().ok()?.unwrap_or(0);
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
+}
+
+pub(crate) fn meta_edit_is_line_number_length_key(key: &str) -> bool {
+    matches!(
+        key.trim().to_ascii_lowercase().as_str(),
+        "linenumberlength" | "line_number_length" | "line-number-length"
+    )
+}
+
+pub(crate) fn meta_edit_changes_request_line_number_length(raw_changes: &str) -> bool {
+    split_meta_edit_commas_outside_parens(raw_changes)
+        .into_iter()
+        .filter_map(|change| change.split_once('='))
+        .any(|(key, _)| meta_edit_is_line_number_length_key(key))
+}
+
+pub(crate) fn meta_edit_inline_requests_line_number_length(operation: &str, value: &str) -> bool {
+    if !operation.eq_ignore_ascii_case("modify-ts") {
+        return false;
+    }
+    split_meta_edit_batch_items(value, operation)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|item| item.split_once(':'))
+        .any(|(_, changes)| meta_edit_changes_request_line_number_length(changes))
+}
+
+pub(crate) fn meta_edit_definition_requests_line_number_length(definition: &Value) -> bool {
+    let Some(definition) = definition.as_object() else {
+        return false;
+    };
+    definition.iter().any(|(operation, operation_value)| {
+        if meta_edit_operation_key(operation).as_deref() != Some("modify") {
+            return false;
+        }
+        let Some(modify) = operation_value.as_object() else {
+            return false;
+        };
+        modify.iter().any(|(child_type, child_value)| {
+            if meta_edit_child_type_key(child_type) != Some("tabularSections") {
+                return false;
+            }
+            child_value
+                .as_object()
+                .into_iter()
+                .flat_map(|sections| sections.values())
+                .filter_map(Value::as_object)
+                .flat_map(|changes| changes.keys())
+                .any(|key| meta_edit_is_line_number_length_key(key))
+        })
+    })
+}
+
 pub(crate) fn split_meta_edit_batch_items<'a>(
     raw_value: &'a str,
     operation: &str,
@@ -12305,6 +19118,7 @@ pub(crate) fn meta_edit_apply_inline_operation(
     object_name: &str,
     operation: &str,
     value: &str,
+    line_number_length_policy: MetaEditLineNumberLengthPolicy,
     counts: &mut MetaEditCounts,
 ) -> Result<(), String> {
     let (action, target) = operation
@@ -12389,6 +19203,7 @@ pub(crate) fn meta_edit_apply_inline_operation(
                     child_type,
                     name.trim(),
                     raw_changes.trim(),
+                    line_number_length_policy,
                 )?;
             }
         }
@@ -12403,6 +19218,7 @@ pub(crate) fn meta_edit_apply_definition(
     object_type: &str,
     object_name: &str,
     definition: &Value,
+    line_number_length_policy: MetaEditLineNumberLengthPolicy,
     counts: &mut MetaEditCounts,
 ) -> Result<(), String> {
     let definition = definition
@@ -12449,6 +19265,7 @@ pub(crate) fn meta_edit_apply_definition(
                 object_type,
                 object_name,
                 value,
+                line_number_length_policy,
                 counts,
             )?,
             Some(other) => return Err(format!("Unsupported definition operation: {other}")),
@@ -12504,6 +19321,7 @@ pub(crate) fn meta_edit_apply_definition_modify(
     object_type: &str,
     object_name: &str,
     value: &Value,
+    line_number_length_policy: MetaEditLineNumberLengthPolicy,
     counts: &mut MetaEditCounts,
 ) -> Result<(), String> {
     let object = value
@@ -12521,15 +19339,25 @@ pub(crate) fn meta_edit_apply_definition_modify(
                 counts,
             )?;
         } else if child_type == "tabularSections" {
-            meta_edit_modify_tabular_sections_from_definition(xml_text, items, counts)?;
+            meta_edit_modify_tabular_sections_from_definition(
+                xml_text,
+                items,
+                line_number_length_policy,
+                counts,
+            )?;
         } else {
             let item_object = items
                 .as_object()
                 .ok_or_else(|| format!("modify {child_type} must be an object"))?;
             for (name, changes) in item_object {
                 let raw_changes = meta_edit_changes_to_inline(changes)?;
-                counts.modified +=
-                    meta_edit_modify_top_child(xml_text, child_type, name, &raw_changes)?;
+                counts.modified += meta_edit_modify_top_child(
+                    xml_text,
+                    child_type,
+                    name,
+                    &raw_changes,
+                    line_number_length_policy,
+                )?;
             }
         }
     }
@@ -12830,18 +19658,29 @@ pub(crate) fn meta_edit_set_scalar_property(
     if key.is_empty() {
         return Err("modify-property requires non-empty key".to_string());
     }
-    let normalized = normalize_meta_edit_property_value(key, raw_value);
     let doc = Document::parse(xml_text.trim_start_matches('\u{feff}'))
         .map_err(|err| format!("XML parse error: {err}"))?;
     let object = meta_edit_object_node(&doc)?;
+    let object_type = object.tag_name().name();
+    let normalized = normalize_meta_edit_scalar_property_value(object_type, key, raw_value);
+    if key == "Name" {
+        validate_meta_compile_name("meta.edit object", &normalized)?;
+    }
     let properties = meta_info_child(object, "Properties")
         .ok_or_else(|| "Object has no Properties".to_string())?;
     let matching_properties = meta_info_children(properties, key).len();
+    if matching_properties == 0 {
+        return Err(format!(
+            "direct scalar property <{key}> does not exist in object Properties"
+        ));
+    }
     if matching_properties > 1 {
         return Err(format!(
             "Properties contains {matching_properties} direct <{key}> elements; expected at most one"
         ));
     }
+    validate_meta_8_3_27_property_value("meta.edit", key, &normalized)?;
+    validate_meta_8_3_27_boolean_property_value("meta.edit", object_type, key, &normalized)?;
     let range = properties.range();
     drop(doc);
 
@@ -12867,6 +19706,7 @@ pub(crate) fn meta_edit_add_child_value(
             if attr.name.is_empty() {
                 return Err("add-attribute requires Value like Name: Type".to_string());
             }
+            validate_meta_compile_attr_type(&attr, "meta.edit add attribute")?;
             meta_edit_ensure_top_child_name_free(xml_text, "Attribute", &attr.name)?;
             let context = meta_edit_attribute_context(object_type);
             let mut lines = Vec::new();
@@ -12904,6 +19744,7 @@ pub(crate) fn meta_edit_add_child_value(
             if attr.name.is_empty() {
                 return Err(format!("add-{child_type} requires Value like Name: Type"));
             }
+            validate_meta_compile_attr_type(&attr, "meta.edit add register field")?;
             let tag = if child_type == "dimensions" {
                 "Dimension"
             } else {
@@ -12924,6 +19765,7 @@ pub(crate) fn meta_edit_add_child_value(
         }
         "enumValues" => {
             let enum_value = meta_edit_enum_value_from_value(&value)?;
+            validate_meta_compile_name("meta.edit enum value", &enum_value.name)?;
             meta_edit_ensure_top_child_name_free(xml_text, "EnumValue", &enum_value.name)?;
             let mut lines = Vec::new();
             let mut next_uuid = fresh_meta_compile_uuid;
@@ -12939,6 +19781,7 @@ pub(crate) fn meta_edit_add_child_value(
             let column_value = meta_edit_column_value(&value);
             let column_name = meta_edit_value_name(&column_value)
                 .ok_or_else(|| "add-column requires non-empty name".to_string())?;
+            validate_meta_compile_name("meta.edit column", &column_name)?;
             meta_edit_ensure_top_child_name_free(xml_text, "Column", &column_name)?;
             let mut lines = Vec::new();
             let mut next_uuid = fresh_meta_compile_uuid;
@@ -12953,6 +19796,7 @@ pub(crate) fn meta_edit_add_child_value(
             };
             let name = meta_edit_value_name(&value)
                 .ok_or_else(|| format!("add-{child_type} requires non-empty name"))?;
+            validate_meta_compile_name(&format!("meta.edit {child_type}"), &name)?;
             meta_edit_ensure_top_child_name_free(xml_text, tag, &name)?;
             let mut lines = Vec::new();
             let mut next_uuid = fresh_meta_compile_uuid;
@@ -12980,6 +19824,7 @@ pub(crate) fn meta_edit_modify_top_child(
     child_type: &str,
     name: &str,
     raw_changes: &str,
+    line_number_length_policy: MetaEditLineNumberLengthPolicy,
 ) -> Result<usize, String> {
     let tag = meta_edit_child_xml_tag(child_type)
         .ok_or_else(|| format!("Unsupported modify child type: {child_type}"))?;
@@ -12993,7 +19838,9 @@ pub(crate) fn meta_edit_modify_top_child(
         "dimensions" | "resources" => MetaEditModifyTarget::RegisterField,
         "enumValues" => MetaEditModifyTarget::EnumValue,
         "columns" => MetaEditModifyTarget::Column,
-        "tabularSections" => MetaEditModifyTarget::TabularSection,
+        "tabularSections" => MetaEditModifyTarget::TabularSection {
+            line_number_length: line_number_length_policy,
+        },
         _ => return Err(format!("Unsupported modify child type: {child_type}")),
     };
     meta_edit_modify_top_child_properties(xml_text, tag, name, raw_changes, target)
@@ -13002,6 +19849,7 @@ pub(crate) fn meta_edit_modify_top_child(
 pub(crate) fn meta_edit_modify_tabular_sections_from_definition(
     xml_text: &mut String,
     value: &Value,
+    line_number_length_policy: MetaEditLineNumberLengthPolicy,
     counts: &mut MetaEditCounts,
 ) -> Result<(), String> {
     let object = value
@@ -13061,7 +19909,12 @@ pub(crate) fn meta_edit_modify_tabular_sections_from_definition(
         if !section_property_changes.is_empty() {
             let raw_changes =
                 meta_edit_changes_to_inline(&Value::Object(section_property_changes))?;
-            meta_edit_modify_tabular_section_properties(xml_text, section_name, &raw_changes)?;
+            meta_edit_modify_tabular_section_properties(
+                xml_text,
+                section_name,
+                &raw_changes,
+                line_number_length_policy,
+            )?;
             counts.modified += 1;
         }
     }
@@ -13502,10 +20355,12 @@ pub(crate) fn meta_edit_tabular_section_from_value(
         .get("attrs")
         .or_else(|| object.get("attributes"))
         .or_else(|| object.get("реквизиты"));
-    Ok(MetaCompileTabularSection {
+    let section = MetaCompileTabularSection {
         name: name.to_string(),
         columns: meta_compile_attributes(columns_value),
-    })
+    };
+    validate_meta_compile_tabular_section_types(&section, "meta.edit tabular section")?;
+    Ok(section)
 }
 
 pub(crate) fn meta_edit_enum_value_from_value(
@@ -13669,6 +20524,7 @@ pub(crate) fn meta_edit_add_attribute(
     if attr.name.is_empty() {
         return Err("add-attribute requires Value like Name: Type".to_string());
     }
+    validate_meta_compile_attr_type(&attr, "meta.edit add-attribute")?;
     meta_edit_ensure_top_child_name_free(xml_text, "Attribute", &attr.name)?;
     let context = meta_edit_attribute_context(object_type);
     let mut lines = Vec::new();
@@ -13707,10 +20563,12 @@ pub(crate) fn meta_edit_parse_tabular_section(
     }
 
     let Some((name, raw_columns)) = value.split_once(':') else {
-        return Ok(MetaCompileTabularSection {
+        let section = MetaCompileTabularSection {
             name: value.to_string(),
             columns: Vec::new(),
-        });
+        };
+        validate_meta_compile_tabular_section_types(&section, "meta.edit add-ts")?;
+        return Ok(section);
     };
 
     let name = name.trim();
@@ -13719,10 +20577,12 @@ pub(crate) fn meta_edit_parse_tabular_section(
     }
 
     let columns = meta_edit_parse_tabular_section_columns(raw_columns)?;
-    Ok(MetaCompileTabularSection {
+    let section = MetaCompileTabularSection {
         name: name.to_string(),
         columns,
-    })
+    };
+    validate_meta_compile_tabular_section_types(&section, "meta.edit add-ts")?;
+    Ok(section)
 }
 
 pub(crate) fn meta_edit_parse_tabular_section_columns(
@@ -13759,6 +20619,7 @@ pub(crate) fn meta_edit_parse_tabular_section_columns(
                     "add-ts column requires Value like Name: Type, got: {column}"
                 ));
             }
+            validate_meta_compile_attr_type(&attr, "meta.edit add-ts column")?;
             Ok(attr)
         })
         .collect()
@@ -13816,6 +20677,7 @@ pub(crate) fn meta_edit_add_tabular_section_attribute_value(
     if section_name.is_empty() || attr.name.is_empty() {
         return Err("add-ts-attribute requires Value like Section.Attribute: Type".to_string());
     }
+    validate_meta_compile_attr_type(&attr, "meta.edit add-ts-attribute")?;
     meta_edit_ensure_tabular_child_name_free(xml_text, section_name, "Attribute", &attr.name)?;
     let mut lines = Vec::new();
     let mut next_uuid = fresh_meta_compile_uuid;
@@ -13885,6 +20747,7 @@ pub(crate) fn meta_edit_modify_attribute(
 pub(crate) fn meta_edit_modify_tabular_section(
     xml_text: &mut String,
     raw_value: &str,
+    line_number_length_policy: MetaEditLineNumberLengthPolicy,
 ) -> Result<usize, String> {
     let mut modified = 0usize;
     for item in raw_value
@@ -13899,8 +20762,12 @@ pub(crate) fn meta_edit_modify_tabular_section(
         if section_name.is_empty() || raw_changes.trim().is_empty() {
             return Err("modify-ts requires Value like TabularSection: key=value".to_string());
         }
-        modified +=
-            meta_edit_modify_tabular_section_properties(xml_text, section_name, raw_changes)?;
+        modified += meta_edit_modify_tabular_section_properties(
+            xml_text,
+            section_name,
+            raw_changes,
+            line_number_length_policy,
+        )?;
     }
     if modified == 0 {
         return Err("modify-ts requires non-empty Value".to_string());
@@ -14007,6 +20874,7 @@ pub(crate) fn meta_edit_modify_tabular_section_properties(
     xml_text: &mut String,
     section_name: &str,
     raw_changes: &str,
+    line_number_length_policy: MetaEditLineNumberLengthPolicy,
 ) -> Result<usize, String> {
     let doc = Document::parse(xml_text.trim_start_matches('\u{feff}'))
         .map_err(|err| format!("XML parse error: {err}"))?;
@@ -14017,9 +20885,10 @@ pub(crate) fn meta_edit_modify_tabular_section_properties(
         .into_iter()
         .find(|section| meta_edit_child_object_name(*section).as_deref() == Some(section_name))
         .ok_or_else(|| format!("TabularSection '{section_name}' not found"))?;
-    if let Some(new_name) =
-        meta_edit_requested_name(raw_changes, MetaEditModifyTarget::TabularSection)?
-    {
+    let target = MetaEditModifyTarget::TabularSection {
+        line_number_length: line_number_length_policy,
+    };
+    if let Some(new_name) = meta_edit_requested_name(raw_changes, target)? {
         meta_edit_ensure_sibling_name_free(
             child_objects,
             "TabularSection",
@@ -14032,12 +20901,7 @@ pub(crate) fn meta_edit_modify_tabular_section_properties(
         .ok_or_else(|| format!("TabularSection '{section_name}' has no Properties"))?;
     let range = props.range();
     drop(doc);
-    meta_edit_modify_properties_range(
-        xml_text,
-        range,
-        raw_changes,
-        MetaEditModifyTarget::TabularSection,
-    )
+    meta_edit_modify_properties_range(xml_text, range, raw_changes, target)
 }
 
 pub(crate) fn meta_edit_modify_tabular_attribute_properties(
@@ -14078,11 +20942,15 @@ pub(crate) fn meta_edit_modify_tabular_attribute_properties(
 
 #[derive(Clone, Copy)]
 pub(crate) enum MetaEditModifyTarget {
-    Attribute { fill_value_allowed: bool },
+    Attribute {
+        fill_value_allowed: bool,
+    },
     RegisterField,
     EnumValue,
     Column,
-    TabularSection,
+    TabularSection {
+        line_number_length: MetaEditLineNumberLengthPolicy,
+    },
 }
 
 pub(crate) fn meta_edit_modify_properties_range(
@@ -14108,6 +20976,7 @@ pub(crate) fn meta_edit_modify_properties_range(
         let canonical = meta_edit_canonical_attribute_property(key, target)?;
         match canonical.as_str() {
             "Name" => {
+                validate_meta_compile_name("meta.edit rename", value)?;
                 let replacement = format!("{child_indent}<Name>{}</Name>", escape_xml(value));
                 meta_edit_replace_or_insert_property(
                     &mut properties,
@@ -14140,6 +21009,9 @@ pub(crate) fn meta_edit_modify_properties_range(
                 )?;
             }
             "Type" => {
+                validate_meta_type_union(std::iter::once(value)).map_err(|error| {
+                    format!("invalid 8.3.27 type for meta.edit modify: {error}")
+                })?;
                 let mut lines = Vec::new();
                 emit_meta_value_type(&mut lines, &child_indent, value);
                 meta_edit_replace_or_insert_property(
@@ -14182,6 +21054,23 @@ pub(crate) fn meta_edit_modify_properties_range(
                     &child_indent,
                 )?;
             }
+            "LineNumberLength" => {
+                if !meta_edit_property_exists(&properties, "LineNumberLength")? {
+                    return Err(
+                        "Property 'LineNumberLength' is not available in this tabular section"
+                            .to_string(),
+                    );
+                }
+                let value = meta_edit_line_number_length_value(value)?;
+                let replacement =
+                    format!("{child_indent}<LineNumberLength>{value}</LineNumberLength>");
+                meta_edit_replace_or_insert_property(
+                    &mut properties,
+                    "LineNumberLength",
+                    &replacement,
+                    &child_indent,
+                )?;
+            }
             _ => {
                 let replacement = format!(
                     "{child_indent}<{canonical}>{}</{canonical}>",
@@ -14207,7 +21096,33 @@ pub(crate) fn meta_edit_canonical_attribute_property(
     target: MetaEditModifyTarget,
 ) -> Result<String, String> {
     let trimmed = key.trim();
-    let canonical = match trimmed.to_ascii_lowercase().as_str() {
+    let normalized = trimmed.to_ascii_lowercase();
+    if meta_edit_is_line_number_length_key(trimmed) {
+        return match target {
+            MetaEditModifyTarget::TabularSection {
+                line_number_length: MetaEditLineNumberLengthPolicy::Editable,
+            } => Ok("LineNumberLength".to_string()),
+            MetaEditModifyTarget::TabularSection {
+                line_number_length: MetaEditLineNumberLengthPolicy::FixedFive,
+            } => Err(
+                "LineNumberLength is fixed at 5 when CompatibilityMode is Version8_3_26 or earlier"
+                    .to_string(),
+            ),
+            MetaEditModifyTarget::TabularSection {
+                line_number_length: MetaEditLineNumberLengthPolicy::NotApplicable,
+            } => Err(
+                "LineNumberLength is not applicable to Report, DataProcessor, ExternalReport, or ExternalDataProcessor tabular sections".to_string(),
+            ),
+            MetaEditModifyTarget::TabularSection {
+                line_number_length: MetaEditLineNumberLengthPolicy::UnknownCompatibility,
+            } => Err(
+                "LineNumberLength cannot be changed because CompatibilityMode cannot be determined"
+                    .to_string(),
+            ),
+            _ => Err(format!("Unsupported modify property key '{trimmed}'")),
+        };
+    }
+    let canonical = match normalized.as_str() {
         "name" | "имя" => Ok("Name".to_string()),
         "synonym" | "синоним" => Ok("Synonym".to_string()),
         "comment" | "комментарий" => Ok("Comment".to_string()),
@@ -14216,7 +21131,7 @@ pub(crate) fn meta_edit_canonical_attribute_property(
                 target,
                 MetaEditModifyTarget::Attribute { .. }
                     | MetaEditModifyTarget::RegisterField
-                    | MetaEditModifyTarget::TabularSection
+                    | MetaEditModifyTarget::TabularSection { .. }
             ) =>
         {
             Ok("FillChecking".to_string())
@@ -14226,7 +21141,7 @@ pub(crate) fn meta_edit_canonical_attribute_property(
                 target,
                 MetaEditModifyTarget::Attribute { .. }
                     | MetaEditModifyTarget::RegisterField
-                    | MetaEditModifyTarget::TabularSection
+                    | MetaEditModifyTarget::TabularSection { .. }
             ) =>
         {
             Ok("Use".to_string())
@@ -14270,6 +21185,21 @@ pub(crate) fn meta_edit_canonical_attribute_property(
         _ => Err(format!("Unsupported modify property key '{trimmed}'")),
     }?;
     Ok(canonical)
+}
+
+pub(crate) fn meta_edit_line_number_length_value(raw_value: &str) -> Result<String, String> {
+    let parsed = raw_value.parse::<u8>().map_err(|_| {
+        format!(
+            "LineNumberLength must be an integer in 5..=9, got '{}'",
+            raw_value
+        )
+    })?;
+    if !(5..=9).contains(&parsed) {
+        return Err(format!(
+            "LineNumberLength must be an integer in 5..=9, got '{raw_value}'"
+        ));
+    }
+    Ok(parsed.to_string())
 }
 
 fn meta_edit_fill_value_xml(indent: &str, raw_value: &str) -> String {
@@ -14395,6 +21325,7 @@ pub(crate) fn meta_edit_requested_name(
             if name.is_empty() {
                 return Err("modify name requires non-empty value".to_string());
             }
+            validate_meta_compile_name("meta.edit rename", name)?;
             return Ok(Some(name.to_string()));
         }
     }
@@ -14938,6 +21869,19 @@ pub(crate) fn normalize_meta_edit_property_value(key: &str, value: &str) -> Stri
         "EditType" => normalize_meta_enum_value(value),
         _ => value.to_string(),
     }
+}
+
+fn normalize_meta_edit_scalar_property_value(object_type: &str, key: &str, value: &str) -> String {
+    let normalized = normalize_meta_edit_property_value(key, value);
+    if meta_8_3_27_boolean_properties(object_type).contains(&key) {
+        if normalized.eq_ignore_ascii_case("true") {
+            return "true".to_string();
+        }
+        if normalized.eq_ignore_ascii_case("false") {
+            return "false".to_string();
+        }
+    }
+    normalized
 }
 
 pub(crate) fn invoke_read(
@@ -17026,5 +23970,1701 @@ mod tests {
             },
             path,
         )
+
+    #[test]
+    fn meta_info_directory_fallback_selects_first_xml_by_file_name() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-meta-info-sorted-fallback-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let later = root.join("z-later.xml");
+        let first = root.join("a-first.xml");
+        fs::write(&later, "<later/>").unwrap();
+        fs::write(&first, "<first/>").unwrap();
+
+        assert_eq!(resolve_meta_info_path(root.clone()).unwrap(), first);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn exchange_plan_content_matches_8_3_27() {
+        let files = meta_compile_extra_ext_files("ExchangePlan", "2.20");
+        let (name, content) = &files[0];
+        let expected =
+            include_str!("../../../../../tests/fixtures/platform_8_3_27/exchange_plan/Content.xml");
+
+        assert_eq!(*name, "Content.xml");
+        assert_eq!(
+            content.replace("\r\n", "\n"),
+            expected.replace("\r\n", "\n")
+        );
+    }
+
+    #[test]
+    fn standard_attributes_emit_platform_type_reduction_modes_in_order() {
+        let (xml, _) = meta_compile_catalog_xml(&Map::new(), "CorpusCatalog", "2.20").unwrap();
+        let document = Document::parse(&xml).unwrap();
+        let standard_attributes = document
+            .descendants()
+            .find(|node| node.tag_name().name() == "StandardAttributes")
+            .unwrap();
+        let expected = [
+            ("PredefinedDataName", "TransformValues"),
+            ("Predefined", "TransformValues"),
+            ("Ref", "TransformValues"),
+            ("DeletionMark", "TransformValues"),
+            ("IsFolder", "TransformValues"),
+            ("Owner", "Deny"),
+            ("Parent", "TransformValues"),
+            ("Description", "TransformValues"),
+            ("Code", "TransformValues"),
+        ];
+        let attributes = standard_attributes
+            .children()
+            .filter(|node| node.is_element())
+            .collect::<Vec<_>>();
+        assert_eq!(attributes.len(), expected.len());
+
+        for (attribute, (expected_name, expected_mode)) in attributes.iter().zip(expected) {
+            assert_eq!(attribute.attribute("name"), Some(expected_name));
+            let children = attribute
+                .children()
+                .filter(|node| node.is_element())
+                .collect::<Vec<_>>();
+            let child_names = children
+                .iter()
+                .map(|node| node.tag_name().name())
+                .collect::<Vec<_>>();
+            let create_on_input = child_names
+                .iter()
+                .position(|name| *name == "CreateOnInput")
+                .unwrap();
+            let type_reduction_mode = child_names
+                .iter()
+                .position(|name| *name == "TypeReductionMode")
+                .unwrap();
+            let max_value = child_names
+                .iter()
+                .position(|name| *name == "MaxValue")
+                .unwrap();
+            assert_eq!(type_reduction_mode, create_on_input + 1, "{expected_name}");
+            assert_eq!(max_value, type_reduction_mode + 1, "{expected_name}");
+            assert_eq!(children[type_reduction_mode].text(), Some(expected_mode));
+        }
+
+        for object_type in [
+            "Document",
+            "Enum",
+            "InformationRegister",
+            "AccumulationRegister",
+            "AccountingRegister",
+            "CalculationRegister",
+            "ChartOfAccounts",
+            "ChartOfCharacteristicTypes",
+            "ChartOfCalculationTypes",
+            "BusinessProcess",
+            "Task",
+            "ExchangePlan",
+            "DocumentJournal",
+            "TabularSection",
+        ] {
+            let mut lines = Vec::new();
+            emit_meta_standard_attributes(&mut lines, "\t", object_type);
+            let xml = format!(
+                "<Properties xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">{}</Properties>",
+                lines.join("")
+            );
+            let document = Document::parse(&xml).unwrap();
+            let attributes = document
+                .descendants()
+                .filter(|node| node.tag_name().name() == "StandardAttribute")
+                .collect::<Vec<_>>();
+            assert!(!attributes.is_empty(), "{object_type}");
+            for attribute in attributes {
+                let children = attribute
+                    .children()
+                    .filter(|node| node.is_element())
+                    .collect::<Vec<_>>();
+                let child_names = children
+                    .iter()
+                    .map(|node| node.tag_name().name())
+                    .collect::<Vec<_>>();
+                let create_on_input = child_names
+                    .iter()
+                    .position(|name| *name == "CreateOnInput")
+                    .unwrap();
+                let type_reduction_mode = child_names
+                    .iter()
+                    .position(|name| *name == "TypeReductionMode")
+                    .unwrap();
+                let max_value = child_names
+                    .iter()
+                    .position(|name| *name == "MaxValue")
+                    .unwrap();
+                assert_eq!(
+                    type_reduction_mode,
+                    create_on_input + 1,
+                    "{object_type}.{}",
+                    attribute.attribute("name").unwrap_or("")
+                );
+                assert_eq!(max_value, type_reduction_mode + 1, "{object_type}");
+                assert_eq!(
+                    children[type_reduction_mode].text(),
+                    Some("TransformValues"),
+                    "{object_type}.{}",
+                    attribute.attribute("name").unwrap_or("")
+                );
+            }
+        }
+
+        let mut ext_dimension_lines = Vec::new();
+        emit_meta_standard_attribute(
+            &mut ext_dimension_lines,
+            "",
+            "ChartOfAccounts.ExtDimensionTypes",
+            "ExtDimensionType",
+        );
+        assert!(
+            ext_dimension_lines.iter().any(|line| line
+                .contains("<xr:TypeReductionMode>TransformValues</xr:TypeReductionMode>")),
+            "{}",
+            ext_dimension_lines.join("\n")
+        );
+    }
+
+    #[test]
+    fn document_tabular_section_emits_platform_line_number_length() {
+        let definition = json!({
+            "tabularSections": {
+                "Lines": ["Quantity:Number(10,2)"]
+            }
+        });
+        let (xml, _) = meta_compile_object_xml(
+            definition.as_object().unwrap(),
+            "Document",
+            "CorpusDocument",
+            "2.20",
+        )
+        .unwrap();
+        let document = Document::parse(&xml).unwrap();
+        let properties = document
+            .descendants()
+            .find(|node| {
+                node.tag_name().name() == "TabularSection" && node.attribute("uuid").is_some()
+            })
+            .and_then(|section| {
+                section
+                    .children()
+                    .find(|node| node.is_element() && node.tag_name().name() == "Properties")
+            })
+            .unwrap();
+        let children = properties
+            .children()
+            .filter(|node| node.is_element())
+            .collect::<Vec<_>>();
+        let standard_attributes = children
+            .iter()
+            .position(|node| node.tag_name().name() == "StandardAttributes")
+            .unwrap();
+        let line_number_length = children
+            .iter()
+            .position(|node| node.tag_name().name() == "LineNumberLength")
+            .unwrap();
+
+        assert_eq!(line_number_length, standard_attributes + 1, "{xml}");
+        assert_eq!(children[line_number_length].text(), Some("9"), "{xml}");
+    }
+
+    #[test]
+    fn business_process_flowchart_matches_platform_8_3_27_schema() {
+        let files = meta_compile_extra_ext_files("BusinessProcess", "2.20");
+        let (name, content) = files
+            .iter()
+            .find(|(name, _)| *name == "Flowchart.xml")
+            .unwrap();
+        let document = Document::parse(content.trim_start_matches('\u{feff}')).unwrap();
+        let root = document.root_element();
+
+        assert_eq!(*name, "Flowchart.xml");
+        assert_eq!(root.tag_name().name(), "GraphicalSchema");
+        assert_eq!(
+            root.tag_name().namespace(),
+            Some("http://v8.1c.ru/8.3/xcf/scheme")
+        );
+        assert_eq!(root.attribute("version"), Some("2.20"));
+        assert_eq!(
+            test_meta_direct_child_names(root),
+            [
+                "BackColor",
+                "GridEnabled",
+                "DrawGridMode",
+                "GridHorizontalStep",
+                "GridVerticalStep",
+                "PrintParameters",
+                "Items",
+            ]
+        );
+        let print_parameters = meta_info_child(root, "PrintParameters").unwrap();
+        assert_eq!(
+            test_meta_direct_child_names(print_parameters),
+            [
+                "TopMargin",
+                "LeftMargin",
+                "BottomMargin",
+                "RightMargin",
+                "BlackAndWhite",
+                "FitPageMode",
+            ]
+        );
+    }
+
+    #[test]
+    fn chart_characteristic_generated_type_uses_platform_prefix() {
+        let xml = test_compile_meta_xml(
+            "ChartOfCharacteristicTypes",
+            "CorpusCharacteristics",
+            json!({}),
+        );
+        let document = Document::parse(&xml).unwrap();
+        let characteristic = document
+            .descendants()
+            .find(|node| {
+                node.is_element()
+                    && node.tag_name().name() == "GeneratedType"
+                    && node.attribute("category") == Some("Characteristic")
+            })
+            .unwrap();
+
+        assert_eq!(
+            characteristic.attribute("name"),
+            Some("Characteristic.CorpusCharacteristics")
+        );
+    }
+
+    #[test]
+    fn multi_value_types_follow_platform_type_description_order() {
+        for (object_type, object_name) in [
+            ("ChartOfCharacteristicTypes", "CorpusCharacteristics"),
+            ("DefinedType", "CorpusDefinedType"),
+        ] {
+            let xml = test_compile_meta_xml(
+                object_type,
+                object_name,
+                json!({"valueTypes": ["String(100)", "Number(15,2)"]}),
+            );
+            let document = Document::parse(&xml).unwrap();
+            let properties = test_meta_root_properties(&document);
+            let type_node = meta_info_child(properties, "Type").unwrap();
+
+            assert_eq!(
+                test_meta_direct_child_names(type_node),
+                ["Type", "Type", "NumberQualifiers", "StringQualifiers"],
+                "{object_type}: {xml}"
+            );
+        }
+    }
+
+    #[test]
+    fn object_specific_standard_attributes_match_platform_order() {
+        for (object_type, expected) in [
+            (
+                "BusinessProcess",
+                vec![
+                    "Started",
+                    "HeadTask",
+                    "Completed",
+                    "Ref",
+                    "DeletionMark",
+                    "Date",
+                    "Number",
+                ],
+            ),
+            (
+                "Task",
+                vec![
+                    "Executed",
+                    "Description",
+                    "RoutePoint",
+                    "BusinessProcess",
+                    "Ref",
+                    "DeletionMark",
+                    "Date",
+                    "Number",
+                ],
+            ),
+            (
+                "ChartOfCharacteristicTypes",
+                vec![
+                    "PredefinedDataName",
+                    "ValueType",
+                    "Description",
+                    "Code",
+                    "IsFolder",
+                    "Parent",
+                    "Predefined",
+                    "DeletionMark",
+                    "Ref",
+                ],
+            ),
+            (
+                "ExchangePlan",
+                vec![
+                    "ExchangeDate",
+                    "ThisNode",
+                    "ReceivedNo",
+                    "SentNo",
+                    "Ref",
+                    "DeletionMark",
+                    "Description",
+                    "Code",
+                ],
+            ),
+        ] {
+            let mut lines = Vec::new();
+            emit_meta_standard_attributes(&mut lines, "", object_type);
+            let xml = format!(
+                "<Properties xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">{}</Properties>",
+                lines.join("")
+            );
+            let document = Document::parse(&xml).unwrap();
+            let attributes = document
+                .descendants()
+                .filter(|node| node.is_element() && node.tag_name().name() == "StandardAttribute")
+                .map(|node| node.attribute("name").unwrap_or_default())
+                .collect::<Vec<_>>();
+
+            assert_eq!(attributes, expected, "{object_type}");
+        }
+    }
+
+    #[test]
+    fn business_process_properties_match_platform_order_and_defaults() {
+        let xml = test_compile_meta_xml(
+            "BusinessProcess",
+            "CorpusBusinessProcess",
+            json!({"task": "Task.CorpusTask"}),
+        );
+        let document = Document::parse(&xml).unwrap();
+        let properties = test_meta_root_properties(&document);
+
+        assert_eq!(
+            test_meta_direct_child_names(properties),
+            [
+                "Name",
+                "Synonym",
+                "Comment",
+                "UseStandardCommands",
+                "EditType",
+                "InputByString",
+                "CreateOnInput",
+                "SearchStringModeOnInputByString",
+                "ChoiceDataGetModeOnInputByString",
+                "FullTextSearchOnInputByString",
+                "DefaultObjectForm",
+                "DefaultListForm",
+                "DefaultChoiceForm",
+                "AuxiliaryObjectForm",
+                "AuxiliaryListForm",
+                "AuxiliaryChoiceForm",
+                "ChoiceHistoryOnInput",
+                "NumberType",
+                "NumberLength",
+                "NumberAllowedLength",
+                "CheckUnique",
+                "StandardAttributes",
+                "Characteristics",
+                "Autonumbering",
+                "BasedOn",
+                "NumberPeriodicity",
+                "Task",
+                "CreateTaskInPrivilegedMode",
+                "DataLockFields",
+                "DataLockControlMode",
+                "IncludeHelpInContents",
+                "FullTextSearch",
+                "ObjectPresentation",
+                "ExtendedObjectPresentation",
+                "ListPresentation",
+                "ExtendedListPresentation",
+                "Explanation",
+                "DataHistory",
+                "UpdateDataHistoryImmediatelyAfterWrite",
+                "ExecuteAfterWriteDataHistoryVersionProcessing",
+            ]
+        );
+        assert_eq!(
+            meta_info_child_text(properties, "NumberPeriodicity").as_deref(),
+            Some("Nonperiodical")
+        );
+        assert_eq!(
+            meta_info_child_text(properties, "CreateTaskInPrivilegedMode").as_deref(),
+            Some("true")
+        );
+    }
+
+    #[test]
+    fn task_properties_match_platform_order_and_defaults() {
+        let xml = test_compile_meta_xml("Task", "CorpusTask", json!({}));
+        let document = Document::parse(&xml).unwrap();
+        let properties = test_meta_root_properties(&document);
+
+        assert_eq!(
+            test_meta_direct_child_names(properties),
+            [
+                "Name",
+                "Synonym",
+                "Comment",
+                "UseStandardCommands",
+                "NumberType",
+                "NumberLength",
+                "NumberAllowedLength",
+                "CheckUnique",
+                "Autonumbering",
+                "TaskNumberAutoPrefix",
+                "DescriptionLength",
+                "Addressing",
+                "MainAddressingAttribute",
+                "CurrentPerformer",
+                "BasedOn",
+                "StandardAttributes",
+                "Characteristics",
+                "DefaultPresentation",
+                "EditType",
+                "InputByString",
+                "SearchStringModeOnInputByString",
+                "FullTextSearchOnInputByString",
+                "ChoiceDataGetModeOnInputByString",
+                "CreateOnInput",
+                "DefaultObjectForm",
+                "DefaultListForm",
+                "DefaultChoiceForm",
+                "AuxiliaryObjectForm",
+                "AuxiliaryListForm",
+                "AuxiliaryChoiceForm",
+                "ChoiceHistoryOnInput",
+                "IncludeHelpInContents",
+                "DataLockFields",
+                "DataLockControlMode",
+                "FullTextSearch",
+                "ObjectPresentation",
+                "ExtendedObjectPresentation",
+                "ListPresentation",
+                "ExtendedListPresentation",
+                "Explanation",
+                "DataHistory",
+                "UpdateDataHistoryImmediatelyAfterWrite",
+                "ExecuteAfterWriteDataHistoryVersionProcessing",
+            ]
+        );
+    }
+
+    #[test]
+    fn chart_characteristic_properties_match_platform_order_and_defaults() {
+        let xml = test_compile_meta_xml(
+            "ChartOfCharacteristicTypes",
+            "CorpusCharacteristics",
+            json!({"valueTypes": ["String(50)", "Number(15,2)"]}),
+        );
+        let document = Document::parse(&xml).unwrap();
+        let properties = test_meta_root_properties(&document);
+
+        assert_eq!(
+            test_meta_direct_child_names(properties),
+            [
+                "Name",
+                "Synonym",
+                "Comment",
+                "UseStandardCommands",
+                "IncludeHelpInContents",
+                "CharacteristicExtValues",
+                "Type",
+                "Hierarchical",
+                "FoldersOnTop",
+                "CodeLength",
+                "CodeAllowedLength",
+                "DescriptionLength",
+                "CodeSeries",
+                "CheckUnique",
+                "Autonumbering",
+                "DefaultPresentation",
+                "StandardAttributes",
+                "Characteristics",
+                "PredefinedDataUpdate",
+                "EditType",
+                "QuickChoice",
+                "ChoiceMode",
+                "InputByString",
+                "CreateOnInput",
+                "SearchStringModeOnInputByString",
+                "ChoiceDataGetModeOnInputByString",
+                "FullTextSearchOnInputByString",
+                "ChoiceHistoryOnInput",
+                "DefaultObjectForm",
+                "DefaultFolderForm",
+                "DefaultListForm",
+                "DefaultChoiceForm",
+                "DefaultFolderChoiceForm",
+                "AuxiliaryObjectForm",
+                "AuxiliaryFolderForm",
+                "AuxiliaryListForm",
+                "AuxiliaryChoiceForm",
+                "AuxiliaryFolderChoiceForm",
+                "BasedOn",
+                "DataLockFields",
+                "DataLockControlMode",
+                "FullTextSearch",
+                "ObjectPresentation",
+                "ExtendedObjectPresentation",
+                "ListPresentation",
+                "ExtendedListPresentation",
+                "Explanation",
+                "DataHistory",
+                "UpdateDataHistoryImmediatelyAfterWrite",
+                "ExecuteAfterWriteDataHistoryVersionProcessing",
+            ]
+        );
+        assert_eq!(
+            meta_info_child_text(properties, "CodeSeries").as_deref(),
+            Some("WholeCharacteristicKind")
+        );
+    }
+
+    #[test]
+    fn accumulation_register_standard_attributes_match_platform_order() {
+        let xml = test_compile_meta_xml(
+            "AccumulationRegister",
+            "CorpusAccumulationRegister",
+            json!({
+                "registerType": "Balances",
+                "dimensions": ["Warehouse:String(50)|index"],
+                "resources": ["Quantity:Number(15,3)"]
+            }),
+        );
+        let document = Document::parse(&xml).unwrap();
+        let properties = test_meta_root_properties(&document);
+
+        assert_eq!(
+            test_meta_standard_attribute_names(properties),
+            ["RecordType", "Active", "LineNumber", "Recorder", "Period"],
+            "{xml}"
+        );
+    }
+
+    #[test]
+    fn accounting_register_matches_platform_order_and_defaults() {
+        let xml = test_compile_meta_xml(
+            "AccountingRegister",
+            "CorpusAccountingRegister",
+            json!({
+                "chartOfAccounts": "ChartOfAccounts.CorpusAccounts",
+                "dimensions": ["Department:String(50)"],
+                "resources": ["Amount:Number(15,2)"]
+            }),
+        );
+        let document = Document::parse(&xml).unwrap();
+        let properties = test_meta_root_properties(&document);
+
+        assert_eq!(
+            test_meta_direct_child_names(properties),
+            [
+                "Name",
+                "Synonym",
+                "Comment",
+                "UseStandardCommands",
+                "IncludeHelpInContents",
+                "ChartOfAccounts",
+                "Correspondence",
+                "PeriodAdjustmentLength",
+                "DefaultListForm",
+                "AuxiliaryListForm",
+                "StandardAttributes",
+                "DataLockControlMode",
+                "EnableTotalsSplitting",
+                "FullTextSearch",
+                "ListPresentation",
+                "ExtendedListPresentation",
+                "Explanation",
+            ],
+            "{xml}"
+        );
+        assert_eq!(
+            test_meta_standard_attribute_names(properties),
+            [
+                "Account",
+                "RecordType",
+                "Active",
+                "LineNumber",
+                "Recorder",
+                "Period"
+            ],
+            "{xml}"
+        );
+        assert_eq!(
+            meta_info_child_text(properties, "EnableTotalsSplitting").as_deref(),
+            Some("false"),
+            "{xml}"
+        );
+
+        let child_objects = test_meta_root_child_objects(&document);
+        assert_eq!(
+            test_meta_direct_child_names(child_objects),
+            ["Dimension", "Resource"],
+            "{xml}"
+        );
+        let dimension = test_meta_named_object(&document, "Dimension", "Department");
+        assert_eq!(
+            test_meta_direct_child_names(meta_info_child(dimension, "Properties").unwrap()),
+            [
+                "Name",
+                "Synonym",
+                "Comment",
+                "Type",
+                "PasswordMode",
+                "Format",
+                "EditFormat",
+                "ToolTip",
+                "MarkNegatives",
+                "Mask",
+                "MultiLine",
+                "ExtendedEdit",
+                "MinValue",
+                "MaxValue",
+                "FillChecking",
+                "ChoiceFoldersAndItems",
+                "ChoiceParameterLinks",
+                "ChoiceParameters",
+                "QuickChoice",
+                "CreateOnInput",
+                "ChoiceForm",
+                "LinkByType",
+                "ChoiceHistoryOnInput",
+                "Balance",
+                "AccountingFlag",
+                "DenyIncompleteValues",
+                "Indexing",
+                "FullTextSearch",
+            ],
+            "{xml}"
+        );
+        let resource = test_meta_named_object(&document, "Resource", "Amount");
+        assert_eq!(
+            test_meta_direct_child_names(meta_info_child(resource, "Properties").unwrap()),
+            [
+                "Name",
+                "Synonym",
+                "Comment",
+                "Type",
+                "PasswordMode",
+                "Format",
+                "EditFormat",
+                "ToolTip",
+                "MarkNegatives",
+                "Mask",
+                "MultiLine",
+                "ExtendedEdit",
+                "MinValue",
+                "MaxValue",
+                "FillChecking",
+                "ChoiceFoldersAndItems",
+                "ChoiceParameterLinks",
+                "ChoiceParameters",
+                "QuickChoice",
+                "CreateOnInput",
+                "ChoiceForm",
+                "LinkByType",
+                "ChoiceHistoryOnInput",
+                "Balance",
+                "AccountingFlag",
+                "ExtDimensionAccountingFlag",
+                "FullTextSearch",
+            ],
+            "{xml}"
+        );
+    }
+
+    #[test]
+    fn calculation_register_matches_platform_order_and_defaults() {
+        let xml = test_compile_meta_xml(
+            "CalculationRegister",
+            "CorpusCalculationRegister",
+            json!({
+                "chartOfCalculationTypes": "ChartOfCalculationTypes.CorpusCalculationTypes",
+                "periodicity": "Month",
+                "dimensions": ["Employee:String(50)"],
+                "resources": ["Result:Number(15,2)"]
+            }),
+        );
+        let document = Document::parse(&xml).unwrap();
+        let properties = test_meta_root_properties(&document);
+
+        assert_eq!(
+            test_meta_direct_child_names(properties),
+            [
+                "Name",
+                "Synonym",
+                "Comment",
+                "UseStandardCommands",
+                "DefaultListForm",
+                "AuxiliaryListForm",
+                "Periodicity",
+                "ActionPeriod",
+                "BasePeriod",
+                "Schedule",
+                "ScheduleValue",
+                "ScheduleDate",
+                "ChartOfCalculationTypes",
+                "IncludeHelpInContents",
+                "StandardAttributes",
+                "DataLockControlMode",
+                "FullTextSearch",
+                "ListPresentation",
+                "ExtendedListPresentation",
+                "Explanation",
+            ],
+            "{xml}"
+        );
+        assert_eq!(
+            test_meta_standard_attribute_names(properties),
+            [
+                "RegistrationPeriod",
+                "ReversingEntry",
+                "Active",
+                "EndOfBasePeriod",
+                "BegOfBasePeriod",
+                "EndOfActionPeriod",
+                "BegOfActionPeriod",
+                "ActionPeriod",
+                "CalculationType",
+                "LineNumber",
+                "Recorder",
+            ],
+            "{xml}"
+        );
+        let dimension = test_meta_named_object(&document, "Dimension", "Employee");
+        let dimension_properties = meta_info_child(dimension, "Properties").unwrap();
+        assert_eq!(
+            test_meta_direct_child_names(dimension_properties),
+            [
+                "Name",
+                "Synonym",
+                "Comment",
+                "Type",
+                "PasswordMode",
+                "Format",
+                "EditFormat",
+                "ToolTip",
+                "MarkNegatives",
+                "Mask",
+                "MultiLine",
+                "ExtendedEdit",
+                "MinValue",
+                "MaxValue",
+                "FillChecking",
+                "ChoiceFoldersAndItems",
+                "ChoiceParameterLinks",
+                "ChoiceParameters",
+                "QuickChoice",
+                "CreateOnInput",
+                "ChoiceForm",
+                "LinkByType",
+                "ChoiceHistoryOnInput",
+                "DenyIncompleteValues",
+                "BaseDimension",
+                "ScheduleLink",
+                "Indexing",
+                "FullTextSearch",
+            ],
+            "{xml}"
+        );
+    }
+
+    #[test]
+    fn chart_of_accounts_matches_platform_order_and_defaults() {
+        let xml = test_compile_meta_xml(
+            "ChartOfAccounts",
+            "CorpusAccounts",
+            json!({"accountingFlags": ["Tax"]}),
+        );
+        let document = Document::parse(&xml).unwrap();
+        let properties = test_meta_root_properties(&document);
+
+        assert_eq!(
+            test_meta_direct_child_names(properties),
+            [
+                "Name",
+                "Synonym",
+                "Comment",
+                "UseStandardCommands",
+                "IncludeHelpInContents",
+                "BasedOn",
+                "ExtDimensionTypes",
+                "MaxExtDimensionCount",
+                "CodeMask",
+                "CodeLength",
+                "DescriptionLength",
+                "CodeSeries",
+                "CheckUnique",
+                "DefaultPresentation",
+                "StandardAttributes",
+                "Characteristics",
+                "StandardTabularSections",
+                "PredefinedDataUpdate",
+                "EditType",
+                "QuickChoice",
+                "ChoiceMode",
+                "InputByString",
+                "SearchStringModeOnInputByString",
+                "FullTextSearchOnInputByString",
+                "ChoiceDataGetModeOnInputByString",
+                "CreateOnInput",
+                "ChoiceHistoryOnInput",
+                "DefaultObjectForm",
+                "DefaultListForm",
+                "DefaultChoiceForm",
+                "AuxiliaryObjectForm",
+                "AuxiliaryListForm",
+                "AuxiliaryChoiceForm",
+                "AutoOrderByCode",
+                "OrderLength",
+                "DataLockFields",
+                "DataLockControlMode",
+                "FullTextSearch",
+                "DataHistory",
+                "UpdateDataHistoryImmediatelyAfterWrite",
+                "ExecuteAfterWriteDataHistoryVersionProcessing",
+                "ObjectPresentation",
+                "ExtendedObjectPresentation",
+                "ListPresentation",
+                "ExtendedListPresentation",
+                "Explanation",
+            ],
+            "{xml}"
+        );
+        assert_eq!(
+            meta_info_child_text(properties, "MaxExtDimensionCount").as_deref(),
+            Some("0"),
+            "{xml}"
+        );
+        assert_eq!(
+            meta_info_child_text(properties, "CodeSeries").as_deref(),
+            Some("WholeChartOfAccounts"),
+            "{xml}"
+        );
+        assert_eq!(
+            test_meta_standard_attribute_names(properties),
+            [
+                "PredefinedDataName",
+                "Order",
+                "OffBalance",
+                "Type",
+                "Description",
+                "Code",
+                "Parent",
+                "Predefined",
+                "DeletionMark",
+                "Ref",
+            ],
+            "{xml}"
+        );
+        let section = meta_info_child(properties, "StandardTabularSections")
+            .unwrap()
+            .children()
+            .find(roxmltree::Node::is_element)
+            .unwrap();
+        assert_eq!(
+            test_meta_direct_child_names(section),
+            [
+                "Synonym",
+                "Comment",
+                "ToolTip",
+                "FillChecking",
+                "StandardAttributes"
+            ],
+            "{xml}"
+        );
+        assert_eq!(
+            section
+                .descendants()
+                .find(|node| node.tag_name().name() == "content")
+                .and_then(|node| node.text()),
+            Some("Extra dimension types"),
+            "{xml}"
+        );
+        let flag = test_meta_named_object(&document, "AccountingFlag", "Tax");
+        assert_eq!(
+            test_meta_direct_child_names(meta_info_child(flag, "Properties").unwrap()),
+            [
+                "Name",
+                "Synonym",
+                "Comment",
+                "Type",
+                "PasswordMode",
+                "Format",
+                "EditFormat",
+                "ToolTip",
+                "MarkNegatives",
+                "Mask",
+                "MultiLine",
+                "ExtendedEdit",
+                "MinValue",
+                "MaxValue",
+                "FillFromFillingValue",
+                "FillValue",
+                "FillChecking",
+                "ChoiceFoldersAndItems",
+                "ChoiceParameterLinks",
+                "ChoiceParameters",
+                "QuickChoice",
+                "CreateOnInput",
+                "ChoiceForm",
+                "LinkByType",
+                "ChoiceHistoryOnInput",
+                "DataHistory",
+            ],
+            "{xml}"
+        );
+    }
+
+    #[test]
+    fn chart_of_calculation_types_matches_platform_order_and_defaults() {
+        let xml = test_compile_meta_xml(
+            "ChartOfCalculationTypes",
+            "CorpusCalculationTypes",
+            json!({}),
+        );
+        let document = Document::parse(&xml).unwrap();
+        let properties = test_meta_root_properties(&document);
+
+        assert_eq!(
+            test_meta_direct_child_names(properties),
+            [
+                "Name",
+                "Synonym",
+                "Comment",
+                "UseStandardCommands",
+                "CodeLength",
+                "DescriptionLength",
+                "CodeType",
+                "CodeAllowedLength",
+                "DefaultPresentation",
+                "EditType",
+                "QuickChoice",
+                "ChoiceMode",
+                "InputByString",
+                "SearchStringModeOnInputByString",
+                "FullTextSearchOnInputByString",
+                "ChoiceDataGetModeOnInputByString",
+                "CreateOnInput",
+                "ChoiceHistoryOnInput",
+                "DefaultObjectForm",
+                "DefaultListForm",
+                "DefaultChoiceForm",
+                "AuxiliaryObjectForm",
+                "AuxiliaryListForm",
+                "AuxiliaryChoiceForm",
+                "BasedOn",
+                "DependenceOnCalculationTypes",
+                "BaseCalculationTypes",
+                "ActionPeriodUse",
+                "StandardAttributes",
+                "Characteristics",
+                "PredefinedDataUpdate",
+                "IncludeHelpInContents",
+                "DataLockFields",
+                "DataLockControlMode",
+                "FullTextSearch",
+                "ObjectPresentation",
+                "ExtendedObjectPresentation",
+                "ListPresentation",
+                "ExtendedListPresentation",
+                "Explanation",
+                "DataHistory",
+                "UpdateDataHistoryImmediatelyAfterWrite",
+                "ExecuteAfterWriteDataHistoryVersionProcessing",
+            ],
+            "{xml}"
+        );
+        assert_eq!(
+            test_meta_standard_attribute_names(properties),
+            [
+                "PredefinedDataName",
+                "Predefined",
+                "Ref",
+                "DeletionMark",
+                "ActionPeriodIsBasic",
+                "Description",
+                "Code",
+            ],
+            "{xml}"
+        );
+    }
+
+    #[test]
+    fn exchange_plan_properties_match_platform_order_and_defaults() {
+        let xml = test_compile_meta_xml(
+            "ExchangePlan",
+            "CorpusExchangePlan",
+            json!({
+                "distributedInfoBase": true,
+                "includeConfigurationExtensions": true
+            }),
+        );
+        let document = Document::parse(&xml).unwrap();
+        let properties = test_meta_root_properties(&document);
+
+        assert_eq!(
+            test_meta_direct_child_names(properties),
+            [
+                "Name",
+                "Synonym",
+                "Comment",
+                "UseStandardCommands",
+                "CodeLength",
+                "CodeAllowedLength",
+                "DescriptionLength",
+                "DefaultPresentation",
+                "EditType",
+                "QuickChoice",
+                "ChoiceMode",
+                "InputByString",
+                "SearchStringModeOnInputByString",
+                "FullTextSearchOnInputByString",
+                "ChoiceDataGetModeOnInputByString",
+                "DefaultObjectForm",
+                "DefaultListForm",
+                "DefaultChoiceForm",
+                "AuxiliaryObjectForm",
+                "AuxiliaryListForm",
+                "AuxiliaryChoiceForm",
+                "StandardAttributes",
+                "Characteristics",
+                "BasedOn",
+                "DistributedInfoBase",
+                "IncludeConfigurationExtensions",
+                "CreateOnInput",
+                "ChoiceHistoryOnInput",
+                "IncludeHelpInContents",
+                "DataLockFields",
+                "DataLockControlMode",
+                "FullTextSearch",
+                "ObjectPresentation",
+                "ExtendedObjectPresentation",
+                "ListPresentation",
+                "ExtendedListPresentation",
+                "Explanation",
+                "DataHistory",
+                "UpdateDataHistoryImmediatelyAfterWrite",
+                "ExecuteAfterWriteDataHistoryVersionProcessing",
+            ]
+        );
+    }
+
+    #[test]
+    fn constant_data_lock_mode_precedes_data_history() {
+        let xml = test_compile_meta_xml(
+            "Constant",
+            "CorpusConstant",
+            json!({"valueType": "Boolean"}),
+        );
+        let document = Document::parse(&xml).unwrap();
+        let properties = test_meta_root_properties(&document);
+        let names = test_meta_direct_child_names(properties);
+        let lock_mode = names
+            .iter()
+            .position(|name| name == "DataLockControlMode")
+            .unwrap();
+        let data_history = names.iter().position(|name| name == "DataHistory").unwrap();
+
+        assert_eq!(lock_mode + 1, data_history, "{xml}");
+    }
+
+    #[test]
+    fn unbounded_tabular_sections_omit_line_number_length() {
+        for object_type in ["DataProcessor", "Report"] {
+            let xml = test_compile_meta_xml(
+                object_type,
+                &format!("Corpus{object_type}"),
+                json!({"tabularSections": {"Rows": ["Value:String(100)"]}}),
+            );
+            let document = Document::parse(&xml).unwrap();
+            let section = test_meta_named_object(&document, "TabularSection", "Rows");
+            let properties = meta_info_child(section, "Properties").unwrap();
+
+            assert!(
+                meta_info_child(properties, "LineNumberLength").is_none(),
+                "{object_type}: {xml}"
+            );
+        }
+    }
+
+    #[test]
+    fn document_journal_includes_help_before_standard_attributes() {
+        let xml = test_compile_meta_xml(
+            "DocumentJournal",
+            "CorpusDocumentJournal",
+            json!({"registeredDocuments": ["Document.CorpusDocument"]}),
+        );
+        let document = Document::parse(&xml).unwrap();
+        let properties = test_meta_root_properties(&document);
+        let names = test_meta_direct_child_names(properties);
+        let registered = names
+            .iter()
+            .position(|name| name == "RegisteredDocuments")
+            .unwrap();
+        let include_help = names
+            .iter()
+            .position(|name| name == "IncludeHelpInContents")
+            .unwrap();
+        let standard = names
+            .iter()
+            .position(|name| name == "StandardAttributes")
+            .unwrap();
+
+        assert_eq!(include_help, registered + 1, "{xml}");
+        assert_eq!(standard, include_help + 1, "{xml}");
+    }
+
+    #[test]
+    fn http_service_child_properties_include_comments() {
+        let xml = test_compile_meta_xml(
+            "HTTPService",
+            "CorpusHTTPService",
+            json!({
+                "urlTemplates": {
+                    "Items": {"template": "/items/{id}", "methods": {"Get": "GET"}}
+                }
+            }),
+        );
+        let document = Document::parse(&xml).unwrap();
+        let template = test_meta_named_object(&document, "URLTemplate", "Items");
+        let method = test_meta_named_object(&document, "Method", "Get");
+
+        assert_eq!(
+            test_meta_direct_child_names(meta_info_child(template, "Properties").unwrap()),
+            ["Name", "Synonym", "Comment", "Template"]
+        );
+        assert_eq!(
+            test_meta_direct_child_names(meta_info_child(method, "Properties").unwrap()),
+            ["Name", "Synonym", "Comment", "HTTPMethod", "Handler"]
+        );
+    }
+
+    #[test]
+    fn information_register_dimension_emits_type_reduction_mode() {
+        let xml = test_compile_meta_xml(
+            "InformationRegister",
+            "CorpusInformationRegister",
+            json!({"dimensions": ["Item:String(50)|master,index"]}),
+        );
+        let document = Document::parse(&xml).unwrap();
+        let dimension = test_meta_named_object(&document, "Dimension", "Item");
+        let properties = meta_info_child(dimension, "Properties").unwrap();
+        let children = properties
+            .children()
+            .filter(roxmltree::Node::is_element)
+            .collect::<Vec<_>>();
+        let last = children.last().unwrap();
+
+        assert_eq!(last.tag_name().name(), "TypeReductionMode", "{xml}");
+        assert_eq!(last.text(), Some("TransformValues"), "{xml}");
+    }
+
+    #[test]
+    fn web_service_emits_platform_defaults_and_parameter_comment() {
+        let xml = test_compile_meta_xml(
+            "WebService",
+            "CorpusWebService",
+            json!({
+                "namespace": "urn:corpus",
+                "operations": {
+                    "Ping": {"returnType": "xs:string", "parameters": {"Text": "xs:string"}}
+                }
+            }),
+        );
+        let document = Document::parse(&xml).unwrap();
+        let properties = test_meta_root_properties(&document);
+        let operation = test_meta_named_object(&document, "Operation", "Ping");
+        let parameter = test_meta_named_object(&document, "Parameter", "Text");
+
+        assert_eq!(
+            meta_info_child_text(properties, "DescriptorFileName").as_deref(),
+            Some("ws1.1cws")
+        );
+        assert_eq!(
+            meta_info_child_text(
+                meta_info_child(operation, "Properties").unwrap(),
+                "DataLockControlMode"
+            )
+            .as_deref(),
+            Some("Managed")
+        );
+        assert_eq!(
+            test_meta_direct_child_names(meta_info_child(parameter, "Properties").unwrap()),
+            [
+                "Name",
+                "Synonym",
+                "Comment",
+                "XDTOValueType",
+                "Nillable",
+                "TransferDirection",
+            ]
+        );
+    }
+
+    #[test]
+    fn value_type_unions_reject_duplicate_wire_types() {
+        for (object_type, value_types) in [
+            (
+                "DefinedType",
+                json!(["String(50)", "String(20)", "Number(15,2)"]),
+            ),
+            ("ChartOfCharacteristicTypes", json!(["Date", "DateTime"])),
+        ] {
+            let definition = json!({"valueTypes": value_types});
+            let error = meta_compile_object_xml(
+                definition.as_object().unwrap(),
+                object_type,
+                "CorpusType",
+                "2.20",
+            )
+            .unwrap_err();
+
+            assert!(error.contains("duplicate platform type"), "{error}");
+        }
+    }
+
+    #[test]
+    fn nested_value_type_unions_reject_duplicate_wire_types() {
+        for definition in [
+            json!({"attributes": ["Value: String(50) + String(20)"]}),
+            json!({"resources": ["Value: Date + DateTime"]}),
+            json!({
+                "tabularSections": {
+                    "Lines": ["Value: Number(15,2) + Number(10,0)"]
+                }
+            }),
+        ] {
+            let error = meta_compile_object_xml(
+                definition.as_object().unwrap(),
+                if definition.get("resources").is_some() {
+                    "InformationRegister"
+                } else {
+                    "Catalog"
+                },
+                "CorpusObject",
+                "2.20",
+            )
+            .unwrap_err();
+
+            assert!(error.contains("duplicate platform type"), "{error}");
+        }
+    }
+
+    #[test]
+    fn value_type_parameters_must_follow_the_8_3_27_contract() {
+        for value_type in [
+            "String(foo)",
+            "String(10,20)",
+            "String(-1)",
+            "String(1025)",
+            "String(1.5)",
+            "Number(x,2)",
+            "Number(15,y)",
+            "Number(15,2,wrong)",
+            "Number(15,2,nonneg,extra)",
+            "Number(-1,0)",
+            "Number(39,0)",
+            "Number(10,11)",
+            "Number(10,-1)",
+            "Number(10,1.5)",
+            "Garbage",
+            "xs:string",
+            "v8:UUID",
+            "v8:ValueStorage",
+            "CatalogRef.Bad Name",
+            "CatalogRef.Bad:Name",
+            "CatalogRef.Bad.Name",
+        ] {
+            let definition = json!({"attributes": [format!("Value: {value_type}")]});
+            let error = meta_compile_object_xml(
+                definition.as_object().unwrap(),
+                "Catalog",
+                "CorpusCatalog",
+                "2.20",
+            )
+            .unwrap_err();
+
+            assert!(error.contains(value_type), "{value_type}: {error}");
+            assert!(error.contains("8.3.27"), "{value_type}: {error}");
+        }
+    }
+
+    #[test]
+    fn value_type_parameter_boundaries_match_8_3_27() {
+        for value_type in [
+            "String(0)",
+            "String(1024)",
+            "Number(0,0)",
+            "Number(38,0)",
+            "Number(38,38)",
+            "Number(38,38,nonneg)",
+        ] {
+            let definition = json!({"attributes": [format!("Value: {value_type}")]});
+            meta_compile_object_xml(
+                definition.as_object().unwrap(),
+                "Catalog",
+                "CorpusCatalog",
+                "2.20",
+            )
+            .unwrap_or_else(|error| panic!("{value_type}: {error}"));
+        }
+    }
+
+    #[test]
+    fn configuration_type_names_accept_unicode_xml_ncnames() {
+        validate_meta_type_union(["CatalogRef.Контрагенты_1"]).unwrap();
+        let mut lines = Vec::new();
+        emit_meta_type_content(&mut lines, "", "CatalogRef.Контрагенты_1");
+        assert_eq!(lines, ["<v8:Type>cfg:CatalogRef.Контрагенты_1</v8:Type>"]);
+    }
+
+    #[test]
+    fn value_type_tags_follow_the_8_3_27_canonical_order() {
+        let mut lines = Vec::new();
+
+        emit_meta_type_contents(
+            &mut lines,
+            "",
+            [
+                "Number(15,2)",
+                "DateTime",
+                "String(50)",
+                "Boolean",
+                "DefinedType.CorpusDefinedType",
+                "CatalogRef.CorpusCatalog",
+            ],
+        );
+
+        assert_eq!(
+            &lines[..6],
+            [
+                "<v8:Type>cfg:CatalogRef.CorpusCatalog</v8:Type>",
+                "<v8:Type>xs:boolean</v8:Type>",
+                "<v8:Type>xs:string</v8:Type>",
+                "<v8:Type>xs:dateTime</v8:Type>",
+                "<v8:Type>xs:decimal</v8:Type>",
+                "<v8:TypeSet>cfg:DefinedType.CorpusDefinedType</v8:TypeSet>",
+            ]
+        );
+        assert!(lines[6].starts_with("<v8:NumberQualifiers>"), "{lines:?}");
+        assert!(lines[11].starts_with("<v8:StringQualifiers>"), "{lines:?}");
+        assert!(lines[15].starts_with("<v8:DateQualifiers>"), "{lines:?}");
+    }
+
+    #[test]
+    fn event_subscription_sources_form_one_8_3_27_type_description() {
+        let xml = test_compile_meta_xml(
+            "EventSubscription",
+            "CorpusSubscription",
+            json!({
+                "source": ["String(10)", "DocumentObject.CorpusDocument"],
+                "event": "BeforeWrite",
+                "handler": "CorpusModule.Handle"
+            }),
+        );
+        let document = Document::parse(&xml).unwrap();
+        let source = meta_info_child(test_meta_root_properties(&document), "Source").unwrap();
+
+        assert_eq!(
+            test_meta_direct_child_names(source),
+            ["Type", "Type", "StringQualifiers"],
+            "{xml}"
+        );
+    }
+
+    #[test]
+    fn event_subscription_source_string_is_unbounded_in_8_3_27() {
+        let xml = test_compile_meta_xml(
+            "EventSubscription",
+            "CorpusSubscription",
+            json!({
+                "source": [
+                    "DocumentObject.CorpusDocument",
+                    "String(37)",
+                    "CatalogObject.CorpusCatalog"
+                ],
+                "event": "BeforeWrite",
+                "handler": "CorpusModule.Handle"
+            }),
+        );
+        let document = Document::parse(&xml).unwrap();
+        let source = meta_info_child(test_meta_root_properties(&document), "Source").unwrap();
+        let mut source_types = meta_info_children(source, "Type")
+            .into_iter()
+            .map(meta_info_inner_text)
+            .collect::<Vec<_>>();
+        source_types.sort();
+
+        assert_eq!(
+            source_types,
+            [
+                "cfg:CatalogObject.CorpusCatalog",
+                "cfg:DocumentObject.CorpusDocument",
+                "xs:string",
+            ],
+            "{xml}"
+        );
+        let qualifiers = meta_info_child(source, "StringQualifiers").unwrap();
+        assert_eq!(
+            meta_info_child_text(qualifiers, "Length").as_deref(),
+            Some("0"),
+            "{xml}"
+        );
+        assert_eq!(
+            meta_info_child_text(qualifiers, "AllowedLength").as_deref(),
+            Some("Variable"),
+            "{xml}"
+        );
+    }
+
+    #[test]
+    fn event_subscription_sources_validate_as_one_union() {
+        for (sources, expected) in [
+            (vec!["String(10)", "String(20)"], "duplicate platform type"),
+            (
+                vec!["ValueStorage", "DocumentObject.CorpusDocument"],
+                "only platform type",
+            ),
+        ] {
+            let definition = json!({
+                "source": sources,
+                "event": "BeforeWrite",
+                "handler": "CorpusModule.Handle"
+            });
+            let error = meta_compile_object_xml(
+                definition.as_object().unwrap(),
+                "EventSubscription",
+                "CorpusSubscription",
+                "2.20",
+            )
+            .unwrap_err();
+
+            assert!(error.contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn configuration_type_order_is_not_faked_without_workspace_type_ids() {
+        let mut lines = Vec::new();
+
+        emit_meta_type_contents(
+            &mut lines,
+            "",
+            [
+                "DocumentRef.CorpusDocument",
+                "CatalogRef.CorpusCatalog",
+                "Boolean",
+            ],
+        );
+
+        assert_eq!(
+            &lines[..3],
+            [
+                "<v8:Type>cfg:DocumentRef.CorpusDocument</v8:Type>",
+                "<v8:Type>cfg:CatalogRef.CorpusCatalog</v8:Type>",
+                "<v8:Type>xs:boolean</v8:Type>",
+            ]
+        );
+    }
+
+    #[test]
+    fn value_storage_uses_the_8_3_27_core_type() {
+        for alias in ["ValueStorage", "valuestorage", "ХранилищеЗначения"] {
+            validate_meta_type_union([alias]).unwrap();
+            let mut lines = Vec::new();
+            emit_meta_type_content(&mut lines, "", alias);
+            assert_eq!(lines, ["<v8:Type>v8:ValueStorage</v8:Type>"]);
+        }
+
+        let error = validate_meta_type_union(["Boolean", "ValueStorage"]).unwrap_err();
+        assert!(error.contains("only platform type"), "{error}");
+    }
+
+    #[test]
+    fn defined_type_references_use_type_set_after_concrete_types() {
+        let mut lines = Vec::new();
+
+        emit_meta_type_contents(
+            &mut lines,
+            "",
+            ["DefinedType.CorpusDefinedType", "String(50)"],
+        );
+
+        assert_eq!(lines[0], "<v8:Type>xs:string</v8:Type>");
+        assert_eq!(
+            lines[1],
+            "<v8:TypeSet>cfg:DefinedType.CorpusDefinedType</v8:TypeSet>"
+        );
+        assert!(lines[2].starts_with("<v8:StringQualifiers>"), "{lines:?}");
+    }
+
+    #[test]
+    fn chart_of_accounts_rejects_positive_extra_dimension_count_without_type() {
+        for ext_dimension_types in [None, Some(""), Some("   ")] {
+            let mut definition = json!({"maxExtDimensionCount": 3});
+            if let Some(value) = ext_dimension_types {
+                definition["extDimensionTypes"] = json!(value);
+            }
+            let error = meta_compile_object_xml(
+                definition.as_object().unwrap(),
+                "ChartOfAccounts",
+                "CorpusAccounts",
+                "2.20",
+            )
+            .unwrap_err();
+
+            assert!(error.contains("extDimensionTypes"), "{error}");
+            assert!(error.contains("maxExtDimensionCount"), "{error}");
+        }
+    }
+
+    #[test]
+    fn meta_compile_rejects_invalid_object_and_child_names_before_emission() {
+        let cases = [
+            ("metadata object", "Catalog", "../EscapedName", json!({})),
+            (
+                "attributes",
+                "Catalog",
+                "ValidCatalog",
+                json!({"attributes": [{"name": "Bad Name", "type": "String"}]}),
+            ),
+            (
+                "tabularSections",
+                "Document",
+                "ValidDocument",
+                json!({"tabularSections": [{"name": "Bad/Section", "attributes": []}]}),
+            ),
+            (
+                "enum value",
+                "Enum",
+                "ValidEnum",
+                json!({"values": ["Bad Value"]}),
+            ),
+            (
+                "URL template",
+                "HTTPService",
+                "ValidService",
+                json!({"urlTemplates": {"Bad/Template": "/probe"}}),
+            ),
+            (
+                "operation parameter",
+                "WebService",
+                "ValidWebService",
+                json!({
+                    "operations": {
+                        "ValidOperation": {"parameters": {"Bad Parameter": "xs:string"}}
+                    }
+                }),
+            ),
+        ];
+
+        for (context, object_type, object_name, definition) in cases {
+            let error = meta_compile_object_xml(
+                definition.as_object().unwrap(),
+                object_type,
+                object_name,
+                "2.20",
+            )
+            .unwrap_err();
+
+            assert!(error.contains(context), "{context}: {error}");
+            assert!(error.contains("valid 1C identifier"), "{context}: {error}");
+        }
+    }
+
+    #[test]
+    fn meta_compile_rejects_invalid_8_3_27_enum_before_emission() {
+        let definition = json!({"hierarchyType": "Bogus"});
+
+        let error = meta_compile_object_xml(
+            definition.as_object().unwrap(),
+            "Catalog",
+            "ValidCatalog",
+            "2.20",
+        )
+        .unwrap_err();
+
+        assert!(error.contains("HierarchyType"), "{error}");
+        assert!(error.contains("Bogus"), "{error}");
+        assert!(error.contains("8.3.27"), "{error}");
+    }
+
+    fn test_compile_meta_xml(object_type: &str, object_name: &str, definition: Value) -> String {
+        meta_compile_object_xml(
+            definition.as_object().unwrap(),
+            object_type,
+            object_name,
+            "2.20",
+        )
+        .unwrap()
+        .0
+    }
+
+    fn test_meta_root_properties<'a, 'input>(
+        document: &'a Document<'input>,
+    ) -> roxmltree::Node<'a, 'input> {
+        let object = document
+            .root_element()
+            .children()
+            .find(roxmltree::Node::is_element)
+            .unwrap();
+        meta_info_child(object, "Properties").unwrap()
+    }
+
+    fn test_meta_direct_child_names(node: roxmltree::Node<'_, '_>) -> Vec<String> {
+        node.children()
+            .filter(roxmltree::Node::is_element)
+            .map(|child| child.tag_name().name().to_string())
+            .collect()
+    }
+
+    fn test_meta_standard_attribute_names(properties: roxmltree::Node<'_, '_>) -> Vec<String> {
+        meta_info_child(properties, "StandardAttributes")
+            .unwrap()
+            .children()
+            .filter(roxmltree::Node::is_element)
+            .map(|child| child.attribute("name").unwrap_or_default().to_string())
+            .collect()
+    }
+
+    fn test_meta_root_child_objects<'a, 'input>(
+        document: &'a Document<'input>,
+    ) -> roxmltree::Node<'a, 'input> {
+        let object = document
+            .root_element()
+            .children()
+            .find(roxmltree::Node::is_element)
+            .unwrap();
+        meta_info_child(object, "ChildObjects").unwrap()
+    }
+
+    fn test_meta_named_object<'a, 'input>(
+        document: &'a Document<'input>,
+        object_type: &str,
+        name: &str,
+    ) -> roxmltree::Node<'a, 'input> {
+        document
+            .descendants()
+            .filter(|node| node.is_element() && node.tag_name().name() == object_type)
+            .find(|node| {
+                meta_info_child(*node, "Properties")
+                    .and_then(|properties| meta_info_child_text(properties, "Name"))
+                    .as_deref()
+                    == Some(name)
+            })
+            .unwrap_or_else(|| panic!("{object_type} {name} not found"))
     }
 }

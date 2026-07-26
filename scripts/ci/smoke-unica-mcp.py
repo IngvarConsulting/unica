@@ -50,6 +50,7 @@ def smoke(command: list[str], plugin_root: Path, timeout_seconds: float) -> None
             input=request,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=timeout_seconds,
             check=False,
             env=environment,

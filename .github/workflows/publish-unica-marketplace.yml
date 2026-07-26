@@ -50,9 +50,11 @@ jobs:
       - name: Require package contract files
         run: |
           test -f payload/plugins/unica/.codex-plugin/plugin.json
+          test -f payload/plugins/unica/.claude-plugin/plugin.json
           test -f payload/plugins/unica/.mcp.json
           test -f payload/plugins/unica/runtime-manifest.json
           test -f payload/.agents/plugins/marketplace.json
+          test -f payload/.claude-plugin/marketplace.json
       - name: Read the pinned release identity
         run: |
           release_tag="$(sed -n 's/.*"tag"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' payload/plugins/unica/runtime-manifest.json | head -n 1)"
@@ -93,8 +95,10 @@ jobs:
         run: gh auth setup-git
       - name: Download catalog candidate
         run: gh run download "$SOURCE_RUN_ID" --repo IngvarConsulting/unica --name unica-thin-marketplace --dir payload
-      - name: Require stable catalog candidate
-        run: test -f payload/.agents/plugins/marketplace.json
+      - name: Require stable catalog candidates
+        run: |
+          test -f payload/.agents/plugins/marketplace.json
+          test -f payload/.claude-plugin/marketplace.json
       - name: Open catalog-only promotion PR
         run: |
           set -euo pipefail
@@ -105,13 +109,17 @@ jobs:
             "$(git -C marketplace rev-parse "origin/main:plugins/unica")"
           branch="codex/promote-${RELEASE_TAG}-${SOURCE_RUN_ID}"
           git -C marketplace switch -c "$branch"
-          mkdir -p marketplace/.agents/plugins
+          mkdir -p marketplace/.agents/plugins marketplace/.claude-plugin
           cp payload/.agents/plugins/marketplace.json marketplace/.agents/plugins/marketplace.json
-          git -C marketplace add .agents/plugins/marketplace.json
+          cp payload/.claude-plugin/marketplace.json marketplace/.claude-plugin/marketplace.json
+          git -C marketplace add .agents/plugins/marketplace.json .claude-plugin/marketplace.json
           git -C marketplace -c user.name=unica-release-bot -c user.email=actions@users.noreply.github.com \
             commit -m "promote: Unica ${RELEASE_TAG}"
-          promotion_sha="$(git -C marketplace rev-parse HEAD)"
           git -C marketplace push -u origin "$branch"
+          # The tag has to carry the plugin bytes, and the staging merge already
+          # does. Naming the promotion commit instead would demand a tag on a
+          # commit that does not exist until this step has run, which left the
+          # consumer install checks failing on their first run every release.
           gh pr create --repo IngvarConsulting/unica-marketplace --head "$branch" --base main \
             --title "Promote Unica ${RELEASE_TAG}" \
-            --body "Points the stable catalog at ${RELEASE_TAG}. Create the signed ${RELEASE_TAG} tag at commit ${promotion_sha} before merging this PR."
+            --body "Points the stable catalog at ${RELEASE_TAG}. Publish the signed ${RELEASE_TAG} tag at the staging merge commit ${STAGING_MERGE_SHA} before merging this PR; until it exists the consumer install checks cannot resolve the catalog ref. See docs/release-runbook.md."

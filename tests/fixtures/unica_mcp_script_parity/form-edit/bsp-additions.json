@@ -8,7 +8,8 @@
   "commands": [
     {
       "name": "RunParityAction",
-      "title": "Run parity action"
+      "title": "Run parity action",
+      "action": "RunParityAction"
     }
   ],
   "elements": [

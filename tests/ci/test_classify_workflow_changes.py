@@ -55,6 +55,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
     def test_platform_facade_and_platform_tests_require_platform_matrix(self) -> None:
         for path in (
             "crates/unica-coder/src/infrastructure/platform/filesystem.rs",
+            "crates/unica-coder/src/infrastructure/platform_xml_owner.rs",
             "crates/unica-bootstrap/src/platform/mod.rs",
             "crates/unica-coder/tests/platform/new_contract.rs",
             "crates/unica-coder/tests/platform_external_init.rs",

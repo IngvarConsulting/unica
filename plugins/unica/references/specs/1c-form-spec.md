@@ -1,6 +1,8 @@
 # 1C Form.xml Format Specification
 
-Спецификация формата управляемых форм 1С:Предприятие 8.3 (version 2.17).
+> Активный контракт Unica: платформа `8.3.27`, формат выгрузки `2.20`.
+
+Спецификация формата управляемых форм 1С:Предприятие 8.3.27.
 Составлена на основе анализа 7723 форм конфигурации «Бухгалтерия предприятия 3.0.180».
 
 ---
@@ -45,7 +47,7 @@ CommonForms/
 		xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"
 		xmlns:xs="http://www.w3.org/2001/XMLSchema"
 		xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-		version="2.17">
+		version="2.20">
 	<Form uuid="XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX">
 		<Properties>
 			<Name>ИмяФормы</Name>
@@ -77,7 +79,7 @@ CommonForms/
 		xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"
 		xmlns:xs="http://www.w3.org/2001/XMLSchema"
 		xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-		version="2.17">
+		version="2.20">
 	<CommonForm uuid="XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX">
 		<Properties>
 			<Name>ИмяФормы</Name>
@@ -177,12 +179,12 @@ CommonForms регистрируются в `Configuration.xml`:
       xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"
       xmlns:xs="http://www.w3.org/2001/XMLSchema"
       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-      version="2.17">
+      version="2.20">
   ...
 </Form>
 ```
 
-Все 17 namespace-деклараций **идентичны** во всех формах конфигурации. Атрибут `version` всегда `"2.17"`.
+Все 17 namespace-деклараций **идентичны** во всех формах конфигурации. В активном профиле атрибут `version` равен `"2.20"`.
 
 ### Назначение namespace-префиксов
 

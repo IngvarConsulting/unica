@@ -1,15 +1,21 @@
 use super::cf::cf_validate_identifier;
-use super::common::{escape_xml, path_arg, string_arg, write_utf8_bom};
-use super::form::{form_add_content_xml, form_add_metadata_xml, form_add_module_bsl};
+use super::common::{
+    escape_xml, guard_active_format_containing_owner_for_new_output, path_arg, string_arg,
+};
+use super::compile_transaction::CompileTransaction;
+use super::form::{
+    form_add_content_xml, form_add_metadata_xml, form_add_module_bsl, validate_form,
+};
+use super::meta::validate_meta;
 use crate::application::AdapterOutcome;
+use crate::domain::format_profile::ACTIVE_FORMAT_PROFILE;
 use crate::domain::workspace::WorkspaceContext;
 use serde_json::{Map, Value};
-use std::fs;
 use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
 
-const FORMAT_VERSION: &str = "2.17";
-const OBJECT_MODULE_STUB: &str = "#Область ПрограммныйИнтерфейс\n\n#КонецОбласти\n";
+const FORMAT_VERSION: &str = ACTIVE_FORMAT_PROFILE.export_format;
+const OBJECT_MODULE_STUB: &str = "#Область ПрограммныйИнтерфейс\r\n\r\n#КонецОбласти\r\n";
 
 #[derive(Debug, Clone, Copy)]
 enum ExternalArtifactKind {
@@ -109,7 +115,7 @@ fn invoke(
         (Ok(plan), ScaffoldMode::Preview) => {
             success_outcome(tool_name, &plan, ScaffoldMode::Preview, Vec::new())
         }
-        (Ok(plan), ScaffoldMode::Apply) => match create_scaffold(&plan) {
+        (Ok(plan), ScaffoldMode::Apply) => match create_scaffold(&plan, context) {
             Ok(warnings) => success_outcome(tool_name, &plan, ScaffoldMode::Apply, warnings),
             Err(error) => failure_outcome(tool_name, error),
         },
@@ -120,6 +126,20 @@ fn invoke(
 }
 
 fn prepare_plan(
+    kind: ExternalArtifactKind,
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<ScaffoldPlan, String> {
+    let plan = plan_scaffold(kind, args, context)?;
+    for target in [&plan.descriptor, &plan.object_dir] {
+        if target.exists() {
+            return Err(format!("target already exists: {}", target.display()));
+        }
+    }
+    Ok(plan)
+}
+
+fn plan_scaffold(
     kind: ExternalArtifactKind,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -153,11 +173,6 @@ fn prepare_plan(
     }
     let descriptor = output_dir.join(format!("{name}.xml"));
     let object_dir = output_dir.join(name);
-    for target in [&descriptor, &object_dir] {
-        if target.exists() {
-            return Err(format!("target already exists: {}", target.display()));
-        }
-    }
 
     let mut artifacts = vec![descriptor.clone(), object_dir.join("Ext/ObjectModule.bsl")];
     if let Some(form_name) = form_name.as_deref() {
@@ -186,6 +201,21 @@ fn prepare_plan(
     })
 }
 
+pub(crate) fn external_init_planned_xml_paths(
+    operation: &str,
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<Vec<PathBuf>, String> {
+    let kind = ExternalArtifactKind::from_operation(operation)
+        .ok_or_else(|| format!("unsupported external init operation: {operation}"))?;
+    let plan = plan_scaffold(kind, args, context)?;
+    Ok(plan
+        .artifacts
+        .into_iter()
+        .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("xml"))
+        .collect())
+}
+
 fn validate_identifier(argument: &str, value: &str) -> Result<(), String> {
     if cf_validate_identifier(value) {
         Ok(())
@@ -210,7 +240,7 @@ fn normalize_lexical_path(path: &Path) -> PathBuf {
     normalized
 }
 
-fn create_scaffold(plan: &ScaffoldPlan) -> Result<Vec<String>, String> {
+fn create_scaffold(plan: &ScaffoldPlan, context: &WorkspaceContext) -> Result<Vec<String>, String> {
     let content = build_content(plan)?;
     validate_xml("external descriptor", &content.descriptor)?;
     if let Some(form_metadata) = content.form_metadata.as_deref() {
@@ -220,40 +250,44 @@ fn create_scaffold(plan: &ScaffoldPlan) -> Result<Vec<String>, String> {
         validate_xml("managed form", form_content)?;
     }
 
-    let output_existed = plan.output_dir.exists();
-    fs::create_dir_all(&plan.output_dir)
-        .map_err(|error| format!("failed to create {}: {error}", plan.output_dir.display()))?;
-    let staging = plan
-        .output_dir
-        .join(format!(".unica-external-init-{}.tmp", Uuid::new_v4()));
-    if let Err(error) = fs::create_dir(&staging) {
-        let mut cleanup_errors = Vec::new();
-        if !output_existed {
-            remove_empty_dir(&plan.output_dir, &mut cleanup_errors);
-        }
-        return Err(with_cleanup_errors(
-            format!("failed to create staging directory: {error}"),
-            cleanup_errors,
-        ));
+    let mut transaction = CompileTransaction::new();
+    transaction.create_utf8_bom_text(&plan.descriptor, &content.descriptor)?;
+    transaction.create_utf8_bom_text(
+        plan.object_dir.join("Ext/ObjectModule.bsl"),
+        OBJECT_MODULE_STUB,
+    )?;
+    if let (Some(form_name), Some(form_metadata), Some(form_content)) = (
+        plan.form_name.as_deref(),
+        content.form_metadata.as_deref(),
+        content.form_content.as_deref(),
+    ) {
+        let form_dir = plan.object_dir.join("Forms").join(form_name);
+        transaction.create_utf8_bom_text(
+            plan.object_dir
+                .join("Forms")
+                .join(format!("{form_name}.xml")),
+            form_metadata,
+        )?;
+        transaction.create_utf8_bom_text(form_dir.join("Ext/Form.xml"), form_content)?;
+        transaction
+            .create_utf8_bom_text(form_dir.join("Ext/Form/Module.bsl"), form_add_module_bsl())?;
+    }
+    guard_active_format_containing_owner_for_new_output(
+        &mut transaction,
+        &plan.output_dir,
+        context,
+    )?;
+    for target in plan
+        .artifacts
+        .iter()
+        .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("xml"))
+    {
+        guard_active_format_containing_owner_for_new_output(&mut transaction, target, context)?;
     }
 
-    let result = write_and_commit_staging(plan, &content, &staging);
-    match result {
-        Ok(warnings) => Ok(warnings),
-        Err(error) => {
-            let mut cleanup_errors = Vec::new();
-            if let Err(cleanup_error) = fs::remove_dir_all(&staging) {
-                cleanup_errors.push(format!(
-                    "failed to remove staging directory {}: {cleanup_error}",
-                    staging.display()
-                ));
-            }
-            if !output_existed {
-                remove_empty_dir(&plan.output_dir, &mut cleanup_errors);
-            }
-            Err(with_cleanup_errors(error, cleanup_errors))
-        }
-    }
+    let report =
+        transaction.commit_with_post_validation(|| validate_published_scaffold(plan, context))?;
+    Ok(report.cleanup_warnings)
 }
 
 fn build_content(plan: &ScaffoldPlan) -> Result<ScaffoldContent, String> {
@@ -283,153 +317,46 @@ fn build_content(plan: &ScaffoldPlan) -> Result<ScaffoldContent, String> {
     })
 }
 
-fn write_and_commit_staging(
+fn validate_published_scaffold(
     plan: &ScaffoldPlan,
-    content: &ScaffoldContent,
-    staging: &Path,
-) -> Result<Vec<String>, String> {
-    let staged_descriptor = staging.join(format!("{}.xml", plan.name));
-    let staged_object_dir = staging.join(&plan.name);
-    let staged_object_ext = staged_object_dir.join("Ext");
-    fs::create_dir_all(&staged_object_ext)
-        .map_err(|error| format!("failed to create object module directory: {error}"))?;
-    write_utf8_bom(&staged_descriptor, &content.descriptor)?;
-    write_utf8_bom(
-        &staged_object_ext.join("ObjectModule.bsl"),
-        OBJECT_MODULE_STUB,
+    context: &WorkspaceContext,
+) -> Result<(), String> {
+    let descriptor_args = Map::from_iter([(
+        "ObjectPath".to_string(),
+        Value::String(plan.descriptor.display().to_string()),
+    )]);
+    require_validation(
+        "external descriptor",
+        validate_meta(&descriptor_args, context),
     )?;
 
-    if let (Some(form_name), Some(form_metadata), Some(form_content)) = (
-        plan.form_name.as_deref(),
-        content.form_metadata.as_deref(),
-        content.form_content.as_deref(),
-    ) {
-        let forms_dir = staged_object_dir.join("Forms");
-        let form_ext = forms_dir.join(form_name).join("Ext");
-        let form_module_dir = form_ext.join("Form");
-        fs::create_dir_all(&form_module_dir)
-            .map_err(|error| format!("failed to create managed form directories: {error}"))?;
-        write_utf8_bom(&forms_dir.join(format!("{form_name}.xml")), form_metadata)?;
-        write_utf8_bom(&form_ext.join("Form.xml"), form_content)?;
-        write_utf8_bom(&form_module_dir.join("Module.bsl"), form_add_module_bsl())?;
+    if let Some(form_name) = plan.form_name.as_deref() {
+        let form_path = plan
+            .object_dir
+            .join("Forms")
+            .join(form_name)
+            .join("Ext/Form.xml");
+        let form_args = Map::from_iter([(
+            "FormPath".to_string(),
+            Value::String(form_path.display().to_string()),
+        )]);
+        require_validation("managed form", validate_form(&form_args, context))?;
     }
-
-    for target in [&plan.descriptor, &plan.object_dir] {
-        if target.exists() {
-            return Err(format!("target already exists: {}", target.display()));
-        }
-    }
-    fs::create_dir(&plan.object_dir).map_err(|error| {
-        format!(
-            "failed to reserve object directory {} without overwrite: {error}",
-            plan.object_dir.display()
-        )
-    })?;
-    let mut published_subtrees = Vec::new();
-    let publish_object = (|| -> Result<(), String> {
-        let final_ext = plan.object_dir.join("Ext");
-        fs::rename(staged_object_dir.join("Ext"), &final_ext)
-            .map_err(|error| format!("failed to publish object module directory: {error}"))?;
-        published_subtrees.push(final_ext);
-        let staged_forms = staged_object_dir.join("Forms");
-        if staged_forms.exists() {
-            let final_forms = plan.object_dir.join("Forms");
-            fs::rename(&staged_forms, &final_forms)
-                .map_err(|error| format!("failed to publish managed form directory: {error}"))?;
-            published_subtrees.push(final_forms);
-        }
-        Ok(())
-    })();
-    if let Err(error) = publish_object {
-        return Err(with_cleanup_errors(
-            error,
-            rollback_published_object(plan, &published_subtrees),
-        ));
-    }
-    if let Err(error) = fs::hard_link(&staged_descriptor, &plan.descriptor) {
-        return Err(with_cleanup_errors(
-            format!(
-                "failed to publish descriptor {} without overwrite: {error}",
-                plan.descriptor.display()
-            ),
-            rollback_published_object(plan, &published_subtrees),
-        ));
-    }
-
-    let mut warnings = Vec::new();
-    if let Err(error) = fs::remove_dir_all(staging) {
-        warnings.push(format!(
-            "scaffold committed but staging cleanup failed for {}: {error}",
-            staging.display()
-        ));
-    }
-    Ok(warnings)
+    Ok(())
 }
 
-fn rollback_published_object(plan: &ScaffoldPlan, published_subtrees: &[PathBuf]) -> Vec<String> {
-    let mut cleanup_errors = Vec::new();
-    let published_files = plan.artifacts.iter().skip(1).filter(|path| {
-        published_subtrees
-            .iter()
-            .any(|subtree| path.starts_with(subtree))
-    });
-    for path in published_files.rev() {
-        match fs::remove_file(path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => cleanup_errors.push(format!(
-                "failed to remove published file {}: {error}",
-                path.display()
-            )),
-        }
+fn require_validation(label: &str, outcome: AdapterOutcome) -> Result<(), String> {
+    if outcome.ok {
+        return Ok(());
     }
-
-    let mut directories = Vec::new();
-    for path in plan.artifacts.iter().skip(1).filter(|path| {
-        published_subtrees
-            .iter()
-            .any(|subtree| path.starts_with(subtree))
-    }) {
-        let mut parent = path.parent();
-        while let Some(directory) = parent {
-            if !directory.starts_with(&plan.object_dir) {
-                break;
-            }
-            directories.push(directory.to_path_buf());
-            if directory == plan.object_dir {
-                break;
-            }
-            parent = directory.parent();
-        }
-    }
-    directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
-    directories.dedup();
-    for directory in directories {
-        remove_empty_dir(&directory, &mut cleanup_errors);
-    }
-    if plan.object_dir.exists() {
-        remove_empty_dir(&plan.object_dir, &mut cleanup_errors);
-    }
-    cleanup_errors
-}
-
-fn remove_empty_dir(path: &Path, cleanup_errors: &mut Vec<String>) {
-    match fs::remove_dir(path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => cleanup_errors.push(format!(
-            "failed to remove empty directory {}: {error}",
-            path.display()
-        )),
-    }
-}
-
-fn with_cleanup_errors(error: String, cleanup_errors: Vec<String>) -> String {
-    if cleanup_errors.is_empty() {
-        error
+    let details = if outcome.errors.is_empty() {
+        outcome
+            .stdout
+            .unwrap_or_else(|| "validation returned no diagnostics".to_string())
     } else {
-        format!("{error}; cleanup incomplete: {}", cleanup_errors.join("; "))
-    }
+        outcome.errors.join("; ")
+    };
+    Err(format!("{label} validation failed: {details}"))
 }
 
 fn descriptor_xml(plan: &ScaffoldPlan) -> String {
@@ -575,11 +502,18 @@ fn failure_outcome(tool_name: &str, error: String) -> AdapterOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::UnicaApplication;
+    use crate::infrastructure::native_operations::compile_transaction::{
+        with_commit_failpoint, CommitFailpoint,
+    };
+    use crate::infrastructure::native_operations::single_file_publisher::with_before_commit_hook;
     use crate::infrastructure::native_operations::NativeOperationAdapter;
     use crate::infrastructure::platform::testing;
     use crate::infrastructure::workspace::discover_workspace;
     use serde_json::{json, Map, Value};
     use std::collections::BTreeSet;
+    use std::fs;
+    use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -610,6 +544,8 @@ mod tests {
         let bytes = fs::read(&descriptor).unwrap();
         assert!(bytes.starts_with(&[0xef, 0xbb, 0xbf]));
         let xml = String::from_utf8(bytes[3..].to_vec()).unwrap();
+        assert!(xml.contains(r#"version="2.20""#), "{xml}");
+        assert!(!xml.contains(r#"version="2.17""#), "{xml}");
         assert!(xml.contains("<ExternalDataProcessor uuid=\""));
         assert!(xml.contains("<xr:ClassId>c3831ec8-d8d5-4f93-8a22-f9bfae07327f</xr:ClassId>"));
         assert!(xml.contains("name=\"ExternalDataProcessorObject.ИмпортТоваров\""));
@@ -623,12 +559,17 @@ mod tests {
         let form_metadata_bytes = fs::read(object_dir.join("Forms/ОсновнаяФорма.xml")).unwrap();
         assert!(form_metadata_bytes.starts_with(&[0xef, 0xbb, 0xbf]));
         let form_metadata = String::from_utf8(form_metadata_bytes[3..].to_vec()).unwrap();
+        assert!(
+            form_metadata.contains(r#"version="2.20""#),
+            "{form_metadata}"
+        );
         assert_metadata_uuids_v4(&form_metadata, "Form", 1);
 
         let form_path = object_dir.join("Forms/ОсновнаяФорма/Ext/Form.xml");
         let form_bytes = fs::read(&form_path).unwrap();
         assert!(form_bytes.starts_with(&[0xef, 0xbb, 0xbf]));
         let form_xml = String::from_utf8(form_bytes[3..].to_vec()).unwrap();
+        assert!(form_xml.contains(r#"version="2.20""#), "{form_xml}");
         assert!(
             form_xml.contains("<v8:Type>cfg:ExternalDataProcessorObject.ИмпортТоваров</v8:Type>")
         );
@@ -639,7 +580,11 @@ mod tests {
             object_dir.join("Ext/ObjectModule.bsl"),
             object_dir.join("Forms/ОсновнаяФорма/Ext/Form/Module.bsl"),
         ] {
-            assert!(fs::read(path).unwrap().starts_with(&[0xef, 0xbb, 0xbf]));
+            let bytes = fs::read(path).unwrap();
+            assert!(bytes.starts_with(&[0xef, 0xbb, 0xbf]));
+            let text = String::from_utf8(bytes[3..].to_vec()).unwrap();
+            assert!(text.contains("\r\n"), "{text:?}");
+            assert!(!text.replace("\r\n", "").contains('\n'), "{text:?}");
         }
 
         let validate_args = map(json!({"FormPath": form_path}));
@@ -671,6 +616,8 @@ mod tests {
         let bytes = fs::read(&descriptor).unwrap();
         assert!(bytes.starts_with(&[0xef, 0xbb, 0xbf]));
         let xml = String::from_utf8(bytes[3..].to_vec()).unwrap();
+        assert!(xml.contains(r#"version="2.20""#), "{xml}");
+        assert!(!xml.contains(r#"version="2.17""#), "{xml}");
         assert!(xml.contains("<ExternalReport uuid=\""));
         assert!(xml.contains("<xr:ClassId>e41aff26-25cf-4bb6-b6c1-3f478a75f374</xr:ClassId>"));
         assert!(xml.contains("name=\"ExternalReportObject.Остатки\""));
@@ -816,31 +763,238 @@ mod tests {
     }
 
     #[test]
-    fn rollback_removes_only_known_files_and_preserves_unexpected_entries() {
-        let root = temp_root("rollback-preserves-concurrent");
+    fn external_init_rolls_back_complete_scaffold_after_partial_publication_failure() {
+        for (operation, tool_name, name, form_name) in [
+            (
+                "epf-init",
+                "unica.epf.init",
+                "RollbackProcessor",
+                Some("MainForm"),
+            ),
+            ("erf-init", "unica.erf.init", "RollbackReport", None),
+        ] {
+            let root = temp_root(name);
+            let context = discover_workspace(Some(root.clone())).unwrap();
+            let mut args = map(json!({"Name": name, "OutputDir": "external"}));
+            if let Some(form_name) = form_name {
+                args.insert("FormName".to_string(), Value::String(form_name.to_string()));
+            }
+
+            let outcome = with_commit_failpoint(CommitFailpoint::AfterObjectFiles, || {
+                apply(operation, tool_name, &args, &context).unwrap()
+            });
+
+            assert!(!outcome.ok, "{operation} unexpectedly succeeded");
+            assert!(
+                outcome
+                    .errors
+                    .iter()
+                    .any(|error| error.contains("after object files")),
+                "{:?}",
+                outcome.errors
+            );
+            assert!(
+                !root.join("external").exists(),
+                "{operation} left a partial output tree"
+            );
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn external_init_rolls_back_when_locked_post_validation_fails() {
+        let root = temp_root("post-validation-rollback");
         let context = discover_workspace(Some(root.clone())).unwrap();
-        let args = map(json!({"Name": "Rollback", "OutputDir": "external"}));
-        let plan = prepare_plan(ExternalArtifactKind::Processor, &args, &context).unwrap();
-        fs::create_dir_all(plan.object_dir.join("Ext")).unwrap();
+        let args = map(json!({
+            "Name": "Validated",
+            "OutputDir": "external",
+            "FormName": "MainForm"
+        }));
+
+        let outcome = with_commit_failpoint(CommitFailpoint::PostWriteValidation, || {
+            apply("epf-init", "unica.epf.init", &args, &context).unwrap()
+        });
+
+        assert!(
+            !outcome.ok,
+            "post-validation failure unexpectedly succeeded"
+        );
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("post-write validation")),
+            "{:?}",
+            outcome.errors
+        );
+        assert!(
+            !root.join("external").exists(),
+            "post-validation failure left a partial output tree"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn external_init_never_overwrites_a_concurrent_create_target() {
+        let root = temp_root("concurrent-create");
+        let context = discover_workspace(Some(root.clone())).unwrap();
+        let args = map(json!({
+            "Name": "Concurrent",
+            "OutputDir": "external",
+            "FormName": "MainForm"
+        }));
+        let concurrent_target = Arc::new(Mutex::new(None::<PathBuf>));
+        let hook_target = Arc::clone(&concurrent_target);
+
+        let outcome = with_before_commit_hook(
+            move |target| {
+                fs::write(target, b"concurrent replacement").unwrap();
+                *hook_target.lock().unwrap() = Some(target.to_path_buf());
+            },
+            || apply("epf-init", "unica.epf.init", &args, &context).unwrap(),
+        );
+
+        assert!(!outcome.ok, "concurrent target was overwritten");
+        let concurrent_target = concurrent_target
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("publication hook was not reached");
+        assert_eq!(
+            fs::read(&concurrent_target).unwrap(),
+            b"concurrent replacement"
+        );
+        for artifact in [
+            root.join("external/Concurrent.xml"),
+            root.join("external/Concurrent/Ext/ObjectModule.bsl"),
+            root.join("external/Concurrent/Forms/MainForm.xml"),
+            root.join("external/Concurrent/Forms/MainForm/Ext/Form.xml"),
+            root.join("external/Concurrent/Forms/MainForm/Ext/Form/Module.bsl"),
+        ] {
+            if artifact != concurrent_target {
+                assert!(
+                    !artifact.exists(),
+                    "failed transaction left {}",
+                    artifact.display()
+                );
+            }
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn external_init_reauthorizes_containing_owner_immediately_before_publication() {
+        let root = temp_root("external-owner-race");
+        fs::create_dir_all(root.join("src")).unwrap();
         fs::write(
-            plan.object_dir.join("Ext/ObjectModule.bsl"),
-            "published by this operation",
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
         )
         .unwrap();
-        let unexpected = plan.object_dir.join("concurrent-sentinel.txt");
-        fs::write(&unexpected, "must survive rollback").unwrap();
+        let owner = root.join("src/Configuration.xml");
+        fs::write(
+            &owner,
+            br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration/></MetaDataObject>"#,
+        )
+        .unwrap();
+        let context = discover_workspace(Some(root.clone())).unwrap();
+        let args = map(json!({
+            "Name": "ConcurrentOwner",
+            "OutputDir": "src/external"
+        }));
+        let owner_for_hook = owner.clone();
+        let concurrent_owner = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Configuration/></MetaDataObject>"#.to_vec();
 
-        let cleanup_errors = rollback_published_object(&plan, &[plan.object_dir.join("Ext")]);
-
-        assert!(!plan.object_dir.join("Ext/ObjectModule.bsl").exists());
-        assert_eq!(
-            fs::read_to_string(&unexpected).unwrap(),
-            "must survive rollback"
+        let outcome = with_before_commit_hook(
+            move |_| fs::write(&owner_for_hook, &concurrent_owner).unwrap(),
+            || apply("epf-init", "unica.epf.init", &args, &context).unwrap(),
         );
-        assert!(plan.object_dir.is_dir());
-        assert!(cleanup_errors
-            .iter()
-            .any(|error| error.contains("failed to remove empty directory")));
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("changed after planning"),
+            "{outcome:?}"
+        );
+        assert!(fs::read_to_string(&owner)
+            .unwrap()
+            .contains(r#"version="2.21""#));
+        assert!(!root.join("src/external").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn public_external_init_rolls_back_if_an_unplanned_root_descriptor_appears() {
+        let root = temp_root("external-root-membership-race");
+        let external_root = root.join("external");
+        fs::create_dir_all(&external_root).unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: external\n    type: EXTERNAL_DATA_PROCESSORS\n    path: external\n",
+        )
+        .unwrap();
+        fs::write(
+            external_root.join("Existing.xml"),
+            br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><ExternalDataProcessor/></MetaDataObject>"#,
+        )
+        .unwrap();
+        let concurrent = external_root.join("Bar.xml");
+        let concurrent_bytes = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><ExternalDataProcessor/></MetaDataObject>"#.to_vec();
+        let concurrent_for_hook = concurrent.clone();
+        let concurrent_bytes_for_hook = concurrent_bytes.clone();
+        let args = map(json!({
+            "cwd": root.display().to_string(),
+            "Name": "Planned",
+            "OutputDir": "external",
+            "dryRun": false
+        }));
+
+        let outcome = with_before_commit_hook(
+            move |_| {
+                fs::write(&concurrent_for_hook, &concurrent_bytes_for_hook).unwrap();
+            },
+            || {
+                UnicaApplication::new()
+                    .call_tool("unica.epf.init", &args)
+                    .unwrap()
+            },
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        let error = outcome.errors.join("\n");
+        assert!(error.contains("directory membership guard"), "{error}");
+        assert_eq!(fs::read(&concurrent).unwrap(), concurrent_bytes);
+        assert!(!external_root.join("Planned.xml").exists());
+        assert!(!external_root.join("Planned").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn public_external_init_accepts_multiple_supported_root_descriptors() {
+        let root = temp_root("external-root-multiple-supported");
+        let external_root = root.join("external");
+        fs::create_dir_all(&external_root).unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: external\n    type: EXTERNAL_DATA_PROCESSORS\n    path: external\n",
+        )
+        .unwrap();
+        let supported = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><ExternalDataProcessor/></MetaDataObject>"#;
+        fs::write(external_root.join("First.xml"), supported).unwrap();
+        fs::write(external_root.join("Second.xml"), supported).unwrap();
+        let args = map(json!({
+            "cwd": root.display().to_string(),
+            "Name": "Third",
+            "OutputDir": "external",
+            "dryRun": false
+        }));
+
+        let outcome = UnicaApplication::new()
+            .call_tool("unica.epf.init", &args)
+            .unwrap();
+
+        assert!(outcome.ok, "{outcome:?}");
+        assert!(external_root.join("Third.xml").is_file());
+        assert!(external_root.join("Third/Ext/ObjectModule.bsl").is_file());
         let _ = fs::remove_dir_all(root);
     }
 

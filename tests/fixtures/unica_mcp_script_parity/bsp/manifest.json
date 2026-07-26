@@ -3,135 +3,26 @@
     "commit": "57d7f6f888f8cc3ace6f1f21f4adcbb590d430fd",
     "ref": "3.2.1.446"
   },
+  "derivation": {
+    "exportFormat": "2.20",
+    "kind": "profile-projection",
+    "platformLine": "8.3.27",
+    "recipe": "bsp-2.21-to-2.20-v1"
+  },
   "files": [
     {
       "category": "cf",
-      "sha256": "632969310850ce01d388bf5370770a50bc4e4a207275800e30b0a0733c0eb506",
-      "size": 251731,
+      "harvestedSha256": "632969310850ce01d388bf5370770a50bc4e4a207275800e30b0a0733c0eb506",
+      "harvestedSize": 251731,
+      "sha256": "9e70f6ef5305c048de5aac5d9e7facbd5b6d2173dfd4c9eb7cabe4cfb34bf28d",
+      "size": 251717,
       "source": "src/cf/Configuration.xml",
       "target": "cf/Configuration.xml"
     },
     {
-      "category": "forms",
-      "sha256": "260e7591ace182fdd57b34854b3f1e6fc50e4ae19f494b708af62d36ad50d3f0",
-      "size": 29870,
-      "source": "src/cf/BusinessProcesses/Задание/Forms/ДействиеВыполнить/Ext/Form.xml",
-      "target": "forms/BusinessProcesses__Задание__ДействиеВыполнить/Form.xml"
-    },
-    {
-      "category": "forms",
-      "sha256": "8d74eb1312351a2f12b8894a66b0b7c3ff00ea6738885fa6d729b93d43edec71",
-      "size": 29715,
-      "source": "src/cf/BusinessProcesses/Задание/Forms/ДействиеПроверить/Ext/Form.xml",
-      "target": "forms/BusinessProcesses__Задание__ДействиеПроверить/Form.xml"
-    },
-    {
-      "category": "forms",
-      "sha256": "67e1b765cdbf94e5f3fa8c4637ef95fca0912307fc4e993e27de95383da13bf7",
-      "size": 26215,
-      "source": "src/cf/BusinessProcesses/Задание/Forms/ФормаБизнесПроцесса/Ext/Form.xml",
-      "target": "forms/BusinessProcesses__Задание__ФормаБизнесПроцесса/Form.xml"
-    },
-    {
-      "category": "forms",
-      "sha256": "ae6b6dc6fa2ffdfd40c34ddc441a83e5a644bfd92c94a9c37d517db93c6f04a5",
-      "size": 27265,
-      "source": "src/cf/BusinessProcesses/Задание/Forms/ФормаСписка/Ext/Form.xml",
-      "target": "forms/BusinessProcesses__Задание__ФормаСписка/Form.xml"
-    },
-    {
-      "category": "meta",
-      "sha256": "1208bd71a39bcaad2e1208291930fa54584a9b9e9eb0376d4fa3e6fa93587227",
-      "size": 31949,
-      "source": "src/cf/Catalogs/Валюты.xml",
-      "target": "meta/Catalogs/Валюты.xml"
-    },
-    {
-      "category": "meta",
-      "sha256": "949baa4e83292c1b25218711855e62a9b8174ecbb295f045cf403342ec470c08",
-      "size": 1654,
-      "source": "src/cf/CommonModules/GoogleПереводчик.xml",
-      "target": "meta/CommonModules/GoogleПереводчик.xml"
-    },
-    {
-      "category": "meta",
-      "sha256": "9242a8a0392611dcdf09cbd630fed8b6565a4940cdc3d69bc7b53db177d3f376",
-      "size": 13998,
-      "source": "src/cf/CommonModules/GoogleПереводчик/Ext/Module.bsl",
-      "target": "meta/CommonModules/GoogleПереводчик/Module.bsl"
-    },
-    {
-      "category": "meta",
-      "sha256": "d8cb76682a71f69be55e2b93a213e9127e91cadde34d7159416e4fca8417167b",
-      "size": 53758,
-      "source": "src/cf/Documents/АктОбУничтоженииПерсональныхДанных.xml",
-      "target": "meta/Documents/АктОбУничтоженииПерсональныхДанных.xml"
-    },
-    {
-      "category": "meta",
-      "sha256": "8ee2f9f964d687b24ad5d2467c00a4975388a1b236d60be551760f497b469005",
-      "size": 6518,
-      "source": "src/cf/Enums/ВажностьПроблемыУчета.xml",
-      "target": "meta/Enums/ВажностьПроблемыУчета.xml"
-    },
-    {
-      "category": "meta",
-      "sha256": "11829b10bbe63e3b0e13f323a0868efce5ae61a61c26b742b3f923dafae2c73b",
-      "size": 13607,
-      "source": "src/cf/InformationRegisters/АдминистративнаяИерархия.xml",
-      "target": "meta/InformationRegisters/АдминистративнаяИерархия.xml"
-    },
-    {
-      "category": "meta",
-      "sha256": "54d682926ce59b62680f632c9a023c9f1b7399699f44a78de4258f803e3c9309",
-      "size": 2606,
-      "source": "src/cf/Reports/АнализВерсийОбъектов.xml",
-      "target": "meta/Reports/АнализВерсийОбъектов.xml"
-    },
-    {
-      "category": "meta",
-      "sha256": "22b1c2819caa27216fd817a94c23cf9f9540fd06ea06743bcd5d3623fd61ae95",
-      "size": 1416,
-      "source": "src/cf/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных.xml",
-      "target": "meta/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных.xml"
-    },
-    {
-      "category": "meta",
-      "sha256": "1b4e65c2f067d7316c5801742a0349763f2d9556687c45ad7706c3479bf612a2",
-      "size": 8537,
-      "source": "src/cf/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
-      "target": "meta/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml"
-    },
-    {
-      "category": "mxl",
-      "sha256": "fae42b1aeb8b4315ddae3e7b6dabc4596ee27736e65abbaa8567f7cb616e9cc6",
-      "size": 119449,
-      "source": "src/cf/Catalogs/МашиночитаемыеДоверенности/Templates/ПФ_MXL_Доверенность/Ext/Template.xml",
-      "target": "mxl/Catalogs__МашиночитаемыеДоверенности__ПФ_MXL_Доверенность/Template.xml"
-    },
-    {
-      "category": "mxl",
-      "sha256": "2918be9ddaf96ea88a0558ac2a39b42be363a77243e03da41f5b1c699b237b90",
-      "size": 5847,
-      "source": "src/cf/Catalogs/МашиночитаемыеДоверенности/Templates/ПФ_MXL_Квитанция/Ext/Template.xml",
-      "target": "mxl/Catalogs__МашиночитаемыеДоверенности__ПФ_MXL_Квитанция/Template.xml"
-    },
-    {
-      "category": "roles",
-      "sha256": "10006bf30103e0fa27722424ac5aac61ca511256846866a8e2fd7873f84fb972",
-      "size": 133847,
-      "source": "src/cf/Roles/АдминистраторСистемы/Ext/Rights.xml",
-      "target": "roles/АдминистраторСистемы/Rights.xml"
-    },
-    {
-      "category": "roles",
-      "sha256": "91cc764cdc40a7c87d301c6ea473d77226b844f55835b02d9f279290a297e609",
-      "size": 1400,
-      "source": "src/cf/Roles/Администрирование/Ext/Rights.xml",
-      "target": "roles/Администрирование/Rights.xml"
-    },
-    {
       "category": "dcs",
+      "harvestedSha256": "c24b087c863b7376c97098dc4e9b7c61504541fdcab788ee670a19f0d3c4cd0c",
+      "harvestedSize": 7131,
       "sha256": "c24b087c863b7376c97098dc4e9b7c61504541fdcab788ee670a19f0d3c4cd0c",
       "size": 7131,
       "source": "src/cf/Catalogs/ПравилаОбработкиЭлектроннойПочты/Templates/СхемаПравилаОбработкиЭлектроннойПочты/Ext/Template.xml",
@@ -139,6 +30,8 @@
     },
     {
       "category": "dcs",
+      "harvestedSha256": "97db2c387bb669f1c7f9a74dad05a8206dd563a9f334d74bf61c31ce1aded1f2",
+      "harvestedSize": 8488,
       "sha256": "97db2c387bb669f1c7f9a74dad05a8206dd563a9f334d74bf61c31ce1aded1f2",
       "size": 8488,
       "source": "src/cf/DataProcessors/ВыгрузкаЗагрузкаEnterpriseData/Templates/СхемаКомпоновкиДанных/Ext/Template.xml",
@@ -146,25 +39,193 @@
     },
     {
       "category": "dcs",
+      "harvestedSha256": "f83a74cca1da547275a1b460e59b1ef28d173b6ef752e64839e36dc8699ff850",
+      "harvestedSize": 10357,
       "sha256": "f83a74cca1da547275a1b460e59b1ef28d173b6ef752e64839e36dc8699ff850",
       "size": 10357,
       "source": "src/cf/DataProcessors/ЗаменаИОбъединениеЭлементов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
       "target": "dcs/DataProcessors__ЗаменаИОбъединениеЭлементов__ОсновнаяСхемаКомпоновкиДанных/Template.xml"
     },
     {
+      "category": "forms",
+      "harvestedSha256": "260e7591ace182fdd57b34854b3f1e6fc50e4ae19f494b708af62d36ad50d3f0",
+      "harvestedSize": 29870,
+      "sha256": "ef702a6b702efa5e42cce7fd1d8dccc8e60912356a100ec6b2bf53ab3321b4fc",
+      "size": 29870,
+      "source": "src/cf/BusinessProcesses/Задание/Forms/ДействиеВыполнить/Ext/Form.xml",
+      "target": "forms/BusinessProcesses__Задание__ДействиеВыполнить/Form.xml"
+    },
+    {
+      "category": "forms",
+      "harvestedSha256": "8d74eb1312351a2f12b8894a66b0b7c3ff00ea6738885fa6d729b93d43edec71",
+      "harvestedSize": 29715,
+      "sha256": "44eb4b259a79ab27256b67e522b4f783ced6946debced52e73f222ea9e580a68",
+      "size": 29715,
+      "source": "src/cf/BusinessProcesses/Задание/Forms/ДействиеПроверить/Ext/Form.xml",
+      "target": "forms/BusinessProcesses__Задание__ДействиеПроверить/Form.xml"
+    },
+    {
+      "category": "forms",
+      "harvestedSha256": "67e1b765cdbf94e5f3fa8c4637ef95fca0912307fc4e993e27de95383da13bf7",
+      "harvestedSize": 26215,
+      "sha256": "ad6e9f90fbea338b60974bc1e93f1e42d334a413b21cd7a8013be75f6b4bd422",
+      "size": 26215,
+      "source": "src/cf/BusinessProcesses/Задание/Forms/ФормаБизнесПроцесса/Ext/Form.xml",
+      "target": "forms/BusinessProcesses__Задание__ФормаБизнесПроцесса/Form.xml"
+    },
+    {
+      "category": "forms",
+      "harvestedSha256": "ae6b6dc6fa2ffdfd40c34ddc441a83e5a644bfd92c94a9c37d517db93c6f04a5",
+      "harvestedSize": 27265,
+      "sha256": "6ce7f58ecbaa96dc3e4da170d989cd915eab122656a0019529aa1cb1b22cf27d",
+      "size": 27265,
+      "source": "src/cf/BusinessProcesses/Задание/Forms/ФормаСписка/Ext/Form.xml",
+      "target": "forms/BusinessProcesses__Задание__ФормаСписка/Form.xml"
+    },
+    {
+      "category": "meta",
+      "harvestedSha256": "1208bd71a39bcaad2e1208291930fa54584a9b9e9eb0376d4fa3e6fa93587227",
+      "harvestedSize": 31949,
+      "sha256": "c1a2d85c55d047a39434a0d791191b0ef97a8622ade4933758dcb27c5b5306c2",
+      "size": 31949,
+      "source": "src/cf/Catalogs/Валюты.xml",
+      "target": "meta/Catalogs/Валюты.xml"
+    },
+    {
+      "category": "meta",
+      "harvestedSha256": "949baa4e83292c1b25218711855e62a9b8174ecbb295f045cf403342ec470c08",
+      "harvestedSize": 1654,
+      "sha256": "e1a2225d4378f6b1468b35164555a128e923536deca404c9370db239b2a890dc",
+      "size": 1654,
+      "source": "src/cf/CommonModules/GoogleПереводчик.xml",
+      "target": "meta/CommonModules/GoogleПереводчик.xml"
+    },
+    {
+      "category": "meta",
+      "harvestedSha256": "9242a8a0392611dcdf09cbd630fed8b6565a4940cdc3d69bc7b53db177d3f376",
+      "harvestedSize": 13998,
+      "sha256": "9242a8a0392611dcdf09cbd630fed8b6565a4940cdc3d69bc7b53db177d3f376",
+      "size": 13998,
+      "source": "src/cf/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+      "target": "meta/CommonModules/GoogleПереводчик/Module.bsl"
+    },
+    {
+      "category": "meta",
+      "harvestedSha256": "d8cb76682a71f69be55e2b93a213e9127e91cadde34d7159416e4fca8417167b",
+      "harvestedSize": 53758,
+      "sha256": "9f80801e73f93305eff17cc4d1fcf0204eb13a6e3a737dc902278492d72e3753",
+      "size": 53758,
+      "source": "src/cf/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+      "target": "meta/Documents/АктОбУничтоженииПерсональныхДанных.xml"
+    },
+    {
+      "category": "meta",
+      "harvestedSha256": "8ee2f9f964d687b24ad5d2467c00a4975388a1b236d60be551760f497b469005",
+      "harvestedSize": 6518,
+      "sha256": "447910907ea597f23a78dc42e81b5b6716b6565f696565656eb6ea1f05d08a03",
+      "size": 6518,
+      "source": "src/cf/Enums/ВажностьПроблемыУчета.xml",
+      "target": "meta/Enums/ВажностьПроблемыУчета.xml"
+    },
+    {
+      "category": "meta",
+      "harvestedSha256": "11829b10bbe63e3b0e13f323a0868efce5ae61a61c26b742b3f923dafae2c73b",
+      "harvestedSize": 13607,
+      "sha256": "104e41c9e67ffe39dda9e91cb96dabebe0bea8c04f35d47a96e59a160b3475d1",
+      "size": 13607,
+      "source": "src/cf/InformationRegisters/АдминистративнаяИерархия.xml",
+      "target": "meta/InformationRegisters/АдминистративнаяИерархия.xml"
+    },
+    {
+      "category": "meta",
+      "harvestedSha256": "915f7d2eb9b62ca431e1a35e11f75420581edf1729a74cbd22a43adb5edd10ab",
+      "harvestedSize": 1306,
+      "sha256": "f5df362df7adf0aaeb671da5a31530460ec814abd37799d7b9bf3610d775f873",
+      "size": 1306,
+      "source": "src/cf/Languages/Русский.xml",
+      "target": "meta/Languages/Русский.xml"
+    },
+    {
+      "category": "meta",
+      "harvestedSha256": "54d682926ce59b62680f632c9a023c9f1b7399699f44a78de4258f803e3c9309",
+      "harvestedSize": 2606,
+      "sha256": "689b47b5070c249f1d70f9310d0ab14f4348c99a1c45d60f425d0ef85a330b1a",
+      "size": 2606,
+      "source": "src/cf/Reports/АнализВерсийОбъектов.xml",
+      "target": "meta/Reports/АнализВерсийОбъектов.xml"
+    },
+    {
+      "category": "meta",
+      "harvestedSha256": "22b1c2819caa27216fd817a94c23cf9f9540fd06ea06743bcd5d3623fd61ae95",
+      "harvestedSize": 1416,
+      "sha256": "52c9b483e1ea74bd1f1cdf9eab1d43bf54d22b8614a9661086d17661a3696088",
+      "size": 1416,
+      "source": "src/cf/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных.xml",
+      "target": "meta/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных.xml"
+    },
+    {
+      "category": "meta",
+      "harvestedSha256": "1b4e65c2f067d7316c5801742a0349763f2d9556687c45ad7706c3479bf612a2",
+      "harvestedSize": 8537,
+      "sha256": "1b4e65c2f067d7316c5801742a0349763f2d9556687c45ad7706c3479bf612a2",
+      "size": 8537,
+      "source": "src/cf/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+      "target": "meta/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml"
+    },
+    {
+      "category": "mxl",
+      "harvestedSha256": "fae42b1aeb8b4315ddae3e7b6dabc4596ee27736e65abbaa8567f7cb616e9cc6",
+      "harvestedSize": 119449,
+      "sha256": "fae42b1aeb8b4315ddae3e7b6dabc4596ee27736e65abbaa8567f7cb616e9cc6",
+      "size": 119449,
+      "source": "src/cf/Catalogs/МашиночитаемыеДоверенности/Templates/ПФ_MXL_Доверенность/Ext/Template.xml",
+      "target": "mxl/Catalogs__МашиночитаемыеДоверенности__ПФ_MXL_Доверенность/Template.xml"
+    },
+    {
+      "category": "mxl",
+      "harvestedSha256": "2918be9ddaf96ea88a0558ac2a39b42be363a77243e03da41f5b1c699b237b90",
+      "harvestedSize": 5847,
+      "sha256": "2918be9ddaf96ea88a0558ac2a39b42be363a77243e03da41f5b1c699b237b90",
+      "size": 5847,
+      "source": "src/cf/Catalogs/МашиночитаемыеДоверенности/Templates/ПФ_MXL_Квитанция/Ext/Template.xml",
+      "target": "mxl/Catalogs__МашиночитаемыеДоверенности__ПФ_MXL_Квитанция/Template.xml"
+    },
+    {
+      "category": "roles",
+      "harvestedSha256": "10006bf30103e0fa27722424ac5aac61ca511256846866a8e2fd7873f84fb972",
+      "harvestedSize": 133847,
+      "sha256": "7810088d52fd36ae82b7119b26f895f96c09c695a52d4125c9a118490296a6ca",
+      "size": 133847,
+      "source": "src/cf/Roles/АдминистраторСистемы/Ext/Rights.xml",
+      "target": "roles/АдминистраторСистемы/Rights.xml"
+    },
+    {
+      "category": "roles",
+      "harvestedSha256": "91cc764cdc40a7c87d301c6ea473d77226b844f55835b02d9f279290a297e609",
+      "harvestedSize": 1400,
+      "sha256": "e31eb2a36286aa928290fe60af049df8d38254a0b914aa06d8a3c40f4b4d4e34",
+      "size": 1400,
+      "source": "src/cf/Roles/Администрирование/Ext/Rights.xml",
+      "target": "roles/Администрирование/Rights.xml"
+    },
+    {
       "category": "subsystems",
-      "sha256": "fe5b606563334c5968f71ada117890e5e5d8e0652047db6459e0d583f12279bd",
+      "harvestedSha256": "fe5b606563334c5968f71ada117890e5e5d8e0652047db6459e0d583f12279bd",
+      "harvestedSize": 12570,
+      "sha256": "343698b1ccb54a7c220301d13083bd9875a25e8d28f170d2f3365aa5e9f3ac61",
       "size": 12570,
       "source": "src/cf/Subsystems/Администрирование.xml",
       "target": "subsystems/Администрирование.xml"
     },
     {
       "category": "subsystems",
-      "sha256": "9d164ba35c854e4ea080ff2cc2b11dd5019bea63ca5d0f1933617ddd8b0aa2d3",
+      "harvestedSha256": "9d164ba35c854e4ea080ff2cc2b11dd5019bea63ca5d0f1933617ddd8b0aa2d3",
+      "harvestedSize": 50407,
+      "sha256": "212ca9192a0170914ba8fb020624bdf6f8a79e684468dec36712d2982e86436f",
       "size": 50407,
       "source": "src/cf/Subsystems/Администрирование/Ext/CommandInterface.xml",
       "target": "subsystems/Администрирование/Ext/CommandInterface.xml"
     }
   ],
-  "schemaVersion": 1
+  "schemaVersion": 2
 }

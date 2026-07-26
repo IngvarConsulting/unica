@@ -19,19 +19,20 @@ def load_module():
 
 
 class VersionContractTests(unittest.TestCase):
-    def test_repository_versions_are_exactly_0_8_1(self) -> None:
+    def test_every_contract_location_declares_the_same_version(self) -> None:
         module = load_module()
 
         values = module.read_version_contract(REPO_ROOT)
 
+        # Named rather than pinned to a literal: the contract is that the four
+        # locations agree, and asserting the number here only added a file every
+        # release had to come back and edit.
         self.assertEqual(
-            values,
-            {
-                "workspace": "0.8.1",
-                "plugin": "0.8.1",
-                "tools-lock-unica": "0.8.1",
-            },
+            sorted(values),
+            ["claude-plugin", "plugin", "tools-lock-unica", "workspace"],
         )
+        self.assertEqual(len(set(values.values())), 1, values)
+        self.assertRegex(next(iter(values.values())), r"^\d+\.\d+\.\d+$")
 
     def test_mismatch_names_the_contract_field(self) -> None:
         module = load_module()

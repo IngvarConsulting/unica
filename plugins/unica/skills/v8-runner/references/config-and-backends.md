@@ -6,6 +6,7 @@ Important `v8project.yaml` concepts:
 - `builder`: `DESIGNER` or `IBCMD`.
 - `execution_timeout`: runner operation budget in milliseconds; default `300000`, valid range `1..=86400000`.
 - `source-set`: ordered configuration and extension source entries.
+- `basePath` is not supported; relative paths are resolved from the primary config directory.
 - `infobase.connection`: runtime connection string.
 - `infobase.dbms`: required for IBCMD server infobases and invalid for file infobases.
 - `tools.client_mcp.extension`: optional generated tool extension prepared by `build`.

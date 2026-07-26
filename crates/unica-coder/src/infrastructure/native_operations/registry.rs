@@ -10,11 +10,92 @@ use super::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TypedMutationHandler {
     CodePatch,
+    FormEdit,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TopLevelJsonInput {
+    None,
+    RequiredJsonPath,
+    OptionalJsonPath,
+    OptionalDefinitionFile,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NativeMutationFileInputContract {
+    pub(crate) top_level: TopLevelJsonInput,
+    pub(crate) secondary_at_query_files: bool,
+    pub(crate) secondary_from_object_platform_xml: bool,
+}
+
+#[cfg(test)]
+const NO_FILE_INPUT: NativeMutationFileInputContract = NativeMutationFileInputContract {
+    top_level: TopLevelJsonInput::None,
+    secondary_at_query_files: false,
+    secondary_from_object_platform_xml: false,
+};
+
+/// Exhaustive audit classification of caller-selected file-backed derivation
+/// inputs for every public native mutator.
+///
+/// A non-`None` top-level input is parsed from one exact byte snapshot and
+/// bound to the writer transaction. DCS `@query-file` inputs are independently
+/// snapshotted and bound only when they are actually selected. Form compilation
+/// from `FromObject`/`ObjectPath` binds the selected platform XML snapshot.
+///
+/// Mutation targets and platform owner/provenance files are guarded separately
+/// and are intentionally outside this caller-input classification.
+#[cfg(test)]
+pub(crate) fn native_mutation_file_input_contract(
+    operation: &str,
+) -> Option<NativeMutationFileInputContract> {
+    let contract = match operation {
+        "cf-edit" | "interface-edit" | "meta-edit" | "subsystem-edit" | "subsystem-compile" => {
+            NativeMutationFileInputContract {
+                top_level: TopLevelJsonInput::OptionalDefinitionFile,
+                secondary_at_query_files: false,
+                secondary_from_object_platform_xml: false,
+            }
+        }
+        "dcs-compile" => NativeMutationFileInputContract {
+            top_level: TopLevelJsonInput::OptionalDefinitionFile,
+            secondary_at_query_files: true,
+            secondary_from_object_platform_xml: false,
+        },
+        "form-compile" => NativeMutationFileInputContract {
+            top_level: TopLevelJsonInput::OptionalJsonPath,
+            secondary_at_query_files: false,
+            secondary_from_object_platform_xml: true,
+        },
+        "form-edit" => NativeMutationFileInputContract {
+            top_level: TopLevelJsonInput::OptionalJsonPath,
+            secondary_at_query_files: false,
+            secondary_from_object_platform_xml: false,
+        },
+        "meta-compile" | "mxl-compile" | "role-compile" => NativeMutationFileInputContract {
+            top_level: TopLevelJsonInput::RequiredJsonPath,
+            secondary_at_query_files: false,
+            secondary_from_object_platform_xml: false,
+        },
+        "dcs-edit" => NativeMutationFileInputContract {
+            top_level: TopLevelJsonInput::None,
+            secondary_at_query_files: true,
+            secondary_from_object_platform_xml: false,
+        },
+        "code-patch" | "cf-init" | "support-edit" | "cfe-borrow" | "cfe-init" | "epf-init"
+        | "erf-init" | "cfe-patch-method" | "meta-remove" | "help-add" | "form-add"
+        | "form-remove" | "template-add" | "template-remove" => NO_FILE_INPUT,
+        _ => return None,
+    };
+    Some(contract)
 }
 
 pub(crate) fn typed_mutation_handler(operation: &str) -> Option<TypedMutationHandler> {
     match operation {
         "code-patch" => Some(TypedMutationHandler::CodePatch),
+        "form-edit" => Some(TypedMutationHandler::FormEdit),
         _ => None,
     }
 }
@@ -160,10 +241,14 @@ pub(crate) fn invoke_mutation(
 
 #[cfg(test)]
 mod tests {
-    use super::{invoke_mutation, typed_mutation_handler};
+    use super::{
+        invoke_mutation, native_mutation_file_input_contract, typed_mutation_handler,
+        NativeMutationFileInputContract, TopLevelJsonInput,
+    };
     use crate::application::{tools, ToolHandler};
     use crate::domain::workspace::WorkspaceContext;
     use serde_json::Map;
+    use std::collections::BTreeMap;
 
     #[test]
     fn mutating_native_tools_have_registered_mutation_handlers() {
@@ -184,6 +269,106 @@ mod tests {
                 operation
             );
         }
+    }
+
+    #[test]
+    fn every_native_mutator_has_an_explicit_file_input_contract() {
+        let expected_file_backed = BTreeMap::from([
+            (
+                "cf-edit",
+                (TopLevelJsonInput::OptionalDefinitionFile, false, false),
+            ),
+            (
+                "dcs-compile",
+                (TopLevelJsonInput::OptionalDefinitionFile, true, false),
+            ),
+            ("dcs-edit", (TopLevelJsonInput::None, true, false)),
+            (
+                "form-compile",
+                (TopLevelJsonInput::OptionalJsonPath, false, true),
+            ),
+            (
+                "form-edit",
+                (TopLevelJsonInput::OptionalJsonPath, false, false),
+            ),
+            (
+                "interface-edit",
+                (TopLevelJsonInput::OptionalDefinitionFile, false, false),
+            ),
+            (
+                "meta-compile",
+                (TopLevelJsonInput::RequiredJsonPath, false, false),
+            ),
+            (
+                "meta-edit",
+                (TopLevelJsonInput::OptionalDefinitionFile, false, false),
+            ),
+            (
+                "mxl-compile",
+                (TopLevelJsonInput::RequiredJsonPath, false, false),
+            ),
+            (
+                "role-compile",
+                (TopLevelJsonInput::RequiredJsonPath, false, false),
+            ),
+            (
+                "subsystem-compile",
+                (TopLevelJsonInput::OptionalDefinitionFile, false, false),
+            ),
+            (
+                "subsystem-edit",
+                (TopLevelJsonInput::OptionalDefinitionFile, false, false),
+            ),
+        ]);
+        let mut actual_file_backed = BTreeMap::new();
+
+        for tool in tools().into_iter().filter(|tool| tool.mutating) {
+            let ToolHandler::NativeOperation { operation, .. } = tool.handler else {
+                continue;
+            };
+            let contract = native_mutation_file_input_contract(operation).unwrap_or_else(|| {
+                panic!(
+                    "{} native mutator `{operation}` lacks a file-input audit classification",
+                    tool.name
+                )
+            });
+            if contract.top_level != TopLevelJsonInput::None
+                || contract.secondary_at_query_files
+                || contract.secondary_from_object_platform_xml
+            {
+                actual_file_backed.insert(
+                    operation,
+                    (
+                        contract.top_level,
+                        contract.secondary_at_query_files,
+                        contract.secondary_from_object_platform_xml,
+                    ),
+                );
+            }
+        }
+
+        assert_eq!(actual_file_backed, expected_file_backed);
+        assert_eq!(actual_file_backed.len(), 12);
+        assert_eq!(
+            actual_file_backed
+                .values()
+                .map(|(top_level, at_query_files, from_object_platform_xml)| {
+                    usize::from(*top_level != TopLevelJsonInput::None)
+                        + usize::from(*at_query_files)
+                        + usize::from(*from_object_platform_xml)
+                })
+                .sum::<usize>(),
+            14
+        );
+        assert_eq!(native_mutation_file_input_contract("unknown-mutator"), None);
+        assert_eq!(
+            native_mutation_file_input_contract("template-add"),
+            Some(NativeMutationFileInputContract {
+                top_level: TopLevelJsonInput::None,
+                secondary_at_query_files: false,
+                secondary_from_object_platform_xml: false,
+            })
+        );
     }
 
     fn mutation_probe_context(operation: &str) -> WorkspaceContext {

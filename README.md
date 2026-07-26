@@ -1,22 +1,35 @@
 # Unica
 
-Unica — публичный плагин Codex для разработки на 1С:Предприятии. Он добавляет
-навыки и один MCP-сервер `unica`, через который Codex создаёт и проверяет
-метаданные, формы, роли, СКД, внешние обработки и отчёты, запускает 1С и ищет
-BSL-код.
+Unica (Ю&#x301;ника) — публичный плагин [Codex](https://openai.com/codex/) и
+[Claude Code](https://code.claude.com/docs/en/overview) для разработки на
+1С:Предприятии. Он добавляет навыки и один MCP-сервер `unica`, через который
+агент создаёт и проверяет метаданные, формы, роли, СКД, внешние обработки и
+отчёты, запускает 1С и ищет BSL-код.
+
+Оба хоста получают один и тот же каталог плагина: манифесты лежат рядом, а
+`.mcp.json` определяет корень плагина по той переменной, которую подставляет
+конкретный хост.
 
 ## Требования
 
-- актуальный Codex CLI с командами `codex plugin`;
+- один из агентов:
+  - актуальный [Codex CLI](https://learn.chatgpt.com/docs/codex/cli) с командами `codex plugin`;
+  - [Claude Code](https://code.claude.com/docs/en/overview) **2.1.69 или новее** — более
+    ранние клиенты не разбирают тип источника `git-subdir` и не загрузят каталог;
 - стандартный Git, включая Git for Windows на Windows;
 - платформа 1С только для операций, которым реально требуется запуск 1С.
 
-Node.js, Python, `curl`, `wget`, `jq` и архиваторы для обычной установки и
-запуска не нужны. Git является частью runtime-контракта: Codex запускает
-command-scoped Git shell alias, а тот выбирает небольшой нативный bootstrap для
-Windows x64, macOS arm64 или Linux x64.
+### Поддерживаемые версии платформы 1С
+
+| Версия платформы | Статус | Что это означает |
+| --- | --- | --- |
+| `8.3.27.x` | Поддерживается | Unica поддерживает все актуальные релизы ветки 8.3.27. |
+| `8.5.1.x`, `8.5.4.x` | Планируется | Хотим добавить в ближайшее время. |
+| `8.3.26.x` и ниже | Не планируется | Помогаем мигрировать на 8.3.27. Если вам действительно нужна более старая версия, [создайте issue](https://github.com/IngvarConsulting/unica/issues/new) и опишите причину — нам важно понимать такой сценарий. |
 
 ## Установка
+
+### Codex
 
 ```sh
 codex plugin marketplace add IngvarConsulting/unica-marketplace --ref main
@@ -26,14 +39,33 @@ codex plugin add unica@unica
 После установки откройте new Codex task: список навыков и MCP-конфигурация
 фиксируются на границе новой задачи, а не подменяются в уже работающей сессии.
 
-При первом MCP-вызове bootstrap скачивает только runtime текущей платформы из
-релиза `IngvarConsulting/unica`. Архив и каждый файл проверяются по SHA-256.
-Готовый runtime атомарно публикуется в
-`$CODEX_HOME/unica/runtimes/<version>/<target>`; при стандартном `CODEX_HOME`
-это `~/.codex/unica/runtimes/...`. Неполная или повреждённая загрузка не получает
-маркер готовности.
+### Claude Code
+
+```sh
+claude plugin marketplace add IngvarConsulting/unica-marketplace
+claude plugin install unica@unica
+```
+
+Затем выполните `/reload-plugins` либо начните новую сессию. Навыки становятся
+доступны с префиксом плагина, например `/unica:meta-validate`.
+
+### Загрузка runtime
+
+При первом MCP-вызове `unica` скачивает из релиза `IngvarConsulting/unica`
+только исполнительные файлы для текущей ОС и архитектуры. Архив и каждый файл
+проверяются по SHA-256. Неполная или повреждённая загрузка не получает маркер
+готовности.
+
+Готовый runtime атомарно публикуется в кэше хоста:
+
+| Хост | Каталог кэша |
+| --- | --- |
+| Codex | `$CODEX_HOME/unica/runtimes/<version>/<target>`, при стандартном `CODEX_HOME` — `~/.codex/unica/runtimes/...` |
+| Claude Code | `${CLAUDE_PLUGIN_DATA}/runtimes/<version>/<target>`, по умолчанию — `~/.claude/plugins/data/unica-unica/...`; этот каталог переживает обновление плагина |
 
 ## Обновление
+
+### Codex
 
 ```sh
 codex plugin marketplace upgrade unica
@@ -41,11 +73,22 @@ codex plugin remove unica@unica
 codex plugin add unica@unica
 ```
 
-Затем откройте new Codex task. Отдельной команды `codex plugin upgrade` в
-поддерживаемом CLI нет, поэтому переустановка плагина после обновления каталога
-является намеренным шагом.
+Затем откройте new Codex task: уже работающая сессия не загрузит обновлённые
+навыки и MCP-конфигурацию.
 
-## Переход со старой установки и откат
+Отдельной команды `codex plugin upgrade` в поддерживаемом CLI нет, поэтому
+переустановка плагина после обновления каталога является намеренным шагом.
+
+### Claude Code
+
+```sh
+claude plugin marketplace update unica
+claude plugin update unica@unica
+```
+
+Затем выполните `/reload-plugins`.
+
+## Переход со старых версий
 
 Узнайте свою версию:
 
@@ -57,8 +100,8 @@ codex plugin list
 
 | Ваша версия | Что делать |
 | --- | --- |
-| `0.3.0`–`0.7.4` | Запустите скрипт миграции ниже. |
-| `0.7.5` и новее | Выполните обычное обновление ниже. |
+| `0.3.0`–`0.7.4` | Запустите скрипт миграции |
+| `0.7.5` и новее | Выполните обычное обновление |
 
 Для версий `0.3.0`–`0.7.4` на macOS и Linux:
 
@@ -82,26 +125,33 @@ codex plugin remove unica@unica
 codex plugin add unica@unica
 ```
 
-Если скрипт завершился ошибкой, предыдущая установка уже восстановлена.
+Если скрипт завершился ошибкой, предыдущая установка уже будет восстановлена.
 
-Начиная с `v0.8.0`, текущий пакет не содержит исполняемого кода legacy-миграции:
-для старых установок поддерживается только замороженный bridge `v0.7.8` выше.
+Начиная с `v0.8.0`, текущий пакет не содержит исполняемого кода старых-миграций:
+для старых версий поддерживается только переход через замороженную версию `v0.7.8`.
 
 ## Удаление
+
+Codex:
 
 ```sh
 codex plugin remove unica@unica
 codex plugin marketplace remove unica
 ```
 
-Проверенные runtime-кэши можно оставить для повторной установки. Их ручное
-удаление не является частью обычного uninstall.
+Claude Code:
+
+```sh
+claude plugin uninstall unica@unica
+claude plugin marketplace remove unica
+```
+
+Проверенные исполняемые-кэши можно оставить для повторной установки. Их ручное
+удаление не является частью обычного процесса удаления.
 
 ## Разработка
 
-Source checkout не является пользовательским пакетом: в нём нет готовых
-runtime-бинарников. Для разработки используется отдельный marketplace
-`unica-dev`:
+Для разработки под Codex используется отдельный marketplace `unica-dev`:
 
 ```sh
 git clone https://github.com/IngvarConsulting/unica.git
@@ -109,10 +159,15 @@ cd unica
 scripts/dev/install-local-unica.sh
 ```
 
+Под Claude Code каталог плагина подключается напрямую, без маркетплейса:
+
+```sh
+claude --plugin-dir ./plugins/unica
+```
+
 На Windows x64 запускайте этот скрипт из **Git Bash**, входящего в 64-битный
 Git for Windows. Для локальной сборки нужны Python 3.10 или новее, стабильный
 Rust с нативным toolchain MSVC, а также Microsoft C++ Build Tools и Windows SDK.
-Для установки и проверки видимости плагина нужен актуальный Codex CLI.
 
 WSL сохраняет Linux-семантику и собирает `linux-x64`. MSYS2 и Cygwin не входят
 в поддерживаемые shell для этого installer; используйте Git Bash.
@@ -126,10 +181,7 @@ WSL сохраняет Linux-семантику и собирает `linux-x64`.
 - `plugins/unica/skills/` — прикладные навыки 1С;
 - `crates/unica-coder/` — единый MCP runtime `unica`;
 - `crates/unica-bootstrap/` — загрузка, проверка и запуск runtime;
-- `plugins/unica/third-party/tools.lock.json` — версии внутренних инструментов;
-- `.github/workflows/unica-plugin-release.yml` — runtime-релиз;
-- `.github/workflows/publish-unica-marketplace.yml` — staging и promotion
-  публичного каталога.
+- `plugins/unica/third-party/tools.lock.json` — версии внутренних инструментов.
 
 [Авторы, источники и лицензии](plugins/unica/ATTRIBUTIONS.md).
 Лицензия Unica: LGPL-3.0-or-later.

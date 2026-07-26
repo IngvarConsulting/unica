@@ -37,6 +37,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("cargo clippy --workspace --all-targets --all-features -- -D warnings", text)
         self.assertIn("cargo test --workspace -- --test-threads=1", text)
         self.assertIn("python -m unittest discover -s tests/ci --durations 20", text)
+        self.assertIn("python -m unittest discover -s tests/dev --durations 20", text)
+        self.assertIn("python -m py_compile scripts/dev/*.py tests/dev/*.py", text)
         self.assertIn("python scripts/ci/check-version-contract.py", text)
 
     def test_every_pull_request_gets_a_stable_aggregate_gate(self) -> None:
@@ -84,6 +86,16 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
                 self.assertIn(f"      {output}:", classifier)
         self.assertIn("contains(github.event.pull_request.labels.*.name, 'ci:full')", classifier)
         self.assertIn("--force-full", classifier)
+
+    def test_classifier_preserves_merge_base_for_triple_dot_diff(self) -> None:
+        text = self.release_text()
+        classifier = job_block(text, "classify-changes")
+
+        self.assertIn("fetch-depth: 0", classifier)
+        self.assertIn('git fetch --no-tags origin "${{ github.base_ref }}"', classifier)
+        self.assertNotIn("--depth", classifier)
+        self.assertIn("FORCE_FULL", classifier)
+        self.assertIn("git diff --name-only FETCH_HEAD...HEAD", classifier)
 
     def test_rust_jobs_route_primary_and_platform_contours(self) -> None:
         text = self.release_text()
@@ -393,8 +405,14 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("codex/stage-", text)
         self.assertIn("codex/promote-", text)
         self.assertIn('git -C marketplace merge-base --is-ancestor "$STAGING_MERGE_SHA" "origin/main"', text)
-        self.assertIn('promotion_sha="$(git -C marketplace rev-parse HEAD)"', text)
-        self.assertIn("Create the signed ${RELEASE_TAG} tag at commit ${promotion_sha}", text)
+        # The tag names the staging merge, which already carries the plugin bytes
+        # and exists before this job runs. The promotion commit does not, so
+        # naming it kept the consumer install checks red on their first run.
+        self.assertIn(
+            "tag at the staging merge commit ${STAGING_MERGE_SHA} before merging this PR",
+            text,
+        )
+        self.assertNotIn("${promotion_sha}", text)
         self.assertNotIn("git ls-remote", text)
         self.assertNotIn('"refs/tags/${RELEASE_TAG}^{}"', text)
         self.assertIn("payload/plugins/unica/.codex-plugin/plugin.json", text)

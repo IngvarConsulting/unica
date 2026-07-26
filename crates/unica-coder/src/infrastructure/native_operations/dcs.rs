@@ -1,7 +1,9 @@
 #![allow(dead_code, unused_imports)]
 
+use crate::application::operation_descriptors::TEMPLATE_PATH;
 use crate::application::AdapterOutcome;
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::platform_xml_owner::DCS_ROOT;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -11,9 +13,34 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::common::*;
+use super::compile_transaction::CompileTransaction;
 use super::{
     cf::*, cfe::*, form::*, interface::*, meta::*, mxl::*, role::*, subsystem::*, template::*,
 };
+
+pub(crate) const DCS_SCHEMA_NS: &str = "http://v8.1c.ru/8.1/data-composition-system/schema";
+pub(crate) const DCS_SETTINGS_NS: &str = "http://v8.1c.ru/8.1/data-composition-system/settings";
+pub(crate) const DCS_CORE_NS: &str = "http://v8.1c.ru/8.1/data-composition-system/core";
+pub(crate) const DCS_COMMON_NS: &str = "http://v8.1c.ru/8.1/data-composition-system/common";
+pub(crate) const V8_DATA_NS: &str = "http://v8.1c.ru/8.1/data/core";
+pub(crate) const XML_SCHEMA_INSTANCE_NS: &str = "http://www.w3.org/2001/XMLSchema-instance";
+
+pub(crate) fn require_dcs_root(root: roxmltree::Node<'_, '_>) -> Result<(), String> {
+    let local_name = root.tag_name().name();
+    if local_name != "DataCompositionSchema" {
+        return Err(format!(
+            "Root element is '{local_name}', expected 'DataCompositionSchema'"
+        ));
+    }
+    let namespace = root.tag_name().namespace().unwrap_or("");
+    if namespace != DCS_SCHEMA_NS {
+        return Err(format!(
+            "Root namespace is '{namespace}' for DataCompositionSchema, expected '{DCS_SCHEMA_NS}'"
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) struct DcsValidationReporter {
     pub(crate) errors: usize,
     pub(crate) warnings: usize,
@@ -27,8 +54,6 @@ pub(crate) struct DcsValidationReporter {
 pub(crate) struct DcsValidationRun {
     pub(crate) ok: bool,
     pub(crate) stdout: String,
-    pub(crate) out_file: Option<PathBuf>,
-    pub(crate) out_file_label: Option<String>,
     pub(crate) artifact: PathBuf,
     pub(crate) errors: Vec<String>,
 }
@@ -95,10 +120,10 @@ pub(crate) fn analyze_dcs_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    const NS_SCHEMA: &str = "http://v8.1c.ru/8.1/data-composition-system/schema";
+    const NS_SCHEMA: &str = DCS_SCHEMA_NS;
     const NS_SETTINGS: &str = "http://v8.1c.ru/8.1/data-composition-system/settings";
 
-    let result = (|| -> Result<(String, Option<PathBuf>, PathBuf), String> {
+    let result = (|| -> Result<(String, PathBuf), String> {
         let template_path = resolve_dcs_info_path_for_script(args, context)?;
         let resolved_path = template_path
             .canonicalize()
@@ -107,12 +132,12 @@ pub(crate) fn analyze_dcs_info(
         let doc = Document::parse(text.trim_start_matches('\u{feff}'))
             .map_err(|err| format!("XML parse error in {}: {err}", resolved_path.display()))?;
         let root = doc.root_element();
+        require_dcs_root(root)?;
         let mode = string_arg(args, &["mode", "Mode"]).unwrap_or("overview");
-        let out_file_label = string_arg(args, &["outFile", "OutFile"]).map(ToOwned::to_owned);
-        let out_file = out_file_label
-            .as_ref()
-            .filter(|value| !value.is_empty())
-            .map(|value| absolutize(PathBuf::from(value), &context.cwd));
+        let raw = bool_arg(args, &["raw", "Raw"]);
+        if raw && mode != "query" {
+            return Err("Raw is only supported with Mode=query".to_string());
+        }
         let limit = int_arg(args, &["limit", "Limit"]).unwrap_or(150).max(0) as usize;
         let offset = int_arg(args, &["offset", "Offset"]).unwrap_or(0).max(0) as usize;
         let mut lines = Vec::<String>::new();
@@ -131,6 +156,9 @@ pub(crate) fn analyze_dcs_info(
             }
             "query" => {
                 let name = string_arg(args, &["name", "Name"]);
+                if raw {
+                    return Ok((dcs_info_raw_query(root, NS_SCHEMA, name)?, resolved_path));
+                }
                 dcs_info_query(root, &mut lines, NS_SCHEMA, name)?;
             }
             "fields" => dcs_info_fields(root, &mut lines, NS_SCHEMA),
@@ -173,27 +201,12 @@ pub(crate) fn analyze_dcs_info(
         }
 
         let total_lines = lines.len();
-        if let Some(out_file) = &out_file {
-            if let Some(parent) = out_file.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
-            }
-            write_utf8_bom(out_file, &lines.join("\n"))?;
-            let label = out_file_label.as_deref().unwrap_or("");
-            return Ok((
-                format!("Written {total_lines} lines to {label}\n"),
-                Some(out_file.clone()),
-                resolved_path,
-            ));
-        }
-
         let mut result = if offset > 0 {
             if offset >= total_lines {
                 return Ok((
                     format!(
                         "[INFO] Offset {offset} exceeds total lines ({total_lines}). Nothing to show.\n"
                     ),
-                    None,
                     resolved_path,
                 ));
             }
@@ -211,27 +224,21 @@ pub(crate) fn analyze_dcs_info(
         } else {
             format!("{}\n", result.join("\n"))
         };
-        Ok((stdout, None, resolved_path))
+        Ok((stdout, resolved_path))
     })();
 
     match result {
-        Ok((stdout, out_file, artifact)) => {
-            let mut artifacts = vec![artifact.display().to_string()];
-            if let Some(out_file) = &out_file {
-                artifacts.push(out_file.display().to_string());
-            }
-            AdapterOutcome {
-                ok: true,
-                summary: "unica.dcs.info completed with native DCS inspector".to_string(),
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: Vec::new(),
-                artifacts,
-                stdout: Some(stdout),
-                stderr: None,
-                command: None,
-            }
-        }
+        Ok((stdout, artifact)) => AdapterOutcome {
+            ok: true,
+            summary: "unica.dcs.info completed with native DCS inspector".to_string(),
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: Vec::new(),
+            artifacts: vec![artifact.display().to_string()],
+            stdout: Some(stdout),
+            stderr: None,
+            command: None,
+        },
         Err(error) => AdapterOutcome {
             ok: false,
             summary: "unica.dcs.info failed in native DCS inspector".to_string(),
@@ -620,6 +627,40 @@ pub(crate) fn dcs_info_query(
     ns_schema: &str,
     name: Option<&str>,
 ) -> Result<(), String> {
+    let target = dcs_info_query_target(root, ns_schema, name)?;
+    let query = dcs_child(target, "query", ns_schema)
+        .map(dcs_inner_text)
+        .unwrap_or_default();
+    let name = dcs_child(target, "name", ns_schema)
+        .map(dcs_text_of)
+        .unwrap_or_default();
+    lines.push(format!(
+        "=== Query: {name} ({} lines) ===",
+        query.split('\n').count()
+    ));
+    lines.push(String::new());
+    for line in query.trim().split('\n') {
+        lines.push(line.trim_end().to_string());
+    }
+    Ok(())
+}
+
+pub(crate) fn dcs_info_raw_query(
+    root: roxmltree::Node<'_, '_>,
+    ns_schema: &str,
+    name: Option<&str>,
+) -> Result<String, String> {
+    let target = dcs_info_query_target(root, ns_schema, name)?;
+    Ok(dcs_child(target, "query", ns_schema)
+        .map(dcs_inner_text)
+        .unwrap_or_default())
+}
+
+fn dcs_info_query_target<'a, 'input>(
+    root: roxmltree::Node<'a, 'input>,
+    ns_schema: &str,
+    name: Option<&str>,
+) -> Result<roxmltree::Node<'a, 'input>, String> {
     let mut target = None;
     if let Some(name) = name.filter(|value| !value.is_empty()) {
         for data_set in dcs_children(root, "dataSet", ns_schema) {
@@ -691,21 +732,7 @@ pub(crate) fn dcs_info_query(
         }
         return Err("Dataset has no query element".to_string());
     }
-    let query = dcs_child(target, "query", ns_schema)
-        .map(dcs_inner_text)
-        .unwrap_or_default();
-    let name = dcs_child(target, "name", ns_schema)
-        .map(dcs_text_of)
-        .unwrap_or_default();
-    lines.push(format!(
-        "=== Query: {name} ({} lines) ===",
-        query.split('\n').count()
-    ));
-    lines.push(String::new());
-    for line in query.trim().split('\n') {
-        lines.push(line.trim_end().to_string());
-    }
-    Ok(())
+    Ok(target)
 }
 
 pub(crate) fn dcs_info_fields(
@@ -1380,17 +1407,27 @@ pub(crate) fn dcs_info_template_name(path: &Path) -> String {
     path.display().to_string()
 }
 
-pub(crate) fn resolve_dcs_info_path_for_script(
+struct DcsInfoPathInspection {
+    resolution: Result<PathBuf, String>,
+    dependencies: Vec<PathBuf>,
+}
+
+fn inspect_dcs_info_path(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Result<PathBuf, String> {
-    let raw_path = required_path(
-        args,
-        &["templatePath", "TemplatePath", "path", "Path"],
-        "TemplatePath",
-    )?;
+) -> DcsInfoPathInspection {
+    let raw_path = match required_path(args, TEMPLATE_PATH, "TemplatePath") {
+        Ok(path) => path,
+        Err(error) => {
+            return DcsInfoPathInspection {
+                resolution: Err(error),
+                dependencies: Vec::new(),
+            };
+        }
+    };
     let original_path = raw_path.clone();
     let mut template_path = raw_path.clone();
+    let mut dependencies = Vec::new();
     if template_path
         .extension()
         .and_then(|value| value.to_str())
@@ -1414,15 +1451,37 @@ pub(crate) fn resolve_dcs_info_path_for_script(
         let templates_dir = absolutize(original_path.join("Templates"), &context.cwd);
         if templates_dir.is_dir() {
             let mut dcs_templates = Vec::<PathBuf>::new();
-            for entry in fs::read_dir(&templates_dir)
-                .map_err(|err| format!("failed to read {}: {err}", templates_dir.display()))?
-            {
-                let entry = entry
-                    .map_err(|err| format!("failed to read {}: {err}", templates_dir.display()))?;
+            let entries = match fs::read_dir(&templates_dir) {
+                Ok(entries) => entries,
+                Err(err) => {
+                    return DcsInfoPathInspection {
+                        resolution: Err(format!(
+                            "failed to read {}: {err}",
+                            templates_dir.display()
+                        )),
+                        dependencies,
+                    };
+                }
+            };
+            let mut entries = match entries.collect::<Result<Vec<_>, _>>() {
+                Ok(entries) => entries,
+                Err(err) => {
+                    return DcsInfoPathInspection {
+                        resolution: Err(format!(
+                            "failed to read {}: {err}",
+                            templates_dir.display()
+                        )),
+                        dependencies,
+                    };
+                }
+            };
+            entries.sort_by_key(|entry| entry.file_name());
+            for entry in entries {
                 let path = entry.path();
                 if path.extension().and_then(|value| value.to_str()) != Some("xml") {
                     continue;
                 }
+                dependencies.push(path.clone());
                 let Ok(text) = fs::read_to_string(&path) else {
                     continue;
                 };
@@ -1445,33 +1504,65 @@ pub(crate) fn resolve_dcs_info_path_for_script(
                 }
             }
             if dcs_templates.len() == 1 {
-                return Ok(dcs_templates.remove(0));
+                let resolved_path = dcs_templates.remove(0);
+                dependencies.push(resolved_path.clone());
+                return DcsInfoPathInspection {
+                    resolution: Ok(resolved_path),
+                    dependencies,
+                };
             }
             if dcs_templates.len() > 1 {
-                return Err(format!(
-                    "Multiple DCS templates found in: {}",
-                    original_path.display()
-                ));
+                return DcsInfoPathInspection {
+                    resolution: Err(format!(
+                        "Multiple DCS templates found in: {}",
+                        original_path.display()
+                    )),
+                    dependencies,
+                };
             }
-            return Err(format!(
-                "No DCS templates found in: {}",
-                original_path.display()
-            ));
+            return DcsInfoPathInspection {
+                resolution: Err(format!(
+                    "No DCS templates found in: {}",
+                    original_path.display()
+                )),
+                dependencies,
+            };
         }
     }
 
     let abs_template = absolutize(template_path, &context.cwd);
     if !abs_template.is_file() {
-        return Err(format!("File not found: {}", abs_template.display()));
+        return DcsInfoPathInspection {
+            resolution: Err(format!("File not found: {}", abs_template.display())),
+            dependencies,
+        };
     }
-    Ok(abs_template)
+    dependencies.push(abs_template.clone());
+    DcsInfoPathInspection {
+        resolution: Ok(abs_template),
+        dependencies,
+    }
+}
+
+pub(crate) fn resolve_dcs_info_path_for_script(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<PathBuf, String> {
+    inspect_dcs_info_path(args, context).resolution
+}
+
+pub(crate) fn dcs_info_format_dependency_paths(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Vec<PathBuf> {
+    inspect_dcs_info_path(args, context).dependencies
 }
 
 pub(crate) fn validate_dcs(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    const NS_SCHEMA: &str = "http://v8.1c.ru/8.1/data-composition-system/schema";
+    const NS_SCHEMA: &str = DCS_SCHEMA_NS;
 
     let result = (|| -> Result<DcsValidationRun, String> {
         let template_path = resolve_dcs_validate_path(args, context)?;
@@ -1483,11 +1574,6 @@ pub(crate) fn validate_dcs(
             .and_then(|value| value.to_str())
             .unwrap_or("")
             .to_string();
-        let out_file_label = string_arg(args, &["outFile", "OutFile"]).map(ToOwned::to_owned);
-        let out_file = out_file_label
-            .as_ref()
-            .filter(|value| !value.is_empty())
-            .map(|value| absolutize(PathBuf::from(value), &context.cwd));
         let detailed = bool_arg(args, &["detailed", "Detailed"]);
         let max_errors = int_arg(args, &["maxErrors", "MaxErrors"])
             .unwrap_or(20)
@@ -1511,8 +1597,6 @@ pub(crate) fn validate_dcs(
                 return Ok(DcsValidationRun {
                     ok: false,
                     stdout: format!("{}\n", report.lines.join("\n")),
-                    out_file,
-                    out_file_label,
                     artifact: resolved_path,
                     errors,
                 });
@@ -1520,31 +1604,12 @@ pub(crate) fn validate_dcs(
         };
 
         let root = doc.root_element();
-        let root_local = root.tag_name().name();
-        if root_local != "DataCompositionSchema" {
-            report.error(format!(
-                "Root element is '{root_local}', expected 'DataCompositionSchema'"
-            ));
-        } else {
-            report.ok("Root element: DataCompositionSchema");
+        if let Err(error) = require_dcs_root(root) {
+            report.error(error);
+            return dcs_validation_finish(report, &file_name, resolved_path);
         }
-        let root_ns = root.tag_name().namespace().unwrap_or("");
-        if root_ns != NS_SCHEMA {
-            report.error(format!(
-                "Default namespace is '{root_ns}', expected '{NS_SCHEMA}'"
-            ));
-        } else {
-            report.ok("Default namespace correct");
-        }
-        if report.stopped {
-            return dcs_validation_finish(
-                report,
-                &file_name,
-                out_file,
-                out_file_label,
-                resolved_path,
-            );
-        }
+        report.ok("Root element: DataCompositionSchema");
+        report.ok("Default namespace correct");
 
         let data_source_nodes = dcs_children(root, "dataSource", NS_SCHEMA);
         let mut data_source_names = HashSet::<String>::new();
@@ -1588,23 +1653,11 @@ pub(crate) fn validate_dcs(
 
         dcs_validate_data_sources(&mut report, &data_source_nodes);
         if report.stopped {
-            return dcs_validation_finish(
-                report,
-                &file_name,
-                out_file,
-                out_file_label,
-                resolved_path,
-            );
+            return dcs_validation_finish(report, &file_name, resolved_path);
         }
         dcs_validate_data_sets(&mut report, &data_set_nodes, &data_source_names);
         if report.stopped {
-            return dcs_validation_finish(
-                report,
-                &file_name,
-                out_file,
-                out_file_label,
-                resolved_path,
-            );
+            return dcs_validation_finish(report, &file_name, resolved_path);
         }
         for ds in &data_set_nodes {
             let ds_name = dcs_child(*ds, "name", NS_SCHEMA)
@@ -1612,147 +1665,64 @@ pub(crate) fn validate_dcs(
                 .unwrap_or_else(|| "(unnamed)".to_string());
             dcs_validate_data_set_fields(&mut report, *ds, &ds_name);
             if report.stopped {
-                return dcs_validation_finish(
-                    report,
-                    &file_name,
-                    out_file.clone(),
-                    out_file_label.clone(),
-                    resolved_path.clone(),
-                );
+                return dcs_validation_finish(report, &file_name, resolved_path.clone());
             }
         }
         if report.stopped {
-            return dcs_validation_finish(
-                report,
-                &file_name,
-                out_file,
-                out_file_label,
-                resolved_path,
-            );
+            return dcs_validation_finish(report, &file_name, resolved_path);
         }
         dcs_validate_data_set_links(&mut report, root, &data_set_names);
         if report.stopped {
-            return dcs_validation_finish(
-                report,
-                &file_name,
-                out_file,
-                out_file_label,
-                resolved_path,
-            );
+            return dcs_validation_finish(report, &file_name, resolved_path);
         }
         dcs_validate_calculated_fields(&mut report, &calc_field_nodes, &all_field_paths);
         if report.stopped {
-            return dcs_validation_finish(
-                report,
-                &file_name,
-                out_file,
-                out_file_label,
-                resolved_path,
-            );
+            return dcs_validation_finish(report, &file_name, resolved_path);
         }
         dcs_validate_total_fields(&mut report, &total_field_nodes);
         if report.stopped {
-            return dcs_validation_finish(
-                report,
-                &file_name,
-                out_file,
-                out_file_label,
-                resolved_path,
-            );
+            return dcs_validation_finish(report, &file_name, resolved_path);
         }
         dcs_validate_parameters(&mut report, &param_nodes);
         if report.stopped {
-            return dcs_validation_finish(
-                report,
-                &file_name,
-                out_file,
-                out_file_label,
-                resolved_path,
-            );
+            return dcs_validation_finish(report, &file_name, resolved_path);
         }
         dcs_validate_templates(&mut report, &template_nodes);
         if report.stopped {
-            return dcs_validation_finish(
-                report,
-                &file_name,
-                out_file,
-                out_file_label,
-                resolved_path,
-            );
+            return dcs_validation_finish(report, &file_name, resolved_path);
         }
         dcs_validate_group_templates(&mut report, &group_template_nodes, &template_names);
         if report.stopped {
-            return dcs_validation_finish(
-                report,
-                &file_name,
-                out_file,
-                out_file_label,
-                resolved_path,
-            );
+            return dcs_validation_finish(report, &file_name, resolved_path);
         }
         dcs_validate_settings_variants(&mut report, &variant_nodes, &known_fields);
         if report.stopped {
-            return dcs_validation_finish(
-                report,
-                &file_name,
-                out_file,
-                out_file_label,
-                resolved_path,
-            );
+            return dcs_validation_finish(report, &file_name, resolved_path);
         }
         dcs_validate_value_types(&mut report, root);
         if report.stopped {
-            return dcs_validation_finish(
-                report,
-                &file_name,
-                out_file,
-                out_file_label,
-                resolved_path,
-            );
+            return dcs_validation_finish(report, &file_name, resolved_path);
         }
         dcs_validate_value_contents(&mut report, root);
-        dcs_validation_finish(report, &file_name, out_file, out_file_label, resolved_path)
+        dcs_validation_finish(report, &file_name, resolved_path)
     })();
 
     match result {
-        Ok(run) => {
-            let mut stdout = run.stdout.clone();
-            let mut artifacts = vec![run.artifact.display().to_string()];
-            if let Some(out_file) = &run.out_file {
-                if let Err(error) = write_utf8_bom(out_file, run.stdout.trim_end_matches('\n')) {
-                    return AdapterOutcome {
-                        ok: false,
-                        summary: "unica.dcs.validate failed in native DCS validator".to_string(),
-                        changes: Vec::new(),
-                        warnings: Vec::new(),
-                        errors: vec![error.clone()],
-                        artifacts,
-                        stdout: None,
-                        stderr: Some(format!("{error}\n")),
-                        command: None,
-                    };
-                }
-                if let Some(label) = &run.out_file_label {
-                    stdout.push_str(&format!("Written to: {label}\n"));
-                }
-                artifacts.push(out_file.display().to_string());
-            }
-            AdapterOutcome {
-                ok: run.ok,
-                summary: if run.ok {
-                    "unica.dcs.validate completed with native DCS validator".to_string()
-                } else {
-                    "unica.dcs.validate failed in native DCS validator".to_string()
-                },
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: run.errors,
-                artifacts,
-                stdout: Some(stdout),
-                stderr: Some(String::new()),
-                command: None,
-            }
-        }
+        Ok(run) => AdapterOutcome {
+            ok: run.ok,
+            summary: if run.ok {
+                "unica.dcs.validate completed with native DCS validator".to_string()
+            } else {
+                "unica.dcs.validate failed in native DCS validator".to_string()
+            },
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: run.errors,
+            artifacts: vec![run.artifact.display().to_string()],
+            stdout: Some(run.stdout),
+            stderr: Some(String::new()),
+            command: None,
+        },
         Err(error) => AdapterOutcome {
             ok: false,
             summary: "unica.dcs.validate failed in native DCS validator".to_string(),
@@ -1770,16 +1740,12 @@ pub(crate) fn validate_dcs(
 pub(crate) fn dcs_validation_finish(
     report: DcsValidationReporter,
     file_name: &str,
-    out_file: Option<PathBuf>,
-    out_file_label: Option<String>,
     artifact: PathBuf,
 ) -> Result<DcsValidationRun, String> {
     let (ok, stdout, errors) = report.finalize(file_name);
     Ok(DcsValidationRun {
         ok,
         stdout,
-        out_file,
-        out_file_label,
         artifact,
         errors,
     })
@@ -2727,11 +2693,7 @@ pub(crate) fn resolve_dcs_validate_path(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
-    let raw_path = required_path(
-        args,
-        &["templatePath", "TemplatePath", "path", "Path"],
-        "TemplatePath",
-    )?;
+    let raw_path = required_path(args, TEMPLATE_PATH, "TemplatePath")?;
     let mut display_path = raw_path.clone();
     let mut template_path = absolutize(raw_path, &context.cwd);
 
@@ -2790,7 +2752,7 @@ pub(crate) fn resolve_dcs_validate_path(
 }
 
 pub(crate) fn compile_dcs(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
-    let write_result = (|| -> Result<(String, PathBuf), String> {
+    let write_result = (|| -> Result<(String, PathBuf, Vec<String>, Vec<String>), String> {
         let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
         let value = string_arg(args, &["value", "Value"]);
         if definition_file.is_some() && value.is_some() {
@@ -2804,8 +2766,10 @@ pub(crate) fn compile_dcs(args: &Map<String, Value>, context: &WorkspaceContext)
             .ok_or_else(|| "missing required OutputPath argument".to_string())?
             .to_string();
         let output_path = absolutize(PathBuf::from(&output_path_label), &context.cwd);
+        let show_validation = !bool_arg(args, &["noValidate", "NoValidate"]);
 
-        let (json_text, query_base_dir) = if let Some(definition_file) = definition_file {
+        let mut transaction = CompileTransaction::new();
+        let (mut defn, query_base_dir) = if let Some(definition_file) = definition_file {
             let definition_file = absolutize(definition_file, &context.cwd);
             if !definition_file.exists() {
                 return Err(format!(
@@ -2813,19 +2777,21 @@ pub(crate) fn compile_dcs(args: &Map<String, Value>, context: &WorkspaceContext)
                     definition_file.display()
                 ));
             }
-            let text = fs::read_to_string(&definition_file)
-                .map_err(|err| format!("failed to read {}: {err}", definition_file.display()))?;
             let base_dir = definition_file
                 .parent()
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|| context.cwd.clone());
-            (text, base_dir)
+            let definition = FileBackedJson::read(&definition_file, |err| {
+                format!("failed to parse DCS JSON: {err}")
+            })?
+            .bind_to(&mut transaction)?;
+            (definition, base_dir)
         } else {
-            (value.unwrap_or("").to_string(), context.cwd.clone())
+            let definition = serde_json::from_str(value.unwrap_or(""))
+                .map_err(|err| format!("failed to parse DCS JSON: {err}"))?;
+            (definition, context.cwd.clone())
         };
 
-        let mut defn: Value = serde_json::from_str(json_text.trim_start_matches('\u{feff}'))
-            .map_err(|err| format!("failed to parse DCS JSON: {err}"))?;
         {
             let Some(data_sets) = defn.get_mut("dataSets").and_then(Value::as_array_mut) else {
                 return Err("JSON must have at least one entry in 'dataSets'".to_string());
@@ -2850,12 +2816,14 @@ pub(crate) fn compile_dcs(args: &Map<String, Value>, context: &WorkspaceContext)
             }
         }
 
-        let content = dcs_compile_xml(&defn, &query_base_dir, &context.cwd)?;
-        if let Some(parent) = output_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
+        let mut query_inputs = Vec::new();
+        let content =
+            dcs_compile_xml_with_inputs(&defn, &query_base_dir, &context.cwd, &mut query_inputs)?;
+        for input in &query_inputs {
+            input.bind_to(&mut transaction)?;
         }
-        write_utf8_bom(&output_path, &content)?;
+        let replacement = utf8_bom_bytes(&content);
+        let file_size = replacement.len();
 
         let empty_data_sets = Vec::new();
         let data_sets = defn
@@ -2894,21 +2862,51 @@ pub(crate) fn compile_dcs(args: &Map<String, Value>, context: &WorkspaceContext)
             .filter(|items| !items.is_empty())
             .map(Vec::len)
             .unwrap_or(1);
-        let file_size = fs::metadata(&output_path)
-            .map_err(|err| format!("failed to stat {}: {err}", output_path.display()))?
-            .len();
-        let stdout = format!(
+        let mut stdout = format!(
             "OK  {output_path_label}\n    DataSets: {ds_count}  Fields: {field_count}  Calculated: {calc_count}  Totals: {total_count}  Params: {param_count}  Variants: {variant_count}\n    Size: {file_size} bytes\n"
         );
-        Ok((stdout, output_path))
+
+        transaction.create_or_replace_bytes(&output_path, replacement)?;
+        guard_active_format_owner_with_exact_root(
+            &mut transaction,
+            &output_path,
+            context,
+            DCS_ROOT,
+        )?;
+        let mut validation_stdout = None;
+        let report = transaction.commit_with_post_validation(|| {
+            let validation = require_dcs_post_validation(&output_path, context)?;
+            validation_stdout = Some(validation);
+            Ok(())
+        })?;
+
+        if show_validation {
+            stdout.push_str("\n--- Running dcs-validate ---\n");
+            if let Some(validation) = validation_stdout {
+                stdout.push_str(&validation);
+            }
+        }
+
+        let mut changes = report
+            .created
+            .iter()
+            .map(|path| format!("created {}", path.display()))
+            .collect::<Vec<_>>();
+        changes.extend(
+            report
+                .updated
+                .iter()
+                .map(|path| format!("updated {}", path.display())),
+        );
+        Ok((stdout, output_path, changes, report.cleanup_warnings))
     })();
 
     match write_result {
-        Ok((stdout, output_path)) => AdapterOutcome {
+        Ok((stdout, output_path, changes, warnings)) => AdapterOutcome {
             ok: true,
             summary: "unica.dcs.compile completed with native DCS compiler".to_string(),
-            changes: vec![format!("created {}", output_path.display())],
-            warnings: Vec::new(),
+            changes,
+            warnings,
             errors: Vec::new(),
             artifacts: vec![output_path.display().to_string()],
             stdout: Some(stdout),
@@ -2929,11 +2927,54 @@ pub(crate) fn compile_dcs(args: &Map<String, Value>, context: &WorkspaceContext)
     }
 }
 
+fn require_dcs_post_validation(
+    template_path: &Path,
+    context: &WorkspaceContext,
+) -> Result<String, String> {
+    let validation_args = Map::from_iter([(
+        "TemplatePath".to_string(),
+        Value::String(template_path.display().to_string()),
+    )]);
+    let outcome = validate_dcs(&validation_args, context);
+    let stdout = outcome.stdout.unwrap_or_default();
+    if outcome.ok {
+        return Ok(stdout);
+    }
+    let detail = if outcome.errors.is_empty() {
+        stdout.trim().to_string()
+    } else {
+        outcome.errors.join("; ")
+    };
+    Err(format!(
+        "DCS validation failed for {}: {}",
+        template_path.display(),
+        if detail.is_empty() {
+            "validation returned no diagnostics"
+        } else {
+            &detail
+        }
+    ))
+}
+
 pub(crate) fn dcs_compile_xml(
     defn: &Value,
     query_base_dir: &Path,
     cwd: &Path,
 ) -> Result<String, String> {
+    dcs_compile_xml_with_inputs(defn, query_base_dir, cwd, &mut Vec::new())
+}
+
+fn dcs_compile_xml_with_inputs(
+    defn: &Value,
+    query_base_dir: &Path,
+    cwd: &Path,
+    query_inputs: &mut Vec<ExactFileInput>,
+) -> Result<String, String> {
+    let mut query_context = DcsCompileQueryContext {
+        query_base_dir,
+        cwd,
+        inputs: query_inputs,
+    };
     let data_sources = dcs_compile_data_sources(defn);
     let default_source = data_sources
         .first()
@@ -2961,16 +3002,15 @@ pub(crate) fn dcs_compile_xml(
                 data_set,
                 "\t",
                 &default_source,
-                query_base_dir,
-                cwd,
+                &mut query_context,
             )?;
         }
     }
 
     dcs_compile_emit_data_set_links(&mut lines, defn);
-    dcs_compile_emit_calculated_fields(&mut lines, defn);
+    dcs_compile_emit_calculated_fields(&mut lines, defn)?;
     dcs_compile_emit_total_fields(&mut lines, defn);
-    dcs_compile_emit_parameters(&mut lines, defn);
+    dcs_compile_emit_parameters(&mut lines, defn)?;
     dcs_compile_emit_settings_variants(&mut lines, defn);
     lines.push("</DataCompositionSchema>".to_string());
     Ok(format!("{}\n", lines.join("\n")))
@@ -2995,13 +3035,36 @@ pub(crate) fn dcs_compile_data_sources(defn: &Value) -> Vec<(String, String)> {
     vec![("ИсточникДанных1".to_string(), "Local".to_string())]
 }
 
+pub(crate) struct DcsCompileQueryContext<'a> {
+    query_base_dir: &'a Path,
+    cwd: &'a Path,
+    inputs: &'a mut Vec<ExactFileInput>,
+}
+
 pub(crate) fn dcs_compile_emit_data_set(
     lines: &mut Vec<String>,
     data_set: &Value,
     indent: &str,
     default_source: &str,
-    query_base_dir: &Path,
-    cwd: &Path,
+    query_context: &mut DcsCompileQueryContext<'_>,
+) -> Result<(), String> {
+    dcs_compile_emit_data_set_element(
+        lines,
+        data_set,
+        indent,
+        "dataSet",
+        default_source,
+        query_context,
+    )
+}
+
+pub(crate) fn dcs_compile_emit_data_set_element(
+    lines: &mut Vec<String>,
+    data_set: &Value,
+    indent: &str,
+    element_name: &str,
+    default_source: &str,
+    query_context: &mut DcsCompileQueryContext<'_>,
 ) -> Result<(), String> {
     let ds_type = if data_set.get("items").is_some() {
         "DataSetUnion"
@@ -3010,14 +3073,19 @@ pub(crate) fn dcs_compile_emit_data_set(
     } else {
         "DataSetQuery"
     };
-    lines.push(format!("{indent}<dataSet xsi:type=\"{ds_type}\">"));
+    lines.push(format!("{indent}<{element_name} xsi:type=\"{ds_type}\">"));
     lines.push(format!(
         "{indent}\t<name>{}</name>",
         escape_xml(&json_string_field(data_set, "name").unwrap_or_default())
     ));
     if let Some(fields) = data_set.get("fields").and_then(Value::as_array) {
         for field in fields {
-            dcs_compile_emit_field(lines, field, &format!("{indent}\t"));
+            dcs_compile_emit_field(
+                lines,
+                field,
+                &format!("{indent}\t"),
+                ds_type != "DataSetQuery",
+            )?;
         }
     }
     if ds_type != "DataSetUnion" {
@@ -3031,7 +3099,12 @@ pub(crate) fn dcs_compile_emit_data_set(
     match ds_type {
         "DataSetQuery" => {
             let query = json_string_field(data_set, "query").unwrap_or_default();
-            let query = dcs_compile_resolve_query_value(&query, query_base_dir, cwd)?;
+            let query = dcs_compile_resolve_query_value_with_inputs(
+                &query,
+                query_context.query_base_dir,
+                query_context.cwd,
+                query_context.inputs,
+            )?;
             lines.push(format!("{indent}\t<query>{}</query>", escape_xml(&query)));
             if data_set
                 .get("autoFillFields")
@@ -3051,25 +3124,30 @@ pub(crate) fn dcs_compile_emit_data_set(
         "DataSetUnion" => {
             if let Some(items) = data_set.get("items").and_then(Value::as_array) {
                 for item in items {
-                    dcs_compile_emit_data_set(
+                    dcs_compile_emit_data_set_element(
                         lines,
                         item,
                         &format!("{indent}\t"),
+                        "item",
                         default_source,
-                        query_base_dir,
-                        cwd,
+                        query_context,
                     )?;
                 }
             }
         }
         _ => {}
     }
-    lines.push(format!("{indent}</dataSet>"));
+    lines.push(format!("{indent}</{element_name}>"));
     Ok(())
 }
 
-pub(crate) fn dcs_compile_emit_field(lines: &mut Vec<String>, field: &Value, indent: &str) {
-    let (data_path, field_name, title, field_type, presentation_expression) =
+pub(crate) fn dcs_compile_emit_field(
+    lines: &mut Vec<String>,
+    field: &Value,
+    indent: &str,
+    emit_value_type: bool,
+) -> Result<(), String> {
+    let (data_path, field_name, title, field_type, presentation_expression, type_declared) =
         if let Some(text) = field.as_str() {
             let parsed = dcs_compile_parse_field_shorthand(text);
             (
@@ -3078,6 +3156,7 @@ pub(crate) fn dcs_compile_emit_field(lines: &mut Vec<String>, field: &Value, ind
                 String::new(),
                 dcs_compile_resolve_type(&parsed.2),
                 String::new(),
+                parsed.3,
             )
         } else {
             let data_path = json_string_field(field, "dataPath")
@@ -3097,8 +3176,13 @@ pub(crate) fn dcs_compile_emit_field(lines: &mut Vec<String>, field: &Value, ind
                 title,
                 field_type,
                 presentation_expression,
+                field.get("type").is_some(),
             )
         };
+
+    let value_type_entries = type_declared
+        .then(|| dcs_compile_parse_value_type(&field_type))
+        .transpose()?;
 
     lines.push(format!("{indent}<field xsi:type=\"DataSetFieldField\">"));
     lines.push(format!(
@@ -3126,21 +3210,26 @@ pub(crate) fn dcs_compile_emit_field(lines: &mut Vec<String>, field: &Value, ind
         "attributeUseRestriction",
         &format!("{indent}\t"),
     );
-    if !field_type.is_empty() {
-        lines.push(format!("{indent}\t<valueType>"));
-        dcs_compile_emit_value_type(lines, &field_type, &format!("{indent}\t\t"));
-        lines.push(format!("{indent}\t</valueType>"));
-    }
     if !presentation_expression.is_empty() {
         lines.push(format!(
             "{indent}\t<presentationExpression>{}</presentationExpression>",
             escape_xml(&presentation_expression)
         ));
     }
+    if emit_value_type && value_type_entries.is_some() {
+        lines.push(format!("{indent}\t<valueType>"));
+        dcs_compile_emit_value_type_entries(
+            lines,
+            value_type_entries.as_deref().unwrap_or_default(),
+            &format!("{indent}\t\t"),
+        );
+        lines.push(format!("{indent}\t</valueType>"));
+    }
     lines.push(format!("{indent}</field>"));
+    Ok(())
 }
 
-pub(crate) fn dcs_compile_parse_field_shorthand(text: &str) -> (String, String, String) {
+pub(crate) fn dcs_compile_parse_field_shorthand(text: &str) -> (String, String, String, bool) {
     let value = text
         .split_whitespace()
         .filter(|part| !part.starts_with('@') && !part.starts_with('#'))
@@ -3153,9 +3242,10 @@ pub(crate) fn dcs_compile_parse_field_shorthand(text: &str) -> (String, String, 
             data_path.clone(),
             data_path,
             dcs_compile_resolve_type(right.trim()),
+            true,
         )
     } else {
-        (value.to_string(), value.to_string(), String::new())
+        (value.to_string(), value.to_string(), String::new(), false)
     }
 }
 
@@ -3166,31 +3256,46 @@ pub(crate) fn dcs_compile_emit_restriction(
     tag_name: &str,
     indent: &str,
 ) {
-    let Some(items) = dcs_compile_string_items(value.get(source_key)) else {
-        return;
-    };
-    if items.is_empty() {
-        return;
-    }
-    let mut body = Vec::new();
-    for item in items {
-        let xml_name = match item.as_str() {
-            "noField" => Some("field"),
-            "noFilter" | "noCondition" => Some("condition"),
-            "noGroup" => Some("group"),
-            "noOrder" => Some("order"),
-            other if matches!(other, "field" | "condition" | "group" | "order") => Some(other),
-            _ => None,
+    dcs_compile_emit_merged_restriction(lines, value, &[source_key], tag_name, indent);
+}
+
+pub(crate) fn dcs_compile_emit_merged_restriction(
+    lines: &mut Vec<String>,
+    value: &Value,
+    source_keys: &[&str],
+    tag_name: &str,
+    indent: &str,
+) {
+    let mut enabled = [false; 4];
+    for source_key in source_keys {
+        let Some(items) = dcs_compile_string_items(value.get(*source_key)) else {
+            continue;
         };
-        if let Some(xml_name) = xml_name {
-            body.push(format!("{indent}\t<{xml_name}>true</{xml_name}>"));
+        for item in items {
+            let index = match item.as_str() {
+                "noField" | "field" => Some(0),
+                "noFilter" | "noCondition" | "condition" => Some(1),
+                "noGroup" | "group" => Some(2),
+                "noOrder" | "order" => Some(3),
+                _ => None,
+            };
+            if let Some(index) = index {
+                enabled[index] = true;
+            }
         }
     }
-    if body.is_empty() {
+    if !enabled.iter().any(|enabled| *enabled) {
         return;
     }
     lines.push(format!("{indent}<{tag_name}>"));
-    lines.extend(body);
+    for (xml_name, enabled) in ["field", "condition", "group", "order"]
+        .into_iter()
+        .zip(enabled)
+    {
+        if enabled {
+            lines.push(format!("{indent}\t<{xml_name}>true</{xml_name}>"));
+        }
+    }
     lines.push(format!("{indent}</{tag_name}>"));
 }
 
@@ -3224,7 +3329,6 @@ pub(crate) fn dcs_compile_type_value(value: &Value) -> String {
         return items
             .iter()
             .map(dcs_compile_type_value)
-            .filter(|item| !item.is_empty())
             .collect::<Vec<_>>()
             .join("|");
     }
@@ -3262,13 +3366,14 @@ pub(crate) fn dcs_compile_resolve_type(type_str: &str) -> String {
 
 pub(crate) fn dcs_compile_type_synonym(type_str: &str) -> Option<&'static str> {
     match type_str.to_lowercase().as_str() {
-        "число" | "int" | "integer" | "number" | "num" => Some("decimal"),
-        "bool" => Some("boolean"),
-        "строка" | "str" => Some("string"),
+        "число" | "decimal" | "int" | "integer" | "number" | "num" => Some("decimal"),
+        "bool" | "boolean" => Some("boolean"),
+        "строка" | "str" | "string" => Some("string"),
         "булево" => Some("boolean"),
-        "дата" => Some("date"),
-        "датавремя" => Some("dateTime"),
-        "стандартныйпериод" => Some("StandardPeriod"),
+        "дата" | "date" => Some("date"),
+        "датавремя" | "datetime" => Some("dateTime"),
+        "время" | "time" => Some("time"),
+        "стандартныйпериод" | "standardperiod" => Some("StandardPeriod"),
         "справочникссылка" => Some("CatalogRef"),
         "документссылка" => Some("DocumentRef"),
         "перечислениессылка" => Some("EnumRef"),
@@ -3280,109 +3385,332 @@ pub(crate) fn dcs_compile_type_synonym(type_str: &str) -> Option<&'static str> {
     }
 }
 
-pub(crate) fn dcs_compile_emit_value_type(lines: &mut Vec<String>, type_spec: &str, indent: &str) {
-    for part in type_spec
-        .split('|')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-    {
-        dcs_compile_emit_single_value_type(lines, part, indent);
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum DcsTypeNodeKind {
+    Type,
+    TypeSet,
+    TypeId,
+}
+
+impl DcsTypeNodeKind {
+    fn tag(self) -> &'static str {
+        match self {
+            Self::Type => "Type",
+            Self::TypeSet => "TypeSet",
+            Self::TypeId => "TypeId",
+        }
     }
 }
 
-pub(crate) fn dcs_compile_emit_single_value_type(
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DcsTypeQualifier {
+    Number {
+        digits: u32,
+        fraction: u32,
+        nonnegative: bool,
+    },
+    String {
+        length: u32,
+        fixed: bool,
+    },
+    Date(&'static str),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DcsTypeEntry {
+    kind: DcsTypeNodeKind,
+    wire_name: String,
+    configuration_namespace: bool,
+    qualifier: Option<DcsTypeQualifier>,
+}
+
+pub(crate) fn dcs_compile_emit_value_type(
     lines: &mut Vec<String>,
-    type_str: &str,
+    type_spec: &str,
+    indent: &str,
+) -> Result<(), String> {
+    let entries = dcs_compile_parse_value_type(type_spec)?;
+    dcs_compile_emit_value_type_entries(lines, &entries, indent);
+    Ok(())
+}
+
+pub(crate) fn dcs_compile_parse_value_type(type_spec: &str) -> Result<Vec<DcsTypeEntry>, String> {
+    let raw_parts = type_spec.split('|').collect::<Vec<_>>();
+    if raw_parts.is_empty() || raw_parts.iter().any(|part| part.trim().is_empty()) {
+        return Err(format!(
+            "DCS type '{type_spec}' is not valid for 8.3.27: composite type contains an empty item"
+        ));
+    }
+
+    let entries = raw_parts
+        .iter()
+        .map(|part| dcs_compile_parse_type_entry(part.trim()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("DCS type '{type_spec}' is not valid for 8.3.27: {error}"))?;
+
+    let mut seen = BTreeMap::<(DcsTypeNodeKind, String), &str>::new();
+    for (raw, entry) in raw_parts.iter().zip(&entries) {
+        let key = (entry.kind, entry.wire_name.clone());
+        if let Some(previous) = seen.insert(key, raw.trim()) {
+            return Err(format!(
+                "DCS type '{type_spec}' is not valid for 8.3.27: duplicate platform type '{previous}' and '{}' both map to v8:{} {}",
+                raw.trim(),
+                entry.kind.tag(),
+                entry.wire_name
+            ));
+        }
+    }
+
+    Ok(entries)
+}
+
+pub(crate) fn dcs_compile_parse_type_entry(type_name: &str) -> Result<DcsTypeEntry, String> {
+    let normalized = dcs_compile_resolve_type(type_name);
+    if normalized == "boolean" {
+        return Ok(dcs_type_entry(DcsTypeNodeKind::Type, "xs:boolean", false));
+    }
+    if normalized == "StandardPeriod" {
+        return Ok(dcs_type_entry(
+            DcsTypeNodeKind::Type,
+            "v8:StandardPeriod",
+            false,
+        ));
+    }
+    if normalized == "string" {
+        return Ok(dcs_type_qualified_entry(
+            "xs:string",
+            DcsTypeQualifier::String {
+                length: 0,
+                fixed: false,
+            },
+        ));
+    }
+    if normalized.starts_with("string(") {
+        let (length, fixed) = parse_form_string_contract(&normalized).ok_or_else(|| {
+            format!(
+                "type '{type_name}' must be string(integer length 0..=1024[,fixed|variable]); fixed requires length > 0"
+            )
+        })?;
+        return Ok(dcs_type_qualified_entry(
+            "xs:string",
+            DcsTypeQualifier::String { length, fixed },
+        ));
+    }
+    if normalized == "decimal" {
+        return Ok(dcs_type_qualified_entry(
+            "xs:decimal",
+            DcsTypeQualifier::Number {
+                digits: 10,
+                fraction: 2,
+                nonnegative: false,
+            },
+        ));
+    }
+    if normalized.starts_with("decimal(") {
+        let (digits, fraction, nonnegative) =
+            dcs_compile_parse_decimal_contract(&normalized).ok_or_else(|| {
+                format!(
+                    "type '{type_name}' must be decimal(integer digits 0..=38[, integer fraction 0..=digits][,nonneg])"
+                )
+            })?;
+        return Ok(dcs_type_qualified_entry(
+            "xs:decimal",
+            DcsTypeQualifier::Number {
+                digits,
+                fraction,
+                nonnegative,
+            },
+        ));
+    }
+    if matches!(normalized.as_str(), "date" | "dateTime" | "time") {
+        let fractions = match normalized.as_str() {
+            "date" => "Date",
+            "dateTime" => "DateTime",
+            "time" => "Time",
+            _ => unreachable!(),
+        };
+        return Ok(dcs_type_qualified_entry(
+            "xs:dateTime",
+            DcsTypeQualifier::Date(fractions),
+        ));
+    }
+    if let Some(type_id) = normalized.strip_prefix("typeid:") {
+        if !is_valid_uuid(type_id) {
+            return Err(format!("type '{type_name}' has an invalid TypeId UUID"));
+        }
+        return Ok(dcs_type_entry(
+            DcsTypeNodeKind::TypeId,
+            &type_id.to_ascii_lowercase(),
+            false,
+        ));
+    }
+    if normalized.starts_with("DefinedType.") {
+        dcs_compile_validate_configuration_type(type_name, &normalized)?;
+        return Err(format!(
+            "type '{type_name}' is not supported by the fixed 8.3.27 DCS contract: platform 8.3.27 removes DefinedType.* from valueType during round-trip; use the defined type's expanded constituent types"
+        ));
+    }
+    if normalized.starts_with("Characteristic.") {
+        dcs_compile_validate_configuration_type(type_name, &normalized)?;
+        return Ok(dcs_type_entry(
+            DcsTypeNodeKind::TypeSet,
+            &format!("d5p1:{normalized}"),
+            true,
+        ));
+    }
+    if let Some((prefix, _)) = normalized.split_once('.') {
+        if !form_valid_cfg_prefixes().contains(&prefix) {
+            return Err(format!(
+                "type '{type_name}' has unknown configuration type prefix '{prefix}'"
+            ));
+        }
+        dcs_compile_validate_configuration_type(type_name, &normalized)?;
+        return Ok(dcs_type_entry(
+            DcsTypeNodeKind::Type,
+            &format!("d5p1:{normalized}"),
+            true,
+        ));
+    }
+    // In the DCS DSL a bare XML name deliberately denotes a configuration
+    // TypeSet. Its existence can only be checked against a concrete configuration.
+    if form_is_xml_ncname(&normalized) {
+        return Ok(dcs_type_entry(
+            DcsTypeNodeKind::TypeSet,
+            &format!("d5p1:{normalized}"),
+            true,
+        ));
+    }
+    Err(format!(
+        "type '{type_name}' is not supported by the fixed 8.3.27 DCS type contract"
+    ))
+}
+
+fn dcs_compile_parse_decimal_contract(value: &str) -> Option<(u32, u32, bool)> {
+    let rest = value.strip_prefix("decimal(")?.strip_suffix(')')?;
+    let parts = rest.split(',').map(str::trim).collect::<Vec<_>>();
+    if parts.len() == 1 {
+        let digits = parts[0]
+            .parse::<u32>()
+            .ok()
+            .filter(|digits| *digits <= 38)?;
+        return Some((digits, 0, false));
+    }
+    parse_form_decimal_contract(value)
+}
+
+fn dcs_compile_validate_configuration_type(raw: &str, normalized: &str) -> Result<(), String> {
+    let invalid_name = normalized
+        .split_once('.')
+        .is_none_or(|(_, name)| name.trim().is_empty() || name.contains('.'));
+    if invalid_name || !form_is_xml_ncname(normalized) {
+        return Err(format!(
+            "type '{raw}' has an invalid or empty configuration type name"
+        ));
+    }
+    Ok(())
+}
+
+fn dcs_type_entry(
+    kind: DcsTypeNodeKind,
+    wire_name: &str,
+    configuration_namespace: bool,
+) -> DcsTypeEntry {
+    DcsTypeEntry {
+        kind,
+        wire_name: wire_name.to_string(),
+        configuration_namespace,
+        qualifier: None,
+    }
+}
+
+fn dcs_type_qualified_entry(wire_name: &str, qualifier: DcsTypeQualifier) -> DcsTypeEntry {
+    DcsTypeEntry {
+        qualifier: Some(qualifier),
+        ..dcs_type_entry(DcsTypeNodeKind::Type, wire_name, false)
+    }
+}
+
+fn dcs_compile_emit_value_type_entries(
+    lines: &mut Vec<String>,
+    entries: &[DcsTypeEntry],
     indent: &str,
 ) {
-    let type_str = dcs_compile_resolve_type(type_str);
-    if type_str == "boolean" {
-        lines.push(format!("{indent}<v8:Type>xs:boolean</v8:Type>"));
-        return;
+    for kind in [
+        DcsTypeNodeKind::Type,
+        DcsTypeNodeKind::TypeSet,
+        DcsTypeNodeKind::TypeId,
+    ] {
+        for entry in entries.iter().filter(|entry| entry.kind == kind) {
+            let tag = entry.kind.tag();
+            if entry.configuration_namespace {
+                lines.push(format!(
+                    "{indent}<v8:{tag} xmlns:d5p1=\"http://v8.1c.ru/8.1/data/enterprise/current-config\">{}</v8:{tag}>",
+                    escape_xml(&entry.wire_name)
+                ));
+            } else {
+                lines.push(format!(
+                    "{indent}<v8:{tag}>{}</v8:{tag}>",
+                    escape_xml(&entry.wire_name)
+                ));
+            }
+        }
     }
-    if type_str == "StandardPeriod" {
-        lines.push(format!("{indent}<v8:Type>v8:StandardPeriod</v8:Type>"));
-        return;
-    }
-    if let Some(length) = dcs_compile_string_length(&type_str) {
-        lines.push(format!("{indent}<v8:Type>xs:string</v8:Type>"));
-        lines.push(format!("{indent}<v8:StringQualifiers>"));
-        lines.push(format!("{indent}\t<v8:Length>{length}</v8:Length>"));
-        lines.push(format!(
-            "{indent}\t<v8:AllowedLength>Variable</v8:AllowedLength>"
-        ));
-        lines.push(format!("{indent}</v8:StringQualifiers>"));
-        return;
-    }
-    if let Some((digits, fraction, sign)) = dcs_compile_decimal_qualifiers(&type_str) {
-        lines.push(format!("{indent}<v8:Type>xs:decimal</v8:Type>"));
-        lines.push(format!("{indent}<v8:NumberQualifiers>"));
-        lines.push(format!("{indent}\t<v8:Digits>{digits}</v8:Digits>"));
-        lines.push(format!(
-            "{indent}\t<v8:FractionDigits>{fraction}</v8:FractionDigits>"
-        ));
-        lines.push(format!("{indent}\t<v8:AllowedSign>{sign}</v8:AllowedSign>"));
-        lines.push(format!("{indent}</v8:NumberQualifiers>"));
-        return;
-    }
-    if matches!(type_str.as_str(), "date" | "dateTime") {
-        let fractions = if type_str == "date" {
-            "Date"
-        } else {
-            "DateTime"
-        };
-        lines.push(format!("{indent}<v8:Type>xs:dateTime</v8:Type>"));
-        lines.push(format!("{indent}<v8:DateQualifiers>"));
-        lines.push(format!(
-            "{indent}\t<v8:DateFractions>{fractions}</v8:DateFractions>"
-        ));
-        lines.push(format!("{indent}</v8:DateQualifiers>"));
-        return;
-    }
-    if type_str.contains('.') {
-        lines.push(format!(
-            "{indent}<v8:Type xmlns:d5p1=\"http://v8.1c.ru/8.1/data/enterprise/current-config\">d5p1:{}</v8:Type>",
-            escape_xml(&type_str)
-        ));
-    } else {
-        lines.push(format!(
-            "{indent}<v8:Type>{}</v8:Type>",
-            escape_xml(&type_str)
-        ));
+    for qualifier_rank in [0_u8, 1, 2] {
+        for qualifier in entries.iter().filter_map(|entry| entry.qualifier) {
+            if dcs_type_qualifier_rank(qualifier) == qualifier_rank {
+                dcs_compile_emit_type_qualifier(lines, qualifier, indent);
+            }
+        }
     }
 }
 
-pub(crate) fn dcs_compile_string_length(type_str: &str) -> Option<&str> {
-    if type_str == "string" {
-        return Some("0");
+fn dcs_type_qualifier_rank(qualifier: DcsTypeQualifier) -> u8 {
+    match qualifier {
+        DcsTypeQualifier::Number { .. } => 0,
+        DcsTypeQualifier::String { .. } => 1,
+        DcsTypeQualifier::Date(_) => 2,
     }
-    let rest = type_str.strip_prefix("string(")?.strip_suffix(')')?;
-    (!rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_digit())).then_some(rest)
 }
 
-pub(crate) fn dcs_compile_decimal_qualifiers(type_str: &str) -> Option<(&str, &str, &'static str)> {
-    if type_str == "decimal" {
-        return Some(("10", "2", "Any"));
+fn dcs_compile_emit_type_qualifier(
+    lines: &mut Vec<String>,
+    qualifier: DcsTypeQualifier,
+    indent: &str,
+) {
+    match qualifier {
+        DcsTypeQualifier::Number {
+            digits,
+            fraction,
+            nonnegative,
+        } => {
+            lines.push(format!("{indent}<v8:NumberQualifiers>"));
+            lines.push(format!("{indent}\t<v8:Digits>{digits}</v8:Digits>"));
+            lines.push(format!(
+                "{indent}\t<v8:FractionDigits>{fraction}</v8:FractionDigits>"
+            ));
+            lines.push(format!(
+                "{indent}\t<v8:AllowedSign>{}</v8:AllowedSign>",
+                if nonnegative { "Nonnegative" } else { "Any" }
+            ));
+            lines.push(format!("{indent}</v8:NumberQualifiers>"));
+        }
+        DcsTypeQualifier::String { length, fixed } => {
+            lines.push(format!("{indent}<v8:StringQualifiers>"));
+            lines.push(format!("{indent}\t<v8:Length>{length}</v8:Length>"));
+            lines.push(format!(
+                "{indent}\t<v8:AllowedLength>{}</v8:AllowedLength>",
+                if fixed { "Fixed" } else { "Variable" }
+            ));
+            lines.push(format!("{indent}</v8:StringQualifiers>"));
+        }
+        DcsTypeQualifier::Date(fractions) => {
+            lines.push(format!("{indent}<v8:DateQualifiers>"));
+            lines.push(format!(
+                "{indent}\t<v8:DateFractions>{fractions}</v8:DateFractions>"
+            ));
+            lines.push(format!("{indent}</v8:DateQualifiers>"));
+        }
     }
-    let rest = type_str.strip_prefix("decimal(")?.strip_suffix(')')?;
-    let parts = rest.split(',').map(str::trim).collect::<Vec<_>>();
-    if parts.is_empty() || parts[0].is_empty() {
-        return None;
-    }
-    let fraction = parts
-        .get(1)
-        .copied()
-        .filter(|value| !value.is_empty())
-        .unwrap_or("0");
-    let sign = if parts
-        .iter()
-        .any(|part| matches!(*part, "nonneg" | "nonnegative"))
-    {
-        "Nonnegative"
-    } else {
-        "Any"
-    };
-    Some((parts[0], fraction, sign))
 }
 
 pub(crate) fn dcs_compile_emit_mltext(
@@ -3493,49 +3821,61 @@ pub(crate) fn dcs_compile_emit_data_set_links(lines: &mut Vec<String>, defn: &Va
         {
             lines.push("\t\t<parameterListAllowed>true</parameterListAllowed>".to_string());
         }
-        if let Some(value) = json_string_field(link, "startExpression") {
-            lines.push(format!(
-                "\t\t<startExpression>{}</startExpression>",
-                escape_xml(&value)
-            ));
-        }
         if let Some(value) = json_string_field(link, "linkConditionExpression") {
             lines.push(format!(
                 "\t\t<linkConditionExpression>{}</linkConditionExpression>",
                 escape_xml(&value)
             ));
         }
+        if let Some(value) = json_string_field(link, "startExpression") {
+            lines.push(format!(
+                "\t\t<startExpression>{}</startExpression>",
+                escape_xml(&value)
+            ));
+        }
+        if link.get("required").and_then(Value::as_bool) == Some(false) {
+            lines.push("\t\t<required>false</required>".to_string());
+        }
         lines.push("\t</dataSetLink>".to_string());
     }
 }
 
-pub(crate) fn dcs_compile_emit_calculated_fields(lines: &mut Vec<String>, defn: &Value) {
+pub(crate) fn dcs_compile_emit_calculated_fields(
+    lines: &mut Vec<String>,
+    defn: &Value,
+) -> Result<(), String> {
     let Some(fields) = defn.get("calculatedFields").and_then(Value::as_array) else {
-        return;
+        return Ok(());
     };
     for field in fields {
-        let (data_path, expression, title, field_type) = if let Some(text) = field.as_str() {
-            let parsed = dcs_edit_parse_calc_field(text);
-            (
-                parsed.data_path,
-                parsed.expression,
-                parsed.title,
-                parsed.field_type,
-            )
-        } else {
-            (
-                json_string_field(field, "dataPath")
-                    .or_else(|| json_string_field(field, "field"))
-                    .or_else(|| json_string_field(field, "name"))
-                    .unwrap_or_default(),
-                json_string_field(field, "expression").unwrap_or_default(),
-                json_string_field(field, "title").unwrap_or_default(),
-                field
-                    .get("type")
-                    .map(dcs_compile_type_value)
-                    .unwrap_or_default(),
-            )
-        };
+        let (data_path, expression, title, field_type, type_declared) =
+            if let Some(text) = field.as_str() {
+                let parsed = dcs_edit_parse_calc_field(text);
+                (
+                    parsed.data_path,
+                    parsed.expression,
+                    parsed.title,
+                    parsed.field_type,
+                    parsed.type_declared,
+                )
+            } else {
+                (
+                    json_string_field(field, "dataPath")
+                        .or_else(|| json_string_field(field, "field"))
+                        .or_else(|| json_string_field(field, "name"))
+                        .unwrap_or_default(),
+                    json_string_field(field, "expression").unwrap_or_default(),
+                    json_string_field(field, "title").unwrap_or_default(),
+                    field
+                        .get("type")
+                        .map(dcs_compile_type_value)
+                        .unwrap_or_default(),
+                    field.get("type").is_some(),
+                )
+            };
+        let value_type_entries = type_declared
+            .then(|| dcs_compile_parse_value_type(&field_type))
+            .transpose()?;
         lines.push("\t<calculatedField>".to_string());
         lines.push(format!(
             "\t\t<dataPath>{}</dataPath>",
@@ -3548,23 +3888,25 @@ pub(crate) fn dcs_compile_emit_calculated_fields(lines: &mut Vec<String>, defn: 
         if !title.is_empty() {
             dcs_compile_emit_mltext(lines, "\t\t", "title", &title);
         }
-        if !field_type.is_empty() {
+        dcs_compile_emit_merged_restriction(
+            lines,
+            field,
+            &["restrict", "useRestriction"],
+            "useRestriction",
+            "\t\t",
+        );
+        if value_type_entries.is_some() {
             lines.push("\t\t<valueType>".to_string());
-            dcs_compile_emit_value_type(lines, &field_type, "\t\t\t");
-            lines.push("\t\t</valueType>".to_string());
-        }
-        dcs_compile_emit_restriction(lines, field, "restrict", "useRestriction", "\t\t");
-        if let Some(value) = field.get("useRestriction") {
-            dcs_compile_emit_restriction(
+            dcs_compile_emit_value_type_entries(
                 lines,
-                &json!({ "useRestriction": value }),
-                "useRestriction",
-                "useRestriction",
-                "\t\t",
+                value_type_entries.as_deref().unwrap_or_default(),
+                "\t\t\t",
             );
+            lines.push("\t\t</valueType>".to_string());
         }
         lines.push("\t</calculatedField>".to_string());
     }
+    Ok(())
 }
 
 pub(crate) fn dcs_compile_emit_total_fields(lines: &mut Vec<String>, defn: &Value) {
@@ -3601,55 +3943,71 @@ pub(crate) fn dcs_compile_emit_total_fields(lines: &mut Vec<String>, defn: &Valu
     }
 }
 
-pub(crate) fn dcs_compile_emit_parameters(lines: &mut Vec<String>, defn: &Value) {
+pub(crate) fn dcs_compile_emit_parameters(
+    lines: &mut Vec<String>,
+    defn: &Value,
+) -> Result<(), String> {
     let Some(parameters) = defn.get("parameters").and_then(Value::as_array) else {
-        return;
+        return Ok(());
     };
     for parameter in parameters {
-        let parsed = if let Some(text) = parameter.as_str() {
-            dcs_edit_parse_parameter(text)
+        let (parsed, type_declared) = if let Some(text) = parameter.as_str() {
+            let parsed = dcs_edit_parse_parameter(text);
+            let type_declared = parsed.type_declared;
+            (parsed, type_declared)
         } else {
-            DcsEditParameter {
-                name: json_string_field(parameter, "name").unwrap_or_default(),
-                title: json_string_field(parameter, "title")
-                    .or_else(|| json_string_field(parameter, "presentation"))
-                    .unwrap_or_default(),
-                type_name: parameter
-                    .get("type")
-                    .map(dcs_compile_type_value)
-                    .unwrap_or_default(),
-                values: parameter
-                    .get("value")
-                    .map(|value| vec![dcs_compile_setting_value_text(value)])
-                    .unwrap_or_default(),
-                hidden: parameter
-                    .get("hidden")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-                always: parameter
-                    .get("use")
-                    .map(json_value_to_python_string)
-                    .is_some_and(|value| value == "Always"),
-                value_list_allowed: parameter
-                    .get("valueListAllowed")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-                available_values: Vec::new(),
-                auto_dates: parameter
-                    .get("autoDates")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-                expression: json_string_field(parameter, "expression"),
-            }
+            (
+                DcsEditParameter {
+                    name: json_string_field(parameter, "name").unwrap_or_default(),
+                    title: json_string_field(parameter, "title")
+                        .or_else(|| json_string_field(parameter, "presentation"))
+                        .unwrap_or_default(),
+                    type_name: parameter
+                        .get("type")
+                        .map(dcs_compile_type_value)
+                        .unwrap_or_default(),
+                    values: parameter
+                        .get("value")
+                        .map(|value| vec![dcs_compile_setting_value_text(value)])
+                        .unwrap_or_default(),
+                    hidden: parameter
+                        .get("hidden")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    always: parameter
+                        .get("use")
+                        .map(json_value_to_python_string)
+                        .is_some_and(|value| value == "Always"),
+                    value_list_allowed: parameter
+                        .get("valueListAllowed")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    available_values: dcs_compile_parameter_available_values(parameter)?,
+                    auto_dates: parameter
+                        .get("autoDates")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    expression: json_string_field(parameter, "expression"),
+                    type_declared: parameter.get("type").is_some(),
+                },
+                parameter.get("type").is_some(),
+            )
         };
+        let value_type_entries = type_declared
+            .then(|| dcs_compile_parse_value_type(&parsed.type_name))
+            .transpose()?;
         lines.push("\t<parameter>".to_string());
         lines.push(format!("\t\t<name>{}</name>", escape_xml(&parsed.name)));
         if !parsed.title.is_empty() {
             dcs_compile_emit_mltext(lines, "\t\t", "title", &parsed.title);
         }
-        if !parsed.type_name.is_empty() {
+        if value_type_entries.is_some() {
             lines.push("\t\t<valueType>".to_string());
-            dcs_compile_emit_value_type(lines, &parsed.type_name, "\t\t\t");
+            dcs_compile_emit_value_type_entries(
+                lines,
+                value_type_entries.as_deref().unwrap_or_default(),
+                "\t\t\t",
+            );
             lines.push("\t\t</valueType>".to_string());
         }
         if parsed.values.is_empty() {
@@ -3676,6 +4034,17 @@ pub(crate) fn dcs_compile_emit_parameters(lines: &mut Vec<String>, defn: &Value)
                 escape_xml(expression)
             ));
         }
+        for (value, presentation) in &parsed.available_values {
+            lines.push("\t\t<availableValue>".to_string());
+            dcs_compile_emit_parameter_value(lines, &parsed.type_name, value, "\t\t\t", "value");
+            if !presentation.is_empty() {
+                dcs_compile_emit_mltext(lines, "\t\t\t", "presentation", presentation);
+            }
+            lines.push("\t\t</availableValue>".to_string());
+        }
+        if parsed.value_list_allowed {
+            lines.push("\t\t<valueListAllowed>true</valueListAllowed>".to_string());
+        }
         if parsed.hidden
             || parameter
                 .get("availableAsField")
@@ -3683,9 +4052,6 @@ pub(crate) fn dcs_compile_emit_parameters(lines: &mut Vec<String>, defn: &Value)
                 .is_some_and(|value| !value)
         {
             lines.push("\t\t<availableAsField>false</availableAsField>".to_string());
-        }
-        if parsed.value_list_allowed {
-            lines.push("\t\t<valueListAllowed>true</valueListAllowed>".to_string());
         }
         if parameter
             .get("denyIncompleteValues")
@@ -3699,6 +4065,43 @@ pub(crate) fn dcs_compile_emit_parameters(lines: &mut Vec<String>, defn: &Value)
         }
         lines.push("\t</parameter>".to_string());
     }
+    Ok(())
+}
+
+pub(crate) fn dcs_compile_parameter_available_values(
+    parameter: &Value,
+) -> Result<Vec<(String, String)>, String> {
+    let Some(raw_items) = parameter.get("availableValues") else {
+        return Ok(Vec::new());
+    };
+    let items = raw_items
+        .as_array()
+        .ok_or_else(|| "parameter 'availableValues' must be an array".to_string())?;
+    let mut result = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let object = item
+            .as_object()
+            .ok_or_else(|| format!("parameter 'availableValues[{index}]' must be an object"))?;
+        let value = object
+            .get("value")
+            .ok_or_else(|| format!("parameter 'availableValues[{index}].value' is required"))?;
+        if !matches!(value, Value::Bool(_) | Value::Number(_) | Value::String(_)) {
+            return Err(format!(
+                "parameter 'availableValues[{index}].value' must be a string, number, or boolean"
+            ));
+        }
+        let presentation = match object.get("presentation") {
+            None | Some(Value::Null) => String::new(),
+            Some(Value::String(value)) => value.clone(),
+            Some(_) => {
+                return Err(format!(
+                    "parameter 'availableValues[{index}].presentation' must be a string"
+                ));
+            }
+        };
+        result.push((dcs_compile_setting_value_text(value), presentation));
+    }
+    Ok(result)
 }
 
 pub(crate) fn dcs_compile_emit_empty_value(
@@ -3814,15 +4217,21 @@ pub(crate) fn dcs_compile_emit_settings_variants(lines: &mut Vec<String>, defn: 
         if let Some(filter) = settings.get("filter").and_then(Value::as_array) {
             dcs_compile_emit_filter(lines, filter, "\t\t\t");
         }
+        if let Some(data_parameters) = settings.get("dataParameters").and_then(Value::as_array) {
+            dcs_compile_emit_data_parameters(lines, data_parameters, "\t\t\t");
+        }
         if let Some(order) = settings.get("order").and_then(Value::as_array) {
             dcs_compile_emit_order(lines, order, "\t\t\t");
+        }
+        if let Some(conditional_appearance) = settings
+            .get("conditionalAppearance")
+            .and_then(Value::as_array)
+        {
+            dcs_compile_emit_conditional_appearance(lines, conditional_appearance, "\t\t\t");
         }
         if let Some(output_parameters) = settings.get("outputParameters").and_then(Value::as_object)
         {
             dcs_compile_emit_output_parameters(lines, output_parameters, "\t\t\t");
-        }
-        if let Some(data_parameters) = settings.get("dataParameters").and_then(Value::as_array) {
-            dcs_compile_emit_data_parameters(lines, data_parameters, "\t\t\t");
         }
         if let Some(structure) = settings.get("structure") {
             dcs_compile_emit_structure(lines, structure, "\t\t\t");
@@ -3919,6 +4328,105 @@ pub(crate) fn dcs_compile_emit_filter(lines: &mut Vec<String>, items: &[Value], 
     lines.push(format!("{indent}</dcsset:filter>"));
 }
 
+pub(crate) fn dcs_compile_emit_conditional_appearance(
+    lines: &mut Vec<String>,
+    items: &[Value],
+    indent: &str,
+) {
+    if items.is_empty() {
+        return;
+    }
+    lines.push(format!("{indent}<dcsset:conditionalAppearance>"));
+    for item in items {
+        if let Some(text) = item.as_str() {
+            let parsed = dcs_edit_parse_conditional_appearance(text);
+            let fragment =
+                dcs_edit_conditional_appearance_fragment(&parsed, &format!("{indent}\t"));
+            lines.extend(fragment.lines().map(ToOwned::to_owned));
+            continue;
+        }
+
+        lines.push(format!("{indent}\t<dcsset:item>"));
+        if item
+            .get("use")
+            .and_then(Value::as_bool)
+            .is_some_and(|value| !value)
+        {
+            lines.push(format!("{indent}\t\t<dcsset:use>false</dcsset:use>"));
+        }
+        if let Some(fields) = item
+            .get("selection")
+            .or_else(|| item.get("fields"))
+            .and_then(Value::as_array)
+        {
+            lines.push(format!("{indent}\t\t<dcsset:selection>"));
+            for field in fields {
+                let (name, use_field) = if let Some(name) = field.as_str() {
+                    (name.to_string(), true)
+                } else {
+                    (
+                        json_string_field(field, "field").unwrap_or_default(),
+                        field.get("use").and_then(Value::as_bool).unwrap_or(true),
+                    )
+                };
+                if name.is_empty() {
+                    continue;
+                }
+                lines.push(format!("{indent}\t\t\t<dcsset:item>"));
+                if !use_field {
+                    lines.push(format!("{indent}\t\t\t\t<dcsset:use>false</dcsset:use>"));
+                }
+                lines.push(format!(
+                    "{indent}\t\t\t\t<dcsset:field>{}</dcsset:field>",
+                    escape_xml(&name)
+                ));
+                lines.push(format!("{indent}\t\t\t</dcsset:item>"));
+            }
+            lines.push(format!("{indent}\t\t</dcsset:selection>"));
+        }
+        if let Some(filter) = item.get("filter").and_then(Value::as_array) {
+            dcs_compile_emit_filter(lines, filter, &format!("{indent}\t\t"));
+        }
+        if let Some(appearance) = item.get("appearance").and_then(Value::as_object) {
+            lines.push(format!("{indent}\t\t<dcsset:appearance>"));
+            for (parameter, raw_value) in appearance {
+                let (value, use_value) = if let Some(object) = raw_value.as_object() {
+                    if let Some(value) = object.get("value") {
+                        (
+                            value,
+                            object.get("use").and_then(Value::as_bool).unwrap_or(true),
+                        )
+                    } else {
+                        (raw_value, true)
+                    }
+                } else {
+                    (raw_value, true)
+                };
+                lines.push(format!(
+                    "{indent}\t\t\t<dcscor:item xsi:type=\"dcsset:SettingsParameterValue\">"
+                ));
+                if !use_value {
+                    lines.push(format!("{indent}\t\t\t\t<dcscor:use>false</dcscor:use>"));
+                }
+                lines.push(format!(
+                    "{indent}\t\t\t\t<dcscor:parameter>{}</dcscor:parameter>",
+                    escape_xml(parameter)
+                ));
+                let value_text = dcs_compile_setting_value_text(value);
+                lines.extend(dcs_edit_conditional_appearance_value_lines(
+                    parameter,
+                    &value_text,
+                    &format!("{indent}\t\t\t\t"),
+                ));
+                lines.push(format!("{indent}\t\t\t</dcscor:item>"));
+            }
+            lines.push(format!("{indent}\t\t</dcsset:appearance>"));
+        }
+        lines.push(format!("{indent}\t</dcsset:item>"));
+    }
+    lines.push(format!("{indent}</dcsset:conditionalAppearance>"));
+}
+
 pub(crate) fn dcs_compile_emit_filter_item(lines: &mut Vec<String>, item: &Value, indent: &str) {
     let parsed_from_string;
     let item = if let Some(text) = item.as_str() {
@@ -3967,7 +4475,9 @@ pub(crate) fn dcs_compile_emit_filter_item(lines: &mut Vec<String>, item: &Value
             ));
         }
     }
-    if let Some(view_mode) = json_string_field(item, "viewMode").filter(|value| !value.is_empty()) {
+    if let Some(view_mode) =
+        json_string_field(item, "viewMode").filter(|value| !value.is_empty() && value != "None")
+    {
         lines.push(format!(
             "{indent}\t<dcsset:viewMode>{}</dcsset:viewMode>",
             escape_xml(&view_mode)
@@ -4169,14 +4679,26 @@ pub(crate) fn dcs_compile_emit_structure_item(lines: &mut Vec<String>, item: &Va
     }
     let group_by = item.get("groupBy").or_else(|| item.get("groupFields"));
     dcs_compile_emit_group_items(lines, group_by, &format!("{indent}\t"));
+    if let Some(filter) = item.get("filter").and_then(Value::as_array) {
+        dcs_compile_emit_filter(lines, filter, &format!("{indent}\t"));
+    }
     if let Some(order) = item.get("order").and_then(Value::as_array) {
         dcs_compile_emit_order(lines, order, &format!("{indent}\t"));
     }
     if let Some(selection) = item.get("selection").and_then(Value::as_array) {
         dcs_compile_emit_selection(lines, selection, &format!("{indent}\t"));
     }
-    if let Some(filter) = item.get("filter").and_then(Value::as_array) {
-        dcs_compile_emit_filter(lines, filter, &format!("{indent}\t"));
+    if let Some(conditional_appearance) =
+        item.get("conditionalAppearance").and_then(Value::as_array)
+    {
+        dcs_compile_emit_conditional_appearance(
+            lines,
+            conditional_appearance,
+            &format!("{indent}\t"),
+        );
+    }
+    if let Some(output_parameters) = item.get("outputParameters").and_then(Value::as_object) {
+        dcs_compile_emit_output_parameters(lines, output_parameters, &format!("{indent}\t"));
     }
     if let Some(children) = item.get("children").and_then(Value::as_array) {
         for child in children {
@@ -4320,6 +4842,15 @@ pub(crate) fn dcs_compile_resolve_query_value(
     base_dir: &Path,
     cwd: &Path,
 ) -> Result<String, String> {
+    dcs_compile_resolve_query_value_with_inputs(value, base_dir, cwd, &mut Vec::new())
+}
+
+fn dcs_compile_resolve_query_value_with_inputs(
+    value: &str,
+    base_dir: &Path,
+    cwd: &Path,
+    inputs: &mut Vec<ExactFileInput>,
+) -> Result<String, String> {
     let Some(file_path) = value.strip_prefix('@') else {
         return Ok(value.to_string());
     };
@@ -4331,9 +4862,9 @@ pub(crate) fn dcs_compile_resolve_query_value(
     };
     for candidate in &candidates {
         if candidate.exists() {
-            let text = fs::read_to_string(candidate)
-                .map_err(|err| format!("failed to read {}: {err}", candidate.display()))?;
-            return Ok(text.trim_end().to_string());
+            let snapshot = read_utf8_sig_snapshot(candidate)?;
+            inputs.push(ExactFileInput::new(candidate, snapshot.raw));
+            return Ok(snapshot.text.trim_end().to_string());
         }
     }
     Err(format!(
@@ -4346,21 +4877,55 @@ pub(crate) fn dcs_compile_resolve_query_value(
     ))
 }
 
+#[cfg(test)]
+type DcsEditAfterReadHook = Box<dyn FnOnce(&Path)>;
+
+#[cfg(test)]
+std::thread_local! {
+    static TEST_DCS_EDIT_AFTER_READ_HOOK: std::cell::RefCell<Option<DcsEditAfterReadHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn with_dcs_edit_after_read_hook<T>(
+    hook: impl FnOnce(&Path) + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<DcsEditAfterReadHook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_DCS_EDIT_AFTER_READ_HOOK.with(|slot| slot.replace(self.0.take()));
+        }
+    }
+
+    let previous = TEST_DCS_EDIT_AFTER_READ_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(test)]
+fn run_dcs_edit_after_read_hook(path: &Path) {
+    if let Some(hook) = TEST_DCS_EDIT_AFTER_READ_HOOK.with(|slot| slot.borrow_mut().take()) {
+        hook(path);
+    }
+}
+
 pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
-    let edit_result = (|| -> Result<(String, PathBuf, bool), String> {
+    let edit_result = (|| -> Result<(String, PathBuf, bool, Vec<String>), String> {
         let template_path = resolve_dcs_validate_path(args, context)?;
         let operation = required_string(args, &["operation", "Operation"], "Operation")?;
         let value_arg = required_string(args, &["value", "Value"], "Value")?;
         let data_set = string_arg(args, &["dataSet", "DataSet"]).unwrap_or("");
         let variant = string_arg(args, &["variant", "Variant"]).unwrap_or("");
         let no_selection = bool_arg(args, &["noSelection", "NoSelection"]);
+        let show_validation = !bool_arg(args, &["noValidate", "NoValidate"]);
 
-        let mut xml_text = fs::read_to_string(&template_path)
-            .map_err(|err| format!("failed to read {}: {err}", template_path.display()))?;
-        if xml_text.starts_with('\u{feff}') {
-            xml_text = xml_text.trim_start_matches('\u{feff}').to_string();
-        }
-        Document::parse(&xml_text).map_err(|err| format!("[ERROR] XML parse error: {err}"))?;
+        let source = read_utf8_sig_snapshot(&template_path)?;
+        let original_bytes = source.raw;
+        let mut xml_text = source.text;
+        let document =
+            Document::parse(&xml_text).map_err(|err| format!("[ERROR] XML parse error: {err}"))?;
+        require_dcs_root(document.root_element()).map_err(|error| format!("[ERROR] {error}"))?;
 
         let original_line_ending = if xml_text.contains("\r\n") {
             "\r\n"
@@ -4368,10 +4933,13 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
             "\n"
         };
         let original_xml_text = xml_text.clone();
+        #[cfg(test)]
+        run_dcs_edit_after_read_hook(&template_path);
         let base_dir = template_path.parent().unwrap_or(context.cwd.as_path());
         let values = dcs_edit_split_values(operation, value_arg);
         let mut force_save = false;
         let mut stdout = String::new();
+        let mut query_inputs = Vec::new();
         for value in values {
             match operation {
                 "add-field" => dcs_edit_add_field(
@@ -4400,12 +4968,13 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                 }
                 "add-calculated-field" => {
                     let parsed = dcs_edit_parse_calc_field(&value);
+                    let fragment = dcs_edit_calc_field_fragment(&parsed, "\t")?;
                     dcs_edit_add_top_level_fragment(
                         &mut xml_text,
                         "calculatedField",
                         "dataPath",
                         &parsed.data_path,
-                        &dcs_edit_calc_field_fragment(&parsed, "\t"),
+                        &fragment,
                         &format!(
                             "[OK] CalculatedField \"{}\" = {} added\n",
                             parsed.data_path, parsed.expression
@@ -4433,12 +5002,13 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                 }
                 "add-parameter" => {
                     let parsed = dcs_edit_parse_parameter(&value);
+                    let fragment = dcs_edit_parameter_fragment(&parsed, "\t")?;
                     dcs_edit_add_top_level_fragment(
                         &mut xml_text,
                         "parameter",
                         "name",
                         &parsed.name,
-                        &dcs_edit_parameter_fragment(&parsed, "\t"),
+                        &fragment,
                         &format!("[OK] Parameter \"{}\" added\n", parsed.name),
                         &mut stdout,
                     )?;
@@ -4459,13 +5029,15 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                                 available_values: Vec::new(),
                                 auto_dates: false,
                                 expression: Some(format!("&{}.{}", parsed.name, suffix)),
+                                type_declared: true,
                             };
+                            let auto_fragment = dcs_edit_parameter_fragment(&auto, "\t")?;
                             let _ = dcs_edit_add_top_level_fragment(
                                 &mut xml_text,
                                 "parameter",
                                 "name",
                                 &auto.name,
-                                &dcs_edit_parameter_fragment(&auto, "\t"),
+                                &auto_fragment,
                                 "",
                                 &mut String::new(),
                             );
@@ -4477,6 +5049,7 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                 }
                 "add-filter" => {
                     let parsed = dcs_edit_parse_filter(&value);
+                    dcs_edit_validate_filter_literal(&parsed)?;
                     let indent = dcs_edit_settings_container_child_indent(
                         &xml_text,
                         variant,
@@ -4506,7 +5079,7 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                         "dcsset:dataParameters",
                     )
                     .unwrap_or_else(|_| "\t\t\t\t".to_string());
-                    let fragment = dcs_edit_data_parameter_fragment(&parsed, &indent);
+                    let fragment = dcs_edit_data_parameter_fragment(&parsed, &indent)?;
                     dcs_edit_insert_or_create_settings_item(
                         &mut xml_text,
                         variant,
@@ -4521,7 +5094,12 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                     ));
                 }
                 "set-query" => {
-                    let query = dcs_compile_resolve_query_value(&value, base_dir, &context.cwd)?;
+                    let query = dcs_compile_resolve_query_value_with_inputs(
+                        &value,
+                        base_dir,
+                        &context.cwd,
+                        &mut query_inputs,
+                    )?;
                     dcs_edit_set_query(&mut xml_text, data_set, &query)?;
                     stdout.push_str(&format!(
                         "[OK] Query replaced in dataset \"{}\"\n",
@@ -4672,18 +5250,7 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                 "add-dataSetLink" => {
                     let parsed = dcs_edit_parse_data_set_link(&value)?;
                     let fragment = dcs_edit_data_set_link_fragment(&parsed, "\t");
-                    dcs_edit_insert_before_first_root_child(
-                        &mut xml_text,
-                        &[
-                            "calculatedField",
-                            "totalField",
-                            "parameter",
-                            "template",
-                            "groupTemplate",
-                            "settingsVariant",
-                        ],
-                        &fragment,
-                    )?;
+                    dcs_edit_insert_top_level_fragment(&mut xml_text, "dataSetLink", &fragment)?;
                     let mut desc = format!(
                         "{} > {} on {} = {}",
                         parsed.source, parsed.dest, parsed.source_expr, parsed.dest_expr
@@ -4694,7 +5261,12 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                     stdout.push_str(&format!("[OK] DataSetLink \"{desc}\" added\n"));
                 }
                 "add-dataSet" => {
-                    let parsed = dcs_edit_parse_data_set(&value, base_dir, &context.cwd)?;
+                    let parsed = dcs_edit_parse_data_set_with_inputs(
+                        &value,
+                        base_dir,
+                        &context.cwd,
+                        &mut query_inputs,
+                    )?;
                     if dcs_edit_top_level_contains(&xml_text, "dataSet", "name", &parsed.name) {
                         stdout.push_str(&format!(
                             "[WARN] DataSet \"{}\" already exists -- skipped\n",
@@ -4704,17 +5276,7 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                         let source = dcs_edit_first_data_source(&xml_text)
                             .unwrap_or_else(|| "ИсточникДанных1".to_string());
                         let fragment = dcs_edit_data_set_fragment(&parsed, &source, "\t");
-                        dcs_edit_insert_before_first_root_child(
-                            &mut xml_text,
-                            &[
-                                "dataSetLink",
-                                "calculatedField",
-                                "totalField",
-                                "parameter",
-                                "settingsVariant",
-                            ],
-                            &fragment,
-                        )?;
+                        dcs_edit_insert_top_level_fragment(&mut xml_text, "dataSet", &fragment)?;
                         stdout.push_str(&format!(
                             "[OK] DataSet \"{}\" added (dataSource={source})\n",
                             parsed.name
@@ -4739,6 +5301,9 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                 }
                 "add-conditionalAppearance" => {
                     let parsed = dcs_edit_parse_conditional_appearance(&value);
+                    for filter in &parsed.filters {
+                        dcs_edit_validate_filter_literal(filter)?;
+                    }
                     let indent = dcs_edit_settings_container_child_indent(
                         &xml_text,
                         variant,
@@ -4782,7 +5347,7 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                     ) {
                         replaced = dcs_edit_remove_item_by_child(
                             &mut xml_text,
-                            (range.open_end, range.close_start),
+                            (range.start, range.end),
                             "dcscor:item",
                             "dcscor:parameter",
                             &parsed.key,
@@ -4794,7 +5359,7 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                         "dcsset:outputParameters",
                     )
                     .unwrap_or_else(|_| "\t\t\t\t".to_string());
-                    let fragment = dcs_edit_output_parameter_fragment(&parsed, &indent);
+                    let fragment = dcs_edit_output_parameter_fragment(&parsed, &indent)?;
                     dcs_edit_insert_or_create_settings_item(
                         &mut xml_text,
                         variant,
@@ -4896,6 +5461,7 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                 }
                 "modify-filter" => {
                     let parsed = dcs_edit_parse_filter(&value);
+                    dcs_edit_validate_filter_literal(&parsed)?;
                     force_save |=
                         dcs_edit_modify_filter(&mut xml_text, variant, &parsed, &mut stdout)?;
                 }
@@ -4958,7 +5524,7 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                         dcs_edit_prefixed_container_range(&xml_text, variant, "dcsset:filter")?;
                     let removed = dcs_edit_remove_item_by_child(
                         &mut xml_text,
-                        (filter_range.open_end, filter_range.close_start),
+                        (filter_range.start, filter_range.end),
                         "dcsset:item",
                         "dcsset:left",
                         &value,
@@ -4988,6 +5554,7 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
         }
 
         let changed = force_save || xml_text != original_xml_text;
+        let mut warnings = Vec::new();
         if changed {
             let mut xml_text = xml_text.replacen("encoding=\"UTF-8\"", "encoding=\"utf-8\"", 1);
             if original_line_ending == "\r\n" {
@@ -4998,16 +5565,38 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
             if !xml_text.ends_with('\n') {
                 xml_text.push_str(original_line_ending);
             }
-            write_utf8_bom(&template_path, &xml_text)?;
+            let mut transaction = CompileTransaction::new();
+            for input in &query_inputs {
+                input.bind_to(&mut transaction)?;
+            }
+            transaction.replace_bytes(
+                &template_path,
+                &original_bytes,
+                utf8_bom_bytes(&xml_text),
+            )?;
+            guard_active_format_owner(&mut transaction, &template_path, context)?;
+            let mut validation_stdout = None;
+            let report = transaction.commit_with_post_validation(|| {
+                let validation = require_dcs_post_validation(&template_path, context)?;
+                validation_stdout = Some(validation);
+                Ok(())
+            })?;
+            warnings = report.cleanup_warnings;
             stdout.push_str(&format!("[OK] Saved {}\n", template_path.display()));
+            if show_validation {
+                stdout.push_str("\n--- Running dcs-validate ---\n");
+                if let Some(validation) = validation_stdout {
+                    stdout.push_str(&validation);
+                }
+            }
         } else {
             stdout.push_str("[INFO] No changes -- file untouched\n");
         }
-        Ok((stdout, template_path, changed))
+        Ok((stdout, template_path, changed, warnings))
     })();
 
     match edit_result {
-        Ok((stdout, template_path, changed)) => AdapterOutcome {
+        Ok((stdout, template_path, changed, warnings)) => AdapterOutcome {
             ok: true,
             summary: "unica.dcs.edit completed with native DCS editor".to_string(),
             changes: if changed {
@@ -5015,7 +5604,7 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
             } else {
                 Vec::new()
             },
-            warnings: Vec::new(),
+            warnings,
             errors: Vec::new(),
             artifacts: vec![template_path.display().to_string()],
             stdout: Some(stdout),
@@ -5068,13 +5657,19 @@ pub(crate) fn dcs_edit_add_field(
     stdout: &mut String,
 ) -> Result<(), String> {
     let parsed = dcs_edit_parse_field(value);
-    let range = dcs_edit_dataset_range(xml_text, data_set)?;
-    let escaped_data_path = escape_xml(&parsed.data_path);
-    let duplicate_probe = format!("<dataPath>{escaped_data_path}</dataPath>");
-    let dataset_text = &xml_text[range.0..range.1];
-    let data_set_name =
-        dcs_edit_dataset_name(xml_text, data_set).unwrap_or_else(|| data_set.to_string());
-    if dataset_text.contains(&duplicate_probe) {
+    if parsed.type_declared {
+        dcs_compile_parse_value_type(&parsed.field_type)?;
+    }
+    let DcsEditDataSetTarget {
+        range,
+        name: data_set_name,
+        emit_field_value_type,
+        field_insert_pos,
+        child_indent,
+    } = dcs_edit_dataset_target(xml_text, data_set)?;
+    if dcs_edit_find_item_by_child(xml_text, range, "field", "dataPath", &parsed.data_path)
+        .is_some()
+    {
         stdout.push_str(&format!(
             "[WARN] Field \"{}\" already exists in dataset \"{}\" -- skipped\n",
             parsed.data_path, data_set_name
@@ -5083,8 +5678,8 @@ pub(crate) fn dcs_edit_add_field(
     }
 
     let mut lines = Vec::new();
-    dcs_edit_emit_field(&mut lines, &parsed, "\t\t");
-    dcs_edit_insert_before_dataset_payload(xml_text, range, &lines.join("\n"))?;
+    dcs_edit_emit_field(&mut lines, &parsed, &child_indent, emit_field_value_type)?;
+    xml_text.insert_str(field_insert_pos, &format!("{}\n", lines.join("\n")));
     stdout.push_str(&format!(
         "[OK] Field \"{}\" added to dataset \"{}\"\n",
         parsed.data_path, data_set_name
@@ -5167,43 +5762,184 @@ pub(crate) fn dcs_edit_insert_top_level_fragment(
     item: &str,
     fragment: &str,
 ) -> Result<(), String> {
-    if let Some(end) = dcs_edit_last_top_level_block_end(xml_text, item) {
-        xml_text.insert_str(end, &format!("\n{fragment}"));
-        return Ok(());
-    }
-    let before = match item {
-        "calculatedField" => &[
-            "totalField",
-            "parameter",
-            "template",
-            "groupTemplate",
-            "settingsVariant",
-        ][..],
-        "totalField" => &["parameter", "template", "groupTemplate", "settingsVariant"][..],
-        "parameter" => &["template", "groupTemplate", "settingsVariant"][..],
-        _ => &[
-            "totalField",
-            "calculatedField",
-            "parameter",
-            "template",
-            "groupTemplate",
-            "settingsVariant",
-        ][..],
-    };
-    dcs_edit_insert_before_first_root_child(xml_text, before, fragment)
+    let root_range = Document::parse(xml_text)
+        .map_err(|error| format!("XML parse error: {error}"))?
+        .root_element()
+        .range();
+    let insert_pos = dcs_edit_canonical_child_insert_pos(
+        xml_text,
+        (root_range.start, root_range.end),
+        item,
+        DCS_EDIT_ROOT_CHILD_SEQUENCE,
+    )?;
+    xml_text.insert_str(insert_pos, &format!("{fragment}\n"));
+    Ok(())
 }
 
-pub(crate) fn dcs_edit_last_top_level_block_end(xml_text: &str, item: &str) -> Option<usize> {
-    let needle = format!("\n\t<{item}");
-    let mut cursor = 0usize;
-    let mut last = None;
-    while let Some(rel) = xml_text[cursor..].find(&needle) {
-        let start = cursor + rel + 1;
-        let end = dcs_edit_matching_element_end(xml_text, start, xml_text.len(), item)?;
-        last = Some(end);
-        cursor = end;
+const DCS_EDIT_ROOT_CHILD_SEQUENCE: &[&str] = &[
+    "dataSource",
+    "dataSet",
+    "dataSetLink",
+    "calculatedField",
+    "totalField",
+    "parameter",
+    "nestedSchema",
+    "template",
+    "fieldTemplate",
+    "groupTemplate",
+    "groupHeaderTemplate",
+    "totalFieldsTemplate",
+    "defaultSettings",
+    "settingsVariant",
+];
+
+const DCS_EDIT_SETTINGS_CHILD_SEQUENCE: &[&str] = &[
+    "userFields",
+    "selection",
+    "filter",
+    "dataParameters",
+    "order",
+    "conditionalAppearance",
+    "outputParameters",
+    "item",
+    "additionalProperties",
+    "itemsViewMode",
+    "itemsUserSettingID",
+    "itemsUserSettingPresentation",
+];
+
+const DCS_EDIT_DATA_SET_FIELD_CHILD_SEQUENCE: &[&str] = &[
+    "dataPath",
+    "field",
+    "title",
+    "useRestriction",
+    "attributeUseRestriction",
+    "role",
+    "presentationExpression",
+    "orderExpression",
+    "inHierarchyDataSet",
+    "inHierarchyDataSetParameter",
+    "valueType",
+    "appearance",
+    "availableValue",
+    "inputParameters",
+];
+
+const DCS_EDIT_FIELD_ROLE_CHILD_SEQUENCE: &[&str] = &[
+    "periodNumber",
+    "periodType",
+    "dimension",
+    "parentDimension",
+    "account",
+    "accountTypeExpression",
+    "balance",
+    "balanceGroupName",
+    "balanceType",
+    "accountingBalanceType",
+    "accountField",
+    "ignoreNullValues",
+    "required",
+    "dimensionAttribute",
+];
+
+const DCS_EDIT_FILTER_ITEM_COMPARISON_CHILD_SEQUENCE: &[&str] = &[
+    "use",
+    "left",
+    "comparisonType",
+    "right",
+    "presentation",
+    "application",
+    "viewMode",
+    "userSettingID",
+    "userSettingPresentation",
+];
+
+const DCS_EDIT_SETTINGS_PARAMETER_VALUE_CHILD_SEQUENCE: &[&str] = &[
+    "use",
+    "parameter",
+    "value",
+    "item",
+    "viewMode",
+    "userSettingID",
+    "userSettingPresentation",
+];
+
+const DCS_EDIT_PARAMETER_CHILD_SEQUENCE: &[&str] = &[
+    "name",
+    "title",
+    "valueType",
+    "value",
+    "useRestriction",
+    "expression",
+    "availableValue",
+    "valueListAllowed",
+    "availableAsField",
+    "functionalOptionsParameter",
+    "inputParameters",
+    "denyIncompleteValues",
+    "use",
+];
+
+const DCS_EDIT_STRUCTURE_GROUP_CHILD_SEQUENCE: &[&str] = &[
+    "use",
+    "name",
+    "groupItems",
+    "filter",
+    "order",
+    "selection",
+    "conditionalAppearance",
+    "outputParameters",
+    "item",
+    "id",
+    "viewMode",
+    "userSettingID",
+    "userSettingPresentation",
+    "itemsViewMode",
+    "itemsUserSettingID",
+    "itemsUserSettingPresentation",
+    "groupState",
+];
+
+pub(crate) fn dcs_edit_canonical_child_insert_pos(
+    xml_text: &str,
+    parent_range: (usize, usize),
+    target_name: &str,
+    sequence: &[&str],
+) -> Result<usize, String> {
+    let target_name = target_name.rsplit(':').next().unwrap_or(target_name);
+    let target_rank = sequence
+        .iter()
+        .position(|name| *name == target_name)
+        .ok_or_else(|| format!("'{target_name}' is not in the fixed DCS 8.3.27 XSD sequence"))?;
+    let document =
+        Document::parse(xml_text).map_err(|error| format!("XML parse error: {error}"))?;
+    let parent = document
+        .descendants()
+        .find(|node| node.is_element() && node.range().start == parent_range.0)
+        .ok_or_else(|| format!("DCS parent element at byte {} not found", parent_range.0))?;
+
+    for child in parent.children().filter(roxmltree::Node::is_element) {
+        let Some(child_rank) = sequence
+            .iter()
+            .position(|name| *name == child.tag_name().name())
+        else {
+            continue;
+        };
+        if child_rank > target_rank {
+            return Ok(dcs_edit_line_start(xml_text, child.range().start));
+        }
     }
-    last
+
+    let parent_node_range = parent.range();
+    let close_rel = xml_text[parent_node_range.start..parent_node_range.end]
+        .rfind("</")
+        .ok_or_else(|| {
+            format!("Cannot insert '{target_name}' into self-closing DCS parent element")
+        })?;
+    Ok(dcs_edit_line_start(
+        xml_text,
+        parent_node_range.start + close_rel,
+    ))
 }
 
 pub(crate) fn dcs_edit_top_level_contains(
@@ -5212,53 +5948,38 @@ pub(crate) fn dcs_edit_top_level_contains(
     child: &str,
     key: &str,
 ) -> bool {
-    let child_probe = format!("<{child}>{}</{child}>", escape_xml(key));
-    let mut cursor = 0;
-    let open_prefix = format!("<{item}");
-    let close = format!("</{item}>");
-    while let Some(open_rel) = xml_text[cursor..].find(&open_prefix) {
-        let start = cursor + open_rel;
-        let Some(close_rel) = xml_text[start..].find(&close) else {
-            return false;
-        };
-        let end = start + close_rel + close.len();
-        if xml_text[start..end].contains(&child_probe) {
-            return true;
-        }
-        cursor = end;
-    }
-    false
+    let Ok(document) = Document::parse(xml_text) else {
+        return false;
+    };
+    let root = document.root_element();
+    root.children()
+        .filter(|node| {
+            node.is_element() && dcs_edit_requested_name_matches(*node, item, Some(DCS_SCHEMA_NS))
+        })
+        .any(|node| {
+            node.children()
+                .filter(roxmltree::Node::is_element)
+                .any(|candidate| {
+                    dcs_edit_requested_name_matches(candidate, child, node.tag_name().namespace())
+                        && dcs_text_of(candidate) == key
+                })
+        })
 }
 
 pub(crate) fn dcs_edit_insert_before_root_close(
     xml_text: &mut String,
     fragment: &str,
 ) -> Result<(), String> {
-    let Some(pos) = xml_text.rfind("</DataCompositionSchema>") else {
-        return Err("No closing </DataCompositionSchema> found".to_string());
-    };
+    let document =
+        Document::parse(xml_text).map_err(|error| format!("XML parse error: {error}"))?;
+    let root = document.root_element();
+    require_dcs_root(root)?;
+    let root_range = root.range();
+    let pos = dcs_edit_element_content_range(xml_text, (root_range.start, root_range.end))
+        .ok_or_else(|| "Malformed DataCompositionSchema root element".to_string())?
+        .end;
     xml_text.insert_str(pos, &format!("{fragment}\n"));
     Ok(())
-}
-
-pub(crate) fn dcs_edit_insert_before_first_root_child(
-    xml_text: &mut String,
-    before: &[&str],
-    fragment: &str,
-) -> Result<(), String> {
-    let mut insert_pos = None;
-    for tag in before {
-        let needle = format!("\n\t<{tag}");
-        if let Some(pos) = xml_text.find(&needle) {
-            insert_pos = Some(insert_pos.map_or(pos + 1, |current: usize| current.min(pos + 1)));
-        }
-    }
-    if let Some(pos) = insert_pos {
-        xml_text.insert_str(pos, &format!("{fragment}\n"));
-        Ok(())
-    } else {
-        dcs_edit_insert_before_root_close(xml_text, fragment)
-    }
 }
 
 pub(crate) fn dcs_edit_total_fragment(data_path: &str, expression: &str) -> String {
@@ -5301,6 +6022,7 @@ pub(crate) struct DcsEditCalcField {
     pub(crate) title: String,
     pub(crate) field_type: String,
     pub(crate) expression: String,
+    pub(crate) type_declared: bool,
 }
 
 pub(crate) fn dcs_edit_parse_calc_field(value: &str) -> DcsEditCalcField {
@@ -5310,24 +6032,33 @@ pub(crate) fn dcs_edit_parse_calc_field(value: &str) -> DcsEditCalcField {
         .unwrap_or((value.trim(), ""));
     let (mut name_type, title) = dcs_edit_extract_bracket_title(left);
     name_type = dcs_edit_strip_markers(&name_type);
-    let (data_path, field_type) = name_type
+    let (data_path, field_type, type_declared) = name_type
         .split_once(':')
         .map(|(name, type_name)| {
             (
                 name.trim().to_string(),
                 dcs_compile_resolve_type(type_name.trim()),
+                true,
             )
         })
-        .unwrap_or((name_type.trim().to_string(), String::new()));
+        .unwrap_or((name_type.trim().to_string(), String::new(), false));
     DcsEditCalcField {
         data_path,
         title,
         field_type,
         expression: expression.to_string(),
+        type_declared,
     }
 }
 
-pub(crate) fn dcs_edit_calc_field_fragment(field: &DcsEditCalcField, indent: &str) -> String {
+pub(crate) fn dcs_edit_calc_field_fragment(
+    field: &DcsEditCalcField,
+    indent: &str,
+) -> Result<String, String> {
+    let value_type_entries = field
+        .type_declared
+        .then(|| dcs_compile_parse_value_type(&field.field_type))
+        .transpose()?;
     let mut lines = vec![
         format!("{indent}<calculatedField>"),
         format!(
@@ -5342,13 +6073,13 @@ pub(crate) fn dcs_edit_calc_field_fragment(field: &DcsEditCalcField, indent: &st
     if !field.title.is_empty() {
         dcs_compile_emit_mltext(&mut lines, &format!("{indent}\t"), "title", &field.title);
     }
-    if !field.field_type.is_empty() {
+    if let Some(entries) = value_type_entries {
         lines.push(format!("{indent}\t<valueType>"));
-        dcs_compile_emit_value_type(&mut lines, &field.field_type, &format!("{indent}\t\t"));
+        dcs_compile_emit_value_type_entries(&mut lines, &entries, &format!("{indent}\t\t"));
         lines.push(format!("{indent}\t</valueType>"));
     }
     lines.push(format!("{indent}</calculatedField>"));
-    lines.join("\n")
+    Ok(lines.join("\n"))
 }
 
 pub(crate) struct DcsEditParameter {
@@ -5362,6 +6093,7 @@ pub(crate) struct DcsEditParameter {
     pub(crate) available_values: Vec<(String, String)>,
     pub(crate) auto_dates: bool,
     pub(crate) expression: Option<String>,
+    pub(crate) type_declared: bool,
 }
 
 pub(crate) fn dcs_edit_parse_parameter(value: &str) -> DcsEditParameter {
@@ -5388,15 +6120,16 @@ pub(crate) fn dcs_edit_parse_parameter(value: &str) -> DcsEditParameter {
         .unwrap_or((cleaned.trim(), Vec::new(), value_list_allowed));
     let (mut name_type, title) = dcs_edit_extract_bracket_title(left);
     name_type = dcs_edit_strip_markers(&name_type);
-    let (name, type_name) = name_type
+    let (name, type_name, type_declared) = name_type
         .split_once(':')
         .map(|(name, type_name)| {
             (
                 name.trim().to_string(),
                 dcs_compile_resolve_type(type_name.trim()),
+                true,
             )
         })
-        .unwrap_or((name_type.trim().to_string(), String::new()));
+        .unwrap_or((name_type.trim().to_string(), String::new(), false));
     DcsEditParameter {
         name,
         title,
@@ -5408,10 +6141,18 @@ pub(crate) fn dcs_edit_parse_parameter(value: &str) -> DcsEditParameter {
         available_values,
         auto_dates,
         expression: None,
+        type_declared,
     }
 }
 
-pub(crate) fn dcs_edit_parameter_fragment(param: &DcsEditParameter, indent: &str) -> String {
+pub(crate) fn dcs_edit_parameter_fragment(
+    param: &DcsEditParameter,
+    indent: &str,
+) -> Result<String, String> {
+    let value_type_entries = param
+        .type_declared
+        .then(|| dcs_compile_parse_value_type(&param.type_name))
+        .transpose()?;
     let mut lines = vec![
         format!("{indent}<parameter>"),
         format!("{indent}\t<name>{}</name>", escape_xml(&param.name)),
@@ -5419,9 +6160,9 @@ pub(crate) fn dcs_edit_parameter_fragment(param: &DcsEditParameter, indent: &str
     if !param.title.is_empty() {
         dcs_compile_emit_mltext(&mut lines, &format!("{indent}\t"), "title", &param.title);
     }
-    if !param.type_name.is_empty() {
+    if let Some(entries) = value_type_entries {
         lines.push(format!("{indent}\t<valueType>"));
-        dcs_compile_emit_value_type(&mut lines, &param.type_name, &format!("{indent}\t\t"));
+        dcs_compile_emit_value_type_entries(&mut lines, &entries, &format!("{indent}\t\t"));
         lines.push(format!("{indent}\t</valueType>"));
     }
     for value in &param.values {
@@ -5430,21 +6171,10 @@ pub(crate) fn dcs_edit_parameter_fragment(param: &DcsEditParameter, indent: &str
             value,
             &format!("{indent}\t"),
             "value",
-        ));
-    }
-    if param.value_list_allowed {
-        lines.push(format!(
-            "{indent}\t<valueListAllowed>true</valueListAllowed>"
-        ));
+        )?);
     }
     if param.hidden {
         lines.push(format!("{indent}\t<useRestriction>true</useRestriction>"));
-        lines.push(format!(
-            "{indent}\t<availableAsField>false</availableAsField>"
-        ));
-    }
-    if param.always {
-        lines.push(format!("{indent}\t<use>Always</use>"));
     }
     if let Some(expression) = &param.expression {
         lines.push(format!(
@@ -5460,7 +6190,7 @@ pub(crate) fn dcs_edit_parameter_fragment(param: &DcsEditParameter, indent: &str
                 value,
                 &format!("{indent}\t\t"),
                 "value",
-            ));
+            )?);
             if !presentation.is_empty() {
                 dcs_compile_emit_mltext(
                     &mut lines,
@@ -5472,8 +6202,21 @@ pub(crate) fn dcs_edit_parameter_fragment(param: &DcsEditParameter, indent: &str
             lines.push(format!("{indent}\t</availableValue>"));
         }
     }
+    if param.value_list_allowed {
+        lines.push(format!(
+            "{indent}\t<valueListAllowed>true</valueListAllowed>"
+        ));
+    }
+    if param.hidden {
+        lines.push(format!(
+            "{indent}\t<availableAsField>false</availableAsField>"
+        ));
+    }
+    if param.always {
+        lines.push(format!("{indent}\t<use>Always</use>"));
+    }
     lines.push(format!("{indent}</parameter>"));
-    lines.join("\n")
+    Ok(lines.join("\n"))
 }
 
 pub(crate) fn dcs_edit_parameter_value_lines(
@@ -5481,28 +6224,55 @@ pub(crate) fn dcs_edit_parameter_value_lines(
     value: &str,
     indent: &str,
     tag_name: &str,
-) -> Vec<String> {
+) -> Result<Vec<String>, String> {
     let declared_type = dcs_edit_normalize_declared_type(declared_type);
     if dcs_edit_is_empty_value(value) {
-        return vec![format!("{indent}<{tag_name} xsi:nil=\"true\"/>")];
+        return Ok(vec![format!("{indent}<{tag_name} xsi:nil=\"true\"/>")]);
     }
     if declared_type == "StandardPeriod" {
-        return vec![
+        if !dcs_edit_is_standard_period_variant(value) {
+            return Err(format!(
+                "Value '{value}' is not a valid v8:StandardPeriodVariant for the fixed DCS 8.3.27 XSD contract"
+            ));
+        }
+        let mut lines = vec![
             format!("{indent}<{tag_name} xsi:type=\"v8:StandardPeriod\">"),
             format!(
                 "{indent}\t<v8:variant xsi:type=\"v8:StandardPeriodVariant\">{}</v8:variant>",
                 escape_xml(value)
             ),
-            format!("{indent}\t<v8:startDate>0001-01-01T00:00:00</v8:startDate>"),
-            format!("{indent}\t<v8:endDate>0001-01-01T00:00:00</v8:endDate>"),
-            format!("{indent}</{tag_name}>"),
         ];
+        if value == "Custom" {
+            lines.push(format!(
+                "{indent}\t<v8:startDate>0001-01-01T00:00:00</v8:startDate>"
+            ));
+            lines.push(format!(
+                "{indent}\t<v8:endDate>0001-01-01T00:00:00</v8:endDate>"
+            ));
+        }
+        lines.push(format!("{indent}</{tag_name}>"));
+        return Ok(lines);
     }
     let xsi_type = if declared_type.starts_with("date") {
+        if !is_date_time_literal(value) {
+            return Err(format!(
+                "Value '{value}' is not a valid xs:dateTime literal for the fixed DCS 8.3.27 XSD contract"
+            ));
+        }
         "xs:dateTime"
     } else if declared_type == "boolean" {
+        if !matches!(value, "true" | "false" | "0" | "1") {
+            return Err(format!(
+                "Value '{value}' is not a valid xs:boolean literal for the fixed DCS 8.3.27 XSD contract"
+            ));
+        }
         "xs:boolean"
     } else if declared_type.starts_with("decimal") {
+        if !dcs_edit_is_valid_xs_decimal(value) {
+            return Err(format!(
+                "Value '{value}' is not a valid xs:decimal literal for the fixed DCS 8.3.27 XSD contract"
+            ));
+        }
         "xs:decimal"
     } else if declared_type.starts_with("string") {
         "xs:string"
@@ -5510,6 +6280,10 @@ pub(crate) fn dcs_edit_parameter_value_lines(
         "dcscor:DesignTimeValue"
     } else if is_date_time_literal(value) {
         "xs:dateTime"
+    } else if dcs_edit_looks_date_time(value) {
+        return Err(format!(
+            "Value '{value}' is not a valid xs:dateTime literal for the fixed DCS 8.3.27 XSD contract"
+        ));
     } else if value == "true" || value == "false" {
         "xs:boolean"
     } else if dcs_edit_is_design_time_value(value) {
@@ -5517,10 +6291,10 @@ pub(crate) fn dcs_edit_parameter_value_lines(
     } else {
         "xs:string"
     };
-    vec![format!(
+    Ok(vec![format!(
         "{indent}<{tag_name} xsi:type=\"{xsi_type}\">{}</{tag_name}>",
         escape_xml(value)
-    )]
+    )])
 }
 
 pub(crate) fn dcs_edit_normalize_declared_type(value: &str) -> String {
@@ -5710,8 +6484,8 @@ pub(crate) fn dcs_edit_modify_filter(
             "{child_indent}<dcsset:comparisonType>{}</dcsset:comparisonType>",
             escape_xml(&filter.operator)
         ),
-        &["dcsset:right", "dcsset:viewMode", "dcsset:userSettingID"],
-    );
+        DCS_EDIT_FILTER_ITEM_COMPARISON_CHILD_SEQUENCE,
+    )?;
     let filter_range = dcs_edit_prefixed_container_range(xml_text, variant, "dcsset:filter")?;
     let item_range = dcs_edit_find_item_by_child(
         xml_text,
@@ -5731,8 +6505,8 @@ pub(crate) fn dcs_edit_modify_filter(
                 filter.value_type,
                 escape_xml(&filter.value)
             ),
-            &["dcsset:viewMode", "dcsset:userSettingID"],
-        );
+            DCS_EDIT_FILTER_ITEM_COMPARISON_CHILD_SEQUENCE,
+        )?;
     }
     let filter_range = dcs_edit_prefixed_container_range(xml_text, variant, "dcsset:filter")?;
     let item_range = dcs_edit_find_item_by_child(
@@ -5744,13 +6518,15 @@ pub(crate) fn dcs_edit_modify_filter(
     )
     .ok_or_else(|| format!("Filter for \"{}\" not found", filter.field))?;
     match filter.use_flag {
-        Some(false) => dcs_edit_replace_or_insert_child_fragment(
-            xml_text,
-            item_range,
-            "dcsset:use",
-            &format!("{child_indent}<dcsset:use>false</dcsset:use>"),
-            &["dcsset:left", "dcsset:comparisonType", "dcsset:right"],
-        ),
+        Some(false) => {
+            dcs_edit_replace_or_insert_child_fragment(
+                xml_text,
+                item_range,
+                "dcsset:use",
+                &format!("{child_indent}<dcsset:use>false</dcsset:use>"),
+                DCS_EDIT_FILTER_ITEM_COMPARISON_CHILD_SEQUENCE,
+            )?;
+        }
         Some(true) => {
             let _ = dcs_edit_remove_child_element(xml_text, item_range, "dcsset:use");
         }
@@ -5774,8 +6550,8 @@ pub(crate) fn dcs_edit_modify_filter(
                 "{child_indent}<dcsset:viewMode>{}</dcsset:viewMode>",
                 escape_xml(view_mode)
             ),
-            &["dcsset:userSettingID"],
-        );
+            DCS_EDIT_FILTER_ITEM_COMPARISON_CHILD_SEQUENCE,
+        )?;
     }
     let filter_range = dcs_edit_prefixed_container_range(xml_text, variant, "dcsset:filter")?;
     let item_range = dcs_edit_find_item_by_child(
@@ -5795,8 +6571,8 @@ pub(crate) fn dcs_edit_modify_filter(
                 "{child_indent}<dcsset:userSettingID>{}</dcsset:userSettingID>",
                 escape_xml(user_setting_id)
             ),
-            &[],
-        );
+            DCS_EDIT_FILTER_ITEM_COMPARISON_CHILD_SEQUENCE,
+        )?;
     }
     stdout.push_str(&format!(
         "[OK] Filter \"{}\" modified in variant \"{}\"\n",
@@ -5845,7 +6621,7 @@ pub(crate) fn dcs_edit_filter_value_type(value: &str) -> (String, String) {
     if is_date_time_literal(value) {
         return (value.to_string(), "xs:dateTime".to_string());
     }
-    if value.chars().all(|ch| ch.is_ascii_digit() || ch == '.') {
+    if dcs_edit_is_valid_xs_decimal(value) {
         return (value.to_string(), "xs:decimal".to_string());
     }
     if [
@@ -5864,11 +6640,152 @@ pub(crate) fn dcs_edit_filter_value_type(value: &str) -> (String, String) {
     (value.to_string(), "xs:string".to_string())
 }
 
-pub(crate) fn is_date_time_literal(value: &str) -> bool {
-    value.len() >= 11
-        && value.as_bytes().get(4) == Some(&b'-')
+pub(crate) fn dcs_edit_validate_filter_literal(filter: &DcsEditFilter) -> Result<(), String> {
+    let value = filter.value.trim();
+    if value.is_empty() {
+        return Ok(());
+    }
+    if dcs_edit_looks_numeric(value) && !dcs_edit_is_valid_xs_decimal(value) {
+        return Err(format!(
+            "Filter value '{value}' is not a valid xs:decimal literal for the fixed DCS 8.3.27 XSD contract"
+        ));
+    }
+    if dcs_edit_looks_date_time(value) && !is_date_time_literal(value) {
+        return Err(format!(
+            "Filter value '{value}' is not a valid xs:dateTime literal for the fixed DCS 8.3.27 XSD contract"
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn dcs_edit_is_valid_xs_decimal(value: &str) -> bool {
+    let value = value.strip_prefix(['+', '-']).unwrap_or(value);
+    let Some((integer, fraction)) = value.split_once('.') else {
+        return !value.is_empty() && value.chars().all(|character| character.is_ascii_digit());
+    };
+    !value[integer.len() + 1..].contains('.')
+        && (!integer.is_empty() || !fraction.is_empty())
+        && integer.chars().all(|character| character.is_ascii_digit())
+        && fraction.chars().all(|character| character.is_ascii_digit())
+}
+
+pub(crate) fn dcs_edit_looks_numeric(value: &str) -> bool {
+    value.chars().any(|character| character.is_ascii_digit())
+        && value.chars().next().is_some_and(|character| {
+            character.is_ascii_digit() || matches!(character, '+' | '-' | '.')
+        })
+        && value
+            .chars()
+            .all(|character| character.is_ascii_digit() || matches!(character, '+' | '-' | '.'))
+}
+
+pub(crate) fn dcs_edit_looks_date_time(value: &str) -> bool {
+    value.as_bytes().get(4) == Some(&b'-')
         && value.as_bytes().get(7) == Some(&b'-')
         && value.as_bytes().get(10) == Some(&b'T')
+}
+
+pub(crate) fn is_date_time_literal(value: &str) -> bool {
+    let Some((date, time_and_zone)) = value.split_once('T') else {
+        return false;
+    };
+    if time_and_zone.contains('T') {
+        return false;
+    }
+    let mut date_parts = date.split('-');
+    let (Some(year), Some(month), Some(day), None) = (
+        date_parts.next(),
+        date_parts.next(),
+        date_parts.next(),
+        date_parts.next(),
+    ) else {
+        return false;
+    };
+    if year.len() < 4
+        || !year.chars().all(|character| character.is_ascii_digit())
+        || year.chars().all(|character| character == '0')
+    {
+        return false;
+    }
+    let (Ok(year), Ok(month), Ok(day)) = (
+        year.parse::<u32>(),
+        month.parse::<u32>(),
+        day.parse::<u32>(),
+    ) else {
+        return false;
+    };
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let max_day = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    };
+    if day == 0 || day > max_day {
+        return false;
+    }
+
+    let (time, zone) = if let Some(time) = time_and_zone.strip_suffix('Z') {
+        (time, Some("Z"))
+    } else if let Some(index) = time_and_zone
+        .char_indices()
+        .skip(1)
+        .find_map(|(index, character)| matches!(character, '+' | '-').then_some(index))
+    {
+        (&time_and_zone[..index], Some(&time_and_zone[index..]))
+    } else {
+        (time_and_zone, None)
+    };
+    let mut time_parts = time.split(':');
+    let (Some(hour), Some(minute), Some(second), None) = (
+        time_parts.next(),
+        time_parts.next(),
+        time_parts.next(),
+        time_parts.next(),
+    ) else {
+        return false;
+    };
+    let (second, fraction) = second
+        .split_once('.')
+        .map_or((second, None), |(second, fraction)| {
+            (second, Some(fraction))
+        });
+    if fraction.is_some_and(|fraction| {
+        fraction.is_empty() || !fraction.chars().all(|character| character.is_ascii_digit())
+    }) {
+        return false;
+    }
+    let (Ok(hour), Ok(minute), Ok(second)) = (
+        hour.parse::<u32>(),
+        minute.parse::<u32>(),
+        second.parse::<u32>(),
+    ) else {
+        return false;
+    };
+    if minute > 59 || second > 59 || hour > 24 {
+        return false;
+    }
+    if hour == 24
+        && (minute != 0
+            || second != 0
+            || fraction.is_some_and(|fraction| fraction.chars().any(|digit| digit != '0')))
+    {
+        return false;
+    }
+    if let Some(zone) = zone.filter(|zone| *zone != "Z") {
+        let zone = &zone[1..];
+        let Some((hours, minutes)) = zone.split_once(':') else {
+            return false;
+        };
+        let (Ok(hours), Ok(minutes)) = (hours.parse::<u32>(), minutes.parse::<u32>()) else {
+            return false;
+        };
+        if hours > 14 || minutes > 59 || (hours == 14 && minutes != 0) {
+            return false;
+        }
+    }
+    true
 }
 
 pub(crate) struct DcsEditDataParameter {
@@ -5921,7 +6838,7 @@ pub(crate) fn dcs_edit_parse_data_parameter(value: &str) -> DcsEditDataParameter
 pub(crate) fn dcs_edit_data_parameter_fragment(
     param: &DcsEditDataParameter,
     indent: &str,
-) -> String {
+) -> Result<String, String> {
     let mut lines = vec![format!(
         "{indent}<dcscor:item xsi:type=\"dcsset:SettingsParameterValue\">"
     )];
@@ -5933,7 +6850,11 @@ pub(crate) fn dcs_edit_data_parameter_fragment(
         escape_xml(&param.parameter)
     ));
     if let Some(value) = &param.value {
-        lines.extend(dcs_edit_settings_value_lines("dcscor:value", value, indent));
+        lines.extend(dcs_edit_settings_value_lines(
+            "dcscor:value",
+            value,
+            indent,
+        )?);
     }
     if let Some(view_mode) = &param.view_mode {
         lines.push(format!(
@@ -5948,7 +6869,7 @@ pub(crate) fn dcs_edit_data_parameter_fragment(
         ));
     }
     lines.push(format!("{indent}</dcscor:item>"));
-    lines.join("\n")
+    Ok(lines.join("\n"))
 }
 
 pub(crate) fn dcs_edit_modify_data_parameter(
@@ -5981,13 +6902,15 @@ pub(crate) fn dcs_edit_modify_data_parameter(
     let item_indent = dcs_edit_line_indent(xml_text, item_range.0);
     let child_indent = format!("{item_indent}\t");
     match param.use_flag {
-        Some(false) => dcs_edit_replace_or_insert_child_fragment(
-            xml_text,
-            item_range,
-            "dcscor:use",
-            &format!("{child_indent}<dcscor:use>false</dcscor:use>"),
-            &["dcscor:parameter", "dcscor:value"],
-        ),
+        Some(false) => {
+            dcs_edit_replace_or_insert_child_fragment(
+                xml_text,
+                item_range,
+                "dcscor:use",
+                &format!("{child_indent}<dcscor:use>false</dcscor:use>"),
+                DCS_EDIT_SETTINGS_PARAMETER_VALUE_CHILD_SEQUENCE,
+            )?;
+        }
         Some(true) => {
             let _ = dcs_edit_remove_child_element(xml_text, item_range, "dcscor:use");
         }
@@ -6004,14 +6927,14 @@ pub(crate) fn dcs_edit_modify_data_parameter(
     .ok_or_else(|| format!("DataParameter \"{}\" not found", param.parameter))?;
     if let Some(value) = &param.value {
         let value_fragment =
-            dcs_edit_settings_value_lines("dcscor:value", value, &item_indent).join("\n");
+            dcs_edit_settings_value_lines("dcscor:value", value, &item_indent)?.join("\n");
         dcs_edit_replace_or_insert_child_fragment(
             xml_text,
             item_range,
             "dcscor:value",
             &value_fragment,
-            &["dcsset:viewMode", "dcsset:userSettingID"],
-        );
+            DCS_EDIT_SETTINGS_PARAMETER_VALUE_CHILD_SEQUENCE,
+        )?;
     }
     let range = dcs_edit_prefixed_container_range(xml_text, variant, "dcsset:dataParameters")?;
     let item_range = dcs_edit_find_item_by_child(
@@ -6031,8 +6954,8 @@ pub(crate) fn dcs_edit_modify_data_parameter(
                 "{child_indent}<dcsset:viewMode>{}</dcsset:viewMode>",
                 escape_xml(view_mode)
             ),
-            &["dcsset:userSettingID"],
-        );
+            DCS_EDIT_SETTINGS_PARAMETER_VALUE_CHILD_SEQUENCE,
+        )?;
     }
     let range = dcs_edit_prefixed_container_range(xml_text, variant, "dcsset:dataParameters")?;
     let item_range = dcs_edit_find_item_by_child(
@@ -6052,8 +6975,8 @@ pub(crate) fn dcs_edit_modify_data_parameter(
                 "{child_indent}<dcsset:userSettingID>{}</dcsset:userSettingID>",
                 escape_xml(user_setting_id)
             ),
-            &[],
-        );
+            DCS_EDIT_SETTINGS_PARAMETER_VALUE_CHILD_SEQUENCE,
+        )?;
     }
     stdout.push_str(&format!(
         "[OK] DataParameter \"{}\" modified in variant \"{}\"\n",
@@ -6066,21 +6989,33 @@ pub(crate) fn dcs_edit_settings_value_lines(
     tag_name: &str,
     value: &str,
     indent: &str,
-) -> Vec<String> {
+) -> Result<Vec<String>, String> {
     if dcs_edit_is_empty_value(value) {
-        return vec![format!("{indent}\t<{tag_name} xsi:nil=\"true\"/>")];
+        return Ok(vec![format!("{indent}\t<{tag_name} xsi:nil=\"true\"/>")]);
     }
     if dcs_edit_is_standard_period_variant(value) {
-        return vec![
+        let mut lines = vec![
             format!("{indent}\t<{tag_name} xsi:type=\"v8:StandardPeriod\">"),
             format!(
                 "{indent}\t\t<v8:variant xsi:type=\"v8:StandardPeriodVariant\">{}</v8:variant>",
                 escape_xml(value)
             ),
-            format!("{indent}\t\t<v8:startDate>0001-01-01T00:00:00</v8:startDate>"),
-            format!("{indent}\t\t<v8:endDate>0001-01-01T00:00:00</v8:endDate>"),
-            format!("{indent}\t</{tag_name}>"),
         ];
+        if value == "Custom" {
+            lines.push(format!(
+                "{indent}\t\t<v8:startDate>0001-01-01T00:00:00</v8:startDate>"
+            ));
+            lines.push(format!(
+                "{indent}\t\t<v8:endDate>0001-01-01T00:00:00</v8:endDate>"
+            ));
+        }
+        lines.push(format!("{indent}\t</{tag_name}>"));
+        return Ok(lines);
+    }
+    if dcs_edit_looks_date_time(value) && !is_date_time_literal(value) {
+        return Err(format!(
+            "Value '{value}' is not a valid xs:dateTime literal for the fixed DCS 8.3.27 XSD contract"
+        ));
     }
     let value_type = if is_date_time_literal(value) {
         "xs:dateTime"
@@ -6089,10 +7024,10 @@ pub(crate) fn dcs_edit_settings_value_lines(
     } else {
         "xs:string"
     };
-    vec![format!(
+    Ok(vec![format!(
         "{indent}\t<{tag_name} xsi:type=\"{value_type}\">{}</{tag_name}>",
         escape_xml(value)
-    )]
+    )])
 }
 
 pub(crate) fn dcs_edit_is_empty_value(value: &str) -> bool {
@@ -6117,25 +7052,41 @@ pub(crate) fn dcs_edit_is_standard_period_variant(value: &str) -> bool {
             | "FromBeginningOfThisQuarter"
             | "FromBeginningOfThisHalfYear"
             | "FromBeginningOfThisYear"
+            | "Yesterday"
             | "LastWeek"
             | "LastTenDays"
             | "LastMonth"
             | "LastQuarter"
             | "LastHalfYear"
             | "LastYear"
-            | "NextDay"
+            | "LastWeekTillSameWeekDay"
+            | "LastTenDaysTillSameDayNumber"
+            | "LastMonthTillSameDate"
+            | "LastQuarterTillSameDate"
+            | "LastHalfYearTillSameDate"
+            | "LastYearTillSameDate"
+            | "Tomorrow"
             | "NextWeek"
             | "NextTenDays"
             | "NextMonth"
             | "NextQuarter"
             | "NextHalfYear"
             | "NextYear"
+            | "NextWeekTillSameWeekDay"
+            | "NextTenDaysTillSameDayNumber"
+            | "NextMonthTillSameDate"
+            | "NextQuarterTillSameDate"
+            | "NextHalfYearTillSameDate"
+            | "NextYearTillSameDate"
             | "TillEndOfThisWeek"
             | "TillEndOfThisTenDays"
             | "TillEndOfThisMonth"
             | "TillEndOfThisQuarter"
             | "TillEndOfThisHalfYear"
             | "TillEndOfThisYear"
+            | "Last7Days"
+            | "Next7Days"
+            | "Month"
     )
 }
 
@@ -6147,14 +7098,10 @@ pub(crate) fn dcs_edit_insert_or_create_settings_item(
 ) -> Result<(), String> {
     match dcs_edit_insert_prefixed_item(xml_text, variant, container, fragment) {
         Ok(()) => Ok(()),
-        Err(_) => {
+        Err(error) if error == format!("No <{container}> section found in DCS") => {
             let settings = dcs_edit_settings_element_range(xml_text, variant)?;
             let insert_pos =
-                dcs_edit_new_settings_container_insert_pos(xml_text, variant, container)
-                    .unwrap_or_else(|_| {
-                        let settings_pos = settings.1 - "</dcsset:settings>".len();
-                        dcs_edit_line_start(xml_text, settings_pos)
-                    });
+                dcs_edit_new_settings_container_insert_pos(xml_text, variant, container)?;
             let settings_indent = dcs_edit_line_indent(xml_text, settings.0);
             let child_indent = format!("{settings_indent}\t");
             xml_text.insert_str(
@@ -6163,6 +7110,7 @@ pub(crate) fn dcs_edit_insert_or_create_settings_item(
             );
             Ok(())
         }
+        Err(error) => Err(error),
     }
 }
 
@@ -6171,64 +7119,13 @@ pub(crate) fn dcs_edit_new_settings_container_insert_pos(
     variant: &str,
     container: &str,
 ) -> Result<usize, String> {
-    let settings_content = dcs_edit_settings_content_range(xml_text, variant)?;
-    for sibling in dcs_edit_settings_container_after_siblings(container) {
-        if let Ok(range) = dcs_edit_prefixed_container_range(xml_text, variant, sibling) {
-            return Ok(dcs_edit_next_settings_child_line_start(
-                xml_text,
-                range.end,
-                settings_content.1,
-            )
-            .unwrap_or_else(|| dcs_edit_line_start(xml_text, settings_content.1)));
-        }
-    }
-    Ok(dcs_edit_line_start(xml_text, settings_content.1))
-}
-
-pub(crate) fn dcs_edit_settings_container_after_siblings(
-    container: &str,
-) -> &'static [&'static str] {
-    match container {
-        "dcsset:filter" => &["dcsset:selection"],
-        "dcsset:outputParameters" => &[
-            "dcsset:conditionalAppearance",
-            "dcsset:order",
-            "dcsset:filter",
-            "dcsset:selection",
-        ],
-        "dcsset:dataParameters" => &[
-            "dcsset:outputParameters",
-            "dcsset:conditionalAppearance",
-            "dcsset:order",
-            "dcsset:filter",
-            "dcsset:selection",
-        ],
-        "dcsset:conditionalAppearance" => &[
-            "dcsset:outputParameters",
-            "dcsset:order",
-            "dcsset:filter",
-            "dcsset:selection",
-        ],
-        "dcsset:order" => &["dcsset:filter", "dcsset:selection"],
-        _ => &[],
-    }
-}
-
-pub(crate) fn dcs_edit_next_settings_child_line_start(
-    xml_text: &str,
-    from: usize,
-    to: usize,
-) -> Option<usize> {
-    let mut offset = from;
-    while offset < to {
-        let rel = xml_text[offset..to].find('<')?;
-        let pos = offset + rel;
-        if !xml_text[pos..].starts_with("</dcsset:settings>") {
-            return Some(dcs_edit_line_start(xml_text, pos));
-        }
-        offset = pos + 1;
-    }
-    None
+    let settings = dcs_edit_settings_element_range(xml_text, variant)?;
+    dcs_edit_canonical_child_insert_pos(
+        xml_text,
+        settings,
+        container,
+        DCS_EDIT_SETTINGS_CHILD_SEQUENCE,
+    )
 }
 
 pub(crate) fn dcs_edit_settings_container_child_indent(
@@ -6318,20 +7215,32 @@ pub(crate) fn dcs_edit_parse_data_set(
     base_dir: &Path,
     cwd: &Path,
 ) -> Result<DcsEditDataSet, String> {
+    dcs_edit_parse_data_set_with_inputs(value, base_dir, cwd, &mut Vec::new())
+}
+
+fn dcs_edit_parse_data_set_with_inputs(
+    value: &str,
+    base_dir: &Path,
+    cwd: &Path,
+    inputs: &mut Vec<ExactFileInput>,
+) -> Result<DcsEditDataSet, String> {
     let (name, query) = if let Some((left, right)) = value.split_once(':') {
         (left.trim().to_string(), right.trim())
     } else {
         ("НаборДанных".to_string(), value.trim())
     };
-    let query = dcs_compile_resolve_query_value(query, base_dir, cwd)?;
+    let query = dcs_compile_resolve_query_value_with_inputs(query, base_dir, cwd, inputs)?;
     Ok(DcsEditDataSet { name, query })
 }
 
 pub(crate) fn dcs_edit_first_data_source(xml_text: &str) -> Option<String> {
-    let start = xml_text.find("<dataSource>")?;
-    let end = xml_text[start..].find("</dataSource>")? + start;
-    let name = dcs_edit_child_text_range(xml_text, (start, end), "name").ok()?;
-    Some(xml_text[name].trim().to_string())
+    let document = Document::parse(xml_text).ok()?;
+    document
+        .root_element()
+        .children()
+        .find(|node| role_info_element(*node, "dataSource", Some(DCS_SCHEMA_NS)))
+        .and_then(|node| dcs_child(node, "name", DCS_SCHEMA_NS))
+        .map(dcs_text_of)
 }
 
 pub(crate) fn dcs_edit_data_set_fragment(
@@ -6364,8 +7273,18 @@ pub(crate) fn dcs_edit_parse_variant(value: &str) -> DcsEditVariant {
 }
 
 pub(crate) fn dcs_edit_variant_exists(xml_text: &str, name: &str) -> bool {
-    xml_text.contains(&format!("<dcsset:name>{}</dcsset:name>", escape_xml(name)))
-        || xml_text.contains(&format!("<name>{}</name>", escape_xml(name)))
+    let Ok(document) = Document::parse(xml_text) else {
+        return false;
+    };
+    document
+        .root_element()
+        .children()
+        .filter(|node| role_info_element(*node, "settingsVariant", Some(DCS_SCHEMA_NS)))
+        .any(|node| {
+            node.children()
+                .find(|child| role_info_element(*child, "name", Some(DCS_SETTINGS_NS)))
+                .is_some_and(|candidate| dcs_text_of(candidate) == name)
+        })
 }
 
 pub(crate) fn dcs_edit_variant_fragment(variant: &DcsEditVariant, indent: &str) -> String {
@@ -6393,7 +7312,6 @@ pub(crate) fn dcs_edit_variant_fragment(variant: &DcsEditVariant, indent: &str) 
     lines.push(format!(
         "{indent}\t\t<dcsset:item xsi:type=\"dcsset:StructureItemGroup\">"
     ));
-    lines.push(format!("{indent}\t\t\t<dcsset:groupItems/>"));
     lines.push(format!("{indent}\t\t\t<dcsset:order>"));
     lines.push(format!(
         "{indent}\t\t\t\t<dcsset:item xsi:type=\"dcsset:OrderItemAuto\"/>"
@@ -6615,7 +7533,7 @@ pub(crate) fn dcs_edit_parse_output_parameter(
 pub(crate) fn dcs_edit_output_parameter_fragment(
     item: &DcsEditOutputParameter,
     indent: &str,
-) -> String {
+) -> Result<String, String> {
     let mut lines = vec![
         format!("{indent}<dcscor:item xsi:type=\"dcsset:SettingsParameterValue\">"),
         format!(
@@ -6640,10 +7558,10 @@ pub(crate) fn dcs_edit_output_parameter_fragment(
             "dcscor:value",
             &item.value,
             indent,
-        ));
+        )?);
     }
     lines.push(format!("{indent}</dcscor:item>"));
-    lines.join("\n")
+    Ok(lines.join("\n"))
 }
 
 #[derive(Clone, Debug)]
@@ -6737,9 +7655,7 @@ pub(crate) fn dcs_edit_structure_item_fragment(
             escape_xml(name)
         ));
     }
-    if item.group_by.is_empty() {
-        lines.push(format!("{indent}\t<dcsset:groupItems/>"));
-    } else {
+    if !item.group_by.is_empty() {
         lines.push(format!("{indent}\t<dcsset:groupItems>"));
         for field in &item.group_by {
             lines.push(dcs_edit_group_item_field_fragment(
@@ -6794,54 +7710,33 @@ pub(crate) fn dcs_edit_replace_structure(
     variant: &str,
     fragment: &str,
 ) -> Result<(), String> {
-    loop {
-        let settings = dcs_edit_settings_content_range(xml_text, variant)?;
-        let Some(open_rel) = xml_text[settings.0..settings.1]
-            .find("<dcsset:item xsi:type=\"dcsset:StructureItemGroup\"")
-        else {
-            break;
-        };
-        let start = settings.0 + open_rel;
-        let Some(end) = dcs_edit_matching_dcsset_item_end(xml_text, start, settings.1) else {
-            return Err("No closing </dcsset:item> found for structure item".to_string());
-        };
-        let range = dcs_edit_element_line_range(xml_text, start, end);
-        xml_text.replace_range(range, "");
+    let settings_range = dcs_edit_settings_element_range(xml_text, variant)?;
+    let document =
+        Document::parse(xml_text).map_err(|error| format!("XML parse error: {error}"))?;
+    let settings = dcs_edit_element_for_range(&document, settings_range)
+        .ok_or_else(|| "DCS settings element not found".to_string())?;
+    let mut removals = settings
+        .children()
+        .filter(|node| role_info_element(*node, "item", Some(DCS_SETTINGS_NS)))
+        .filter(|node| dcs_edit_xsi_type_matches(*node, DCS_SETTINGS_NS, "StructureItemGroup"))
+        .map(|node| {
+            let range = node.range();
+            dcs_edit_element_line_range(xml_text, range.start, range.end)
+        })
+        .collect::<Vec<_>>();
+    removals.sort_by_key(|range| std::cmp::Reverse(range.start));
+    for removal in removals {
+        xml_text.replace_range(removal, "");
     }
-    let settings = dcs_edit_settings_content_range(xml_text, variant)?;
-    let insert_pos = dcs_edit_first_settings_child_pos(
+    let settings = dcs_edit_settings_element_range(xml_text, variant)?;
+    let insert_pos = dcs_edit_canonical_child_insert_pos(
         xml_text,
         settings,
-        &[
-            "dcsset:outputParameters",
-            "dcsset:dataParameters",
-            "dcsset:conditionalAppearance",
-            "dcsset:order",
-            "dcsset:filter",
-            "dcsset:selection",
-            "dcsset:item",
-        ],
-    )
-    .unwrap_or(settings.1);
-    let insert_pos = dcs_edit_line_start(xml_text, insert_pos);
+        "item",
+        DCS_EDIT_SETTINGS_CHILD_SEQUENCE,
+    )?;
     xml_text.insert_str(insert_pos, &format!("{fragment}\n"));
     Ok(())
-}
-
-pub(crate) fn dcs_edit_first_settings_child_pos(
-    xml_text: &str,
-    settings: (usize, usize),
-    tags: &[&str],
-) -> Option<usize> {
-    let mut result = None;
-    for tag in tags {
-        let needle = format!("<{tag}");
-        if let Some(rel) = xml_text[settings.0..settings.1].find(&needle) {
-            let pos = settings.0 + rel;
-            result = Some(result.map_or(pos, |current: usize| current.min(pos)));
-        }
-    }
-    result
 }
 
 pub(crate) fn dcs_edit_modify_structure(
@@ -6910,14 +7805,23 @@ pub(crate) fn dcs_edit_replace_named_group_items(
     let Some(group_range) = dcs_edit_find_named_structure_group(xml_text, variant, name)? else {
         return Ok(false);
     };
+    if group_by.is_empty() {
+        if let Some(group_items) = dcs_edit_find_group_items_range(xml_text, group_range)? {
+            let removal = dcs_edit_element_line_range(xml_text, group_items.start, group_items.end);
+            xml_text.replace_range(removal, "");
+        }
+        return Ok(true);
+    }
     let Some(group_items) = dcs_edit_find_group_items_range(xml_text, group_range)? else {
-        let insert_pos = group_range.0
-            + xml_text[group_range.0..group_range.1]
-                .find("</dcsset:name>")
-                .map(|rel| rel + "</dcsset:name>".len())
-                .unwrap_or(0);
-        let fragment = dcs_edit_group_items_fragment(group_by, "\n\t\t\t\t");
-        xml_text.insert_str(insert_pos, &fragment);
+        let insert_pos = dcs_edit_canonical_child_insert_pos(
+            xml_text,
+            group_range,
+            "groupItems",
+            DCS_EDIT_STRUCTURE_GROUP_CHILD_SEQUENCE,
+        )?;
+        let child_indent = format!("{}\t", dcs_edit_line_indent(xml_text, group_range.0));
+        let fragment = dcs_edit_group_items_fragment(group_by, &child_indent);
+        xml_text.insert_str(insert_pos, &format!("{fragment}\n"));
         return Ok(true);
     };
     if group_items.self_closing {
@@ -6942,7 +7846,7 @@ pub(crate) fn dcs_edit_replace_named_group_items(
 
 pub(crate) fn dcs_edit_group_items_fragment(group_by: &[String], indent: &str) -> String {
     if group_by.is_empty() {
-        return format!("{indent}<dcsset:groupItems/>");
+        return String::new();
     }
     format!(
         "{indent}<dcsset:groupItems>\n{}{indent}</dcsset:groupItems>",
@@ -6971,62 +7875,35 @@ pub(crate) fn dcs_edit_find_named_structure_group(
     variant: &str,
     name: &str,
 ) -> Result<Option<(usize, usize)>, String> {
-    let settings = dcs_edit_settings_content_range(xml_text, variant)?;
-    let name_probe = format!("<dcsset:name>{}</dcsset:name>", escape_xml(name));
-    let open_probe = "<dcsset:item xsi:type=\"dcsset:StructureItemGroup\"";
-    let mut cursor = settings.0;
-    while let Some(name_rel) = xml_text[cursor..settings.1].find(&name_probe) {
-        let name_start = cursor + name_rel;
-        let Some(open_rel) = xml_text[settings.0..name_start].rfind(open_probe) else {
-            cursor = name_start + name_probe.len();
-            continue;
-        };
-        let start = settings.0 + open_rel;
-        let Some(end) = dcs_edit_matching_dcsset_item_end(xml_text, start, settings.1) else {
-            return Err("No closing </dcsset:item> found for structure item".to_string());
-        };
-        if end > name_start {
-            return Ok(Some((start, end)));
-        }
-        cursor = name_start + name_probe.len();
-    }
-    Ok(None)
+    let settings_range = dcs_edit_settings_element_range(xml_text, variant)?;
+    let document =
+        Document::parse(xml_text).map_err(|error| format!("XML parse error: {error}"))?;
+    let settings = dcs_edit_element_for_range(&document, settings_range)
+        .ok_or_else(|| "DCS settings element not found".to_string())?;
+    Ok(settings
+        .descendants()
+        .skip(1)
+        .filter(|node| role_info_element(*node, "item", Some(DCS_SETTINGS_NS)))
+        .filter(|node| dcs_edit_xsi_type_matches(*node, DCS_SETTINGS_NS, "StructureItemGroup"))
+        .find(|node| {
+            dcs_child(*node, "name", DCS_SETTINGS_NS)
+                .is_some_and(|candidate| dcs_text_of(candidate) == name)
+        })
+        .map(|node| {
+            let range = node.range();
+            (range.start, range.end)
+        }))
 }
 
 pub(crate) fn dcs_edit_find_group_items_range(
     xml_text: &str,
     group_range: (usize, usize),
 ) -> Result<Option<DcsEditElementRange>, String> {
-    let Some(open_rel) = xml_text[group_range.0..group_range.1].find("<dcsset:groupItems") else {
+    let Some(range) = dcs_edit_child_element_range(xml_text, group_range, "dcsset:groupItems")
+    else {
         return Ok(None);
     };
-    let start = group_range.0 + open_rel;
-    let Some(open_end_rel) = xml_text[start..group_range.1].find('>') else {
-        return Err("Malformed <dcsset:groupItems> element".to_string());
-    };
-    let open_end = start + open_end_rel + 1;
-    let open_tag = &xml_text[start..open_end];
-    if open_tag.trim_end().ends_with("/>") {
-        return Ok(Some(DcsEditElementRange {
-            start,
-            open_end,
-            close_start: open_end,
-            end: open_end,
-            self_closing: true,
-        }));
-    }
-    let close = "</dcsset:groupItems>";
-    let Some(close_rel) = xml_text[open_end..group_range.1].find(close) else {
-        return Err("No </dcsset:groupItems> element found".to_string());
-    };
-    let close_start = open_end + close_rel;
-    Ok(Some(DcsEditElementRange {
-        start,
-        open_end,
-        close_start,
-        end: close_start + close.len(),
-        self_closing: false,
-    }))
+    dcs_edit_element_range_details(xml_text, range, "dcsset:groupItems").map(Some)
 }
 
 pub(crate) fn dcs_edit_remove_first_block(
@@ -7108,7 +7985,7 @@ pub(crate) fn dcs_edit_add_drilldown(
         escape_xml(&marker),
         escape_xml(resource)
     );
-    if dcs_edit_insert_before_root_close(xml_text, &fragment).is_ok() {
+    if dcs_edit_insert_top_level_fragment(xml_text, "parameter", &fragment).is_ok() {
         DcsEditDrilldownResult::Added
     } else {
         DcsEditDrilldownResult::NoMatch
@@ -7146,45 +8023,21 @@ pub(crate) fn dcs_edit_set_field_role(
         stdout.push_str(&format!("[WARN] Field \"{}\" not found\n", data_path));
         return Ok(());
     };
-    let preserved_role_children = dcs_edit_preserved_role_children(xml_text, field_range, &kv);
+    let field_child_indent = format!("{}\t", dcs_edit_line_indent(xml_text, field_range.0));
+    let role_fragment = dcs_edit_field_role_fragment_with_values(&flags, &kv, &field_child_indent)?;
     let _ = dcs_edit_remove_child_block(xml_text, field_range, "role");
-    if !flags.is_empty() || !kv.is_empty() {
+    if !role_fragment.is_empty() {
         let range = dcs_edit_dataset_range(xml_text, data_set)?;
         let field_range =
             dcs_edit_find_item_by_child(xml_text, range, "field", "dataPath", &data_path)
                 .ok_or_else(|| format!("Field \"{}\" not found", data_path))?;
-        let block = &xml_text[field_range.0..field_range.1];
-        let insert = ["\n\t\t\t<valueType", "\n\t\t\t<inputParameters"]
-            .iter()
-            .filter_map(|needle| block.find(needle))
-            .min()
-            .map(|rel| field_range.0 + rel + 1)
-            .unwrap_or_else(|| {
-                field_range.0
-                    + block
-                        .rfind("\n\t\t</field>")
-                        .unwrap_or(field_range.1 - field_range.0)
-            });
-        let mut lines = vec!["\t\t\t<role>".to_string()];
-        for flag in &flags {
-            if flag == "period" {
-                lines.push("\t\t\t\t<dcscom:periodNumber>1</dcscom:periodNumber>".to_string());
-                lines.push("\t\t\t\t<dcscom:periodType>Main</dcscom:periodType>".to_string());
-            } else {
-                lines.push(format!("\t\t\t\t<dcscom:{flag}>true</dcscom:{flag}>"));
-            }
-        }
-        for (key, val) in &kv {
-            lines.push(format!(
-                "\t\t\t\t<dcscom:{key}>{}</dcscom:{key}>",
-                escape_xml(val)
-            ));
-        }
-        for raw in &preserved_role_children {
-            lines.push(format!("\t\t\t\t{raw}"));
-        }
-        lines.push("\t\t\t</role>".to_string());
-        xml_text.insert_str(insert, &format!("{}\n", lines.join("\n")));
+        let insert = dcs_edit_canonical_child_insert_pos(
+            xml_text,
+            field_range,
+            "role",
+            DCS_EDIT_DATA_SET_FIELD_CHILD_SEQUENCE,
+        )?;
+        xml_text.insert_str(insert, &format!("{role_fragment}\n"));
         let mut parts = Vec::new();
         if !flags.is_empty() {
             parts.push(
@@ -7212,70 +8065,6 @@ pub(crate) fn dcs_edit_set_field_role(
         stdout.push_str(&format!("[OK] Field \"{}\" role cleared\n", data_path));
     }
     Ok(())
-}
-
-pub(crate) fn dcs_edit_preserved_role_children(
-    xml_text: &str,
-    field_range: (usize, usize),
-    kv: &[(String, String)],
-) -> Vec<String> {
-    let Some(role_range) = dcs_edit_child_element_range(xml_text, field_range, "role") else {
-        return Vec::new();
-    };
-    let Some(open_end_rel) = xml_text[role_range.0..role_range.1].find('>') else {
-        return Vec::new();
-    };
-    let content_start = role_range.0 + open_end_rel + 1;
-    let content_end = role_range
-        .1
-        .saturating_sub("</role>".len())
-        .max(content_start);
-    let known = [
-        "periodNumber",
-        "periodType",
-        "dimension",
-        "ignoreNullsInGroups",
-        "balance",
-        "account",
-        "accountTypeExpression",
-        "additionType",
-        "addition",
-    ];
-    let kv_keys = kv.iter().map(|(key, _)| key.as_str()).collect::<Vec<_>>();
-    let mut result = Vec::new();
-    let mut cursor = content_start;
-    while cursor < content_end {
-        let Some(rel) = xml_text[cursor..content_end].find("<dcscom:") else {
-            break;
-        };
-        let start = cursor + rel;
-        let name_start = start + "<dcscom:".len();
-        let Some(name_end_rel) = xml_text[name_start..content_end]
-            .find(|ch: char| ch == '>' || ch == '/' || ch.is_whitespace())
-        else {
-            break;
-        };
-        let name_end = name_start + name_end_rel;
-        let name = &xml_text[name_start..name_end];
-        let Some(open_end_rel) = xml_text[start..content_end].find('>') else {
-            break;
-        };
-        let open_end = start + open_end_rel + 1;
-        let end = if xml_text[start..open_end].trim_end().ends_with("/>") {
-            open_end
-        } else {
-            let close = format!("</dcscom:{name}>");
-            let Some(close_rel) = xml_text[open_end..content_end].find(&close) else {
-                break;
-            };
-            open_end + close_rel + close.len()
-        };
-        if !known.contains(&name) && !kv_keys.contains(&name) {
-            result.push(xml_text[start..end].trim().to_string());
-        }
-        cursor = end;
-    }
-    result
 }
 
 pub(crate) struct DcsEditParameterPatch {
@@ -7346,34 +8135,62 @@ pub(crate) fn dcs_edit_modify_parameter(
     patch: &DcsEditParameterPatch,
     stdout: &mut String,
 ) -> Result<(), String> {
-    if dcs_edit_parameter_range(xml_text, &patch.name).is_none() {
+    let Some(initial_range) = dcs_edit_parameter_range(xml_text, &patch.name) else {
         stdout.push_str(&format!(
             "[WARN] Parameter \"{}\" not found -- skipped\n",
             patch.name
         ));
         return Ok(());
+    };
+    let declared_type = dcs_edit_parameter_declared_type(xml_text, initial_range);
+    let child_indent = format!("{}\t", dcs_edit_line_indent(xml_text, initial_range.0));
+
+    for (key, value) in &patch.simple_pairs {
+        dcs_edit_validate_parameter_simple_pair(key, value)?;
     }
+    let mut value_lines = Vec::new();
+    if let Some(values) = &patch.values {
+        for value in values {
+            value_lines.extend(dcs_edit_parameter_value_lines(
+                &declared_type,
+                value,
+                &child_indent,
+                "value",
+            )?);
+        }
+    }
+    let mut available_value_lines = Vec::new();
+    for (value, presentation) in &patch.available_values {
+        available_value_lines.push(format!("{child_indent}<availableValue>"));
+        available_value_lines.extend(dcs_edit_parameter_value_lines(
+            &declared_type,
+            value,
+            &format!("{child_indent}\t"),
+            "value",
+        )?);
+        if !presentation.is_empty() {
+            dcs_compile_emit_mltext(
+                &mut available_value_lines,
+                &format!("{child_indent}\t"),
+                "presentation",
+                presentation,
+            );
+        }
+        available_value_lines.push(format!("{child_indent}</availableValue>"));
+    }
+
     if !patch.title.is_empty() {
         let range = dcs_edit_parameter_range(xml_text, &patch.name)
             .ok_or_else(|| format!("Parameter \"{}\" not found", patch.name))?;
         let mut lines = Vec::new();
-        dcs_compile_emit_mltext(&mut lines, "\t\t", "title", &patch.title);
-        dcs_edit_replace_or_insert_parameter_child_fragment(
+        dcs_compile_emit_mltext(&mut lines, &child_indent, "title", &patch.title);
+        dcs_edit_replace_or_insert_child_fragment(
             xml_text,
             range,
             "title",
             &lines.join("\n"),
-            &[
-                "valueType",
-                "value",
-                "useRestriction",
-                "availableAsField",
-                "availableValue",
-                "denyIncompleteValues",
-                "use",
-                "expression",
-            ],
-        );
+            DCS_EDIT_PARAMETER_CHILD_SEQUENCE,
+        )?;
         stdout.push_str(&format!(
             "[OK] Parameter \"{}\": title set to \"{}\"\n",
             patch.name, patch.title
@@ -7382,46 +8199,28 @@ pub(crate) fn dcs_edit_modify_parameter(
     if let Some(values) = &patch.values {
         let range = dcs_edit_parameter_range(xml_text, &patch.name)
             .ok_or_else(|| format!("Parameter \"{}\" not found", patch.name))?;
-        let declared_type = dcs_edit_parameter_declared_type(xml_text, range);
         let existed = dcs_edit_remove_parameter_value_children(xml_text, range);
-        let range = dcs_edit_parameter_range(xml_text, &patch.name)
-            .ok_or_else(|| format!("Parameter \"{}\" not found", patch.name))?;
-        let fragment = values
-            .iter()
-            .flat_map(|value| {
-                dcs_edit_parameter_value_lines(&declared_type, value, "\t\t", "value")
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        dcs_edit_insert_parameter_child_fragment(
-            xml_text,
-            range,
-            &fragment,
-            &[
-                "useRestriction",
-                "availableAsField",
-                "valueListAllowed",
-                "availableValue",
-                "denyIncompleteValues",
-                "use",
-                "expression",
-            ],
-        );
+        if !value_lines.is_empty() {
+            let range = dcs_edit_parameter_range(xml_text, &patch.name)
+                .ok_or_else(|| format!("Parameter \"{}\" not found", patch.name))?;
+            dcs_edit_replace_or_insert_child_fragment(
+                xml_text,
+                range,
+                "value",
+                &value_lines.join("\n"),
+                DCS_EDIT_PARAMETER_CHILD_SEQUENCE,
+            )?;
+        }
         if values.len() >= 2 {
             let range = dcs_edit_parameter_range(xml_text, &patch.name)
                 .ok_or_else(|| format!("Parameter \"{}\" not found", patch.name))?;
-            dcs_edit_replace_or_insert_parameter_child_fragment(
+            dcs_edit_replace_or_insert_child_fragment(
                 xml_text,
                 range,
                 "valueListAllowed",
-                "\t\t<valueListAllowed>true</valueListAllowed>",
-                &[
-                    "availableValue",
-                    "denyIncompleteValues",
-                    "use",
-                    "expression",
-                ],
-            );
+                &format!("{child_indent}<valueListAllowed>true</valueListAllowed>"),
+                DCS_EDIT_PARAMETER_CHILD_SEQUENCE,
+            )?;
             stdout.push_str(&format!(
                 "[OK] Parameter \"{}\": value set to list of {} item(s)\n",
                 patch.name,
@@ -7441,18 +8240,13 @@ pub(crate) fn dcs_edit_modify_parameter(
         let range = dcs_edit_parameter_range(xml_text, &patch.name)
             .ok_or_else(|| format!("Parameter \"{}\" not found", patch.name))?;
         let existed = dcs_edit_child_element_range(xml_text, range, key).is_some();
-        let before = if key == "denyIncompleteValues" {
-            &["use"][..]
-        } else {
-            &[][..]
-        };
-        dcs_edit_replace_or_insert_parameter_child_fragment(
+        dcs_edit_replace_or_insert_child_fragment(
             xml_text,
             range,
             key,
-            &format!("\t\t<{key}>{}</{key}>", escape_xml(value)),
-            before,
-        );
+            &format!("{child_indent}<{key}>{}</{key}>", escape_xml(value)),
+            DCS_EDIT_PARAMETER_CHILD_SEQUENCE,
+        )?;
         stdout.push_str(&format!(
             "[OK] Parameter \"{}\": {}\n",
             patch.name,
@@ -7466,35 +8260,16 @@ pub(crate) fn dcs_edit_modify_parameter(
     if !patch.available_values.is_empty() {
         let range = dcs_edit_parameter_range(xml_text, &patch.name)
             .ok_or_else(|| format!("Parameter \"{}\" not found", patch.name))?;
-        let declared_type = dcs_edit_parameter_declared_type(xml_text, range);
         dcs_edit_remove_parameter_available_value_children(xml_text, range);
         let range = dcs_edit_parameter_range(xml_text, &patch.name)
             .ok_or_else(|| format!("Parameter \"{}\" not found", patch.name))?;
-        let fragment = patch
-            .available_values
-            .iter()
-            .map(|(value, presentation)| {
-                let mut lines = vec!["\t\t<availableValue>".to_string()];
-                lines.extend(dcs_edit_parameter_value_lines(
-                    &declared_type,
-                    value,
-                    "\t\t\t",
-                    "value",
-                ));
-                if !presentation.is_empty() {
-                    dcs_compile_emit_mltext(&mut lines, "\t\t\t", "presentation", presentation);
-                }
-                lines.push("\t\t</availableValue>".to_string());
-                lines.join("\n")
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        dcs_edit_insert_parameter_child_fragment(
+        dcs_edit_replace_or_insert_child_fragment(
             xml_text,
             range,
-            &fragment,
-            &["denyIncompleteValues", "use", "expression"],
-        );
+            "availableValue",
+            &available_value_lines.join("\n"),
+            DCS_EDIT_PARAMETER_CHILD_SEQUENCE,
+        )?;
         stdout.push_str(&format!(
             "[OK] Parameter \"{}\": availableValue set to {} item(s)\n",
             patch.name,
@@ -7504,33 +8279,22 @@ pub(crate) fn dcs_edit_modify_parameter(
     if patch.hidden {
         let range = dcs_edit_parameter_range(xml_text, &patch.name)
             .ok_or_else(|| format!("Parameter \"{}\" not found", patch.name))?;
-        dcs_edit_replace_or_insert_parameter_child_fragment(
+        dcs_edit_replace_or_insert_child_fragment(
             xml_text,
             range,
             "availableAsField",
-            "\t\t<availableAsField>false</availableAsField>",
-            &[
-                "availableValue",
-                "denyIncompleteValues",
-                "use",
-                "expression",
-            ],
-        );
+            &format!("{child_indent}<availableAsField>false</availableAsField>"),
+            DCS_EDIT_PARAMETER_CHILD_SEQUENCE,
+        )?;
         let range = dcs_edit_parameter_range(xml_text, &patch.name)
             .ok_or_else(|| format!("Parameter \"{}\" not found", patch.name))?;
-        dcs_edit_replace_or_insert_parameter_child_fragment(
+        dcs_edit_replace_or_insert_child_fragment(
             xml_text,
             range,
             "useRestriction",
-            "\t\t<useRestriction>true</useRestriction>",
-            &[
-                "availableAsField",
-                "availableValue",
-                "denyIncompleteValues",
-                "use",
-                "expression",
-            ],
-        );
+            &format!("{child_indent}<useRestriction>true</useRestriction>"),
+            DCS_EDIT_PARAMETER_CHILD_SEQUENCE,
+        )?;
         stdout.push_str(&format!(
             "[OK] Parameter \"{}\": @hidden applied\n",
             patch.name
@@ -7539,17 +8303,46 @@ pub(crate) fn dcs_edit_modify_parameter(
     if patch.always {
         let range = dcs_edit_parameter_range(xml_text, &patch.name)
             .ok_or_else(|| format!("Parameter \"{}\" not found", patch.name))?;
-        dcs_edit_replace_or_insert_parameter_child_fragment(
+        dcs_edit_replace_or_insert_child_fragment(
             xml_text,
             range,
             "use",
-            "\t\t<use>Always</use>",
-            &[],
-        );
+            &format!("{child_indent}<use>Always</use>"),
+            DCS_EDIT_PARAMETER_CHILD_SEQUENCE,
+        )?;
         stdout.push_str(&format!(
             "[OK] Parameter \"{}\": @always applied\n",
             patch.name
         ));
+    }
+    Ok(())
+}
+
+pub(crate) fn dcs_edit_validate_parameter_simple_pair(
+    key: &str,
+    value: &str,
+) -> Result<(), String> {
+    match key {
+        "useRestriction" | "valueListAllowed" | "availableAsField" | "denyIncompleteValues" => {
+            if !matches!(value, "true" | "false" | "0" | "1") {
+                return Err(format!(
+                    "Parameter property '{key}' value '{value}' is not a valid xs:boolean literal in the fixed DCS 8.3.27 XSD contract"
+                ));
+            }
+        }
+        "use" => {
+            if !matches!(value, "Always" | "Auto") {
+                return Err(format!(
+                    "Parameter property 'use' value '{value}' is not allowed by the fixed DCS 8.3.27 XSD contract"
+                ));
+            }
+        }
+        "expression" | "functionalOptionsParameter" => {}
+        _ => {
+            return Err(format!(
+                "Parameter property '{key}' is not allowed by the fixed DCS 8.3.27 Parameter XSD contract"
+            ));
+        }
     }
     Ok(())
 }
@@ -7633,16 +8426,27 @@ pub(crate) fn dcs_edit_remove_parameter_children_by_name(
     range: (usize, usize),
     child: &str,
 ) -> bool {
-    let mut removed = false;
-    loop {
-        let current_range = (range.0, range.1.min(xml_text.len()));
-        let Some((start, end)) = dcs_edit_child_element_range(xml_text, current_range, child)
-        else {
-            break;
-        };
-        let remove = dcs_edit_element_line_range(xml_text, start, end);
+    let Ok(document) = Document::parse(xml_text) else {
+        return false;
+    };
+    let Some(parameter) = dcs_edit_element_for_range(&document, range) else {
+        return false;
+    };
+    let namespace = parameter.tag_name().namespace();
+    let mut removals = parameter
+        .children()
+        .filter(|node| {
+            node.is_element() && dcs_edit_requested_name_matches(*node, child, namespace)
+        })
+        .map(|node| {
+            let node_range = node.range();
+            dcs_edit_element_line_range(xml_text, node_range.start, node_range.end)
+        })
+        .collect::<Vec<_>>();
+    let removed = !removals.is_empty();
+    removals.sort_by_key(|range| std::cmp::Reverse(range.start));
+    for remove in removals {
         xml_text.replace_range(remove, "");
-        removed = true;
     }
     removed
 }
@@ -7652,31 +8456,16 @@ pub(crate) fn dcs_edit_replace_or_insert_child_fragment(
     range: (usize, usize),
     child: &str,
     fragment: &str,
-    before_children: &[&str],
-) {
+    sequence: &[&str],
+) -> Result<(), String> {
     if let Some(child_range) = dcs_edit_child_element_range(xml_text, range, child) {
         let replace = dcs_edit_element_line_range(xml_text, child_range.0, child_range.1);
         xml_text.replace_range(replace, &format!("{fragment}\n"));
-        return;
+        return Ok(());
     }
-    let block = &xml_text[range.0..range.1];
-    let parent_name = dcs_edit_element_name_at(xml_text, range.0).unwrap_or_default();
-    let parent_indent = dcs_edit_line_indent(xml_text, range.0);
-    let child_indent = format!("{parent_indent}\t");
-    let insert = before_children
-        .iter()
-        .filter_map(|name| block.find(&format!("\n{child_indent}<{name}")))
-        .min()
-        .map(|rel| range.0 + rel + 1)
-        .unwrap_or_else(|| {
-            let close = format!("\n{parent_indent}</{parent_name}>");
-            range.0
-                + block
-                    .rfind(&close)
-                    .map(|rel| rel + 1)
-                    .unwrap_or(range.1 - range.0)
-        });
+    let insert = dcs_edit_canonical_child_insert_pos(xml_text, range, child, sequence)?;
     xml_text.insert_str(insert, &format!("{fragment}\n"));
+    Ok(())
 }
 
 pub(crate) fn dcs_edit_element_name_at(xml_text: &str, start: usize) -> Option<String> {
@@ -7693,39 +8482,93 @@ pub(crate) fn dcs_edit_child_element_range(
     range: (usize, usize),
     child: &str,
 ) -> Option<(usize, usize)> {
-    let start_bound = range.0.min(xml_text.len());
-    let mut end_bound = range.1.min(xml_text.len());
-    while end_bound > start_bound && !xml_text.is_char_boundary(end_bound) {
-        end_bound -= 1;
+    let document = Document::parse(xml_text).ok()?;
+    let parent = dcs_edit_element_for_range(&document, range)?;
+    let default_namespace = parent.tag_name().namespace();
+    parent
+        .children()
+        .find(|node| {
+            node.is_element() && dcs_edit_requested_name_matches(*node, child, default_namespace)
+        })
+        .map(|node| {
+            let range = node.range();
+            (range.start, range.end)
+        })
+}
+
+pub(crate) fn dcs_edit_element_for_range<'a, 'input>(
+    document: &'a Document<'input>,
+    range: (usize, usize),
+) -> Option<roxmltree::Node<'a, 'input>> {
+    document
+        .descendants()
+        .filter(roxmltree::Node::is_element)
+        .filter(|node| {
+            let node_range = node.range();
+            node_range.start <= range.0 && node_range.end >= range.1
+        })
+        .min_by_key(|node| {
+            let node_range = node.range();
+            node_range.end.saturating_sub(node_range.start)
+        })
+}
+
+pub(crate) fn dcs_edit_requested_name_matches(
+    node: roxmltree::Node<'_, '_>,
+    requested: &str,
+    default_namespace: Option<&str>,
+) -> bool {
+    let (prefix, local_name) = requested
+        .split_once(':')
+        .map_or((None, requested), |(prefix, local_name)| {
+            (Some(prefix), local_name)
+        });
+    if node.tag_name().name() != local_name {
+        return false;
     }
-    let block = xml_text.get(start_bound..end_bound)?;
-    let open = format!("<{child}");
-    let mut search_from = 0usize;
-    let rel = loop {
-        let rel = block[search_from..].find(&open)? + search_from;
-        let after = block.as_bytes().get(rel + open.len()).copied();
-        if after.is_some_and(|ch| ch == b'>' || ch == b'/' || ch.is_ascii_whitespace()) {
-            break rel;
-        }
-        search_from = rel + open.len();
+    let expected_namespace = match prefix {
+        Some("dcsset") => Some(DCS_SETTINGS_NS),
+        Some("dcscor") => Some(DCS_CORE_NS),
+        Some("dcscom") => Some(DCS_COMMON_NS),
+        Some("v8") => Some(V8_DATA_NS),
+        Some("xs") => Some("http://www.w3.org/2001/XMLSchema"),
+        Some("xsi") => Some("http://www.w3.org/2001/XMLSchema-instance"),
+        Some(_) => None,
+        None => default_namespace,
     };
-    let start = start_bound + rel;
-    let open_end = xml_text[start..end_bound].find('>')? + start;
-    if xml_text[start..=open_end].trim_end().ends_with("/>") {
-        return Some((start, open_end + 1));
-    }
-    let end = dcs_edit_matching_element_end(xml_text, start, end_bound, child)?;
-    Some((start, end))
+    expected_namespace.is_none_or(|namespace| node.tag_name().namespace() == Some(namespace))
+}
+
+pub(crate) fn dcs_edit_xsi_type_matches(
+    node: roxmltree::Node<'_, '_>,
+    expected_namespace: &str,
+    expected_local_name: &str,
+) -> bool {
+    let Some(value) = node.attribute((XML_SCHEMA_INSTANCE_NS, "type")) else {
+        return false;
+    };
+    let Some((prefix, local_name)) = value.split_once(':') else {
+        return value == expected_local_name
+            && node.lookup_namespace_uri(None) == Some(expected_namespace);
+    };
+    local_name == expected_local_name
+        && !prefix.contains(':')
+        && node.lookup_namespace_uri(Some(prefix)) == Some(expected_namespace)
 }
 
 pub(crate) fn dcs_edit_parameter_range(xml_text: &str, name: &str) -> Option<(usize, usize)> {
-    dcs_edit_find_item_by_child(
-        xml_text,
-        (0, dcs_edit_parameter_limit(xml_text)),
-        "parameter",
-        "name",
-        name,
-    )
+    let document = Document::parse(xml_text).ok()?;
+    let root = document.root_element();
+    root.children()
+        .filter(|node| role_info_element(*node, "parameter", Some(DCS_SCHEMA_NS)))
+        .find(|node| {
+            dcs_child(*node, "name", DCS_SCHEMA_NS)
+                .is_some_and(|name_node| dcs_text_of(name_node) == name)
+        })
+        .map(|node| {
+            let range = node.range();
+            (range.start, range.end)
+        })
 }
 
 pub(crate) fn dcs_edit_rename_parameter(
@@ -7745,17 +8588,15 @@ pub(crate) fn dcs_edit_rename_parameter(
         stdout.push_str("[WARN] rename-parameter: old and new names are equal -- skipped\n");
         return Ok(());
     }
-    if !dcs_edit_top_level_contains(xml_text, "parameter", "name", old) {
+    if dcs_edit_parameter_range(xml_text, old).is_none() {
         stdout.push_str(&format!(
             "[WARN] Parameter \"{}\" not found -- skipped\n",
             old
         ));
         return Ok(());
     }
-    let parameter_limit = dcs_edit_parameter_limit(xml_text);
-    let range =
-        dcs_edit_find_item_by_child(xml_text, (0, parameter_limit), "parameter", "name", old)
-            .ok_or_else(|| format!("Parameter \"{}\" not found", old))?;
+    let range = dcs_edit_parameter_range(xml_text, old)
+        .ok_or_else(|| format!("Parameter \"{}\" not found", old))?;
     dcs_edit_replace_child_text(xml_text, range, "name", new)?;
     let expr_updated = dcs_edit_update_parameter_expression_refs(xml_text, old, new);
     let dp_updated = dcs_edit_replace_exact_data_parameter_refs(xml_text, old, new);
@@ -7778,34 +8619,26 @@ pub(crate) fn dcs_edit_update_parameter_expression_refs(
     old: &str,
     new: &str,
 ) -> usize {
-    let mut updated = 0usize;
-    let mut cursor = 0usize;
-    loop {
-        let limit = dcs_edit_parameter_limit(xml_text);
-        if cursor >= limit {
-            break;
-        }
-        let Some(open_rel) = xml_text[cursor..limit].find("<parameter") else {
-            break;
-        };
-        let start = cursor + open_rel;
-        let Some(end) = dcs_edit_matching_element_end(xml_text, start, limit, "parameter") else {
-            break;
-        };
-        let Ok(expr_range) = dcs_edit_child_text_range(xml_text, (start, end), "expression") else {
-            cursor = end;
-            continue;
-        };
-        let current = xml_text[expr_range.clone()].to_string();
-        let (replacement, count) = dcs_edit_replace_parameter_tokens(&current, old, new);
-        if count > 0 {
-            let old_len = expr_range.end - expr_range.start;
-            xml_text.replace_range(expr_range.start..expr_range.end, &replacement);
-            updated += count;
-            cursor = end + replacement.len() - old_len;
-        } else {
-            cursor = end;
-        }
+    let Ok(document) = Document::parse(xml_text) else {
+        return 0;
+    };
+    let root = document.root_element();
+    let mut replacements = root
+        .children()
+        .filter(|node| role_info_element(*node, "parameter", Some(DCS_SCHEMA_NS)))
+        .filter_map(|parameter| dcs_child(parameter, "expression", DCS_SCHEMA_NS))
+        .filter_map(|expression| {
+            let range = expression.range();
+            let content = dcs_edit_element_content_range(xml_text, (range.start, range.end))?;
+            let current = &xml_text[content.clone()];
+            let (replacement, count) = dcs_edit_replace_parameter_tokens(current, old, new);
+            (count > 0).then_some((content, replacement, count))
+        })
+        .collect::<Vec<_>>();
+    let updated = replacements.iter().map(|(_, _, count)| *count).sum();
+    replacements.sort_by_key(|(range, _, _)| std::cmp::Reverse(range.start));
+    for (range, replacement, _) in replacements {
+        xml_text.replace_range(range, &replacement);
     }
     updated
 }
@@ -7916,26 +8749,28 @@ pub(crate) fn dcs_edit_reorder_parameters(
 
 pub(crate) fn dcs_edit_collect_root_parameter_blocks(
     xml_text: &str,
-    limit: usize,
+    _limit: usize,
 ) -> Vec<(String, usize, usize, String)> {
-    let mut result = Vec::new();
-    let mut cursor = 0usize;
-    while cursor < limit {
-        let Some(open_rel) = xml_text[cursor..limit].find("\n\t<parameter") else {
-            break;
-        };
-        let start = cursor + open_rel + 1;
-        let Some(end) = dcs_edit_matching_element_end(xml_text, start, limit, "parameter") else {
-            break;
-        };
-        let block = xml_text[start..end].to_string();
-        let name = dcs_edit_child_text_range(xml_text, (start, end), "name")
-            .map(|range| xml_text[range].trim().to_string())
-            .unwrap_or_default();
-        result.push((name, start, end, block));
-        cursor = end;
-    }
-    result
+    let Ok(document) = Document::parse(xml_text) else {
+        return Vec::new();
+    };
+    document
+        .root_element()
+        .children()
+        .filter(|node| role_info_element(*node, "parameter", Some(DCS_SCHEMA_NS)))
+        .map(|node| {
+            let range = node.range();
+            let name = dcs_child(node, "name", DCS_SCHEMA_NS)
+                .map(dcs_text_of)
+                .unwrap_or_default();
+            (
+                name,
+                range.start,
+                range.end,
+                xml_text[range.start..range.end].to_string(),
+            )
+        })
+        .collect()
 }
 
 pub(crate) fn dcs_edit_collect_blocks(xml_text: &str, item: &str) -> Vec<(String, String)> {
@@ -7977,18 +8812,27 @@ pub(crate) fn dcs_edit_find_item_by_child(
     child: &str,
     value: &str,
 ) -> Option<(usize, usize)> {
-    let open_prefix = format!("<{item}");
-    let mut cursor = range.0;
-    while cursor < range.1 {
-        let open_rel = xml_text[cursor..range.1].find(&open_prefix)?;
-        let start = cursor + open_rel;
-        let end = dcs_edit_matching_element_end(xml_text, start, range.1, item)?;
-        if dcs_edit_block_has_child_text(&xml_text[start..end], child, value) {
-            return Some((start, end));
-        }
-        cursor = end;
-    }
-    None
+    let document = Document::parse(xml_text).ok()?;
+    let parent = dcs_edit_element_for_range(&document, range)?;
+    let parent_namespace = parent.tag_name().namespace();
+    parent
+        .children()
+        .filter(|node| {
+            node.is_element() && dcs_edit_requested_name_matches(*node, item, parent_namespace)
+        })
+        .find(|node| {
+            let item_namespace = node.tag_name().namespace();
+            node.children()
+                .filter(roxmltree::Node::is_element)
+                .any(|candidate| {
+                    dcs_edit_requested_name_matches(candidate, child, item_namespace)
+                        && dcs_text_of(candidate) == value
+                })
+        })
+        .map(|node| {
+            let range = node.range();
+            (range.start, range.end)
+        })
 }
 
 pub(crate) fn dcs_edit_remove_child_block(
@@ -7996,22 +8840,7 @@ pub(crate) fn dcs_edit_remove_child_block(
     range: (usize, usize),
     child: &str,
 ) -> bool {
-    let open = format!("<{child}");
-    let close = format!("</{child}>");
-    let Some(open_rel) = xml_text[range.0..range.1].find(&open) else {
-        return false;
-    };
-    let start = range.0 + open_rel;
-    let Some(open_end_rel) = xml_text[start..range.1].find('>') else {
-        return false;
-    };
-    let content_start = start + open_end_rel + 1;
-    let Some(close_rel) = xml_text[content_start..range.1].find(&close) else {
-        return false;
-    };
-    let end = content_start + close_rel + close.len();
-    xml_text.replace_range(start..end, "");
-    true
+    dcs_edit_remove_child_element(xml_text, range, child)
 }
 
 pub(crate) fn dcs_edit_remove_child_element(
@@ -8191,6 +9020,7 @@ pub(crate) struct DcsEditField {
     pub(crate) field_type: String,
     pub(crate) roles: Vec<String>,
     pub(crate) restrict: Vec<String>,
+    pub(crate) type_declared: bool,
 }
 
 pub(crate) fn dcs_edit_parse_field(value: &str) -> DcsEditField {
@@ -8219,13 +9049,14 @@ pub(crate) fn dcs_edit_parse_field(value: &str) -> DcsEditField {
         .filter(|part| !part.starts_with('@') && !part.starts_with('#'))
         .collect::<Vec<_>>()
         .join(" ");
-    let (data_path, field_type) = if let Some((left, right)) = text.split_once(':') {
+    let (data_path, field_type, type_declared) = if let Some((left, right)) = text.split_once(':') {
         (
             left.trim().to_string(),
             dcs_compile_resolve_type(right.trim()),
+            true,
         )
     } else {
-        (text.trim().to_string(), String::new())
+        (text.trim().to_string(), String::new(), false)
     };
     DcsEditField {
         field: data_path.clone(),
@@ -8234,10 +9065,20 @@ pub(crate) fn dcs_edit_parse_field(value: &str) -> DcsEditField {
         field_type,
         roles,
         restrict,
+        type_declared,
     }
 }
 
-pub(crate) fn dcs_edit_emit_field(lines: &mut Vec<String>, field: &DcsEditField, indent: &str) {
+pub(crate) fn dcs_edit_emit_field(
+    lines: &mut Vec<String>,
+    field: &DcsEditField,
+    indent: &str,
+    emit_value_type: bool,
+) -> Result<(), String> {
+    let value_type_entries = field
+        .type_declared
+        .then(|| dcs_compile_parse_value_type(&field.field_type))
+        .transpose()?;
     lines.push(format!("{indent}<field xsi:type=\"DataSetFieldField\">"));
     lines.push(format!(
         "{indent}\t<dataPath>{}</dataPath>",
@@ -8254,62 +9095,133 @@ pub(crate) fn dcs_edit_emit_field(lines: &mut Vec<String>, field: &DcsEditField,
     if !restriction.is_empty() {
         lines.push(restriction);
     }
-    let role = dcs_edit_field_role_fragment(&field.roles, &format!("{indent}\t"));
+    let role = dcs_edit_field_role_fragment(&field.roles, &format!("{indent}\t"))?;
     if !role.is_empty() {
         lines.push(role);
     }
-    if !field.field_type.is_empty() {
+    if emit_value_type && value_type_entries.is_some() {
         lines.push(format!("{indent}\t<valueType>"));
-        dcs_compile_emit_value_type(lines, &field.field_type, &format!("{indent}\t\t"));
+        dcs_compile_emit_value_type_entries(
+            lines,
+            value_type_entries.as_deref().unwrap_or_default(),
+            &format!("{indent}\t\t"),
+        );
         lines.push(format!("{indent}\t</valueType>"));
     }
     lines.push(format!("{indent}</field>"));
+    Ok(())
 }
 
-pub(crate) fn dcs_edit_field_role_fragment(roles: &[String], indent: &str) -> String {
-    if roles.is_empty() {
-        return String::new();
+pub(crate) fn dcs_edit_field_role_fragment(
+    roles: &[String],
+    indent: &str,
+) -> Result<String, String> {
+    dcs_edit_field_role_fragment_with_values(roles, &[], indent)
+}
+
+pub(crate) fn dcs_edit_field_role_fragment_with_values(
+    flags: &[String],
+    values: &[(String, String)],
+    indent: &str,
+) -> Result<String, String> {
+    let entries = dcs_edit_field_role_entries(flags, values)?;
+    if entries.is_empty() {
+        return Ok(String::new());
     }
     let mut lines = vec![format!("{indent}<role>")];
-    for role in roles {
-        if role == "period" {
+    for key in DCS_EDIT_FIELD_ROLE_CHILD_SEQUENCE {
+        if let Some(value) = entries.get(*key) {
             lines.push(format!(
-                "{indent}\t<dcscom:periodNumber>1</dcscom:periodNumber>"
+                "{indent}\t<dcscom:{key}>{}</dcscom:{key}>",
+                escape_xml(value)
             ));
-            lines.push(format!(
-                "{indent}\t<dcscom:periodType>Main</dcscom:periodType>"
-            ));
-        } else {
-            lines.push(format!("{indent}\t<dcscom:{role}>true</dcscom:{role}>"));
         }
     }
     lines.push(format!("{indent}</role>"));
-    lines.join("\n")
+    Ok(lines.join("\n"))
+}
+
+pub(crate) fn dcs_edit_field_role_entries(
+    flags: &[String],
+    values: &[(String, String)],
+) -> Result<BTreeMap<String, String>, String> {
+    let mut entries = BTreeMap::new();
+    for flag in flags {
+        match flag.as_str() {
+            "period" => {
+                entries.insert("periodNumber".to_string(), "1".to_string());
+                entries.insert("periodType".to_string(), "Main".to_string());
+            }
+            "dimension" | "account" | "balance" | "ignoreNullValues" | "required"
+            | "dimensionAttribute" => {
+                entries.insert(flag.clone(), "true".to_string());
+            }
+            _ => {
+                return Err(format!(
+                    "Role flag '@{flag}' is not allowed by the fixed DCS 8.3.27 DataSetFieldRole XSD contract"
+                ));
+            }
+        }
+    }
+    for (key, value) in values {
+        if !DCS_EDIT_FIELD_ROLE_CHILD_SEQUENCE.contains(&key.as_str()) {
+            return Err(format!(
+                "Role key '{key}' is not allowed by the fixed DCS 8.3.27 DataSetFieldRole XSD contract"
+            ));
+        }
+        dcs_edit_validate_field_role_value(key, value)?;
+        entries.insert(key.clone(), value.clone());
+    }
+    Ok(entries)
+}
+
+pub(crate) fn dcs_edit_validate_field_role_value(key: &str, value: &str) -> Result<(), String> {
+    let valid = match key {
+        "periodNumber" => {
+            let digits = value.strip_prefix(['+', '-']).unwrap_or(value);
+            !digits.is_empty() && digits.chars().all(|character| character.is_ascii_digit())
+        }
+        "periodType" => matches!(value, "Main" | "Specify" | "Additional"),
+        "dimension" | "account" | "balance" | "ignoreNullValues" | "required"
+        | "dimensionAttribute" => matches!(value, "true" | "false" | "0" | "1"),
+        "balanceType" => matches!(value, "None" | "OpeningBalance" | "ClosingBalance"),
+        "accountingBalanceType" => matches!(value, "None" | "Debit" | "Credit"),
+        _ => true,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(format!(
+            "Role value '{value}' is invalid for '{key}' in the fixed DCS 8.3.27 XSD contract"
+        ))
+    }
 }
 
 pub(crate) fn dcs_edit_field_restriction_fragment(restrict: &[String], indent: &str) -> String {
-    if restrict.is_empty() {
+    let mut enabled = [false; 4];
+    for item in restrict {
+        match item.as_str() {
+            "noField" => enabled[0] = true,
+            "noFilter" | "noCondition" => enabled[1] = true,
+            "noGroup" => enabled[2] = true,
+            "noOrder" => enabled[3] = true,
+            _ => {}
+        }
+    }
+    if !enabled.iter().any(|value| *value) {
         return String::new();
     }
     let mut lines = vec![format!("{indent}<useRestriction>")];
-    for item in restrict {
-        let tag = match item.as_str() {
-            "noField" => Some("field"),
-            "noFilter" | "noCondition" => Some("condition"),
-            "noGroup" => Some("group"),
-            "noOrder" => Some("order"),
-            _ => None,
-        };
-        if let Some(tag) = tag {
+    for (enabled, tag) in enabled
+        .into_iter()
+        .zip(["field", "condition", "group", "order"])
+    {
+        if enabled {
             lines.push(format!("{indent}\t<{tag}>true</{tag}>"));
         }
     }
     lines.push(format!("{indent}</useRestriction>"));
-    if lines.len() <= 2 {
-        String::new()
-    } else {
-        lines.join("\n")
-    }
+    lines.join("\n")
 }
 
 pub(crate) fn dcs_edit_replace_dataset_field(
@@ -8317,7 +9229,14 @@ pub(crate) fn dcs_edit_replace_dataset_field(
     data_set: &str,
     field: &DcsEditField,
 ) -> Result<bool, String> {
-    let range = dcs_edit_dataset_range(xml_text, data_set)?;
+    let value_type_entries = field
+        .type_declared
+        .then(|| dcs_compile_parse_value_type(&field.field_type))
+        .transpose()?;
+    let _ = dcs_edit_field_role_entries(&field.roles, &[])?;
+    let target = dcs_edit_dataset_target(xml_text, data_set)?;
+    let emit_value_type = target.emit_field_value_type;
+    let range = target.range;
     let Some(_) =
         dcs_edit_find_item_by_child(xml_text, range, "field", "dataPath", &field.data_path)
     else {
@@ -8328,30 +9247,32 @@ pub(crate) fn dcs_edit_replace_dataset_field(
         let field_range =
             dcs_edit_find_item_by_child(xml_text, range, "field", "dataPath", &field.data_path)
                 .ok_or_else(|| format!("Field \"{}\" not found", field.data_path))?;
+        let field_child_indent = format!("{}\t", dcs_edit_line_indent(xml_text, field_range.0));
         let mut lines = Vec::new();
-        dcs_compile_emit_mltext(&mut lines, "\t\t\t", "title", &field.title);
+        dcs_compile_emit_mltext(&mut lines, &field_child_indent, "title", &field.title);
         dcs_edit_replace_or_insert_child_fragment(
             xml_text,
             field_range,
             "title",
             &lines.join("\n"),
-            &["useRestriction", "role", "valueType", "inputParameters"],
-        );
+            DCS_EDIT_DATA_SET_FIELD_CHILD_SEQUENCE,
+        )?;
     }
     if !field.restrict.is_empty() {
         let range = dcs_edit_dataset_range(xml_text, data_set)?;
         let field_range =
             dcs_edit_find_item_by_child(xml_text, range, "field", "dataPath", &field.data_path)
                 .ok_or_else(|| format!("Field \"{}\" not found", field.data_path))?;
-        let fragment = dcs_edit_field_restriction_fragment(&field.restrict, "\t\t\t");
+        let field_child_indent = format!("{}\t", dcs_edit_line_indent(xml_text, field_range.0));
+        let fragment = dcs_edit_field_restriction_fragment(&field.restrict, &field_child_indent);
         if !fragment.is_empty() {
             dcs_edit_replace_or_insert_child_fragment(
                 xml_text,
                 field_range,
                 "useRestriction",
                 &fragment,
-                &["role", "valueType", "inputParameters"],
-            );
+                DCS_EDIT_DATA_SET_FIELD_CHILD_SEQUENCE,
+            )?;
         }
     }
     if !field.roles.is_empty() {
@@ -8359,32 +9280,127 @@ pub(crate) fn dcs_edit_replace_dataset_field(
         let field_range =
             dcs_edit_find_item_by_child(xml_text, range, "field", "dataPath", &field.data_path)
                 .ok_or_else(|| format!("Field \"{}\" not found", field.data_path))?;
-        let fragment = dcs_edit_field_role_fragment(&field.roles, "\t\t\t");
+        let field_child_indent = format!("{}\t", dcs_edit_line_indent(xml_text, field_range.0));
+        let fragment = dcs_edit_field_role_fragment(&field.roles, &field_child_indent)?;
         dcs_edit_replace_or_insert_child_fragment(
             xml_text,
             field_range,
             "role",
             &fragment,
-            &["valueType", "inputParameters"],
-        );
+            DCS_EDIT_DATA_SET_FIELD_CHILD_SEQUENCE,
+        )?;
     }
-    if !field.field_type.is_empty() {
+    if !emit_value_type || !field.field_type.is_empty() {
         let range = dcs_edit_dataset_range(xml_text, data_set)?;
         let field_range =
             dcs_edit_find_item_by_child(xml_text, range, "field", "dataPath", &field.data_path)
                 .ok_or_else(|| format!("Field \"{}\" not found", field.data_path))?;
-        let mut lines = vec!["\t\t\t<valueType>".to_string()];
-        dcs_compile_emit_value_type(&mut lines, &field.field_type, "\t\t\t\t");
-        lines.push("\t\t\t</valueType>".to_string());
-        dcs_edit_replace_or_insert_child_fragment(
-            xml_text,
-            field_range,
-            "valueType",
-            &lines.join("\n"),
-            &["inputParameters"],
-        );
+        if emit_value_type {
+            let field_child_indent = format!("{}\t", dcs_edit_line_indent(xml_text, field_range.0));
+            let mut lines = vec![format!("{field_child_indent}<valueType>")];
+            dcs_compile_emit_value_type_entries(
+                &mut lines,
+                value_type_entries.as_deref().unwrap_or_default(),
+                &format!("{field_child_indent}\t"),
+            );
+            lines.push(format!("{field_child_indent}</valueType>"));
+            dcs_edit_replace_or_insert_child_fragment(
+                xml_text,
+                field_range,
+                "valueType",
+                &lines.join("\n"),
+                DCS_EDIT_DATA_SET_FIELD_CHILD_SEQUENCE,
+            )?;
+        } else {
+            dcs_edit_remove_child_element(xml_text, field_range, "valueType");
+        }
     }
     Ok(true)
+}
+
+pub(crate) struct DcsEditDataSetTarget {
+    pub(crate) range: (usize, usize),
+    pub(crate) name: String,
+    pub(crate) emit_field_value_type: bool,
+    pub(crate) field_insert_pos: usize,
+    pub(crate) child_indent: String,
+}
+
+pub(crate) fn dcs_edit_dataset_target(
+    xml_text: &str,
+    data_set: &str,
+) -> Result<DcsEditDataSetTarget, String> {
+    const XSI_NS: &str = "http://www.w3.org/2001/XMLSchema-instance";
+
+    let document =
+        Document::parse(xml_text).map_err(|error| format!("XML parse error: {error}"))?;
+    let node = document
+        .descendants()
+        .filter(|node| {
+            role_info_element(*node, "dataSet", Some(DCS_SCHEMA_NS))
+                || role_info_element(*node, "item", Some(DCS_SCHEMA_NS))
+        })
+        .find(|node| {
+            data_set.is_empty()
+                || dcs_child(*node, "name", DCS_SCHEMA_NS)
+                    .is_some_and(|name| dcs_text_of(name) == data_set)
+        })
+        .ok_or_else(|| {
+            if data_set.is_empty() {
+                "No dataSet found in DCS".to_string()
+            } else {
+                format!("DataSet '{data_set}' not found")
+            }
+        })?;
+    let name = dcs_child(node, "name", DCS_SCHEMA_NS)
+        .map(dcs_text_of)
+        .unwrap_or_else(|| data_set.to_string());
+    let data_set_type = node
+        .attribute((XSI_NS, "type"))
+        .unwrap_or("")
+        .rsplit(':')
+        .next()
+        .unwrap_or("");
+    let range = node.range();
+    let direct_elements = node
+        .children()
+        .filter(roxmltree::Node::is_element)
+        .collect::<Vec<_>>();
+    let child_indent = direct_elements
+        .first()
+        .map(|child| dcs_edit_line_indent(xml_text, child.range().start))
+        .unwrap_or_else(|| format!("{}\t", dcs_edit_line_indent(xml_text, range.start)));
+    let insert_at = direct_elements
+        .iter()
+        .find(|child| {
+            child.tag_name().namespace() != Some(DCS_SCHEMA_NS)
+                || !matches!(child.tag_name().name(), "name" | "field")
+        })
+        .map(|child| child.range().start)
+        .unwrap_or_else(|| {
+            range.start
+                + xml_text[range.clone()]
+                    .rfind("</")
+                    .unwrap_or(range.end - range.start)
+        });
+    let line_start = xml_text[..insert_at]
+        .rfind('\n')
+        .map_or(insert_at, |position| position + 1);
+    let field_insert_pos = if xml_text[line_start..insert_at]
+        .chars()
+        .all(char::is_whitespace)
+    {
+        line_start
+    } else {
+        insert_at
+    };
+    Ok(DcsEditDataSetTarget {
+        range: (range.start, range.end),
+        name,
+        emit_field_value_type: data_set_type != "DataSetQuery",
+        field_insert_pos,
+        child_indent,
+    })
 }
 
 pub(crate) fn dcs_edit_set_query(
@@ -8449,31 +9465,11 @@ pub(crate) fn dcs_edit_dataset_range(
     xml_text: &str,
     data_set: &str,
 ) -> Result<(usize, usize), String> {
-    let mut cursor = 0;
-    while let Some(rel_start) = xml_text[cursor..].find("<dataSet") {
-        let start = cursor + rel_start;
-        let Some(rel_end) = xml_text[start..].find("</dataSet>") else {
-            return Err("No closing </dataSet> found".to_string());
-        };
-        let end = start + rel_end + "</dataSet>".len();
-        let block = &xml_text[start..end];
-        if data_set.is_empty() || block.contains(&format!("<name>{}</name>", escape_xml(data_set)))
-        {
-            return Ok((start, end));
-        }
-        cursor = end;
-    }
-    if data_set.is_empty() {
-        Err("No dataSet found in DCS".to_string())
-    } else {
-        Err(format!("DataSet '{data_set}' not found"))
-    }
+    Ok(dcs_edit_dataset_target(xml_text, data_set)?.range)
 }
 
 pub(crate) fn dcs_edit_dataset_name(xml_text: &str, data_set: &str) -> Option<String> {
-    let range = dcs_edit_dataset_range(xml_text, data_set).ok()?;
-    let name_range = dcs_edit_child_text_range(xml_text, range, "name").ok()?;
-    Some(xml_text[name_range].trim().to_string())
+    Some(dcs_edit_dataset_target(xml_text, data_set).ok()?.name)
 }
 
 pub(crate) fn dcs_edit_variant_name(xml_text: &str, variant: &str) -> Option<String> {
@@ -8491,17 +9487,23 @@ pub(crate) fn dcs_edit_variant_range(
     xml_text: &str,
     variant: &str,
 ) -> Result<(usize, usize), String> {
-    let mut cursor = 0;
-    while let Some(rel_start) = xml_text[cursor..].find("<settingsVariant") {
-        let start = cursor + rel_start;
-        let Some(rel_end) = xml_text[start..].find("</settingsVariant>") else {
-            return Err("No closing </settingsVariant> found".to_string());
-        };
-        let end = start + rel_end + "</settingsVariant>".len();
-        if variant.is_empty() || dcs_edit_variant_block_has_name(&xml_text[start..end], variant) {
-            return Ok((start, end));
-        }
-        cursor = end;
+    let document =
+        Document::parse(xml_text).map_err(|error| format!("XML parse error: {error}"))?;
+    let root = document.root_element();
+    if let Some(node) = root
+        .children()
+        .filter(|node| role_info_element(*node, "settingsVariant", Some(DCS_SCHEMA_NS)))
+        .find(|node| {
+            variant.is_empty()
+                || node
+                    .children()
+                    .filter(roxmltree::Node::is_element)
+                    .find(|child| child.tag_name().name() == "name")
+                    .is_some_and(|name| dcs_text_of(name) == variant)
+        })
+    {
+        let range = node.range();
+        return Ok((range.start, range.end));
     }
     if variant.is_empty() {
         Err("No settingsVariant found in DCS".to_string())
@@ -8521,15 +9523,16 @@ pub(crate) fn dcs_edit_settings_element_range(
     variant: &str,
 ) -> Result<(usize, usize), String> {
     let variant_range = dcs_edit_variant_range(xml_text, variant)?;
-    let Some(open_rel) = xml_text[variant_range.0..variant_range.1].find("<dcsset:settings") else {
-        return Err("No <dcsset:settings> found in variant".to_string());
-    };
-    let start = variant_range.0 + open_rel;
-    let Some(close_rel) = xml_text[start..variant_range.1].find("</dcsset:settings>") else {
-        return Err("No </dcsset:settings> found in variant".to_string());
-    };
-    let end = start + close_rel + "</dcsset:settings>".len();
-    Ok((start, end))
+    let document =
+        Document::parse(xml_text).map_err(|error| format!("XML parse error: {error}"))?;
+    let variant_node = dcs_edit_element_for_range(&document, variant_range)
+        .ok_or_else(|| "settingsVariant element not found".to_string())?;
+    let settings = variant_node
+        .children()
+        .find(|node| role_info_element(*node, "settings", Some(DCS_SETTINGS_NS)))
+        .ok_or_else(|| "No settings element found in variant".to_string())?;
+    let range = settings.range();
+    Ok((range.start, range.end))
 }
 
 pub(crate) fn dcs_edit_settings_content_range(
@@ -8559,25 +9562,6 @@ pub(crate) fn dcs_edit_insert_before_dataset_close(
     Ok(())
 }
 
-pub(crate) fn dcs_edit_insert_before_dataset_payload(
-    xml_text: &mut String,
-    range: (usize, usize),
-    fragment: &str,
-) -> Result<(), String> {
-    let dataset = &xml_text[range.0..range.1];
-    let insert_pos = ["dataSource", "query"]
-        .iter()
-        .filter_map(|tag| dataset.find(&format!("\n\t\t<{tag}")))
-        .min()
-        .map(|rel| range.0 + rel + 1);
-    if let Some(pos) = insert_pos {
-        xml_text.insert_str(pos, &format!("{fragment}\n"));
-        Ok(())
-    } else {
-        dcs_edit_insert_before_dataset_close(xml_text, range, fragment)
-    }
-}
-
 pub(crate) fn dcs_edit_replace_child_text(
     xml_text: &mut String,
     range: (usize, usize),
@@ -8594,17 +9578,29 @@ pub(crate) fn dcs_edit_child_text_range(
     range: (usize, usize),
     child: &str,
 ) -> Result<std::ops::Range<usize>, String> {
-    let open = format!("<{child}>");
-    let close = format!("</{child}>");
-    let block = &xml_text[range.0..range.1];
-    let Some(open_rel) = block.find(&open) else {
-        return Err(format!("No <{child}> element found"));
-    };
-    let text_start = range.0 + open_rel + open.len();
-    let Some(close_rel) = xml_text[text_start..range.1].find(&close) else {
-        return Err(format!("No </{child}> element found"));
-    };
-    Ok(text_start..text_start + close_rel)
+    let (start, end) = dcs_edit_child_element_range(xml_text, range, child)
+        .ok_or_else(|| format!("No direct <{child}> element found"))?;
+    dcs_edit_element_content_range(xml_text, (start, end))
+        .ok_or_else(|| format!("Malformed or self-closing <{child}> element"))
+}
+
+pub(crate) fn dcs_edit_element_content_range(
+    xml_text: &str,
+    range: (usize, usize),
+) -> Option<std::ops::Range<usize>> {
+    let (start, end) = range;
+    let open_end = xml_text[start..end]
+        .find('>')
+        .map(|relative| start + relative + 1)?;
+    if xml_text[start..open_end].trim_end().ends_with("/>") {
+        return None;
+    }
+    let qualified_name = dcs_edit_element_name_at(xml_text, start)?;
+    let close = format!("</{qualified_name}>");
+    let close_start = xml_text[open_end..end]
+        .rfind(&close)
+        .map(|relative| open_end + relative)?;
+    Some(open_end..close_start)
 }
 
 pub(crate) fn dcs_edit_prefixed_child_text_range(
@@ -8721,37 +9717,10 @@ pub(crate) fn dcs_edit_find_prefixed_child_range(
     parent_range: (usize, usize),
     child: &str,
 ) -> Result<Option<DcsEditElementRange>, String> {
-    let open = format!("<{child}");
-    let Some(open_rel) = xml_text[parent_range.0..parent_range.1].find(&open) else {
+    let Some(range) = dcs_edit_child_element_range(xml_text, parent_range, child) else {
         return Ok(None);
     };
-    let start = parent_range.0 + open_rel;
-    let Some(open_end_rel) = xml_text[start..parent_range.1].find('>') else {
-        return Err(format!("Malformed <{child}> element"));
-    };
-    let open_end = start + open_end_rel + 1;
-    let open_tag = &xml_text[start..open_end];
-    if open_tag.trim_end().ends_with("/>") {
-        return Ok(Some(DcsEditElementRange {
-            start,
-            open_end,
-            close_start: open_end,
-            end: open_end,
-            self_closing: true,
-        }));
-    }
-    let close = format!("</{child}>");
-    let Some(close_rel) = xml_text[open_end..parent_range.1].find(&close) else {
-        return Err(format!("No closing </{child}> found"));
-    };
-    let close_start = open_end + close_rel;
-    Ok(Some(DcsEditElementRange {
-        start,
-        open_end,
-        close_start,
-        end: close_start + close.len(),
-        self_closing: false,
-    }))
+    dcs_edit_element_range_details(xml_text, range, child).map(Some)
 }
 
 pub(crate) fn dcs_edit_insert_into_prefixed_range(
@@ -8822,21 +9791,61 @@ pub(crate) struct DcsEditElementRange {
     pub(crate) self_closing: bool,
 }
 
+pub(crate) fn dcs_edit_element_range_details(
+    xml_text: &str,
+    range: (usize, usize),
+    description: &str,
+) -> Result<DcsEditElementRange, String> {
+    let (start, end) = range;
+    let Some(open_end_rel) = xml_text[start..end].find('>') else {
+        return Err(format!("Malformed <{description}> element"));
+    };
+    let open_end = start + open_end_rel + 1;
+    if xml_text[start..open_end].trim_end().ends_with("/>") {
+        return Ok(DcsEditElementRange {
+            start,
+            open_end,
+            close_start: open_end,
+            end: open_end,
+            self_closing: true,
+        });
+    }
+    let qualified_name = dcs_edit_element_name_at(xml_text, start)
+        .ok_or_else(|| format!("Malformed <{description}> element"))?;
+    let close = format!("</{qualified_name}>");
+    let close_start = xml_text[open_end..end]
+        .rfind(&close)
+        .map(|relative| open_end + relative)
+        .ok_or_else(|| format!("No closing </{description}> found"))?;
+    Ok(DcsEditElementRange {
+        start,
+        open_end,
+        close_start,
+        end: close_start + close.len(),
+        self_closing: false,
+    })
+}
+
 pub(crate) fn dcs_edit_prefixed_container_range(
     xml_text: &str,
     variant: &str,
     container: &str,
 ) -> Result<DcsEditElementRange, String> {
     let settings_element = dcs_edit_settings_element_range(xml_text, variant)?;
-    let settings = dcs_edit_settings_content_range(xml_text, variant)?;
-    let settings_indent = dcs_edit_line_indent(xml_text, settings_element.0);
-    let child_indent = format!("{settings_indent}\t");
-    let open_prefix = format!("\n{child_indent}<{container}");
-    let Some(open_rel) = xml_text[settings.0..settings.1].find(&open_prefix) else {
-        return Err(format!("No <{container}> section found in DCS"));
-    };
-    let start = settings.0 + open_rel + 1 + child_indent.len();
-    let Some(open_end_rel) = xml_text[start..settings.1].find('>') else {
+    let document =
+        Document::parse(xml_text).map_err(|error| format!("XML parse error: {error}"))?;
+    let settings = dcs_edit_element_for_range(&document, settings_element)
+        .ok_or_else(|| "DCS settings element not found".to_string())?;
+    let child = settings
+        .children()
+        .find(|node| {
+            node.is_element()
+                && dcs_edit_requested_name_matches(*node, container, Some(DCS_SETTINGS_NS))
+        })
+        .ok_or_else(|| format!("No <{container}> section found in DCS"))?;
+    let child_range = child.range();
+    let start = child_range.start;
+    let Some(open_end_rel) = xml_text[start..child_range.end].find('>') else {
         return Err(format!("Malformed <{container}> section in DCS"));
     };
     let open_end = start + open_end_rel + 1;
@@ -8850,8 +9859,10 @@ pub(crate) fn dcs_edit_prefixed_container_range(
             self_closing: true,
         });
     }
-    let close = format!("</{container}>");
-    let Some(close_rel) = xml_text[open_end..settings.1].find(&close) else {
+    let qualified_name = dcs_edit_element_name_at(xml_text, start)
+        .ok_or_else(|| format!("Malformed <{container}> section in DCS"))?;
+    let close = format!("</{qualified_name}>");
+    let Some(close_rel) = xml_text[open_end..child_range.end].rfind(&close) else {
         return Err(format!("No </{container}> section found in DCS"));
     };
     let close_start = open_end + close_rel;
@@ -8927,7 +9938,13 @@ pub(crate) fn dcs_edit_remove_dataset_item(
     value: &str,
 ) -> Result<bool, String> {
     let range = dcs_edit_dataset_range(xml_text, data_set)?;
-    dcs_edit_remove_item_by_child(xml_text, range, item, child, value)
+    let Some((start, end)) = dcs_edit_find_item_by_child(xml_text, range, item, child, value)
+    else {
+        return Ok(false);
+    };
+    let removal = dcs_edit_element_line_range(xml_text, start, end);
+    xml_text.replace_range(removal, "");
+    Ok(true)
 }
 
 pub(crate) fn dcs_edit_remove_top_level_item(
@@ -8936,7 +9953,29 @@ pub(crate) fn dcs_edit_remove_top_level_item(
     child: &str,
     value: &str,
 ) -> Result<bool, String> {
-    dcs_edit_remove_item_by_child(xml_text, (0, xml_text.len()), item, child, value)
+    let document =
+        Document::parse(xml_text).map_err(|error| format!("XML parse error: {error}"))?;
+    let root = document.root_element();
+    let Some(node) = root
+        .children()
+        .filter(|node| {
+            node.is_element() && dcs_edit_requested_name_matches(*node, item, Some(DCS_SCHEMA_NS))
+        })
+        .find(|node| {
+            node.children()
+                .filter(roxmltree::Node::is_element)
+                .any(|candidate| {
+                    dcs_edit_requested_name_matches(candidate, child, node.tag_name().namespace())
+                        && dcs_text_of(candidate) == value
+                })
+        })
+    else {
+        return Ok(false);
+    };
+    let range = node.range();
+    let remove = dcs_edit_element_line_range(xml_text, range.start, range.end);
+    xml_text.replace_range(remove, "");
+    Ok(true)
 }
 
 pub(crate) fn dcs_edit_remove_item_by_child(
@@ -8946,24 +9985,33 @@ pub(crate) fn dcs_edit_remove_item_by_child(
     child: &str,
     value: &str,
 ) -> Result<bool, String> {
-    let open_prefix = format!("<{item}");
-    let mut cursor = range.0;
-    while cursor < range.1 {
-        let Some(open_rel) = xml_text[cursor..range.1].find(&open_prefix) else {
-            return Ok(false);
-        };
-        let start = cursor + open_rel;
-        let Some(end) = dcs_edit_matching_element_end(xml_text, start, range.1, item) else {
-            return Err(format!("No closing </{item}> found"));
-        };
-        if dcs_edit_block_has_child_text(&xml_text[start..end], child, value) {
-            let range = dcs_edit_element_line_range(xml_text, start, end);
-            xml_text.replace_range(range, "");
-            return Ok(true);
-        }
-        cursor = end;
-    }
-    Ok(false)
+    let document =
+        Document::parse(xml_text).map_err(|error| format!("XML parse error: {error}"))?;
+    let parent = dcs_edit_element_for_range(&document, range)
+        .ok_or_else(|| format!("DCS parent element at byte {} not found", range.0))?;
+    let default_namespace = parent.tag_name().namespace();
+    let Some(node) = parent
+        .descendants()
+        .skip(1)
+        .filter(|node| {
+            node.is_element() && dcs_edit_requested_name_matches(*node, item, default_namespace)
+        })
+        .find(|node| {
+            let item_namespace = node.tag_name().namespace();
+            node.children()
+                .filter(roxmltree::Node::is_element)
+                .any(|candidate| {
+                    dcs_edit_requested_name_matches(candidate, child, item_namespace)
+                        && dcs_text_of(candidate) == value
+                })
+        })
+    else {
+        return Ok(false);
+    };
+    let node_range = node.range();
+    let removal = dcs_edit_element_line_range(xml_text, node_range.start, node_range.end);
+    xml_text.replace_range(removal, "");
+    Ok(true)
 }
 
 pub(crate) fn dcs_edit_block_has_child_text(block: &str, child: &str, value: &str) -> bool {
@@ -9076,7 +10124,7 @@ pub(crate) fn dcs_edit_remove_prefixed_selection_field(
     }
     dcs_edit_remove_item_by_child(
         xml_text,
-        (selection.open_end, selection.close_start),
+        (selection.start, selection.end),
         "dcsset:item",
         "dcsset:field",
         field,
@@ -9111,11 +10159,1462 @@ pub(crate) fn invoke_mutation(
 
 #[cfg(test)]
 mod tests {
+    use super::super::compile_transaction::{with_commit_failpoint, CommitFailpoint};
+    use super::super::single_file_publisher::{
+        with_before_commit_hook, with_publish_failpoints, PublishCheckpoint,
+    };
     use super::*;
     use crate::domain::workspace::WorkspaceContext;
     use serde_json::{json, Map};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    const TEST_DCS_SETTINGS_NS: &str = "http://v8.1c.ru/8.1/data-composition-system/settings";
+    const TEST_DCS_CORE_NS: &str = "http://v8.1c.ru/8.1/data-composition-system/core";
+    const TEST_DCS_COMMON_NS: &str = "http://v8.1c.ru/8.1/data-composition-system/common";
+
+    fn exact_dcs_bytes(xml: &str) -> Vec<u8> {
+        let mut bytes = b"\xef\xbb\xbf".to_vec();
+        bytes.extend_from_slice(xml.replace("\r\n", "\n").replace('\n', "\r\n").as_bytes());
+        bytes
+    }
+
+    fn dcs_edit_args(operation: &str, value: &str, no_validate: bool) -> Map<String, Value> {
+        Map::from_iter([
+            ("TemplatePath".to_string(), json!("Template.xml")),
+            ("Operation".to_string(), json!(operation)),
+            ("Value".to_string(), json!(value)),
+            ("NoValidate".to_string(), json!(no_validate)),
+        ])
+    }
+
+    fn dcs_compile_args(definition: &Value, output_path: &str) -> Map<String, Value> {
+        Map::from_iter([
+            ("Value".to_string(), Value::String(definition.to_string())),
+            ("OutputPath".to_string(), json!(output_path)),
+        ])
+    }
+
+    fn valid_compile_definition() -> Value {
+        json!({
+            "dataSets": [{
+                "name": "Data",
+                "query": "SELECT 1 AS Value",
+                "fields": ["Value"]
+            }]
+        })
+    }
+
+    #[test]
+    fn dcs_edit_no_validate_still_rolls_back_semantically_invalid_final_dcs() {
+        let context = temp_context("dcs-edit-invalid-post-validation");
+        let template_path = context.cwd.join("Template.xml");
+        let invalid = base_dcs_xml().replace(
+            "<dataSource>ИсточникДанных1</dataSource>",
+            "<dataSource>MissingSource</dataSource>",
+        );
+        let original = exact_dcs_bytes(&invalid);
+        fs::write(&template_path, &original).unwrap();
+        let args = dcs_edit_args("add-total", "Amount: SUM(Amount)", true);
+
+        let outcome = edit_dcs(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("unknown dataSource"),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&template_path).unwrap(), original);
+        fs::remove_dir_all(&context.cwd).unwrap();
+    }
+
+    #[test]
+    fn dcs_edit_post_write_validation_failure_restores_exact_bytes() {
+        let context = temp_context("dcs-edit-post-write-rollback");
+        let template_path = context.cwd.join("Template.xml");
+        let original = exact_dcs_bytes(base_dcs_xml());
+        fs::write(&template_path, &original).unwrap();
+        let args = dcs_edit_args("add-total", "Amount: SUM(Amount)", false);
+
+        let outcome = with_commit_failpoint(CommitFailpoint::PostWriteValidation, || {
+            edit_dcs(&args, &context)
+        });
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("post-write validation"),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&template_path).unwrap(), original);
+        fs::remove_dir_all(&context.cwd).unwrap();
+    }
+
+    #[test]
+    fn dcs_edit_preserves_a_concurrent_replacement_instead_of_overwriting_it() {
+        let context = temp_context("dcs-edit-concurrent-replacement");
+        let template_path = context.cwd.join("Template.xml");
+        fs::write(&template_path, exact_dcs_bytes(base_dcs_xml())).unwrap();
+        let concurrent = exact_dcs_bytes(&base_dcs_xml().replace(
+            "<query>ВЫБРАТЬ Amount КАК Amount</query>",
+            "<query>ВЫБРАТЬ Amount КАК ConcurrentAmount</query>",
+        ));
+        let concurrent_for_hook = concurrent.clone();
+        let expected_target = template_path.clone();
+        let args = dcs_edit_args("add-total", "Amount: SUM(Amount)", false);
+
+        let outcome = with_dcs_edit_after_read_hook(
+            move |target| {
+                assert_eq!(target, expected_target);
+                fs::write(target, concurrent_for_hook).unwrap();
+            },
+            || edit_dcs(&args, &context),
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(outcome.errors.join("\n").contains("changed"), "{outcome:?}");
+        assert_eq!(fs::read(&template_path).unwrap(), concurrent);
+        fs::remove_dir_all(&context.cwd).unwrap();
+    }
+
+    #[test]
+    fn dcs_edit_no_validate_suppresses_output_but_not_validation() {
+        for (no_validate, expect_report) in [(false, true), (true, false)] {
+            let context = temp_context(&format!("dcs-edit-validation-output-{no_validate}"));
+            fs::write(context.cwd.join("Template.xml"), base_dcs_xml()).unwrap();
+            let args = dcs_edit_args("add-total", "Amount: SUM(Amount)", no_validate);
+
+            let outcome = edit_dcs(&args, &context);
+
+            assert!(outcome.ok, "{outcome:?}");
+            assert_eq!(
+                outcome
+                    .stdout
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("--- Running dcs-validate ---"),
+                expect_report,
+                "{outcome:?}"
+            );
+            fs::remove_dir_all(&context.cwd).unwrap();
+        }
+    }
+
+    #[test]
+    fn dcs_compile_rejects_invalid_generated_dcs_without_leaving_a_file() {
+        let context = temp_context("dcs-compile-invalid-post-validation");
+        let definition = json!({
+            "dataSources": [{"name": "KnownSource", "type": "Local"}],
+            "dataSets": [{
+                "name": "Data",
+                "source": "MissingSource",
+                "query": "SELECT 1 AS Value",
+                "fields": ["Value"]
+            }]
+        });
+        let args = dcs_compile_args(&definition, "out/Template.xml");
+
+        let outcome = compile_dcs(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("unknown dataSource"),
+            "{outcome:?}"
+        );
+        assert!(!context.cwd.join("out/Template.xml").exists());
+        assert!(!context.cwd.join("out").exists());
+        fs::remove_dir_all(&context.cwd).unwrap();
+    }
+
+    #[test]
+    fn dcs_compile_post_write_validation_failure_removes_created_file_and_directory() {
+        let context = temp_context("dcs-compile-post-write-rollback");
+        let args = dcs_compile_args(&valid_compile_definition(), "out/Template.xml");
+
+        let outcome = with_commit_failpoint(CommitFailpoint::PostWriteValidation, || {
+            compile_dcs(&args, &context)
+        });
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("post-write validation"),
+            "{outcome:?}"
+        );
+        assert!(!context.cwd.join("out/Template.xml").exists());
+        assert!(!context.cwd.join("out").exists());
+        fs::remove_dir_all(&context.cwd).unwrap();
+    }
+
+    #[test]
+    fn dcs_compile_directly_rejects_existing_wrong_root_without_write() {
+        let context = temp_context("dcs-compile-existing-wrong-root");
+        let output_path = context.cwd.join("Template.xml");
+        let original = b"<garbage/>".to_vec();
+        fs::write(&output_path, &original).unwrap();
+        let args = dcs_compile_args(&valid_compile_definition(), "Template.xml");
+
+        let outcome = compile_dcs(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("declared platform XML target root")),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&output_path).unwrap(), original);
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        assert!(outcome.artifacts.is_empty(), "{outcome:?}");
+        fs::remove_dir_all(&context.cwd).unwrap();
+    }
+
+    #[test]
+    fn dcs_compile_rolls_back_if_format_owner_changes_during_publication() {
+        let context = temp_context("dcs-compile-format-owner-race");
+        let source = context.cwd.join("src");
+        let output = source.join("Templates/Guarded/Ext/Template.xml");
+        let owner = source.join("Configuration.xml");
+        fs::create_dir_all(output.parent().unwrap()).unwrap();
+        fs::write(
+            context.cwd.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::write(
+            &owner,
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><Configuration uuid=\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\"><Properties><Name>Demo</Name></Properties><ChildObjects/></Configuration></MetaDataObject>",
+        )
+        .unwrap();
+        let args = dcs_compile_args(
+            &valid_compile_definition(),
+            "src/Templates/Guarded/Ext/Template.xml",
+        );
+        let owner_for_hook = owner.clone();
+
+        let outcome = with_before_commit_hook(
+            move |_| {
+                fs::write(
+                    &owner_for_hook,
+                    "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.21\"><Configuration/></MetaDataObject>",
+                )
+                .unwrap();
+            },
+            || compile_dcs(&args, &context),
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("read guard"),
+            "{outcome:?}"
+        );
+        assert!(!output.exists());
+        fs::remove_dir_all(&context.cwd).unwrap();
+    }
+
+    #[test]
+    fn dcs_compile_rolls_back_if_selected_query_file_changes_after_read() {
+        let context = temp_context("dcs-compile-query-input-race");
+        let query_path = context.cwd.join("query.bsl");
+        let output_path = context.cwd.join("Template.xml");
+        fs::write(&query_path, "SELECT 1 AS Value").unwrap();
+        let definition = json!({
+            "dataSets": [{
+                "name": "Data",
+                "query": "@query.bsl",
+                "fields": ["Value"]
+            }]
+        });
+        let args = dcs_compile_args(&definition, "Template.xml");
+        let concurrent_query = b"SELECT 2 AS ConcurrentValue".to_vec();
+        let query_for_hook = query_path.clone();
+        let concurrent_for_hook = concurrent_query.clone();
+
+        let outcome = with_before_commit_hook(
+            move |_| fs::write(&query_for_hook, &concurrent_for_hook).unwrap(),
+            || compile_dcs(&args, &context),
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("read guard"),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&query_path).unwrap(), concurrent_query);
+        assert!(!output_path.exists());
+        fs::remove_dir_all(&context.cwd).unwrap();
+    }
+
+    #[test]
+    fn dcs_edit_rolls_back_if_selected_query_file_changes_after_read() {
+        let context = temp_context("dcs-edit-query-input-race");
+        let template_path = context.cwd.join("Template.xml");
+        let query_path = context.cwd.join("query.bsl");
+        let original = exact_dcs_bytes(base_dcs_xml());
+        fs::write(&template_path, &original).unwrap();
+        fs::write(&query_path, "SELECT 1 AS Value").unwrap();
+        let args = Map::from_iter([
+            ("TemplatePath".to_string(), json!("Template.xml")),
+            ("Operation".to_string(), json!("set-query")),
+            ("DataSet".to_string(), json!("НаборДанных1")),
+            ("Value".to_string(), json!("@query.bsl")),
+        ]);
+        let concurrent_query = b"SELECT 2 AS ConcurrentValue".to_vec();
+        let query_for_hook = query_path.clone();
+        let concurrent_for_hook = concurrent_query.clone();
+
+        let outcome = with_before_commit_hook(
+            move |_| fs::write(&query_for_hook, &concurrent_for_hook).unwrap(),
+            || edit_dcs(&args, &context),
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("read guard"),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&query_path).unwrap(), concurrent_query);
+        assert_eq!(fs::read(&template_path).unwrap(), original);
+        fs::remove_dir_all(&context.cwd).unwrap();
+    }
+
+    #[test]
+    fn dcs_compile_surfaces_cleanup_warnings_after_a_committed_create() {
+        let context = temp_context("dcs-compile-cleanup-warning");
+        let args = dcs_compile_args(&valid_compile_definition(), "Template.xml");
+
+        let outcome = with_publish_failpoints(&[PublishCheckpoint::Cleanup], || {
+            compile_dcs(&args, &context)
+        });
+
+        assert!(outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("injected publication cleanup failure")),
+            "{outcome:?}"
+        );
+        assert!(context.cwd.join("Template.xml").is_file());
+        fs::remove_dir_all(&context.cwd).unwrap();
+    }
+
+    #[test]
+    fn dcs_info_rejects_wrong_root_namespace_without_output() {
+        let context = temp_context("dcs-info-wrong-root-ns");
+        let template_path = context.cwd.join("Template.xml");
+        let out_file = context.cwd.join("info.txt");
+        fs::write(
+            &template_path,
+            base_dcs_xml().replace(
+                "http://v8.1c.ru/8.1/data-composition-system/schema",
+                "urn:not-dcs",
+            ),
+        )
+        .unwrap();
+        let args = Map::from_iter([
+            ("TemplatePath".to_string(), json!("Template.xml")),
+            ("OutFile".to_string(), json!("info.txt")),
+        ]);
+
+        let outcome = analyze_dcs_info(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(!out_file.exists());
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| error.contains("urn:not-dcs") && error.contains("DataCompositionSchema")));
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn dcs_info_raw_returns_exact_unpaginated_query_text() {
+        let context = temp_context("dcs-info-raw-query");
+        let template_path = context.cwd.join("Template.xml");
+        let query = "  ВЫБРАТЬ 1 КАК Значение  \n|ОБЪЕДИНИТЬ ВСЕ\n|ВЫБРАТЬ 2  ";
+        fs::write(
+            &template_path,
+            base_dcs_xml().replace(
+                "<query>ВЫБРАТЬ Amount КАК Amount</query>",
+                &format!("<query>{query}</query>"),
+            ),
+        )
+        .unwrap();
+        let args = Map::from_iter([
+            ("TemplatePath".to_string(), json!("Template.xml")),
+            ("Mode".to_string(), json!("query")),
+            ("Name".to_string(), json!("НаборДанных1")),
+            ("Raw".to_string(), json!(true)),
+            ("Limit".to_string(), json!(1)),
+            ("Offset".to_string(), json!(100)),
+        ]);
+
+        let outcome = analyze_dcs_info(&args, &context);
+
+        assert!(outcome.ok, "{outcome:?}");
+        assert_eq!(outcome.stdout.as_deref(), Some(query));
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn dcs_info_raw_rejects_non_query_mode() {
+        let context = temp_context("dcs-info-raw-non-query");
+        fs::write(context.cwd.join("Template.xml"), base_dcs_xml()).unwrap();
+        let args = Map::from_iter([
+            ("TemplatePath".to_string(), json!("Template.xml")),
+            ("Mode".to_string(), json!("overview")),
+            ("Raw".to_string(), json!(true)),
+        ]);
+
+        let outcome = analyze_dcs_info(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| error.contains("Raw") && error.contains("Mode=query")));
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn dcs_edit_rejects_wrong_root_namespace_without_write() {
+        let context = temp_context("dcs-edit-wrong-root-ns");
+        let template_path = context.cwd.join("Template.xml");
+        let original = base_dcs_xml()
+            .replace(
+                "http://v8.1c.ru/8.1/data-composition-system/schema",
+                "urn:not-dcs",
+            )
+            .into_bytes();
+        fs::write(&template_path, &original).unwrap();
+        let args = Map::from_iter([
+            ("TemplatePath".to_string(), json!("Template.xml")),
+            ("Operation".to_string(), json!("add-field")),
+            ("Value".to_string(), json!("Quantity: decimal(10,0)")),
+        ]);
+
+        let outcome = edit_dcs(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| error.contains("urn:not-dcs") && error.contains("DataCompositionSchema")));
+        assert_eq!(fs::read(&template_path).unwrap(), original);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn dcs_compile_orders_non_query_field_children_like_platform_8_3_27() {
+        let definition = json!({
+            "dataSets": [
+                {
+                    "name": "Query",
+                    "query": "SELECT 1 AS Value",
+                    "fields": ["Value:string"]
+                },
+                {
+                    "name": "Object",
+                    "objectName": "Catalog.Items",
+                    "fields": [{
+                        "dataPath": "Value",
+                        "field": "Value",
+                        "type": "string",
+                        "presentationExpression": "Value"
+                    }]
+                },
+                {
+                    "name": "Union",
+                    "fields": [{
+                        "dataPath": "UnionValue",
+                        "field": "UnionValue",
+                        "type": "string",
+                        "presentationExpression": "UnionValue"
+                    }],
+                    "items": [{
+                        "name": "UnionQuery",
+                        "query": "SELECT 1 AS UnionValue"
+                    }]
+                }
+            ]
+        });
+
+        let xml = dcs_compile_xml(&definition, Path::new("."), Path::new(".")).unwrap();
+        let document = Document::parse(&xml).unwrap();
+        let root = document.root_element();
+        let query = test_data_set(root, "Query");
+        let object = test_data_set(root, "Object");
+        let union = test_data_set(root, "Union");
+        let query_field = test_data_set_field(query, "Value");
+        let object_field = test_data_set_field(object, "Value");
+        let union_field = test_data_set_field(union, "UnionValue");
+
+        assert_eq!(
+            test_direct_child_names(query),
+            ["name", "field", "dataSource", "query"]
+        );
+        assert_eq!(test_direct_child_names(query_field), ["dataPath", "field"]);
+        assert_eq!(
+            test_direct_child_names(object),
+            ["name", "field", "dataSource", "objectName"]
+        );
+        assert_eq!(
+            test_direct_child_names(object_field),
+            ["dataPath", "field", "presentationExpression", "valueType"]
+        );
+        assert_eq!(
+            test_direct_child_names(union_field),
+            ["dataPath", "field", "presentationExpression", "valueType"]
+        );
+    }
+
+    #[test]
+    fn dcs_compile_canonicalizes_string_synonyms_for_object_and_union_fields() {
+        const V8_DATA_NS: &str = "http://v8.1c.ru/8.1/data/core";
+        let definition = json!({
+            "dataSets": [
+                {
+                    "name": "Object",
+                    "objectName": "Catalog.Items",
+                    "fields": ["ObjectValue:String"]
+                },
+                {
+                    "name": "Union",
+                    "fields": ["UnionValue:string"],
+                    "items": [{
+                        "name": "UnionQuery",
+                        "query": "SELECT 1 AS UnionValue"
+                    }]
+                }
+            ]
+        });
+
+        let xml = dcs_compile_xml(&definition, Path::new("."), Path::new(".")).unwrap();
+        let document = Document::parse(&xml).unwrap();
+        let root = document.root_element();
+
+        for (data_set_name, field_name) in [("Object", "ObjectValue"), ("Union", "UnionValue")] {
+            let data_set = test_data_set(root, data_set_name);
+            let field = test_data_set_field(data_set, field_name);
+            let value_type = dcs_child(field, "valueType", DCS_SCHEMA_NS).unwrap();
+            assert_eq!(
+                test_direct_child_names(value_type),
+                ["Type", "StringQualifiers"],
+                "{data_set_name}"
+            );
+            assert_eq!(
+                dcs_child(value_type, "Type", V8_DATA_NS).and_then(|node| node.text()),
+                Some("xs:string"),
+                "{data_set_name}"
+            );
+            let qualifiers = dcs_child(value_type, "StringQualifiers", V8_DATA_NS).unwrap();
+            assert_eq!(
+                test_direct_child_names(qualifiers),
+                ["Length", "AllowedLength"],
+                "{data_set_name}"
+            );
+            assert_eq!(
+                dcs_child(qualifiers, "Length", V8_DATA_NS).and_then(|node| node.text()),
+                Some("0"),
+                "{data_set_name}"
+            );
+            assert_eq!(
+                dcs_child(qualifiers, "AllowedLength", V8_DATA_NS).and_then(|node| node.text()),
+                Some("Variable"),
+                "{data_set_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn dcs_compile_value_type_uses_xsd_group_order_after_full_validation() {
+        const V8_DATA_NS: &str = "http://v8.1c.ru/8.1/data/core";
+        let definition = json!({
+            "dataSets": [{
+                "name": "Object",
+                "objectName": "Catalog.Items",
+                "fields": [{
+                    "field": "Value",
+                    "type": [
+                        "ВидыСубконтоХозрасчетные",
+                        "typeid:00112233-4455-6677-8899-aabbccddeeff",
+                        "date",
+                        "string(12)",
+                        "decimal(15,2,nonneg)",
+                        "CatalogRef.Items",
+                        "boolean"
+                    ]
+                }]
+            }]
+        });
+
+        let xml = dcs_compile_xml(&definition, Path::new("."), Path::new(".")).unwrap();
+        let document = Document::parse(&xml).unwrap();
+        let field = test_data_set_field(test_data_set(document.root_element(), "Object"), "Value");
+        let value_type = dcs_child(field, "valueType", DCS_SCHEMA_NS).unwrap();
+
+        assert_eq!(
+            test_direct_child_names(value_type),
+            [
+                "Type",
+                "Type",
+                "Type",
+                "Type",
+                "Type",
+                "TypeSet",
+                "TypeId",
+                "NumberQualifiers",
+                "StringQualifiers",
+                "DateQualifiers",
+            ]
+        );
+        assert_eq!(
+            dcs_children(value_type, "Type", V8_DATA_NS)
+                .into_iter()
+                .map(dcs_text_of)
+                .collect::<Vec<_>>(),
+            [
+                "xs:dateTime",
+                "xs:string",
+                "xs:decimal",
+                "d5p1:CatalogRef.Items",
+                "xs:boolean",
+            ]
+        );
+        assert_eq!(
+            dcs_child(value_type, "TypeSet", V8_DATA_NS).map(dcs_text_of),
+            Some("d5p1:ВидыСубконтоХозрасчетные".to_string())
+        );
+        assert_eq!(
+            dcs_child(value_type, "TypeId", V8_DATA_NS).map(dcs_text_of),
+            Some("00112233-4455-6677-8899-aabbccddeeff".to_string())
+        );
+    }
+
+    #[test]
+    fn dcs_compile_value_type_rejects_invalid_8_3_27_contract_values() {
+        for type_name in [
+            "string(1025)",
+            "decimal(39,0)",
+            "decimal(10,11)",
+            "decimal(10,2,nonnegative)",
+            "MysteryRef.Items",
+            "CatalogRef.Items.Extra",
+            "typeid:not-a-uuid",
+            "string||boolean",
+            "string|String(10)",
+        ] {
+            let definition = json!({
+                "dataSets": [{
+                    "name": "Object",
+                    "objectName": "Catalog.Items",
+                    "fields": [{ "field": "Value", "type": type_name }]
+                }]
+            });
+
+            let error =
+                dcs_compile_xml(&definition, Path::new("."), Path::new(".")).expect_err(type_name);
+            assert!(
+                error.contains(type_name) || error.contains("duplicate platform type"),
+                "unexpected error for {type_name}: {error}"
+            );
+        }
+
+        let definition = json!({
+            "dataSets": [{
+                "name": "Query",
+                "query": "SELECT 1 AS Value",
+                "fields": [{ "field": "Value", "type": ["string", ""] }]
+            }]
+        });
+        let error = dcs_compile_xml(&definition, Path::new("."), Path::new("."))
+            .expect_err("empty array item must be rejected before query-field omission");
+        assert!(error.contains("empty item"), "{error}");
+
+        let definition = json!({
+            "dataSets": [{
+                "name": "Query",
+                "query": "SELECT 1 AS Value",
+                "fields": ["Value:"]
+            }]
+        });
+        let error = dcs_compile_xml(&definition, Path::new("."), Path::new("."))
+            .expect_err("explicitly empty shorthand type must be rejected");
+        assert!(error.contains("empty item"), "{error}");
+
+        let mut lines = vec!["sentinel".to_string()];
+        let error = dcs_compile_emit_value_type(&mut lines, "string|decimal(39,0)", "\t")
+            .expect_err("all entries must be checked before the first entry is emitted");
+        assert!(error.contains("decimal(39,0)"), "{error}");
+        assert_eq!(lines, ["sentinel"]);
+    }
+
+    #[test]
+    fn dcs_compile_rejects_defined_type_that_platform_8_3_27_drops_without_write() {
+        let context = temp_context("dcs-compile-defined-type-no-write");
+        let output_path = context.cwd.join("Template.xml");
+        let original = base_dcs_xml().as_bytes().to_vec();
+        fs::write(&output_path, &original).unwrap();
+        let definition = json!({
+            "dataSets": [{
+                "name": "Main",
+                "query": "SELECT 1 AS Value",
+                "fields": ["Value"]
+            }],
+            "parameters": [{
+                "name": "NamedType",
+                "type": "DefinedType.NamedType"
+            }]
+        });
+        let args = Map::from_iter([
+            ("OutputPath".to_string(), json!("Template.xml")),
+            ("Value".to_string(), json!(definition.to_string())),
+        ]);
+
+        let outcome = compile_dcs(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.iter().any(|error| {
+                error.contains("DefinedType.NamedType")
+                    && error.contains("8.3.27")
+                    && error.contains("round-trip")
+            }),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&output_path).unwrap(), original);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn dcs_compile_calculated_field_merges_restrictions_in_8_3_27_order() {
+        let definition = json!({
+            "calculatedFields": [{
+                "dataPath": "Total",
+                "expression": "Quantity * Price",
+                "title": "Total",
+                "type": "decimal(15,2)",
+                "restrict": ["noGroup", "noFilter"],
+                "useRestriction": ["noField", "noFilter"]
+            }]
+        });
+
+        let xml = dcs_compile_xml(&definition, Path::new("."), Path::new(".")).unwrap();
+        let document = Document::parse(&xml).unwrap();
+        let calculated =
+            dcs_child(document.root_element(), "calculatedField", DCS_SCHEMA_NS).unwrap();
+
+        assert_eq!(
+            test_direct_child_names(calculated),
+            [
+                "dataPath",
+                "expression",
+                "title",
+                "useRestriction",
+                "valueType"
+            ]
+        );
+        let restriction = dcs_child(calculated, "useRestriction", DCS_SCHEMA_NS).unwrap();
+        assert_eq!(
+            test_direct_child_names(restriction),
+            ["field", "condition", "group"]
+        );
+        assert_eq!(
+            dcs_children(calculated, "useRestriction", DCS_SCHEMA_NS).len(),
+            1,
+            "restrict and useRestriction aliases must merge into one XSD child"
+        );
+    }
+
+    #[test]
+    fn dcs_compile_parameter_combination_follows_8_3_27_order() {
+        let definition = json!({
+            "parameters": [{
+                "name": "Choice",
+                "title": "Choice",
+                "type": "string(20)",
+                "value": "A",
+                "useRestriction": true,
+                "expression": "&Source.Choice",
+                "valueListAllowed": true,
+                "availableAsField": false,
+                "denyIncompleteValues": true,
+                "use": "Always"
+            }]
+        });
+
+        let xml = dcs_compile_xml(&definition, Path::new("."), Path::new(".")).unwrap();
+        let document = Document::parse(&xml).unwrap();
+        let parameter = dcs_child(document.root_element(), "parameter", DCS_SCHEMA_NS).unwrap();
+
+        assert_eq!(
+            test_direct_child_names(parameter),
+            [
+                "name",
+                "title",
+                "valueType",
+                "value",
+                "useRestriction",
+                "expression",
+                "valueListAllowed",
+                "availableAsField",
+                "denyIncompleteValues",
+                "use",
+            ]
+        );
+    }
+
+    #[test]
+    fn dcs_compile_omits_required_true_default_but_preserves_false() {
+        let definition = json!({
+            "dataSets": [
+                {
+                    "name": "Source",
+                    "query": "SELECT 1 AS Value",
+                    "fields": ["Value"]
+                },
+                {
+                    "name": "RequiredDestination",
+                    "query": "SELECT 1 AS Value",
+                    "fields": ["Value"]
+                },
+                {
+                    "name": "OptionalDestination",
+                    "query": "SELECT 1 AS Value",
+                    "fields": ["Value"]
+                }
+            ],
+            "dataSetLinks": [
+                {
+                    "source": "Source",
+                    "dest": "RequiredDestination",
+                    "sourceExpr": "Value",
+                    "destExpr": "Value",
+                    "required": true
+                },
+                {
+                    "source": "Source",
+                    "dest": "OptionalDestination",
+                    "sourceExpr": "Value",
+                    "destExpr": "Value",
+                    "required": false
+                }
+            ]
+        });
+
+        let xml = dcs_compile_xml(&definition, Path::new("."), Path::new(".")).unwrap();
+        let document = Document::parse(&xml).unwrap();
+        let links = dcs_children(document.root_element(), "dataSetLink", DCS_SCHEMA_NS);
+
+        assert_eq!(links.len(), 2);
+        assert!(
+            dcs_child(links[0], "required", DCS_SCHEMA_NS).is_none(),
+            "8.3.27 canonical export omits the default true value\n{xml}"
+        );
+        assert_eq!(
+            dcs_child(links[1], "required", DCS_SCHEMA_NS).map(dcs_text_of),
+            Some("false".to_string())
+        );
+    }
+
+    #[test]
+    fn dcs_compile_complex_definition_follows_8_3_27_direct_child_order() {
+        const DCS_SETTINGS_NS: &str = "http://v8.1c.ru/8.1/data-composition-system/settings";
+        let definition = json!({
+            "dataSets": [
+                {
+                    "name": "Union",
+                    "fields": ["Value"],
+                    "items": [
+                        {
+                            "name": "First",
+                            "query": "SELECT 1 AS Value",
+                            "fields": ["Value"]
+                        },
+                        {
+                            "name": "Second",
+                            "objectName": "Catalog.Items",
+                            "fields": [{ "field": "Value", "type": "string" }]
+                        }
+                    ]
+                },
+                {
+                    "name": "Other",
+                    "query": "SELECT 1 AS Value",
+                    "fields": ["Value"]
+                }
+            ],
+            "dataSetLinks": [{
+                "source": "Union",
+                "dest": "Other",
+                "sourceExpr": "Value",
+                "destExpr": "Value",
+                "parameter": "LinkParameter",
+                "parameterListAllowed": true,
+                "linkConditionExpression": "Value <> 0",
+                "startExpression": "Value",
+                "required": false
+            }],
+            "parameters": [{
+                "name": "Choice",
+                "title": "Choice",
+                "type": "string(20)",
+                "value": "A",
+                "useRestriction": true,
+                "expression": "&Source.Choice",
+                "availableValues": [
+                    { "value": "A", "presentation": "Alpha" },
+                    { "value": "B", "presentation": "Beta" }
+                ],
+                "valueListAllowed": true,
+                "availableAsField": false,
+                "denyIncompleteValues": true,
+                "use": "Always"
+            }],
+            "settingsVariants": [{
+                "name": "Main",
+                "settings": {
+                    "selection": ["Value"],
+                    "filter": ["Value > 0"],
+                    "dataParameters": [{ "parameter": "LinkParameter", "value": "A" }],
+                    "order": [{ "field": "Value", "direction": "Asc" }],
+                    "conditionalAppearance": [{
+                        "fields": ["Value"],
+                        "filter": ["Value > 0"],
+                        "appearance": { "ЦветТекста": "web:Red" }
+                    }],
+                    "outputParameters": { "Title": "Report" },
+                    "structure": [{
+                        "type": "group",
+                        "name": "Group",
+                        "groupBy": ["Value"],
+                        "filter": ["Value > 0"],
+                        "order": [{ "field": "Value", "direction": "Desc" }],
+                        "selection": ["Value"],
+                        "conditionalAppearance": [{
+                            "fields": ["Value"],
+                            "filter": ["Value > 0"],
+                            "appearance": { "ЦветТекста": "web:Red" }
+                        }],
+                        "outputParameters": { "Title": "Group" },
+                        "children": [{ "type": "group", "name": "Nested" }]
+                    }]
+                }
+            }]
+        });
+
+        let xml = dcs_compile_xml(&definition, Path::new("."), Path::new(".")).unwrap();
+        let document = Document::parse(&xml).unwrap();
+        let root = document.root_element();
+
+        let union = test_data_set(root, "Union");
+        assert_eq!(
+            test_direct_child_names(union),
+            ["name", "field", "item", "item"]
+        );
+
+        let link = dcs_child(root, "dataSetLink", DCS_SCHEMA_NS).unwrap();
+        assert_eq!(
+            test_direct_child_names(link),
+            [
+                "sourceDataSet",
+                "destinationDataSet",
+                "sourceExpression",
+                "destinationExpression",
+                "parameter",
+                "parameterListAllowed",
+                "linkConditionExpression",
+                "startExpression",
+                "required",
+            ]
+        );
+
+        let parameter = dcs_child(root, "parameter", DCS_SCHEMA_NS).unwrap();
+        assert_eq!(
+            test_direct_child_names(parameter),
+            [
+                "name",
+                "title",
+                "valueType",
+                "value",
+                "useRestriction",
+                "expression",
+                "availableValue",
+                "availableValue",
+                "valueListAllowed",
+                "availableAsField",
+                "denyIncompleteValues",
+                "use",
+            ]
+        );
+        for available_value in dcs_children(parameter, "availableValue", DCS_SCHEMA_NS) {
+            assert_eq!(
+                test_direct_child_names(available_value),
+                ["value", "presentation"]
+            );
+        }
+
+        let variant = dcs_child(root, "settingsVariant", DCS_SCHEMA_NS).unwrap();
+        let settings = dcs_child(variant, "settings", DCS_SETTINGS_NS).unwrap();
+        assert_eq!(
+            test_direct_child_names(settings),
+            [
+                "selection",
+                "filter",
+                "dataParameters",
+                "order",
+                "conditionalAppearance",
+                "outputParameters",
+                "item",
+            ]
+        );
+        let group = dcs_child(settings, "item", DCS_SETTINGS_NS).unwrap();
+        assert_eq!(
+            test_direct_child_names(group),
+            [
+                "name",
+                "groupItems",
+                "filter",
+                "order",
+                "selection",
+                "conditionalAppearance",
+                "outputParameters",
+                "item",
+            ]
+        );
+        for (parent, expected_title) in [(settings, "Report"), (group, "Group")] {
+            let conditional = dcs_child(parent, "conditionalAppearance", DCS_SETTINGS_NS).unwrap();
+            let item = dcs_child(conditional, "item", DCS_SETTINGS_NS).unwrap();
+            assert_eq!(
+                test_direct_child_names(item),
+                ["selection", "filter", "appearance"]
+            );
+            let appearance = dcs_child(item, "appearance", DCS_SETTINGS_NS).unwrap();
+            let appearance_item = dcs_child(appearance, "item", TEST_DCS_CORE_NS).unwrap();
+            assert_eq!(
+                dcs_child(appearance_item, "parameter", TEST_DCS_CORE_NS)
+                    .map(dcs_text_of)
+                    .as_deref(),
+                Some("ЦветТекста")
+            );
+            assert_eq!(
+                dcs_child(appearance_item, "value", TEST_DCS_CORE_NS)
+                    .map(dcs_all_text)
+                    .as_deref(),
+                Some("web:Red")
+            );
+
+            let output_parameters = dcs_child(parent, "outputParameters", DCS_SETTINGS_NS).unwrap();
+            let output_item = dcs_child(output_parameters, "item", TEST_DCS_CORE_NS).unwrap();
+            assert_eq!(
+                dcs_child(output_item, "parameter", TEST_DCS_CORE_NS)
+                    .map(dcs_text_of)
+                    .as_deref(),
+                Some("Title")
+            );
+            assert_eq!(
+                dcs_child(output_item, "value", TEST_DCS_CORE_NS)
+                    .map(dcs_all_text)
+                    .as_deref(),
+                Some(expected_title)
+            );
+        }
+    }
+
+    #[test]
+    fn dcs_compile_string_filter_omits_absent_view_mode() {
+        const DCS_SETTINGS_NS: &str = "http://v8.1c.ru/8.1/data-composition-system/settings";
+        let definition = json!({
+            "settingsVariants": [{
+                "name": "Main",
+                "settings": { "filter": ["Amount > 0"] }
+            }]
+        });
+
+        let xml = dcs_compile_xml(&definition, Path::new("."), Path::new(".")).unwrap();
+        let document = Document::parse(&xml).unwrap();
+        let variant = dcs_child(document.root_element(), "settingsVariant", DCS_SCHEMA_NS).unwrap();
+        let settings = dcs_child(variant, "settings", DCS_SETTINGS_NS).unwrap();
+        let filter = dcs_child(settings, "filter", DCS_SETTINGS_NS).unwrap();
+        let item = dcs_child(filter, "item", DCS_SETTINGS_NS).unwrap();
+
+        assert_eq!(
+            test_direct_child_names(item),
+            ["left", "comparisonType", "right"]
+        );
+        assert!(!xml.contains("<dcsset:viewMode>None</dcsset:viewMode>"));
+    }
+
+    #[test]
+    fn dcs_compile_rejects_malformed_available_values_before_writing() {
+        let context = temp_context("dcs-compile-malformed-available-values");
+        let output_path = context.cwd.join("Template.xml");
+        let original = b"existing output".to_vec();
+        fs::write(&output_path, &original).unwrap();
+        let definition = json!({
+            "dataSets": [{
+                "name": "Main",
+                "query": "SELECT 1 AS Value",
+                "fields": ["Value"]
+            }],
+            "parameters": [{
+                "name": "Choice",
+                "type": "string",
+                "availableValues": [{ "presentation": "Missing value" }]
+            }]
+        });
+        let args = Map::from_iter([
+            ("OutputPath".to_string(), json!("Template.xml")),
+            ("Value".to_string(), json!(definition.to_string())),
+        ]);
+
+        let outcome = compile_dcs(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("availableValues") && error.contains("value")),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&output_path).unwrap(), original);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn dcs_edit_add_parameter_combination_follows_8_3_27_order() {
+        let xml = edit_field_test_xml(
+            "dcs-edit-parameter-order",
+            base_dcs_xml(),
+            "add-parameter",
+            "Choice [Choice]: string(20) = A,B @hidden @always @valueList availableValue=A:Alpha,B:Beta",
+        );
+        let document = Document::parse(&xml).unwrap();
+        let parameter = dcs_children(document.root_element(), "parameter", DCS_SCHEMA_NS)
+            .into_iter()
+            .find(|parameter| {
+                dcs_child(*parameter, "name", DCS_SCHEMA_NS)
+                    .is_some_and(|name| dcs_text_of(name) == "Choice")
+            })
+            .unwrap();
+
+        assert_eq!(
+            test_direct_child_names(parameter),
+            [
+                "name",
+                "title",
+                "valueType",
+                "value",
+                "value",
+                "useRestriction",
+                "availableValue",
+                "availableValue",
+                "valueListAllowed",
+                "availableAsField",
+                "use",
+            ]
+        );
+    }
+
+    #[test]
+    fn dcs_edit_auto_dates_parameters_follow_8_3_27_order() {
+        let xml = edit_field_test_xml(
+            "dcs-edit-auto-date-parameter-order",
+            base_dcs_xml(),
+            "add-parameter",
+            "Period [Period]: StandardPeriod = LastMonth @autoDates",
+        );
+        let document = Document::parse(&xml).unwrap();
+
+        for name in ["ДатаНачала", "ДатаОкончания"] {
+            let parameter = dcs_children(document.root_element(), "parameter", DCS_SCHEMA_NS)
+                .into_iter()
+                .find(|parameter| {
+                    dcs_child(*parameter, "name", DCS_SCHEMA_NS)
+                        .is_some_and(|node| dcs_text_of(node) == name)
+                })
+                .unwrap_or_else(|| panic!("parameter {name} not found"));
+            assert_eq!(
+                test_direct_child_names(parameter),
+                [
+                    "name",
+                    "title",
+                    "valueType",
+                    "value",
+                    "useRestriction",
+                    "expression",
+                    "availableAsField",
+                ],
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn dcs_edit_named_standard_period_omits_custom_only_dates() {
+        let xml = edit_field_test_xml(
+            "dcs-edit-standard-period-canonical-value",
+            base_dcs_xml(),
+            "add-parameter",
+            "Period [Period]: StandardPeriod = LastMonth @autoDates",
+        );
+        let document = Document::parse(&xml).unwrap();
+        let parameter = dcs_children(document.root_element(), "parameter", DCS_SCHEMA_NS)
+            .into_iter()
+            .find(|parameter| {
+                dcs_child(*parameter, "name", DCS_SCHEMA_NS)
+                    .is_some_and(|name| dcs_text_of(name) == "Period")
+            })
+            .unwrap();
+        let value = dcs_child(parameter, "value", DCS_SCHEMA_NS).unwrap();
+
+        assert_eq!(
+            dcs_child(value, "variant", V8_DATA_NS)
+                .map(dcs_text_of)
+                .as_deref(),
+            Some("LastMonth")
+        );
+        assert!(dcs_child(value, "startDate", V8_DATA_NS).is_none());
+        assert!(dcs_child(value, "endDate", V8_DATA_NS).is_none());
+
+        let custom = dcs_edit_parameter_value_lines("StandardPeriod", "Custom", "\t", "value")
+            .unwrap()
+            .join("\n");
+        assert!(custom.contains("<v8:startDate>"));
+        assert!(custom.contains("<v8:endDate>"));
+    }
+
+    #[test]
+    fn dcs_compile_invalid_calculated_field_type_does_not_overwrite_output() {
+        let context = temp_context("dcs-compile-invalid-calculated-type-no-write");
+        let output_path = context.cwd.join("Template.xml");
+        let original = b"existing output".to_vec();
+        fs::write(&output_path, &original).unwrap();
+        let definition = json!({
+            "dataSets": [{
+                "name": "Main",
+                "query": "SELECT 1 AS Value",
+                "fields": ["Value"]
+            }],
+            "calculatedFields": [{
+                "dataPath": "Broken",
+                "expression": "1",
+                "type": "decimal(39,0)",
+                "restrict": ["noGroup"]
+            }]
+        });
+        let args = Map::from_iter([
+            ("OutputPath".to_string(), json!("Template.xml")),
+            ("Value".to_string(), json!(definition.to_string())),
+        ]);
+
+        let outcome = compile_dcs(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("decimal(39,0)")),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&output_path).unwrap(), original);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn dcs_edit_invalid_parameter_type_does_not_write() {
+        let context = temp_context("dcs-edit-invalid-parameter-type");
+        let template_path = context.cwd.join("Template.xml");
+        let original = base_dcs_xml().as_bytes().to_vec();
+        fs::write(&template_path, &original).unwrap();
+        let args = Map::from_iter([
+            ("TemplatePath".to_string(), json!("Template.xml")),
+            ("Operation".to_string(), json!("add-parameter")),
+            ("Value".to_string(), json!("Broken: decimal(39,0) = 1")),
+        ]);
+
+        let outcome = edit_dcs(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| error.contains("decimal(39,0)")));
+        assert_eq!(fs::read(&template_path).unwrap(), original);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn dcs_edit_rejects_defined_type_that_platform_8_3_27_drops_without_write() {
+        let context = temp_context("dcs-edit-defined-type-no-write");
+        let template_path = context.cwd.join("Template.xml");
+        let original = base_dcs_xml().as_bytes().to_vec();
+        fs::write(&template_path, &original).unwrap();
+        let args = Map::from_iter([
+            ("TemplatePath".to_string(), json!("Template.xml")),
+            ("Operation".to_string(), json!("add-parameter")),
+            (
+                "Value".to_string(),
+                json!("NamedType: DefinedType.NamedType"),
+            ),
+        ]);
+
+        let outcome = edit_dcs(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.iter().any(|error| {
+                error.contains("DefinedType.NamedType")
+                    && error.contains("8.3.27")
+                    && error.contains("round-trip")
+            }),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&template_path).unwrap(), original);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn dcs_compile_duplicate_wire_type_does_not_overwrite_output() {
+        let context = temp_context("dcs-compile-duplicate-type-no-write");
+        let output_path = context.cwd.join("Template.xml");
+        let original = b"existing output".to_vec();
+        fs::write(&output_path, &original).unwrap();
+        let definition = json!({
+            "dataSets": [{
+                "name": "Object",
+                "objectName": "Catalog.Items",
+                "fields": [{ "field": "Value", "type": ["string", "String(10)"] }]
+            }]
+        });
+        let args = Map::from_iter([
+            ("OutputPath".to_string(), json!("Template.xml")),
+            ("Value".to_string(), json!(definition.to_string())),
+        ]);
+
+        let outcome = compile_dcs(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| error.contains("duplicate platform type")));
+        assert_eq!(fs::read(&output_path).unwrap(), original);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn dcs_edit_add_field_uses_dataset_specific_value_type_rule_and_order() {
+        let query_xml = edit_field_test_xml(
+            "edit-add-query-field",
+            base_dcs_xml(),
+            "add-field",
+            "Added:String",
+        );
+        let query_document = Document::parse(&query_xml).unwrap();
+        let query_data_set = test_data_set(query_document.root_element(), "НаборДанных1");
+        let query_field = test_data_set_field(query_data_set, "Added");
+
+        assert_eq!(
+            test_direct_child_names(query_data_set),
+            ["name", "field", "field", "dataSource", "query"]
+        );
+        assert_eq!(test_direct_child_names(query_field), ["dataPath", "field"]);
+
+        let object_source = base_dcs_xml()
+            .replace("xsi:type=\"DataSetQuery\"", "xsi:type=\"DataSetObject\"")
+            .replace(
+                "<query>ВЫБРАТЬ Amount КАК Amount</query>",
+                "<objectName>Catalog.Items</objectName>",
+            );
+        let object_xml = edit_field_test_xml(
+            "edit-add-object-field",
+            &object_source,
+            "add-field",
+            "Added:String",
+        );
+        let object_document = Document::parse(&object_xml).unwrap();
+        let object_data_set = test_data_set(object_document.root_element(), "НаборДанных1");
+        let object_field = test_data_set_field(object_data_set, "Added");
+
+        assert_eq!(
+            test_direct_child_names(object_field),
+            ["dataPath", "field", "valueType"]
+        );
+    }
+
+    #[test]
+    fn dcs_edit_modify_query_field_removes_noncanonical_value_type() {
+        let source = base_dcs_xml().replacen(
+            "\t\t</field>",
+            "\t\t\t<valueType>\n\t\t\t\t<v8:Type>xs:string</v8:Type>\n\t\t\t</valueType>\n\t\t</field>",
+            1,
+        );
+
+        let xml = edit_field_test_xml(
+            "edit-modify-query-field",
+            &source,
+            "modify-field",
+            "Amount [Updated]",
+        );
+        let document = Document::parse(&xml).unwrap();
+        let data_set = test_data_set(document.root_element(), "НаборДанных1");
+        let field = test_data_set_field(data_set, "Amount");
+
+        assert_eq!(
+            test_direct_child_names(field),
+            ["dataPath", "field", "title"]
+        );
+    }
+
+    #[test]
+    fn dcs_edit_add_field_inserts_into_nested_query_before_its_payload() {
+        let xml = edit_field_test_xml_for_dataset(
+            "edit-add-nested-query-field",
+            &nested_union_dcs_xml(),
+            "InnerQuery",
+            "add-field",
+            "Added:String",
+        );
+        let document = Document::parse(&xml).unwrap();
+        let union = test_data_set(document.root_element(), "Union");
+        let inner = test_data_set(union, "InnerQuery");
+        let added = test_data_set_field(inner, "Added");
+
+        assert_eq!(
+            test_direct_child_names(inner),
+            ["name", "field", "field", "dataSource", "query"]
+        );
+        assert_eq!(test_direct_child_names(added), ["dataPath", "field"]);
+    }
+
+    #[test]
+    fn dcs_edit_modify_field_targets_nested_query_when_outer_field_has_same_path() {
+        let xml = edit_field_test_xml_for_dataset(
+            "edit-modify-nested-query-field",
+            &nested_union_dcs_xml(),
+            "InnerQuery",
+            "modify-field",
+            "Value [Inner updated]:String",
+        );
+        let document = Document::parse(&xml).unwrap();
+        let union = test_data_set(document.root_element(), "Union");
+        let outer_field = test_data_set_field(union, "Value");
+        let inner = test_data_set(union, "InnerQuery");
+        let inner_field = test_data_set_field(inner, "Value");
+
+        assert_eq!(test_direct_child_names(outer_field), ["dataPath", "field"]);
+        assert_eq!(
+            test_direct_child_names(inner_field),
+            ["dataPath", "field", "title"]
+        );
+        assert!(
+            xml.contains("\n\t\t\t\t<title xsi:type=\"v8:LocalStringType\">"),
+            "nested field child must keep its four-tab indentation:\n{xml}"
+        );
+    }
 
     #[test]
     fn native_dcs_edit_accepts_documented_operations_without_script_fallback() {
@@ -9138,11 +11637,11 @@ mod tests {
             ("add-dataParameter", "Период = LastMonth @user"),
             ("add-order", "Amount desc"),
             ("add-selection", "Quantity"),
+            ("add-dataSet", "Доп: ВЫБРАТЬ 1 КАК Amount"),
             (
                 "add-dataSetLink",
                 "НаборДанных1 > Доп on Amount = Amount [param LinkParam]",
             ),
-            ("add-dataSet", "Доп: ВЫБРАТЬ 1 КАК Amount"),
             ("add-variant", "Alt [Alt presentation]"),
             (
                 "add-conditionalAppearance",
@@ -9161,7 +11660,7 @@ mod tests {
                 "Период [Period title] value=ThisYear @hidden @always",
             ),
             ("modify-structure", "Quantity > details @name=Данные"),
-            ("set-field-role", "Quantity dimension"),
+            ("set-field-role", "Quantity @dimension"),
             ("rename-parameter", "Период => ПериодОтчета"),
             (
                 "reorder-parameters",
@@ -9397,6 +11896,645 @@ mod tests {
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
+    #[test]
+    fn dcs_edit_creates_data_parameters_before_order() {
+        let xml = edit_field_test_xml(
+            "dcs-edit-data-parameters-order",
+            base_dcs_xml(),
+            "add-dataParameter",
+            "Period = Today",
+        );
+
+        assert_eq!(
+            test_settings_child_names(&xml),
+            ["selection", "filter", "dataParameters", "order", "item"]
+        );
+    }
+
+    #[test]
+    fn dcs_edit_creates_order_after_data_parameters() {
+        let source = base_dcs_xml().replace(
+            "\t\t\t<dcsset:order>\n\t\t\t</dcsset:order>\n",
+            "\t\t\t<dcsset:dataParameters>\n\t\t\t\t<dcscor:item xsi:type=\"dcsset:SettingsParameterValue\">\n\t\t\t\t\t<dcscor:parameter>Period</dcscor:parameter>\n\t\t\t\t</dcscor:item>\n\t\t\t</dcsset:dataParameters>\n",
+        );
+        let xml = edit_field_test_xml(
+            "dcs-edit-order-after-data-parameters",
+            &source,
+            "add-order",
+            "Amount desc",
+        );
+
+        assert_eq!(
+            test_settings_child_names(&xml),
+            ["selection", "filter", "dataParameters", "order", "item"]
+        );
+    }
+
+    #[test]
+    fn dcs_edit_creates_conditional_appearance_before_output_parameters() {
+        let source = base_dcs_xml().replace(
+            "\t\t\t<dcsset:item xsi:type=\"dcsset:StructureItemGroup\">",
+            "\t\t\t<dcsset:outputParameters>\n\t\t\t\t<dcscor:item xsi:type=\"dcsset:SettingsParameterValue\">\n\t\t\t\t\t<dcscor:parameter>Title</dcscor:parameter>\n\t\t\t\t</dcscor:item>\n\t\t\t</dcsset:outputParameters>\n\t\t\t<dcsset:item xsi:type=\"dcsset:StructureItemGroup\">",
+        );
+        let xml = edit_field_test_xml(
+            "dcs-edit-conditional-before-output",
+            &source,
+            "add-conditionalAppearance",
+            "TextColor = web:Red",
+        );
+
+        assert_eq!(
+            test_settings_child_names(&xml),
+            [
+                "selection",
+                "filter",
+                "order",
+                "conditionalAppearance",
+                "outputParameters",
+                "item",
+            ]
+        );
+    }
+
+    #[test]
+    fn dcs_edit_set_structure_keeps_items_after_settings_containers() {
+        let xml = edit_field_test_xml(
+            "dcs-edit-set-structure-order",
+            base_dcs_xml(),
+            "set-structure",
+            "Amount @name=Main > details",
+        );
+
+        assert_eq!(
+            test_settings_child_names(&xml),
+            ["selection", "filter", "order", "item"]
+        );
+    }
+
+    #[test]
+    fn dcs_edit_details_group_omits_platform_default_group_items() {
+        let mut xml = edit_field_test_xml(
+            "dcs-edit-details-group-canonical",
+            base_dcs_xml(),
+            "set-structure",
+            "Amount @name=Main > Quantity @name=Details",
+        );
+
+        assert!(dcs_edit_replace_named_group_items(&mut xml, "", "Details", &[]).unwrap());
+
+        let document = Document::parse(&xml).unwrap();
+        let details = document
+            .descendants()
+            .filter(|node| role_info_element(*node, "item", Some(TEST_DCS_SETTINGS_NS)))
+            .find(|node| {
+                dcs_child(*node, "name", TEST_DCS_SETTINGS_NS)
+                    .is_some_and(|name| dcs_text_of(name) == "Details")
+            })
+            .unwrap();
+        assert!(
+            dcs_child(details, "groupItems", TEST_DCS_SETTINGS_NS).is_none(),
+            "8.3.27 removes an empty groupItems container from a details group"
+        );
+
+        let details_fragment =
+            dcs_edit_structure_item_fragment(&dcs_edit_parse_structure("details")[0], "\t");
+        assert!(!details_fragment.contains("<dcsset:groupItems"));
+    }
+
+    #[test]
+    fn dcs_edit_root_additions_precede_nested_schema() {
+        let source = base_dcs_xml().replace(
+            "\t<settingsVariant>",
+            "\t<nestedSchema/>\n\t<settingsVariant>",
+        );
+        for (operation, value, expected) in [
+            ("add-calculated-field", "Extra = 1", "calculatedField"),
+            ("add-total", "Amount: Sum(Amount)", "totalField"),
+            ("add-parameter", "Extra: string = x", "parameter"),
+            (
+                "add-dataSetLink",
+                "НаборДанных1 > НаборДанных1 on Amount = Amount",
+                "dataSetLink",
+            ),
+            ("add-dataSet", "Extra: SELECT 1", "dataSet"),
+        ] {
+            let xml = edit_field_test_xml(
+                &format!("dcs-edit-root-order-{operation}"),
+                &source,
+                operation,
+                value,
+            );
+            let names = test_root_child_names(&xml);
+            let added = names.iter().position(|name| name == expected).unwrap();
+            let nested = names
+                .iter()
+                .position(|name| name == "nestedSchema")
+                .unwrap();
+            assert!(added < nested, "{operation}: {names:?}\n{xml}");
+        }
+    }
+
+    #[test]
+    fn dcs_edit_add_drilldown_inserts_parameter_before_templates() {
+        let source = base_dcs_xml().replace(
+            "\t<settingsVariant>",
+            "\t<template>\n\t\t<name>Named</name>\n\t\t<template>Amount</template>\n\t</template>\n\t<settingsVariant>",
+        );
+        let xml = edit_field_test_xml(
+            "dcs-edit-drilldown-root-order",
+            &source,
+            "add-drilldown",
+            "Amount",
+        );
+        let names = test_root_child_names(&xml);
+        let parameter = names.iter().position(|name| name == "parameter").unwrap();
+        let template = names.iter().position(|name| name == "template").unwrap();
+
+        assert!(parameter < template, "{names:?}\n{xml}");
+    }
+
+    #[test]
+    fn dcs_edit_field_restrictions_and_roles_are_canonical_and_unique() {
+        let xml = edit_field_test_xml(
+            "dcs-edit-field-contract-order",
+            base_dcs_xml(),
+            "add-field",
+            "ContractField @required @dimension @dimension @period #noOrder #noField #noField",
+        );
+        let document = Document::parse(&xml).unwrap();
+        let data_set = test_data_set(document.root_element(), "НаборДанных1");
+        let field = test_data_set_field(data_set, "ContractField");
+        let restriction = dcs_child(field, "useRestriction", DCS_SCHEMA_NS).unwrap();
+        let role = dcs_child(field, "role", DCS_SCHEMA_NS).unwrap();
+
+        assert_eq!(test_direct_child_names(restriction), ["field", "order"]);
+        assert_eq!(
+            test_direct_child_names(role),
+            ["periodNumber", "periodType", "dimension", "required"]
+        );
+    }
+
+    #[test]
+    fn dcs_edit_rejects_unknown_field_role_without_write() {
+        for (case, operation, value) in [
+            ("add", "add-field", "Broken @autoOrder"),
+            ("set", "set-field-role", "Amount @autoOrder"),
+        ] {
+            let context = temp_context(&format!("dcs-edit-invalid-role-{case}-no-write"));
+            let template_path = context.cwd.join("Template.xml");
+            let original = base_dcs_xml().as_bytes().to_vec();
+            fs::write(&template_path, &original).unwrap();
+            let args = Map::from_iter([
+                ("TemplatePath".to_string(), json!("Template.xml")),
+                ("Operation".to_string(), json!(operation)),
+                ("Value".to_string(), json!(value)),
+            ]);
+
+            let outcome = edit_dcs(&args, &context);
+
+            assert!(!outcome.ok, "{operation}: {outcome:?}");
+            assert!(
+                outcome
+                    .errors
+                    .iter()
+                    .any(|error| error.contains("autoOrder") && error.contains("8.3.27")),
+                "{operation}: {outcome:?}"
+            );
+            assert_eq!(fs::read(&template_path).unwrap(), original);
+            let _ = fs::remove_dir_all(&context.cwd);
+        }
+    }
+
+    #[test]
+    fn dcs_edit_set_field_role_is_canonical_unique_and_allows_overrides() {
+        let xml = edit_field_test_xml(
+            "dcs-edit-set-field-role-contract",
+            base_dcs_xml(),
+            "set-field-role",
+            "Amount @required @period @dimension @dimension periodNumber=2 periodType=Additional balanceType=OpeningBalance",
+        );
+        let document = Document::parse(&xml).unwrap();
+        let field = test_data_set_field(
+            test_data_set(document.root_element(), "НаборДанных1"),
+            "Amount",
+        );
+        let role = dcs_child(field, "role", DCS_SCHEMA_NS).unwrap();
+
+        assert_eq!(
+            test_direct_child_names(role),
+            [
+                "periodNumber",
+                "periodType",
+                "dimension",
+                "balanceType",
+                "required",
+            ]
+        );
+        assert_eq!(
+            dcs_child(role, "periodNumber", TEST_DCS_COMMON_NS)
+                .map(dcs_text_of)
+                .as_deref(),
+            Some("2")
+        );
+        assert_eq!(
+            dcs_child(role, "periodType", TEST_DCS_COMMON_NS)
+                .map(dcs_text_of)
+                .as_deref(),
+            Some("Additional")
+        );
+    }
+
+    #[test]
+    fn dcs_edit_modify_field_uses_full_dataset_field_sequence() {
+        let source = base_dcs_xml()
+            .replace("DataSetQuery", "DataSetObject")
+            .replace(
+                "\t\t\t<field>Amount</field>",
+                "\t\t\t<field>Amount</field>\n\t\t\t<attributeUseRestriction><condition>true</condition></attributeUseRestriction>\n\t\t\t<presentationExpression>Amount</presentationExpression>\n\t\t\t<appearance/>\n\t\t\t<availableValue/>\n\t\t\t<inputParameters/>",
+            )
+            .replace(
+                "\t\t<query>ВЫБРАТЬ Amount КАК Amount</query>",
+                "\t\t<objectName>Catalog.Items</objectName>",
+            );
+        let xml = edit_field_test_xml(
+            "dcs-edit-rich-field-order",
+            &source,
+            "modify-field",
+            "Amount [Amount title]: string @dimension #noField",
+        );
+        let document = Document::parse(&xml).unwrap();
+        let field = test_data_set_field(
+            test_data_set(document.root_element(), "НаборДанных1"),
+            "Amount",
+        );
+
+        assert_eq!(
+            test_direct_child_names(field),
+            [
+                "dataPath",
+                "field",
+                "title",
+                "useRestriction",
+                "attributeUseRestriction",
+                "role",
+                "presentationExpression",
+                "valueType",
+                "appearance",
+                "availableValue",
+                "inputParameters",
+            ]
+        );
+    }
+
+    #[test]
+    fn dcs_edit_modify_filter_uses_full_filter_item_sequence() {
+        let source = base_dcs_xml().replace(
+            "\t\t\t<dcsset:filter>\n\t\t\t</dcsset:filter>",
+            "\t\t\t<dcsset:filter>\n\t\t\t\t<dcsset:item xsi:type=\"dcsset:FilterItemComparison\">\n\t\t\t\t\t<dcsset:left xsi:type=\"dcscor:Field\">Amount</dcsset:left>\n\t\t\t\t\t<dcsset:comparisonType>Equal</dcsset:comparisonType>\n\t\t\t\t\t<dcsset:presentation/>\n\t\t\t\t\t<dcsset:application>Items</dcsset:application>\n\t\t\t\t\t<dcsset:userSettingPresentation/>\n\t\t\t\t</dcsset:item>\n\t\t\t</dcsset:filter>",
+        );
+        let xml = edit_field_test_xml(
+            "dcs-edit-rich-filter-order",
+            &source,
+            "modify-filter",
+            "Amount >= 1 @quickAccess @user",
+        );
+        let document = Document::parse(&xml).unwrap();
+        let filter = document
+            .descendants()
+            .find(|node| role_info_element(*node, "filter", Some(TEST_DCS_SETTINGS_NS)))
+            .unwrap();
+        let item = dcs_child(filter, "item", TEST_DCS_SETTINGS_NS).unwrap();
+
+        assert_eq!(
+            test_direct_child_names(item),
+            [
+                "left",
+                "comparisonType",
+                "right",
+                "presentation",
+                "application",
+                "viewMode",
+                "userSettingID",
+                "userSettingPresentation",
+            ]
+        );
+    }
+
+    #[test]
+    fn dcs_edit_modify_data_parameter_uses_full_settings_parameter_sequence() {
+        let source = base_dcs_xml().replace(
+            "\t\t\t<dcsset:order>",
+            "\t\t\t<dcsset:dataParameters>\n\t\t\t\t<dcscor:item xsi:type=\"dcsset:SettingsParameterValue\">\n\t\t\t\t\t<dcscor:parameter>Period</dcscor:parameter>\n\t\t\t\t\t<dcsset:userSettingPresentation/>\n\t\t\t\t</dcscor:item>\n\t\t\t</dcsset:dataParameters>\n\t\t\t<dcsset:order>",
+        );
+        let xml = edit_field_test_xml(
+            "dcs-edit-rich-data-parameter-order",
+            &source,
+            "modify-dataParameter",
+            "Period = Today @quickAccess @user",
+        );
+        let document = Document::parse(&xml).unwrap();
+        let data_parameters = document
+            .descendants()
+            .find(|node| role_info_element(*node, "dataParameters", Some(TEST_DCS_SETTINGS_NS)))
+            .unwrap();
+        let item = dcs_child(data_parameters, "item", TEST_DCS_CORE_NS).unwrap();
+
+        assert_eq!(
+            test_direct_child_names(item),
+            [
+                "parameter",
+                "value",
+                "viewMode",
+                "userSettingID",
+                "userSettingPresentation",
+            ]
+        );
+    }
+
+    #[test]
+    fn dcs_edit_reuses_existing_settings_container_independent_of_whitespace() {
+        let source = base_dcs_xml()
+            .replace(
+                "\t\t\t<dcsset:filter>\n\t\t\t</dcsset:filter>",
+                "\t\t\t<dcsset:filter>\n\t\t\t\t<dcsset:item xsi:type=\"dcsset:FilterItemComparison\">\n\t\t\t\t\t<dcsset:left xsi:type=\"dcscor:Field\">Amount</dcsset:left>\n\t\t\t\t\t<dcsset:comparisonType>Greater</dcsset:comparisonType>\n\t\t\t\t\t<dcsset:right xsi:type=\"xs:decimal\">0</dcsset:right>\n\t\t\t\t</dcsset:item>\n\t\t\t</dcsset:filter>",
+            )
+            .replace('\t', "  ");
+        let xml = edit_field_test_xml(
+            "dcs-edit-existing-container-spaces",
+            &source,
+            "add-filter",
+            "Amount < 100",
+        );
+        let document = Document::parse(&xml).unwrap();
+        let settings = document
+            .descendants()
+            .find(|node| role_info_element(*node, "settings", Some(TEST_DCS_SETTINGS_NS)))
+            .unwrap();
+        let filters = dcs_children(settings, "filter", TEST_DCS_SETTINGS_NS);
+
+        assert_eq!(filters.len(), 1, "duplicate singleton filter:\n{xml}");
+        assert_eq!(
+            dcs_children(filters[0], "item", TEST_DCS_SETTINGS_NS).len(),
+            2,
+            "new filter item was not appended to the existing container:\n{xml}"
+        );
+    }
+
+    #[test]
+    fn dcs_edit_union_operations_are_scoped_to_direct_dataset_children() {
+        let source = nested_union_dcs_xml().replace(
+            "\t\t\t\t<dataPath>Value</dataPath>\n\t\t\t\t<field>Value</field>\n\t\t\t\t<valueType>",
+            "\t\t\t\t<dataPath>InnerOnly</dataPath>\n\t\t\t\t<field>InnerOnly</field>\n\t\t\t\t<valueType>",
+        );
+
+        let unchanged = edit_field_test_xml_for_dataset(
+            "dcs-edit-union-direct-modify",
+            &source,
+            "Union",
+            "modify-field",
+            "InnerOnly [must stay nested]",
+        );
+        assert!(
+            !unchanged.contains("<v8:content>must stay nested</v8:content>"),
+            "outer union operation modified a nested item field:\n{unchanged}"
+        );
+
+        let with_outer = edit_field_test_xml_for_dataset(
+            "dcs-edit-union-direct-add",
+            &source,
+            "Union",
+            "add-field",
+            "InnerOnly:String",
+        );
+        let document = Document::parse(&with_outer).unwrap();
+        let union = test_data_set(document.root_element(), "Union");
+        assert!(
+            dcs_children(union, "field", DCS_SCHEMA_NS)
+                .into_iter()
+                .any(|field| dcs_child(field, "dataPath", DCS_SCHEMA_NS)
+                    .is_some_and(|node| dcs_text_of(node) == "InnerOnly")),
+            "nested dataPath incorrectly blocked a direct union field:\n{with_outer}"
+        );
+
+        let context = temp_context("dcs-edit-union-direct-query");
+        let template_path = context.cwd.join("Template.xml");
+        fs::write(&template_path, &source).unwrap();
+        let before = fs::read(&template_path).unwrap();
+        let args = Map::from_iter([
+            ("TemplatePath".to_string(), json!("Template.xml")),
+            ("Operation".to_string(), json!("set-query")),
+            ("DataSet".to_string(), json!("Union")),
+            ("Value".to_string(), json!("SELECT 2")),
+        ]);
+        let outcome = edit_dcs(&args, &context);
+        assert!(!outcome.ok, "union has no direct query: {outcome:?}");
+        assert_eq!(fs::read(&template_path).unwrap(), before);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn dcs_edit_rejects_invalid_typed_literals_without_write() {
+        for (case, operation, value) in [
+            ("filter-decimal", "add-filter", "Amount = 1.2.3"),
+            (
+                "data-parameter-date",
+                "add-dataParameter",
+                "Period = 2024-99-99T00:00:00",
+            ),
+            (
+                "parameter-decimal",
+                "add-parameter",
+                "Bad:decimal(10,2)=abc",
+            ),
+            (
+                "standard-period",
+                "add-parameter",
+                "BadPeriod:StandardPeriod=NotAStandardPeriod",
+            ),
+        ] {
+            let context = temp_context(&format!("dcs-edit-invalid-literal-{case}"));
+            let template_path = context.cwd.join("Template.xml");
+            fs::write(&template_path, base_dcs_xml()).unwrap();
+            let before = fs::read(&template_path).unwrap();
+            let args = Map::from_iter([
+                ("TemplatePath".to_string(), json!("Template.xml")),
+                ("Operation".to_string(), json!(operation)),
+                ("Value".to_string(), json!(value)),
+            ]);
+
+            let outcome = edit_dcs(&args, &context);
+
+            assert!(!outcome.ok, "{case}: {outcome:?}");
+            assert_eq!(fs::read(&template_path).unwrap(), before, "{case}");
+            let _ = fs::remove_dir_all(&context.cwd);
+        }
+    }
+
+    #[test]
+    fn dcs_edit_modify_parameter_rejects_unknown_children_without_write() {
+        let context = temp_context("dcs-edit-modify-parameter-whitelist");
+        let template_path = context.cwd.join("Template.xml");
+        let source = dcs_with_contract_parameter(false);
+        fs::write(&template_path, &source).unwrap();
+        let before = fs::read(&template_path).unwrap();
+        let args = Map::from_iter([
+            ("TemplatePath".to_string(), json!("Template.xml")),
+            ("Operation".to_string(), json!("modify-parameter")),
+            ("Value".to_string(), json!("P foo=bar")),
+        ]);
+
+        let outcome = edit_dcs(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("foo") && error.contains("8.3.27")),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&template_path).unwrap(), before);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn dcs_edit_modify_parameter_uses_canonical_8_3_27_sequence() {
+        let xml = edit_field_test_xml(
+            "dcs-edit-modify-parameter-order",
+            &dcs_with_contract_parameter(false),
+            "modify-parameter",
+            "P value=A,B @hidden @always",
+        );
+        let document = Document::parse(&xml).unwrap();
+        let parameter = dcs_child(document.root_element(), "parameter", DCS_SCHEMA_NS).unwrap();
+
+        assert_eq!(
+            test_direct_child_names(parameter),
+            [
+                "name",
+                "valueType",
+                "value",
+                "value",
+                "useRestriction",
+                "expression",
+                "availableValue",
+                "valueListAllowed",
+                "availableAsField",
+                "denyIncompleteValues",
+                "use",
+            ]
+        );
+    }
+
+    #[test]
+    fn dcs_edit_parameter_selector_does_not_match_parameter_list_allowed() {
+        let xml = edit_field_test_xml(
+            "dcs-edit-parameter-qname-boundary",
+            &dcs_with_contract_parameter(true),
+            "modify-parameter",
+            "P use=Always",
+        );
+        let document = Document::parse(&xml).unwrap();
+        let parameter = dcs_child(document.root_element(), "parameter", DCS_SCHEMA_NS).unwrap();
+
+        assert_eq!(
+            dcs_child(parameter, "use", DCS_SCHEMA_NS)
+                .map(dcs_text_of)
+                .as_deref(),
+            Some("Always")
+        );
+    }
+
+    #[test]
+    fn dcs_edit_variant_exists_ignores_names_of_other_root_items() {
+        assert!(dcs_edit_variant_exists(base_dcs_xml(), "Основной"));
+        assert!(
+            !dcs_edit_variant_exists(base_dcs_xml(), "НаборДанных1"),
+            "a dataSet name must not be mistaken for a settingsVariant name"
+        );
+    }
+
+    #[test]
+    fn dcs_edit_modify_structure_does_not_reuse_nested_group_items() {
+        let mut xml = edit_field_test_xml(
+            "dcs-edit-structure-direct-group-items-source",
+            base_dcs_xml(),
+            "set-structure",
+            "Amount @name=Parent > Quantity @name=Child",
+        );
+        let parent_range = dcs_edit_find_named_structure_group(&xml, "", "Parent")
+            .unwrap()
+            .unwrap();
+        assert!(dcs_edit_remove_child_element(
+            &mut xml,
+            parent_range,
+            "dcsset:groupItems"
+        ));
+
+        assert!(
+            dcs_edit_replace_named_group_items(&mut xml, "", "Parent", &["Price".to_string()])
+                .unwrap()
+        );
+
+        let document = Document::parse(&xml).unwrap();
+        let group = |name: &str| {
+            document
+                .descendants()
+                .filter(|node| role_info_element(*node, "item", Some(TEST_DCS_SETTINGS_NS)))
+                .find(|node| {
+                    dcs_child(*node, "name", TEST_DCS_SETTINGS_NS)
+                        .is_some_and(|candidate| dcs_text_of(candidate) == name)
+                })
+                .unwrap()
+        };
+        let group_item_field = |name: &str| {
+            let group_items = dcs_child(group(name), "groupItems", TEST_DCS_SETTINGS_NS).unwrap();
+            let item = dcs_child(group_items, "item", TEST_DCS_SETTINGS_NS).unwrap();
+            dcs_child(item, "field", TEST_DCS_SETTINGS_NS)
+                .map(dcs_text_of)
+                .unwrap()
+        };
+
+        assert_eq!(group_item_field("Parent"), "Price");
+        assert_eq!(group_item_field("Child"), "Quantity");
+    }
+
+    #[test]
+    fn dcs_edit_remove_selection_field_removes_the_nested_item_not_its_folder() {
+        let mut xml = base_dcs_xml().replace(
+            "\t\t\t<dcsset:selection>\n\t\t\t</dcsset:selection>",
+            "\t\t\t<dcsset:selection>\n\t\t\t\t<dcsset:item xsi:type=\"dcsset:SelectedItemFolder\">\n\t\t\t\t\t<dcsset:item xsi:type=\"dcsset:SelectedItemField\">\n\t\t\t\t\t\t<dcsset:field>Amount</dcsset:field>\n\t\t\t\t\t</dcsset:item>\n\t\t\t\t\t<dcsset:placement>Auto</dcsset:placement>\n\t\t\t\t</dcsset:item>\n\t\t\t</dcsset:selection>",
+        );
+
+        assert!(dcs_edit_remove_prefixed_selection_field(&mut xml, "", "Amount").unwrap());
+
+        let document = Document::parse(&xml).unwrap();
+        let selection = document
+            .descendants()
+            .find(|node| role_info_element(*node, "selection", Some(TEST_DCS_SETTINGS_NS)))
+            .unwrap();
+        let folder = dcs_child(selection, "item", TEST_DCS_SETTINGS_NS)
+            .expect("the containing selection folder must be preserved");
+        assert!(dcs_child(folder, "placement", TEST_DCS_SETTINGS_NS).is_some());
+        assert!(folder
+            .descendants()
+            .filter(|node| role_info_element(*node, "field", Some(TEST_DCS_SETTINGS_NS)))
+            .all(|node| dcs_text_of(node) != "Amount"));
+    }
+
+    fn dcs_with_contract_parameter(with_link: bool) -> String {
+        let link = if with_link {
+            "\t<dataSetLink>\n\t\t<sourceDataSet>НаборДанных1</sourceDataSet>\n\t\t<destinationDataSet>НаборДанных1</destinationDataSet>\n\t\t<sourceExpression>Amount</sourceExpression>\n\t\t<destinationExpression>Amount</destinationExpression>\n\t\t<parameter>P</parameter>\n\t\t<parameterListAllowed>true</parameterListAllowed>\n\t</dataSetLink>\n"
+        } else {
+            ""
+        };
+        let parameter = "\t<parameter>\n\t\t<name>P</name>\n\t\t<valueType>\n\t\t\t<v8:Type>xs:string</v8:Type>\n\t\t\t<v8:StringQualifiers>\n\t\t\t\t<v8:Length>0</v8:Length>\n\t\t\t\t<v8:AllowedLength>Variable</v8:AllowedLength>\n\t\t\t</v8:StringQualifiers>\n\t\t</valueType>\n\t\t<expression>&amp;Source.P</expression>\n\t\t<availableValue>\n\t\t\t<value xsi:type=\"xs:string\">A</value>\n\t\t</availableValue>\n\t\t<denyIncompleteValues>true</denyIncompleteValues>\n\t\t<use>Auto</use>\n\t</parameter>\n";
+        base_dcs_xml().replace(
+            "\t<settingsVariant>",
+            &format!("{link}{parameter}\t<settingsVariant>"),
+        )
+    }
+
     fn temp_context(name: &str) -> WorkspaceContext {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -9455,6 +12593,122 @@ mod tests {
 "#
     }
 
+    fn edit_field_test_xml(name: &str, source: &str, operation: &str, value: &str) -> String {
+        edit_field_test_xml_for_dataset(name, source, "НаборДанных1", operation, value)
+    }
+
+    fn edit_field_test_xml_for_dataset(
+        name: &str,
+        source: &str,
+        data_set: &str,
+        operation: &str,
+        value: &str,
+    ) -> String {
+        let context = temp_context(name);
+        let template_path = context.cwd.join("Template.xml");
+        fs::write(&template_path, source).unwrap();
+        let args = Map::from_iter([
+            ("TemplatePath".to_string(), json!("Template.xml")),
+            ("Operation".to_string(), json!(operation)),
+            ("Value".to_string(), json!(value)),
+            ("DataSet".to_string(), json!(data_set)),
+            ("NoSelection".to_string(), json!(true)),
+        ]);
+
+        let outcome = edit_dcs(&args, &context);
+
+        assert!(outcome.ok, "{outcome:?}");
+        let xml = fs::read_to_string(&template_path)
+            .unwrap()
+            .trim_start_matches('\u{feff}')
+            .to_string();
+        let _ = fs::remove_dir_all(&context.cwd);
+        xml
+    }
+
+    fn nested_union_dcs_xml() -> String {
+        base_dcs_xml().replace(
+            r#"	<dataSet xsi:type="DataSetQuery">
+		<name>НаборДанных1</name>
+		<field xsi:type="DataSetFieldField">
+			<dataPath>Amount</dataPath>
+			<field>Amount</field>
+		</field>
+		<dataSource>ИсточникДанных1</dataSource>
+		<query>ВЫБРАТЬ Amount КАК Amount</query>
+	</dataSet>"#,
+            r#"	<dataSet xsi:type="DataSetUnion">
+		<name>Union</name>
+		<field xsi:type="DataSetFieldField">
+			<dataPath>Value</dataPath>
+			<field>Value</field>
+		</field>
+		<item xsi:type="DataSetQuery">
+			<name>InnerQuery</name>
+			<field xsi:type="DataSetFieldField">
+				<dataPath>Value</dataPath>
+				<field>Value</field>
+				<valueType>
+					<v8:Type>xs:string</v8:Type>
+				</valueType>
+			</field>
+			<dataSource>ИсточникДанных1</dataSource>
+			<query>ВЫБРАТЬ 1 КАК Value</query>
+		</item>
+	</dataSet>"#,
+        )
+    }
+
+    fn test_data_set<'a, 'input>(
+        root: roxmltree::Node<'a, 'input>,
+        name: &str,
+    ) -> roxmltree::Node<'a, 'input> {
+        root.children()
+            .filter(|child| {
+                role_info_element(*child, "dataSet", Some(DCS_SCHEMA_NS))
+                    || role_info_element(*child, "item", Some(DCS_SCHEMA_NS))
+            })
+            .find(|data_set| {
+                dcs_child(*data_set, "name", DCS_SCHEMA_NS)
+                    .is_some_and(|node| dcs_text_of(node) == name)
+            })
+            .unwrap_or_else(|| panic!("dataSet {name} not found"))
+    }
+
+    fn test_data_set_field<'a, 'input>(
+        data_set: roxmltree::Node<'a, 'input>,
+        data_path: &str,
+    ) -> roxmltree::Node<'a, 'input> {
+        dcs_children(data_set, "field", DCS_SCHEMA_NS)
+            .into_iter()
+            .find(|field| {
+                dcs_child(*field, "dataPath", DCS_SCHEMA_NS)
+                    .is_some_and(|node| dcs_text_of(node) == data_path)
+            })
+            .unwrap_or_else(|| panic!("field {data_path} not found"))
+    }
+
+    fn test_direct_child_names(node: roxmltree::Node<'_, '_>) -> Vec<String> {
+        node.children()
+            .filter(roxmltree::Node::is_element)
+            .map(|child| child.tag_name().name().to_string())
+            .collect()
+    }
+
+    fn test_settings_child_names(xml_text: &str) -> Vec<String> {
+        let document = Document::parse(xml_text).unwrap();
+        let settings = document
+            .descendants()
+            .find(|node| role_info_element(*node, "settings", Some(TEST_DCS_SETTINGS_NS)))
+            .unwrap();
+        test_direct_child_names(settings)
+    }
+
+    fn test_root_child_names(xml_text: &str) -> Vec<String> {
+        let document = Document::parse(xml_text).unwrap();
+        test_direct_child_names(document.root_element())
+    }
+
     fn two_variant_dcs_xml() -> String {
         base_dcs_xml().replace(
             "</settingsVariant>\n</DataCompositionSchema>",
@@ -9468,8 +12722,8 @@ mod tests {
             "\t<parameter>\n\t\t<name>Период</name>\n\t\t<expression>&amp;Период</expression>\n\t</parameter>\n\t<parameter>\n\t\t<name>ПериодОтчетаДокумента</name>\n\t\t<expression>&amp;ПериодОтчетаДокумента</expression>\n\t</parameter>\n\t<settingsVariant>",
         )
         .replace(
-            "\t\t\t<dcsset:selection>",
-            "\t\t\t<dcsset:dataParameters>\n\t\t\t\t<dcsset:item>\n\t\t\t\t\t<dcscor:parameter>Период</dcscor:parameter>\n\t\t\t\t</dcsset:item>\n\t\t\t\t<dcsset:item>\n\t\t\t\t\t<dcscor:parameter>ПериодОтчетаДокумента</dcscor:parameter>\n\t\t\t\t</dcsset:item>\n\t\t\t</dcsset:dataParameters>\n\t\t\t<dcsset:selection>",
+            "\t\t\t<dcsset:order>",
+            "\t\t\t<dcsset:dataParameters>\n\t\t\t\t<dcscor:item xsi:type=\"dcsset:SettingsParameterValue\">\n\t\t\t\t\t<dcscor:parameter>Период</dcscor:parameter>\n\t\t\t\t</dcscor:item>\n\t\t\t\t<dcscor:item xsi:type=\"dcsset:SettingsParameterValue\">\n\t\t\t\t\t<dcscor:parameter>ПериодОтчетаДокумента</dcscor:parameter>\n\t\t\t\t</dcscor:item>\n\t\t\t</dcsset:dataParameters>\n\t\t\t<dcsset:order>",
         )
     }
 

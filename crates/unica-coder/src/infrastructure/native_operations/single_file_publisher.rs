@@ -15,22 +15,31 @@ use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(test)]
 use std::sync::{mpsc::Sender, Barrier};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError, Weak};
+use std::sync::{
+    Arc, Mutex, MutexGuard, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockError, Weak,
+};
 
 use crate::infrastructure::platform::filesystem::{
-    hard_link_count, install_file_no_clobber, metadata_is_link_or_reparse_point,
+    file_identity, hard_link_count, install_file_no_clobber, metadata_is_link_or_reparse_point,
     path_lock_identity, portable_permissions, prepare_file_for_removal, replace_file_atomically,
-    restrict_stage_to_owner, PortablePermissions,
+    restrict_stage_to_owner, FileIdentity, PortablePermissions,
 };
 
 const STAGE_ATTEMPTS: usize = 16;
 static STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static PUBLICATION_PROCESS_LOCKS: OnceLock<Mutex<HashMap<String, Weak<Mutex<()>>>>> =
     OnceLock::new();
+static PUBLICATION_TREE_PROCESS_LOCK: OnceLock<RwLock<()>> = OnceLock::new();
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PublicationTreeLockMode {
+    Shared,
+    Exclusive,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum PublishMode<'a> {
@@ -415,13 +424,46 @@ pub(crate) fn with_publication_locks<T>(
     targets: &[PathBuf],
     action: impl FnOnce(&PublicationLockToken<'_>) -> T,
 ) -> Result<T, PublishError> {
+    with_publication_locks_mode(targets, PublicationTreeLockMode::Shared, action)
+}
+
+/// Acquire the global publication-tree gate and exact target locks in one
+/// stable order. Normal file publications share the gate. A transaction that
+/// removes a subtree takes it exclusively so no descendant publication can
+/// interleave with the move-to-recovery window, including across processes.
+pub(crate) fn with_publication_locks_mode<T>(
+    targets: &[PathBuf],
+    tree_mode: PublicationTreeLockMode,
+    action: impl FnOnce(&PublicationLockToken<'_>) -> T,
+) -> Result<T, PublishError> {
+    with_publication_locks_mode_and_guard_targets(targets, &[], tree_mode, action)
+}
+
+/// Acquire normal publication locks plus lock-only identities for provenance
+/// guards. Guard targets may have missing parent directories because their
+/// purpose is to keep an observed absence stable; actual write targets retain
+/// the stricter [`publication_identity`] contract.
+pub(crate) fn with_publication_locks_mode_and_guard_targets<T>(
+    targets: &[PathBuf],
+    guard_targets: &[PathBuf],
+    tree_mode: PublicationTreeLockMode,
+    action: impl FnOnce(&PublicationLockToken<'_>) -> T,
+) -> Result<T, PublishError> {
     let mut identities = targets
         .iter()
         .map(|target| publication_identity(target))
         .collect::<Result<Vec<_>, _>>()?;
+    identities.extend(
+        guard_targets
+            .iter()
+            .map(|target| lock_only_publication_identity(target))
+            .collect::<Result<Vec<_>, _>>()?,
+    );
     identities.sort();
     identities.dedup();
 
+    let tree_process_guard = lock_publication_tree_process(tree_mode);
+    let tree_file_guard = acquire_publication_tree_file_lock(tree_mode)?;
     let process_locks = publication_process_locks(&identities);
     let process_guards = process_locks
         .iter()
@@ -440,6 +482,8 @@ pub(crate) fn with_publication_locks<T>(
     // files are persistent because removing one races with existing waiters.
     drop(file_locks);
     drop(process_guards);
+    drop(tree_file_guard);
+    drop(tree_process_guard);
     Ok(result)
 }
 
@@ -469,6 +513,10 @@ pub(crate) struct PreparedCreate<'request, 'lock, 'scope> {
 }
 
 impl PreparedCreate<'_, '_, '_> {
+    pub(crate) fn staged_file_identity(&self) -> Result<FileIdentity, PublishError> {
+        staged_file_identity(&self.stage.path)
+    }
+
     pub(crate) fn commit(mut self) -> Result<PublishReport, PublishError> {
         run_before_commit_hook(self.target);
         let recheck = injected_failure(PublishCheckpoint::Recheck, self.target)
@@ -515,6 +563,10 @@ pub(crate) struct PreparedReplace<'request, 'lock, 'scope> {
 }
 
 impl PreparedReplace<'_, '_, '_> {
+    pub(crate) fn staged_file_identity(&self) -> Result<FileIdentity, PublishError> {
+        staged_file_identity(&self.stage.path)
+    }
+
     pub(crate) fn portable_permissions(&self) -> &PortablePermissions {
         &self.snapshot.permissions
     }
@@ -550,6 +602,12 @@ impl PreparedReplace<'_, '_, '_> {
     pub(crate) fn discard(mut self) -> Vec<CleanupWarning> {
         self.stage.cleanup().err().into_iter().collect()
     }
+}
+
+fn staged_file_identity(path: &Path) -> Result<FileIdentity, PublishError> {
+    let file =
+        File::open(path).map_err(|source| PublishError::io(PublishPhase::Inspect, path, source))?;
+    file_identity(&file).map_err(|source| PublishError::io(PublishPhase::Inspect, path, source))
 }
 
 pub(crate) fn prepare<'request, 'lock, 'scope>(
@@ -667,6 +725,119 @@ fn publication_identity(target: &Path) -> Result<String, PublishError> {
     }
 
     Ok(path_lock_identity(&canonical_parent.join(file_name)))
+}
+
+fn lock_only_publication_identity(target: &Path) -> Result<String, PublishError> {
+    let target = absolute_lexical_path(target)?;
+    if target.file_name().is_none_or(|name| name.is_empty()) {
+        return Err(PublishError::new(PublishErrorKind::InvalidTarget {
+            target,
+        }));
+    }
+
+    let mut closest_existing_directory = None;
+    for ancestor in target.parent().into_iter().flat_map(Path::ancestors) {
+        match fs::symlink_metadata(ancestor) {
+            Ok(metadata) => {
+                if metadata_is_link_or_reparse_point(&metadata) || !metadata.is_dir() {
+                    return Err(PublishError::new(PublishErrorKind::InvalidTarget {
+                        target: target.clone(),
+                    }));
+                }
+                if closest_existing_directory.is_none() {
+                    closest_existing_directory = Some(ancestor.to_path_buf());
+                }
+            }
+            Err(source) if source.kind() == ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(PublishError::io(PublishPhase::Inspect, ancestor, source));
+            }
+        }
+    }
+    let existing_directory = closest_existing_directory.ok_or_else(|| {
+        PublishError::new(PublishErrorKind::InvalidTarget {
+            target: target.clone(),
+        })
+    })?;
+    let canonical_directory = fs::canonicalize(&existing_directory)
+        .map_err(|source| PublishError::io(PublishPhase::Inspect, &existing_directory, source))?;
+    let suffix = target.strip_prefix(&existing_directory).map_err(|_| {
+        PublishError::new(PublishErrorKind::InvalidTarget {
+            target: target.clone(),
+        })
+    })?;
+    Ok(path_lock_identity(&canonical_directory.join(suffix)))
+}
+
+fn absolute_lexical_path(path: &Path) -> Result<PathBuf, PublishError> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|source| PublishError::io(PublishPhase::Inspect, Path::new("."), source))?
+            .join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+    Ok(normalized)
+}
+
+enum PublicationTreeProcessGuard<'a> {
+    Shared { _guard: RwLockReadGuard<'a, ()> },
+    Exclusive { _guard: RwLockWriteGuard<'a, ()> },
+}
+
+fn lock_publication_tree_process(
+    mode: PublicationTreeLockMode,
+) -> PublicationTreeProcessGuard<'static> {
+    let lock = PUBLICATION_TREE_PROCESS_LOCK.get_or_init(|| RwLock::new(()));
+    match mode {
+        PublicationTreeLockMode::Shared => {
+            let guard = match lock.try_read() {
+                Ok(guard) => guard,
+                Err(TryLockError::WouldBlock) => {
+                    signal_publication_lock_contention();
+                    lock.read()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                }
+                Err(TryLockError::Poisoned(error)) => error.into_inner(),
+            };
+            PublicationTreeProcessGuard::Shared { _guard: guard }
+        }
+        PublicationTreeLockMode::Exclusive => {
+            let guard = match lock.try_write() {
+                Ok(guard) => guard,
+                Err(TryLockError::WouldBlock) => {
+                    signal_publication_lock_contention();
+                    lock.write()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                }
+                Err(TryLockError::Poisoned(error)) => error.into_inner(),
+            };
+            PublicationTreeProcessGuard::Exclusive { _guard: guard }
+        }
+    }
+}
+
+fn acquire_publication_tree_file_lock(mode: PublicationTreeLockMode) -> Result<File, PublishError> {
+    let path = publication_lock_path("unica-publication-tree-gate-v1");
+    let file = open_publication_lock_file(&path)?;
+    let result = match mode {
+        PublicationTreeLockMode::Shared => FileExt::lock_shared(&file),
+        PublicationTreeLockMode::Exclusive => FileExt::lock_exclusive(&file),
+    };
+    result.map_err(|source| PublishError::io(PublishPhase::Lock, &path, source))?;
+    Ok(file)
 }
 
 fn publication_process_locks(identities: &[String]) -> Vec<Arc<Mutex<()>>> {
@@ -1113,12 +1284,13 @@ mod tests {
     use super::{
         create_stage_with_candidates, publish, remove_stage, with_before_commit_hook,
         with_publication_lock_contention_signal, with_publication_lock_pause,
-        with_publication_locks, with_publish_failpoints, PublishCheckpoint, PublishEffect,
+        with_publication_locks, with_publication_locks_mode_and_guard_targets,
+        with_publish_failpoints, PublicationTreeLockMode, PublishCheckpoint, PublishEffect,
         PublishErrorKind, PublishMode, PublishPhase, PublishRequest,
     };
     use crate::infrastructure::platform::filesystem::{
-        hard_link_count, metadata_is_link_or_reparse_point, portable_permissions,
-        prepare_file_for_removal,
+        create_dir_symlink_for_test, hard_link_count, metadata_is_link_or_reparse_point,
+        portable_permissions, prepare_file_for_removal,
     };
     use crate::infrastructure::platform::testing::{
         create_file_link_fixture_for_test, set_unix_mode_for_test, unix_mode_for_test,
@@ -1151,6 +1323,76 @@ mod tests {
         assert!(report.cleanup_warnings.is_empty());
         assert_eq!(fs::read(&target).unwrap(), replacement);
         assert!(publication_debris(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lock_only_identity_accepts_an_absent_target_below_a_missing_parent() {
+        let root = unique_temp_root("lock-only-missing-parent");
+        let marker = fs::canonicalize(&root)
+            .unwrap()
+            .join("Configuration/Configuration.mdo");
+
+        with_publication_locks_mode_and_guard_targets(
+            &[],
+            std::slice::from_ref(&marker),
+            PublicationTreeLockMode::Shared,
+            |_| (),
+        )
+        .expect("lock-only provenance target must allow a missing parent");
+
+        assert!(!marker.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn actual_publication_target_still_rejects_a_missing_parent() {
+        let root = unique_temp_root("strict-write-missing-parent");
+        let target = root.join("missing/created.bin");
+
+        let error = publish(PublishRequest {
+            target: &target,
+            replacement: b"replacement",
+            mode: PublishMode::CreateOnly,
+        })
+        .expect_err("actual publication identity must remain strict");
+
+        assert!(matches!(
+            error.kind(),
+            PublishErrorKind::InvalidTarget { .. }
+        ));
+        assert!(!target.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lock_only_identity_rejects_an_existing_symlink_ancestor() {
+        let root = unique_temp_root("lock-only-symlink-ancestor");
+        let real = root.join("real");
+        let link = root.join("link");
+        fs::create_dir(&real).unwrap();
+        let Some(link_result) = create_dir_symlink_for_test(&real, &link) else {
+            fs::remove_dir_all(root).unwrap();
+            return;
+        };
+        if link_result.is_err() {
+            fs::remove_dir_all(root).unwrap();
+            return;
+        }
+        let marker = link.join("missing/Configuration.mdo");
+
+        let error = with_publication_locks_mode_and_guard_targets(
+            &[],
+            &[marker],
+            PublicationTreeLockMode::Shared,
+            |_| (),
+        )
+        .expect_err("lock-only identity must fail closed on a symlink ancestor");
+
+        assert!(matches!(
+            error.kind(),
+            PublishErrorKind::InvalidTarget { .. }
+        ));
         fs::remove_dir_all(root).unwrap();
     }
 

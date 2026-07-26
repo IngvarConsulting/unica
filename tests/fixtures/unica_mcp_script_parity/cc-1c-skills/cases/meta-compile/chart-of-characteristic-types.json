@@ -4,8 +4,16 @@
     "type": "ChartOfCharacteristicTypes",
     "name": "ДополнительныеРеквизитыИСведения",
     "descriptionLength": 100,
-    "valueTypes": ["String(200)", "Number(15,2)", "Boolean", "Date"],
-    "attributes": ["НаборСвойств: String(100)"]
+    "hierarchical": true,
+    "valueTypes": ["String(200)", "Number(15,2)", "Boolean", "Date", "CatalogRef.ЗначенияСвойств"],
+    "characteristicExtValues": "Catalog.ЗначенияСвойств",
+    "standardAttributes": { "Description": { "synonym": "Свойство" } },
+    "attributes": ["НаборСвойств: String(100)"],
+    "predefined": [
+      "(000001) Цвет: CatalogRef.ЗначенияСвойств",
+      "(000002) Размер [Размер одежды]: String(50) + Number(3,0)",
+      { "name": "Группа", "code": "000003", "isFolder": true, "type": "" }
+    ]
   },
   "validatePath": "ChartsOfCharacteristicTypes/ДополнительныеРеквизитыИСведения",
   "expect": {

@@ -36,6 +36,18 @@ pub(crate) enum SupportGuardCheck {
     Block(AdapterOutcome),
 }
 
+pub(crate) enum FormatGuardCheck {
+    Allow,
+    Warn {
+        warning: String,
+        diagnostic: Value,
+    },
+    Block {
+        outcome: AdapterOutcome,
+        diagnostic: Value,
+    },
+}
+
 pub(crate) trait ApplicationPorts: Send + Sync {
     fn discover_workspace(
         &self,
@@ -49,6 +61,15 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         dry_run: bool,
         context: &WorkspaceContext,
     ) -> Result<(), String>;
+
+    fn evaluate_format_guard(
+        &self,
+        _spec: ToolSpec,
+        _args: &Map<String, Value>,
+        _context: &WorkspaceContext,
+    ) -> Result<FormatGuardCheck, String> {
+        Ok(FormatGuardCheck::Allow)
+    }
 
     fn evaluate_support_guard(
         &self,

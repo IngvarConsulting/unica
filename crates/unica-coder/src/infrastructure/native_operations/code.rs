@@ -14,7 +14,8 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use super::single_file_publisher::{publish, PublishMode, PublishRequest};
+use super::common::guard_active_format_owner;
+use super::compile_transaction::CompileTransaction;
 
 pub(crate) fn apply_with_data(
     args: &Map<String, Value>,
@@ -190,7 +191,7 @@ fn patch_inner(
     mode: PatchMode,
 ) -> CodePatchExecution {
     match build_patch(args, context) {
-        Ok(plan) => finish_patch(plan, mode),
+        Ok(plan) => finish_patch(plan, mode, context),
         Err(error) => CodePatchExecution::failure(error, None),
     }
 }
@@ -238,7 +239,11 @@ fn build_patch(args: &Map<String, Value>, context: &WorkspaceContext) -> Result<
     })
 }
 
-fn finish_patch(plan: PatchPlan, mode: PatchMode) -> CodePatchExecution {
+fn finish_patch(
+    plan: PatchPlan,
+    mode: PatchMode,
+    context: &WorkspaceContext,
+) -> CodePatchExecution {
     let postimage = match std::str::from_utf8(&plan.after) {
         Ok(postimage) => postimage,
         Err(_) => {
@@ -286,13 +291,14 @@ fn finish_patch(plan: PatchPlan, mode: PatchMode) -> CodePatchExecution {
         return CodePatchExecution::failure(error, Some(data));
     }
     if mode == PatchMode::Apply && !plan.no_op {
-        if let Err(error) = publish(PublishRequest {
-            target: &plan.target.path,
-            replacement: &plan.after,
-            mode: PublishMode::ReplaceExisting {
-                expected_preimage: &plan.before,
-            },
-        }) {
+        let publish_result = (|| -> Result<(), String> {
+            let mut transaction = CompileTransaction::new();
+            transaction.replace_bytes(&plan.target.path, &plan.before, plan.after.clone())?;
+            guard_active_format_owner(&mut transaction, &plan.target.path, context)?;
+            transaction.commit()?;
+            Ok(())
+        })();
+        if let Err(error) = publish_result {
             return CodePatchExecution::failure(format!("publish BSL module: {error}"), Some(data));
         }
     }
@@ -2040,6 +2046,46 @@ mod tests {
     }
 
     #[test]
+    fn patch_rolls_back_if_v8project_changes_the_owner_source_set_before_commit() {
+        let context = temp_context("source-map-race");
+        let module = context
+            .workspace_root
+            .join("src/CommonModules/Sample/Ext/Module.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        let before = b"Procedure Run()\nEndProcedure\n";
+        fs::write(&module, before).unwrap();
+        fs::write(
+            context.workspace_root.join("src/CommonModules.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><ExternalDataProcessor/></MetaDataObject>"#,
+        )
+        .unwrap();
+        let args = patch_args(
+            "src/CommonModules/Sample/Ext/Module.bsl",
+            "Run",
+            "Procedure Added()\nEndProcedure",
+        );
+        let v8project = context.workspace_root.join("v8project.yaml");
+        let concurrent_source_map = "format: DESIGNER\nsource-set:\n  - name: main\n    type: EXTERNAL_DATA_PROCESSORS\n    path: src\n";
+        let v8project_for_hook = v8project.clone();
+
+        let result = with_before_commit_hook(
+            move |_| fs::write(&v8project_for_hook, concurrent_source_map).unwrap(),
+            || patch_inner(&args, &context, PatchMode::Apply),
+        );
+
+        assert!(!result.outcome.ok);
+        let error = result.outcome.errors.join("\n");
+        assert!(error.contains("read guard"), "{error}");
+        assert!(error.contains("v8project.yaml"), "{error}");
+        assert_eq!(fs::read(&module).unwrap(), before);
+        assert_eq!(
+            fs::read_to_string(&v8project).unwrap(),
+            concurrent_source_map
+        );
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    #[test]
     fn parser_library_commit_matches_the_bundled_analyzer_contract() {
         let tools: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -2118,7 +2164,11 @@ mod tests {
             "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
         )
         .unwrap();
-        fs::write(root.join("src/Configuration.xml"), "<MetaDataObject/>").unwrap();
+        fs::write(
+            root.join("src/Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration/></MetaDataObject>"#,
+        )
+        .unwrap();
         fs::write(
             root.join("src/CommonModules/Sample.xml"),
             "<MetaDataObject/>",

@@ -109,8 +109,6 @@ SCENARIO_SKILLS = {
         "unica.runtime.execute",
     ],
     "platform-help": [
-        "unica.standards.search",
-        "unica.standards.explain",
         "unica.code.search",
         "unica.project.map",
         "unica.runtime.execute",
@@ -231,7 +229,11 @@ SCENARIO_REQUIRED_TOKENS = {
     "code-review": ["Findings first", "severity", "file/line"],
     "query-optimize": ["СКД", "virtual", "query-in-loop"],
     "test-authoring": ['"testRunner": "yaxunit"', '"testRunner": "va"'],
-    "platform-help": ["Unica MCP contract gap", "method signatures"],
+    "platform-help": [
+        "platform-help contract gap",
+        "development-standard",
+        "method signatures",
+    ],
     "bsp-patterns": ["БСП", "СведенияОВнешнейОбработке"],
     "integration-implement": ["HTTP-сервис", "webhook", "secrets"],
     "autonomous-server": ["HTTP-сервис", "веб-клиент", "external browser-testing tool"],
@@ -300,7 +302,7 @@ TASK_EXAMPLE_ARGUMENT_KEYS = {
     "dcs-info": ["TemplatePath"],
     "dcs-validate": ["TemplatePath"],
     "mxl-compile": ["JsonPath", "OutputPath"],
-    "mxl-decompile": ["TemplatePath", "OutputPath"],
+    "mxl-decompile": ["TemplatePath"],
     "mxl-info": ["TemplatePath", "WithText"],
     "mxl-validate": ["TemplatePath"],
     "role-compile": ["JsonPath", "OutputDir"],
@@ -376,6 +378,7 @@ SCENARIO_PRESERVING_TOKENS = {
         '"Name": "МояКонфигурация"',
         '"Version": "1.0.0.1"',
         '"Vendor": "Фирма 1С"',
+        "Режим совместимости (default: `Version8_3_27`)",
         '"CompatibilityMode": "Version8_3_27"',
         '"name": "unica.cf.info"',
         '"name": "unica.cf.validate"',
@@ -402,8 +405,7 @@ SCENARIO_PRESERVING_TOKENS = {
         '"InterceptorType": "Before"',
         '"InterceptorType": "After"',
         '"Context": "НаКлиенте"',
-        '"InterceptorType": "ModificationAndControl"',
-        '"IsFunction": true',
+        '"IsFunction": false',
     ],
     "meta-edit": [
         '"Value": "Комментарий: Строка(200) ;; Сумма: Число(15,2) | index"',
@@ -515,8 +517,65 @@ SCENARIO_PRESERVING_TOKENS = {
         '"MaxParams": 20',
         '"Offset": 150',
     ],
-    "role-info": ['"OutFile": "<output.txt>"', '"Offset": 150'],
+    "role-info": ['"Offset": 150'],
 }
+
+
+def markdown_routing_units(text: str) -> list[str]:
+    units = []
+    current = []
+    item_start = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
+
+    def flush() -> None:
+        if current:
+            units.append(" ".join(current))
+            current.clear()
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            flush()
+            continue
+        if item_start.match(line):
+            flush()
+        current.append(stripped)
+    flush()
+    return [
+        claim.strip()
+        for unit in units
+        for claim in re.split(r"(?<=[.!?;])\s+", unit)
+        if claim.strip()
+    ]
+
+
+def find_unsafe_platform_evidence_routes(
+    documents: list[tuple[str, str]],
+) -> list[str]:
+    safe_boundaries = [
+        "development-standard",
+        "development standards",
+        "not platform",
+        "do not infer",
+        "do not present",
+    ]
+    unsafe_routes = []
+
+    for display_path, text in documents:
+        for normalized in markdown_routing_units(text):
+            lowered = normalized.casefold()
+            mentions_standards_tool = "unica.standards." in lowered
+            mentions_platform_evidence = "platform" in lowered or "платформ" in lowered
+            marks_the_source_boundary = any(
+                boundary in lowered for boundary in safe_boundaries
+            )
+            if (
+                mentions_standards_tool
+                and mentions_platform_evidence
+                and not marks_the_source_boundary
+            ):
+                unsafe_routes.append(f"{display_path}: {normalized}")
+
+    return unsafe_routes
 
 
 class UnicaSkillRoutingTests(unittest.TestCase):
@@ -529,13 +588,37 @@ class UnicaSkillRoutingTests(unittest.TestCase):
     def reference_root(self) -> Path:
         return self.repo_root() / "plugins" / "unica" / "references"
 
-    def parity_reference_root(self) -> Path:
+    def test_read_only_skills_do_not_offer_outfile(self) -> None:
+        read_only_skills = [
+            "cf-info",
+            "cf-validate",
+            "cfe-validate",
+            "meta-info",
+            "meta-validate",
+            "interface-validate",
+            "subsystem-info",
+            "subsystem-validate",
+            "dcs-info",
+            "dcs-validate",
+            "role-info",
+            "role-validate",
+        ]
+
+        for skill in read_only_skills:
+            with self.subTest(skill=skill):
+                text = (self.skill_root() / skill / "SKILL.md").read_text(
+                    encoding="utf-8"
+                )
+                self.assertNotIn("OutFile", text)
+                self.assertNotIn("outFile", text)
+
+    def unica_reference_models_root(self) -> Path:
         return (
             self.repo_root()
             / "tests"
             / "fixtures"
             / "unica_mcp_script_parity"
-            / "reference_skills"
+            / "unica_reference_models"
         )
 
     def test_in_scope_skills_route_to_single_unica_mcp(self) -> None:
@@ -594,6 +677,108 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         ]:
             with self.subTest(token=token):
                 self.assertIn(token, joined)
+
+    def test_compatibility_guidance_preserves_effective_version_contract(self) -> None:
+        reference_path = self.reference_root() / "platform" / "compatibility-modes.md"
+        self.assertTrue(reference_path.is_file())
+        reference = reference_path.read_text(encoding="utf-8")
+
+        for token in [
+            "runtime platform line",
+            "configured compatibility mode",
+            "effective compatibility version",
+            "`DontUse` -> runtime platform line",
+            "`VersionX` -> `X`",
+            "`CompatibilityMode`",
+            "`ConfigurationExtensionCompatibilityMode`",
+            "`InterfaceCompatibilityMode`",
+            "code location does not select the mode family",
+            "corroborating implementation evidence",
+            "not complete old-platform equivalence",
+        ]:
+            with self.subTest(token=token):
+                self.assertIn(token, reference)
+
+        for skill in ["platform-help", "release-support", "bsp-patterns"]:
+            skill_text = (self.skill_root() / skill / "SKILL.md").read_text(
+                encoding="utf-8"
+            )
+            with self.subTest(skill=skill):
+                self.assertIn(
+                    "references/platform/compatibility-modes.md",
+                    skill_text,
+                )
+
+        meta_edit_docs = [
+            self.skill_root() / "meta-edit" / "SKILL.md",
+            self.skill_root() / "meta-edit" / "child-operations.md",
+        ]
+        for doc_path in meta_edit_docs:
+            doc = doc_path.read_text(encoding="utf-8")
+            with self.subTest(path=doc_path.relative_to(self.repo_root())):
+                self.assertRegex(doc, r"не\s+новее `Version8_3_26`")
+                self.assertNotRegex(doc, r"`Version8_3_26`\s+и старше")
+
+    def test_platform_evidence_is_not_routed_to_standards_tools(self) -> None:
+        docs = list(self.skill_root().glob("**/*.md")) + list(
+            self.reference_root().glob("**/*.md")
+        )
+        unsafe_routes = find_unsafe_platform_evidence_routes(
+            [
+                (
+                    str(doc_path.relative_to(self.repo_root())),
+                    doc_path.read_text(encoding="utf-8"),
+                )
+                for doc_path in docs
+            ]
+        )
+
+        self.assertEqual(
+            unsafe_routes,
+            [],
+            "standards tools must not be presented as platform evidence:\n"
+            + "\n".join(unsafe_routes),
+        )
+
+    def test_route_linter_checks_adjacent_markdown_items_independently(self) -> None:
+        unsafe_routes = find_unsafe_platform_evidence_routes(
+            [
+                (
+                    "masking-fixture.md",
+                    "- Use `unica.standards.search` for platform API rules.\n"
+                    "- Use `unica.standards.search` only for a "
+                    "`development-standard`, not platform evidence.\n",
+                )
+            ]
+        )
+
+        self.assertEqual(len(unsafe_routes), 1)
+        self.assertIn("platform API rules", unsafe_routes[0])
+        self.assertNotIn("development-standard", unsafe_routes[0])
+
+    def test_route_linter_checks_claims_within_one_markdown_item(self) -> None:
+        unsafe_routes = find_unsafe_platform_evidence_routes(
+            [
+                (
+                    "same-item-fixture.md",
+                    "- `unica.standards.search` is a `development-standard`, "
+                    "not platform evidence. Use `unica.standards.search` for "
+                    "platform API rules.\n",
+                )
+            ]
+        )
+
+        self.assertEqual(len(unsafe_routes), 1)
+        self.assertIn("platform API rules", unsafe_routes[0])
+        self.assertNotIn("development-standard", unsafe_routes[0])
+
+    def test_platform_help_uses_one_contract_gap_label(self) -> None:
+        platform_help = (self.skill_root() / "platform-help" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn("Unica MCP contract gap", platform_help)
+        self.assertIn("platform-help contract gap", platform_help)
 
     def test_all_skills_do_not_expose_internal_mcp_names(self) -> None:
         forbidden = [
@@ -694,6 +879,44 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertIn('"sourceSet": "external-reports"', text)
         self.assertIn('"output": "build/external"', text)
 
+    def test_v8_runner_documents_bounded_vanessa_launch_contract(self) -> None:
+        skill_dir = self.skill_root() / "v8-runner"
+        skill_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+        reference_text = "\n".join(
+            (skill_dir / relative_path).read_text(encoding="utf-8")
+            for relative_path in [
+                "references/command-selection.md",
+                "references/project-workflows.md",
+            ]
+        )
+        all_text = f"{skill_text}\n{reference_text}"
+
+        self.assertIn('"waitForExit": true', skill_text)
+        self.assertIn('"waitTimeoutMs": 30000', skill_text)
+        self.assertIn('"c": "StartFeaturePlayer;', skill_text)
+        self.assertIn("типизированное поле `c`", skill_text)
+        self.assertIn("не через `rawKeys`", skill_text)
+        self.assertIn('"operation": "tools-download"', skill_text)
+        self.assertIn('"tool": "vanessa"', skill_text)
+        self.assertIn(
+            '"execute": "build/tools/vanessa-automation-single.epf"',
+            skill_text,
+        )
+        self.assertIn('"output": "build/va.platform-out.log"', skill_text)
+        self.assertIn(
+            '"stderrOutput": "build/va.client.stderr.log"',
+            skill_text,
+        )
+        self.assertIn("`tools.va.epf_path`", skill_text)
+        self.assertIn("платформенный `/Out`", all_text)
+        self.assertIn("stderr клиентского процесса 1\u0421", all_text)
+        self.assertIn(
+            "`unica.runtime.job.start` не принимает bounded-поля",
+            skill_text,
+        )
+        self.assertIn("`data.external_epf_wait`", skill_text)
+        self.assertIn("`diagnostics.external_epf_wait`", skill_text)
+
     def test_v8_runner_metadata_describes_runtime_trigger_surface(self) -> None:
         skill_doc = self.skill_root() / "v8-runner" / "SKILL.md"
         text = skill_doc.read_text(encoding="utf-8")
@@ -775,9 +998,9 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 with self.subTest(path=doc.relative_to(self.repo_root()), token=token):
                     self.assertNotIn(token, text)
 
-    def test_reference_fixtures_track_upstream_runtime_portability_fixes(self) -> None:
+    def test_unica_reference_models_retain_reviewed_runtime_portability_fixes(self) -> None:
         dcs_scripts = [
-            self.parity_reference_root()
+            self.unica_reference_models_root()
             / "dcs-edit"
             / "scripts"
             / "dcs-edit.py",
@@ -791,7 +1014,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 self.assertNotRegex(text, r"<expression>\{esc_xml\('&' \+ param_name")
 
         subsystem_compile = (
-            self.parity_reference_root()
+            self.unica_reference_models_root()
             / "subsystem-compile"
             / "scripts"
             / "subsystem-compile.py"
@@ -895,12 +1118,114 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertIn(token, form_dsl)
 
-        self.assertIn("Выпадающее меню", form_patterns)
+        self.assertIn("Связанные действия командной панели", form_patterns)
         self.assertIn("mobileCommandBarContent", form_compile)
         self.assertIn("choiceParameters", form_compile)
         self.assertIn("availableTypes", form_compile)
         self.assertIn("unica.form.info", form_edit)
         self.assertIn("unica.form.validate", form_edit)
+
+    def test_form_patterns_ux_guidance_is_mirrored_and_uses_supported_dsl(self) -> None:
+        heading = "## UX-правила для элементов и компоновки форм"
+        legacy_heading = "## UX-правила для элементов форм"
+
+        def ux_section(path: Path) -> str:
+            text = path.read_text(encoding="utf-8")
+            start = text.index(heading if heading in text else legacy_heading)
+            end = text.index("\n---", start)
+            return text[start:end]
+
+        reference_path = self.reference_root() / "specs" / "form-patterns.md"
+        skill_path = self.skill_root() / "form-patterns" / "SKILL.md"
+        reference_section = ux_section(reference_path)
+        skill_section = ux_section(skill_path)
+
+        self.assertIn(heading, reference_path.read_text(encoding="utf-8"))
+        self.assertIn(heading, skill_path.read_text(encoding="utf-8"))
+        self.assertEqual(skill_section, reference_section)
+        self.assertIn(
+            "https://github.com/Oxotka/1CDesignGuide/tree/edc05eaf5c191250a184b0e185006bf4b412f7a5",
+            reference_section,
+        )
+        for token in [
+            "Обычная группа",
+            "прижатия элементов и заголовков к краю",
+            "Сильное",
+            "Обычное",
+            "Слабое",
+            "Сворачиваемая группа",
+            "не отображайте отступ слева",
+            '"showLeftMargin": false',
+            "`collapsed` задаёт начальное состояние",
+            "`Группа.Показать()`",
+            "`Группа.Скрыть()`",
+            "только в коде формы",
+            "Всплывающая группа",
+            "DSL пока не может настроить `ControlRepresentation`",
+            "как подсказку",
+            "подобно гиперссылке",
+            "Командная панель",
+            '"commandSource": "Form"',
+            '"commandSource": "FormCommandPanelGlobalCommands"',
+            '"commandName": "CommonCommand.ОткрытьПараметры"',
+            "вручную устраните дубли",
+            "не выдавайте `popup` или `buttonGroup` за исполнимые нативные элементы",
+            "Команды формы",
+            "Шапка формы",
+            "функциональным опциям",
+            "автозаполняются или сохраняют предыдущее значение",
+            "изменяющее форму, ставьте первым",
+            "Подвал формы",
+            "Комментарий и Ответственный последними",
+            "строковых полей с доступным выбором",
+            '"choiceButton": true',
+            "очевидных полей",
+            '"titleLocation": "none"',
+            '"titleLocation": "top"',
+            '"inputHint": "По всем организациям"',
+            '"showInHeader": false',
+            '"readOnly": true',
+            '"horizontalStretch": true',
+            '"headerHorizontalAlign": "Right"',
+            '"horizontalAlign": "Right"',
+            "не используйте много разных стилей и цветов",
+            "достаточно длинное название",
+            "двойное отрицание",
+            "Проводить документ при записи",
+            '"tooltip": "Пояснение"',
+            '"tooltipRepresentation": "Button"',
+            '"checkBoxType": "switcher"',
+            "3–5 значений",
+            "на весь экран",
+            "слева вверху",
+            "модальной",
+            "справа внизу",
+            '"font": { "bold": true }',
+            '"backColor": "#FFFF00"',
+        ]:
+            with self.subTest(token=token):
+                self.assertIn(token, reference_section)
+
+        self.assertEqual(reference_section.count("defaultButton"), 1)
+        self.assertNotIn("buttonHint", reference_section)
+        self.assertNotIn("RGB(", reference_section)
+        self.assertNotRegex(reference_section, r'"radio"\s*:')
+        self.assertNotRegex(reference_section, r'"(?:popup|buttonGroup)"\s*:')
+        self.assertNotRegex(reference_section, r'"(?:leftIndent|showLeftIndent)"\s*:')
+        self.assertNotIn("нет нативного DSL-ключа для левого отступа", reference_section)
+        self.assertNotIn('"representation": "Picture"', reference_section)
+        self.assertNotIn("Кнопки действий внизу", reference_section)
+
+    def test_form_dsl_keeps_tooltip_and_command_binding_contracts_unambiguous(self) -> None:
+        form_dsl = (self.reference_root() / "specs" / "form-dsl-spec.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("Обычный `<Title>` поля и `<ToolTip>`", form_dsl)
+        self.assertRegex(form_dsl, r"передавать им `\{text, formatted\}`\s+нельзя")
+        self.assertIn("приоритетом `command` → `commandName` → `stdCommand`", form_dsl)
+        self.assertIn("`popup` и `buttonGroup` зарезервированы", form_dsl)
+        self.assertNotRegex(form_dsl, r'"(?:popup|buttonGroup)"\s*:')
 
     def test_meta_info_tracks_upstream_type_presentation_through_unica_boundary(self) -> None:
         meta_info = (self.skill_root() / "meta-info" / "SKILL.md").read_text(encoding="utf-8")
@@ -1061,7 +1386,40 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertNotRegex(v8project, r"(?m)^connection:")
         self.assertNotIn("mode=load|merge|update", v8project)
 
-    def test_v8_runner_dump_references_keep_unsafe_modes_preview_only(self) -> None:
+    def test_verified_applied_full_dump_documents_windows_fail_closed_policy(
+        self,
+    ) -> None:
+        docs = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in [
+                self.skill_root() / "v8-runner" / "SKILL.md",
+                self.skill_root()
+                / "v8-runner"
+                / "references"
+                / "file-and-artifact-workflows.md",
+                self.reference_root() / "tooling" / "runtime-build.md",
+                self.reference_root() / "tooling" / "v8project.md",
+            ]
+        )
+
+        self.assertRegex(
+            docs,
+            re.compile(
+                r"Windows.{0,240}(?:fail-closed|blocked|unsupported)",
+                re.IGNORECASE | re.DOTALL,
+            ),
+        )
+        self.assertRegex(
+            docs,
+            re.compile(
+                r"(?:ACL|access control).{0,240}(?:implemented|available|support)",
+                re.IGNORECASE | re.DOTALL,
+            ),
+        )
+
+    def test_v8_runner_dump_references_keep_incomplete_and_external_routes_preview_only(
+        self,
+    ) -> None:
         v8_runner_root = self.skill_root() / "v8-runner"
         safety_context = re.compile(
             r"dryRun.{0,8}(?:true|`true`)|preview|read-only|fail-closed|block",
@@ -1080,18 +1438,36 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 ):
                     self.assertRegex(context, safety_context)
 
-        for path in v8_runner_root.rglob("*.md"):
+        for path in paths:
             text = path.read_text(encoding="utf-8")
             for block in re.findall(r"```json\s*(.*?)```", text, re.DOTALL):
-                payload = json.loads(block)
-                arguments = payload.get("params", {}).get("arguments", {})
+                try:
+                    payload = json.loads(block)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                params = payload.get("params", {})
+                if not isinstance(params, dict):
+                    continue
+                arguments = params.get("arguments", {})
+                if not isinstance(arguments, dict):
+                    continue
+                source_set = arguments.get("sourceSet")
                 if (
                     arguments.get("operation") == "dump"
-                    and arguments.get("mode") in {"incremental", "partial"}
+                    and (
+                        arguments.get("mode") in {"incremental", "partial"}
+                        or (
+                            isinstance(source_set, str)
+                            and "external" in source_set.lower()
+                        )
+                    )
                 ):
                     with self.subTest(
                         path=path.relative_to(self.repo_root()),
-                        mode=arguments["mode"],
+                        mode=arguments.get("mode"),
+                        source_set=source_set,
                     ):
                         self.assertIs(arguments.get("dryRun"), True)
 
@@ -1177,19 +1553,19 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             with self.subTest(skill=skill):
                 self.assertFalse((self.skill_root() / skill / "scripts").exists())
 
-    def test_parity_reference_skills_are_test_only_donor_fixtures(self) -> None:
-        reference_root = self.parity_reference_root()
-        referenced_skills = {
-            path.parent.parent.name for path in reference_root.glob("*/scripts/*.py")
+    def test_unica_reference_models_are_test_only_fixtures(self) -> None:
+        models_root = self.unica_reference_models_root()
+        modelled_skills = {
+            path.parent.parent.name for path in models_root.glob("*/scripts/*.py")
         }
         self.assertEqual(
-            referenced_skills,
+            modelled_skills,
             set(IN_SCOPE_TOOLS) - {"epf-init", "erf-init"},
         )
         allowed_suffixes = {".json", ".md", ".ps1", ".py"}
-        for path in reference_root.rglob("*"):
+        for path in models_root.rglob("*"):
             if path.is_file():
-                with self.subTest(path=path.relative_to(reference_root)):
+                with self.subTest(path=path.relative_to(models_root)):
                     self.assertNotIn("__pycache__", path.parts)
                     self.assertIn(path.suffix, allowed_suffixes)
 

@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ingvarconsulting.github.io/unica/schemas/verify-8-3-27-xml-report.schema.json",
+  "type": "object",
+  "oneOf": [
+    {"type": "object", "required": ["verdict", "exitCode"], "properties": {"verdict": {"const": "pass"}, "exitCode": {"const": 0}}},
+    {"type": "object", "required": ["verdict", "exitCode"], "properties": {"verdict": {"const": "fail"}, "exitCode": {"const": 1}}},
+    {"type": "object", "required": ["verdict", "exitCode", "sourceError"], "properties": {"verdict": {"const": "source-error"}, "exitCode": {"const": 2}}},
+    {"type": "object", "required": ["verdict", "exitCode"], "properties": {"verdict": {"const": "inconclusive"}, "exitCode": {"const": 3}}}
+  ],
+  "required": ["schemaVersion", "profile", "verdict", "exitCode", "sources", "schemaCompilation", "files", "summary"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {"type": "integer", "const": 1},
+    "profile": {"type": "string", "minLength": 1},
+    "verdict": {"type": "string", "enum": ["pass", "fail", "inconclusive", "source-error"]},
+    "exitCode": {"type": "integer", "enum": [0, 1, 2, 3]},
+    "sourceError": {"type": "string", "minLength": 1},
+    "sources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runtime": {
+          "type": "object",
+          "required": ["kind", "sha256", "formatVersion", "platformVersion", "manifestSummary", "identityStatement"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"type": "string", "const": "runtime-xsd"},
+            "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "formatVersion": {"type": "integer", "minimum": 0},
+            "platformVersion": {"type": "string", "minLength": 1},
+            "manifestSummary": {
+              "type": "object",
+              "required": ["packages", "namespaces", "success", "schemas", "errors"],
+              "additionalProperties": false,
+              "properties": {
+                "packages": {"type": "integer", "minimum": 0},
+                "namespaces": {"type": "integer", "minimum": 0},
+                "success": {"type": "integer", "minimum": 0},
+                "schemas": {"type": "integer", "minimum": 0},
+                "errors": {"type": "integer", "minimum": 0}
+              }
+            },
+            "identityStatement": {"type": "string", "minLength": 1}
+          }
+        },
+        "edt": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["provided", "evidenceScope"],
+              "additionalProperties": false,
+              "properties": {
+                "provided": {"const": false},
+                "evidenceScope": {"type": "string", "minLength": 1}
+              }
+            },
+            {
+              "type": "object",
+              "required": ["provided", "sha256", "bundleSymbolicName", "bundleVersion", "evidenceScope", "identityStatement", "declarations"],
+              "additionalProperties": false,
+              "properties": {
+                "provided": {"const": true},
+                "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "bundleSymbolicName": {"type": "string", "minLength": 1},
+                "bundleVersion": {"type": "string", "minLength": 1},
+                "evidenceScope": {"type": "string", "minLength": 1},
+                "identityStatement": {"type": "string", "minLength": 1},
+                "declarations": {
+                  "type": "object",
+                  "additionalProperties": {"type": "boolean"}
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "schemaCompilation": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["file", "targetNamespace", "status", "detail"],
+        "additionalProperties": false,
+        "properties": {
+          "file": {"type": "string", "minLength": 1},
+          "targetNamespace": {"type": "string", "minLength": 1},
+          "status": {"type": "string", "enum": ["compiled", "known-source-incompatibility", "compile-error"]},
+          "detail": {"type": "string"}
+        }
+      }
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["caseId", "toolId", "xmlImpact", "path", "sha256", "rootQName", "coverage", "checks", "result", "requiredNextEvidence"],
+        "additionalProperties": false,
+        "properties": {
+          "caseId": {"type": "string", "minLength": 1},
+          "toolId": {"type": "string", "minLength": 1},
+          "xmlImpact": {"type": "string", "minLength": 1},
+          "path": {"type": "string", "minLength": 1},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "rootQName": {"type": ["string", "null"]},
+          "coverage": {"type": "string", "enum": ["strict", "advisory", "not-covered", "known-schema-incompatibility", "unknown"]},
+          "checks": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["name", "status"],
+              "additionalProperties": false,
+              "properties": {
+                "name": {"type": "string", "minLength": 1},
+                "status": {"type": "string", "enum": ["pass", "fail", "unavailable"]},
+                "detail": {"type": "string"},
+                "actual": {"type": ["string", "null"]},
+                "expected": {"type": ["string", "null"]},
+                "ownerPath": {"type": "string", "minLength": 1}
+              }
+            }
+          },
+          "result": {"type": "string", "enum": ["pass", "fail", "inconclusive"]},
+          "requiredNextEvidence": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["files", "passed", "failed", "inconclusive"],
+      "additionalProperties": false,
+      "properties": {
+        "files": {"type": "integer", "minimum": 0},
+        "passed": {"type": "integer", "minimum": 0},
+        "failed": {"type": "integer", "minimum": 0},
+        "inconclusive": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

@@ -7,6 +7,7 @@ use crate::domain::project_sources::{config_dump_info_xml_kind, ConfigDumpInfoXm
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::metadata_kinds::{metadata_kind, metadata_kind_by_directory};
+use crate::infrastructure::platform::filesystem::path_lock_identity;
 use crate::infrastructure::platform::{
     ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedOutput,
 };
@@ -15,7 +16,6 @@ use crate::infrastructure::redaction::{is_secret_key, redactor};
 use crate::infrastructure::runtime_jobs::{
     self, RuntimeJobOperation, RuntimeJobRequest, RuntimeJobService,
 };
-#[cfg(test)]
 use crate::infrastructure::source_roots::normalize_path_identity;
 use crate::infrastructure::source_roots::resolve_source_root;
 use crate::infrastructure::workspace::discover_workspace;
@@ -84,6 +84,10 @@ struct SystemBslMcpRunner;
 static SYSTEM_PROCESS_RUNNER: SystemProcessRunner = SystemProcessRunner;
 static SYSTEM_BSL_MCP_RUNNER: SystemBslMcpRunner = SystemBslMcpRunner;
 
+pub(crate) fn system_process_runner() -> &'static dyn ProcessRunner {
+    &SYSTEM_PROCESS_RUNNER
+}
+
 pub struct CliAdapter<'a> {
     tool_name: &'static str,
     default_command: &'static [&'static str],
@@ -95,6 +99,20 @@ pub struct CliAdapter<'a> {
 
 pub struct RuntimeAdapter<'a> {
     runner: &'a dyn ProcessRunner,
+}
+
+pub struct RuntimeAdapterOutcome {
+    pub outcome: AdapterOutcome,
+    pub data: Option<Value>,
+}
+
+impl RuntimeAdapterOutcome {
+    fn plain(outcome: AdapterOutcome) -> Self {
+        Self {
+            outcome,
+            data: None,
+        }
+    }
 }
 
 pub struct RuntimeJobAdapterOutcome {
@@ -610,7 +628,19 @@ impl<'a> RuntimeAdapter<'a> {
         dry_run: bool,
         mutating: bool,
     ) -> Result<AdapterOutcome, String> {
-        self.invoke_cancellable(
+        self.invoke_with_data(tool_name, args, context, dry_run, mutating)
+            .map(|outcome| outcome.outcome)
+    }
+
+    pub fn invoke_with_data(
+        &self,
+        tool_name: &str,
+        args: &Map<String, Value>,
+        context: &WorkspaceContext,
+        dry_run: bool,
+        mutating: bool,
+    ) -> Result<RuntimeAdapterOutcome, String> {
+        self.invoke_cancellable_with_data(
             tool_name,
             args,
             context,
@@ -620,7 +650,7 @@ impl<'a> RuntimeAdapter<'a> {
         )
     }
 
-    pub fn invoke_cancellable(
+    pub fn invoke_cancellable_with_data(
         &self,
         tool_name: &str,
         args: &Map<String, Value>,
@@ -628,26 +658,27 @@ impl<'a> RuntimeAdapter<'a> {
         dry_run: bool,
         mutating: bool,
         cancellation: &CancellationToken,
-    ) -> Result<AdapterOutcome, String> {
+    ) -> Result<RuntimeAdapterOutcome, String> {
         if cancellation.is_cancelled() {
-            return Ok(AdapterOutcome::cancelled(format!(
-                "{tool_name} cancelled before adapter work"
+            return Ok(RuntimeAdapterOutcome::plain(AdapterOutcome::cancelled(
+                format!("{tool_name} cancelled before adapter work"),
             )));
         }
         if let Some(outcome) = bind_external_processor_config(args, context, dry_run)? {
-            return Ok(outcome);
+            return Ok(RuntimeAdapterOutcome::plain(outcome));
         }
         let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
             "could not locate Unica plugin root for internal adapter lookup".to_string()
         })?;
         let report_args = runtime_args(args, true)?;
         let execution_args = runtime_args(args, false)?;
+        validate_bounded_external_epf_artifact_paths(args, &context.cwd)?;
         let bundled_tool = resolve_bundled_tool(&plugin_root, "v8-runner", !dry_run)?;
         let mut command = vec![bundled_tool.program.display().to_string()];
         command.extend(report_args);
 
         if dry_run {
-            return Ok(AdapterOutcome {
+            return Ok(RuntimeAdapterOutcome::plain(AdapterOutcome {
                 ok: true,
                 summary: format!(
                     "dry run: {tool_name} would call internal v8-runner runtime adapter"
@@ -663,7 +694,7 @@ impl<'a> RuntimeAdapter<'a> {
                 stdout: None,
                 stderr: None,
                 command: Some(command),
-            });
+            }));
         }
 
         let process_timeout = None;
@@ -678,7 +709,7 @@ impl<'a> RuntimeAdapter<'a> {
             Ok(output) => output,
             Err(error) => {
                 let error = redactor(&error);
-                return Ok(AdapterOutcome {
+                return Ok(RuntimeAdapterOutcome::plain(AdapterOutcome {
                     ok: false,
                     summary: format!(
                         "{tool_name} failed through internal v8-runner runtime adapter"
@@ -692,60 +723,270 @@ impl<'a> RuntimeAdapter<'a> {
                     stdout: None,
                     stderr: Some(format!("{error}\n")),
                     command: Some(command),
-                });
+                }));
             }
         };
-        let ok = output.status_success;
+        let mut ok = output.status_success;
         let stdout = redactor(&output.stdout);
         let stderr = redactor(&output.stderr);
         if output.cancelled {
-            return Ok(cancelled_process_outcome(
+            return Ok(RuntimeAdapterOutcome::plain(cancelled_process_outcome(
                 tool_name,
                 stdout,
                 stderr,
                 Some(command),
-            ));
+            )));
         }
-        Ok(AdapterOutcome {
-            ok,
-            summary: if ok {
-                format!("{tool_name} completed through internal v8-runner runtime adapter")
-            } else {
-                format!("{tool_name} failed through internal v8-runner runtime adapter")
+        let waited_epf = args
+            .get("waitForExit")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let mut artifacts = Vec::new();
+        let mut wait_error = None;
+        let mut runner_error = None;
+        let mut data = None;
+        if waited_epf {
+            match parse_runner_json_envelope(&output.stdout) {
+                Ok(envelope) => {
+                    runner_error = runner_error_message(&envelope).map(redactor);
+                    match parse_external_epf_wait(&envelope) {
+                        Ok(Some(wait)) => {
+                            match validate_external_epf_wait_receipt(&wait, args, &context.cwd) {
+                                Ok(()) => {
+                                    artifacts.extend(requested_external_epf_artifacts(args));
+                                    data = Some(json!({
+                                        "external_epf_wait": external_epf_wait_value(&wait)
+                                    }));
+                                    if wait.timed_out {
+                                        ok = false;
+                                        wait_error = Some(
+                                            "bounded external EPF launch timed out".to_string(),
+                                        );
+                                    } else if wait.exit_code != Some(0) {
+                                        ok = false;
+                                        wait_error = Some(match wait.exit_code {
+                                            Some(code) => {
+                                                format!(
+                                                    "bounded external EPF exited with code {code}"
+                                                )
+                                            }
+                                            None => "bounded external EPF exit code is missing"
+                                                .to_string(),
+                                        });
+                                    }
+                                }
+                                Err(error) => {
+                                    ok = false;
+                                    wait_error = Some(error);
+                                }
+                            }
+                        }
+                        Ok(None) if output.status_success => {
+                            ok = false;
+                            wait_error = Some(
+                                "bounded external EPF runner result is missing `data.external_epf_wait`"
+                                    .to_string(),
+                            );
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            ok = false;
+                            wait_error = Some(error);
+                        }
+                    }
+                }
+                Err(error) if output.status_success => {
+                    ok = false;
+                    wait_error = Some(error);
+                }
+                Err(_) => {}
+            }
+        }
+        let wait_failed = wait_error.is_some();
+        Ok(RuntimeAdapterOutcome {
+            outcome: AdapterOutcome {
+                ok,
+                summary: if ok {
+                    format!("{tool_name} completed through internal v8-runner runtime adapter")
+                } else {
+                    format!("{tool_name} failed through internal v8-runner runtime adapter")
+                },
+                changes: if mutating && ok {
+                    vec!["internal v8-runner runtime adapter executed".to_string()]
+                } else {
+                    Vec::new()
+                },
+                warnings: if ok || wait_failed {
+                    Vec::new()
+                } else if output.timed_out {
+                    vec!["internal v8-runner runtime adapter timed out".to_string()]
+                } else {
+                    vec![format!(
+                        "internal v8-runner runtime adapter exited with status {}",
+                        output.status
+                    )]
+                },
+                errors: if let Some(error) = wait_error {
+                    vec![error]
+                } else if ok {
+                    Vec::new()
+                } else if let Some(error) = runner_error {
+                    vec![error]
+                } else if stderr.trim().is_empty() && output.timed_out {
+                    vec![process_timeout_error("v8-runner runtime", process_timeout)]
+                } else if stderr.trim().is_empty() {
+                    vec![format!(
+                        "internal v8-runner runtime adapter exited with status {}",
+                        output.status
+                    )]
+                } else {
+                    vec![stderr.trim().to_string()]
+                },
+                artifacts,
+                stdout: Some(stdout),
+                stderr: Some(stderr),
+                command: Some(command),
             },
-            changes: if mutating && ok {
-                vec!["internal v8-runner runtime adapter executed".to_string()]
-            } else {
-                Vec::new()
-            },
-            warnings: if ok {
-                Vec::new()
-            } else if output.timed_out {
-                vec!["internal v8-runner runtime adapter timed out".to_string()]
-            } else {
-                vec![format!(
-                    "internal v8-runner runtime adapter exited with status {}",
-                    output.status
-                )]
-            },
-            errors: if ok {
-                Vec::new()
-            } else if stderr.trim().is_empty() && output.timed_out {
-                vec![process_timeout_error("v8-runner runtime", process_timeout)]
-            } else if stderr.trim().is_empty() {
-                vec![format!(
-                    "internal v8-runner runtime adapter exited with status {}",
-                    output.status
-                )]
-            } else {
-                vec![stderr.trim().to_string()]
-            },
-            artifacts: Vec::new(),
-            stdout: Some(stdout),
-            stderr: Some(stderr),
-            command: Some(command),
+            data,
         })
     }
+}
+
+fn validate_bounded_external_epf_artifact_paths(
+    args: &Map<String, Value>,
+    cwd: &Path,
+) -> Result<(), String> {
+    if args.get("waitForExit").and_then(Value::as_bool) != Some(true) {
+        return Ok(());
+    }
+    // The mapper rejects identical path strings; this resolved host identity check also
+    // catches aliases such as relative/absolute, symlinked, and case-only spellings.
+    let resolve = |key: &str| {
+        args.get(key)
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("bounded external EPF launch requires `{key}`"))
+            .and_then(|path| runtime_path_identity(path, cwd))
+    };
+    if resolve("output")? == resolve("stderrOutput")? {
+        return Err(
+            "bounded external EPF `output` and `stderrOutput` resolve to the same path".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn runtime_path_identity(path: &str, cwd: &Path) -> Result<String, String> {
+    let path = Path::new(path);
+    let candidate = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    };
+    normalize_path_identity(&candidate).map(|path| path_lock_identity(&path))
+}
+
+struct ExternalEpfWait {
+    pid: u64,
+    execute_path: String,
+    exit_code: Option<i64>,
+    timed_out: bool,
+    output_path: String,
+    stderr_path: String,
+}
+
+fn parse_runner_json_envelope(stdout: &str) -> Result<Value, String> {
+    serde_json::from_str(stdout).map_err(|error| {
+        format!("bounded external EPF runner returned invalid JSON result: {error}")
+    })
+}
+
+fn runner_error_message(envelope: &Value) -> Option<&str> {
+    envelope
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .or_else(|| envelope.pointer("/data/message").and_then(Value::as_str))
+}
+
+fn parse_external_epf_wait(envelope: &Value) -> Result<Option<ExternalEpfWait>, String> {
+    let Some(wait) = envelope.pointer("/data/external_epf_wait") else {
+        return Ok(None);
+    };
+    let wait = wait.as_object().ok_or_else(|| {
+        "bounded external EPF runner result has invalid `data.external_epf_wait`".to_string()
+    })?;
+    let path = |key: &str| {
+        wait.get(key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| format!("bounded external EPF runner result is missing `{key}`"))
+    };
+    if !wait.contains_key("exit_code") {
+        return Err("bounded external EPF runner result is missing `exit_code`".to_string());
+    }
+    Ok(Some(ExternalEpfWait {
+        pid: wait
+            .get("pid")
+            .and_then(Value::as_u64)
+            .filter(|pid| *pid > 0)
+            .ok_or_else(|| {
+                "bounded external EPF runner result is missing positive `pid`".to_string()
+            })?,
+        execute_path: path("execute_path")?,
+        exit_code: wait.get("exit_code").and_then(Value::as_i64),
+        timed_out: wait
+            .get("timed_out")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| {
+                "bounded external EPF runner result is missing `timed_out`".to_string()
+            })?,
+        output_path: path("output_path")?,
+        stderr_path: path("stderr_path")?,
+    }))
+}
+
+fn validate_external_epf_wait_receipt(
+    wait: &ExternalEpfWait,
+    args: &Map<String, Value>,
+    cwd: &Path,
+) -> Result<(), String> {
+    for (receipt_key, returned, argument_key) in [
+        ("execute_path", wait.execute_path.as_str(), "execute"),
+        ("output_path", wait.output_path.as_str(), "output"),
+        ("stderr_path", wait.stderr_path.as_str(), "stderrOutput"),
+    ] {
+        let requested = args
+            .get(argument_key)
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("bounded external EPF launch requires `{argument_key}`"))?;
+        if runtime_path_identity(returned, cwd)? != runtime_path_identity(requested, cwd)? {
+            return Err(format!(
+                "bounded external EPF receipt `{receipt_key}` does not match requested `{argument_key}`"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn requested_external_epf_artifacts(args: &Map<String, Value>) -> [String; 2] {
+    ["output", "stderrOutput"].map(|key| {
+        redactor(
+            args.get(key)
+                .and_then(Value::as_str)
+                .expect("bounded external EPF arguments were validated"),
+        )
+    })
+}
+
+fn external_epf_wait_value(wait: &ExternalEpfWait) -> Value {
+    json!({
+        "pid": wait.pid,
+        "execute_path": redactor(&wait.execute_path),
+        "exit_code": wait.exit_code,
+        "timed_out": wait.timed_out,
+        "output_path": redactor(&wait.output_path),
+        "stderr_path": redactor(&wait.stderr_path),
+    })
 }
 
 impl<'a> Default for RuntimeAdapter<'a> {
@@ -965,6 +1206,15 @@ impl RuntimeJobAdapter {
         context: &WorkspaceContext,
         dry_run: bool,
     ) -> Result<RuntimeJobAdapterOutcome, String> {
+        for argument in ["waitForExit", "waitTimeoutMs", "stderrOutput"] {
+            if args.contains_key(argument) {
+                return Err(format!(
+                    "{tool_name} does not support bounded external EPF argument `{argument}`; \
+                     use `unica.runtime.execute`"
+                ));
+            }
+        }
+
         let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
             "could not locate Unica plugin root for internal adapter lookup".to_string()
         })?;
@@ -2674,7 +2924,8 @@ fn readiness_warning(readiness: IndexReadiness) -> String {
     match readiness {
         IndexReadiness::Ready { .. } => "rlm index ready".to_string(),
         IndexReadiness::Missing => "rlm index unavailable: index is missing".to_string(),
-        IndexReadiness::Stale | IndexReadiness::Building => "rlm index building".to_string(),
+        IndexReadiness::Stale { status } => format!("rlm index stale: {status}"),
+        IndexReadiness::Building => "rlm index building".to_string(),
         IndexReadiness::Failed(error) | IndexReadiness::Unavailable(error)
             if error.starts_with(CANCELLED_PREFIX) =>
         {
@@ -3430,6 +3681,9 @@ const RUNTIME_MAPPER_LAUNCH_ARGS: &[&str] = &[
     "execute",
     "usePrivilegedMode",
     "output",
+    "stderrOutput",
+    "waitForExit",
+    "waitTimeoutMs",
     "rawKeys",
 ];
 const RUNTIME_MAPPER_EXTENSIONS_ARGS: &[&str] =
@@ -3586,6 +3840,9 @@ fn append_runtime_global_args(
     args: &Map<String, Value>,
     redact: bool,
 ) {
+    if args.get("waitForExit").and_then(Value::as_bool) == Some(true) {
+        result.push("--json-message".to_string());
+    }
     if operation != "config-init" {
         append_arg(result, "--config", args, "config", redact);
     }
@@ -3657,6 +3914,7 @@ fn validate_runtime_mapper_payload(
             validate_mapper_enum(args, "testRunner", RUNTIME_MAPPER_TEST_RUNNERS)?;
             validate_mapper_enum(args, "testScope", RUNTIME_MAPPER_TEST_SCOPES)?;
         }
+        "launch" => validate_bounded_external_epf_launch(args)?,
         "tools-download" => {
             validate_mapper_enum(args, "tool", RUNTIME_MAPPER_TOOLS)?;
             if args
@@ -3678,6 +3936,84 @@ fn validate_runtime_mapper_payload(
     }
 
     Ok(())
+}
+
+fn validate_bounded_external_epf_launch(args: &Map<String, Value>) -> Result<(), String> {
+    let wait = args.get("waitForExit").and_then(Value::as_bool);
+    if args.contains_key("waitForExit") && wait.is_none() {
+        return Err("bounded external EPF `waitForExit` must be boolean".to_string());
+    }
+    if !wait.unwrap_or(false) {
+        if args.contains_key("stderrOutput") || args.contains_key("waitTimeoutMs") {
+            return Err(
+                "bounded external EPF output and timeout require `waitForExit: true`".to_string(),
+            );
+        }
+        return Ok(());
+    }
+
+    if args.get("clientMode").and_then(Value::as_str) != Some("thin") {
+        return Err("bounded external EPF launch requires `clientMode: thin`".to_string());
+    }
+    let required_string = |key: &str| {
+        args.get(key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| format!("bounded external EPF launch requires non-empty `{key}`"))
+    };
+    let execute = required_string("execute")?;
+    if !execute.to_ascii_lowercase().ends_with(".epf") {
+        return Err("bounded external EPF `execute` must name an .epf file".to_string());
+    }
+    let output = required_string("output")?;
+    let stderr_output = required_string("stderrOutput")?;
+    if Path::new(output) == Path::new(stderr_output) {
+        return Err(
+            "bounded external EPF `output` and `stderrOutput` must be distinct".to_string(),
+        );
+    }
+    args.get("waitTimeoutMs")
+        .and_then(Value::as_u64)
+        .filter(|value| (1..=86_400_000).contains(value))
+        .ok_or_else(|| {
+            "bounded external EPF `waitTimeoutMs` must be an integer from 1 to 86400000".to_string()
+        })?;
+
+    if args
+        .get("rawKeys")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .any(|key| {
+            ["c", "execute", "out"]
+                .iter()
+                .any(|reserved| launch_key_alias_matches(key, reserved))
+        })
+    {
+        return Err(
+            "bounded external EPF rawKeys must not override /C, /Execute, or /Out".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn launch_key_alias_matches(raw: &str, key: &str) -> bool {
+    let trimmed = raw.trim_start();
+    if !trimmed.starts_with(['/', '-']) {
+        return false;
+    }
+    let normalized = trimmed
+        .trim_start_matches(['/', '-'])
+        .trim_end()
+        .to_ascii_lowercase();
+    if normalized == key {
+        return true;
+    }
+    normalized
+        .strip_prefix(key)
+        .and_then(|rest| rest.chars().next())
+        .is_some_and(|ch| matches!(ch, '"' | '=' | ':' | ' ' | '\t'))
 }
 
 fn runtime_mapper_operation_args(operation: &str) -> Option<&'static [&'static str]> {
@@ -3758,16 +4094,12 @@ fn cli_args(args: &Map<String, Value>, redact: bool) -> Result<Vec<String>, Stri
             Value::Array(items) => {
                 for item in items {
                     result.push(flag.clone());
-                    result.push(value_to_cli_string(item));
+                    result.push(reported_cli_value(key, item, redact));
                 }
             }
             other => {
                 result.push(flag);
-                result.push(if redact && is_secret_key(key) {
-                    "<redacted>".to_string()
-                } else {
-                    value_to_cli_string(other)
-                });
+                result.push(reported_cli_value(key, other, redact));
             }
         }
     }
@@ -3799,11 +4131,7 @@ fn append_array_args(
     };
     for item in items {
         result.push(flag.to_string());
-        result.push(if redact && is_secret_key(key) {
-            "<redacted>".to_string()
-        } else {
-            value_to_cli_string(item)
-        });
+        result.push(reported_cli_value(key, item, redact));
     }
 }
 
@@ -3857,6 +4185,9 @@ fn append_launch_direct_args(result: &mut Vec<String>, args: &Map<String, Value>
     append_arg(result, "--execute", args, "execute", redact);
     append_bool_flag(result, "--use-privileged-mode", args, "usePrivilegedMode");
     append_arg(result, "--output", args, "output", redact);
+    append_arg(result, "--stderr-output", args, "stderrOutput", redact);
+    append_bool_flag(result, "--wait-for-exit", args, "waitForExit");
+    append_arg(result, "--wait-timeout-ms", args, "waitTimeoutMs", redact);
     append_array_args(result, "--raw-key", args, "rawKeys", redact);
 }
 
@@ -3871,12 +4202,18 @@ fn string_arg(args: &Map<String, Value>, key: &str, redact: bool) -> Option<Stri
         if value.is_null() {
             return None;
         }
-        if redact && is_secret_key(key) {
-            Some("<redacted>".to_string())
-        } else {
-            Some(value_to_cli_string(value))
-        }
+        Some(reported_cli_value(key, value, redact))
     })
+}
+
+fn reported_cli_value(key: &str, value: &Value, redact: bool) -> String {
+    if !redact {
+        return value_to_cli_string(value);
+    }
+    if is_secret_key(key) {
+        return "<redacted>".to_string();
+    }
+    redactor(&value_to_cli_string(value))
 }
 
 fn kebab_case(key: &str) -> String {
@@ -3919,6 +4256,45 @@ mod tests {
     use std::path::Path;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn only_active_building_readiness_reports_index_building() {
+        assert_eq!(
+            readiness_warning(IndexReadiness::Building),
+            "rlm index building"
+        );
+        assert_eq!(
+            readiness_warning(IndexReadiness::Stale {
+                status: "stale (content)".to_string(),
+            }),
+            "rlm index stale: stale (content)"
+        );
+    }
+
+    #[test]
+    fn failed_readiness_reports_original_reason() {
+        assert_eq!(
+            readiness_warning(IndexReadiness::Failed(
+                "update left stale (content); recovery build failed: disk full".to_string(),
+            )),
+            "rlm index unavailable: update left stale (content); recovery build failed: disk full"
+        );
+    }
+
+    #[test]
+    fn prefixed_cancelled_failed_readiness_maps_to_cancelled_outcome() {
+        let outcome = index_unavailable_outcome(
+            "unica.code.definition",
+            IndexReadiness::Failed(
+                "cancelled: rlm index build stopped; recovery after stale (content)".to_string(),
+            ),
+        );
+
+        assert!(!outcome.ok);
+        assert!(outcome.errors[0].starts_with("cancelled:"));
+        assert!(outcome.errors[0].contains("stale (content)"));
+        assert!(outcome.warnings.is_empty());
+    }
 
     #[test]
     fn code_grep_does_not_start_rlm_index_side_effect() {
@@ -4754,6 +5130,370 @@ mod tests {
                 "1550"
             ]
         );
+    }
+
+    #[test]
+    fn runtime_adapter_maps_bounded_external_epf_launch() {
+        let args = json!({
+            "operation": "launch",
+            "clientMode": "thin",
+            "execute": "tests/Smoke.epf",
+            "output": "build/smoke.stdout.log",
+            "stderrOutput": "build/smoke.stderr.log",
+            "waitForExit": true,
+            "waitTimeoutMs": 30_000,
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        assert_eq!(
+            runtime_args(&args, false).unwrap(),
+            vec![
+                "--json-message",
+                "launch",
+                "thin",
+                "--execute",
+                "tests/Smoke.epf",
+                "--output",
+                "build/smoke.stdout.log",
+                "--stderr-output",
+                "build/smoke.stderr.log",
+                "--wait-for-exit",
+                "--wait-timeout-ms",
+                "30000",
+            ]
+        );
+    }
+
+    #[test]
+    fn runtime_adapter_rejects_invalid_bounded_external_epf_launch() {
+        let invalid = [
+            json!({
+                "operation": "launch",
+                "clientMode": "thick",
+                "execute": "tests/Smoke.epf",
+                "output": "build/out.log",
+                "stderrOutput": "build/err.log",
+                "waitForExit": true,
+                "waitTimeoutMs": 30_000,
+            }),
+            json!({
+                "operation": "launch",
+                "clientMode": "thin",
+                "execute": "tests/Smoke.epf",
+                "output": "build/out.log",
+                "stderrOutput": "build/out.log",
+                "waitForExit": true,
+                "waitTimeoutMs": 30_000,
+            }),
+            json!({
+                "operation": "launch",
+                "clientMode": "thin",
+                "execute": "tests/Smoke.epf",
+                "output": "build/out.log",
+                "stderrOutput": "build/err.log",
+                "waitForExit": true,
+                "waitTimeoutMs": 0,
+            }),
+            json!({
+                "operation": "launch",
+                "clientMode": "thin",
+                "execute": "tests/Smoke.epf",
+                "output": "build/out.log",
+                "stderrOutput": "build/err.log",
+                "waitForExit": true,
+                "waitTimeoutMs": 30_000,
+                "rawKeys": ["/Execute tests/Other.epf"],
+            }),
+        ];
+
+        for input in invalid {
+            let error = runtime_args(input.as_object().unwrap(), false).unwrap_err();
+            assert!(error.contains("bounded external EPF"), "{error}");
+        }
+    }
+
+    #[test]
+    fn runtime_job_start_rejects_bounded_external_epf_arguments() {
+        let context = temp_context("runtime-job-rejects-bounded-external-epf");
+        let bounded_arguments = [
+            ("waitForExit", json!(true)),
+            ("waitTimeoutMs", json!(30_000)),
+            ("stderrOutput", json!("build/smoke.stderr.log")),
+        ];
+
+        for (argument, value) in bounded_arguments {
+            let mut args = json!({
+                "operation": "launch",
+                "clientMode": "thin",
+            })
+            .as_object()
+            .unwrap()
+            .clone();
+            args.insert(argument.to_string(), value);
+
+            let error = match RuntimeJobAdapter::invoke(
+                RuntimeJobAction::Start,
+                "unica.runtime.job.start",
+                &args,
+                &context,
+                true,
+            ) {
+                Ok(_) => panic!("runtime.job.start accepted bounded argument `{argument}`"),
+                Err(error) => error,
+            };
+
+            assert!(error.contains(argument), "{error}");
+            assert!(error.contains("unica.runtime.execute"), "{error}");
+        }
+
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_reports_waited_external_epf_exit_and_artifacts() {
+        let context = temp_context("runtime-waited-external-epf");
+        let runner = FakeProcessRunner {
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: json!({
+                    "ok": true,
+                    "data": {
+                        "external_epf_wait": {
+                            "pid": 42,
+                            "execute_path": "tests/Smoke.epf",
+                            "exit_code": 7,
+                            "timed_out": false,
+                            "output_path": "build/smoke.stdout.log",
+                            "stderr_path": "build/smoke.stderr.log"
+                        }
+                    }
+                })
+                .to_string(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+            },
+        };
+        let args = json!({
+            "operation": "launch",
+            "clientMode": "thin",
+            "execute": "tests/Smoke.epf",
+            "output": "build/smoke.stdout.log",
+            "stderrOutput": "build/smoke.stderr.log",
+            "waitForExit": true,
+            "waitTimeoutMs": 30_000,
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        let result = RuntimeAdapter::with_runner(&runner)
+            .invoke_with_data("unica.runtime.execute", &args, &context, false, true)
+            .unwrap();
+        let outcome = result.outcome;
+
+        assert!(!outcome.ok);
+        assert!(outcome.errors.iter().any(|error| error.contains("code 7")));
+        assert_eq!(
+            outcome.artifacts,
+            vec![
+                "build/smoke.stdout.log".to_string(),
+                "build/smoke.stderr.log".to_string()
+            ]
+        );
+        let wait = &result.data.unwrap()["external_epf_wait"];
+        assert_eq!(wait["pid"], 42);
+        assert_eq!(wait["execute_path"], "tests/Smoke.epf");
+        assert_eq!(wait["exit_code"], 7);
+        assert_eq!(wait["timed_out"], false);
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_parses_wait_envelope_before_redacting_public_output() {
+        let context = temp_context("runtime-waited-external-epf-unredacted-json");
+        let runner = FakeProcessRunner {
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: json!({
+                    "ok": true,
+                    "data": {
+                        "external_epf_wait": {
+                            "pid": 42,
+                            "execute_path": "tests/Smoke.epf",
+                            "exit_code": 0,
+                            "timed_out": false,
+                            "output_path": "build/token=private/out.log",
+                            "stderr_path": "build/smoke.stderr.log"
+                        }
+                    }
+                })
+                .to_string(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+            },
+        };
+        let args = json!({
+            "operation": "launch",
+            "clientMode": "thin",
+            "execute": "tests/Smoke.epf",
+            "output": "build/token=private/out.log",
+            "stderrOutput": "build/smoke.stderr.log",
+            "waitForExit": true,
+            "waitTimeoutMs": 30_000,
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        let result = RuntimeAdapter::with_runner(&runner)
+            .invoke_with_data("unica.runtime.execute", &args, &context, false, true)
+            .unwrap();
+        let outcome = result.outcome;
+
+        assert!(outcome.ok, "{:?}", outcome.errors);
+        assert_eq!(outcome.artifacts[1], "build/smoke.stderr.log");
+        let artifacts = outcome.artifacts.join("\n");
+        assert!(!artifacts.contains("private"), "{artifacts}");
+        assert!(artifacts.contains("<redacted>"), "{artifacts}");
+        assert!(!outcome.stdout.unwrap().contains("private"));
+        let command = outcome.command.unwrap().join("\n");
+        assert!(!command.contains("private"), "{command}");
+        assert!(command.contains("<redacted>"), "{command}");
+        let data = result.data.unwrap().to_string();
+        assert!(!data.contains("private"), "{data}");
+        assert!(data.contains("<redacted>"), "{data}");
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_preserves_prelaunch_runner_error_without_wait_payload() {
+        let context = temp_context("runtime-waited-external-epf-prelaunch-error");
+        let runner = FakeProcessRunner {
+            output: ProcessOutput {
+                status_success: false,
+                status: "exit status: 2".to_string(),
+                stdout: json!({
+                    "ok": false,
+                    "command": "launch",
+                    "data": {
+                        "message": "config file not found: v8project.yaml"
+                    },
+                    "error": {
+                        "code": "invalid_argument",
+                        "kind": "validation",
+                        "message": "config file not found: v8project.yaml"
+                    }
+                })
+                .to_string(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+            },
+        };
+        let args = bounded_external_epf_args();
+
+        let outcome = RuntimeAdapter::with_runner(&runner)
+            .invoke("unica.runtime.execute", &args, &context, false, true)
+            .unwrap();
+
+        assert!(!outcome.ok);
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| error.contains("config file not found")));
+        assert!(outcome
+            .errors
+            .iter()
+            .all(|error| !error.contains("external_epf_wait")));
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_rejects_mismatched_wait_artifact_receipt() {
+        let context = temp_context("runtime-waited-external-epf-mismatched-receipt");
+        let runner = FakeProcessRunner {
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: json!({
+                    "ok": true,
+                    "data": {
+                        "external_epf_wait": {
+                            "pid": 42,
+                            "execute_path": "tests/Other.epf",
+                            "exit_code": 0,
+                            "timed_out": false,
+                            "output_path": "build/smoke.stdout.log",
+                            "stderr_path": "build/smoke.stderr.log"
+                        }
+                    }
+                })
+                .to_string(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+            },
+        };
+        let args = bounded_external_epf_args();
+
+        let outcome = RuntimeAdapter::with_runner(&runner)
+            .invoke("unica.runtime.execute", &args, &context, false, true)
+            .unwrap();
+
+        assert!(!outcome.ok);
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| error.contains("`execute_path` does not match")));
+        assert!(outcome.artifacts.is_empty());
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn bounded_external_epf_rejects_case_only_output_aliases() {
+        if path_lock_identity(Path::new("Out.log")) != path_lock_identity(Path::new("out.log")) {
+            return;
+        }
+
+        let context = temp_context("runtime-waited-external-epf-case-alias");
+        let args = json!({
+            "waitForExit": true,
+            "output": "build/Out.log",
+            "stderrOutput": "build/out.log",
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        let error = validate_bounded_external_epf_artifact_paths(&args, &context.cwd).unwrap_err();
+
+        assert!(error.contains("resolve to the same path"), "{error}");
+        cleanup_context(&context);
+    }
+
+    fn bounded_external_epf_args() -> Map<String, Value> {
+        json!({
+            "operation": "launch",
+            "clientMode": "thin",
+            "execute": "tests/Smoke.epf",
+            "output": "build/smoke.stdout.log",
+            "stderrOutput": "build/smoke.stderr.log",
+            "waitForExit": true,
+            "waitTimeoutMs": 30_000,
+        })
+        .as_object()
+        .unwrap()
+        .clone()
     }
 
     #[test]

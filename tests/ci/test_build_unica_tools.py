@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -39,7 +40,13 @@ class BuildUnicaToolsTests(unittest.TestCase):
             self.assertEqual(separator, "-build.")
             self.assertRegex(build_revision, r"^[1-9][0-9]*$")
 
-            source_suffix = f"-{tool['sourceTag']}"
+            source_tag = tool["sourceTag"]
+            source_label = (
+                source_tag
+                if source_tag.startswith("v")
+                else f"nightly-{re.sub(r'[^a-z0-9]+', '-', source_tag.lower()).strip('-')}"
+            )
+            source_suffix = f"-{source_label}"
             self.assertTrue(release_tag.endswith(source_suffix))
             release_name = release_tag[: -len(source_suffix)]
             self.assertTrue(
@@ -100,12 +107,27 @@ class BuildUnicaToolsTests(unittest.TestCase):
 
         updated_tools = json.loads(json.dumps(external_tools))
         for tool in updated_tools:
-            version = tool["sourceTag"].removeprefix("v").split(".")
-            version[-1] = str(int(version[-1]) + 1)
-            tool["sourceTag"] = f"v{'.'.join(version)}"
-            release_name = tool["assetTag"].rsplit("-v", 1)[0]
-            build_revision = int(tool["assetTag"].rsplit("-build.", 1)[1]) + 1
-            tool["assetTag"] = f"{release_name}-{tool['sourceTag']}-build.{build_revision}"
+            source_tag = tool["sourceTag"]
+            current_source_label = (
+                source_tag
+                if source_tag.startswith("v")
+                else f"nightly-{re.sub(r'[^a-z0-9]+', '-', source_tag.lower()).strip('-')}"
+            )
+            current_revision = tool["assetTag"].rsplit("-build.", 1)[1]
+            release_name = tool["assetTag"].removesuffix(
+                f"-{current_source_label}-build.{current_revision}"
+            )
+            if source_tag.startswith("v"):
+                version = source_tag.removeprefix("v").split(".")
+                version[-1] = str(int(version[-1]) + 1)
+                tool["sourceTag"] = f"v{'.'.join(version)}"
+                source_label = tool["sourceTag"]
+            else:
+                source_label = (
+                    f"nightly-{re.sub(r'[^a-z0-9]+', '-', source_tag.lower()).strip('-')}"
+                )
+            build_revision = int(current_revision) + 1
+            tool["assetTag"] = f"{release_name}-{source_label}-build.{build_revision}"
         self.assert_external_toolchain_contract(updated_tools)
 
     def test_release_asset_checksum_mismatch_fails_before_use(self) -> None:

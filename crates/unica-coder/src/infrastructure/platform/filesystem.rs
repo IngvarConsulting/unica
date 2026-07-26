@@ -4,10 +4,34 @@ use std::fs::File;
 use std::io;
 use std::path::Path;
 
+#[cfg(all(test, unix))]
+pub(crate) fn create_test_directory_link(target: &Path, link: &Path) -> io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(all(test, windows))]
+pub(crate) fn create_test_directory_link(target: &Path, link: &Path) -> io::Result<()> {
+    std::os::windows::fs::symlink_dir(target, link)
+}
+
+#[cfg(all(test, not(any(unix, windows))))]
+pub(crate) fn create_test_directory_link(_target: &Path, _link: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "test directory links are unavailable on this host",
+    ))
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct PortablePermissions {
     permissions: fs::Permissions,
     key: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FileIdentity {
+    volume: u64,
+    file: u64,
 }
 
 impl PortablePermissions {
@@ -62,8 +86,35 @@ pub(crate) fn hard_link_count(file: &fs::File) -> io::Result<u64> {
     Ok(file.metadata()?.nlink())
 }
 
+#[cfg(unix)]
+pub(crate) fn file_identity(file: &fs::File) -> io::Result<FileIdentity> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = file.metadata()?;
+    Ok(FileIdentity {
+        volume: metadata.dev(),
+        file: metadata.ino(),
+    })
+}
+
 #[cfg(windows)]
 pub(crate) fn hard_link_count(file: &fs::File) -> io::Result<u64> {
+    Ok(u64::from(windows_file_information(file)?.nNumberOfLinks))
+}
+
+#[cfg(windows)]
+pub(crate) fn file_identity(file: &fs::File) -> io::Result<FileIdentity> {
+    let information = windows_file_information(file)?;
+    Ok(FileIdentity {
+        volume: u64::from(information.dwVolumeSerialNumber),
+        file: (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow),
+    })
+}
+
+#[cfg(windows)]
+fn windows_file_information(
+    file: &fs::File,
+) -> io::Result<windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION> {
     use std::mem::MaybeUninit;
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
@@ -80,8 +131,7 @@ pub(crate) fn hard_link_count(file: &fs::File) -> io::Result<u64> {
     } else {
         // SAFETY: a nonzero result guarantees that GetFileInformationByHandle initialized the
         // entire BY_HANDLE_FILE_INFORMATION value.
-        let information = unsafe { information.assume_init() };
-        Ok(u64::from(information.nNumberOfLinks))
+        Ok(unsafe { information.assume_init() })
     }
 }
 
@@ -93,8 +143,143 @@ pub(crate) fn hard_link_count(_file: &fs::File) -> io::Result<u64> {
     ))
 }
 
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn file_identity(_file: &fs::File) -> io::Result<FileIdentity> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "file identity is not available on this host",
+    ))
+}
+
+#[cfg(any(test, windows))]
+fn windows_api_path_from_utf16(mut path: Vec<u16>, absolute: bool) -> Vec<u16> {
+    const BACKSLASH: u16 = b'\\' as u16;
+    const FORWARD_SLASH: u16 = b'/' as u16;
+    const QUESTION_MARK: u16 = b'?' as u16;
+    const DOT: u16 = b'.' as u16;
+
+    let has_device_prefix = path.starts_with(&[BACKSLASH, BACKSLASH, QUESTION_MARK, BACKSLASH])
+        || path.starts_with(&[BACKSLASH, BACKSLASH, DOT, BACKSLASH]);
+    if absolute && !has_device_prefix {
+        for unit in &mut path {
+            if *unit == FORWARD_SLASH {
+                *unit = BACKSLASH;
+            }
+        }
+        let mut extended = if path.starts_with(&[BACKSLASH, BACKSLASH]) {
+            r"\\?\UNC\".encode_utf16().collect::<Vec<_>>()
+        } else {
+            r"\\?\".encode_utf16().collect::<Vec<_>>()
+        };
+        if path.starts_with(&[BACKSLASH, BACKSLASH]) {
+            extended.extend_from_slice(&path[2..]);
+        } else {
+            extended.extend_from_slice(&path);
+        }
+        path = extended;
+    }
+    path.push(0);
+    path
+}
+
+#[cfg(windows)]
+fn windows_api_path(path: &Path) -> io::Result<Vec<u16>> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let path = std::path::absolute(path)?;
+    let encoded = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    if encoded.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Windows path contains NUL",
+        ));
+    }
+    Ok(windows_api_path_from_utf16(encoded, true))
+}
+
 pub(crate) fn install_file_no_clobber(source: &Path, target: &Path) -> io::Result<()> {
     fs::hard_link(source, target)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub(crate) fn rename_no_replace(source: &Path, target: &Path) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let source = CString::new(source.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "source path contains NUL"))?;
+    let target = CString::new(target.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "target path contains NUL"))?;
+    #[cfg(target_os = "linux")]
+    let no_replace_flag = libc::RENAME_NOREPLACE;
+    #[cfg(target_os = "android")]
+    let no_replace_flag = libc::RENAME_NOREPLACE as libc::c_uint;
+    // SAFETY: both C strings are NUL-terminated and remain live for the syscall. The raw syscall
+    // avoids a glibc-only symbol so this remains available on Linux musl; RENAME_NOREPLACE asks
+    // the kernel to fail atomically when the destination already exists.
+    let moved = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            target.as_ptr(),
+            no_replace_flag,
+        )
+    };
+    if moved == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+pub(crate) fn rename_no_replace(source: &Path, target: &Path) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let source = CString::new(source.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "source path contains NUL"))?;
+    let target = CString::new(target.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "target path contains NUL"))?;
+    // SAFETY: both C strings are NUL-terminated and remain live for the call. RENAME_EXCL makes
+    // destination existence an atomic failure instead of replacing it.
+    let moved = unsafe { libc::renamex_np(source.as_ptr(), target.as_ptr(), libc::RENAME_EXCL) };
+    if moved == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn rename_no_replace(source: &Path, target: &Path) -> io::Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
+
+    let source = windows_api_path(source)?;
+    let target = windows_api_path(target)?;
+    // SAFETY: both pointers reference NUL-terminated UTF-16 buffers for the call duration.
+    // Omitting MOVEFILE_REPLACE_EXISTING makes destination existence an atomic failure.
+    let moved = unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), MOVEFILE_WRITE_THROUGH) };
+    if moved == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_vendor = "apple",
+    windows
+)))]
+pub(crate) fn rename_no_replace(_source: &Path, _target: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "atomic no-replace rename is not available on this host",
+    ))
 }
 
 #[cfg(windows)]
@@ -216,8 +401,6 @@ pub(crate) fn replace_file_atomically(source: &Path, target: &Path) -> io::Resul
 
 #[cfg(windows)]
 pub(crate) fn replace_file_atomically(source: &Path, target: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-
     const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
     const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
     #[link(name = "kernel32")]
@@ -225,16 +408,8 @@ pub(crate) fn replace_file_atomically(source: &Path, target: &Path) -> io::Resul
         fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: u32) -> i32;
     }
 
-    let source = source
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let target = target
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
+    let source = windows_api_path(source)?;
+    let target = windows_api_path(target)?;
     // SAFETY: both pointers reference NUL-terminated UTF-16 buffers for the call duration.
     let moved = unsafe {
         MoveFileExW(
@@ -300,7 +475,7 @@ fn path_lock_identity_text(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::path_lock_identity_text;
+    use super::{path_lock_identity_text, windows_api_path_from_utf16};
     use std::fs;
     use std::io;
     use std::path::PathBuf;
@@ -318,6 +493,32 @@ mod tests {
             "unica-filesystem-{name}-{}-{nanos}",
             std::process::id()
         ))
+    }
+
+    fn windows_api_path_text(path: &str, absolute: bool) -> String {
+        let mut encoded = windows_api_path_from_utf16(path.encode_utf16().collect(), absolute);
+        assert_eq!(encoded.pop(), Some(0));
+        String::from_utf16(&encoded).unwrap()
+    }
+
+    #[test]
+    fn windows_api_paths_use_extended_prefixes_without_lossy_text_conversion() {
+        assert_eq!(
+            windows_api_path_text(r"C:/deep/source.xml", true),
+            r"\\?\C:\deep\source.xml"
+        );
+        assert_eq!(
+            windows_api_path_text(r"\\server\share/deep/source.xml", true),
+            r"\\?\UNC\server\share\deep\source.xml"
+        );
+        assert_eq!(
+            windows_api_path_text(r"\\?\C:\deep\source.xml", true),
+            r"\\?\C:\deep\source.xml"
+        );
+        assert_eq!(
+            windows_api_path_text(r"relative/source.xml", false),
+            r"relative/source.xml"
+        );
     }
 
     #[test]
@@ -439,6 +640,36 @@ mod tests {
             PathBuf::from(r"\\server\share\source"),
             strip_windows_extended_length_prefix(&extended)
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn raw_windows_move_primitives_support_extended_length_paths() {
+        use super::{rename_no_replace, replace_file_atomically};
+
+        let base = unique_temp_root("long-moves");
+        let mut root = base.clone();
+        while root.display().to_string().len() < 270 {
+            root.push("long-path-segment");
+        }
+        fs::create_dir_all(&root).unwrap();
+
+        let replacement_stage = root.join("replacement-stage");
+        let replacement_target = root.join("replacement-target");
+        fs::write(&replacement_stage, b"replacement").unwrap();
+        fs::write(&replacement_target, b"original").unwrap();
+        replace_file_atomically(&replacement_stage, &replacement_target).unwrap();
+        assert_eq!(fs::read(&replacement_target).unwrap(), b"replacement");
+        assert!(!replacement_stage.exists());
+
+        let move_source = root.join("move-source");
+        let move_target = root.join("move-target");
+        fs::write(&move_source, b"moved").unwrap();
+        rename_no_replace(&move_source, &move_target).unwrap();
+        assert_eq!(fs::read(&move_target).unwrap(), b"moved");
+        assert!(!move_source.exists());
+
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[cfg(windows)]

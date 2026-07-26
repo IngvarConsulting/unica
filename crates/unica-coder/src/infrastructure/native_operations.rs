@@ -11,6 +11,7 @@ pub(crate) mod form_event_registry;
 pub(crate) mod help;
 pub(crate) mod interface;
 pub(crate) mod meta;
+pub(crate) mod meta_validation_context;
 pub(crate) mod mxl;
 pub(crate) mod registry;
 pub(crate) mod role;
@@ -34,7 +35,11 @@ impl NativeOperationAdapter {
         dry_run: bool,
         mutating: bool,
     ) -> Result<AdapterOutcome, String> {
-        if registry::typed_mutation_handler(operation).is_some() {
+        let form_edit_without_payload_preview =
+            operation == "form-edit" && dry_run && !form::has_edit_payload(args);
+        if registry::typed_mutation_handler(operation).is_some()
+            && !form_edit_without_payload_preview
+        {
             return Err(format!(
                 "{operation} requires the typed native-operation result path"
             ));

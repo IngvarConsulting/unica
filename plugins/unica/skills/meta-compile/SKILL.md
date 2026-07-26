@@ -71,9 +71,11 @@ allowed-tools:
 "ИмяРеквизита: Тип | req, index"  → с флагами
 ```
 
-Типы: `String(100)`, `Number(15,2)`, `Boolean`, `Date`, `DateTime`, `CatalogRef.Xxx`, `DocumentRef.Xxx`, `EnumRef.Xxx`, `DefinedType.Xxx` и др. ссылочные.
+Типы: `String(100)`, `Number(15,2)`, `Boolean`, `Date`, `DateTime`, `ValueStorage`, `CatalogRef.Xxx`, `DocumentRef.Xxx`, `EnumRef.Xxx`, `DefinedType.Xxx` и др. ссылочные. Для 8.3.27 длина `String` — целое `0..=1024`; `Number` принимает целые `digits` `0..=38` и `fraction` `0..=digits`. `ValueStorage` допустим только как единственный тип.
+В составном типе не дублируй один платформенный тип; порядок конфигурационных ссылок сохраняется из DSL, потому что каноническую сортировку платформа вычисляет по `GeneratedType/xr:TypeId` всей конфигурации.
+Имя ссылочного типа после единственной точки должно быть допустимым XML NCName: пробелы, двоеточия и дополнительные точки не поддерживаются.
 
-Составной тип: `"Значение: String + Number(15,2) + CatalogRef.Контрагенты"`.
+Составной тип: `"Значение: String + Number(15,2) + CatalogRef.Контрагенты"`. Типы, которые сводятся к одному платформенному QName (`String(50) + String(20)`, `Date + DateTime`), нельзя дублировать.
 
 Флаги: `req`, `index`, `indexAdditional`, `nonneg`, `master`, `mainFilter`, `denyIncomplete`, `useInTotals`.
 

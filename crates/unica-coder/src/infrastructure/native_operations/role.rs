@@ -15,6 +15,46 @@ use super::compile_transaction::{CompileTransaction, RegistrationStatus};
 use super::{
     cf::*, cfe::*, dcs::*, form::*, interface::*, meta::*, mxl::*, subsystem::*, template::*,
 };
+
+#[cfg(test)]
+type RoleCompileAfterConfigurationProbeHook = Box<dyn FnOnce(&Path)>;
+
+#[cfg(test)]
+thread_local! {
+    static ROLE_COMPILE_AFTER_CONFIGURATION_PROBE_HOOK:
+        std::cell::RefCell<Option<RoleCompileAfterConfigurationProbeHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn with_role_compile_after_configuration_probe_hook<T>(
+    hook: impl FnOnce(&Path) + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<RoleCompileAfterConfigurationProbeHook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            ROLE_COMPILE_AFTER_CONFIGURATION_PROBE_HOOK.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+
+    let previous =
+        ROLE_COMPILE_AFTER_CONFIGURATION_PROBE_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(test)]
+fn run_role_compile_after_configuration_probe_hook(path: &Path) {
+    if let Some(hook) =
+        ROLE_COMPILE_AFTER_CONFIGURATION_PROBE_HOOK.with(|slot| slot.borrow_mut().take())
+    {
+        hook(path);
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct RoleRight {
     pub(crate) name: String,
@@ -43,17 +83,63 @@ pub(crate) struct RoleInfoGroup {
     pub(crate) objects: Vec<RoleInfoObjectSummary>,
 }
 
+struct RoleReadLayout {
+    role_dir_name: String,
+    metadata_path: PathBuf,
+    configuration_path: PathBuf,
+}
+
+fn role_read_layout(rights_path: &Path) -> RoleReadLayout {
+    let ext_dir = rights_path.parent().unwrap_or_else(|| Path::new(""));
+    let role_dir = ext_dir
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .to_path_buf();
+    let roles_dir = role_dir
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .to_path_buf();
+    let role_dir_name = role_dir
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_string();
+    let metadata_path = roles_dir.join(format!("{role_dir_name}.xml"));
+    let configuration_path = roles_dir
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .join("Configuration.xml");
+    RoleReadLayout {
+        role_dir_name,
+        metadata_path,
+        configuration_path,
+    }
+}
+
+pub(crate) fn role_read_format_dependency_paths(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+    operation: &str,
+) -> Result<Vec<PathBuf>, String> {
+    let rights_path = resolve_role_read_rights_path(args, context)?;
+    let layout = role_read_layout(&rights_path);
+
+    let mut paths = vec![rights_path];
+    if layout.metadata_path.is_file() {
+        paths.push(layout.metadata_path);
+    }
+    if operation == "role-validate" && layout.configuration_path.is_file() {
+        paths.push(layout.configuration_path);
+    }
+    Ok(paths)
+}
+
 pub(crate) fn analyze_role_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    let result = (|| -> Result<(String, Option<PathBuf>, PathBuf), String> {
-        let rights_path_raw = required_path(
-            args,
-            &["rightsPath", "RightsPath", "path", "Path"],
-            "RightsPath",
-        )?;
-        let rights_path = absolutize(rights_path_raw, &context.cwd);
+    let result = (|| -> Result<(String, PathBuf), String> {
+        let rights_path = resolve_role_read_rights_path(args, context)?;
         if !rights_path.is_file() {
             return Err(format!("[ERROR] File not found: {}", rights_path.display()));
         }
@@ -248,7 +334,6 @@ pub(crate) fn analyze_role_info(
                     format!(
                         "[INFO] Offset {offset} exceeds total lines ({total_lines}). Nothing to show.\n"
                     ),
-                    None,
                     rights_path,
                 ));
             }
@@ -265,37 +350,21 @@ pub(crate) fn analyze_role_info(
             out_lines = shown;
         }
 
-        if let Some(out_file) = path_arg(args, &["outFile", "OutFile"]) {
-            let out_file = absolutize(out_file, &context.cwd);
-            write_utf8_bom(&out_file, &out_lines.join("\n"))?;
-            Ok((
-                format!("Output written to {}\n", out_file.display()),
-                Some(out_file),
-                rights_path,
-            ))
-        } else {
-            Ok((format!("{}\n", out_lines.join("\n")), None, rights_path))
-        }
+        Ok((format!("{}\n", out_lines.join("\n")), rights_path))
     })();
 
     match result {
-        Ok((stdout, out_file, rights_path)) => {
-            let mut artifacts = vec![rights_path.display().to_string()];
-            if let Some(out_file) = out_file {
-                artifacts.push(out_file.display().to_string());
-            }
-            AdapterOutcome {
-                ok: true,
-                summary: "unica.role.info completed with native role analyzer".to_string(),
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: Vec::new(),
-                artifacts,
-                stdout: Some(stdout),
-                stderr: Some(String::new()),
-                command: None,
-            }
-        }
+        Ok((stdout, rights_path)) => AdapterOutcome {
+            ok: true,
+            summary: "unica.role.info completed with native role analyzer".to_string(),
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: Vec::new(),
+            artifacts: vec![rights_path.display().to_string()],
+            stdout: Some(stdout),
+            stderr: Some(String::new()),
+            command: None,
+        },
         Err(error) => AdapterOutcome {
             ok: false,
             summary: "unica.role.info failed in native role analyzer".to_string(),
@@ -311,15 +380,9 @@ pub(crate) fn analyze_role_info(
 }
 
 pub(crate) fn role_info_metadata(rights_path: &Path) -> (String, String) {
-    let ext_dir = rights_path.parent().unwrap_or_else(|| Path::new(""));
-    let role_dir = ext_dir.parent().unwrap_or_else(|| Path::new(""));
-    let roles_dir = role_dir.parent().unwrap_or_else(|| Path::new(""));
-    let role_folder_name = role_dir
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("")
-        .to_string();
-    let meta_path = roles_dir.join(format!("{role_folder_name}.xml"));
+    let layout = role_read_layout(rights_path);
+    let role_folder_name = layout.role_dir_name;
+    let meta_path = layout.metadata_path;
 
     let mut role_name = String::new();
     let mut role_synonym = String::new();
@@ -450,33 +513,18 @@ pub(crate) fn validate_role(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    let result = (|| -> Result<(bool, String, PathBuf, Option<PathBuf>, String), String> {
-        let rights_path_raw = required_path(
-            args,
-            &["rightsPath", "RightsPath", "path", "Path"],
-            "RightsPath",
-        )?;
-        let rights_path =
-            resolve_role_validate_rights_path(absolutize(rights_path_raw, &context.cwd));
-        let out_file =
-            path_arg(args, &["outFile", "OutFile"]).map(|path| absolutize(path, &context.cwd));
+    let result = (|| -> Result<(bool, String, PathBuf), String> {
+        let rights_path = resolve_role_read_rights_path(args, context)?;
         let detailed = bool_arg(args, &["detailed", "Detailed"]);
 
-        let ext_dir = rights_path.parent().unwrap_or_else(|| Path::new(""));
-        let role_dir = ext_dir.parent().unwrap_or_else(|| Path::new(""));
-        let roles_dir = role_dir.parent().unwrap_or_else(|| Path::new(""));
-        let role_dir_name = role_dir
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("")
-            .to_string();
-        let metadata_path = roles_dir.join(format!("{role_dir_name}.xml"));
+        let layout = role_read_layout(&rights_path);
+        let metadata_path = layout.metadata_path;
 
         let mut report = RoleValidationReport::new(detailed);
         if !rights_path.exists() {
             report.error(format!("File not found: {}", rights_path.display()));
             let text = report.lines.join("\n");
-            return Ok((false, text, rights_path, out_file, String::new()));
+            return Ok((false, text, rights_path));
         }
 
         let rights_text = fs::read_to_string(&rights_path)
@@ -489,7 +537,7 @@ pub(crate) fn validate_role(
             Err(err) => {
                 report.error(format!("XML parse error: {err}"));
                 let text = report.lines.join("\n");
-                return Ok((false, text, rights_path, out_file, String::new()));
+                return Ok((false, text, rights_path));
             }
         };
 
@@ -738,14 +786,9 @@ pub(crate) fn validate_role(
             }
         }
 
-        let config_dir = roles_dir.parent().unwrap_or_else(|| Path::new(""));
-        let config_xml_path = config_dir.join("Configuration.xml");
+        let config_xml_path = layout.configuration_path;
         if inferred_role_name.is_empty() {
-            inferred_role_name = role_dir
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("")
-                .to_string();
+            inferred_role_name = layout.role_dir_name;
         }
 
         if config_xml_path.exists() {
@@ -794,66 +837,29 @@ pub(crate) fn validate_role(
 
         let ok = report.errors == 0;
         let text = report.finish(&inferred_role_name);
-        Ok((ok, text, rights_path, out_file, String::new()))
+        Ok((ok, text, rights_path))
     })();
 
     match result {
-        Ok((ok, text, rights_path, out_file, error_slot)) => {
-            let stdout = if let Some(out_file) = &out_file {
-                if let Some(parent) = out_file.parent() {
-                    if let Err(err) = fs::create_dir_all(parent) {
-                        return AdapterOutcome {
-                            ok: false,
-                            summary: "unica.role.validate failed in native role validator"
-                                .to_string(),
-                            changes: Vec::new(),
-                            warnings: Vec::new(),
-                            errors: vec![format!("failed to create {}: {err}", parent.display())],
-                            artifacts: Vec::new(),
-                            stdout: None,
-                            stderr: None,
-                            command: None,
-                        };
-                    }
-                }
-                if let Err(error) = write_utf8_bom(out_file, &text) {
-                    return AdapterOutcome {
-                        ok: false,
-                        summary: "unica.role.validate failed in native role validator".to_string(),
-                        changes: Vec::new(),
-                        warnings: Vec::new(),
-                        errors: vec![error.clone()],
-                        artifacts: Vec::new(),
-                        stdout: None,
-                        stderr: Some(format!("{error}\n")),
-                        command: None,
-                    };
-                }
-                format!("Written to: {}\n", out_file.display())
+        Ok((ok, text, rights_path)) => AdapterOutcome {
+            ok,
+            summary: if ok {
+                "unica.role.validate completed with native role validator".to_string()
             } else {
-                format!("{text}\n")
-            };
-
-            let mut artifacts = vec![rights_path.display().to_string()];
-            if let Some(out_file) = out_file {
-                artifacts.push(out_file.display().to_string());
-            }
-            AdapterOutcome {
-                ok,
-                summary: if ok {
-                    "unica.role.validate completed with native role validator".to_string()
-                } else {
-                    "unica.role.validate failed in native role validator".to_string()
-                },
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: if ok { Vec::new() } else { vec![error_slot] },
-                artifacts,
-                stdout: Some(stdout),
-                stderr: Some(String::new()),
-                command: None,
-            }
-        }
+                "unica.role.validate failed in native role validator".to_string()
+            },
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: if ok {
+                Vec::new()
+            } else {
+                vec![text.trim().to_string()]
+            },
+            artifacts: vec![rights_path.display().to_string()],
+            stdout: Some(format!("{text}\n")),
+            stderr: Some(String::new()),
+            command: None,
+        },
         Err(error) => AdapterOutcome {
             ok: false,
             summary: "unica.role.validate failed in native role validator".to_string(),
@@ -1148,6 +1154,226 @@ struct RoleCompileResult {
     warnings: Vec<String>,
 }
 
+const ROLE_RIGHTS_NAMESPACE: &str = "http://v8.1c.ru/8.2/roles";
+const ROLE_METADATA_NAMESPACE: &str = "http://v8.1c.ru/8.3/MDClasses";
+
+fn validate_role_compile_name(value: &str) -> Result<(), String> {
+    let mut components = Path::new(value).components();
+    let is_single_path_component = matches!(
+        components.next(),
+        Some(std::path::Component::Normal(component))
+            if component == std::ffi::OsStr::new(value)
+    ) && components.next().is_none();
+
+    if form_is_xml_ncname(value) && is_single_path_component {
+        Ok(())
+    } else {
+        Err(format!(
+            "Role name must be a valid Unicode XML NCName and a single path component: {value:?}"
+        ))
+    }
+}
+
+fn role_compile_json_bool(definition: &Value, field: &str, default: bool) -> Result<bool, String> {
+    match definition.get(field) {
+        None => Ok(default),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(value) => Err(format!(
+            "role.compile field '{field}' must be a JSON boolean true or false; got {value}"
+        )),
+    }
+}
+
+fn validate_compiled_role_rights_xml(xml: &str, format_version: &str) -> Result<(), String> {
+    let doc = Document::parse(xml.trim_start_matches('\u{feff}'))
+        .map_err(|error| format!("Rights XML parse error: {error}"))?;
+    let root = doc.root_element();
+    if root.tag_name().name() != "Rights"
+        || root.tag_name().namespace() != Some(ROLE_RIGHTS_NAMESPACE)
+    {
+        return Err(format!(
+            "Rights root must be {{{ROLE_RIGHTS_NAMESPACE}}}Rights, got {{{}}}{}",
+            root.tag_name().namespace().unwrap_or(""),
+            root.tag_name().name()
+        ));
+    }
+    if root.attribute("version") != Some(format_version) {
+        return Err(format!(
+            "Rights version must be {format_version:?}, got {:?}",
+            root.attribute("version")
+        ));
+    }
+
+    for flag in [
+        "setForNewObjects",
+        "setForAttributesByDefault",
+        "independentRightsOfChildObjects",
+    ] {
+        let nodes = root
+            .children()
+            .filter(|node| {
+                node.is_element()
+                    && node.tag_name().name() == flag
+                    && node.tag_name().namespace() == Some(ROLE_RIGHTS_NAMESPACE)
+            })
+            .collect::<Vec<_>>();
+        if nodes.len() != 1 {
+            return Err(format!(
+                "Rights must contain exactly one <{flag}> element, found {}",
+                nodes.len()
+            ));
+        }
+        let value = nodes[0].text().unwrap_or("");
+        if !matches!(value, "true" | "false") {
+            return Err(format!(
+                "Rights <{flag}> must contain an xs:boolean true or false, got {value:?}"
+            ));
+        }
+    }
+
+    for right in root.descendants().filter(|node| {
+        node.is_element()
+            && node.tag_name().name() == "right"
+            && node.tag_name().namespace() == Some(ROLE_RIGHTS_NAMESPACE)
+    }) {
+        let values = right
+            .children()
+            .filter(|node| {
+                node.is_element()
+                    && node.tag_name().name() == "value"
+                    && node.tag_name().namespace() == Some(ROLE_RIGHTS_NAMESPACE)
+            })
+            .collect::<Vec<_>>();
+        if values.len() != 1 || !matches!(values[0].text().unwrap_or(""), "true" | "false") {
+            return Err(
+                "every Rights <right> must contain exactly one xs:boolean <value>".to_string(),
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_compiled_role_metadata_xml(
+    xml: &str,
+    role_name: &str,
+    format_version: &str,
+) -> Result<(), String> {
+    let doc = Document::parse(xml.trim_start_matches('\u{feff}'))
+        .map_err(|error| format!("role metadata XML parse error: {error}"))?;
+    let root = doc.root_element();
+    if root.tag_name().name() != "MetaDataObject"
+        || root.tag_name().namespace() != Some(ROLE_METADATA_NAMESPACE)
+    {
+        return Err(format!(
+            "role metadata root must be {{{ROLE_METADATA_NAMESPACE}}}MetaDataObject, got {{{}}}{}",
+            root.tag_name().namespace().unwrap_or(""),
+            root.tag_name().name()
+        ));
+    }
+    if root.attribute("version") != Some(format_version) {
+        return Err(format!(
+            "role metadata version must be {format_version:?}, got {:?}",
+            root.attribute("version")
+        ));
+    }
+
+    let roles = root
+        .children()
+        .filter(|node| {
+            node.is_element()
+                && node.tag_name().name() == "Role"
+                && node.tag_name().namespace() == Some(ROLE_METADATA_NAMESPACE)
+        })
+        .collect::<Vec<_>>();
+    if roles.len() != 1 {
+        return Err(format!(
+            "role metadata must contain exactly one <Role>, found {}",
+            roles.len()
+        ));
+    }
+    let role = roles[0];
+    let uuid = role.attribute("uuid").unwrap_or("");
+    if !is_valid_uuid(uuid) {
+        return Err(format!("role metadata has invalid UUID {uuid:?}"));
+    }
+    let names = role
+        .children()
+        .filter(|node| {
+            node.is_element()
+                && node.tag_name().name() == "Properties"
+                && node.tag_name().namespace() == Some(ROLE_METADATA_NAMESPACE)
+        })
+        .flat_map(|properties| properties.children())
+        .filter(|node| {
+            node.is_element()
+                && node.tag_name().name() == "Name"
+                && node.tag_name().namespace() == Some(ROLE_METADATA_NAMESPACE)
+        })
+        .collect::<Vec<_>>();
+    if names.len() != 1 || names[0].text().unwrap_or("") != role_name {
+        return Err(format!(
+            "role metadata <Name> must be {role_name:?}, got {:?}",
+            names.first().and_then(|node| node.text())
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static TEST_ROLE_COMPILE_POST_VALIDATION_FAILURE: std::cell::Cell<bool> = const {
+        std::cell::Cell::new(false)
+    };
+}
+
+#[cfg(test)]
+fn with_role_compile_post_validation_failure<T>(action: impl FnOnce() -> T) -> T {
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_ROLE_COMPILE_POST_VALIDATION_FAILURE.with(|slot| slot.set(self.0));
+        }
+    }
+
+    let previous = TEST_ROLE_COMPILE_POST_VALIDATION_FAILURE.with(|slot| slot.replace(true));
+    let _reset = Reset(previous);
+    action()
+}
+
+fn validate_role_compile_post_state(
+    metadata_path: &Path,
+    rights_path: &Path,
+    role_name: &str,
+    format_version: &str,
+) -> Result<(), String> {
+    #[cfg(test)]
+    if TEST_ROLE_COMPILE_POST_VALIDATION_FAILURE.with(|slot| slot.get()) {
+        return Err("injected role semantic post-validation failure".to_string());
+    }
+
+    let metadata = fs::read_to_string(metadata_path)
+        .map_err(|error| format!("failed to read {}: {error}", metadata_path.display()))?;
+    validate_compiled_role_metadata_xml(&metadata, role_name, format_version)?;
+    let rights = fs::read_to_string(rights_path)
+        .map_err(|error| format!("failed to read {}: {error}", rights_path.display()))?;
+    validate_compiled_role_rights_xml(&rights, format_version)
+}
+
+fn require_role_configuration_owner_validation(
+    config_path: &Path,
+    context: &WorkspaceContext,
+) -> Result<(), String> {
+    validate_cf_owner_path(config_path, context).map_err(|detail| {
+        format!(
+            "role.compile Configuration owner validation failed for {}: {}",
+            config_path.display(),
+            detail.trim()
+        )
+    })
+}
+
 pub(crate) fn compile_role(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -1173,21 +1399,28 @@ fn compile_role_internal(
     dry_run: bool,
 ) -> AdapterOutcome {
     let write_result = (|| -> Result<RoleCompileResult, String> {
-        let mut transaction = CompileTransaction::new();
         let json_path_raw = required_path(args, &["jsonPath", "JsonPath"], "JsonPath")?;
-        let output_dir_raw = required_path(args, &["outputDir", "OutputDir"], "OutputDir")?;
         let json_path = absolutize(json_path_raw, &context.cwd);
         if !json_path.exists() {
             return Err(format!("File not found: {}", json_path.display()));
         }
-        let json_text = fs::read_to_string(&json_path)
-            .map_err(|err| format!("failed to read {}: {err}", json_path.display()))?;
-        let mut defn: Value = serde_json::from_str(json_text.trim_start_matches('\u{feff}'))
-            .map_err(|err| format!("failed to parse role JSON: {err}"))?;
+        let mut transaction = CompileTransaction::new();
+        let mut defn = FileBackedJson::read(&json_path, |err| {
+            format!("failed to parse role JSON: {err}")
+        })?
+        .bind_to(&mut transaction)?;
 
-        let role_name = json_string_field(&defn, "name")
+        let role_name = defn
+            .get("name")
+            .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
             .ok_or_else(|| "JSON must have 'name' field (role programmatic name)".to_string())?;
+        validate_role_compile_name(&role_name)?;
+        let sfno = role_compile_json_bool(&defn, "setForNewObjects", false)?.to_string();
+        let sfab = role_compile_json_bool(&defn, "setForAttributesByDefault", true)?.to_string();
+        let irco =
+            role_compile_json_bool(&defn, "independentRightsOfChildObjects", false)?.to_string();
         let synonym = json_string_field(&defn, "synonym").unwrap_or_else(|| role_name.clone());
         let comment = json_string_field(&defn, "comment").unwrap_or_default();
 
@@ -1198,8 +1431,9 @@ fn compile_role_internal(
             }
         }
 
+        let output_dir_raw = required_path(args, &["outputDir", "OutputDir"], "OutputDir")?;
         let output_dir = absolutize(output_dir_raw.clone(), &context.cwd);
-        let format_version = detect_format_version(&output_dir);
+        let format_version = detect_format_version(&output_dir, context)?.to_string();
         let mut stderr = String::new();
         let mut parsed_objects = Vec::<RoleObject>::new();
         if let Some(objects) = defn.get("objects").and_then(Value::as_array) {
@@ -1209,19 +1443,6 @@ fn compile_role_internal(
                 }
             }
         }
-
-        let sfno = defn
-            .get("setForNewObjects")
-            .map(json_value_to_python_lower)
-            .unwrap_or_else(|| "false".to_string());
-        let sfab = defn
-            .get("setForAttributesByDefault")
-            .map(json_value_to_python_lower)
-            .unwrap_or_else(|| "true".to_string());
-        let irco = defn
-            .get("independentRightsOfChildObjects")
-            .map(json_value_to_python_lower)
-            .unwrap_or_else(|| "false".to_string());
 
         let mut rights_lines = Vec::<String>::new();
         rights_lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
@@ -1243,10 +1464,13 @@ fn compile_role_internal(
         let mut total_rights = 0usize;
         for object in &parsed_objects {
             rights_lines.push("    <object>".to_string());
-            rights_lines.push(format!("        <name>{}</name>", object.name));
+            rights_lines.push(format!("        <name>{}</name>", escape_xml(&object.name)));
             for right in &object.rights {
                 rights_lines.push("        <right>".to_string());
-                rights_lines.push(format!("            <name>{}</name>", right.name));
+                rights_lines.push(format!(
+                    "            <name>{}</name>",
+                    escape_xml(&right.name)
+                ));
                 rights_lines.push(format!("            <value>{}</value>", right.value));
                 if let Some(condition) = &right.condition {
                     rights_lines.push("            <restrictionByCondition>".to_string());
@@ -1327,14 +1551,25 @@ fn compile_role_internal(
                 ));
             }
         }
+        let config_xml_path = config_dir.join("Configuration.xml");
+        let config_owner_exists = config_xml_path.is_file();
+        #[cfg(test)]
+        run_role_compile_after_configuration_probe_hook(&config_xml_path);
+        if config_owner_exists {
+            require_role_configuration_owner_validation(&config_xml_path, context)?;
+        }
         let uid = fresh_meta_compile_uuid();
         let metadata_xml = role_metadata_xml(&role_name, &synonym, &comment, &format_version, &uid);
+        validate_compiled_role_metadata_xml(&metadata_xml, &role_name, &format_version)?;
+        validate_compiled_role_rights_xml(&rights_xml, &format_version)?;
         transaction.create_utf8_bom_text(&metadata_path, &metadata_xml)?;
         transaction.create_utf8_bom_text(&rights_path, &rights_xml)?;
 
-        let config_xml_path = config_dir.join("Configuration.xml");
         let reg_result =
             transaction.register_canonical_child(&config_xml_path, "Role", &role_name)?;
+        let config_owner_registered = !matches!(reg_result, RegistrationStatus::MissingTarget);
+        guard_active_format_owner(&mut transaction, &metadata_path, context)?;
+        guard_active_format_owner(&mut transaction, &config_xml_path, context)?;
 
         let mut stdout = format!(
             "[OK] Role '{role_name}' compiled\n     UUID: {uid}\n     Metadata: {}\n     Rights:   {}\n     Objects: {}, Rights: {total_rights}, Templates: {template_count}\n",
@@ -1356,6 +1591,9 @@ fn compile_role_internal(
         }
 
         let (artifacts, changes, warnings, output) = if dry_run {
+            if config_owner_registered {
+                require_role_configuration_owner_validation(&config_xml_path, context)?;
+            }
             (
                 Vec::new(),
                 transaction.dry_run_changes(),
@@ -1363,7 +1601,17 @@ fn compile_role_internal(
                 transaction.dry_run_stdout(),
             )
         } else {
-            let report = transaction.commit()?;
+            let report = transaction.commit_with_post_validation(|| {
+                if config_owner_registered {
+                    require_role_configuration_owner_validation(&config_xml_path, context)?;
+                }
+                validate_role_compile_post_state(
+                    &metadata_path,
+                    &rights_path,
+                    &role_name,
+                    &format_version,
+                )
+            })?;
             let mut changes = report
                 .created
                 .iter()
@@ -1452,7 +1700,10 @@ pub(crate) fn role_metadata_xml(
     lines.push(format!("        version=\"{format_version}\">"));
     lines.push(format!("    <Role uuid=\"{uid}\">"));
     lines.push("        <Properties>".to_string());
-    lines.push(format!("            <Name>{role_name}</Name>"));
+    lines.push(format!(
+        "            <Name>{}</Name>",
+        escape_xml(role_name)
+    ));
     lines.push("            <Synonym>".to_string());
     lines.push("                <v8:item>".to_string());
     lines.push("                    <v8:lang>ru</v8:lang>".to_string());
@@ -1775,5 +2026,543 @@ pub(crate) fn invoke_mutation(
     match operation {
         "role-compile" => Some(compile_role(args, context)),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod role_compile_contract_tests {
+    use super::super::compile_transaction::{with_commit_failpoint, CommitFailpoint};
+    use super::super::single_file_publisher::with_before_commit_hook;
+    use super::*;
+    use crate::application::UnicaApplication;
+
+    fn temp_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "unica-role-{name}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn context(root: &Path) -> WorkspaceContext {
+        WorkspaceContext {
+            cwd: root.to_path_buf(),
+            workspace_root: root.to_path_buf(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        }
+    }
+
+    fn compile_args(definition: &Path, output_dir: &Path) -> Map<String, Value> {
+        Map::from_iter([
+            (
+                "JsonPath".to_string(),
+                Value::String(definition.display().to_string()),
+            ),
+            (
+                "OutputDir".to_string(),
+                Value::String(output_dir.display().to_string()),
+            ),
+        ])
+    }
+
+    fn write_definition(root: &Path, definition: &Value) -> PathBuf {
+        let path = root.join("role.json");
+        fs::write(&path, serde_json::to_vec_pretty(definition).unwrap()).unwrap();
+        path
+    }
+
+    fn configuration_bytes() -> Vec<u8> {
+        let text = concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" version=\"2.20\">\r\n",
+            "\t<Configuration uuid=\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\">\r\n",
+            "\t\t<InternalInfo>\r\n",
+            "\t\t\t<xr:ContainedObject><xr:ClassId>9cd510cd-abfc-11d4-9434-004095e12fc7</xr:ClassId><xr:ObjectId>00000000-0000-0000-0000-000000000002</xr:ObjectId></xr:ContainedObject>\r\n",
+            "\t\t\t<xr:ContainedObject><xr:ClassId>9fcd25a0-4822-11d4-9414-008048da11f9</xr:ClassId><xr:ObjectId>00000000-0000-0000-0000-000000000003</xr:ObjectId></xr:ContainedObject>\r\n",
+            "\t\t\t<xr:ContainedObject><xr:ClassId>e3687481-0a87-462c-a166-9f34594f9bba</xr:ClassId><xr:ObjectId>00000000-0000-0000-0000-000000000004</xr:ObjectId></xr:ContainedObject>\r\n",
+            "\t\t\t<xr:ContainedObject><xr:ClassId>9de14907-ec23-4a07-96f0-85521cb6b53b</xr:ClassId><xr:ObjectId>00000000-0000-0000-0000-000000000005</xr:ObjectId></xr:ContainedObject>\r\n",
+            "\t\t\t<xr:ContainedObject><xr:ClassId>51f2d5d8-ea4d-4064-8892-82951750031e</xr:ClassId><xr:ObjectId>00000000-0000-0000-0000-000000000006</xr:ObjectId></xr:ContainedObject>\r\n",
+            "\t\t\t<xr:ContainedObject><xr:ClassId>e68182ea-4237-4383-967f-90c1e3370bc7</xr:ClassId><xr:ObjectId>00000000-0000-0000-0000-000000000007</xr:ObjectId></xr:ContainedObject>\r\n",
+            "\t\t\t<xr:ContainedObject><xr:ClassId>fb282519-d103-4dd3-bc12-cb271d631dfc</xr:ClassId><xr:ObjectId>00000000-0000-0000-0000-000000000008</xr:ObjectId></xr:ContainedObject>\r\n",
+            "\t\t</InternalInfo>\r\n",
+            "\t\t<Properties><Name>Demo</Name><ConfigurationExtensionCompatibilityMode>Version8_3_27</ConfigurationExtensionCompatibilityMode><DefaultLanguage>Language.English</DefaultLanguage></Properties>\r\n",
+            "\t\t<ChildObjects><Language>English</Language><Catalog>Items</Catalog></ChildObjects>\r\n",
+            "\t</Configuration>\r\n",
+            "</MetaDataObject><!--exact-tail-->"
+        );
+        let mut bytes = b"\xef\xbb\xbf".to_vec();
+        bytes.extend_from_slice(text.as_bytes());
+        bytes
+    }
+
+    fn write_configuration(root: &Path) -> Vec<u8> {
+        let bytes = configuration_bytes();
+        fs::create_dir_all(root.join("Languages")).unwrap();
+        fs::write(root.join("Languages/English.xml"), b"language marker").unwrap();
+        fs::write(root.join("Configuration.xml"), &bytes).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn role_validate_reports_validation_failures_in_errors() {
+        let workspace = temp_root("validate-errors");
+        let rights_path = workspace.join("missing-rights.xml");
+        let outcome = validate_role(
+            &Map::from_iter([(
+                "RightsPath".to_string(),
+                Value::String(rights_path.display().to_string()),
+            )]),
+            &context(&workspace),
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("File not found"),
+            "{outcome:?}"
+        );
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn public_role_compile_rejects_platform_invalid_configuration_owner_without_any_changes() {
+        let workspace = temp_root("public-invalid-owner-enum");
+        let source = workspace.join("src");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let valid = write_configuration(&source);
+        let invalid = String::from_utf8(valid[3..].to_vec())
+            .unwrap()
+            .replace(
+                "<ConfigurationExtensionCompatibilityMode>Version8_3_27</ConfigurationExtensionCompatibilityMode>",
+                "<ConfigurationExtensionCompatibilityMode>Bogus</ConfigurationExtensionCompatibilityMode>",
+            );
+        let mut invalid_bytes = b"\xef\xbb\xbf".to_vec();
+        invalid_bytes.extend_from_slice(invalid.as_bytes());
+        let config_path = source.join("Configuration.xml");
+        fs::write(&config_path, &invalid_bytes).unwrap();
+        let definition = write_definition(&workspace, &json!({ "name": "Reader" }));
+        let args = Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(workspace.display().to_string()),
+            ),
+            ("dryRun".to_string(), Value::Bool(false)),
+            (
+                "JsonPath".to_string(),
+                Value::String(definition.display().to_string()),
+            ),
+            ("OutputDir".to_string(), Value::String("src".to_string())),
+        ]);
+
+        let outcome = UnicaApplication::new()
+            .call_tool("unica.role.compile", &args)
+            .unwrap();
+
+        assert!(!outcome.ok, "{outcome:?}");
+        let errors = outcome.errors.join("\n");
+        assert!(
+            errors.contains("ConfigurationExtensionCompatibilityMode"),
+            "{outcome:?}"
+        );
+        assert!(errors.contains("Bogus"), "{outcome:?}");
+        assert_eq!(fs::read(config_path).unwrap(), invalid_bytes);
+        assert!(!source.join("Roles/Reader.xml").exists());
+        assert!(!source.join("Roles/Reader/Ext/Rights.xml").exists());
+        assert!(!source.join("Roles").exists());
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn public_role_compile_prioritizes_newer_existing_target_over_older_configuration() {
+        let workspace = temp_root("public-existing-newer-target");
+        let source = workspace.join("src");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let older_configuration = String::from_utf8(write_configuration(&source))
+            .unwrap()
+            .replacen(r#"version="2.20""#, r#"version="2.19""#, 1)
+            .into_bytes();
+        let config_path = source.join("Configuration.xml");
+        fs::write(&config_path, &older_configuration).unwrap();
+        let definition_path = write_definition(&workspace, &json!({ "name": "Reader" }));
+        let definition = fs::read(&definition_path).unwrap();
+        let metadata_path = source.join("Roles/Reader.xml");
+        fs::create_dir_all(metadata_path.parent().unwrap()).unwrap();
+        let newer_target = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Role/></MetaDataObject>"#.to_vec();
+        fs::write(&metadata_path, &newer_target).unwrap();
+        let args = Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(workspace.display().to_string()),
+            ),
+            ("dryRun".to_string(), Value::Bool(false)),
+            (
+                "JsonPath".to_string(),
+                Value::String(definition_path.display().to_string()),
+            ),
+            ("OutputDir".to_string(), Value::String("src".to_string())),
+        ]);
+
+        let outcome = UnicaApplication::new()
+            .call_tool("unica.role.compile", &args)
+            .unwrap();
+
+        assert!(!outcome.ok, "{outcome:?}");
+        let diagnostic = &outcome.diagnostics.as_ref().unwrap()["formatCompatibility"];
+        assert_eq!(diagnostic["code"], "platformVersionUnsupported");
+        assert_eq!(diagnostic["actualFormat"], "2.21");
+        let warning = outcome.warnings.join("\n");
+        assert!(warning.contains("1С 8.5"), "{warning}");
+        assert!(!warning.contains("миграц"), "{warning}");
+        assert!(!warning.contains("повторно выгруз"), "{warning}");
+        assert!(!warning.contains("re-export"), "{warning}");
+        assert_eq!(fs::read(&config_path).unwrap(), older_configuration);
+        assert_eq!(fs::read(&metadata_path).unwrap(), newer_target);
+        assert_eq!(fs::read(&definition_path).unwrap(), definition);
+        assert!(!source.join("Roles/Reader/Ext/Rights.xml").exists());
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        assert!(outcome.artifacts.is_empty(), "{outcome:?}");
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn role_compile_rejects_standalone_newer_configuration_without_creating_role() {
+        let workspace = temp_root("standalone-newer-owner");
+        let source = workspace.join("src");
+        fs::create_dir_all(&source).unwrap();
+        let supported = write_configuration(&source);
+        let newer = String::from_utf8(supported)
+            .unwrap()
+            .replace(r#"version="2.20""#, r#"version="2.21""#)
+            .into_bytes();
+        let config_path = source.join("Configuration.xml");
+        fs::write(&config_path, &newer).unwrap();
+        let definition = write_definition(&workspace, &json!({ "name": "Reader" }));
+
+        let outcome = compile_role(&compile_args(&definition, &source), &context(&workspace));
+
+        assert!(!outcome.ok, "{outcome:?}");
+        let diagnostics = outcome.errors.join("\n");
+        assert!(diagnostics.contains("2.21"), "{diagnostics}");
+        assert!(diagnostics.contains("1C 8.5"), "{diagnostics}");
+        assert_eq!(fs::read(&config_path).unwrap(), newer);
+        assert!(!source.join("Roles").exists());
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn role_compile_rejects_newer_configuration_that_appears_after_owner_probe() {
+        let workspace = temp_root("newer-owner-appears-after-probe");
+        let source = temp_root("detached-newer-owner-appears-after-probe");
+        fs::create_dir_all(&source).unwrap();
+        let definition = write_definition(&workspace, &json!({ "name": "Reader" }));
+        let newer = String::from_utf8(configuration_bytes())
+            .unwrap()
+            .replace(r#"version="2.20""#, r#"version="2.21""#)
+            .into_bytes();
+        let config_path = source.join("Configuration.xml");
+        let config_for_hook = config_path.clone();
+        let newer_for_hook = newer.clone();
+
+        let outcome = with_role_compile_after_configuration_probe_hook(
+            move |_| fs::write(&config_for_hook, &newer_for_hook).unwrap(),
+            || compile_role(&compile_args(&definition, &source), &context(&workspace)),
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(outcome.errors.join("\n").contains("2.21"), "{outcome:?}");
+        assert_eq!(fs::read(&config_path).unwrap(), newer);
+        assert!(!source.join("Roles/Reader.xml").exists());
+        assert!(!source.join("Roles/Reader/Ext/Rights.xml").exists());
+        fs::remove_dir_all(source).unwrap();
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn role_compile_rolls_back_if_supported_configuration_appears_during_publication() {
+        let workspace = temp_root("supported-owner-appears-during-publication");
+        let source = temp_root("detached-supported-owner-appears-during-publication");
+        fs::create_dir_all(&source).unwrap();
+        let definition = write_definition(&workspace, &json!({ "name": "Reader" }));
+        let config_path = source.join("Configuration.xml");
+        let config_for_hook = config_path.clone();
+        let supported = configuration_bytes();
+
+        let outcome = with_before_commit_hook(
+            move |_| fs::write(&config_for_hook, &supported).unwrap(),
+            || compile_role(&compile_args(&definition, &source), &context(&workspace)),
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("absence guard"),
+            "{outcome:?}"
+        );
+        assert!(config_path.is_file());
+        assert!(!source.join("Roles/Reader.xml").exists());
+        assert!(!source.join("Roles/Reader/Ext/Rights.xml").exists());
+        fs::remove_dir_all(source).unwrap();
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn role_compile_validates_supported_configuration_that_appears_after_owner_probe() {
+        let workspace = temp_root("invalid-owner-appears-after-probe");
+        let source = temp_root("detached-invalid-owner-appears-after-probe");
+        fs::create_dir_all(source.join("Languages")).unwrap();
+        fs::write(source.join("Languages/English.xml"), b"language marker").unwrap();
+        let definition = write_definition(&workspace, &json!({ "name": "Reader" }));
+        let invalid = String::from_utf8(configuration_bytes())
+            .unwrap()
+            .replace(
+                "<ConfigurationExtensionCompatibilityMode>Version8_3_27</ConfigurationExtensionCompatibilityMode>",
+                "<ConfigurationExtensionCompatibilityMode>Bogus</ConfigurationExtensionCompatibilityMode>",
+            )
+            .into_bytes();
+        let config_path = source.join("Configuration.xml");
+        let config_for_hook = config_path.clone();
+        let invalid_for_hook = invalid.clone();
+
+        let outcome = with_role_compile_after_configuration_probe_hook(
+            move |_| fs::write(&config_for_hook, &invalid_for_hook).unwrap(),
+            || compile_role(&compile_args(&definition, &source), &context(&workspace)),
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .join("\n")
+                .contains("ConfigurationExtensionCompatibilityMode"),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&config_path).unwrap(), invalid);
+        assert!(!source.join("Roles/Reader.xml").exists());
+        assert!(!source.join("Roles/Reader/Ext/Rights.xml").exists());
+        fs::remove_dir_all(source).unwrap();
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn role_compile_rejects_unsafe_name_before_planning_paths() {
+        for (case, role_name) in [("traversal", "../Outside"), ("xml", "Bad&Name")] {
+            let root = temp_root(case);
+            fs::write(
+                root.join("Configuration.xml"),
+                concat!(
+                    "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.21\">",
+                    "<Configuration><ChildObjects/></Configuration></MetaDataObject>"
+                ),
+            )
+            .unwrap();
+            let definition = write_definition(&root, &json!({ "name": role_name }));
+
+            let outcome = compile_role(&compile_args(&definition, &root), &context(&root));
+
+            assert!(!outcome.ok, "{role_name}: {outcome:?}");
+            let error = outcome.errors.join("\n");
+            assert!(error.contains("Unicode XML NCName"), "{error}");
+            assert!(error.contains("single path component"), "{error}");
+            assert!(!error.contains("Export format"), "{error}");
+            assert!(!root.join("Outside.xml").exists());
+            assert!(!root.join("Outside/Ext/Rights.xml").exists());
+            assert!(!root.join("Roles").exists());
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn role_compile_rejects_non_boolean_global_flags_before_planning() {
+        let cases = [
+            ("setForNewObjects", json!("banana")),
+            ("setForAttributesByDefault", json!(1)),
+            ("independentRightsOfChildObjects", Value::Null),
+            ("setForNewObjects", json!([true])),
+            ("setForAttributesByDefault", json!("true")),
+        ];
+
+        for (index, (field, invalid)) in cases.into_iter().enumerate() {
+            let root = temp_root(&format!("invalid-bool-{index}"));
+            let mut definition = json!({ "name": format!("Reader{index}") });
+            definition
+                .as_object_mut()
+                .unwrap()
+                .insert(field.to_string(), invalid);
+            let definition_path = write_definition(&root, &definition);
+
+            let outcome = compile_role(&compile_args(&definition_path, &root), &context(&root));
+
+            assert!(!outcome.ok, "{field}: {outcome:?}");
+            let error = outcome.errors.join("\n");
+            assert!(error.contains(field), "{error}");
+            assert!(error.contains("JSON boolean"), "{error}");
+            assert!(!root.join("Roles").exists());
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn role_compile_emits_all_global_flags_as_exact_xs_booleans() {
+        let root = temp_root("valid-bools");
+        let definition = write_definition(
+            &root,
+            &json!({
+                "name": "Роль_Чтение",
+                "setForNewObjects": true,
+                "setForAttributesByDefault": false,
+                "independentRightsOfChildObjects": true
+            }),
+        );
+
+        let outcome = compile_role(&compile_args(&definition, &root), &context(&root));
+
+        assert!(outcome.ok, "{outcome:?}");
+        let text = fs::read_to_string(root.join("Roles/Роль_Чтение/Ext/Rights.xml")).unwrap();
+        let doc = Document::parse(text.trim_start_matches('\u{feff}')).unwrap();
+        let root_node = doc.root_element();
+        for (field, expected) in [
+            ("setForNewObjects", "true"),
+            ("setForAttributesByDefault", "false"),
+            ("independentRightsOfChildObjects", "true"),
+        ] {
+            let value = root_node
+                .children()
+                .find(|node| node.is_element() && node.tag_name().name() == field)
+                .and_then(|node| node.text());
+            assert_eq!(value, Some(expected), "{field}: {text}");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn role_compile_escapes_object_and_right_names_as_xs_strings() {
+        let root = temp_root("escaped-rights-names");
+        let object_name = "Catalog.Items<&\"'";
+        let right_name = "View<&\"'";
+        let definition = write_definition(
+            &root,
+            &json!({
+                "name": "Reader",
+                "objects": [{
+                    "name": object_name,
+                    "rights": { "View<&\"'": true }
+                }]
+            }),
+        );
+
+        let outcome = compile_role(&compile_args(&definition, &root), &context(&root));
+
+        assert!(outcome.ok, "{outcome:?}");
+        let text = fs::read_to_string(root.join("Roles/Reader/Ext/Rights.xml")).unwrap();
+        let doc = Document::parse(text.trim_start_matches('\u{feff}')).unwrap();
+        let names = doc
+            .descendants()
+            .filter(|node| node.is_element() && node.tag_name().name() == "name")
+            .filter_map(|node| node.text())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec![object_name, right_name]);
+        assert!(text.contains("&lt;&amp;&quot;'"), "{text}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn role_metadata_emitter_defensively_escapes_name() {
+        let xml = role_metadata_xml(
+            "Bad<&\"'Name",
+            "Synonym",
+            "",
+            "2.20",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        );
+
+        let doc = Document::parse(&xml).unwrap();
+        let name = doc
+            .descendants()
+            .find(|node| node.is_element() && node.tag_name().name() == "Name")
+            .and_then(|node| node.text());
+        assert_eq!(name, Some("Bad<&\"'Name"));
+    }
+
+    #[test]
+    fn role_compile_post_validation_failure_rolls_back_exactly() {
+        let root = temp_root("post-validation-rollback");
+        let config = root.join("Configuration.xml");
+        let original = write_configuration(&root);
+        let definition = write_definition(&root, &json!({ "name": "Reader" }));
+
+        let outcome = with_commit_failpoint(CommitFailpoint::PostWriteValidation, || {
+            compile_role(&compile_args(&definition, &root), &context(&root))
+        });
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("post-write validation"),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&config).unwrap(), original);
+        assert!(!root.join("Roles/Reader.xml").exists());
+        assert!(!root.join("Roles/Reader/Ext/Rights.xml").exists());
+        assert!(!root.join("Roles").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn role_compile_semantic_post_validation_failure_rolls_back_exactly() {
+        let root = temp_root("semantic-post-validation-rollback");
+        let config = root.join("Configuration.xml");
+        let original = write_configuration(&root);
+        let definition = write_definition(&root, &json!({ "name": "Reader" }));
+
+        let outcome = with_role_compile_post_validation_failure(|| {
+            compile_role(&compile_args(&definition, &root), &context(&root))
+        });
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .join("\n")
+                .contains("role semantic post-validation failure"),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&config).unwrap(), original);
+        assert!(!root.join("Roles/Reader.xml").exists());
+        assert!(!root.join("Roles/Reader/Ext/Rights.xml").exists());
+        assert!(!root.join("Roles").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn role_compile_descriptors_use_active_format() {
+        let root = temp_root("format");
+        let definition = root.join("role.json");
+        fs::write(&definition, r#"{"name":"Reader"}"#).unwrap();
+
+        let outcome = compile_role(&compile_args(&definition, &root), &context(&root));
+
+        assert!(outcome.ok, "{outcome:?}");
+        for path in [
+            root.join("Roles/Reader.xml"),
+            root.join("Roles/Reader/Ext/Rights.xml"),
+        ] {
+            let generated = fs::read_to_string(path).unwrap();
+            assert!(generated.contains(r#"version="2.20""#), "{generated}");
+            assert!(!generated.contains(r#"version="2.17""#), "{generated}");
+        }
+        let _ = fs::remove_dir_all(root);
     }
 }

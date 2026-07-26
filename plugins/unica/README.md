@@ -1,14 +1,19 @@
-# Unica Codex Plugin
+# Unica Plugin
 
 Unica models day-to-day 1C:Enterprise development workflows and exposes one
 public stdio MCP server named `unica`. Prompt-visible skills call native
 `unica.*` tools; bundled analyzers, runners, indexes, and the standards adapter
 remain private implementation details.
 
+One plugin directory serves both Codex and Claude Code. Each host reads its own
+manifest, `.codex-plugin/plugin.json` or `.claude-plugin/plugin.json`, and
+ignores the other.
+
 ## Public installation
 
-Prerequisites are Codex CLI and Git. Node.js, Python, download utilities, and
-archive utilities are not consumer dependencies.
+Prerequisites are Git and one host: Codex CLI, or Claude Code 2.1.69 or newer.
+Node.js, Python, download utilities, and archive utilities are not consumer
+dependencies.
 
 ```sh
 codex plugin marketplace add IngvarConsulting/unica-marketplace --ref main
@@ -22,6 +27,17 @@ codex plugin marketplace upgrade unica
 codex plugin remove unica@unica
 codex plugin add unica@unica
 ```
+
+On Claude Code the catalog is added without a ref, and skills appear under the
+plugin namespace as `/unica:<skill>`:
+
+```sh
+claude plugin marketplace add IngvarConsulting/unica-marketplace
+claude plugin install unica@unica
+```
+
+Claude Code 2.1.68 and earlier reject the catalog's `git-subdir` source type and
+cannot load it at all; 2.1.69 is the first release that accepts it.
 
 ## Legacy transition boundary
 
@@ -71,11 +87,23 @@ runs `bootstrap/launch.sh`, which selects exactly one bootstrap:
 - `linux-x64`;
 - `win-x64` under Git for Windows.
 
+The alias resolves the plugin root from whichever host it runs under. Claude
+Code rewrites `${CLAUDE_PLUGIN_ROOT}` before the shell sees it; Codex leaves the
+token unset, and the shell falls back to Git's own `$PWD`/`$GIT_PREFIX` pair.
+One launcher therefore serves both hosts without a per-host package.
+
 The bootstrap reads the release-pinned `runtime-manifest.json`, downloads
 `unica-runtime-<target>.tar.gz`, verifies archive and file SHA-256 values, and
-publishes the runtime atomically under `$CODEX_HOME/unica/runtimes`. It then
-execs the single `unica` MCP process. Runtime stdout stays reserved for JSON-RPC;
-bootstrap diagnostics use stderr.
+publishes the runtime atomically in the host cache. It then execs the single
+`unica` MCP process. Runtime stdout stays reserved for JSON-RPC; bootstrap
+diagnostics use stderr.
+
+The cache is `$CODEX_HOME/unica/runtimes` under Codex and
+`${CLAUDE_PLUGIN_DATA}/runtimes` under Claude Code, which survives plugin
+updates. Packaged `.mcp.json` passes the Claude token through
+`UNICA_RUNTIME_CACHE_DIR`; a host that does not substitute it forwards the
+literal token, and the bootstrap discards any value that still contains `${`
+rather than creating a directory named after it.
 
 The runtime archive contains the target's `unica`, `bsl-analyzer`, `v8-runner`,
 `rlm-tools-bsl`, and `rlm-bsl-index` binaries plus the generated
@@ -116,14 +144,26 @@ scripts/dev/install-local-unica.sh --skip-install
 scripts/dev/install-local-unica.sh --marketplace-name unica-dev
 ```
 
+Claude Code loads a plugin directory directly, so the source tree needs no
+marketplace and no install step:
+
+```sh
+claude --plugin-dir ./plugins/unica
+```
+
+To package a current-host Claude debug build instead, pass
+`--local-debug-host claude` to `scripts/ci/package-unica-plugin.py`.
+
 ## Release pipeline
 
 The source workflow builds tools and `unica-bootstrap` natively on each runner,
 creates deterministic runtime archives and checksum metadata, re-downloads
 published release bytes for verification, and emits one thin marketplace
-payload. A separate workflow opens a plugin-only staging PR in
-`IngvarConsulting/unica-marketplace`. After that commit is tagged immutably, a
-catalog-only promotion PR points the stable `git-subdir` entry to the tag.
+payload carrying both host catalogs. A separate workflow opens a plugin-only
+staging PR in `IngvarConsulting/unica-marketplace`. After that commit is tagged
+immutably, a catalog-only promotion PR points both stable `git-subdir` entries,
+`.agents/plugins/marketplace.json` for Codex and `.claude-plugin/marketplace.json`
+for Claude Code, to the tag.
 
 The public catalog is never promoted before the source assets, staging commit,
 and immutable marketplace tag exist.

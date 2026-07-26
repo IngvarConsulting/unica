@@ -1,5 +1,7 @@
 # Спецификация XML-формата схемы компоновки данных 1С (DCS)
 
+> Активный контракт Unica: платформа `8.3.27`, формат выгрузки `2.20`.
+
 Спецификация формата `DataCompositionSchema` — макетов типа «Схема компоновки данных» в конфигурации 1С:Предприятие 8.3.
 Составлена на основе анализа 930 схем конфигурации «Бухгалтерия предприятия 3.0.180» (платформа 8.3.24).
 
@@ -27,7 +29,7 @@
     xmlns:v8="http://v8.1c.ru/8.1/data/core"
     xmlns:xs="http://www.w3.org/2001/XMLSchema"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-    version="2.17">
+    version="2.20">
   <Template uuid="XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX">
     <Properties>
       <Name>ОсновнаяСхемаКомпоновкиДанных</Name>

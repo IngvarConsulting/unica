@@ -1,0 +1,45 @@
+name: Release Warden
+
+# A release crosses two repositories and waits on a human tag in the middle, so
+# it cannot be driven by a single job without either timing out or burning
+# minutes. This advances it one step whenever it can, and turns a stalled
+# release into a failed run instead of silence.
+
+on:
+  schedule:
+    - cron: "*/20 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Report the next action without taking it
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-warden
+  cancel-in-progress: false
+
+jobs:
+  advance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.UNICA_MARKETPLACE_TOKEN }}
+    steps:
+      - name: Require explicit cross-repository credential
+        run: test -n "$GH_TOKEN"
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      # A scheduled run reports a stall as a failure so it cannot go unnoticed;
+      # a manual run just describes the next action.
+      - name: Advance the release
+        run: >
+          python scripts/ci/release-warden.py
+          ${{ inputs.dry_run && '--dry-run' || '' }}
+          ${{ github.event_name == 'schedule' && '--alert-is-failure' || '' }}

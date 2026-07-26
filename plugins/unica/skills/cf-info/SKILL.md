@@ -29,7 +29,6 @@ allowed-tools:
 | `Mode` | Режим: `overview` (default), `brief`, `full` |
 | `Section` | Drill-down по разделу (alias: `Name`). Сейчас: `home-page` |
 | `Limit` / `Offset` | Пагинация (по умолчанию 150 строк) |
-| `OutFile` | Записать результат в файл (UTF-8 BOM) |
 
 ```json
 {

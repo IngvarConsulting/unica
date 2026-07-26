@@ -210,7 +210,7 @@ impl ManagedChild {
 
         loop {
             if self.cancellation.is_cancelled() {
-                self.terminate()?;
+                self.terminate_gracefully()?;
                 return self.finish_after_termination(stdout, stderr, false, true);
             }
             if self.timeout.is_some_and(|limit| started.elapsed() >= limit) {
@@ -252,6 +252,51 @@ impl ManagedChild {
             self.state = ChildState::Terminating;
         }
         self.reap_bounded()
+    }
+
+    fn terminate_gracefully(&mut self) -> Result<(), String> {
+        if self.state == ChildState::Reaped {
+            self.process_tree.cleanup_after_leader_exit(&mut self.child);
+            return Ok(());
+        }
+        if self.state == ChildState::Running {
+            if self.child.try_wait().map_err(process_error)?.is_some() {
+                self.process_tree.cleanup_after_leader_exit(&mut self.child);
+                self.state = ChildState::Reaped;
+                return Ok(());
+            }
+            if let Err(error) = self
+                .process_tree
+                .request_graceful_termination(&mut self.child)
+            {
+                if self.child.try_wait().map_err(process_error)?.is_some() {
+                    self.process_tree.cleanup_after_leader_exit(&mut self.child);
+                    self.state = ChildState::Reaped;
+                    return Ok(());
+                }
+                return Err(process_error(error));
+            }
+            self.state = ChildState::Terminating;
+            self.reap_bounded()?;
+        }
+        if self.state == ChildState::Reaped {
+            self.process_tree.cleanup_after_leader_exit(&mut self.child);
+            return Ok(());
+        }
+
+        if let Err(error) = self.process_tree.terminate(&mut self.child) {
+            if self.child.try_wait().map_err(process_error)?.is_some() {
+                self.process_tree.cleanup_after_leader_exit(&mut self.child);
+                self.state = ChildState::Reaped;
+                return Ok(());
+            }
+            return Err(process_error(error));
+        }
+        self.reap_bounded()?;
+        if self.state == ChildState::Reaped {
+            self.process_tree.cleanup_after_leader_exit(&mut self.child);
+        }
+        Ok(())
     }
 
     fn reap_bounded(&mut self) -> Result<(), String> {
@@ -459,6 +504,26 @@ impl ProcessTree {
         Ok(())
     }
 
+    fn request_graceful_termination(&mut self, _child: &mut Child) -> io::Result<()> {
+        let Some(pgid) = self.process_group else {
+            return Ok(());
+        };
+        if self.kill_sent {
+            return Ok(());
+        }
+        // Give v8-runner a chance to observe SIGTERM and clean up the separately
+        // grouped 1C client before the bounded SIGKILL fallback.
+        if unsafe { libc::kill(-pgid, libc::SIGTERM) } == -1 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ESRCH) {
+                self.process_group = None;
+                return Ok(());
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
     fn cleanup_after_leader_exit(&mut self, child: &mut Child) {
         let deadline = Instant::now() + TERMINATION_WAIT_LIMIT;
         let _ = self.terminate(child);
@@ -585,6 +650,10 @@ impl ProcessTree {
         Ok(())
     }
 
+    fn request_graceful_termination(&mut self, child: &mut Child) -> io::Result<()> {
+        self.terminate(child)
+    }
+
     fn cleanup_after_leader_exit(&mut self, child: &mut Child) {
         let _ = self.terminate(child);
     }
@@ -697,6 +766,10 @@ impl ProcessTree {
 
     fn terminate(&mut self, child: &mut Child) -> io::Result<()> {
         child.kill()
+    }
+
+    fn request_graceful_termination(&mut self, child: &mut Child) -> io::Result<()> {
+        self.terminate(child)
     }
 
     fn cleanup_after_leader_exit(&mut self, child: &mut Child) {
@@ -824,11 +897,37 @@ mod tests {
     #[cfg(windows)]
     use std::process::Child;
     use std::process::{Command, Stdio};
+    #[cfg(unix)]
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     const HELPER_ENV: &str = "UNICA_MANAGED_CHILD_HELPER";
     const HELPER_PID_FILE_ENV: &str = "UNICA_MANAGED_CHILD_PID_FILE";
+
+    #[cfg(unix)]
+    static HELPER_SIGTERM_RECEIVED: AtomicBool = AtomicBool::new(false);
+
+    #[cfg(unix)]
+    extern "C" fn record_helper_sigterm(_signal: libc::c_int) {
+        HELPER_SIGTERM_RECEIVED.store(true, Ordering::SeqCst);
+    }
+
+    #[cfg(unix)]
+    fn install_helper_sigterm_handler() {
+        let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+        action.sa_sigaction = record_helper_sigterm as *const () as usize;
+        unsafe {
+            libc::sigemptyset(&mut action.sa_mask);
+        }
+        let result = unsafe { libc::sigaction(libc::SIGTERM, &action, std::ptr::null_mut()) };
+        assert_eq!(
+            result,
+            0,
+            "install SIGTERM handler: {}",
+            std::io::Error::last_os_error()
+        );
+    }
 
     #[test]
     #[allow(clippy::zombie_processes)] // Fixture intentionally exits while its descendant remains alive.
@@ -890,6 +989,52 @@ mod tests {
                 thread::sleep(Duration::from_secs(10));
             }
             "process_tree_child" => thread::sleep(Duration::from_secs(10)),
+            #[cfg(unix)]
+            "graceful_runner_with_external_process_group" => {
+                use std::os::unix::process::CommandExt;
+
+                install_helper_sigterm_handler();
+                let pid_file = std::env::var_os(HELPER_PID_FILE_ENV).unwrap();
+                let mut command = Command::new(std::env::current_exe().unwrap());
+                command
+                    .args([
+                        "--exact",
+                        "infrastructure::platform::process::tests::managed_child_test_helper",
+                        "--nocapture",
+                    ])
+                    .env(HELPER_ENV, "process_tree_child")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+                unsafe {
+                    command.pre_exec(|| {
+                        if libc::setpgid(0, 0) == -1 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        Ok(())
+                    });
+                }
+                let mut external_child = command.spawn().unwrap();
+                std::fs::write(
+                    pid_file,
+                    format!("{}\n{}\n", std::process::id(), external_child.id()),
+                )
+                .unwrap();
+
+                loop {
+                    if HELPER_SIGTERM_RECEIVED.load(Ordering::SeqCst) {
+                        unsafe {
+                            libc::kill(-(external_child.id() as i32), libc::SIGKILL);
+                        }
+                        external_child.wait().unwrap();
+                        break;
+                    }
+                    if external_child.try_wait().unwrap().is_some() {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
             "process_tree_detached_leader" => {
                 let pid_file = std::env::var_os(HELPER_PID_FILE_ENV).unwrap();
                 let child = Command::new(std::env::current_exe().unwrap())
@@ -1394,6 +1539,58 @@ mod tests {
         assert!(output.cancelled);
         assert!(wait_until_dead(parent_pid, Duration::from_secs(2)));
         assert!(wait_until_dead(child_pid, Duration::from_secs(2)));
+        cleanup.disarm();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancellation_lets_runner_cleanup_its_external_process_group() {
+        let pid_file = std::env::temp_dir().join(format!(
+            "unica-graceful-cancellation-pids-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _pid_file_cleanup = FileCleanupGuard(pid_file.clone());
+        let cancellation = CancellationToken::new();
+        let managed = ManagedChild::spawn(ManagedCommand {
+            program: std::env::current_exe().unwrap(),
+            args: vec![
+                "--exact".to_string(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
+                "--nocapture".to_string(),
+            ],
+            cwd: std::env::current_dir().unwrap(),
+            env: vec![
+                (
+                    OsString::from(HELPER_ENV),
+                    OsString::from("graceful_runner_with_external_process_group"),
+                ),
+                (
+                    OsString::from(HELPER_PID_FILE_ENV),
+                    pid_file.clone().into_os_string(),
+                ),
+            ],
+            timeout: Some(Duration::from_secs(10)),
+            cancellation: cancellation.clone(),
+        })
+        .unwrap();
+        let mut managed_cleanup = ManagedChildCleanupGuard::new(managed, cancellation.clone());
+        let pids = read_helper_pids(&pid_file, Duration::from_secs(2));
+        let mut cleanup = ProcessCleanupGuard(pids.clone());
+
+        cancellation.cancel();
+        let output = managed_cleanup.managed_mut().wait_for_output().unwrap();
+        managed_cleanup.disarm();
+
+        assert!(output.cancelled);
+        assert!(wait_until_dead(pids[0], Duration::from_secs(2)));
+        assert!(
+            wait_until_dead(pids[1], Duration::from_secs(2)),
+            "runner did not get a chance to clean up its external process group"
+        );
         cleanup.disarm();
     }
 

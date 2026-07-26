@@ -43,7 +43,17 @@ from pathlib import Path
 repo = Path.cwd()
 with tempfile.TemporaryDirectory() as tmp:
     messages = [
-        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "unica-acceptance", "version": "1"},
+            },
+        },
+        {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
         {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
         {
             "jsonrpc": "2.0",
@@ -76,21 +86,23 @@ with tempfile.TemporaryDirectory() as tmp:
         env=env,
     )
 
-responses = [json.loads(line) for line in result.stdout.splitlines()]
-assert responses[0]["result"]["serverInfo"]["name"] == "unica"
-tools = {tool["name"] for tool in responses[1]["result"]["tools"]}
+responses = {
+    r["id"]: r for r in map(json.loads, result.stdout.splitlines()) if "id" in r
+}
+assert responses[1]["result"]["serverInfo"]["name"] == "unica"
+tools = {tool["name"] for tool in responses[2]["result"]["tools"]}
 assert "unica.project.status" in tools
 assert "unica.form.edit" in tools
 assert "unica.build.load" in tools
 assert "unica.runtime.execute" in tools
 assert "unica.standards.explain" in tools
 assert all(not tool.startswith("bsl-") for tool in tools)
-payload = json.loads(responses[2]["result"]["content"][0]["text"])
+payload = json.loads(responses[3]["result"]["content"][0]["text"])
 assert payload["cache"]["mode"] == "dry-run"
 assert "FormChanged" in payload["cache"]["events"]
 assert "metadata_graph" in payload["cache"]["invalidated"]
 assert "lazy_rebuilt" in payload["cache"]
-runtime_payload = json.loads(responses[3]["result"]["content"][0]["text"])
+runtime_payload = json.loads(responses[4]["result"]["content"][0]["text"])
 assert runtime_payload["cache"]["mode"] == "dry-run"
 assert "SourceSetChanged" in runtime_payload["cache"]["events"]
 print("ok")
@@ -107,10 +119,16 @@ python3.12 -m unittest discover -s tests/ci
 git diff --check
 ```
 
-BSP parity fixtures are intentionally byte-for-byte harvested. Their subtree is
-marked `-text -whitespace` in `.gitattributes`; fixture integrity is enforced by
-manifest `size`/`sha256`, while `git diff --check` remains required for the rest
-of the tree.
+BSP parity fixtures preserve the exact committed fixture bytes under
+`.gitattributes` `-text -whitespace`. Schema-v1 manifests may describe direct
+harvests. The current schema-v2 test fixture is instead a deterministic,
+declared projection from the harvested BSP `2.21` XML to the fixed `2.20`
+profile:
+`harvestedSize`/`harvestedSha256` identify the upstream bytes, while
+`size`/`sha256` identify the projected committed bytes. It must not be described
+as byte-identical to the upstream harvest. This immutable CI-fixture projection
+is not a supported migration or downgrade operation and is never applied to
+user source. `git diff --check` remains required for the rest of the tree.
 
 ## Skill Script Removal Acceptance
 
@@ -166,17 +184,22 @@ plugin, not stale cached registrations.
 - `project.status` and `project.map`, analyzer commands, RLM commands, and the
   workspace-service identity must agree on that effective source root.
 - Analyzer and RLM work requests carry unique internal operation IDs. A public
-  `notifications/cancelled` request must propagate to the matching operation and
-  return JSON-RPC error `-32800` exactly once.
-- EOF gives accepted MCP workers 250 ms to publish, then cancels them and waits
-  at most 2 seconds more. After that bounded deadline the publication-admission
-  gate closes without waiting for generic writer I/O. A response not already
-  admitted cannot begin I/O; an admitted arbitrary `Write` may complete after
-  the injectable handler returns. The real stdio process then exits and closes
-  stdout. Verify with `cargo test -p unica-coder mcp_dispatcher_close`.
-- Public MCP JSONL lines are limited to 8 MiB and at most 32 `tools/call`
-  workers are admitted. Oversized lines return `-32700`; excess calls return
-  `-32603` with `overloaded` without delaying `ping` or cancellation.
+  `notifications/cancelled` request must propagate to the matching operation.
+  The cancelled public request itself gets no response, as the MCP
+  specification prescribes (ADR-0013); the internal operation still observes
+  cancellation exactly once.
+- The public transport is the official Rust SDK (`rmcp`, ADR-0013). It
+  enforces the handshake: the first request must be a well-formed
+  `initialize` (`ping` may precede it), and `protocolVersion` is negotiated
+  with the client instead of being pinned.
+- On EOF the SDK drains finishing calls (bounded at 5 seconds); the process
+  then cancels all still-running domain operations, waits at most 2 seconds
+  for them, and exits, closing stdout. Verify with
+  `cargo test -p unica-coder eof_cancels_active_calls`.
+- At most 32 `tools/call` workers are admitted; excess calls return `-32603`
+  with `overloaded` without delaying `ping` or cancellation. Public input line
+  length is delegated to the SDK transport; the 8 MiB line bound below applies
+  to the internal workspace-service protocol.
 - `ping`, cancellation, and shutdown must remain responsive while analyzer or
   RLM work is active. Cancelling one request must not require restarting the
   service before a later request succeeds.

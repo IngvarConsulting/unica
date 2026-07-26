@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.17">
+	<Language uuid="77777777-7777-4777-8777-777777777777">
+		<Properties>
+			<Name>Русский</Name>
+			<Synonym/>
+			<Comment/>
+			<LanguageCode>ru</LanguageCode>
+		</Properties>
+	</Language>
+</MetaDataObject>

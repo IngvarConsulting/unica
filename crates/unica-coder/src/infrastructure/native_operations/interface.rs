@@ -11,6 +11,7 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::common::*;
+use super::compile_transaction::CompileTransaction;
 use super::{cf::*, cfe::*, dcs::*, form::*, meta::*, mxl::*, role::*, subsystem::*, template::*};
 pub(crate) const INTERFACE_CI_NS: &str = "http://v8.1c.ru/8.3/xcf/extrnprops";
 
@@ -39,7 +40,7 @@ pub(crate) fn edit_interface(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    let edit_result = (|| -> Result<(String, PathBuf), String> {
+    let edit_result = (|| -> Result<(String, PathBuf, Vec<String>), String> {
         let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
         let operation = string_arg(args, &["operation", "Operation"]);
         if definition_file.is_some() && operation.is_some() {
@@ -51,8 +52,9 @@ pub(crate) fn edit_interface(
 
         let mut ci_path = required_path(args, &["ciPath", "CIPath", "path", "Path"], "CIPath")
             .map(|path| absolutize(path, &context.cwd))?;
-        let format_version =
-            detect_format_version(ci_path.parent().unwrap_or(context.cwd.as_path()));
+        let format_version = crate::domain::format_profile::ACTIVE_FORMAT_PROFILE
+            .export_format
+            .to_string();
 
         let mut stdout = String::new();
         let source_exists = ci_path.is_file();
@@ -75,18 +77,33 @@ pub(crate) fn edit_interface(
         if source_exists {
             ci_path = interface_normalize_lexical_path(&ci_path);
         }
-
-        let source_text = if source_exists {
-            read_utf8_sig(&ci_path)?
-        } else {
-            String::new()
-        };
+        let metadata_owner_path = interface_metadata_owner_path(&ci_path)?;
+        let metadata_owner_preimage = fs::read(&metadata_owner_path).map_err(|error| {
+            format!(
+                "failed to read interface metadata owner {}: {error}",
+                metadata_owner_path.display()
+            )
+        })?;
+        let source_snapshot = source_exists
+            .then(|| read_utf8_sig_snapshot(&ci_path))
+            .transpose()?;
+        let source_text = source_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.text.clone())
+            .unwrap_or_default();
         let mut text = source_text.clone();
         text = lxml_parser_normalized_text(&text);
         if text.is_empty() {
             text = emit_empty_command_interface_document(&format_version);
         }
-        let operations = interface_edit_operations(args, &context.cwd, operation, definition_file)?;
+        let mut transaction = CompileTransaction::new();
+        let operations = interface_edit_operations_guarded(
+            args,
+            &context.cwd,
+            operation,
+            definition_file,
+            &mut transaction,
+        )?;
         let mut counters = InterfaceEditCounters::default();
         for (op_name, value) in operations {
             match op_name.as_str() {
@@ -115,30 +132,55 @@ pub(crate) fn edit_interface(
             }
         }
 
-        if created_new {
-            if let Some(parent) = ci_path.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
-            }
+        let serialized = lxml_tree_serialized_text_like_source(&text, &source_text);
+        let replacement = utf8_bom_bytes(&serialized);
+        if let Some(snapshot) = &source_snapshot {
+            transaction.replace_bytes(&ci_path, &snapshot.raw, replacement)?;
+        } else {
+            transaction.create_bytes(&ci_path, replacement)?;
         }
-        write_utf8_bom(
-            &ci_path,
-            &lxml_tree_serialized_text_like_source(&text, &source_text),
+        if !transaction.protects_path(&metadata_owner_path)? {
+            transaction.guard_exact_preimage(&metadata_owner_path, metadata_owner_preimage)?;
+        }
+        guard_active_format_dependencies(
+            &mut transaction,
+            &[ci_path.as_path(), metadata_owner_path.as_path()],
+            context,
         )?;
+        validate_metadata_owner_shape_8_3_27(&metadata_owner_path, context, "interface.edit")?;
+
+        let show_validation = !bool_arg(args, &["noValidate", "NoValidate"]);
+        let validate_args = Map::from_iter([(
+            "CIPath".to_string(),
+            Value::String(ci_path.display().to_string()),
+        )]);
+        let mut validation_stdout = None;
+        let report = transaction.commit_with_post_validation(|| {
+            validate_metadata_owner_shape_8_3_27(&metadata_owner_path, context, "interface.edit")?;
+            let outcome = validate_interface(&validate_args, context);
+            validation_stdout = outcome.stdout.clone();
+            if outcome.ok {
+                return Ok(());
+            }
+            let detail = if outcome.errors.is_empty() {
+                outcome
+                    .stdout
+                    .unwrap_or_else(|| "validation returned no diagnostics".to_string())
+            } else {
+                outcome.errors.join("; ")
+            };
+            Err(format!("interface validation failed: {detail}"))
+        })?;
+
         if created_new {
             ci_path = interface_normalize_lexical_path(&ci_path);
         }
         stdout.push_str(&format!("[INFO] Saved: {}\n", ci_path.display()));
 
-        if !bool_arg(args, &["noValidate", "NoValidate"]) {
+        if show_validation {
             stdout.push('\n');
             stdout.push_str("--- Running interface-validate ---\n");
-            let mut validate_args = Map::new();
-            validate_args.insert(
-                "CIPath".to_string(),
-                Value::String(ci_path.display().to_string()),
-            );
-            if let Some(validate_stdout) = validate_interface(&validate_args, context).stdout {
+            if let Some(validate_stdout) = validation_stdout {
                 stdout.push_str(&validate_stdout);
             }
         }
@@ -148,16 +190,16 @@ pub(crate) fn edit_interface(
         stdout.push_str(&format!("  Added:    {}\n", counters.added));
         stdout.push_str(&format!("  Removed:  {}\n", counters.removed));
         stdout.push_str(&format!("  Modified: {}\n", counters.modified));
-        Ok((stdout, ci_path))
+        Ok((stdout, ci_path, report.cleanup_warnings))
     })();
 
     match edit_result {
-        Ok((stdout, ci_path)) => AdapterOutcome {
+        Ok((stdout, ci_path, warnings)) => AdapterOutcome {
             ok: true,
             summary: "unica.interface.edit completed with native command interface editor"
                 .to_string(),
             changes: vec![format!("updated {}", ci_path.display())],
-            warnings: Vec::new(),
+            warnings,
             errors: Vec::new(),
             artifacts: vec![ci_path.display().to_string()],
             stdout: Some(stdout),
@@ -190,24 +232,7 @@ pub(crate) fn interface_edit_operations(
             .map_err(|err| format!("failed to read {}: {err}", definition_file.display()))?;
         let parsed: Value = serde_json::from_str(text.trim_start_matches('\u{feff}'))
             .map_err(|err| format!("failed to parse {}: {err}", definition_file.display()))?;
-        let items = match parsed {
-            Value::Array(items) => items,
-            other => vec![other],
-        };
-        let mut operations = Vec::new();
-        for item in items {
-            let op_name = item
-                .get("operation")
-                .and_then(Value::as_str)
-                .unwrap_or(operation.unwrap_or(""))
-                .to_string();
-            let value = item
-                .get("value")
-                .cloned()
-                .unwrap_or_else(|| Value::String(String::new()));
-            operations.push((op_name, value));
-        }
-        Ok(operations)
+        Ok(interface_edit_operations_from_value(parsed, operation))
     } else {
         Ok(vec![(
             operation.unwrap_or("").to_string(),
@@ -218,6 +243,50 @@ pub(crate) fn interface_edit_operations(
             ),
         )])
     }
+}
+
+fn interface_edit_operations_guarded(
+    args: &Map<String, Value>,
+    cwd: &Path,
+    operation: Option<&str>,
+    definition_file: Option<PathBuf>,
+    transaction: &mut CompileTransaction,
+) -> Result<Vec<(String, Value)>, String> {
+    if let Some(definition_file) = definition_file {
+        let definition_file = absolutize(definition_file, cwd);
+        let parsed = FileBackedJson::read(&definition_file, |err| {
+            format!("failed to parse {}: {err}", definition_file.display())
+        })?
+        .bind_to(transaction)?;
+        Ok(interface_edit_operations_from_value(parsed, operation))
+    } else {
+        interface_edit_operations(args, cwd, operation, None)
+    }
+}
+
+fn interface_edit_operations_from_value(
+    parsed: Value,
+    operation: Option<&str>,
+) -> Vec<(String, Value)> {
+    let items = match parsed {
+        Value::Array(items) => items,
+        other => vec![other],
+    };
+    items
+        .into_iter()
+        .map(|item| {
+            let op_name = item
+                .get("operation")
+                .and_then(Value::as_str)
+                .unwrap_or(operation.unwrap_or(""))
+                .to_string();
+            let value = item
+                .get("value")
+                .cloned()
+                .unwrap_or_else(|| Value::String(String::new()));
+            (op_name, value)
+        })
+        .collect()
 }
 
 pub(crate) fn interface_value_list(value: &Value) -> Result<Vec<String>, String> {
@@ -792,6 +861,48 @@ pub(crate) fn interface_normalize_lexical_path(path: &Path) -> PathBuf {
     normalized
 }
 
+pub(crate) fn interface_metadata_owner_path(ci_path: &Path) -> Result<PathBuf, String> {
+    let ci_path = interface_normalize_lexical_path(ci_path);
+    if ci_path.file_name().and_then(|value| value.to_str()) != Some("CommandInterface.xml") {
+        return Err(format!(
+            "interface.edit CIPath must point to CommandInterface.xml: {}",
+            ci_path.display()
+        ));
+    }
+    let ext_dir = ci_path.parent().ok_or_else(|| {
+        format!(
+            "interface.edit cannot resolve metadata owner for {}",
+            ci_path.display()
+        )
+    })?;
+    if ext_dir.file_name().and_then(|value| value.to_str()) != Some("Ext") {
+        return Err(format!(
+            "interface.edit CommandInterface.xml must be located in an Ext directory: {}",
+            ci_path.display()
+        ));
+    }
+    let object_dir = ext_dir.parent().ok_or_else(|| {
+        format!(
+            "interface.edit cannot resolve metadata owner for {}",
+            ci_path.display()
+        )
+    })?;
+    let configuration_owner = object_dir.join("Configuration.xml");
+    let owner_path = if configuration_owner.is_file() {
+        configuration_owner
+    } else {
+        object_dir.with_extension("xml")
+    };
+    if !owner_path.is_file() {
+        return Err(format!(
+            "interface.edit metadata owner is unavailable for {}: expected {}",
+            ci_path.display(),
+            owner_path.display()
+        ));
+    }
+    Ok(owner_path)
+}
+
 pub(crate) fn interface_json_object(value: &Value) -> Result<Value, String> {
     if value.is_object() {
         Ok(value.clone())
@@ -883,27 +994,11 @@ pub(crate) fn validate_interface(
     const NS_CI: &str = "http://v8.1c.ru/8.3/xcf/extrnprops";
     const NS_XR: &str = "http://v8.1c.ru/8.3/xcf/readable";
 
-    let result = (|| -> Result<(bool, String, String, Option<PathBuf>, PathBuf), String> {
-        let raw_path = required_path(args, &["ciPath", "CIPath", "path", "Path"], "CIPath")?;
-        let mut ci_path = absolutize(raw_path, &context.cwd);
-        if ci_path.is_dir() {
-            ci_path = ci_path.join("Ext").join("CommandInterface.xml");
-        }
-        if !ci_path.exists()
-            && ci_path.file_name().and_then(|value| value.to_str()) == Some("CommandInterface.xml")
-        {
-            let candidate = ci_path
-                .parent()
-                .unwrap_or_else(|| Path::new(""))
-                .join("Ext")
-                .join("CommandInterface.xml");
-            if candidate.exists() {
-                ci_path = candidate;
-            }
-        }
+    let result = (|| -> Result<(bool, String, String, PathBuf), String> {
+        let ci_path = resolve_interface_validate_path(args, context)?;
         if !ci_path.exists() {
             let stdout = format!("[ERROR] File not found: {}\n", ci_path.display());
-            return Ok((false, stdout.clone(), String::new(), None, ci_path));
+            return Ok((false, stdout.clone(), String::new(), ci_path));
         }
 
         let context_name = interface_context_name(&ci_path);
@@ -911,8 +1006,6 @@ pub(crate) fn validate_interface(
         let max_errors = int_arg(args, &["maxErrors", "MaxErrors"])
             .unwrap_or(30)
             .max(0) as usize;
-        let out_file =
-            path_arg(args, &["outFile", "OutFile"]).map(|path| absolutize(path, &context.cwd));
         let mut report = MxlValidationReporter::new(max_errors, detailed);
         let mut all_command_names = Vec::<String>::new();
 
@@ -929,7 +1022,7 @@ pub(crate) fn validate_interface(
                 report.error(format!("1. XML parse error: {error}"));
                 report.stopped = true;
                 let output = finish_interface_validation(report, &context_name);
-                return Ok((false, output, String::new(), out_file, ci_path));
+                return Ok((false, output, String::new(), ci_path));
             }
         };
 
@@ -961,10 +1054,13 @@ pub(crate) fn validate_interface(
             let mut invalid_elements = Vec::<String>::new();
             for child in root.children().filter(|child| child.is_element()) {
                 let local_name = child.tag_name().name();
-                if INTERFACE_SECTION_ORDER.contains(&local_name) {
+                if INTERFACE_SECTION_ORDER.contains(&local_name)
+                    && child.tag_name().namespace() == Some(NS_CI)
+                {
                     found_sections.push(local_name.to_string());
                 } else {
-                    invalid_elements.push(local_name.to_string());
+                    let namespace = child.tag_name().namespace().unwrap_or("");
+                    invalid_elements.push(format!("{{{namespace}}}{local_name}"));
                 }
             }
             if invalid_elements.is_empty() {
@@ -1231,42 +1327,31 @@ pub(crate) fn validate_interface(
         }
 
         let ok = report.errors == 0;
-        let mut output = finish_interface_validation(report, &context_name);
-        if let Some(out_file) = &out_file {
-            write_utf8_bom(out_file, &output)?;
-            output.push_str(&format!("Written to: {}\n", out_file.display()));
-        }
-        Ok((ok, output, String::new(), out_file, ci_path))
+        let output = finish_interface_validation(report, &context_name);
+        Ok((ok, output, String::new(), ci_path))
     })();
 
     match result {
-        Ok((ok, stdout, stderr, out_file, artifact)) => {
-            let mut artifacts = vec![artifact.display().to_string()];
-            if let Some(out_file) = out_file {
-                artifacts.push(out_file.display().to_string());
-            }
-            AdapterOutcome {
-                ok,
-                summary: if ok {
-                    "unica.interface.validate completed with native command interface validator"
-                        .to_string()
-                } else {
-                    "unica.interface.validate failed in native command interface validator"
-                        .to_string()
-                },
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: if ok {
-                    Vec::new()
-                } else {
-                    vec![stdout.trim().to_string()]
-                },
-                artifacts,
-                stdout: Some(stdout),
-                stderr: Some(stderr),
-                command: None,
-            }
-        }
+        Ok((ok, stdout, stderr, artifact)) => AdapterOutcome {
+            ok,
+            summary: if ok {
+                "unica.interface.validate completed with native command interface validator"
+                    .to_string()
+            } else {
+                "unica.interface.validate failed in native command interface validator".to_string()
+            },
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: if ok {
+                Vec::new()
+            } else {
+                vec![stdout.trim().to_string()]
+            },
+            artifacts: vec![artifact.display().to_string()],
+            stdout: Some(stdout),
+            stderr: Some(stderr),
+            command: None,
+        },
         Err(error) => AdapterOutcome {
             ok: false,
             summary: "unica.interface.validate failed in native command interface validator"
@@ -1280,6 +1365,34 @@ pub(crate) fn validate_interface(
             command: None,
         },
     }
+}
+
+/// Resolve the exact CommandInterface.xml file opened by `interface.validate`.
+///
+/// Missing targets are returned unchanged so the handler retains its
+/// established file-not-found diagnostic.
+pub(crate) fn resolve_interface_validate_path(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<PathBuf, String> {
+    let raw_path = required_path(args, &["ciPath", "CIPath", "path", "Path"], "CIPath")?;
+    let mut ci_path = absolutize(raw_path, &context.cwd);
+    if ci_path.is_dir() {
+        ci_path = ci_path.join("Ext").join("CommandInterface.xml");
+    }
+    if !ci_path.exists()
+        && ci_path.file_name().and_then(|value| value.to_str()) == Some("CommandInterface.xml")
+    {
+        let candidate = ci_path
+            .parent()
+            .unwrap_or_else(|| Path::new(""))
+            .join("Ext")
+            .join("CommandInterface.xml");
+        if candidate.exists() {
+            ci_path = candidate;
+        }
+    }
+    Ok(ci_path)
 }
 
 pub(crate) fn finish_interface_validation(
@@ -1385,7 +1498,12 @@ pub(crate) fn invoke_mutation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::UnicaApplication;
     use crate::domain::workspace::WorkspaceContext;
+    use crate::infrastructure::native_operations::compile_transaction::{
+        with_commit_failpoint, CommitFailpoint,
+    };
+    use crate::infrastructure::native_operations::single_file_publisher::with_before_commit_hook;
     use serde_json::{Map, Value};
     use std::fs;
 
@@ -1402,6 +1520,83 @@ mod tests {
             cache_root: root.join(".build").join("unica"),
             workspace_epoch: 1,
         }
+    }
+
+    fn command_interface_document(namespace: &str, body: &str) -> String {
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+<CommandInterface xmlns=\"{namespace}\" xmlns:xr=\"{INTERFACE_XR_NS}\" version=\"2.20\">\n\
+{body}\n\
+</CommandInterface>"
+        )
+    }
+
+    fn hide_args(ci_path: &str, create_if_missing: bool) -> Map<String, Value> {
+        Map::from_iter([
+            ("CIPath".to_string(), Value::String(ci_path.to_string())),
+            ("Operation".to_string(), Value::String("hide".to_string())),
+            (
+                "Value".to_string(),
+                Value::String("Catalog.Products.StandardCommand.OpenList".to_string()),
+            ),
+            (
+                "CreateIfMissing".to_string(),
+                Value::Bool(create_if_missing),
+            ),
+            ("NoValidate".to_string(), Value::Bool(true)),
+        ])
+    }
+
+    fn write_command_interface(context: &WorkspaceContext, ci_rel: &str, text: &str) -> PathBuf {
+        let ci_path = context.cwd.join(ci_rel);
+        fs::create_dir_all(ci_path.parent().unwrap()).unwrap();
+        fs::write(&ci_path, text.as_bytes()).unwrap();
+        ci_path
+    }
+
+    fn subsystem_document(name: &str, include_help: &str) -> String {
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" version=\"2.20\">\n\
+\t<Subsystem uuid=\"11111111-2222-4333-8444-555555555555\">\n\
+\t\t<Properties>\n\
+\t\t\t<Name>{name}</Name>\n\
+\t\t\t<Synonym/>\n\
+\t\t\t<Comment/>\n\
+\t\t\t<IncludeHelpInContents>{include_help}</IncludeHelpInContents>\n\
+\t\t\t<IncludeInCommandInterface>true</IncludeInCommandInterface>\n\
+\t\t\t<UseOneCommand>false</UseOneCommand>\n\
+\t\t\t<Explanation/>\n\
+\t\t\t<Picture/>\n\
+\t\t\t<Content/>\n\
+\t\t</Properties>\n\
+\t\t<ChildObjects/>\n\
+\t</Subsystem>\n\
+</MetaDataObject>"
+        )
+    }
+
+    fn write_valid_subsystem_owner(context: &WorkspaceContext, ci_rel: &str) -> (PathBuf, Vec<u8>) {
+        let ci_path = context.cwd.join(ci_rel);
+        let object_dir = ci_path.parent().unwrap().parent().unwrap();
+        let owner_path = object_dir.with_extension("xml");
+        let name = owner_path.file_stem().unwrap().to_str().unwrap();
+        let bytes = subsystem_document(name, "true").into_bytes();
+        fs::create_dir_all(owner_path.parent().unwrap()).unwrap();
+        fs::write(&owner_path, &bytes).unwrap();
+        (owner_path, bytes)
+    }
+
+    fn configuration_owner_document(include_help: &str) -> String {
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">\n\
+\t<Configuration uuid=\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\">\n\
+\t\t<Properties><Name>Demo</Name><IncludeHelpInContents>{include_help}</IncludeHelpInContents></Properties>\n\
+\t\t<ChildObjects><Subsystem>AuditSubsystem</Subsystem></ChildObjects>\n\
+\t</Configuration>\n\
+</MetaDataObject>"
+        )
     }
 
     #[test]
@@ -1432,6 +1627,7 @@ mod tests {
         let context = temp_context("create-if-missing-error");
         let ci_rel = "src/Subsystems/NewSales/Ext/CommandInterface.xml";
         let ci_path = context.cwd.join(ci_rel);
+        write_valid_subsystem_owner(&context, ci_rel);
         let mut args = Map::new();
         args.insert("CIPath".to_string(), Value::String(ci_rel.to_string()));
         args.insert(
@@ -1459,6 +1655,7 @@ mod tests {
             let context = temp_context(&format!("create-if-missing-{operation}"));
             let ci_rel = format!("src/Subsystems/New{operation}/Ext/CommandInterface.xml");
             let ci_path = context.cwd.join(&ci_rel);
+            write_valid_subsystem_owner(&context, &ci_rel);
             let mut args = Map::new();
             args.insert("CIPath".to_string(), Value::String(ci_rel));
             args.insert(
@@ -1489,5 +1686,421 @@ mod tests {
             );
             let _ = fs::remove_dir_all(&context.workspace_root);
         }
+    }
+
+    #[test]
+    fn interface_edit_rejects_invalid_existing_document_without_mutating_preimage() {
+        let invalid_cases = [
+            (
+                "bogus-direct-child",
+                command_interface_document(INTERFACE_CI_NS, "\t<Bogus/>"),
+            ),
+            (
+                "invalid-common",
+                command_interface_document(
+                    INTERFACE_CI_NS,
+                    "\t<CommandsVisibility>\n\
+\t\t<Command name=\"Catalog.Existing.StandardCommand.OpenList\"><Visibility><xr:Common>banana</xr:Common></Visibility></Command>\n\
+\t</CommandsVisibility>",
+                ),
+            ),
+            (
+                "malformed",
+                format!(
+                    "<CommandInterface xmlns=\"{INTERFACE_CI_NS}\"><CommandsVisibility>"
+                ),
+            ),
+            (
+                "wrong-root",
+                format!("<WrongRoot xmlns=\"{INTERFACE_CI_NS}\"/>"),
+            ),
+            (
+                "wrong-root-namespace",
+                command_interface_document("urn:not-command-interface", ""),
+            ),
+            (
+                "wrong-section-namespace",
+                command_interface_document(
+                    INTERFACE_CI_NS,
+                    "\t<bad:CommandsVisibility xmlns:bad=\"urn:not-command-interface\"/>",
+                ),
+            ),
+            (
+                "wrong-section-order",
+                command_interface_document(
+                    INTERFACE_CI_NS,
+                    "\t<CommandsPlacement/>\n\t<CommandsVisibility/>",
+                ),
+            ),
+            (
+                "duplicate-section",
+                command_interface_document(
+                    INTERFACE_CI_NS,
+                    "\t<CommandsVisibility/>\n\t<CommandsVisibility/>",
+                ),
+            ),
+        ];
+
+        for (case, source) in invalid_cases {
+            let context = temp_context(case);
+            let ci_rel = "src/Subsystems/Existing/Ext/CommandInterface.xml";
+            write_valid_subsystem_owner(&context, ci_rel);
+            let ci_path = write_command_interface(&context, ci_rel, &source);
+            let before = fs::read(&ci_path).unwrap();
+
+            let validation = validate_interface(
+                &Map::from_iter([("CIPath".to_string(), Value::String(ci_rel.to_string()))]),
+                &context,
+            );
+            assert!(!validation.ok, "{case}: {validation:?}");
+            assert!(!validation.errors.is_empty(), "{case}: {validation:?}");
+
+            let outcome = edit_interface(&hide_args(ci_rel, false), &context);
+
+            assert!(!outcome.ok, "{case}: {outcome:?}");
+            assert!(!outcome.errors.is_empty(), "{case}: {outcome:?}");
+            assert_eq!(fs::read(&ci_path).unwrap(), before, "{case}");
+            assert!(outcome.changes.is_empty(), "{case}: {outcome:?}");
+            assert!(outcome.artifacts.is_empty(), "{case}: {outcome:?}");
+            let _ = fs::remove_dir_all(&context.workspace_root);
+        }
+    }
+
+    #[test]
+    fn public_interface_edit_rejects_invalid_subsystem_owner_without_mutating_any_file() {
+        let context = temp_context("public-invalid-subsystem-owner");
+        fs::write(
+            context.cwd.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::create_dir_all(context.cwd.join("src/Subsystems")).unwrap();
+        let configuration_path = context.cwd.join("src/Configuration.xml");
+        let configuration = configuration_owner_document("false").into_bytes();
+        fs::write(&configuration_path, &configuration).unwrap();
+        let owner_path = context.cwd.join("src/Subsystems/AuditSubsystem.xml");
+        let invalid_owner = subsystem_document("AuditSubsystem", "banana").into_bytes();
+        fs::write(&owner_path, &invalid_owner).unwrap();
+        let ci_rel = "src/Subsystems/AuditSubsystem/Ext/CommandInterface.xml";
+        let ci_path = write_command_interface(
+            &context,
+            ci_rel,
+            &command_interface_document(INTERFACE_CI_NS, ""),
+        );
+        let ci_before = fs::read(&ci_path).unwrap();
+        let args = Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(context.cwd.display().to_string()),
+            ),
+            ("CIPath".to_string(), Value::String(ci_rel.to_string())),
+            ("Operation".to_string(), Value::String("hide".to_string())),
+            (
+                "Value".to_string(),
+                Value::String("Catalog.Products.StandardCommand.OpenList".to_string()),
+            ),
+            ("dryRun".to_string(), Value::Bool(false)),
+            ("confirm".to_string(), Value::Bool(true)),
+        ]);
+
+        let outcome = UnicaApplication::new()
+            .call_tool("unica.interface.edit", &args)
+            .unwrap();
+
+        assert!(!outcome.ok, "{outcome:?}");
+        let errors = outcome.errors.join("\n");
+        assert!(errors.contains("IncludeHelpInContents"), "{outcome:?}");
+        assert!(errors.contains("banana"), "{outcome:?}");
+        assert_eq!(fs::read(&configuration_path).unwrap(), configuration);
+        assert_eq!(fs::read(&owner_path).unwrap(), invalid_owner);
+        assert_eq!(fs::read(&ci_path).unwrap(), ci_before);
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        assert!(outcome.artifacts.is_empty(), "{outcome:?}");
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    #[test]
+    fn public_interface_edit_rejects_invalid_configuration_owner_without_mutating_any_file() {
+        let context = temp_context("public-invalid-configuration-owner");
+        fs::write(
+            context.cwd.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::create_dir_all(context.cwd.join("src")).unwrap();
+        let configuration_path = context.cwd.join("src/Configuration.xml");
+        let invalid_configuration = configuration_owner_document("banana").into_bytes();
+        fs::write(&configuration_path, &invalid_configuration).unwrap();
+        let ci_rel = "src/Ext/CommandInterface.xml";
+        let ci_path = write_command_interface(
+            &context,
+            ci_rel,
+            &command_interface_document(INTERFACE_CI_NS, ""),
+        );
+        let ci_before = fs::read(&ci_path).unwrap();
+        let args = Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(context.cwd.display().to_string()),
+            ),
+            ("CIPath".to_string(), Value::String(ci_rel.to_string())),
+            ("Operation".to_string(), Value::String("hide".to_string())),
+            (
+                "Value".to_string(),
+                Value::String("Catalog.Products.StandardCommand.OpenList".to_string()),
+            ),
+            ("dryRun".to_string(), Value::Bool(false)),
+            ("confirm".to_string(), Value::Bool(true)),
+        ]);
+
+        let outcome = UnicaApplication::new()
+            .call_tool("unica.interface.edit", &args)
+            .unwrap();
+
+        assert!(!outcome.ok, "{outcome:?}");
+        let errors = outcome.errors.join("\n");
+        assert!(errors.contains("IncludeHelpInContents"), "{outcome:?}");
+        assert!(errors.contains("banana"), "{outcome:?}");
+        assert_eq!(
+            fs::read(&configuration_path).unwrap(),
+            invalid_configuration
+        );
+        assert_eq!(fs::read(&ci_path).unwrap(), ci_before);
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        assert!(outcome.artifacts.is_empty(), "{outcome:?}");
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    #[test]
+    fn public_interface_edit_prioritizes_newer_metadata_owner_over_older_command_interface() {
+        let context = temp_context("public-mixed-owner-versions");
+        fs::write(
+            context.cwd.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::create_dir_all(context.cwd.join("src/Subsystems")).unwrap();
+        let configuration_path = context.cwd.join("src/Configuration.xml");
+        let configuration = configuration_owner_document("false").into_bytes();
+        fs::write(&configuration_path, &configuration).unwrap();
+
+        let owner_path = context.cwd.join("src/Subsystems/AuditSubsystem.xml");
+        let newer_owner = subsystem_document("AuditSubsystem", "true")
+            .replacen(r#"version="2.20""#, r#"version="2.21""#, 1)
+            .into_bytes();
+        fs::write(&owner_path, &newer_owner).unwrap();
+
+        let ci_rel = "src/Subsystems/AuditSubsystem/Ext/CommandInterface.xml";
+        let older_ci = command_interface_document(INTERFACE_CI_NS, "").replacen(
+            r#"version="2.20""#,
+            r#"version="2.19""#,
+            1,
+        );
+        let ci_path = write_command_interface(&context, ci_rel, &older_ci);
+        let ci_before = fs::read(&ci_path).unwrap();
+        let args = Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(context.cwd.display().to_string()),
+            ),
+            ("CIPath".to_string(), Value::String(ci_rel.to_string())),
+            ("Operation".to_string(), Value::String("hide".to_string())),
+            (
+                "Value".to_string(),
+                Value::String("Catalog.Products.StandardCommand.OpenList".to_string()),
+            ),
+            ("dryRun".to_string(), Value::Bool(false)),
+            ("confirm".to_string(), Value::Bool(true)),
+        ]);
+
+        let outcome = UnicaApplication::new()
+            .call_tool("unica.interface.edit", &args)
+            .unwrap();
+
+        assert!(!outcome.ok, "{outcome:?}");
+        let diagnostic = &outcome.diagnostics.as_ref().unwrap()["formatCompatibility"];
+        assert_eq!(diagnostic["code"], "platformVersionUnsupported");
+        assert_eq!(diagnostic["actualFormat"], "2.21");
+        let warning = outcome.warnings.join("\n");
+        assert!(warning.contains("1С 8.5"), "{warning}");
+        assert!(!warning.contains("миграц"), "{warning}");
+        assert!(!warning.contains("повторно выгруз"), "{warning}");
+        assert!(!warning.contains("re-export"), "{warning}");
+        assert_eq!(fs::read(&configuration_path).unwrap(), configuration);
+        assert_eq!(fs::read(&owner_path).unwrap(), newer_owner);
+        assert_eq!(fs::read(&ci_path).unwrap(), ci_before);
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        assert!(outcome.artifacts.is_empty(), "{outcome:?}");
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    #[test]
+    fn interface_edit_post_write_failure_restores_existing_preimage() {
+        let context = temp_context("post-write-existing");
+        let ci_rel = "src/Subsystems/Existing/Ext/CommandInterface.xml";
+        write_valid_subsystem_owner(&context, ci_rel);
+        let source = command_interface_document(INTERFACE_CI_NS, "");
+        let ci_path = write_command_interface(&context, ci_rel, &source);
+        let before = fs::read(&ci_path).unwrap();
+
+        let outcome = with_commit_failpoint(CommitFailpoint::PostWriteValidation, || {
+            edit_interface(&hide_args(ci_rel, false), &context)
+        });
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("post-write validation"),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&ci_path).unwrap(), before);
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        assert!(outcome.artifacts.is_empty(), "{outcome:?}");
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    #[test]
+    fn interface_edit_post_write_failure_removes_new_file_and_directories() {
+        let context = temp_context("post-write-create");
+        let ci_rel = "src/Subsystems/New/Ext/CommandInterface.xml";
+        let ci_path = context.cwd.join(ci_rel);
+        let (owner_path, owner_bytes) = write_valid_subsystem_owner(&context, ci_rel);
+
+        let outcome = with_commit_failpoint(CommitFailpoint::PostWriteValidation, || {
+            edit_interface(&hide_args(ci_rel, true), &context)
+        });
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("post-write validation"),
+            "{outcome:?}"
+        );
+        assert!(!ci_path.exists(), "{outcome:?}");
+        assert!(
+            !ci_path.parent().unwrap().parent().unwrap().exists(),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(owner_path).unwrap(), owner_bytes);
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        assert!(outcome.artifacts.is_empty(), "{outcome:?}");
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    #[test]
+    fn interface_edit_rejects_stale_preimage_without_overwriting_concurrent_change() {
+        let context = temp_context("stale-preimage");
+        let ci_rel = "src/Subsystems/Existing/Ext/CommandInterface.xml";
+        write_valid_subsystem_owner(&context, ci_rel);
+        let source = command_interface_document(INTERFACE_CI_NS, "");
+        let ci_path = write_command_interface(&context, ci_rel, &source);
+        let concurrent = command_interface_document(
+            INTERFACE_CI_NS,
+            "\t<GroupsOrder><Group>Concurrent</Group></GroupsOrder>",
+        )
+        .into_bytes();
+        let hook_path = ci_path.clone();
+        let hook_bytes = concurrent.clone();
+
+        let outcome = with_before_commit_hook(
+            move |path| {
+                assert_eq!(path, hook_path);
+                fs::write(path, &hook_bytes).unwrap();
+            },
+            || edit_interface(&hide_args(ci_rel, false), &context),
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        let errors = outcome.errors.join("\n");
+        assert!(
+            errors.contains("changed") || errors.contains("preimage"),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&ci_path).unwrap(), concurrent);
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        assert!(outcome.artifacts.is_empty(), "{outcome:?}");
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    #[test]
+    fn interface_edit_rolls_back_if_unchanged_metadata_owner_changes_during_publication() {
+        let context = temp_context("metadata-owner-race");
+        fs::write(
+            context.cwd.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::create_dir_all(context.cwd.join("src")).unwrap();
+        fs::write(
+            context.cwd.join("src/Configuration.xml"),
+            configuration_owner_document("true"),
+        )
+        .unwrap();
+        let ci_rel = "src/Subsystems/AuditSubsystem/Ext/CommandInterface.xml";
+        let (owner_path, _) = write_valid_subsystem_owner(&context, ci_rel);
+        let ci_path = write_command_interface(
+            &context,
+            ci_rel,
+            &command_interface_document(INTERFACE_CI_NS, ""),
+        );
+        let ci_before = fs::read(&ci_path).unwrap();
+        let concurrent_owner = subsystem_document("AuditSubsystem", "true")
+            .replace("<Explanation/>", "<Explanation>Concurrent</Explanation>");
+        let owner_for_hook = owner_path.clone();
+        let owner_bytes_for_hook = concurrent_owner.as_bytes().to_vec();
+
+        let outcome = with_before_commit_hook(
+            move |_| fs::write(&owner_for_hook, &owner_bytes_for_hook).unwrap(),
+            || edit_interface(&hide_args(ci_rel, false), &context),
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("read guard"),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&ci_path).unwrap(), ci_before);
+        assert_eq!(fs::read_to_string(&owner_path).unwrap(), concurrent_owner);
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    #[test]
+    fn interface_edit_classifies_ci_and_metadata_owner_as_one_dependency_set() {
+        let context = temp_context("mixed-dependency-versions");
+        fs::write(
+            context.cwd.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::create_dir_all(context.cwd.join("src")).unwrap();
+        fs::write(
+            context.cwd.join("src/Configuration.xml"),
+            configuration_owner_document("true"),
+        )
+        .unwrap();
+        let ci_rel = "src/Subsystems/AuditSubsystem/Ext/CommandInterface.xml";
+        let (owner_path, _) = write_valid_subsystem_owner(&context, ci_rel);
+        let newer_owner = subsystem_document("AuditSubsystem", "true").replacen(
+            r#"version="2.20""#,
+            r#"version="2.21""#,
+            1,
+        );
+        fs::write(&owner_path, &newer_owner).unwrap();
+        let older_ci = command_interface_document(INTERFACE_CI_NS, "").replacen(
+            r#"version="2.20""#,
+            r#"version="2.19""#,
+            1,
+        );
+        let ci_path = write_command_interface(&context, ci_rel, &older_ci);
+        let ci_before = fs::read(&ci_path).unwrap();
+
+        let outcome = edit_interface(&hide_args(ci_rel, false), &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        let errors = outcome.errors.join("\n");
+        assert!(errors.contains("newer than supported 2.20"), "{outcome:?}");
+        assert!(errors.contains("1C 8.5 support is planned"), "{outcome:?}");
+        assert!(!errors.contains("re-export the source"), "{outcome:?}");
+        assert_eq!(fs::read(&ci_path).unwrap(), ci_before);
+        assert_eq!(fs::read_to_string(&owner_path).unwrap(), newer_owner);
+        let _ = fs::remove_dir_all(&context.workspace_root);
     }
 }

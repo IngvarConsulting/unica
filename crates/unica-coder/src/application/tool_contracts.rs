@@ -1,5 +1,6 @@
-use super::operation_descriptors::native_operation_descriptor;
+use super::operation_descriptors::{native_operation_descriptor, native_path_alias_groups};
 use super::{RuntimeJobAction, ToolHandler, ToolSpec};
+use crate::domain::form_edit::{form_edit_definition_schema, validate_form_edit_definition};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use uuid::Uuid;
@@ -67,6 +68,9 @@ const META_EDIT_OPERATIONS: &[&str] = &[
     "set-basedOn",
     "set-inputByString",
 ];
+const CFE_PATCH_METHOD_CONTEXTS: &[&str] = &["НаСервере", "НаКлиенте", "НаСервереБезКонтекста"];
+const CFE_PATCH_METHOD_INTERCEPTOR_TYPES: &[&str] = &["Before", "After"];
+const CFE_PATCH_METHOD_IDENTIFIER_PATTERN: &str = r"^[A-Za-z_А-Яа-яЁё][A-Za-z0-9_А-Яа-яЁё]*$";
 
 const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "BaseForm",
@@ -123,7 +127,6 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "ObjectPath",
     "Offset",
     "Operation",
-    "OutFile",
     "OutputDir",
     "OutputPath",
     "Parent",
@@ -205,7 +208,6 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "objectPath",
     "offset",
     "operation",
-    "outFile",
     "outputDir",
     "outputPath",
     "parent",
@@ -273,6 +275,7 @@ const RUNTIME_ARGS: &[&str] = &[
     "distributiveModules",
     "emptyHandlers",
     "execute",
+    "stderrOutput",
     "extension",
     "externalConnection",
     "externalConnectionServer",
@@ -317,6 +320,8 @@ const RUNTIME_ARGS: &[&str] = &[
     "unsupportedFunctional",
     "unreferenceProcedures",
     "usePrivilegedMode",
+    "waitForExit",
+    "waitTimeoutMs",
     "webClient",
     "workdir",
 ];
@@ -343,6 +348,7 @@ const RUNTIME_STRING_ARGS: &[&str] = &[
     "config",
     "connection",
     "execute",
+    "stderrOutput",
     "extension",
     "format",
     "mcpConfig",
@@ -478,6 +484,9 @@ const RUNTIME_LAUNCH_OPERATION_ARGS: &[&str] = &[
     "execute",
     "usePrivilegedMode",
     "output",
+    "stderrOutput",
+    "waitForExit",
+    "waitTimeoutMs",
     "rawKeys",
 ];
 const RUNTIME_EXTENSIONS_OPERATION_ARGS: &[&str] =
@@ -579,17 +588,49 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
     let property_names = allowed_args(tool);
     let mut properties = Map::new();
     for name in property_names {
-        properties.insert(name.to_string(), property_schema_for_tool(tool, name));
+        let mut property = property_schema_for_tool(tool, name);
+        // Attached here rather than inside property_schema so that the
+        // tool-specific overrides above, which return their own enums and
+        // patterns, are described too.
+        if let Some(description) = description_for_arg(name) {
+            if let Some(object) = property.as_object_mut() {
+                object.insert("description".to_string(), json!(description));
+            }
+        }
+        properties.insert(name.to_string(), property);
+    }
+
+    let mut required = required_args(tool);
+    let mut required_path_aliases = Vec::new();
+    if let ToolHandler::NativeOperation { operation, .. } = tool.handler {
+        for group in native_path_alias_groups(operation) {
+            if let Some(index) = required
+                .iter()
+                .position(|required| *required == group.canonical)
+            {
+                required.remove(index);
+                required_path_aliases.push(json!({
+                    "anyOf": group
+                        .aliases
+                        .iter()
+                        .map(|alias| json!({"required": [alias]}))
+                        .collect::<Vec<_>>()
+                }));
+            }
+        }
     }
 
     let mut schema = json!({
         "type": "object",
         "additionalProperties": false,
         "properties": properties,
-        "required": required_args(tool),
+        "required": required,
     });
+    if !required_path_aliases.is_empty() {
+        schema["allOf"] = Value::Array(required_path_aliases);
+    }
     if tool.name == "unica.form.edit" {
-        schema["oneOf"] = json!([
+        schema["anyOf"] = json!([
             {"required": ["JsonPath"]},
             {"required": ["jsonPath"]},
             {"required": ["definition"]}
@@ -660,6 +701,62 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
     schema
 }
 
+pub(crate) fn normalize_native_path_aliases(
+    tool: ToolSpec,
+    args: &Map<String, Value>,
+) -> Result<Map<String, Value>, String> {
+    let mut normalized = args.clone();
+    let ToolHandler::NativeOperation { operation, .. } = tool.handler else {
+        return Ok(normalized);
+    };
+
+    for group in native_path_alias_groups(operation) {
+        let present = group
+            .aliases
+            .iter()
+            .filter_map(|alias| args.get(*alias).map(|value| (*alias, value)))
+            .collect::<Vec<_>>();
+        if present.is_empty() {
+            continue;
+        }
+
+        let non_empty = present
+            .iter()
+            .copied()
+            .filter(|(_, value)| !is_empty_path_alias_value(value))
+            .collect::<Vec<_>>();
+        if let Some((_, expected)) = non_empty.first().copied() {
+            if non_empty.iter().any(|(_, value)| *value != expected) {
+                return Err(format!(
+                    "{} received conflicting path aliases with different non-empty values: {}",
+                    tool.name,
+                    non_empty
+                        .iter()
+                        .map(|(alias, _)| *alias)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+        }
+
+        let selected = non_empty
+            .first()
+            .or_else(|| present.first())
+            .map(|(_, value)| (*value).clone())
+            .expect("present path aliases cannot be empty");
+        for alias in group.aliases {
+            normalized.remove(*alias);
+        }
+        normalized.insert(group.canonical.to_string(), selected);
+    }
+
+    Ok(normalized)
+}
+
+fn is_empty_path_alias_value(value: &Value) -> bool {
+    value.as_str().is_some_and(|value| value.trim().is_empty())
+}
+
 pub fn validate_tool_arguments(
     tool: ToolSpec,
     args: &Map<String, Value>,
@@ -692,6 +789,7 @@ pub fn validate_tool_arguments(
     validate_support_arguments(tool, args, dry_run)?;
     validate_external_init_arguments(tool, args)?;
     validate_meta_info_arguments(tool, args)?;
+    validate_cfe_patch_method_arguments(tool, args)?;
 
     if !dry_run || is_external_init_tool(tool) {
         for required in required_args(&tool) {
@@ -777,6 +875,96 @@ fn validate_code_patch_arguments(tool: ToolSpec, args: &Map<String, Value>) -> R
     Ok(())
 }
 
+fn validate_cfe_patch_method_arguments(
+    tool: ToolSpec,
+    args: &Map<String, Value>,
+) -> Result<(), String> {
+    if tool.name != "unica.cfe.patch_method" {
+        return Ok(());
+    }
+    for aliases in [
+        &["MethodName", "methodName"][..],
+        &["Context", "context"][..],
+        &["InterceptorType", "interceptorType"][..],
+        &["IsFunction", "isFunction"][..],
+    ] {
+        validate_unique_alias_group(tool.name, args, aliases)?;
+    }
+    for name in ["MethodName", "methodName"] {
+        let Some(value) = args.get(name) else {
+            continue;
+        };
+        let value = value
+            .as_str()
+            .ok_or_else(|| format!("{} argument `{name}` must be string", tool.name))?;
+        if !is_cfe_patch_method_identifier(value) {
+            return Err(format!(
+                "{} argument `MethodName` must be a valid 1C identifier",
+                tool.name
+            ));
+        }
+    }
+    for name in ["Context", "context"] {
+        let Some(value) = args.get(name) else {
+            continue;
+        };
+        let value = value
+            .as_str()
+            .ok_or_else(|| format!("{} argument `{name}` must be string", tool.name))?;
+        if !CFE_PATCH_METHOD_CONTEXTS.contains(&value) {
+            return Err(format!(
+                "{} argument `Context` must be one of: {}",
+                tool.name,
+                CFE_PATCH_METHOD_CONTEXTS.join(", ")
+            ));
+        }
+    }
+    for name in ["InterceptorType", "interceptorType"] {
+        let Some(value) = args.get(name) else {
+            continue;
+        };
+        let value = value
+            .as_str()
+            .ok_or_else(|| format!("{} argument `{name}` must be string", tool.name))?;
+        if !CFE_PATCH_METHOD_INTERCEPTOR_TYPES.contains(&value) {
+            return Err(format!(
+                "{} argument `InterceptorType` must be one of: {}",
+                tool.name,
+                CFE_PATCH_METHOD_INTERCEPTOR_TYPES.join(", ")
+            ));
+        }
+    }
+    for name in ["IsFunction", "isFunction"] {
+        let Some(value) = args.get(name) else {
+            continue;
+        };
+        let value = value
+            .as_bool()
+            .ok_or_else(|| format!("{} argument `{name}` must be boolean", tool.name))?;
+        if value {
+            return Err(format!(
+                "{} v1 requires a parameterless procedure; a base method signature resolver for functions and parameterized methods is not implemented",
+                tool.name
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn is_cfe_patch_method_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    let valid_start = |ch: char| {
+        ch == '_'
+            || ch.is_ascii_alphabetic()
+            || ('А'..='я').contains(&ch)
+            || matches!(ch, 'Ё' | 'ё')
+    };
+    valid_start(first) && chars.all(|ch| valid_start(ch) || ch.is_ascii_digit())
+}
+
 fn validate_external_init_arguments(
     tool: ToolSpec,
     args: &Map<String, Value>,
@@ -832,6 +1020,10 @@ fn validate_form_edit_arguments(
                 tool.name
             ));
         }
+    }
+
+    if let Some(definition) = args.get("definition") {
+        validate_form_edit_definition(definition)?;
     }
 
     Ok(())
@@ -1391,6 +1583,9 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
         ToolHandler::StandardsAdapter { .. } => names.extend(STANDARDS_ARGS),
         ToolHandler::ProjectStatus | ToolHandler::ProjectMap => {}
     }
+    if tool.name == "unica.mxl.decompile" {
+        names.retain(|name| *name != "OutputPath" && *name != "outputPath");
+    }
     names.sort_unstable();
     names.dedup();
     names
@@ -1448,13 +1643,17 @@ fn runtime_required_args(tool: &ToolSpec) -> Vec<&'static str> {
     vec!["operation"]
 }
 
-fn runtime_job_args(action: RuntimeJobAction) -> &'static [&'static str] {
+fn runtime_job_args(action: RuntimeJobAction) -> Vec<&'static str> {
     match action {
-        RuntimeJobAction::Start => RUNTIME_ARGS,
-        RuntimeJobAction::Status | RuntimeJobAction::Cancel => RUNTIME_JOB_STATUS_ARGS,
-        RuntimeJobAction::Wait => RUNTIME_JOB_WAIT_ARGS,
-        RuntimeJobAction::Logs => RUNTIME_JOB_LOGS_ARGS,
-        RuntimeJobAction::List => &[],
+        RuntimeJobAction::Start => RUNTIME_ARGS
+            .iter()
+            .copied()
+            .filter(|name| !matches!(*name, "waitForExit" | "waitTimeoutMs" | "stderrOutput"))
+            .collect(),
+        RuntimeJobAction::Status | RuntimeJobAction::Cancel => RUNTIME_JOB_STATUS_ARGS.to_vec(),
+        RuntimeJobAction::Wait => RUNTIME_JOB_WAIT_ARGS.to_vec(),
+        RuntimeJobAction::Logs => RUNTIME_JOB_LOGS_ARGS.to_vec(),
+        RuntimeJobAction::List => Vec::new(),
     }
 }
 
@@ -1470,6 +1669,14 @@ fn runtime_job_required_args(action: RuntimeJobAction) -> Vec<&'static str> {
 }
 
 fn property_schema(name: &str) -> Value {
+    if name == "waitTimeoutMs" {
+        return json!({
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 86_400_000
+        });
+    }
+
     let value_type = if matches!(
         name,
         "dryRun"
@@ -1496,6 +1703,8 @@ fn property_schema(name: &str) -> Value {
             | "createIfMissing"
             | "IsFunction"
             | "isFunction"
+            | "KeepFiles"
+            | "keepFiles"
             | "allExtensions"
             | "checkUseModality"
             | "checkUseSynchronousCalls"
@@ -1522,6 +1731,7 @@ fn property_schema(name: &str) -> Value {
             | "unsupportedFunctional"
             | "unreferenceProcedures"
             | "usePrivilegedMode"
+            | "waitForExit"
             | "webClient"
             | "includeMethods"
             | "ignoreCase"
@@ -1538,6 +1748,7 @@ fn property_schema(name: &str) -> Value {
             | "MaxParams"
             | "maxParams"
             | "mcpPort"
+            | "waitTimeoutMs"
             | "maxOutputTokens"
             | "maxFiles"
             | "rangeStart"
@@ -1579,6 +1790,738 @@ fn property_schema(name: &str) -> Value {
     }
 }
 
+/// Argument documentation, keyed by the camelCase spelling.
+///
+/// Every argument is accepted in both PascalCase and camelCase, so the lookup
+/// folds the first character and one entry serves both spellings.
+///
+/// A model reaches these before it reaches the skills: under MCP tool search
+/// the schema is what it inspects when deciding how to call. An undescribed
+/// argument therefore has to be guessed, and the tools that share
+/// `NATIVE_XML_DSL_ARGS` offer well over a hundred of them.
+const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
+    (
+        "allExtensions",
+        "Boolean --all-extensions covering every extension in operation syntax; only for the designer-* modes, since mode edt rejects it together with extension",
+    ),
+    (
+        "baseForm",
+        "Declared string argument that no handler reads; `<BaseForm>` is an element inside a borrowed Form.xml marking extension mode, never a call argument",
+    ),
+    (
+        "batch",
+        "Declared argument that no handler reads; `unica.dcs.info` with `Mode=query` always prints every packet and narrows only by `Name`.",
+    ),
+    (
+        "bodyLimit",
+        "Max page-body size for `unica.standards.explain` when it fetches a standard by `id`/`idOrAliasOrUrl`; the XML/DSL tools accept the key but never read it",
+    ),
+    (
+        "body_limit",
+        "Maximum size of the standard page body returned by unica.standards.explain in page mode (snake_case alias of bodyLimit); honoured only alongside id/idOrAliasOrUrl, and ignored by standards.search.",
+    ),
+    (
+        "borrowMainAttribute",
+        "`unica.cfe.borrow` only: `\"Form\"` (or `true`) borrows just the attributes already shown on the form, `\"All\"` borrows every object attribute; omit it to borrow the form without data bindings",
+    ),
+    (
+        "builder",
+        "Build backend recorded by operation config-init, DESIGNER or IBCMD; DESIGNER covers the full workflow set while IBCMD needs infobase.dbms settings for server bases",
+    ),
+    (
+        "c",
+        "String passed as the platform /C key on a direct-client operation launch, e.g. StartFeaturePlayer;VAParams=tools/VAParams.json; put the processing command here rather than in rawKeys",
+    ),
+    (
+        "cIPath",
+        "The `CIPath` spelling of the command-interface path: a subsystem's `Ext/CommandInterface.xml` or its directory, relative to `cwd`, for `unica.interface.edit`/`validate`",
+    ),
+    (
+        "capability",
+        "`unica.support.edit` only: `\"on\"` or `\"off\"`, toggling whether the vendor-supported configuration may be edited at all; pass exactly one of `capability` or `set`",
+    ),
+    (
+        "checkUseModality",
+        "Boolean Designer syntax-check option (--check-use-modality) accepted only by operation syntax with a designer-* mode",
+    ),
+    (
+        "checkUseSynchronousCalls",
+        "Boolean Designer syntax-check option (--check-use-synchronous-calls) accepted only by operation syntax with a designer-* mode",
+    ),
+    (
+        "child",
+        "Declared string argument that no handler reads; a child subsystem is added via `unica.subsystem.edit` with `operation: \"add-child\"` and the name in `value`",
+    ),
+    (
+        "children",
+        "Declared array-of-strings argument that no handler reads; nested form elements are a `children` key inside the form DSL definition, not a call argument",
+    ),
+    (
+        "ciPath",
+        "Path to a subsystem's `Ext/CommandInterface.xml` (the subsystem directory also resolves) for `unica.interface.edit` and `unica.interface.validate`, relative to `cwd`",
+    ),
+    (
+        "clientMode",
+        "Required client kind for operation launch: designer, thin, thick, ordinary, mcp or mcp-va; mcp and mcp-va take mcpConfig/mcpPort, the others take the direct launch flags",
+    ),
+    (
+        "codes",
+        "Array of diagnostic codes such as \"АПК:142\" or \"LineLength\"; on standards.explain it selects diagnostics mode and outranks snippet/id/query, on code.diagnostics it filters the catalog, and standards.search ignores it.",
+    ),
+    (
+        "columns",
+        "Declared string argument that no handler reads; table columns are a `columns` key inside the form DSL definition, not a call argument",
+    ),
+    (
+        "command",
+        "Declared string argument that no handler reads; commands are described in the `commands` section of the form DSL definition instead",
+    ),
+    (
+        "commandName",
+        "Declared string argument that no handler reads; `CommandName` is an element inside Form.xml, not a call argument",
+    ),
+    (
+        "compatibilityMode",
+        "Platform compatibility mode for the generated `Configuration.xml`, e.g. `Version8_3_27`; default `Version8_3_27` in `unica.cf.init` and `Version8_3_24` in `unica.cfe.init`, which infers it from `configPath`",
+    ),
+    (
+        "config",
+        "Workspace-relative path to v8project.yaml on unica.runtime.execute, unica.runtime.job.start and unica.build.* — the file to create for operation config-init and the existing project config for every other operation, never v8project.local.yaml; on unica.code.search and unica.code.diagnostics `config` is a separate passthrough to the bsl-analyzer run and is not the project config.",
+    ),
+    (
+        "configDir",
+        "Root of the configuration dump (the directory holding `Configuration.xml`) for `unica.meta.remove`, relative to `cwd`; that tool takes `configDir`, not `configPath`",
+    ),
+    (
+        "configLogIntegrity",
+        "Boolean Designer syntax-check option (--config-log-integrity) accepted only by operation syntax with a designer-* mode",
+    ),
+    (
+        "configPath",
+        "Path to `Configuration.xml` or the dump directory for `unica.cf.edit`, `unica.cf.info` and `unica.cf.validate`, and the path of the base configuration for `unica.cfe.init`/`borrow`/`diff`; relative to `cwd`. `unica.cf.init` ignores it and writes to `outputDir`.",
+    ),
+    (
+        "confirm",
+        "Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does",
+    ),
+    (
+        "connection",
+        "Infobase connection string (for example File=build/ib) honoured only by operation config-init, which stores it as infobase.connection in the project config; unica.build.* does not accept it",
+    ),
+    (
+        "content",
+        "Non-empty BSL text that unica.code.patch inserts at the selector; its line endings are normalized to the target module's EOL before writing",
+    ),
+    (
+        "context",
+        "`unica.cfe.patch_method` only: BSL context directive, one of `НаСервере`, `НаКлиенте`, `НаСервереБезКонтекста`; omit for object, manager, record-set and value-manager modules, which take no directive",
+    ),
+    (
+        "createIfMissing",
+        "`unica.interface.edit` only: boolean, create `CommandInterface.xml` when it does not exist yet instead of failing",
+    ),
+    (
+        "cwd",
+        "Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it",
+    ),
+    (
+        "dataPath",
+        "Declared string argument that no handler reads; `DataPath` is a Form.xml binding element, expressed as a `path` key in the form DSL",
+    ),
+    (
+        "dataSet",
+        "`unica.dcs.edit` only: name of the data set the operation applies to, defaulting to the first data set in the schema",
+    ),
+    (
+        "database",
+        "String forwarded to unica.build.* as --database with no behaviour documented in the skills; prefer connection on operation config-init when working through unica.runtime.execute",
+    ),
+    (
+        "dbPassword",
+        "String forwarded to unica.build.* as --db-password and redacted in reported commands; undocumented in the skills, and credentials belong in v8project.local.yaml, not tool arguments",
+    ),
+    (
+        "dbUser",
+        "String forwarded to unica.build.* as --db-user; the skills document no behaviour for it beyond the flag name",
+    ),
+    (
+        "definition",
+        "`unica.form.edit` only: the edit DSL as an inline JSON object (`elements`, `attributes`, `commands`, `formEvents`, `removeElements`, …); supply either this or `jsonPath`, never both",
+    ),
+    (
+        "definitionFile",
+        "Path to a JSON file holding a batch of operations or a full definition, for `unica.cf.edit`, `meta.edit`, `interface.edit`, `subsystem.edit`/`compile` and `dcs.compile`; relative to `cwd`",
+    ),
+    (
+        "detail",
+        "How much detail to return, with a per-tool enum: names, signatures or bodies for unica.code.graph; concise or detailed for unica.code.diagnostics",
+    ),
+    (
+        "detailed",
+        "Boolean for the `*.validate` tools: print every check, including the ones that passed, instead of only the failures",
+    ),
+    (
+        "dir",
+        "Edge direction to follow on unica.code.graph - in, out, or both; applies to the traversal modes such as neighbors, callers, and callees",
+    ),
+    (
+        "distributiveModules",
+        "Boolean Designer syntax-check option (--distributive-modules) accepted only by operation syntax with a designer-* mode",
+    ),
+    (
+        "dryRun",
+        "Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution.",
+    ),
+    (
+        "edgeKinds",
+        "Array of graph edge-kind names, forwarded to the analyzer as edge_kinds; unica.code.graph only, and the Unica contract does not enumerate the accepted values",
+    ),
+    ("emitDsl", "Declared string argument that no tool handler reads"),
+    (
+        "emptyHandlers",
+        "Boolean Designer syntax-check option (--empty-handlers) accepted only by operation syntax with a designer-* mode",
+    ),
+    (
+        "excludePath",
+        "One workspace path to exclude from unica.code.grep, resolved against cwd (or placed under sourceDir when relative) and applied as a git-grep exclude pathspec",
+    ),
+    (
+        "execute",
+        "Workspace-relative .epf to run via the platform /Execute key on a direct-client operation launch; required and must end in .epf when waitForExit is true",
+    ),
+    (
+        "expand",
+        "`unica.form.info` only: name or title of a collapsed section to expand, or `\"*\"` to expand all of them",
+    ),
+    (
+        "extension",
+        "Name of the 1C extension to act on for operation dump, make, load or syntax; build rejects it, so build an extension by selecting its configured sourceSet instead",
+    ),
+    (
+        "extensionPath",
+        "Path to the extension — its directory or its `Configuration.xml` — for every `unica.cfe.*` tool, relative to `cwd`; the base configuration goes in `configPath` instead",
+    ),
+    (
+        "externalConnection",
+        "Boolean Designer syntax-check context flag (--external-connection) accepted only by operation syntax with a designer-* mode",
+    ),
+    (
+        "externalConnectionServer",
+        "Boolean Designer syntax-check context flag (--external-connection-server) accepted only by operation syntax with a designer-* mode",
+    ),
+    (
+        "features",
+        "Array of Vanessa Automation feature paths narrowing operation test with testRunner va; each entry becomes one --feature",
+    ),
+    (
+        "field",
+        "Declared string argument that no handler reads; DCS fields are added via `unica.dcs.edit` with `operation: \"add-field\"` and the shorthand in `value`",
+    ),
+    (
+        "fields",
+        "Declared array-of-strings argument that no handler reads; data-set fields are a `fields` key inside the DCS JSON definition, not a call argument",
+    ),
+    (
+        "fileTypes",
+        "String, not an array: bare file extensions for unica.code.grep separated by commas, semicolons, or spaces, such as \"bsl\" or \"bsl,xml\"; each must be alphanumeric",
+    ),
+    (
+        "filterTags",
+        "Array of Vanessa Automation tags to include for operation test with testRunner va; each entry becomes one --filter-tag",
+    ),
+    (
+        "force",
+        "Boolean --force: on unica.runtime.execute it overwrites an existing project config for config-init and re-downloads the payload for tools-download, and no other runtime operation accepts it; the native XML tools expose their own Force, for example unica.meta.remove, where it removes an object despite discovered references.",
+    ),
+    (
+        "formName",
+        "Name of the managed form as a 1C identifier: the form to create in `unica.form.add`, `epf.init` and `erf.init`, or the form to delete in `unica.form.remove`",
+    ),
+    (
+        "formPath",
+        "Path to an existing `Form.xml`, or the form directory that resolves to it, for `unica.form.info`, `unica.form.edit` and `unica.form.validate`, relative to `cwd`",
+    ),
+    (
+        "format",
+        "On unica.runtime.execute this is the source format (designer or edt) recorded by config-init and no other runtime operation accepts it; on unica.code.* and the native XML tools `format` selects the report/output format instead (for example text, json or jsonl), and on unica.build.* it is an undocumented --format passthrough.",
+    ),
+    (
+        "fromObject",
+        "`unica.form.compile` only: boolean selecting preset generation from the object's metadata; use it instead of `jsonPath`, and let `outputPath` supply the object when `objectPath` is omitted",
+    ),
+    (
+        "fullOutput",
+        "Boolean turning on the runner's --full output verbosity for operation test; it is not a build full rebuild, which is fullRebuild on operation build",
+    ),
+    (
+        "fullRebuild",
+        "Boolean for operation build that forces a complete rebuild instead of the incremental one; use it after branch switches, rebases, large object moves or suspect incremental state",
+    ),
+    (
+        "handlersExistence",
+        "Boolean Designer syntax-check option (--handlers-existence) accepted only by operation syntax with a designer-* mode",
+    ),
+    (
+        "id",
+        "Standard id, alias or URL for standards.explain (lower-precedence alias of idOrAliasOrUrl), but a graph node id such as method:CommonModule.Sales.OnPost for code.graph; standards.search ignores it.",
+    ),
+    (
+        "idOrAliasOrUrl",
+        "Standard number, alias or full URL (e.g. \"644\") that puts standards.explain in page-fetch mode; prefer it over id, which it overrides when both are passed, and standards.search ignores it.",
+    ),
+    (
+        "ids",
+        "Array of code-graph node ids for unica.code.graph, forwarded as ids alongside the single-node id argument; use it when one request targets several nodes",
+    ),
+    (
+        "ignoreCase",
+        "Boolean for unica.code.grep; true makes the match case-insensitive (git grep -i), and it defaults to false",
+    ),
+    (
+        "ignoreTags",
+        "Array of Vanessa Automation tags to exclude for operation test with testRunner va; each entry becomes one --ignore-tag",
+    ),
+    (
+        "includeMethods",
+        "Boolean for unica.code.outline controlling whether method entries appear in the outline; defaults to true",
+    ),
+    (
+        "incorrectReferences",
+        "Boolean Designer syntax-check option (--incorrect-references) accepted only by operation syntax with a designer-* mode",
+    ),
+    (
+        "infobase",
+        "String forwarded to unica.build.* as --infobase with no behaviour documented in the skills; unica.runtime.execute has no such argument and reaches a database through connection at config-init",
+    ),
+    (
+        "interceptorType",
+        "`unica.cfe.patch_method` only: `\"Before\"` to generate a `&Перед` interceptor or `\"After\"` for `&После`",
+    ),
+    (
+        "isFunction",
+        "`unica.cfe.patch_method` only: reserved boolean constrained to `false`, because v1 patches parameterless procedures only",
+    ),
+    (
+        "jobId",
+        "UUID of a durable runtime job as returned by unica.runtime.job.start; required by the job status, wait, logs and cancel tools",
+    ),
+    (
+        "jsonPath",
+        "Path to the JSON DSL file, relative to `cwd`, for `unica.form.compile`, `unica.form.edit`, `unica.meta.compile`, `unica.mxl.compile` and `unica.role.compile`",
+    ),
+    (
+        "keepFiles",
+        "`unica.meta.remove` only: boolean that deregisters the object from `Configuration.xml` but leaves its files on disk (requires typing `KeepFiles` as boolean in `property_schema`, which currently declares it a string).",
+    ),
+    ("kind", "Declared string argument that no tool handler reads"),
+    (
+        "lang",
+        "`unica.help.add` only: language code of the help page to create, default `\"ru\"`; `language` is accepted as an alias for it",
+    ),
+    (
+        "language",
+        "Alias of `lang` for `unica.help.add`; on `unica.standards.explain` the same key instead names the language of the `snippet` being explained",
+    ),
+    (
+        "limit",
+        "Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20, code.definition 50, code.grep 200, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results).",
+    ),
+    (
+        "maxErrors",
+        "Stop a validate tool after this many errors: default 30 for `unica.cf.validate`, `cfe.validate`, `form.validate`, `meta.validate` and `interface.validate`, 20 for `unica.dcs.validate` and `unica.mxl.validate`; `unica.role.validate` and `unica.subsystem.validate` accept the key but ignore it.",
+    ),
+    (
+        "maxFiles",
+        "Integer cap on how many files one unica.code.diagnostics read covers, forwarded to the analyzer as max_files",
+    ),
+    (
+        "maxOutputTokens",
+        "Integer output budget for unica.code.graph, forwarded as max_output_tokens; use it to keep a large graph answer within context",
+    ),
+    (
+        "maxParams",
+        "`unica.mxl.info` only: maximum number of parameters listed per area, default 10",
+    ),
+    (
+        "mcpConfig",
+        "Workspace-relative path to the client MCP config file; accepted only by operation launch with clientMode mcp or mcp-va",
+    ),
+    (
+        "mcpPort",
+        "Integer TCP port for the client MCP server; accepted only by operation launch with clientMode mcp or mcp-va",
+    ),
+    (
+        "metadataPath",
+        "Declared string argument that no handler reads; `unica.role.validate` derives the role metadata XML (`Roles/<Name>.xml`) from `rightsPath` itself and checks its UUID, name and synonym whenever that file exists.",
+    ),
+    (
+        "methodName",
+        "`unica.cfe.patch_method` only: name of the existing parameterless procedure to intercept; must match a 1C identifier (Latin or Cyrillic letter or underscore, then letters, digits, underscores)",
+    ),
+    (
+        "minSeverity",
+        "Lowest diagnostic severity unica.code.diagnostics should report: error, warning, info, or hint",
+    ),
+    (
+        "mobileAppClient",
+        "Boolean Designer syntax-check context flag (--mobile-app-client) accepted only by operation syntax with a designer-* mode",
+    ),
+    (
+        "mobileAppServer",
+        "Boolean Designer syntax-check context flag (--mobile-app-server) accepted only by operation syntax with a designer-* mode",
+    ),
+    (
+        "mobileClient",
+        "Boolean including the mobile client context in operation syntax (--mobile-client); only for the designer-* modes",
+    ),
+    (
+        "mobileClientDigiSign",
+        "Boolean Designer syntax-check option (--mobile-client-digi-sign) accepted only by operation syntax with a designer-* mode",
+    ),
+    (
+        "mode",
+        "Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full|incremental|partial for dump, load|merge for load, designer-config|designer-modules|edt for syntax, and the client kind for an mcp or mcp-va launch, while every other tool defines its own values (for example analyze|status|catalog|file|workspace on unica.code.diagnostics) — always use the enum published in that tool's own schema.",
+    ),
+    (
+        "module",
+        "Full BSL module name such as CommonModule.МоиТесты; required for operation test with testRunner yaxunit and testScope module, and rejected for testRunner va",
+    ),
+    (
+        "moduleHint",
+        "Substring of a module path or object name that narrows unica.code.definition when the same method name exists in several modules; matched case-insensitively",
+    ),
+    (
+        "modulePath",
+        "`unica.cfe.patch_method` only: dotted module reference such as `Catalog.X.ObjectModule`, `CommonModule.X` or `Document.X.Form.Y` — a metadata path, not a filesystem path",
+    ),
+    (
+        "name",
+        "Name of the object being created (`cf.init`, `cfe.init`, `epf.init`, `erf.init`), or the drill-down target for `meta.info`, `subsystem.info` and `dcs.info`; on `cf.info` it is an alias of `section`",
+    ),
+    (
+        "namePrefix",
+        "`unica.cfe.init` only: prefix for the extension's own objects, defaulting to the extension name plus `_`; `unica.cfe.patch_method` reuses the stored prefix to name generated procedures",
+    ),
+    ("noRole", "`unica.cfe.init` only: boolean, skip scaffolding the extension's main role"),
+    (
+        "noSelection",
+        "`unica.dcs.edit` only: do not add the new field to the settings variant's selection; pass a real JSON boolean, a string is ignored",
+    ),
+    (
+        "noValidate",
+        "Boolean for `unica.cf.edit`, `interface.edit`, `subsystem.edit` and `dcs.edit`/`compile`: hide the verbose auto-validation report; the mandatory 8.3.27 check before commit still runs. `unica.subsystem.compile` accepts the argument but ignores it.",
+    ),
+    (
+        "object",
+        "On unica.runtime.execute this is one metadata object name for operation dump with mode partial, written in colon form such as Catalog:Номенклатура (use objects for several); on the native XML tools Object is instead the dotted metadata reference the tool acts on, such as Catalog.Контрагенты.Form.ФормаЭлемента for unica.cfe.borrow.",
+    ),
+    (
+        "objectName",
+        "Name of the owning object for `unica.form.remove` and `unica.template.add`/`remove`; for `unica.help.add` it is instead the object's path under `srcDir`, e.g. `Catalogs/МойСправочник`",
+    ),
+    (
+        "objectPath",
+        "Path to an object's metadata XML — a directory resolves to `<name>/<name>.xml` — for `unica.meta.edit`/`info`/`validate` and `unica.form.add`, relative to `cwd`; `meta.validate` accepts several joined by `|`",
+    ),
+    (
+        "objects",
+        "Array of metadata object names for operation dump with mode partial; supply this or object, and note partial dump is preview-only so pair it with dryRun true",
+    ),
+    (
+        "offset",
+        "Number of output lines to skip in the paginating read tools, default 0; combine it with `limit` to page through a long report",
+    ),
+    (
+        "operation",
+        "Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` for unica.code.patch; the metadata edit verbs for unica.meta.edit — read the enum published in the tool's own schema.",
+    ),
+    (
+        "output",
+        "Workspace-relative destination: the artifact file for make (a publish directory for external source-sets), the conversion directory for convert, and the platform /Out log for a direct-client launch",
+    ),
+    (
+        "outputDir",
+        "Destination root directory relative to `cwd`: the new dump for `cf.init`/`cfe.init`/`epf.init`/`erf.init`, or the existing dump root holding `Configuration.xml` for `meta.compile`/`role.compile`/`subsystem.compile`",
+    ),
+    (
+        "outputPath",
+        "Path of the single file to generate: the `Form.xml` for `unica.form.compile` or the `Template.xml` for `unica.dcs.compile` and `unica.mxl.compile`",
+    ),
+    (
+        "parent",
+        "`unica.subsystem.compile` only: path to the parent subsystem's XML when creating a nested subsystem; omit it to register the new subsystem in `Configuration.xml`",
+    ),
+    (
+        "password",
+        "String forwarded to unica.build.* as --password and redacted in reported commands; undocumented in the skills, and credentials belong in v8project.local.yaml, not tool arguments",
+    ),
+    (
+        "path",
+        "Workspace-relative file path whose meaning is tool-scoped: the required .cf or .cfe artifact for unica.runtime.execute operation load (.epf and .erf are rejected there), the target *Module.bsl or module-relative file for unica.code.patch and the other unica.code.* tools, the canonical alias of the object/config path argument on the native XML tools, and a plain --path passthrough on unica.build.*.",
+    ),
+    (
+        "position",
+        "Where unica.code.patch places the content relative to the selector: before or after",
+    ),
+    (
+        "preset",
+        "Declared string argument that no handler reads; role presets are a `preset` key (`view`, `edit`) inside the role JSON definition, not a call argument",
+    ),
+    (
+        "processorName",
+        "Name of the owning object, used together with `templateName` and `srcDir` instead of a direct `templatePath` by `unica.mxl.info` and `unica.mxl.validate`; `unica.help.add` also accepts it as an alias of `objectName`.",
+    ),
+    (
+        "projects",
+        "Array of EDT project names for operation syntax with mode edt; the designer-config and designer-modules modes reject it",
+    ),
+    (
+        "provenance",
+        "Array of provenance filter values forwarded to the analyzer as provenance; unica.code.graph only, and the Unica contract does not enumerate the accepted values",
+    ),
+    (
+        "purpose",
+        "Two different enums: form purpose, which differs per tool — `unica.form.add` takes `Object`, `List`, `Choice`, `Record` (default `Object`), while `unica.form.compile` takes `Item`, `Folder`, `List`, `Choice`, `Record` (default `Item`, inferred from the form name, and its from-object path currently supports only `List` and `Item`) — and extension purpose for `unica.cfe.init` (`Patch`, `Customization`, `AddOn`, default `Customization`).",
+    ),
+    (
+        "query",
+        "Search text: FTS phrase for unica.code.search, git-grep pattern for unica.code.grep, node-lookup text for unica.code.graph mode=resolve, the required unica.standards.search string, and explain's last-resort fallback",
+    ),
+    (
+        "rangeEnd",
+        "Integer end of the source line range for unica.code.diagnostics, forwarded as range_end; pair it with rangeStart to scope a mode=file read",
+    ),
+    (
+        "rangeStart",
+        "Integer start of the source line range for unica.code.diagnostics, forwarded as range_start; pair it with rangeEnd to scope a mode=file read",
+    ),
+    (
+        "raw",
+        "`unica.dcs.info` only: supported only with `Mode=query`; true returns the full query text without headers or pagination and ignores `limit`/`offset`.",
+    ),
+    (
+        "rawKeys",
+        "Array of extra non-reserved platform launch keys such as /TESTMANAGER for a direct-client operation launch; never repeat /C, /Execute or /Out here",
+    ),
+    (
+        "regex",
+        "Boolean for unica.code.grep; false (the default) matches query as a fixed literal, true treats query as a regular expression",
+    ),
+    (
+        "rightsPath",
+        "Path to a role's `Rights.xml`, or the role directory that resolves to it, for `unica.role.info` and `unica.role.validate`, relative to `cwd`",
+    ),
+    (
+        "scenarioFilters",
+        "Array of Vanessa Automation scenario filters for operation test with testRunner va; each entry becomes one --scenario-filter",
+    ),
+    (
+        "section",
+        "`unica.cf.info` only: drill-down section of `Configuration.xml`, currently just `\"home-page\"`; `name` is accepted as an alias for it",
+    ),
+    (
+        "sections",
+        "Array of profile sections unica.meta.profile returns, from structure, modules, roles, subscriptions, functionalOptions, predefinedItems; omit it for all sections except predefinedItems, which must be listed explicitly",
+    ),
+    (
+        "selector",
+        "Object naming the unica.code.patch insertion point: exactly one of {\"method\": \"Name\"} for a whole procedure or function, or {\"anchor\": \"text\"} for a fragment that occurs once inside one method",
+    ),
+    (
+        "server",
+        "Boolean including the server context in operation syntax (--server); only for the designer-* modes",
+    ),
+    (
+        "set",
+        "`unica.support.edit` only: the new support rule for the object at `path` — `\"editable\"`, `\"off-support\"` or `\"locked\"`; pass exactly one of `set` or `capability`",
+    ),
+    (
+        "setDefault",
+        "`unica.form.add` only: `true` assigns the new form to the object's `Default*Form` slot, `false` leaves that slot untouched, and omitting it fills only an empty slot",
+    ),
+    (
+        "setMainSKD",
+        "`unica.template.add` only: boolean overwriting an already-filled `MainDataCompositionSchema` with the new DCS template; an empty slot is filled automatically anyway",
+    ),
+    (
+        "settings",
+        "Workspace-relative path to the merge settings XML; required by operation load with mode merge and rejected with any other load mode",
+    ),
+    (
+        "showDenied",
+        "`unica.role.info` only: also list denied rights, which are hidden by default; pass a real JSON boolean, a string is ignored",
+    ),
+    (
+        "snippet",
+        "Literal BSL source text for standards.explain to explain against standards, sent with language and limit; codes outranks it when both are passed, and standards.search ignores it.",
+    ),
+    (
+        "sourceDir",
+        "Workspace-relative source root to work in: on unica.code.* , unica.code.patch and unica.meta.profile it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.runtime.execute has no sourceDir and selects sources by configured sourceSet name instead.",
+    ),
+    (
+        "sourceSet",
+        "Name of one source-set declared in v8project.yaml, such as main or external-processors; accepted by config-init, build, dump, convert, make and extensions",
+    ),
+    (
+        "sourceSets",
+        "Array of source-set names for operation extensions when several extensions are synchronized at once; use the singular sourceSet for one",
+    ),
+    (
+        "sources",
+        "Boolean that also downloads tool sources on operation tools-download; supported only for tool yaxunit or client-mcp and rejected for vanessa",
+    ),
+    (
+        "srcDir",
+        "Directory holding `<objectName>.xml`, default `src`; for `unica.form.remove` and `unica.template.add`/`remove` point it at the type folder such as `src/Reports`, and `unica.mxl.info`/`help.add` use it too",
+    ),
+    (
+        "stderrOutput",
+        "Workspace-relative file capturing stderr of the 1C client process in a bounded launch; requires waitForExit true, must differ from output, and unica.runtime.job.start rejects it",
+    ),
+    (
+        "subsystemPath",
+        "Path to a subsystem's XML, its directory, or the whole `Subsystems/` folder for `Mode=tree`, used by `unica.subsystem.info`/`edit`/`validate`, relative to `cwd`",
+    ),
+    (
+        "synonym",
+        "Human-readable synonym written into the generated XML; it defaults to the matching `name`, `formName` or `templateName` when omitted",
+    ),
+    (
+        "tailChars",
+        "Integer 1..32768 bounding how many trailing characters of stdout and stderr unica.runtime.job.logs returns, defaulting to 4096",
+    ),
+    (
+        "target",
+        "String forwarded to unica.build.* as --target; the skills document no behaviour for it beyond the flag name",
+    ),
+    (
+        "targetPath",
+        "Alias of `path` for `unica.support.edit`: the dump directory, object XML or form XML whose support state is being changed",
+    ),
+    (
+        "templateName",
+        "Name of the template to create with `unica.template.add`, delete with `unica.template.remove`, or read with `unica.mxl.info` together with `processorName`",
+    ),
+    (
+        "templatePath",
+        "Path to a `Template.xml`, or its directory which auto-resolves to `Ext/Template.xml`, for `unica.dcs.edit`/`info`/`validate` and `unica.mxl.info`/`validate`/`decompile`, relative to `cwd`; `unica.dcs.compile` writes through `outputPath` and ignores this argument.",
+    ),
+    (
+        "templateType",
+        "`unica.template.add` only: one of `HTML`, `Text`, `SpreadsheetDocument`, `BinaryData`, `DataCompositionSchema` — the input keyword, not the resulting metadata type name",
+    ),
+    (
+        "testRunner",
+        "Required test engine for operation test: yaxunit, which then also requires testScope, or va, which rejects testScope and module",
+    ),
+    (
+        "testScope",
+        "YaXUnit scope for operation test, all or module; required with testRunner yaxunit, needs module when set to module, and rejected with testRunner va",
+    ),
+    (
+        "thickClientManagedApplication",
+        "Boolean Designer syntax-check context flag (--thick-client-managed-application) accepted only by operation syntax with a designer-* mode",
+    ),
+    (
+        "thickClientOrdinaryApplication",
+        "Boolean Designer syntax-check context flag (--thick-client-ordinary-application) accepted only by operation syntax with a designer-* mode",
+    ),
+    (
+        "thickClientServerManagedApplication",
+        "Boolean Designer syntax-check context flag (--thick-client-server-managed-application) accepted only by operation syntax with a designer-* mode",
+    ),
+    (
+        "thickClientServerOrdinaryApplication",
+        "Boolean Designer syntax-check context flag (--thick-client-server-ordinary-application) accepted only by operation syntax with a designer-* mode",
+    ),
+    (
+        "thinClient",
+        "Boolean including the thin client context in operation syntax (--thin-client); only for the designer-* modes",
+    ),
+    (
+        "timeoutSeconds",
+        "Integer seconds bounding a blocking call: 1..60 (default 30) for unica.runtime.job.wait, and 30..3600 (default 120) for unica.code.diagnostics, which accepts it only with mode analyze.",
+    ),
+    (
+        "tool",
+        "Runner tool payload to fetch with operation tools-download: yaxunit, vanessa or client-mcp",
+    ),
+    (
+        "type",
+        "Declared string argument that no handler reads; an object's `type` is a key inside the meta-compile JSON definition, not a call argument",
+    ),
+    (
+        "types",
+        "Array of strings forwarded unchanged as the types parameter of the standards search; honoured only by standards.search and by standards.explain given query alone, with no allowed values declared.",
+    ),
+    (
+        "unreferenceProcedures",
+        "Boolean Designer syntax-check option (--unreference-procedures) accepted only by operation syntax with a designer-* mode",
+    ),
+    (
+        "unsupportedFunctional",
+        "Boolean Designer syntax-check option (--unsupported-functional) accepted only by operation syntax with a designer-* mode",
+    ),
+    (
+        "usePrivilegedMode",
+        "Boolean --use-privileged-mode for a direct-client operation launch; the mcp and mcp-va client modes reject it",
+    ),
+    (
+        "user",
+        "String forwarded to unica.build.* as --user; the skills document no behaviour for it beyond the flag name",
+    ),
+    (
+        "value",
+        "Payload for `operation`: a shorthand string batched with `;;`, a JSON string, or the whole inline JSON definition for `unica.dcs.compile` and `unica.subsystem.compile`",
+    ),
+    (
+        "variant",
+        "`unica.dcs.edit` only: name of the settings variant the operation applies to, defaulting to the first variant in the schema",
+    ),
+    (
+        "vendor",
+        "Vendor string written into the generated `Configuration.xml` by `unica.cf.init` and `unica.cfe.init`",
+    ),
+    (
+        "version",
+        "Configuration or extension version string such as `1.0.0.1`, written into the generated `Configuration.xml` by `unica.cf.init` and `unica.cfe.init`",
+    ),
+    (
+        "waitForExit",
+        "Boolean opt-in to a bounded external EPF launch; true requires clientMode thin plus execute, output, stderrOutput and waitTimeoutMs, and unica.runtime.job.start does not accept it",
+    ),
+    (
+        "waitTimeoutMs",
+        "Integer 1..86400000 milliseconds bounding a waitForExit launch; it is not the runner's overall timeout, which is execution_timeout in v8project.yaml",
+    ),
+    (
+        "webClient",
+        "Boolean including the web client context in operation syntax (--web-client); only for the designer-* modes",
+    ),
+    (
+        "withText",
+        "`unica.mxl.info` only: boolean including static cell text and template strings with `[Parameter]` substitutions in the report",
+    ),
+    (
+        "workdir",
+        "Working directory string forwarded to the runner as --workdir; accepted by every runtime operation and left unset in all documented workflows",
+    ),
+];
+
+fn description_for_arg(name: &str) -> Option<&'static str> {
+    let mut canonical = String::with_capacity(name.len());
+    let mut chars = name.chars();
+    if let Some(first) = chars.next() {
+        canonical.extend(first.to_lowercase());
+        canonical.push_str(chars.as_str());
+    }
+    ARG_DESCRIPTIONS
+        .iter()
+        .find(|(candidate, _)| *candidate == canonical)
+        .map(|(_, description)| *description)
+}
+
 fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
     if tool.name == "unica.meta.info" {
         return match name {
@@ -1588,6 +2531,10 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
             "objectRef" | "select" | "cursor" => json!({ "type": "object" }),
             _ => property_schema(name),
         };
+    }
+    if tool.name == "unica.form.edit" && name == "definition" {
+        return form_edit_definition_schema();
+    }
     }
     if tool.name == "unica.code.patch" {
         return match name {
@@ -1610,6 +2557,27 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
     }
     if tool.name == "unica.meta.edit" && matches!(name, "Operation" | "operation") {
         return json!({ "type": "string", "enum": META_EDIT_OPERATIONS });
+    }
+    if tool.name == "unica.cfe.patch_method" {
+        return match name {
+            "Context" | "context" => {
+                json!({ "type": "string", "enum": CFE_PATCH_METHOD_CONTEXTS })
+            }
+            "InterceptorType" | "interceptorType" => {
+                json!({ "type": "string", "enum": CFE_PATCH_METHOD_INTERCEPTOR_TYPES })
+            }
+            "MethodName" | "methodName" => json!({
+                "type": "string",
+                "minLength": 1,
+                "pattern": CFE_PATCH_METHOD_IDENTIFIER_PATTERN
+            }),
+            "IsFunction" | "isFunction" => json!({
+                "type": "boolean",
+                "const": false,
+                "description": "cfe.patch_method v1 supports parameterless procedures only; base method signature resolution is not implemented"
+            }),
+            _ => property_schema(name),
+        };
     }
     if matches!(
         tool.handler,
@@ -1721,6 +2689,8 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
             | "createIfMissing"
             | "IsFunction"
             | "isFunction"
+            | "KeepFiles"
+            | "keepFiles"
             | "allExtensions"
             | "checkUseModality"
             | "checkUseSynchronousCalls"
@@ -1747,6 +2717,7 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
             | "unsupportedFunctional"
             | "unreferenceProcedures"
             | "usePrivilegedMode"
+            | "waitForExit"
             | "webClient"
             | "includeMethods"
             | "ignoreCase"
@@ -1763,6 +2734,7 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
             | "MaxParams"
             | "maxParams"
             | "mcpPort"
+            | "waitTimeoutMs"
             | "maxOutputTokens"
             | "maxFiles"
             | "rangeStart"
@@ -1804,6 +2776,87 @@ mod tests {
     use crate::application::tools;
 
     #[test]
+    fn every_published_argument_is_described() {
+        let mut undescribed: Vec<String> = Vec::new();
+        for tool in tools() {
+            let schema = input_schema_for_tool(&tool);
+            let properties = schema["properties"].as_object().unwrap();
+            for (name, property) in properties {
+                let described = property
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| text.trim().len() >= 15);
+                if !described {
+                    undescribed.push(format!("{}:{name}", tool.name));
+                }
+            }
+        }
+
+        // A model inspects the schema before it reaches the skills, so an
+        // argument without a description has to be guessed at the call site.
+        assert!(
+            undescribed.is_empty(),
+            "arguments published without a description: {undescribed:?}"
+        );
+    }
+
+    #[test]
+    fn argument_descriptions_cover_both_spellings_once() {
+        let mut names: Vec<&str> = ARG_DESCRIPTIONS.iter().map(|(name, _)| *name).collect();
+        let count = names.len();
+        names.sort_unstable();
+        names.dedup();
+
+        assert_eq!(names.len(), count, "ARG_DESCRIPTIONS has duplicate keys");
+        // Keys are the camelCase spelling; the lookup folds the first character
+        // so one entry serves the PascalCase alias too.
+        let pascal: Vec<&str> = ARG_DESCRIPTIONS
+            .iter()
+            .map(|(name, _)| *name)
+            .filter(|name| name.starts_with(char::is_uppercase))
+            .collect();
+        assert!(pascal.is_empty(), "keys must be camelCase: {pascal:?}");
+    }
+
+    #[test]
+    fn output_path_description_excludes_read_only_mxl_decompile() {
+        let (_, description) = ARG_DESCRIPTIONS
+            .iter()
+            .find(|(name, _)| *name == "outputPath")
+            .expect("outputPath must have a shared description");
+
+        assert!(description.contains("mxl.compile"));
+        assert!(!description.contains("mxl.decompile"));
+    }
+
+    #[test]
+    fn described_arguments_are_still_reachable() {
+        let published: std::collections::BTreeSet<String> = tools()
+            .into_iter()
+            .flat_map(|tool| allowed_args(&tool))
+            .map(|name| {
+                let mut chars = name.chars();
+                match chars.next() {
+                    Some(first) => first.to_lowercase().chain(chars).collect(),
+                    None => String::new(),
+                }
+            })
+            .collect();
+        let stale: Vec<&str> = ARG_DESCRIPTIONS
+            .iter()
+            .map(|(name, _)| *name)
+            .filter(|name| !published.contains(*name))
+            .collect();
+
+        // Keeps the table from accumulating entries for arguments that were
+        // removed from the tool surface.
+        assert!(
+            stale.is_empty(),
+            "described arguments no longer exist: {stale:?}"
+        );
+    }
+
+    #[test]
     fn native_contracts_reject_unknown_args() {
         let tool = tools()
             .into_iter()
@@ -1816,6 +2869,70 @@ mod tests {
         let error = validate_tool_arguments(tool, &args, false).unwrap_err();
 
         assert!(error.contains("does not accept argument `unknown`"));
+    }
+
+    #[test]
+    fn mxl_decompile_rejects_legacy_output_path_aliases() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.mxl.decompile")
+            .unwrap();
+
+        for argument in ["OutputPath", "outputPath"] {
+            let args = Map::from_iter([(argument.to_string(), json!("result.json"))]);
+            let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+
+            assert!(error.contains(&format!("does not accept argument `{argument}`")));
+        }
+    }
+
+    #[test]
+    fn read_only_native_tools_reject_out_file_arguments() {
+        let required_path = |name: &str| match name {
+            "unica.cf.info" | "unica.cf.validate" => ("ConfigPath", "src"),
+            "unica.cfe.validate" => ("ExtensionPath", "src"),
+            "unica.meta.info" | "unica.meta.validate" => ("ObjectPath", "src/Object.xml"),
+            "unica.interface.validate" => ("CIPath", "src/CommandInterface.xml"),
+            "unica.subsystem.info" | "unica.subsystem.validate" => {
+                ("SubsystemPath", "src/Subsystems/Main.xml")
+            }
+            "unica.dcs.info" | "unica.dcs.validate" => ("TemplatePath", "src/Template.xml"),
+            "unica.role.info" | "unica.role.validate" => ("RightsPath", "src/Rights.xml"),
+            _ => unreachable!("unexpected read-only tool"),
+        };
+
+        for name in [
+            "unica.cf.info",
+            "unica.cf.validate",
+            "unica.cfe.validate",
+            "unica.meta.info",
+            "unica.meta.validate",
+            "unica.interface.validate",
+            "unica.subsystem.info",
+            "unica.subsystem.validate",
+            "unica.dcs.info",
+            "unica.dcs.validate",
+            "unica.role.info",
+            "unica.role.validate",
+        ] {
+            let tool = tools()
+                .into_iter()
+                .find(|tool| tool.name == name)
+                .expect("read-only tool is registered");
+            let (path_key, path) = required_path(name);
+            for argument in ["OutFile", "outFile"] {
+                let args = Map::from_iter([
+                    (path_key.to_string(), json!(path)),
+                    (argument.to_string(), json!("report.txt")),
+                ]);
+
+                let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+                assert!(
+                    error.contains(&format!("does not accept argument `{argument}`")),
+                    "{name}: {error}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1876,6 +2993,55 @@ mod tests {
     }
 
     #[test]
+    fn cfe_patch_method_contract_exposes_closed_bsl_argument_domains() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.cfe.patch_method")
+            .unwrap();
+        let schema = input_schema_for_tool(&tool);
+        assert_eq!(
+            schema["properties"]["Context"]["enum"],
+            json!(["НаСервере", "НаКлиенте", "НаСервереБезКонтекста"])
+        );
+        assert_eq!(
+            schema["properties"]["InterceptorType"]["enum"],
+            json!(["Before", "After"])
+        );
+        assert_eq!(
+            schema["properties"]["IsFunction"]["const"],
+            json!(false),
+            "v1 exposes procedure-only interception"
+        );
+        assert!(schema["properties"]["MethodName"]["pattern"].is_string());
+
+        let mut args = Map::from_iter([
+            ("ExtensionPath".to_string(), json!("ext")),
+            ("ModulePath".to_string(), json!("CommonModule.Server")),
+            ("MethodName".to_string(), json!("Run")),
+            ("InterceptorType".to_string(), json!("Before")),
+            ("Context".to_string(), json!("AtServer")),
+        ]);
+        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+        assert!(error.contains("Context"), "{error}");
+        args.insert("Context".to_string(), json!("НаСервере"));
+        args.insert("MethodName".to_string(), json!("Bad-Name"));
+        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+        assert!(error.contains("MethodName"), "{error}");
+        args.insert("MethodName".to_string(), json!("Run"));
+        args.insert(
+            "InterceptorType".to_string(),
+            json!("ModificationAndControl"),
+        );
+        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+        assert!(error.contains("InterceptorType"), "{error}");
+        args.insert("InterceptorType".to_string(), json!("Before"));
+        args.insert("IsFunction".to_string(), json!(true));
+        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+        assert!(error.contains("parameterless procedure"), "{error}");
+        assert!(error.contains("not implemented"), "{error}");
+    }
+
+    #[test]
     fn mutating_dry_run_does_not_require_payload() {
         let tool = tools()
             .into_iter()
@@ -1887,6 +3053,177 @@ mod tests {
     }
 
     #[test]
+    fn meta_remove_keep_files_contract_is_boolean() {
+        let remove = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.meta.remove")
+            .expect("unica.meta.remove must be registered");
+        let schema = input_schema_for_tool(&remove);
+
+        assert_eq!(schema["properties"]["KeepFiles"]["type"], "boolean");
+        assert_eq!(schema["properties"]["keepFiles"]["type"], "boolean");
+        validate_tool_arguments(
+            remove,
+            json!({
+                "ConfigDir": "src",
+                "Object": "Catalog.Legacy",
+                "KeepFiles": true,
+            })
+            .as_object()
+            .expect("test arguments must be an object"),
+            false,
+        )
+        .expect("meta.remove must accept boolean KeepFiles");
+    }
+
+    #[test]
+    fn native_required_path_aliases_are_honest_json_schema_alternatives() {
+        let cases = [
+            (
+                "unica.cf.info",
+                vec![
+                    json!({"ConfigPath": "src"}),
+                    json!({"configPath": "src"}),
+                    json!({"Path": "src"}),
+                    json!({"path": "src"}),
+                    json!({"ConfigPath": "src", "configPath": "src"}),
+                ],
+            ),
+            (
+                "unica.meta.edit",
+                vec![
+                    json!({"ObjectPath": "Catalogs/Items.xml"}),
+                    json!({"objectPath": "Catalogs/Items.xml"}),
+                    json!({"Path": "Catalogs/Items.xml"}),
+                    json!({"path": "Catalogs/Items.xml"}),
+                ],
+            ),
+            (
+                "unica.form.edit",
+                vec![
+                    json!({"FormPath": "Ext/Form.xml", "definition": {}}),
+                    json!({"formPath": "Ext/Form.xml", "definition": {}}),
+                    json!({"Path": "Ext/Form.xml", "definition": {}}),
+                    json!({"path": "Ext/Form.xml", "definition": {}}),
+                    json!({
+                        "FormPath": "Ext/Form.xml",
+                        "JsonPath": "edit.json",
+                        "jsonPath": "edit.json"
+                    }),
+                ],
+            ),
+            (
+                "unica.interface.edit",
+                vec![
+                    json!({"CIPath": "Ext/CommandInterface.xml"}),
+                    json!({"ciPath": "Ext/CommandInterface.xml"}),
+                    json!({"Path": "Ext/CommandInterface.xml"}),
+                    json!({"path": "Ext/CommandInterface.xml"}),
+                ],
+            ),
+            (
+                "unica.subsystem.edit",
+                vec![
+                    json!({"SubsystemPath": "Subsystems/Sales.xml"}),
+                    json!({"subsystemPath": "Subsystems/Sales.xml"}),
+                    json!({"Path": "Subsystems/Sales.xml"}),
+                    json!({"path": "Subsystems/Sales.xml"}),
+                ],
+            ),
+            (
+                "unica.dcs.edit",
+                vec![
+                    json!({"TemplatePath": "Ext/Template.xml"}),
+                    json!({"templatePath": "Ext/Template.xml"}),
+                    json!({"Path": "Ext/Template.xml"}),
+                    json!({"path": "Ext/Template.xml"}),
+                ],
+            ),
+            (
+                "unica.form.compile",
+                vec![
+                    json!({"OutputPath": "Ext/Form.xml"}),
+                    json!({"outputPath": "Ext/Form.xml"}),
+                    json!({"OutputPath": "Ext/Form.xml", "outputPath": "Ext/Form.xml"}),
+                ],
+            ),
+        ];
+
+        for (tool_name, instances) in cases {
+            let tool = tools()
+                .into_iter()
+                .find(|tool| tool.name == tool_name)
+                .unwrap();
+            let schema = input_schema_for_tool(&tool);
+            let validator = jsonschema::validator_for(&schema).unwrap();
+            for instance in instances {
+                assert!(
+                    validator.is_valid(&instance),
+                    "{tool_name} schema rejected documented path aliases: {instance}; schema={schema}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_native_path_alias_group_normalizes_to_one_canonical_argument() {
+        for tool in tools() {
+            let ToolHandler::NativeOperation { operation, .. } = tool.handler else {
+                continue;
+            };
+            let schema = input_schema_for_tool(&tool);
+            let properties = schema["properties"].as_object().unwrap();
+            let mut seen = BTreeSet::new();
+            for group in native_path_alias_groups(operation) {
+                assert_eq!(
+                    group.aliases.first().copied(),
+                    Some(group.canonical),
+                    "{operation} canonical alias must be first"
+                );
+                for alias in group.aliases {
+                    assert!(
+                        seen.insert(*alias),
+                        "{operation} assigns path alias {alias} to more than one group"
+                    );
+                    assert!(
+                        properties.contains_key(*alias),
+                        "{operation} path alias {alias} is not public in its MCP schema"
+                    );
+                    let raw =
+                        Map::from_iter([(alias.to_string(), json!(format!("{operation}/value")))]);
+                    let normalized = normalize_native_path_aliases(tool, &raw).unwrap();
+                    assert_eq!(
+                        normalized.get(group.canonical),
+                        raw.get(*alias),
+                        "{operation} failed to normalize {alias} to {}",
+                        group.canonical
+                    );
+                    for removed in group.aliases {
+                        if *removed != group.canonical {
+                            assert!(
+                                !normalized.contains_key(*removed),
+                                "{operation} retained path alias {removed}"
+                            );
+                        }
+                    }
+                }
+
+                if group.aliases.len() > 1 {
+                    let raw = Map::from_iter([
+                        (group.aliases[0].to_string(), json!("first")),
+                        (group.aliases[1].to_string(), json!("second")),
+                    ]);
+                    let error = normalize_native_path_aliases(tool, &raw).unwrap_err();
+                    assert!(
+                        error.contains("conflicting path aliases"),
+                        "{operation}: {error}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn form_edit_contract_accepts_inline_definition_or_json_path() {
         let tool = tools()
             .into_iter()
@@ -1894,9 +3231,20 @@ mod tests {
             .unwrap();
         let schema = input_schema_for_tool(&tool);
         assert_eq!(schema["properties"]["definition"]["type"], "object");
-        assert_eq!(schema["required"], json!(["FormPath"]));
+        assert_eq!(schema["required"], json!([]));
         assert_eq!(
-            schema["oneOf"],
+            schema["allOf"],
+            json!([{
+                "anyOf": [
+                    {"required": ["FormPath"]},
+                    {"required": ["formPath"]},
+                    {"required": ["Path"]},
+                    {"required": ["path"]}
+                ]
+            }])
+        );
+        assert_eq!(
+            schema["anyOf"],
             json!([
                 {"required": ["JsonPath"]},
                 {"required": ["jsonPath"]},
@@ -1939,6 +3287,65 @@ mod tests {
         assert!(validate_tool_arguments(tool, &wrong_type, false)
             .unwrap_err()
             .contains("must be object"));
+    }
+
+    #[test]
+    fn form_edit_contract_rejects_unknown_sections_and_malformed_removals() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.form.edit")
+            .unwrap();
+        let schema = input_schema_for_tool(&tool);
+        let definition = &schema["properties"]["definition"];
+        assert_eq!(definition["additionalProperties"], false);
+        assert_eq!(definition["properties"]["removeElements"]["type"], "array");
+        assert_eq!(
+            definition["properties"]["removeElements"]["items"],
+            json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {"name": {"type": "string", "minLength": 1, "pattern": r"\S"}},
+                "required": ["name"]
+            })
+        );
+
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        assert!(!validator.is_valid(&json!({
+            "FormPath": "Form.xml",
+            "definition": {"removeElements": [{"name": "   "}]}
+        })));
+
+        let cases = [
+            (json!({"typoSection": []}), "FORM_EDIT_UNKNOWN_SECTION"),
+            (
+                json!({"removeElements": [{}]}),
+                "FORM_EDIT_REMOVE_ELEMENT_MISSING_NAME",
+            ),
+            (
+                json!({"removeElements": [{"name": 42}]}),
+                "FORM_EDIT_REMOVE_ELEMENT_MISSING_NAME",
+            ),
+            (
+                json!({"removeElements": [{"name": "Target", "after": "Other"}]}),
+                "FORM_EDIT_REMOVE_ELEMENT_UNKNOWN_FIELD",
+            ),
+            (
+                json!({"removeElements": [{"name": "   "}]}),
+                "FORM_EDIT_REMOVE_ELEMENT_EMPTY_NAME",
+            ),
+            (
+                json!({"removeElements": [{"name": "Target"}, {"name": "Target"}]}),
+                "FORM_EDIT_REMOVE_ELEMENT_DUPLICATE",
+            ),
+        ];
+        for (definition, code) in cases {
+            let args = Map::from_iter([
+                ("FormPath".to_string(), json!("Form.xml")),
+                ("definition".to_string(), definition),
+            ]);
+            let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+            assert!(error.contains(code), "{error}");
+        }
     }
 
     #[test]
@@ -2260,6 +3667,11 @@ mod tests {
         assert!(schema["properties"].get("timeoutMs").is_none());
         assert_eq!(schema["properties"]["fullRebuild"]["type"], "boolean");
         assert_eq!(schema["properties"]["mcpPort"]["type"], "integer");
+        assert_eq!(schema["properties"]["waitForExit"]["type"], "boolean");
+        assert_eq!(schema["properties"]["waitTimeoutMs"]["type"], "integer");
+        assert_eq!(schema["properties"]["waitTimeoutMs"]["minimum"], 1);
+        assert_eq!(schema["properties"]["waitTimeoutMs"]["maximum"], 86_400_000);
+        assert_eq!(schema["properties"]["stderrOutput"]["type"], "string");
         assert!(schema["properties"]["operation"]["enum"]
             .as_array()
             .unwrap()
@@ -2317,6 +3729,56 @@ mod tests {
         let logs_schema = input_schema_for_tool(&job_logs);
         assert_eq!(logs_schema["required"], json!(["jobId"]));
         assert_eq!(logs_schema["properties"]["tailChars"]["type"], "integer");
+    }
+
+    #[test]
+    fn runtime_job_start_excludes_bounded_external_epf_arguments() {
+        let job_start = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.runtime.job.start")
+            .expect("runtime job start is registered");
+        let schema = input_schema_for_tool(&job_start);
+
+        for name in ["waitForExit", "waitTimeoutMs", "stderrOutput"] {
+            assert!(
+                schema["properties"].get(name).is_none(),
+                "{name} must remain exclusive to synchronous runtime.execute"
+            );
+
+            let mut args = json!({
+                "operation": "launch",
+                "clientMode": "thin"
+            })
+            .as_object()
+            .unwrap()
+            .clone();
+            args.insert(
+                name.to_string(),
+                match name {
+                    "waitForExit" => json!(true),
+                    "waitTimeoutMs" => json!(30_000),
+                    "stderrOutput" => json!("build/stderr.log"),
+                    _ => unreachable!(),
+                },
+            );
+
+            let error = validate_tool_arguments(job_start, &args, false)
+                .expect_err("bounded execution arguments must be rejected by runtime jobs");
+            assert!(error.contains(&format!("does not accept argument `{name}`")));
+        }
+
+        validate_tool_arguments(
+            job_start,
+            json!({
+                "operation": "launch",
+                "clientMode": "thin",
+                "c": "StartFeaturePlayer"
+            })
+            .as_object()
+            .unwrap(),
+            false,
+        )
+        .expect("ordinary runtime job launch arguments must remain supported");
     }
 
     #[test]
@@ -2491,7 +3953,25 @@ mod tests {
         let schema = input_schema_for_tool(&dcs_info);
         assert_eq!(schema["additionalProperties"], false);
         assert_eq!(schema["properties"]["Raw"]["type"], "boolean");
-        assert_eq!(schema["required"], json!(["TemplatePath"]));
+        let raw_description = schema["properties"]["Raw"]["description"]
+            .as_str()
+            .expect("Raw must describe its query-only behavior");
+        assert!(raw_description.contains("only with `Mode=query`"));
+        assert!(raw_description.contains("full query text"));
+        assert!(!raw_description.contains("changes nothing"));
+        assert!(!raw_description.contains("truncated"));
+        assert_eq!(schema["required"], json!([]));
+        assert_eq!(
+            schema["allOf"],
+            json!([{
+                "anyOf": [
+                    {"required": ["TemplatePath"]},
+                    {"required": ["templatePath"]},
+                    {"required": ["Path"]},
+                    {"required": ["path"]}
+                ]
+            }])
+        );
 
         let mut args = Map::new();
         args.insert(

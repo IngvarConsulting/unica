@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import shutil
+import xml.parsers.expat
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,13 @@ from typing import Any
 MAX_FIXTURE_SIZE = 256 * 1024
 TEXT_SUFFIXES = {".xml", ".bsl", ".json"}
 FORBIDDEN_SUFFIXES = (".db", ".db-wal", ".db-shm")
+BSP_2_21_TO_2_20_RECIPE = "bsp-2.21-to-2.20-v1"
+BSP_2_21_TO_2_20_DERIVATION = {
+    "kind": "profile-projection",
+    "platformLine": "8.3.27",
+    "exportFormat": "2.20",
+    "recipe": BSP_2_21_TO_2_20_RECIPE,
+}
 METADATA_ROOT_LIMITS = {
     "AccumulationRegisters": 1,
     "Catalogs": 1,
@@ -22,6 +30,7 @@ METADATA_ROOT_LIMITS = {
     "Documents": 1,
     "Enums": 1,
     "InformationRegisters": 1,
+    "Languages": 1,
     "Reports": 1,
 }
 CATEGORY_LIMITS = {
@@ -63,7 +72,7 @@ def _has_bsp_harvest_marker(path: Path) -> bool:
         return False
     return (
         isinstance(manifest, dict)
-        and manifest.get("schemaVersion") == 1
+        and manifest.get("schemaVersion") in {1, 2}
         and isinstance(manifest.get("bsp"), dict)
         and isinstance(manifest.get("files"), list)
     )
@@ -163,11 +172,152 @@ def _metadata_limit_key(rel_source: Path) -> str:
     return rel_source.parts[0]
 
 
+def _root_start_tag(payload: bytes, *, target: str) -> tuple[int, int, dict[str, str]]:
+    root_start: int | None = None
+    root_attributes: dict[str, str] | None = None
+    parser = xml.parsers.expat.ParserCreate()
+
+    def capture_root(_name: str, attributes: dict[str, str]) -> None:
+        nonlocal root_start, root_attributes
+        if root_start is None:
+            root_start = parser.CurrentByteIndex
+            root_attributes = attributes
+
+    parser.StartElementHandler = capture_root
+    try:
+        parser.Parse(payload, True)
+    except xml.parsers.expat.ExpatError as error:
+        raise ValueError(
+            f"{BSP_2_21_TO_2_20_RECIPE}: invalid XML in {target}: {error}"
+        ) from error
+
+    if root_start is None or root_attributes is None:
+        raise ValueError(f"{BSP_2_21_TO_2_20_RECIPE}: XML has no root element: {target}")
+
+    quote: int | None = None
+    for index in range(root_start, len(payload)):
+        byte = payload[index]
+        if quote is not None:
+            if byte == quote:
+                quote = None
+            continue
+        if byte in {ord('"'), ord("'")}:
+            quote = byte
+        elif byte == ord(">"):
+            return root_start, index + 1, root_attributes
+
+    raise ValueError(f"{BSP_2_21_TO_2_20_RECIPE}: unterminated root start tag: {target}")
+
+
+def _replace_exact_once(payload: bytes, *, old: bytes, new: bytes, label: str, target: str) -> bytes:
+    count = payload.count(old)
+    if count != 1:
+        raise ValueError(
+            f"{BSP_2_21_TO_2_20_RECIPE}: expected exactly one {label} token "
+            f"in {target}, found {count}"
+        )
+    return payload.replace(old, new, 1)
+
+
+def _project_bsp_2_21_to_2_20(*, payload: bytes, target: str) -> bytes:
+    if Path(target).suffix.lower() != ".xml":
+        return payload
+
+    root_start, root_end, root_attributes = _root_start_tag(payload, target=target)
+    root_version = root_attributes.get("version")
+    if root_version is None:
+        if target == "cf/Configuration.xml":
+            raise ValueError(
+                f"{BSP_2_21_TO_2_20_RECIPE}: Configuration root has no export version"
+            )
+        return payload
+    if root_version != "2.21":
+        raise ValueError(
+            f"{BSP_2_21_TO_2_20_RECIPE}: unsupported root export version "
+            f"{root_version!r} in {target}"
+        )
+
+    root_tag = payload[root_start:root_end]
+    projected_root = _replace_exact_once(
+        root_tag,
+        old=b'version="2.21"',
+        new=b'version="2.20"',
+        label="root version",
+        target=target,
+    )
+    projected = payload[:root_start] + projected_root + payload[root_end:]
+
+    if target != "cf/Configuration.xml":
+        return projected
+
+    replacements = (
+        (
+            b"<ConfigurationExtensionCompatibilityMode>"
+            b"Version8_5_1"
+            b"</ConfigurationExtensionCompatibilityMode>",
+            b"<ConfigurationExtensionCompatibilityMode>"
+            b"Version8_3_24"
+            b"</ConfigurationExtensionCompatibilityMode>",
+            "ConfigurationExtensionCompatibilityMode",
+        ),
+        (
+            b"<InterfaceCompatibilityMode>"
+            b"Version8_5EnableTaxi"
+            b"</InterfaceCompatibilityMode>",
+            b"<InterfaceCompatibilityMode>"
+            b"Taxi"
+            b"</InterfaceCompatibilityMode>",
+            "InterfaceCompatibilityMode",
+        ),
+        (
+            b"<CompatibilityMode>"
+            b"Version8_5_1"
+            b"</CompatibilityMode>",
+            b"<CompatibilityMode>"
+            b"Version8_3_24"
+            b"</CompatibilityMode>",
+            "CompatibilityMode",
+        ),
+    )
+    for old, new, label in replacements:
+        projected = _replace_exact_once(
+            projected,
+            old=old,
+            new=new,
+            label=label,
+            target=target,
+        )
+    return projected
+
+
+def _project_record(record: dict[str, Any], *, recipe: str | None) -> dict[str, Any]:
+    if recipe is None:
+        return record
+    if recipe != BSP_2_21_TO_2_20_RECIPE:
+        raise ValueError(f"unsupported BSP fixture derivation recipe: {recipe}")
+
+    harvested_payload = record["payload"]
+    target_payload = _project_bsp_2_21_to_2_20(
+        payload=harvested_payload,
+        target=record["target"],
+    )
+    return {
+        **record,
+        "harvestedSha256": record["sha256"],
+        "harvestedSize": record["size"],
+        "payload": target_payload,
+        "sha256": hashlib.sha256(target_payload).hexdigest(),
+        "size": len(target_payload),
+    }
+
+
 def _selected_records(source_root: Path) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     category_counts = {category: 0 for category in CATEGORY_LIMITS}
     metadata_counts = {root: 0 for root in METADATA_ROOT_LIMITS}
     used_targets: set[str] = set()
+    selected_report_name: str | None = None
+    selected_report_template_name: str | None = None
     source_resolved = source_root.resolve()
 
     paths = sorted(
@@ -186,17 +336,52 @@ def _selected_records(source_root: Path) -> list[dict[str, Any]]:
         if fixture is None:
             continue
         payload, text = fixture
-        classified = _classify(rel_source, text)
+        parts = rel_source.parts
+        selected_report_fixture = False
+        classified: tuple[str, Path] | None = None
+        if (
+            selected_report_name is not None
+            and len(parts) == 4
+            and parts[0] == "Reports"
+            and parts[1] == selected_report_name
+            and parts[2] == "Templates"
+            and rel_source.suffix.lower() == ".xml"
+        ):
+            candidate_name = rel_source.stem
+            if selected_report_template_name is None:
+                selected_report_template_name = candidate_name
+            if candidate_name == selected_report_template_name:
+                selected_report_fixture = True
+                classified = "meta", Path("meta") / rel_source
+        elif (
+            selected_report_name is not None
+            and selected_report_template_name is not None
+            and len(parts) == 6
+            and parts[0] == "Reports"
+            and parts[1] == selected_report_name
+            and parts[2] == "Templates"
+            and parts[3] == selected_report_template_name
+            and parts[4] == "Ext"
+            and parts[5] == "Template.xml"
+        ):
+            selected_report_fixture = True
+            classified = "meta", Path("meta") / rel_source
+        if classified is None:
+            classified = _classify(rel_source, text)
         if classified is None:
             continue
         category, rel_target = classified
 
-        if category == "meta":
+        if selected_report_fixture:
+            pass
+        elif category == "meta":
             root_name = _metadata_limit_key(rel_source)
             if root_name in metadata_counts and metadata_counts[root_name] >= METADATA_ROOT_LIMITS[root_name]:
                 continue
             if root_name in metadata_counts:
                 metadata_counts[root_name] += 1
+            if root_name == "Reports":
+                selected_report_name = rel_source.stem
         elif category in category_counts:
             if category_counts[category] >= CATEGORY_LIMITS[category]:
                 continue
@@ -222,10 +407,20 @@ def _selected_records(source_root: Path) -> list[dict[str, Any]]:
     return records
 
 
-def harvest(*, bsp_root: Path, out_root: Path, bsp_ref: str, bsp_commit: str) -> dict[str, Any]:
+def harvest(
+    *,
+    bsp_root: Path,
+    out_root: Path,
+    bsp_ref: str,
+    bsp_commit: str,
+    recipe: str | None = None,
+) -> dict[str, Any]:
     source_root = _source_root(bsp_root)
     _ensure_safe_out_root(bsp_root=bsp_root, source_root=source_root, out_root=out_root)
-    records = _selected_records(source_root)
+    records = [
+        _project_record(record, recipe=recipe)
+        for record in _selected_records(source_root)
+    ]
 
     if out_root.exists():
         shutil.rmtree(out_root)
@@ -236,24 +431,32 @@ def harvest(*, bsp_root: Path, out_root: Path, bsp_ref: str, bsp_commit: str) ->
         target = out_root / record["target"]
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(record["payload"])
-        manifest_files.append(
-            {
-                "category": record["category"],
-                "sha256": record["sha256"],
-                "size": record["size"],
-                "source": record["source"],
-                "target": record["target"],
-            }
-        )
+        manifest_entry = {
+            "category": record["category"],
+            "sha256": record["sha256"],
+            "size": record["size"],
+            "source": record["source"],
+            "target": record["target"],
+        }
+        if recipe is not None:
+            manifest_entry.update(
+                {
+                    "harvestedSha256": record["harvestedSha256"],
+                    "harvestedSize": record["harvestedSize"],
+                }
+            )
+        manifest_files.append(manifest_entry)
 
     manifest: dict[str, Any] = {
-        "schemaVersion": 1,
+        "schemaVersion": 2 if recipe is not None else 1,
         "bsp": {
             "ref": bsp_ref,
             "commit": bsp_commit,
         },
         "files": manifest_files,
     }
+    if recipe is not None:
+        manifest["derivation"] = BSP_2_21_TO_2_20_DERIVATION
     (out_root / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -267,6 +470,7 @@ def main() -> None:
     parser.add_argument("--out-root", required=True, type=Path)
     parser.add_argument("--bsp-ref", required=True)
     parser.add_argument("--bsp-commit", required=True)
+    parser.add_argument("--recipe", choices=[BSP_2_21_TO_2_20_RECIPE])
     args = parser.parse_args()
 
     manifest = harvest(
@@ -274,6 +478,7 @@ def main() -> None:
         out_root=args.out_root,
         bsp_ref=args.bsp_ref,
         bsp_commit=args.bsp_commit,
+        recipe=args.recipe,
     )
     print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
 

@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
 
 def load_contract_module():
@@ -21,6 +22,230 @@ def load_contract_module():
 
 
 class ProductContractTests(unittest.TestCase):
+    def test_native_validators_do_not_expose_internal_local_owner_only_switch(
+        self,
+    ) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        rust_root = repo_root / "crates" / "unica-coder" / "src"
+        offenders = []
+        for path in sorted(rust_root.rglob("*.rs")):
+            text = path.read_text(encoding="utf-8")
+            for marker in ("InternalLocalOwnerOnly", "internalLocalOwnerOnly"):
+                if marker in text:
+                    offenders.append(
+                        f"{path.relative_to(repo_root).as_posix()}: {marker}"
+                    )
+        self.assertEqual(offenders, [])
+
+    def test_v8_runner_partial_load_list_requires_bom_crlf_and_cyrillic_path(self) -> None:
+        module = load_contract_module()
+        expected_path = str(
+            Path("Catalogs.Товары") / "Ext" / "ObjectModule.bsl"
+        )
+        payload = b"\xef\xbb\xbf" + expected_path.encode("utf-8") + b"\r\n"
+
+        self.assertEqual(
+            module.validate_v8_runner_partial_load_list(payload, expected_path),
+            [],
+        )
+        self.assertIn(
+            "UTF-8 BOM",
+            "\n".join(
+                module.validate_v8_runner_partial_load_list(
+                    payload.removeprefix(b"\xef\xbb\xbf"),
+                    expected_path,
+                )
+            ),
+        )
+        self.assertIn(
+            "CRLF",
+            "\n".join(
+                module.validate_v8_runner_partial_load_list(
+                    b"\xef\xbb\xbf" + expected_path.encode("utf-8") + b"\n",
+                    expected_path,
+                )
+            ),
+        )
+
+    def test_v8_runner_partial_load_smoke_rejects_missing_binary(self) -> None:
+        module = load_contract_module()
+
+        errors = module.check_v8_runner_partial_load_contract(
+            Path("/missing/v8-runner"),
+            "linux-x64",
+        )
+
+        self.assertEqual(
+            errors,
+            ["v8-runner partial-load contract: binary not found: /missing/v8-runner"],
+        )
+
+    def test_v8_runner_bounded_external_epf_result_accepts_exit_seven_artifacts(
+        self,
+    ) -> None:
+        module = load_contract_module()
+        validator = getattr(
+            module,
+            "validate_v8_runner_bounded_external_epf_result",
+            None,
+        )
+        self.assertIsNotNone(validator)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            execute = root / "processor.epf"
+            output = root / "platform.log"
+            stderr_output = root / "client.stderr.log"
+            execute.write_bytes(b"epf")
+            output.write_text("bounded-platform-out\n", encoding="utf-8")
+            stderr_output.write_text("bounded-client-stderr\n", encoding="utf-8")
+            envelope = {
+                "data": {
+                    "external_epf_wait": {
+                        "pid": 123,
+                        "execute_path": str(execute),
+                        "exit_code": 7,
+                        "timed_out": False,
+                        "output_path": str(output),
+                        "stderr_path": str(stderr_output),
+                    }
+                }
+            }
+
+            self.assertEqual(
+                validator(
+                    envelope,
+                    execute,
+                    output,
+                    stderr_output,
+                    "bounded-platform-out",
+                    "bounded-client-stderr",
+                ),
+                [],
+            )
+
+    def test_v8_runner_bounded_external_epf_result_rejects_broken_wait_contract(
+        self,
+    ) -> None:
+        module = load_contract_module()
+        validator = getattr(
+            module,
+            "validate_v8_runner_bounded_external_epf_result",
+            None,
+        )
+        self.assertIsNotNone(validator)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            execute = root / "processor.epf"
+            output = root / "platform.log"
+            stderr_output = root / "client.stderr.log"
+            execute.write_bytes(b"epf")
+            output.write_text("bounded-platform-out\n", encoding="utf-8")
+            stderr_output.write_text("bounded-client-stderr\n", encoding="utf-8")
+            envelope = {
+                "data": {
+                    "external_epf_wait": {
+                        "pid": 123,
+                        "execute_path": str(execute),
+                        "exit_code": 7,
+                        "timed_out": False,
+                        "output_path": str(output),
+                        "stderr_path": str(stderr_output),
+                    }
+                }
+            }
+            mutations = [
+                ("pid", 0, "pid"),
+                ("execute_path", str(root / "other.epf"), "execute_path"),
+                ("exit_code", 0, "exit_code"),
+                ("timed_out", True, "timed_out"),
+                ("output_path", str(root / "other.log"), "output_path"),
+                ("stderr_path", str(root / "other.stderr.log"), "stderr_path"),
+            ]
+
+            for field, value, expected_error in mutations:
+                with self.subTest(field=field):
+                    broken = json.loads(json.dumps(envelope))
+                    broken["data"]["external_epf_wait"][field] = value
+                    errors = validator(
+                        broken,
+                        execute,
+                        output,
+                        stderr_output,
+                        "bounded-platform-out",
+                        "bounded-client-stderr",
+                    )
+                    self.assertTrue(
+                        any(expected_error in error for error in errors),
+                        errors,
+                    )
+
+            stderr_output.write_text("unexpected stderr\n", encoding="utf-8")
+            errors = validator(
+                envelope,
+                execute,
+                output,
+                stderr_output,
+                "bounded-platform-out",
+                "bounded-client-stderr",
+            )
+            self.assertTrue(
+                any("stderr artifact" in error for error in errors),
+                errors,
+            )
+
+            output.write_text(
+                "bounded-platform-out\nbounded-client-stderr\n",
+                encoding="utf-8",
+            )
+            stderr_output.write_text(
+                "bounded-client-stderr\nbounded-platform-out\n",
+                encoding="utf-8",
+            )
+            errors = validator(
+                envelope,
+                execute,
+                output,
+                stderr_output,
+                "bounded-platform-out",
+                "bounded-client-stderr",
+            )
+            self.assertTrue(
+                any("platform /Out artifact" in error for error in errors),
+                errors,
+            )
+            self.assertTrue(
+                any("stderr artifact" in error for error in errors),
+                errors,
+            )
+
+    def test_targeted_tool_contracts_run_both_v8_runner_behavioral_smokes(self) -> None:
+        module = load_contract_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tools_dir = Path(tmp)
+            runner = tools_dir / "v8-runner"
+            runner.write_bytes(b"runner")
+            with (
+                patch.object(module, "TOOL_HELP_CHECKS", []),
+                patch.object(
+                    module,
+                    "check_v8_runner_partial_load_contract",
+                    return_value=["behavioral failure"],
+                ) as behavioral_check,
+                patch.object(
+                    module,
+                    "check_v8_runner_bounded_external_epf_contract",
+                    return_value=["bounded failure"],
+                ) as bounded_check,
+            ):
+                errors = module.check_tool_contracts(tools_dir, "linux-x64")
+
+        self.assertEqual(errors, ["behavioral failure", "bounded failure"])
+        behavioral_check.assert_called_once_with(runner.resolve(), "linux-x64")
+        bounded_check.assert_called_once_with(runner.resolve(), "linux-x64")
+
     BSL_ANALYZER_HELP = (
         "#!/usr/bin/env sh\n"
         "case \"$*\" in\n"
@@ -64,6 +289,158 @@ class ProductContractTests(unittest.TestCase):
             "https://ingvar.pro/products/unica/terms/en",
         )
 
+    def test_release_runbook_is_discoverable_and_names_the_tag_target(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        runbook = repo_root / "docs/release-runbook.md"
+        agents = (repo_root / "AGENTS.md").read_text(encoding="utf-8")
+        skill = (repo_root / ".claude/skills/release/SKILL.md").read_text(encoding="utf-8")
+
+        self.assertTrue(runbook.is_file())
+        # An agent asked to release has to reach the runbook from the entry point
+        # rather than reconstruct the order from the workflows.
+        self.assertIn("docs/release-runbook.md", agents)
+        self.assertIn("docs/release-runbook.md", skill)
+
+        text = runbook.read_text(encoding="utf-8")
+        for value in (
+            "staging merge commit",
+            "bump-version.py",
+            "check-version-contract.py",
+            "publish-unica-marketplace.yml",
+            # A release that fails part-way has to have a documented way out.
+            "One-way doors",
+            "never reuse a version number",
+            "Rolling back a live release",
+            "Release Warden",
+        ):
+            with self.subTest(value=value):
+                self.assertIn(value, text)
+
+    def test_warden_cannot_publish_without_the_human_tag(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        warden = (repo_root / "scripts/ci/release-warden.py").read_text(encoding="utf-8")
+        workflow = (repo_root / ".github/workflows/release-warden.yml").read_text(
+            encoding="utf-8"
+        )
+
+        # The marketplace default branch has no protection rules, so the
+        # greenness check in the warden is the only thing standing between a red
+        # promotion and every consumer.
+        self.assertIn("def is_green", warden)
+        self.assertIn("PASSING_CONCLUSIONS", warden)
+        # A stalled release has to surface rather than sit quietly, which is the
+        # failure this whole workflow exists to prevent.
+        self.assertIn("--alert-is-failure", workflow)
+        self.assertIn("schedule:", workflow)
+
+    def test_release_tag_is_not_hardcoded_in_the_build_workflow(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        release = (repo_root / ".github/workflows/unica-plugin-release.yml").read_text(
+            encoding="utf-8"
+        )
+        # A hardcoded release version is a location no contract check covers, and
+        # packaging fails on every later pull request once it drifts. A tag-shaped
+        # literal is wrong anywhere in the file, however quoted, and this also
+        # catches suffixed forms such as v1.2.3-rc1 by matching their prefix.
+        tag_literals = sorted(set(re.findall(r"v\d+\.\d+\.\d+", release)))
+        # An unprefixed literal is only wrong inside the step that derives the
+        # tag, including in an intermediate variable it reads. The file elsewhere
+        # pins other tools by bare version, so this cannot be a whole-file rule.
+        step_name = "Resolve the release tag for non-tag builds"
+        start = release.find(step_name)
+        self.assertNotEqual(start, -1, "the workflow no longer derives the release tag")
+        following = re.search(r"(?m)^      - (name|uses|run):", release[start:])
+        step = release[start : start + following.start()] if following else release[start:]
+        unprefixed = sorted(set(re.findall(r"\d+\.\d+\.\d+", step)))
+
+        self.assertEqual(tag_literals, [])
+        self.assertEqual(unprefixed, [])
+
+    def test_bump_version_writes_every_contract_location(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        module_path = repo_root / "scripts" / "dev" / "bump-version.py"
+        spec = importlib.util.spec_from_file_location("bump_version", module_path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        contract = importlib.util.spec_from_file_location(
+            "check_version_contract", repo_root / "scripts" / "ci" / "check-version-contract.py"
+        )
+        assert contract is not None and contract.loader is not None
+        contract_module = importlib.util.module_from_spec(contract)
+        contract.loader.exec_module(contract_module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp) / "repo"
+            for relative in (
+                "Cargo.toml",
+                "plugins/unica/.codex-plugin/plugin.json",
+                "plugins/unica/third-party/tools.lock.json",
+            ):
+                target = work / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(
+                    (repo_root / relative).read_text(encoding="utf-8"), encoding="utf-8"
+                )
+            # Synthesised rather than copied so the Claude manifest is covered on
+            # branches that do not carry it yet.
+            claude = work / "plugins/unica/.claude-plugin/plugin.json"
+            claude.parent.mkdir(parents=True, exist_ok=True)
+            claude.write_text(
+                json.dumps({"name": "unica", "version": "0.0.0"}) + "\n", encoding="utf-8"
+            )
+
+            changed = module.bump(work, "9.8.7")
+            values = contract_module.read_version_contract(work)
+            claude_version = json.loads(claude.read_text(encoding="utf-8"))["version"]
+
+        self.assertEqual(set(values.values()), {"9.8.7"}, values)
+        self.assertEqual(claude_version, "9.8.7")
+        self.assertIn("plugins/unica/.claude-plugin/plugin.json", changed)
+
+    def test_bump_version_writes_nothing_when_a_later_file_is_malformed(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        module_path = repo_root / "scripts" / "dev" / "bump-version.py"
+        spec = importlib.util.spec_from_file_location("bump_version", module_path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp) / "repo"
+            cargo = work / "Cargo.toml"
+            cargo.parent.mkdir(parents=True, exist_ok=True)
+            cargo.write_text(
+                (repo_root / "Cargo.toml").read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            lock = work / "plugins/unica/third-party/tools.lock.json"
+            lock.parent.mkdir(parents=True, exist_ok=True)
+            # Two unica entries: valid JSON, but no single version to set.
+            lock.write_text(
+                json.dumps({"tools": [{"name": "unica"}, {"name": "unica"}]}), encoding="utf-8"
+            )
+            before = cargo.read_text(encoding="utf-8")
+
+            with self.assertRaises(SystemExit):
+                module.bump(work, "9.8.7")
+
+            # Straddling two versions is the exact state the contract forbids, so
+            # a failure part-way through has to leave everything untouched.
+            self.assertEqual(cargo.read_text(encoding="utf-8"), before)
+
+    def test_promotion_pr_points_the_tag_at_the_staging_merge(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        publish = (repo_root / ".github/workflows/publish-unica-marketplace.yml").read_text(
+            encoding="utf-8"
+        )
+
+        # Naming the promotion commit would require tagging a commit that does
+        # not exist until the promotion step has already run, which leaves the
+        # consumer install checks red on their first run every release.
+        self.assertIn("staging merge commit ${STAGING_MERGE_SHA}", publish)
+        self.assertNotIn("tag at commit ${promotion_sha}", publish)
+
     def test_readme_documents_public_marketplace_lifecycle(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         readme = (repo_root / "README.md").read_text(encoding="utf-8")
@@ -82,6 +459,68 @@ class ProductContractTests(unittest.TestCase):
         for value in required:
             with self.subTest(value=value):
                 self.assertIn(value, readme)
+
+    def test_readme_documents_the_claude_marketplace_lifecycle(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        readme = (repo_root / "README.md").read_text(encoding="utf-8")
+
+        required = (
+            "claude plugin marketplace add IngvarConsulting/unica-marketplace",
+            "claude plugin install unica@unica",
+            "claude plugin marketplace update unica",
+            "claude plugin update unica@unica",
+            "claude plugin uninstall unica@unica",
+            "claude plugin marketplace remove unica",
+            "claude --plugin-dir ./plugins/unica",
+            # The floor is load-bearing: older clients cannot parse git-subdir.
+            "2.1.69",
+        )
+        for value in required:
+            with self.subTest(value=value):
+                self.assertIn(value, readme)
+
+    def test_claude_host_contract_is_recorded_for_agents(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        agents = (repo_root / "AGENTS.md").read_text(encoding="utf-8")
+        claude_md = (repo_root / "CLAUDE.md").read_text(encoding="utf-8")
+        decisions = (repo_root / "spec/decisions/README.md").read_text(encoding="utf-8")
+
+        self.assertIn("plugins/unica/.claude-plugin/plugin.json", agents)
+        self.assertIn("AGENTS.md", claude_md)
+        self.assertIn("0012-one-plugin-directory-for-two-hosts.md", decisions)
+        self.assertTrue(
+            (repo_root / "spec/decisions/0012-one-plugin-directory-for-two-hosts.md").is_file()
+        )
+
+    def test_publish_workflow_promotes_both_host_catalogs(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        publish = (repo_root / ".github/workflows/publish-unica-marketplace.yml").read_text(
+            encoding="utf-8"
+        )
+        release = (repo_root / ".github/workflows/unica-plugin-release.yml").read_text(
+            encoding="utf-8"
+        )
+
+        # Staging must carry both manifests, and promotion must move both
+        # catalogs together, or one host would be left pointing at a stale tag.
+        self.assertIn("payload/plugins/unica/.claude-plugin/plugin.json", publish)
+        self.assertIn("payload/.claude-plugin/marketplace.json", publish)
+        self.assertIn(
+            "cp payload/.claude-plugin/marketplace.json "
+            "marketplace/.claude-plugin/marketplace.json",
+            publish,
+        )
+        # Copying is not enough: an unstaged catalog would leave the promotion
+        # PR without the Claude entry while the copy assertion still passed.
+        self.assertIn(
+            "git -C marketplace add .agents/plugins/marketplace.json "
+            ".claude-plugin/marketplace.json",
+            publish,
+        )
+        # The gate is pinned to the compatibility floor, not to the latest CLI.
+        self.assertIn("@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}", release)
+        self.assertIn("CLAUDE_CLI_VERSION: 2.1.69", release)
+        self.assertIn("claude plugin validate", release)
 
     def test_readme_documents_the_frozen_v078_bridge(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
@@ -382,6 +821,173 @@ class ProductContractTests(unittest.TestCase):
                 )
 
             self.assertEqual(module.check_rlm_schema(db_path), [])
+
+    def test_rlm_mtime_recovery_contract_checks_scripted_orchestration(self) -> None:
+        module = load_contract_module()
+        outputs = iter(
+            [
+                (0, "Index built\n"),
+                (0, "Status: fresh\n"),
+                (0, "Status: stale (content)\n"),
+                (0, "Changed: 0\nFast path: True\n"),
+                (0, "Status: stale (content)\n"),
+                (0, "Index built\n"),
+                (0, "Status: fresh\n"),
+            ]
+        )
+        actions = []
+
+        def run_rlm(command, cwd, env):
+            action = command[2]
+            self.assertEqual(
+                command,
+                ["rlm-bsl-index", "index", action, str(cwd)],
+            )
+            actions.append(command[2])
+            self.assertEqual(cwd, Path(command[3]))
+            self.assertEqual(env["RLM_INDEX_DIR"], str(cwd.parent / "index"))
+            self.assertEqual(env["RLM_INDEX_SAMPLE_SIZE"], "1000")
+            self.assertEqual(env["RLM_INDEX_SAMPLE_THRESHOLD"], "0")
+            self.assertEqual(env["RLM_INDEX_SKIP_SAMPLE_HOURS"], "0")
+            return next(outputs)
+
+        errors = module.check_rlm_mtime_recovery_contract(
+            Path("rlm-bsl-index"),
+            run_rlm=run_rlm,
+        )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            actions,
+            ["build", "info", "info", "update", "info", "build", "info"],
+        )
+
+    def test_run_rlm_command_times_out_instead_of_hanging(self) -> None:
+        module = load_contract_module()
+        timeout = module.subprocess.TimeoutExpired(["rlm-bsl-index"], 120.0)
+
+        with patch.object(module.subprocess, "run", side_effect=timeout) as run:
+            status, output = module.run_rlm_command(
+                ["rlm-bsl-index"],
+                Path.cwd(),
+                {},
+            )
+
+        self.assertEqual(status, 1)
+        self.assertIn("timed out after 120.0s", output)
+        self.assertEqual(run.call_args.kwargs["timeout"], 120.0)
+
+    def test_run_rlm_command_reuses_script_wrapping(self) -> None:
+        module = load_contract_module()
+        completed = module.subprocess.CompletedProcess(
+            ["fixture.py"],
+            0,
+            stdout="wrapped stdout\n",
+            stderr="wrapped stderr\n",
+        )
+
+        with patch.object(module.subprocess, "run", return_value=completed) as run:
+            status, output = module.run_rlm_command(
+                ["fixture.py", "index", "info"],
+                Path.cwd(),
+                {"RLM_CONTRACT_TEST": "1"},
+            )
+
+        self.assertEqual(status, 0)
+        self.assertEqual(output, "wrapped stdout\nwrapped stderr\n")
+        wrapped_command = run.call_args.args[0]
+        self.assertEqual(wrapped_command[0], module.sys.executable)
+        self.assertEqual(wrapped_command[1:], ["fixture.py", "index", "info"])
+        self.assertEqual(
+            run.call_args.kwargs["env"]["RLM_CONTRACT_TEST"],
+            "1",
+        )
+        self.assertEqual(run.call_args.kwargs["timeout"], 120.0)
+
+    def test_rlm_mtime_recovery_fixture_disables_git_signing(self) -> None:
+        module = load_contract_module()
+        outputs = iter(
+            [
+                (0, "Index built\n"),
+                (0, "Status: fresh\n"),
+                (0, "Status: stale (content)\n"),
+                (0, "Changed: 0\nFast path: True\n"),
+                (0, "Status: stale (content)\n"),
+                (0, "Index built\n"),
+                (0, "Status: fresh\n"),
+            ]
+        )
+        git_commands = []
+
+        def run_git(command, cwd):
+            git_commands.append(command)
+            if command == ["git", "rev-parse", "HEAD"]:
+                return 0, "fixture-head\n"
+            return 0, ""
+
+        with patch.object(module, "run_command", side_effect=run_git):
+            errors = module.check_rlm_mtime_recovery_contract(
+                Path("rlm-bsl-index"),
+                run_rlm=lambda command, cwd, env: next(outputs),
+            )
+
+        self.assertEqual(errors, [])
+        signing_disabled = [
+            "git",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "tag.gpgSign=false",
+        ]
+        self.assertEqual(
+            git_commands,
+            [
+                [*signing_disabled, "init", "-q"],
+                [
+                    *signing_disabled,
+                    "config",
+                    "user.email",
+                    "unica-ci@example.invalid",
+                ],
+                [*signing_disabled, "config", "user.name", "Unica CI"],
+                [*signing_disabled, "add", "."],
+                [*signing_disabled, "commit", "-q", "-m", "fixture"],
+                ["git", "status", "--porcelain", "--untracked-files=no"],
+                ["git", "rev-parse", "HEAD"],
+                ["git", "rev-parse", "HEAD"],
+            ],
+        )
+
+    def test_rlm_mtime_recovery_contract_rejects_changed_git_head(self) -> None:
+        module = load_contract_module()
+        outputs = iter(
+            [
+                (0, "Index built\n"),
+                (0, "Status: fresh\n"),
+                (0, "Status: stale (content)\n"),
+                (0, "Changed: 0\nFast path: True\n"),
+                (0, "Status: stale (content)\n"),
+                (0, "Index built\n"),
+                (0, "Status: fresh\n"),
+            ]
+        )
+        heads = iter(["initial-head\n", "changed-head\n"])
+
+        def run_git(command, cwd):
+            if command == ["git", "rev-parse", "HEAD"]:
+                return 0, next(heads)
+            return 0, ""
+
+        with patch.object(module, "run_command", side_effect=run_git):
+            errors = module.check_rlm_mtime_recovery_contract(
+                Path("rlm-bsl-index"),
+                run_rlm=lambda command, cwd, env: next(outputs),
+            )
+
+        self.assertTrue(
+            any("Git HEAD changed during update" in error for error in errors),
+            errors,
+        )
 
     def test_rlm_schema_contract_reports_missing_column(self) -> None:
         module = load_contract_module()

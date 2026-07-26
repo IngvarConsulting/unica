@@ -1,6 +1,10 @@
 #![allow(dead_code, unused_imports)]
 
+use crate::application::operation_descriptors::{CFE_VALIDATE_PATH, CF_PATH, RIGHTS_PATH};
 use crate::application::{AdapterOutcome, SupportGuardRequirement};
+use crate::domain::format_profile::{
+    classify_root_version, ExportFormatVersion, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
+};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::source_adapters::platform_xml::support::{
     read_support_facts, EffectiveSupportRule, SupportFacts, SupportRule, SupportSourceState,
@@ -9,10 +13,12 @@ use crate::infrastructure::source_adapters::platform_xml::support::{
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs::{self, File};
-use std::io::Write;
+use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
+use super::compile_transaction::CompileTransaction;
+use super::single_file_publisher::{publish, PublishMode, PublishRequest};
 use super::{
     cf::*, cfe::*, dcs::*, form::*, interface::*, meta::*, mxl::*, role::*, subsystem::*,
     template::*,
@@ -160,9 +166,61 @@ pub(crate) fn register_form_in_object_text(text: &str, form_name: &str) -> Strin
     text.to_string()
 }
 
+#[derive(Clone)]
 pub(crate) struct Utf8TextSnapshot {
     pub(crate) raw: Vec<u8>,
     pub(crate) text: String,
+}
+
+/// Exact regular-file bytes used to derive a mutation plan.
+///
+/// Binding the input to the same [`CompileTransaction`] as the derived output
+/// makes a concurrent edit fail the transaction instead of publishing output
+/// calculated from stale bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExactFileInput {
+    path: PathBuf,
+    raw: Vec<u8>,
+}
+
+impl ExactFileInput {
+    pub(crate) fn new(path: impl Into<PathBuf>, raw: impl Into<Vec<u8>>) -> Self {
+        Self {
+            path: path.into(),
+            raw: raw.into(),
+        }
+    }
+
+    pub(crate) fn bind_to(&self, transaction: &mut CompileTransaction) -> Result<(), String> {
+        transaction.guard_or_verify_exact_preimage(&self.path, &self.raw)
+    }
+}
+
+/// JSON parsed from one exact byte snapshot. The parsed value is deliberately
+/// unavailable until those source bytes are bound to the publication
+/// transaction.
+pub(crate) struct FileBackedJson {
+    input: ExactFileInput,
+    value: Value,
+}
+
+impl FileBackedJson {
+    pub(crate) fn read(
+        path: &Path,
+        parse_error: impl FnOnce(serde_json::Error) -> String,
+    ) -> Result<Self, String> {
+        let snapshot = read_utf8_sig_snapshot(path)?;
+        let value = serde_json::from_str(snapshot.text.as_str()).map_err(parse_error)?;
+        Ok(Self {
+            input: ExactFileInput::new(path, snapshot.raw),
+            value,
+        })
+    }
+
+    pub(crate) fn bind_to(self, transaction: &mut CompileTransaction) -> Result<Value, String> {
+        self.input.bind_to(transaction)?;
+        Ok(self.value)
+    }
 }
 
 pub(crate) fn read_utf8_sig_snapshot(path: &Path) -> Result<Utf8TextSnapshot, String> {
@@ -455,7 +513,10 @@ pub(crate) fn load_subsystem_edit_model(path: &Path) -> Result<SubsystemEditMode
         .collect::<Vec<_>>();
 
     Ok(SubsystemEditModel {
-        version: root.attribute("version").unwrap_or("2.17").to_string(),
+        version: root
+            .attribute("version")
+            .unwrap_or(ACTIVE_FORMAT_PROFILE.export_format)
+            .to_string(),
         uuid: sub
             .attribute("uuid")
             .map(ToOwned::to_owned)
@@ -1094,6 +1155,17 @@ pub(crate) fn resolve_role_validate_rights_path(path: PathBuf) -> PathBuf {
     rights_path
 }
 
+pub(crate) fn resolve_role_read_rights_path(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<PathBuf, String> {
+    let raw = required_path(args, RIGHTS_PATH, "RightsPath")?;
+    Ok(resolve_role_validate_rights_path(absolutize(
+        raw,
+        &context.cwd,
+    )))
+}
+
 pub(crate) fn is_valid_uuid(value: &str) -> bool {
     let parts = value.split('-').collect::<Vec<_>>();
     let expected = [8usize, 4, 4, 4, 12];
@@ -1140,12 +1212,8 @@ pub(crate) fn resolve_cf_edit_config_path(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
-    let mut config_path = required_path(
-        args,
-        &["configPath", "ConfigPath", "path", "Path"],
-        "ConfigPath",
-    )
-    .map(|path| absolutize(path, &context.cwd))?;
+    let mut config_path =
+        required_path(args, CF_PATH, "ConfigPath").map(|path| absolutize(path, &context.cwd))?;
     if config_path.is_dir() {
         let candidate = config_path.join("Configuration.xml");
         if candidate.is_file() {
@@ -1158,6 +1226,45 @@ pub(crate) fn resolve_cf_edit_config_path(
         return Err(format!("File not found: {}", config_path.display()));
     }
     Ok(config_path)
+}
+
+pub(crate) fn resolve_cf_read_config_path(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<PathBuf, String> {
+    resolve_configuration_read_path(args, CF_PATH, "ConfigPath", context)
+}
+
+pub(crate) fn resolve_cfe_validate_config_path(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<PathBuf, String> {
+    resolve_configuration_read_path(args, CFE_VALIDATE_PATH, "ExtensionPath", context)
+}
+
+fn resolve_configuration_read_path(
+    args: &Map<String, Value>,
+    names: &[&str],
+    label: &str,
+    context: &WorkspaceContext,
+) -> Result<PathBuf, String> {
+    let raw = required_path(args, names, label)?;
+    let mut path = absolutize(raw, &context.cwd);
+    if path.is_dir() {
+        let candidate = path.join("Configuration.xml");
+        if candidate.is_file() {
+            path = candidate;
+        } else {
+            return Err(format!(
+                "[ERROR] No Configuration.xml found in directory: {}",
+                path.display()
+            ));
+        }
+    }
+    if !path.is_file() {
+        return Err(format!("[ERROR] File not found: {}", path.display()));
+    }
+    Ok(path.canonicalize().unwrap_or(path))
 }
 
 pub(crate) fn ensure_trailing_lf(text: &str) -> String {
@@ -1248,10 +1355,40 @@ pub(crate) fn output_dir_arg(
 
 pub(crate) fn write_utf8_bom(path: &Path, content: &str) -> Result<(), String> {
     let bytes = utf8_bom_bytes(content);
-    let mut file = File::create(path)
-        .map_err(|error| format!("failed to write {}: {error}", path.display()))?;
-    file.write_all(&bytes)
-        .map_err(|error| format!("failed to write {}: {error}", path.display()))
+    let expected_preimage = match fs::read(path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "failed to inspect UTF-8 BOM publication target {}: {error}",
+                path.display()
+            ));
+        }
+    };
+    let mode = match expected_preimage.as_deref() {
+        Some(expected_preimage) => PublishMode::ReplaceExisting { expected_preimage },
+        None => PublishMode::CreateOnly,
+    };
+    let report = publish(PublishRequest {
+        target: path,
+        replacement: &bytes,
+        mode,
+    })
+    .map_err(|error| format!("failed to publish {}: {error}", path.display()))?;
+    if report.cleanup_warnings.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "published {} but publication cleanup is incomplete: {}",
+            path.display(),
+            report
+                .cleanup_warnings
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; ")
+        ))
+    }
 }
 
 pub(crate) fn utf8_bom_bytes(content: &str) -> Vec<u8> {
@@ -1268,9 +1405,53 @@ pub(crate) fn stable_uuid(index: usize) -> String {
 
 #[cfg(test)]
 mod mutation_tests {
-    use super::{read_utf8_sig_snapshot, utf8_bom_bytes};
+    use super::{
+        format_compatibility_warning, guard_active_format_owner, read_utf8_sig_snapshot,
+        utf8_bom_bytes, write_utf8_bom,
+    };
+    use crate::domain::format_profile::{ExportFormatVersion, FormatCompatibility};
+    use crate::domain::workspace::WorkspaceContext;
+    use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
+    use crate::infrastructure::native_operations::single_file_publisher::{
+        with_before_commit_hook, with_publish_failpoints, PublishCheckpoint,
+    };
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn format_owner_context(name: &str, version: &str) -> (WorkspaceContext, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "unica-common-format-owner-{name}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let source = root.join("src");
+        fs::create_dir_all(source.join("Templates/Guarded/Ext")).unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::write(
+            source.join("Configuration.xml"),
+            format!(
+                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"{version}\"><Configuration uuid=\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\"><Properties><Name>Demo</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"
+            ),
+        )
+        .unwrap();
+        let target = source.join("Templates/Guarded/Ext/Template.xml");
+        (
+            WorkspaceContext {
+                cwd: root.clone(),
+                workspace_root: root.clone(),
+                cache_root: root.join(".build/unica"),
+                workspace_epoch: 1,
+            },
+            target,
+        )
+    }
 
     #[test]
     fn utf8_bom_bytes_emits_exactly_one_bom() {
@@ -1301,6 +1482,129 @@ mod mutation_tests {
         assert_eq!(snapshot.raw, raw);
         assert_eq!(snapshot.text, "<xml/>\r\n");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn utf8_bom_writer_never_overwrites_a_concurrent_replacement() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-common-publish-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("Configuration.xml");
+        fs::write(&path, b"\xef\xbb\xbforiginal").unwrap();
+        let concurrent = b"\xef\xbb\xbfconcurrent";
+
+        let result = with_before_commit_hook(
+            move |target| fs::write(target, concurrent).unwrap(),
+            || write_utf8_bom(&path, "replacement"),
+        );
+
+        let error = result.expect_err("stale preimage must abort publication");
+        assert!(
+            error.contains("differs from the expected preimage"),
+            "{error}"
+        );
+        assert_eq!(fs::read(&path).unwrap(), concurrent);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn utf8_bom_writer_surfaces_cleanup_warning_after_committed_create() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-common-cleanup-warning-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("Configuration.xml");
+
+        let result = with_publish_failpoints(&[PublishCheckpoint::Cleanup], || {
+            write_utf8_bom(&path, "<MetaDataObject/>")
+        });
+
+        let error = result.expect_err("committed cleanup warning must never be hidden");
+        assert!(error.contains("published"), "{error}");
+        assert!(error.contains("cleanup is incomplete"), "{error}");
+        assert!(
+            error.contains("injected publication cleanup failure"),
+            "{error}"
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"\xef\xbb\xbf<MetaDataObject/>");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn older_format_warning_offers_explicit_platform_reexport_without_auto_migration() {
+        let warning = format_compatibility_warning(&FormatCompatibility::Older {
+            actual: ExportFormatVersion::parse("2.19").unwrap(),
+        });
+
+        assert!(
+            warning.contains("will not migrate it automatically"),
+            "{warning}"
+        );
+        assert!(warning.contains("re-export"), "{warning}");
+        assert!(warning.contains("1C:Enterprise 8.3.27"), "{warning}");
+        assert!(!warning.contains("migrate the configuration before writing"));
+    }
+
+    #[test]
+    fn newer_format_warning_keeps_8_5_roadmap_copy_without_downgrade_offer() {
+        let warning = format_compatibility_warning(&FormatCompatibility::Newer {
+            actual: ExportFormatVersion::parse("2.21").unwrap(),
+        });
+
+        assert!(warning.contains("1C 8.5 support is planned"), "{warning}");
+        assert!(!warning.to_ascii_lowercase().contains("downgrade"));
+    }
+
+    #[test]
+    fn active_format_owner_guard_reauthorizes_and_rejects_newer_snapshot() {
+        let (context, target) = format_owner_context("newer", "2.21");
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .create_utf8_bom_text(&target, "<Template/>")
+            .unwrap();
+
+        let error = guard_active_format_owner(&mut transaction, &target, &context)
+            .expect_err("handler-side guard must reject a newer owner snapshot");
+
+        assert!(error.contains("2.21"), "{error}");
+        assert!(error.contains("2.20"), "{error}");
+        assert!(!target.exists());
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn active_format_owner_guard_binds_supported_snapshot_to_commit() {
+        let (context, target) = format_owner_context("concurrent", "2.20");
+        let owner = context.workspace_root.join("src/Configuration.xml");
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .create_utf8_bom_text(&target, "<Template/>")
+            .unwrap();
+        guard_active_format_owner(&mut transaction, &target, &context).unwrap();
+        fs::write(
+            &owner,
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.21\"><Configuration/></MetaDataObject>",
+        )
+        .unwrap();
+
+        let error = transaction
+            .commit()
+            .expect_err("owner drift after handler reauthorization must abort publication");
+
+        assert!(error.contains("read guard"), "{error}");
+        assert!(!target.exists());
+        fs::remove_dir_all(context.workspace_root).unwrap();
     }
 }
 
@@ -1724,20 +2028,244 @@ pub(crate) fn extension_name_prefix(config: &Path) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-pub(crate) fn detect_format_version(start: &Path) -> String {
-    let mut current = Some(start);
-    while let Some(dir) = current {
-        let cfg_path = dir.join("Configuration.xml");
-        if cfg_path.is_file() {
-            if let Ok(head) = fs::read_to_string(&cfg_path) {
-                if let Some(version) = extract_xml_attr(&head, "MetaDataObject", "version") {
-                    return version;
-                }
-            }
+pub(crate) fn detect_format_version(
+    target: &Path,
+    context: &WorkspaceContext,
+) -> Result<ExportFormatVersion, String> {
+    let owners =
+        crate::infrastructure::platform_xml_owner::resolve_platform_xml_owners(target, context)
+            .map_err(|error| error.message)?;
+    require_supported_platform_xml_owners(&owners)?;
+    ExportFormatVersion::parse(ACTIVE_FORMAT_PROFILE.export_format)
+        .map_err(|error| error.to_string())
+}
+
+/// Re-authorize the current version-owning XML bytes at handler planning time
+/// and bind that exact snapshot to the transaction. The application guard is
+/// user-facing early rejection; this guard closes the authorization/publication
+/// window for cooperating Unica writers.
+pub(crate) fn guard_active_format_owner(
+    transaction: &mut CompileTransaction,
+    target: &Path,
+    context: &WorkspaceContext,
+) -> Result<(), String> {
+    guard_active_format_dependencies(transaction, &[target], context)
+}
+
+pub(crate) fn guard_active_format_owner_with_exact_root(
+    transaction: &mut CompileTransaction,
+    target: &Path,
+    context: &WorkspaceContext,
+    expected_root: crate::infrastructure::platform_xml_owner::PlatformXmlRootExpectation,
+) -> Result<(), String> {
+    guard_active_format_dependency_targets(
+        transaction,
+        &[FormatDependencyTarget {
+            path: target,
+            expected_root: Some(expected_root),
+        }],
+        context,
+    )
+}
+
+pub(crate) fn guard_active_format_dependencies(
+    transaction: &mut CompileTransaction,
+    targets: &[&Path],
+    context: &WorkspaceContext,
+) -> Result<(), String> {
+    let targets = targets
+        .iter()
+        .map(|path| FormatDependencyTarget {
+            path,
+            expected_root: None,
+        })
+        .collect::<Vec<_>>();
+    guard_active_format_dependency_targets(transaction, &targets, context)
+}
+
+#[derive(Clone, Copy)]
+struct FormatDependencyTarget<'a> {
+    path: &'a Path,
+    expected_root: Option<crate::infrastructure::platform_xml_owner::PlatformXmlRootExpectation>,
+}
+
+fn guard_active_format_dependency_targets(
+    transaction: &mut CompileTransaction,
+    targets: &[FormatDependencyTarget<'_>],
+    context: &WorkspaceContext,
+) -> Result<(), String> {
+    let mut owners = BTreeMap::new();
+    let mut provenances = Vec::new();
+    for target in targets {
+        let resolution = match target.expected_root {
+            Some(expected_root) => crate::infrastructure::platform_xml_owner::
+                resolve_platform_xml_owners_for_exact_root_with_provenance(
+                    target.path,
+                    context,
+                    expected_root,
+                ),
+            None => crate::infrastructure::platform_xml_owner::
+                resolve_platform_xml_owners_with_provenance(target.path, context),
         }
-        current = dir.parent();
+        .map_err(|error| error.message)?;
+        for owner in resolution.owners {
+            owners.entry(owner.path.clone()).or_insert(owner);
+        }
+        provenances.push(resolution.provenance);
     }
-    "2.17".to_string()
+    let owners = owners.into_values().collect::<Vec<_>>();
+    require_supported_platform_xml_owners(&owners)?;
+    for provenance in provenances {
+        provenance.bind_to(transaction)?;
+    }
+    for owner in owners {
+        if !transaction.protects_path(&owner.path)? {
+            transaction.guard_exact_preimage(owner.path, owner.raw)?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn guard_active_format_containing_owner_for_new_output(
+    transaction: &mut CompileTransaction,
+    target: &Path,
+    context: &WorkspaceContext,
+) -> Result<(), String> {
+    let resolution = crate::infrastructure::platform_xml_owner::
+        resolve_existing_platform_xml_owners_for_new_output_with_provenance(target, context)
+        .map_err(|error| error.message)?;
+    let owners = resolution.owners;
+    require_supported_platform_xml_owners(&owners)?;
+    resolution.provenance.bind_to(transaction)?;
+    for owner in owners {
+        if !transaction.protects_path(&owner.path)? {
+            transaction.guard_exact_preimage(owner.path, owner.raw)?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn guard_active_format_xml_tree(
+    transaction: &mut CompileTransaction,
+    target: &Path,
+    context: &WorkspaceContext,
+) -> Result<(), String> {
+    guard_active_format_dependencies_and_xml_trees(transaction, &[], &[target], context)
+}
+
+pub(crate) fn guard_active_format_dependencies_and_xml_trees(
+    transaction: &mut CompileTransaction,
+    dependencies: &[&Path],
+    trees: &[&Path],
+    context: &WorkspaceContext,
+) -> Result<(), String> {
+    let mut paths = Vec::new();
+    paths.extend(dependencies.iter().map(|path| (*path).to_path_buf()));
+    for tree in trees {
+        collect_platform_xml_tree_paths(tree, &mut paths)?;
+    }
+    paths.sort();
+    paths.dedup();
+    let targets = paths.iter().map(PathBuf::as_path).collect::<Vec<_>>();
+    guard_active_format_dependencies(transaction, &targets, context)
+}
+
+fn collect_platform_xml_tree_paths(target: &Path, paths: &mut Vec<PathBuf>) -> Result<(), String> {
+    let metadata = match fs::symlink_metadata(target) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!("failed to inspect {}: {error}", target.display()));
+        }
+    };
+    if crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point(&metadata) {
+        return Err(format!(
+            "platform XML dependency must not be a symbolic link or reparse point: {}",
+            target.display()
+        ));
+    }
+    if metadata.is_file() {
+        if target
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+        {
+            paths.push(target.to_path_buf());
+        }
+        return Ok(());
+    }
+    if !metadata.is_dir() {
+        return Err(format!(
+            "platform XML dependency is neither a regular file nor a directory: {}",
+            target.display()
+        ));
+    }
+    let mut entries = fs::read_dir(target)
+        .map_err(|error| format!("failed to inspect {}: {error}", target.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed to inspect {}: {error}", target.display()))?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        collect_platform_xml_tree_paths(&entry.path(), paths)?;
+    }
+    Ok(())
+}
+
+fn require_supported_platform_xml_owners(
+    owners: &[crate::infrastructure::platform_xml_owner::PlatformXmlOwner],
+) -> Result<(), String> {
+    let mut older = None;
+    let mut newer = None;
+    for owner in owners {
+        match classify_root_version(owner.version.as_deref()) {
+            Ok(FormatCompatibility::Supported { .. }) => {}
+            Ok(compatibility @ FormatCompatibility::Older { .. }) if older.is_none() => {
+                older = Some(compatibility);
+            }
+            Ok(compatibility @ FormatCompatibility::Newer { .. }) if newer.is_none() => {
+                newer = Some(compatibility);
+            }
+            Ok(FormatCompatibility::Older { .. } | FormatCompatibility::Newer { .. }) => {}
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    if let Some(compatibility) = newer.or(older) {
+        return Err(format_compatibility_warning(&compatibility));
+    }
+    Ok(())
+}
+
+/// Bind bytes that were already used to derive a write plan. This differs
+/// from taking a fresh snapshot immediately before commit: a later, still
+/// valid `2.20` document must not authorize output calculated from older
+/// bytes.
+pub(crate) fn guard_exact_preimage_if_unprotected(
+    transaction: &mut CompileTransaction,
+    path: &Path,
+    expected_preimage: impl AsRef<[u8]>,
+) -> Result<(), String> {
+    if !transaction.protects_path(path)? {
+        transaction.guard_exact_preimage(path, expected_preimage)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn format_compatibility_warning(compatibility: &FormatCompatibility) -> String {
+    match compatibility {
+        FormatCompatibility::Older { actual } => format!(
+            "Export format {actual} is older than supported {}. Unica will not migrate it automatically; re-export the source explicitly with 1C:Enterprise {}, then retry.",
+            ACTIVE_FORMAT_PROFILE.export_format,
+            ACTIVE_FORMAT_PROFILE.platform_line
+        ),
+        FormatCompatibility::Newer { actual } => format!(
+            "Export format {actual} is newer than supported {}; platform 1C 8.5 support is planned in upcoming releases.",
+            ACTIVE_FORMAT_PROFILE.export_format
+        ),
+        FormatCompatibility::Supported { .. } => format!(
+            "Export format is supported ({})",
+            ACTIVE_FORMAT_PROFILE.export_format
+        ),
+    }
 }
 
 pub(crate) fn support_state_lines_for_configuration(
@@ -1904,22 +2432,33 @@ pub(crate) fn find_support_config_dir(target_path: &Path) -> Option<PathBuf> {
     None
 }
 
-pub(crate) fn support_object_uuid_for_path(target_path: &Path) -> Option<String> {
-    if target_path.is_file() {
-        if let Some(uuid) = support_root_uuid(target_path) {
-            return Some(uuid);
+pub(crate) fn support_uuid_dependency_paths(target_path: &Path) -> Vec<PathBuf> {
+    let mut dependencies = Vec::new();
+    if target_path.is_file()
+        && target_path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+    {
+        dependencies.push(target_path.to_path_buf());
+        if support_root_uuid(target_path).is_some() {
+            return dependencies;
         }
     }
     let mut current = if target_path.is_dir() {
         target_path.to_path_buf()
     } else {
-        target_path.parent()?.to_path_buf()
+        let Some(parent) = target_path.parent() else {
+            return dependencies;
+        };
+        parent.to_path_buf()
     };
     for _ in 0..20 {
         let candidate = current.with_extension("xml");
-        if candidate.is_file() {
-            if let Some(uuid) = support_root_uuid(&candidate) {
-                return Some(uuid);
+        if candidate.is_file() && !dependencies.contains(&candidate) {
+            dependencies.push(candidate.clone());
+            if support_root_uuid(&candidate).is_some() {
+                return dependencies;
             }
         }
         let Some(parent) = current.parent() else {
@@ -1930,11 +2469,28 @@ pub(crate) fn support_object_uuid_for_path(target_path: &Path) -> Option<String>
         }
         current = parent.to_path_buf();
     }
-    None
+    dependencies
+}
+
+pub(crate) fn support_uuid_dependency_path(target_path: &Path) -> Option<PathBuf> {
+    support_uuid_dependency_paths(target_path)
+        .into_iter()
+        .find(|path| support_root_uuid(path).is_some())
+}
+
+pub(crate) fn support_object_uuid_for_path(target_path: &Path) -> Option<String> {
+    support_uuid_dependency_path(target_path)
+        .as_deref()
+        .and_then(support_root_uuid)
 }
 
 pub(crate) fn support_root_uuid(xml_path: &Path) -> Option<String> {
-    let text = fs::read_to_string(xml_path).ok()?;
+    let raw = fs::read(xml_path).ok()?;
+    support_root_uuid_from_bytes(&raw)
+}
+
+pub(crate) fn support_root_uuid_from_bytes(raw: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(raw).ok()?;
     let doc = Document::parse(text.trim_start_matches('\u{feff}')).ok()?;
     let root = doc.root_element();
     if let Some(uuid) = root.attribute("uuid") {

@@ -125,7 +125,7 @@
 | Поле JSON | Умолчание | XML элемент |
 |-----------|----------|-------------|
 | `extDimensionTypes` | `""` | ExtDimensionTypes (ссылка на ПВХ) |
-| `maxExtDimensionCount` | `3` | MaxExtDimensionCount |
+| `maxExtDimensionCount` | `0` без `extDimensionTypes`, иначе `3` | MaxExtDimensionCount |
 | `codeMask` | `""` | CodeMask |
 | `codeLength` | `8` | CodeLength |
 | `descriptionLength` | `120` | DescriptionLength |
@@ -137,6 +137,8 @@
 | `extDimensionAccountingFlags` | `[]` | → ExtDimensionAccountingFlag (Boolean-тип, массив имён) |
 | `attributes` | `[]` | → Attribute |
 | `tabularSections` | `{}` | → TabularSection |
+
+Явное `maxExtDimensionCount > 0` требует непустой `extDimensionTypes`.
 
 ```json
 {

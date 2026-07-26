@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import dataclasses
 import hashlib
 import json
@@ -8,20 +9,34 @@ import queue
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
+MODULE_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(MODULE_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(MODULE_REPO_ROOT))
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+from scripts.ci import donor_parity_contract as donor_contract
+
+
+REPO_ROOT = MODULE_REPO_ROOT
 PLUGIN_ROOT = REPO_ROOT / "plugins" / "unica"
 SKILLS_ROOT = PLUGIN_ROOT / "skills"
 FIXTURES_ROOT = REPO_ROOT / "tests" / "fixtures" / "unica_mcp_script_parity"
-REFERENCE_SKILLS_ROOT = FIXTURES_ROOT / "reference_skills"
-CC_1C_CASES_ROOT = FIXTURES_ROOT / "cc-1c-skills" / "cases"
+UNICA_REFERENCE_MODELS_ROOT = FIXTURES_ROOT / "unica_reference_models"
+DONOR_SNAPSHOT_ROOT = Path(
+    os.environ.get("UNICA_DONOR_SNAPSHOT_ROOT", FIXTURES_ROOT / "cc-1c-skills")
+).resolve()
+DONOR_SKILLS_ROOT = DONOR_SNAPSHOT_ROOT / "skills"
+CC_1C_CASES_ROOT = DONOR_SNAPSHOT_ROOT / "cases"
+DONOR_BASELINE_PATH = FIXTURES_ROOT / "donor-baseline.json"
+DONOR_RELATIONS_PATH = FIXTURES_ROOT / "donor-relations.json"
 BSP_DCS_QUERY_FIXTURE = (
     "bsp/dcs/Catalogs__ПравилаОбработкиЭлектроннойПочты__"
     "СхемаПравилаОбработкиЭлектроннойПочты/Template.xml"
@@ -72,12 +87,27 @@ class SetupStep:
     script: str
     arguments: dict[str, Any]
     tool: str | None = None
+    stdout_path: str | None = None
 
 
 @dataclasses.dataclass(frozen=True)
 class FileFixture:
     source: str
     target: str
+
+
+META_VALIDATE_COMPILED_OWNER_FIXTURES = (
+    FileFixture("meta-validate-parity-owner/Configuration.xml", "src/Configuration.xml"),
+    FileFixture(
+        "meta-validate-parity-owner/Languages/Русский.xml",
+        "src/Languages/Русский.xml",
+    ),
+)
+
+BSP_META_VALIDATE_OWNER_FIXTURES = (
+    FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),
+    FileFixture("bsp/meta/Languages/Русский.xml", "src/Languages/Русский.xml"),
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -171,7 +201,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "ExtensionPath": "src-cfe/Configuration.xml",
             "Detailed": True,
-            "OutFile": "cfe-validate.txt",
         },
         setup_steps=(
             SetupStep(
@@ -192,14 +221,14 @@ SUCCESS_SCENARIOS = [
         expect_ok=True,
     ),
     ParityScenario(
-        name="cfe-patch-method-before",
+        name="cfe-patch-method-before-borrowed-common-module",
         tool="unica.cfe.patch_method",
         skill="cfe-patch-method",
         script="cfe-patch-method.py",
         arguments={
             "ExtensionPath": "src-cfe",
-            "ModulePath": "CommonModule.Server",
-            "MethodName": "BeforeWrite",
+            "ModulePath": "CommonModule.GoogleПереводчик",
+            "MethodName": "ОбновитьДанные",
             "InterceptorType": "Before",
             "Context": "НаСервере",
         },
@@ -211,24 +240,49 @@ SUCCESS_SCENARIOS = [
                     "Name": "ParityExtension",
                     "NamePrefix": "PE_",
                     "OutputDir": "src-cfe",
+                    "Purpose": "Customization",
+                    "Version": "1.0.0.1",
+                    "Vendor": "Unica",
+                    "CompatibilityMode": "Version8_3_24",
                     "NoRole": True,
                 },
+            ),
+            SetupStep(
+                skill="cfe-borrow",
+                script="cfe-borrow.py",
+                tool="unica.cfe.borrow",
+                arguments={
+                    "ExtensionPath": "src-cfe",
+                    "ConfigPath": "src",
+                    "Object": "CommonModule.GoogleПереводчик",
+                },
+            ),
+        ),
+        fixtures=(
+            FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),
+            FileFixture(
+                BSP_META_COMMON_MODULE_FIXTURE,
+                "src/CommonModules/GoogleПереводчик.xml",
+            ),
+            FileFixture(
+                "cfe-patch-method/base-common-module.bsl",
+                "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
             ),
         ),
         expect_ok=True,
         compare_files=True,
     ),
     ParityScenario(
-        name="cfe-patch-method-after-form",
+        name="cfe-patch-method-after-borrowed-common-module",
         tool="unica.cfe.patch_method",
         skill="cfe-patch-method",
         script="cfe-patch-method.py",
         arguments={
             "ExtensionPath": "src-cfe",
-            "ModulePath": "Document.Заказ.Form.ФормаДокумента",
-            "MethodName": "ПослеЗаписиНаСервере",
+            "ModulePath": "CommonModule.GoogleПереводчик",
+            "MethodName": "ОбновитьДанные",
             "InterceptorType": "After",
-            "Context": "НаКлиенте",
+            "Context": "НаСервере",
         },
         setup_steps=(
             SetupStep(
@@ -238,35 +292,33 @@ SUCCESS_SCENARIOS = [
                     "Name": "ParityExtension",
                     "NamePrefix": "PE_",
                     "OutputDir": "src-cfe",
+                    "Purpose": "Customization",
+                    "Version": "1.0.0.1",
+                    "Vendor": "Unica",
+                    "CompatibilityMode": "Version8_3_24",
                     "NoRole": True,
                 },
             ),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="cfe-patch-method-modification-function",
-        tool="unica.cfe.patch_method",
-        skill="cfe-patch-method",
-        script="cfe-patch-method.py",
-        arguments={
-            "ExtensionPath": "src-cfe",
-            "ModulePath": "CommonModule.ОбщийМодуль",
-            "MethodName": "ПолучитьДанные",
-            "InterceptorType": "ModificationAndControl",
-            "IsFunction": True,
-        },
-        setup_steps=(
             SetupStep(
-                skill="cfe-init",
-                script="cfe-init.py",
+                skill="cfe-borrow",
+                script="cfe-borrow.py",
+                tool="unica.cfe.borrow",
                 arguments={
-                    "Name": "ParityExtension",
-                    "NamePrefix": "PE_",
-                    "OutputDir": "src-cfe",
-                    "NoRole": True,
+                    "ExtensionPath": "src-cfe",
+                    "ConfigPath": "src",
+                    "Object": "CommonModule.GoogleПереводчик",
                 },
+            ),
+        ),
+        fixtures=(
+            FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),
+            FileFixture(
+                BSP_META_COMMON_MODULE_FIXTURE,
+                "src/CommonModules/GoogleПереводчик.xml",
+            ),
+            FileFixture(
+                "cfe-patch-method/base-common-module.bsl",
+                "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
             ),
         ),
         expect_ok=True,
@@ -577,7 +629,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "ConfigPath": "src/Configuration.xml",
             "Mode": "overview",
-            "OutFile": "cf-info.txt",
         },
         fixtures=(FileFixture("cf-info/Configuration.xml", "src/Configuration.xml"),),
         expect_ok=True,
@@ -633,7 +684,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "ConfigPath": "src/Configuration.xml",
             "Detailed": True,
-            "OutFile": "cf-validate.txt",
         },
         fixtures=(
             FileFixture("cf-validate/Configuration.xml", "src/Configuration.xml"),
@@ -702,6 +752,24 @@ SUCCESS_SCENARIOS = [
                 script="meta-compile.py",
                 arguments={"JsonPath": "fixtures/meta-catalog.json", "OutputDir": "src"},
             ),
+            SetupStep(
+                skill="form-add",
+                script="form-add.py",
+                arguments={
+                    "ObjectPath": "src/Catalogs/ParityCatalog.xml",
+                    "FormName": "ListForm",
+                    "Purpose": "List",
+                },
+            ),
+            SetupStep(
+                skill="form-add",
+                script="form-add.py",
+                arguments={
+                    "ObjectPath": "src/Catalogs/ParityCatalog.xml",
+                    "FormName": "ObjectForm",
+                    "Purpose": "Object",
+                },
+            ),
         ),
         fixtures=(
             FileFixture("meta-catalog.json", "fixtures/meta-catalog.json"),
@@ -748,17 +816,35 @@ SUCCESS_SCENARIOS = [
         skill="meta-remove",
         script="meta-remove.py",
         arguments={"ConfigDir": "src", "Object": "Catalog.ParityCatalog"},
-        fixtures=(
-            FileFixture("meta-remove/Configuration.xml", "src/Configuration.xml"),
-            FileFixture("meta-remove/Catalogs/ParityCatalog.xml", "src/Catalogs/ParityCatalog.xml"),
-            FileFixture(
-                "meta-remove/Catalogs/ParityCatalog/Ext/ObjectModule.bsl",
-                "src/Catalogs/ParityCatalog/Ext/ObjectModule.bsl",
+        setup_steps=(
+            SetupStep(
+                skill="meta-compile",
+                script="meta-compile.py",
+                arguments={"JsonPath": "fixtures/meta-catalog.json", "OutputDir": "src"},
             ),
-            FileFixture("meta-remove/Subsystems/Sales.xml", "src/Subsystems/Sales.xml"),
+            SetupStep(
+                skill="subsystem-compile",
+                script="subsystem-compile.py",
+                arguments={
+                    "Value": {
+                        "name": "Sales",
+                        "synonym": "Sales",
+                        "content": [
+                            "Catalog.ParityCatalog",
+                            "Catalog.KeepCatalog",
+                        ],
+                    },
+                    "OutputDir": "src",
+                    "NoValidate": True,
+                },
+            ),
+        ),
+        fixtures=(
+            FileFixture("meta-catalog.json", "fixtures/meta-catalog.json"),
+            FileFixture("meta-remove/Configuration.xml", "src/Configuration.xml"),
             FileFixture(
-                "meta-remove/Subsystems/Sales/Ext/CommandInterface.xml",
-                "src/Subsystems/Sales/Ext/CommandInterface.xml",
+                "cf-validate/Languages/Русский.xml",
+                "src/Languages/Русский.xml",
             ),
         ),
         expect_ok=True,
@@ -772,7 +858,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "ObjectPath": "src/Catalogs/ParityCatalog.xml",
             "Mode": "overview",
-            "OutFile": "meta-info.txt",
         },
         setup_steps=(
             SetupStep(
@@ -793,7 +878,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "ObjectPath": "src/Catalogs/ParityCatalog.xml",
             "Detailed": True,
-            "OutFile": "meta-validate.txt",
         },
         setup_steps=(
             SetupStep(
@@ -802,9 +886,39 @@ SUCCESS_SCENARIOS = [
                 arguments={"JsonPath": "fixtures/meta-catalog.json", "OutputDir": "src"},
             ),
         ),
-        fixtures=(FileFixture("meta-catalog.json", "fixtures/meta-catalog.json"),),
+        fixtures=META_VALIDATE_COMPILED_OWNER_FIXTURES
+        + (FileFixture("meta-catalog.json", "fixtures/meta-catalog.json"),),
         expect_ok=True,
         compare_files=True,
+    ),
+    ParityScenario(
+        name="meta-validate-language-aware",
+        tool="unica.meta.validate",
+        skill="meta-validate",
+        script="meta-validate.py",
+        arguments={
+            "ObjectPath": "src/Enums/LanguageAware.xml",
+            "Detailed": True,
+        },
+        fixtures=(
+            FileFixture(
+                "meta-validate-language-aware/Configuration.xml",
+                "src/Configuration.xml",
+            ),
+            FileFixture(
+                "meta-validate-language-aware/Languages/Русский.xml",
+                "src/Languages/Русский.xml",
+            ),
+            FileFixture(
+                "meta-validate-language-aware/Languages/English.xml",
+                "src/Languages/English.xml",
+            ),
+            FileFixture(
+                "meta-validate-language-aware/Enums/LanguageAware.xml",
+                "src/Enums/LanguageAware.xml",
+            ),
+        ),
+        expect_ok=True,
     ),
     ParityScenario(
         name="help-add-catalog",
@@ -850,7 +964,8 @@ SUCCESS_SCENARIOS = [
             "Detailed": True,
             "MaxErrors": 80,
         },
-        fixtures=(FileFixture(BSP_META_CATALOG_FIXTURE, "src/Catalogs/Валюты.xml"),),
+        fixtures=BSP_META_VALIDATE_OWNER_FIXTURES
+        + (FileFixture(BSP_META_CATALOG_FIXTURE, "src/Catalogs/Валюты.xml"),),
         expect_ok=True,
     ),
     ParityScenario(
@@ -881,7 +996,8 @@ SUCCESS_SCENARIOS = [
             "Detailed": True,
             "MaxErrors": 80,
         },
-        fixtures=(
+        fixtures=BSP_META_VALIDATE_OWNER_FIXTURES
+        + (
             FileFixture(
                 BSP_META_DOCUMENT_FIXTURE,
                 "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
@@ -912,7 +1028,8 @@ SUCCESS_SCENARIOS = [
             "Detailed": True,
             "MaxErrors": 80,
         },
-        fixtures=(FileFixture(BSP_META_REPORT_FIXTURE, "src/Reports/АнализВерсийОбъектов.xml"),),
+        fixtures=BSP_META_VALIDATE_OWNER_FIXTURES
+        + (FileFixture(BSP_META_REPORT_FIXTURE, "src/Reports/АнализВерсийОбъектов.xml"),),
         expect_ok=True,
     ),
     ParityScenario(
@@ -944,7 +1061,8 @@ SUCCESS_SCENARIOS = [
             "Detailed": True,
             "MaxErrors": 80,
         },
-        fixtures=(
+        fixtures=BSP_META_VALIDATE_OWNER_FIXTURES
+        + (
             FileFixture(BSP_META_COMMON_MODULE_FIXTURE, "src/CommonModules/GoogleПереводчик.xml"),
             FileFixture(
                 BSP_META_COMMON_MODULE_BSL_FIXTURE,
@@ -976,7 +1094,8 @@ SUCCESS_SCENARIOS = [
             "Detailed": True,
             "MaxErrors": 80,
         },
-        fixtures=(FileFixture(BSP_META_ENUM_FIXTURE, "src/Enums/ВажностьПроблемыУчета.xml"),),
+        fixtures=BSP_META_VALIDATE_OWNER_FIXTURES
+        + (FileFixture(BSP_META_ENUM_FIXTURE, "src/Enums/ВажностьПроблемыУчета.xml"),),
         expect_ok=True,
     ),
     ParityScenario(
@@ -1007,7 +1126,8 @@ SUCCESS_SCENARIOS = [
             "Detailed": True,
             "MaxErrors": 80,
         },
-        fixtures=(
+        fixtures=BSP_META_VALIDATE_OWNER_FIXTURES
+        + (
             FileFixture(
                 BSP_META_INFORMATION_REGISTER_FIXTURE,
                 "src/InformationRegisters/АдминистративнаяИерархия.xml",
@@ -1350,7 +1470,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "SubsystemPath": "src/Subsystems/Subsystems/ParitySubsystem.xml",
             "Mode": "full",
-            "OutFile": "subsystem-info.txt",
             "Limit": 0,
         },
         setup_steps=(
@@ -1376,7 +1495,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "SubsystemPath": "src/Subsystems/Subsystems/ParitySubsystem.xml",
             "Detailed": True,
-            "OutFile": "subsystem-validate.txt",
         },
         setup_steps=(
             SetupStep(
@@ -1457,16 +1575,26 @@ SUCCESS_SCENARIOS = [
             "FormName": "MainForm",
             "SrcDir": "src/Reports",
         },
+        setup_steps=(
+            SetupStep(
+                skill="meta-compile",
+                script="meta-compile.py",
+                arguments={"JsonPath": "fixtures/meta-report.json", "OutputDir": "src"},
+            ),
+            SetupStep(
+                skill="form-add",
+                script="form-add.py",
+                arguments={
+                    "ObjectPath": "src/Reports/ParityReport.xml",
+                    "FormName": "MainForm",
+                    "Purpose": "Object",
+                    "Synonym": "Main form",
+                    "SetDefault": True,
+                },
+            ),
+        ),
         fixtures=(
-            FileFixture("form-remove/ParityReport.xml", "src/Reports/ParityReport.xml"),
-            FileFixture(
-                "form-remove/ParityReport/Forms/MainForm.xml",
-                "src/Reports/ParityReport/Forms/MainForm.xml",
-            ),
-            FileFixture(
-                "form-remove/ParityReport/Forms/MainForm/Ext/Form.xml",
-                "src/Reports/ParityReport/Forms/MainForm/Ext/Form.xml",
-            ),
+            FileFixture("meta-report.json", "fixtures/meta-report.json"),
         ),
         expect_ok=True,
         compare_files=True,
@@ -1507,7 +1635,14 @@ SUCCESS_SCENARIOS = [
             "SrcDir": "src/Reports",
             "SetMainSKD": True,
         },
-        fixtures=(FileFixture("template-remove/ParityReport.xml", "src/Reports/ParityReport.xml"),),
+        setup_steps=(
+            SetupStep(
+                skill="meta-compile",
+                script="meta-compile.py",
+                arguments={"JsonPath": "fixtures/meta-report.json", "OutputDir": "src"},
+            ),
+        ),
+        fixtures=(FileFixture("meta-report.json", "fixtures/meta-report.json"),),
         expect_ok=True,
         compare_files=True,
     ),
@@ -1560,7 +1695,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "CIPath": "src/Subsystems/Sales/Ext/CommandInterface.xml",
             "Detailed": True,
-            "OutFile": "interface-validate.txt",
         },
         fixtures=(
             FileFixture(
@@ -1583,6 +1717,10 @@ SUCCESS_SCENARIOS = [
         },
         fixtures=(
             FileFixture(
+                BSP_SUBSYSTEM_FIXTURE,
+                "src/Subsystems/Администрирование.xml",
+            ),
+            FileFixture(
                 BSP_SUBSYSTEM_COMMAND_INTERFACE_FIXTURE,
                 "src/Subsystems/Администрирование/Ext/CommandInterface.xml",
             ),
@@ -1602,6 +1740,10 @@ SUCCESS_SCENARIOS = [
         },
         fixtures=(
             FileFixture(
+                BSP_SUBSYSTEM_FIXTURE,
+                "src/Subsystems/Администрирование.xml",
+            ),
+            FileFixture(
                 BSP_SUBSYSTEM_COMMAND_INTERFACE_FIXTURE,
                 "src/Subsystems/Администрирование/Ext/CommandInterface.xml",
             ),
@@ -1619,6 +1761,17 @@ SUCCESS_SCENARIOS = [
             "DefinitionFile": "fixtures/interface-edit-ops.json",
             "NoValidate": True,
         },
+        setup_steps=(
+            SetupStep(
+                skill="subsystem-compile",
+                script="subsystem-compile.py",
+                arguments={
+                    "Value": {"name": "Sales", "synonym": "Sales"},
+                    "OutputDir": "src",
+                    "NoValidate": True,
+                },
+            ),
+        ),
         fixtures=(
             FileFixture(
                 "interface-validate/Sales/Ext/CommandInterface.xml",
@@ -1641,6 +1794,17 @@ SUCCESS_SCENARIOS = [
             "CreateIfMissing": True,
             "NoValidate": True,
         },
+        setup_steps=(
+            SetupStep(
+                skill="subsystem-compile",
+                script="subsystem-compile.py",
+                arguments={
+                    "Value": {"name": "NewSales", "synonym": "New sales"},
+                    "OutputDir": "src",
+                    "NoValidate": True,
+                },
+            ),
+        ),
         expect_ok=True,
         compare_files=True,
     ),
@@ -1656,6 +1820,20 @@ SUCCESS_SCENARIOS = [
             "CreateIfMissing": True,
             "NoValidate": True,
         },
+        setup_steps=(
+            SetupStep(
+                skill="subsystem-compile",
+                script="subsystem-compile.py",
+                arguments={
+                    "Value": {
+                        "name": "NewVisibility",
+                        "synonym": "New visibility",
+                    },
+                    "OutputDir": "src",
+                    "NoValidate": True,
+                },
+            ),
+        ),
         expect_ok=True,
         compare_files=True,
     ),
@@ -1671,6 +1849,17 @@ SUCCESS_SCENARIOS = [
             "CreateIfMissing": True,
             "NoValidate": True,
         },
+        setup_steps=(
+            SetupStep(
+                skill="subsystem-compile",
+                script="subsystem-compile.py",
+                arguments={
+                    "Value": {"name": "NewVisible", "synonym": "New visible"},
+                    "OutputDir": "src",
+                    "NoValidate": True,
+                },
+            ),
+        ),
         expect_ok=True,
         compare_files=True,
     ),
@@ -1684,16 +1873,27 @@ SUCCESS_SCENARIOS = [
             "TemplateName": "MainSchema",
             "SrcDir": "src/Reports",
         },
+        setup_steps=(
+            SetupStep(
+                skill="meta-compile",
+                script="meta-compile.py",
+                arguments={"JsonPath": "fixtures/meta-report.json", "OutputDir": "src"},
+            ),
+            SetupStep(
+                skill="template-add",
+                script="add-template.py",
+                arguments={
+                    "ObjectName": "ParityReport",
+                    "TemplateName": "MainSchema",
+                    "TemplateType": "DataCompositionSchema",
+                    "Synonym": "Main schema",
+                    "SrcDir": "src/Reports",
+                    "SetMainSKD": True,
+                },
+            ),
+        ),
         fixtures=(
-            FileFixture("template-remove/ParityReport.xml", "src/Reports/ParityReport.xml"),
-            FileFixture(
-                "template-remove/ParityReport/Templates/MainSchema.xml",
-                "src/Reports/ParityReport/Templates/MainSchema.xml",
-            ),
-            FileFixture(
-                "template-remove/ParityReport/Templates/MainSchema/Ext/Template.xml",
-                "src/Reports/ParityReport/Templates/MainSchema/Ext/Template.xml",
-            ),
+            FileFixture("meta-report.json", "fixtures/meta-report.json"),
         ),
         expect_ok=True,
         compare_files=True,
@@ -1732,7 +1932,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "TemplatePath": "templates/DCS.xml",
             "Mode": "overview",
-            "OutFile": "dcs-info.txt",
         },
         setup_steps=(
             SetupStep(
@@ -1888,7 +2087,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "TemplatePath": "src/Reports/ParityReport/Templates/Main/Ext/Template.xml",
             "Detailed": True,
-            "OutFile": "dcs-validate.txt",
         },
         setup_steps=(
             SetupStep(
@@ -2286,6 +2484,18 @@ SUCCESS_SCENARIOS = [
             "Operation": "add-dataSetLink",
             "Value": "МестаИспользования > ParityDataSetFinal on КоличествоДанных = КоличествоДанных [param ParityLinkFinal]",
         },
+        setup_steps=(
+            SetupStep(
+                skill="dcs-edit",
+                script="dcs-edit.py",
+                tool="unica.dcs.edit",
+                arguments={
+                    "TemplatePath": "src/Template.xml",
+                    "Operation": "add-dataSet",
+                    "Value": "ParityDataSetFinal: ВЫБРАТЬ 1 КАК КоличествоДанных",
+                },
+            ),
+        ),
         fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
         expect_ok=True,
         compare_files=True,
@@ -3155,13 +3365,12 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
-        name="mxl-decompile-simple-outfile",
+        name="mxl-decompile-simple-stdout",
         tool="unica.mxl.decompile",
         skill="mxl-decompile",
         script="mxl-decompile.py",
         arguments={
             "TemplatePath": "templates/MXL.xml",
-            "OutputPath": "mxl.json",
         },
         setup_steps=(
             SetupStep(
@@ -3175,7 +3384,6 @@ SUCCESS_SCENARIOS = [
         ),
         fixtures=(FileFixture("mxl-simple.json", "fixtures/mxl-simple.json"),),
         expect_ok=True,
-        compare_files=True,
     ),
     ParityScenario(
         name="mxl-info-text",
@@ -3258,13 +3466,12 @@ SUCCESS_SCENARIOS = [
         expect_ok=True,
     ),
     ParityScenario(
-        name="bsp-mxl-decompile-real-template-outfile",
+        name="bsp-mxl-decompile-real-template-stdout",
         tool="unica.mxl.decompile",
         skill="mxl-decompile",
         script="mxl-decompile.py",
         arguments={
             "TemplatePath": "src/Reports/ParityReport/Templates/Receipt/Ext/Template.xml",
-            "OutputPath": "mxl-bsp.json",
         },
         fixtures=(
             FileFixture(
@@ -3273,7 +3480,6 @@ SUCCESS_SCENARIOS = [
             ),
         ),
         expect_ok=True,
-        compare_files=True,
     ),
     ParityScenario(
         name="bsp-mxl-parity-roundtrip-real-template",
@@ -3291,8 +3497,8 @@ SUCCESS_SCENARIOS = [
                 tool="unica.mxl.decompile",
                 arguments={
                     "TemplatePath": "src/Reports/ParityReport/Templates/Receipt/Ext/Template.xml",
-                    "OutputPath": "mxl-bsp.json",
                 },
+                stdout_path="mxl-bsp.json",
             ),
         ),
         fixtures=(
@@ -3342,7 +3548,6 @@ SUCCESS_SCENARIOS = [
             "RightsPath": "src/Roles/SalesReader/Ext/Rights.xml",
             "Limit": 5,
             "Offset": 1,
-            "OutFile": "role-info.txt",
         },
         fixtures=(
             FileFixture("role-info/SalesReader.xml", "src/Roles/SalesReader.xml"),
@@ -3362,7 +3567,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "RightsPath": "src/Roles/SalesReader/Ext/Rights.xml",
             "Detailed": True,
-            "OutFile": "role-validate.txt",
         },
         fixtures=(
             FileFixture("role-info/SalesReader.xml", "src/Roles/SalesReader.xml"),
@@ -3432,6 +3636,48 @@ SUCCESS_SCENARIOS = [
 
 
 VALIDATION_FAILURE_SCENARIOS = [
+    ParityScenario(
+        name="meta-validate-missing-owner",
+        tool="unica.meta.validate",
+        skill="meta-validate",
+        script="meta-validate.py",
+        arguments={
+            "ObjectPath": "src/Enums/LanguageAware.xml",
+            "Detailed": True,
+        },
+        expect_ok=False,
+        fixtures=(
+            FileFixture(
+                "meta-validate-language-aware/Enums/LanguageAware.xml",
+                "src/Enums/LanguageAware.xml",
+            ),
+        ),
+    ),
+    ParityScenario(
+        name="meta-validate-missing-registered-language",
+        tool="unica.meta.validate",
+        skill="meta-validate",
+        script="meta-validate.py",
+        arguments={
+            "ObjectPath": "src/Enums/LanguageAware.xml",
+            "Detailed": True,
+        },
+        expect_ok=False,
+        fixtures=(
+            FileFixture(
+                "meta-validate-language-aware/Configuration.xml",
+                "src/Configuration.xml",
+            ),
+            FileFixture(
+                "meta-validate-language-aware/Languages/Русский.xml",
+                "src/Languages/Русский.xml",
+            ),
+            FileFixture(
+                "meta-validate-language-aware/Enums/LanguageAware.xml",
+                "src/Enums/LanguageAware.xml",
+            ),
+        ),
+    ),
     ParityScenario(
         name="form-validate-bare-type-is-error",
         tool="unica.form.validate",
@@ -3783,7 +4029,7 @@ MISSING_INPUT_SCENARIOS = [
         "unica.mxl.decompile",
         "mxl-decompile",
         "mxl-decompile.py",
-        {"TemplatePath": "missing/Template.xml", "OutputPath": "out/mxl.json"},
+        {"TemplatePath": "missing/Template.xml"},
         False,
     ),
     ParityScenario(
@@ -3997,6 +4243,22 @@ UUID_RE = re.compile(
 )
 
 
+MCP_HANDSHAKE_ID = "unica-ci-handshake"
+MCP_HANDSHAKE = [
+    {
+        "jsonrpc": "2.0",
+        "id": MCP_HANDSHAKE_ID,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "unica-ci", "version": "1"},
+        },
+    },
+    {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+]
+
+
 def dcs_edit_operations_in_args(arguments: dict[str, Any]) -> set[str]:
     operation = arguments.get("Operation") or arguments.get("operation")
     return {operation} if isinstance(operation, str) and operation else set()
@@ -4037,6 +4299,38 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         self.assertGreaterEqual(coverage, MIN_NATIVE_PARITY_COVERAGE)
         self.assertEqual(NATIVE_PARITY_TOOLS - covered, set())
 
+    def test_cfe_patch_method_parity_uses_only_the_supported_v1_contract(self) -> None:
+        scenarios = [
+            scenario
+            for scenario in SUCCESS_SCENARIOS
+            if scenario.tool == "unica.cfe.patch_method"
+        ]
+        self.assertGreater(len(scenarios), 0)
+        for scenario in scenarios:
+            with self.subTest(scenario=scenario.name):
+                self.assertIn(
+                    scenario.arguments.get("InterceptorType"),
+                    {"Before", "After"},
+                )
+                self.assertFalse(scenario.arguments.get("IsFunction", False))
+                self.assertEqual(
+                    scenario.arguments.get("MethodName"),
+                    "ОбновитьДанные",
+                    "the fixture exposes this caller-verified zero-parameter procedure",
+                )
+                self.assertTrue(
+                    any(step.tool == "unica.cfe.borrow" for step in scenario.setup_steps),
+                    "the target must be registered and adopted through the public borrow tool",
+                )
+                self.assertTrue(
+                    any(
+                        fixture.source
+                        == "cfe-patch-method/base-common-module.bsl"
+                        for fixture in scenario.fixtures
+                    ),
+                    "the base source must prove the documented procedure signature",
+                )
+
     def test_rust_registry_parity_list_matches_python_parity_harness(self) -> None:
         app_mod = (REPO_ROOT / "crates" / "unica-coder" / "src" / "application" / "mod.rs").read_text(
             encoding="utf-8"
@@ -4055,6 +4349,30 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         manifest_sources = {f"bsp/{entry['target']}" for entry in manifest["files"]}
         used_sources = {fixture.source for scenario in SCENARIOS for fixture in scenario.fixtures}
         self.assertEqual(manifest_sources - used_sources, set())
+
+    def test_language_aware_fixture_proves_list_presentation_precedence(self) -> None:
+        fixture = (
+            FIXTURES_ROOT
+            / "meta-validate-language-aware"
+            / "Enums"
+            / "LanguageAware.xml"
+        )
+        root = ET.parse(fixture).getroot()
+        namespaces = {
+            "md": "http://v8.1c.ru/8.3/MDClasses",
+            "v8": "http://v8.1c.ru/8.1/data/core",
+        }
+
+        def russian_text(property_name: str) -> str:
+            item = root.find(
+                f".//md:{property_name}/v8:item[v8:lang='ru']/v8:content",
+                namespaces,
+            )
+            self.assertIsNotNone(item, f"missing Russian {property_name}")
+            return item.text or ""
+
+        self.assertGreater(len(russian_text("Synonym")), 38)
+        self.assertLessEqual(len(russian_text("ListPresentation")), 38)
 
     def test_bsp_fixture_parity_covers_real_world_read_and_edit_tools(self) -> None:
         for tool in sorted(BSP_PARITY_REQUIRED_TOOLS):
@@ -4238,6 +4556,15 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             workspace = temp_root / "workspace"
             cache = temp_root / "cache"
             workspace.mkdir()
+            (workspace / "src" / "cf").mkdir(parents=True)
+            (workspace / "v8project.yaml").write_text(
+                "format: DESIGNER\nsource-set:\n  main:\n    type: CONFIGURATION\n    path: src/cf\n",
+                encoding="utf-8",
+            )
+            shutil.copyfile(
+                FIXTURES_ROOT / "meta-remove" / "Configuration.xml",
+                workspace / "src" / "cf" / "Configuration.xml",
+            )
             invalid_definition = workspace / "invalid.json"
             valid_definition = workspace / "valid.json"
             invalid_definition.write_text(
@@ -4248,10 +4575,13 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                 json.dumps({"events": {"OnCreateAtServer": "OnCreateAtServer"}}),
                 encoding="utf-8",
             )
-            invalid_output = workspace / "InvalidForm.xml"
-            valid_output = workspace / "ValidForm.xml"
-            invalid_before = b"invalid-preview-sentinel"
-            valid_before = b"valid-preview-sentinel"
+            invalid_output = workspace / "src" / "cf" / "InvalidForm.xml"
+            valid_output = workspace / "src" / "cf" / "ValidForm.xml"
+            invalid_before = (
+                b'<?xml version="1.0" encoding="UTF-8"?>\n'
+                b'<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"/>\n'
+            )
+            valid_before = invalid_before
             invalid_output.write_bytes(invalid_before)
             valid_output.write_bytes(valid_before)
             messages = [
@@ -4264,7 +4594,7 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                         "arguments": {
                             "cwd": str(workspace),
                             "JsonPath": "invalid.json",
-                            "OutputPath": "InvalidForm.xml",
+                            "OutputPath": "src/cf/InvalidForm.xml",
                             "dryRun": True,
                         },
                     },
@@ -4278,7 +4608,7 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                         "arguments": {
                             "cwd": str(workspace),
                             "JsonPath": "valid.json",
-                            "OutputPath": "ValidForm.xml",
+                            "OutputPath": "src/cf/ValidForm.xml",
                             "dryRun": True,
                         },
                     },
@@ -4325,6 +4655,10 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             (workspace / "v8project.yaml").write_text(
                 "format: DESIGNER\nsource-set:\n  main:\n    type: CONFIGURATION\n    path: src/cf\n",
                 encoding="utf-8",
+            )
+            shutil.copyfile(
+                FIXTURES_ROOT / "meta-remove" / "Configuration.xml",
+                workspace / "src" / "cf" / "Configuration.xml",
             )
             for example in examples:
                 arguments = example.payload["params"]["arguments"]
@@ -4385,9 +4719,6 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                     descriptor_path.write_text(
                         "<MetaDataObject/>\n", encoding="utf-8"
                     )
-                    (workspace / "src" / "cf" / "Configuration.xml").write_text(
-                        "<MetaDataObject/>\n", encoding="utf-8"
-                    )
             messages = [
                 dry_run_message_for_example(example, index + 1, workspace)
                 for index, example in enumerate(examples)
@@ -4403,12 +4734,28 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                 self.assertTrue(result["ok"], json.dumps(result, ensure_ascii=False, indent=2))
                 self.assertIn("dry run", result["summary"])
 
-    def test_mcp_calls_match_reference_python_scripts(self) -> None:
+    def test_mcp_calls_match_unica_reference_models(self) -> None:
         for scenario in SCENARIOS:
             with self.subTest(scenario=scenario.name, tool=scenario.tool):
                 self.assert_parity(scenario)
 
-    def test_cc_1c_skill_cases_match_reference_python_scripts(self) -> None:
+    def test_every_donor_case_has_one_reviewed_relation(self) -> None:
+        cases = {case.case_id for case in iter_cc_1c_skill_cases()}
+        relations = load_donor_relations()
+        self.assertEqual(set(relations), cases)
+
+    def test_donor_snapshot_integrity_and_provenance(self) -> None:
+        errors = donor_contract.validate_repository_contract(REPO_ROOT)
+        self.assertEqual(errors, [])
+
+    def test_category_only_expected_gap_allowlist_is_removed(self) -> None:
+        legacy_name = "CC_1C_" + "EXPECTED_GAPS"
+        self.assertNotIn(
+            legacy_name,
+            Path(__file__).read_text(encoding="utf-8"),
+        )
+
+    def test_donor_cases_match_reviewed_relations(self) -> None:
         for case in iter_cc_1c_skill_cases():
             with self.subTest(case=case.case_id, tool=cc_case_tool(case)):
                 self.assert_cc_1c_case_parity(case)
@@ -4424,7 +4771,7 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             self.prepare_workspace(direct_ws, scenario, setup_mode="reference")
             self.prepare_workspace(mcp_ws, scenario, setup_mode="mcp", cache_dir=mcp_cache)
 
-            direct = run_python_script(scenario.skill, scenario.script, scenario.arguments, direct_ws)
+            direct = run_unica_reference_model(scenario.skill, scenario.script, scenario.arguments, direct_ws)
             mcp = self.call_mcp(scenario, mcp_ws, mcp_cache)
 
             direct_ok = direct.returncode == 0
@@ -4458,6 +4805,25 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                 self.assertEqual(snapshot_workspace(direct_ws), snapshot_workspace(mcp_ws))
 
     def assert_cc_1c_case_parity(self, case: CcSkillCase) -> None:
+        observation, message = self.observe_cc_1c_case(case)
+        relation = load_donor_relations()[case.case_id]
+        errors = donor_contract.validate_relation_observation(
+            relation=relation,
+            content_digest=donor_contract.case_content_digest(
+                DONOR_SNAPSHOT_ROOT, case.case_id
+            ),
+            observation=observation,
+        )
+        self.assertEqual(
+            errors,
+            [],
+            f"{case.case_id}: {message}\n"
+            + json.dumps(observation, ensure_ascii=False, indent=2),
+        )
+
+    def observe_cc_1c_case(
+        self, case: CcSkillCase
+    ) -> tuple[dict[str, Any], str]:
         with tempfile.TemporaryDirectory(prefix=f"unica-cc-parity-{case.skill_dir}-{case.case_path.stem}-") as temp:
             temp_root = Path(temp)
             direct_ws = temp_root / "direct"
@@ -4481,12 +4847,14 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                     mcp_input.unlink(missing_ok=True)
 
             expect_error = bool(case.case_data.get("expectError"))
-            gap, message = cc_case_parity_gap(case, direct, mcp, direct_ws, mcp_ws, expect_error)
-            expected_gap = CC_1C_EXPECTED_GAPS.get(case.case_id)
-            if expected_gap is None:
-                self.assertIsNone(gap, message)
-                return
-            self.assertEqual(gap, expected_gap, f"{case.case_id}: expected gap {expected_gap}, got {gap}\n{message}")
+            return cc_case_observation(
+                case,
+                direct,
+                mcp,
+                direct_ws,
+                mcp_ws,
+                expect_error,
+            )
 
     def prepare_workspace(
         self,
@@ -4508,12 +4876,20 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                 self.assertTrue(mcp["ok"], json.dumps(mcp, ensure_ascii=False, indent=2))
                 if step.tool in NATIVE_PARITY_TOOLS:
                     self.assertIsNone(mcp.get("command"), f"{step.tool} setup must not use script fallback")
+                if step.stdout_path is not None:
+                    target = workspace / step.stdout_path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(mcp.get("stdout") or "", encoding="utf-8")
             else:
-                result = run_python_script(step.skill, step.script, step.arguments, workspace)
+                result = run_unica_reference_model(step.skill, step.script, step.arguments, workspace)
                 if result.returncode != 0:
                     raise AssertionError(
                         f"setup step {step.skill}/{step.script} failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
                     )
+                if step.stdout_path is not None:
+                    target = workspace / step.stdout_path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(result.stdout, encoding="utf-8")
 
     def prepare_cc_1c_workspace(self, workspace: Path, case: CcSkillCase) -> None:
         setup_name = case.case_data.get("setup") or case.skill_config.get("setup") or "none"
@@ -4521,6 +4897,7 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             result = run_cc_python_script("cf-init", "cf-init.py", {"Name": "TestConfig", "OutputDir": "."}, workspace)
             if result.returncode != 0:
                 raise AssertionError(f"cc setup empty-config failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+            project_empty_config_to_8_3_27(workspace)
         elif isinstance(setup_name, str) and setup_name.startswith("fixture:"):
             fixture = case.case_path.parent / "fixtures" / setup_name.removeprefix("fixture:")
             if not fixture.exists():
@@ -4532,7 +4909,10 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         for index, step in enumerate(case.case_data.get("preRun") or []):
             if "writeFile" in step:
                 write_file = step["writeFile"]
-                target = workspace / write_file["path"]
+                target = workspace / project_cc_case_path(
+                    case.skill_dir,
+                    write_file["path"],
+                )
                 target.parent.mkdir(parents=True, exist_ok=True)
                 content = write_file.get("content", "")
                 if not isinstance(content, str):
@@ -4545,9 +4925,14 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             if "input" in step:
                 pre_input = workspace / f"__cc_pre_input_{index}.json"
                 pre_input.write_text(json.dumps(step["input"], ensure_ascii=False, indent=2), encoding="utf-8")
-            args = cc_step_raw_args(step.get("args") or {}, workspace, pre_input)
+            args = cc_step_raw_args(
+                step.get("args") or {},
+                workspace,
+                pre_input,
+                case.skill_dir,
+            )
             try:
-                result = run_reference_skill_raw(script_rel, args, workspace)
+                result = run_donor_skill_raw(script_rel, args, workspace)
             finally:
                 if pre_input is not None:
                     pre_input.unlink(missing_ok=True)
@@ -4614,23 +4999,43 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
 
         threading.Thread(target=read_stdout, daemon=True).start()
         deadline = time.monotonic() + 30
+        def read_response() -> dict[str, Any]:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.fail("timed out waiting for MCP response")
+            try:
+                line = lines.get(timeout=remaining)
+            except queue.Empty:
+                self.fail("timed out waiting for MCP response")
+            if not line:
+                self.fail("MCP process exited before all responses arrived")
+            return json.loads(line)
+
         try:
+            # The rmcp-based server requires the MCP handshake before requests;
+            # perform it unless the scenario drives initialize itself, and wait
+            # for the initialize acknowledgement before sending anything else.
+            if not messages or messages[0].get("method") != "initialize":
+                process.stdin.write(
+                    json.dumps(MCP_HANDSHAKE[0], ensure_ascii=False) + "\n"
+                )
+                process.stdin.flush()
+                handshake_response = read_response()
+                self.assertEqual(
+                    handshake_response.get("id"), MCP_HANDSHAKE_ID, handshake_response
+                )
+                self.assertEqual(
+                    handshake_response["result"]["serverInfo"]["name"], "unica"
+                )
+                process.stdin.write(
+                    json.dumps(MCP_HANDSHAKE[1], ensure_ascii=False) + "\n"
+                )
             for message in messages:
                 process.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
             process.stdin.flush()
 
-            responses = []
-            for _ in messages:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    self.fail("timed out waiting for MCP response")
-                try:
-                    line = lines.get(timeout=remaining)
-                except queue.Empty:
-                    self.fail("timed out waiting for MCP response")
-                if not line:
-                    self.fail("MCP process exited before all responses arrived")
-                responses.append(json.loads(line))
+            expected = sum("id" in message for message in messages)
+            responses = [read_response() for _ in range(expected)]
 
             process.stdin.close()
             return_code = process.wait(timeout=max(0.1, deadline - time.monotonic()))
@@ -4661,13 +5066,13 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         return {response["id"]: response for response in responses}
 
 
-def run_python_script(
+def run_unica_reference_model(
     skill: str,
     script: str,
     arguments: dict[str, Any],
     workspace: Path,
     *,
-    skills_root: Path = REFERENCE_SKILLS_ROOT,
+    skills_root: Path = UNICA_REFERENCE_MODELS_ROOT,
 ) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         command_for_script(skill, script, arguments, skills_root=skills_root),
@@ -4685,112 +5090,23 @@ def run_cc_python_script(
     arguments: dict[str, Any],
     workspace: Path,
 ) -> subprocess.CompletedProcess[str]:
-    return run_python_script(skill, script, arguments, workspace)
+    return run_unica_reference_model(
+        skill,
+        script,
+        arguments,
+        workspace,
+        skills_root=DONOR_SKILLS_ROOT,
+    )
 
 
 CC_CASE_TOOLS = {
     "meta-compile": "unica.meta.compile",
-    "dcs-compile": "unica.dcs.compile",
+    "skd-compile": "unica.dcs.compile",
     "form-compile": "unica.form.compile",
     "form-compile-from-object": "unica.form.compile",
     "cfe-borrow": "unica.cfe.borrow",
 }
 
-
-CC_1C_EXPECTED_GAPS = {
-    "meta-compile/batch": "snapshot_diff",
-    "form-compile/dup-command-names": "ok_mismatch",
-    "form-compile/dup-element-names": "ok_mismatch",
-    "cfe-borrow/catalog": "snapshot_diff",
-    "cfe-borrow/common-module": "snapshot_diff",
-    "cfe-borrow/document": "snapshot_diff",
-    "cfe-borrow/enum": "snapshot_diff",
-    "cfe-borrow/multiple-objects": "snapshot_diff",
-    "form-compile/dynamic-list-parameters": "snapshot_diff",
-    "form-compile/minimal": "snapshot_diff",
-    "form-compile/namespace-collision-ok": "snapshot_diff",
-    "form-compile/pages": "snapshot_diff",
-    "form-compile/text-edit-flag": "snapshot_diff",
-    "meta-compile/accounting-register": "snapshot_diff",
-    "meta-compile/accumulation-register": "snapshot_diff",
-    "meta-compile/business-process": "snapshot_diff",
-    "meta-compile/calculation-register": "snapshot_diff",
-    "meta-compile/catalog-basic": "snapshot_diff",
-    "meta-compile/catalog-hierarchical": "snapshot_diff",
-    "meta-compile/catalog-minimal": "snapshot_diff",
-    "meta-compile/catalog-mixed-types": "snapshot_diff",
-    "meta-compile/catalog-tabparts": "snapshot_diff",
-    "meta-compile/chart-of-accounts": "snapshot_diff",
-    "meta-compile/chart-of-calculation-types": "snapshot_diff",
-    "meta-compile/chart-of-characteristic-types": "snapshot_diff",
-    "meta-compile/common-module-client": "snapshot_diff",
-    "meta-compile/common-module": "snapshot_diff",
-    "meta-compile/constant": "snapshot_diff",
-    "meta-compile/data-processor": "snapshot_diff",
-    "meta-compile/defined-type": "snapshot_diff",
-    "meta-compile/document-basic": "snapshot_diff",
-    "meta-compile/document-journal": "snapshot_diff",
-    "meta-compile/document-multiple-tabparts": "snapshot_diff",
-    "meta-compile/event-subscription": "snapshot_diff",
-    "meta-compile/exchange-plan": "snapshot_diff",
-    "meta-compile/http-service": "snapshot_diff",
-    "meta-compile/information-register": "snapshot_diff",
-    "meta-compile/report": "snapshot_diff",
-    "meta-compile/scheduled-job": "snapshot_diff",
-    "meta-compile/task": "snapshot_diff",
-    "meta-compile/web-service": "snapshot_diff",
-    "form-compile/commands": "stdout_mismatch_snapshot_diff",
-    "form-compile/dynamic-list-form": "stdout_mismatch_snapshot_diff",
-    "form-compile/groups": "stdout_mismatch_snapshot_diff",
-    "form-compile/input-fields": "stderr_mismatch",
-    "form-compile/table": "stdout_mismatch_snapshot_diff",
-    "meta-compile/error-unknown-type": "stderr_mismatch",
-    "cfe-borrow/form-bindings": "stdout_mismatch_snapshot_diff",
-    "form-compile/attributes-types": "stdout_mismatch_snapshot_diff",
-    "form-compile/auto-cmd-bar": "stdout_mismatch_snapshot_diff",
-    "form-compile/column-group": "stdout_mismatch_snapshot_diff",
-    "form-compile/file-dialog": "stdout_mismatch_snapshot_diff",
-    "form-compile/synonyms": "stdout_mismatch_snapshot_diff",
-    "meta-compile/enum": "snapshot_diff",
-    "dcs-compile/auto-data-parameters": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/available-values-and-folders": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/calc-object-name-restrict-string": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/calc-shorthand-extended": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/decimal-qualifier-defaults": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/empty-param-values": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/field-appearance-and-presentation": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/field-restrictions": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/full-example": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/grouping-and-totals": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/horizontal-merge": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/multi-lang-title": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/orgroup-string-items": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/parameter-title-presentation-synonyms": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/userestriction-object-form": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/with-filters": "stdout_mismatch_snapshot_diff",
-    "dcs-compile/with-parameters": "stdout_mismatch_snapshot_diff",
-    "form-compile/additional-columns": "unsupported_form_element",
-    "form-compile/button-group": "unsupported_form_element",
-    "form-compile/calendar": "unsupported_form_element",
-    "form-compile/chart-fields": "unsupported_form_element",
-    "form-compile/chart-gantt-settings": "unsupported_form_element",
-    "form-compile/chart-settings": "unsupported_form_element",
-    "form-compile/element-appearance": "unsupported_form_element",
-    "form-compile/events": "unsupported_form_element",
-    "form-compile/picture-field": "unsupported_form_element",
-    "form-compile/radio-auto-enum": "unsupported_form_element",
-    "form-compile/radio-synonyms": "unsupported_form_element",
-    "form-compile/radio-tumbler-strings": "unsupported_form_element",
-    "form-compile/special-fields": "unsupported_form_element",
-    "form-compile-from-object/accumreg-list-simple": "unsupported_from_object_type",
-    "form-compile-from-object/ccoct-item-simple": "unsupported_from_object_type",
-    "form-compile-from-object/chartofaccounts-item-simple": "unsupported_from_object_type",
-    "form-compile-from-object/chartofaccounts-list-simple": "unsupported_from_object_type",
-    "form-compile-from-object/exchangeplan-item-simple": "unsupported_from_object_type",
-    "form-compile-from-object/inforeg-list-periodic": "unsupported_from_object_type",
-    "form-compile-from-object/inforeg-record-nonperiodic": "unsupported_from_object_type",
-    "form-compile-from-object/inforeg-record-periodic": "unsupported_from_object_type",
-}
 
 
 def iter_cc_1c_skill_cases() -> list[CcSkillCase]:
@@ -4817,6 +5133,48 @@ def iter_cc_1c_skill_cases() -> list[CcSkillCase]:
                 )
             )
     return cases
+
+
+def load_donor_relations() -> dict[str, dict[str, Any]]:
+    registry = donor_contract.load_json(DONOR_RELATIONS_PATH)
+    relations = registry.get("relations")
+    if not isinstance(relations, dict):
+        raise AssertionError("donor relation registry must contain an object")
+    return relations
+
+
+def write_donor_observation_candidates(output_path: Path) -> None:
+    UnicaMcpScriptParityTests.setUpClass()
+    test_case = UnicaMcpScriptParityTests(methodName="runTest")
+    observations = {}
+    cases = iter_cc_1c_skill_cases()
+    for index, case in enumerate(cases, start=1):
+        print(
+            f"[{index}/{len(cases)}] {case.case_id}",
+            file=sys.stderr,
+            flush=True,
+        )
+        observation, message = test_case.observe_cc_1c_case(case)
+        observations[case.case_id] = {
+            "contentDigest": donor_contract.case_content_digest(
+                DONOR_SNAPSHOT_ROOT, case.case_id
+            ),
+            "observation": observation,
+            "observationFingerprint": donor_contract.observation_fingerprint(
+                observation
+            ),
+            "message": message,
+        }
+    payload = {
+        "schemaVersion": 1,
+        "snapshotRoot": str(DONOR_SNAPSHOT_ROOT),
+        "observations": observations,
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def cc_case_tool(case: CcSkillCase) -> str:
@@ -4847,12 +5205,22 @@ def cc_case_main_arguments(case: CcSkillCase, workspace: Path) -> tuple[dict[str
     arguments: dict[str, Any] = {}
     for mapping in case.skill_config["args"]:
         key = mapping["flag"].lstrip("-")
-        value = cc_mapping_value(mapping, case.case_data, workspace, input_file)
+        value = cc_mapping_value(
+            mapping,
+            case.case_data,
+            workspace,
+            input_file,
+            case.skill_dir,
+        )
         if value is CC_OMIT:
             continue
         arguments[key] = value
 
-    for key, value in cc_args_extra(case.case_data.get("args_extra") or [], workspace).items():
+    for key, value in cc_args_extra(
+        case.case_data.get("args_extra") or [],
+        workspace,
+        case.skill_dir,
+    ).items():
         arguments[key] = value
     return arguments, input_file
 
@@ -4865,6 +5233,7 @@ def cc_mapping_value(
     case_data: dict[str, Any],
     workspace: Path,
     input_file: Path | None,
+    case_scope: str,
 ) -> Any:
     source = mapping["from"]
     if source == "inputFile":
@@ -4874,12 +5243,17 @@ def cc_mapping_value(
     if source == "workDir":
         return "."
     if source == "outputPath":
-        return cc_workspace_path(workspace, case_data.get("outputPath") or "")
+        raw = project_cc_case_path(
+            case_scope,
+            case_data.get("outputPath") or "",
+        )
+        return cc_workspace_path(workspace, raw)
     if source == "workPath":
         field = mapping.get("field") or "objectPath"
         raw = case_data.get("params", {}).get(field, case_data.get(field))
         if raw in (None, ""):
             return CC_OMIT if mapping.get("optional") else "."
+        raw = project_cc_case_path(case_scope, raw)
         return cc_workspace_path(workspace, raw)
     if source == "switch":
         return case_data.get(mapping["flag"].lstrip("-"), True) is not False
@@ -4895,7 +5269,30 @@ def cc_workspace_path(workspace: Path, raw: str) -> str:
     return (workspace / raw).as_posix()
 
 
-def cc_args_extra(args_extra: list[Any], workspace: Path) -> dict[str, Any]:
+def project_cc_case_path(case_scope: str, raw: str) -> str:
+    projections = donor_contract.CASE_EXECUTION_PATH_PROJECTIONS.get(
+        case_scope,
+        {},
+    )
+    for source, target in projections.items():
+        for prefix in (source, f"{{workDir}}/{source}"):
+            if raw == prefix:
+                return target if prefix == source else f"{{workDir}}/{target}"
+            if raw.startswith(f"{prefix}/"):
+                replacement = (
+                    target
+                    if prefix == source
+                    else f"{{workDir}}/{target}"
+                )
+                return replacement + raw[len(prefix) :]
+    return raw
+
+
+def cc_args_extra(
+    args_extra: list[Any],
+    workspace: Path,
+    case_scope: str,
+) -> dict[str, Any]:
     result: dict[str, Any] = {}
     index = 0
     while index < len(args_extra):
@@ -4912,32 +5309,39 @@ def cc_args_extra(args_extra: list[Any], workspace: Path) -> dict[str, Any]:
             continue
         value = args_extra[next_index]
         if isinstance(value, str):
+            value = project_cc_case_path(case_scope, value)
             value = value.replace("{workDir}", workspace.as_posix())
         result[key] = value
         index += 2
     return result
 
 
-def cc_step_raw_args(args_map: dict[str, Any], workspace: Path, input_file: Path | None) -> list[str]:
+def cc_step_raw_args(
+    args_map: dict[str, Any],
+    workspace: Path,
+    input_file: Path | None,
+    case_scope: str,
+) -> list[str]:
     args: list[str] = []
     for flag, raw_value in args_map.items():
         args.append(flag)
         if raw_value is True or raw_value == "":
             continue
-        value = str(raw_value).replace("{workDir}", workspace.as_posix())
+        value = project_cc_case_path(case_scope, str(raw_value))
+        value = value.replace("{workDir}", workspace.as_posix())
         if input_file is not None:
             value = value.replace("{inputFile}", input_file.as_posix())
         args.append(value)
     return args
 
 
-def run_reference_skill_raw(
+def run_donor_skill_raw(
     script_rel: str,
     args: list[str],
     workspace: Path,
 ) -> subprocess.CompletedProcess[str]:
     skill, script = cc_script_skill_and_script(script_rel)
-    script_path = REFERENCE_SKILLS_ROOT / skill / "scripts" / script
+    script_path = DONOR_SKILLS_ROOT / skill / "scripts" / script
     result = subprocess.run(
         ["python3", str(script_path), *args],
         cwd=workspace,
@@ -4964,7 +5368,54 @@ def decoded_completed_process(
     )
 
 
-def cc_case_parity_gap(
+def cc_case_observation(
+    case: CcSkillCase,
+    direct: subprocess.CompletedProcess[str],
+    mcp: dict[str, Any],
+    direct_ws: Path,
+    mcp_ws: Path,
+    expect_error: bool,
+) -> tuple[dict[str, Any], str]:
+    mismatch_kind, message = _cc_case_parity_gap(
+        case,
+        direct,
+        mcp,
+        direct_ws,
+        mcp_ws,
+        expect_error,
+    )
+    expected_files = cc_case_expected_files(case)
+    donor_snapshot = snapshot_workspace(direct_ws)
+    unica_snapshot = snapshot_workspace(mcp_ws)
+    observation = {
+        "donorOk": direct.returncode == 0,
+        "unicaOk": bool(mcp.get("ok")),
+        "mismatchKind": mismatch_kind,
+        "donorStdoutSha256": donor_contract.sha256_json(
+            normalize_text(direct.stdout, direct_ws)
+        ),
+        "unicaStdoutSha256": donor_contract.sha256_json(
+            normalize_text(mcp.get("stdout") or "", mcp_ws)
+        ),
+        "donorStderrSha256": donor_contract.sha256_json(
+            normalize_text(direct.stderr, direct_ws)
+        ),
+        "unicaStderrSha256": donor_contract.sha256_json(
+            normalize_text(mcp.get("stderr") or "", mcp_ws)
+        ),
+        "donorWorkspaceSha256": donor_contract.sha256_json(donor_snapshot),
+        "unicaWorkspaceSha256": donor_contract.sha256_json(unica_snapshot),
+        "donorExpectedFiles": {
+            path: (direct_ws / path).exists() for path in expected_files
+        },
+        "unicaExpectedFiles": {
+            path: (mcp_ws / path).exists() for path in expected_files
+        },
+    }
+    return observation, message
+
+
+def _cc_case_parity_gap(
     case: CcSkillCase,
     direct: subprocess.CompletedProcess[str],
     mcp: dict[str, Any],
@@ -5035,6 +5486,17 @@ def cc_case_expected_files(case: CcSkillCase) -> list[str]:
     return [str(path) for path in files]
 
 
+def project_empty_config_to_8_3_27(workspace: Path) -> None:
+    configuration = workspace / "Configuration.xml"
+    data = configuration.read_bytes()
+    marker = b'version="2.17"'
+    if marker not in data:
+        raise AssertionError(
+            "donor empty-config fixture no longer uses the reviewed 2.17 format"
+        )
+    configuration.write_bytes(data.replace(marker, b'version="2.20"', 1))
+
+
 def copy_tree_contents(source: Path, target: Path) -> None:
     for child in source.iterdir():
         destination = target / child.name
@@ -5052,7 +5514,7 @@ def command_for_script(
     script: str,
     arguments: dict[str, Any],
     *,
-    skills_root: Path = REFERENCE_SKILLS_ROOT,
+    skills_root: Path = UNICA_REFERENCE_MODELS_ROOT,
 ) -> list[str]:
     script_path = skills_root / skill / "scripts" / script
     return ["python3", str(script_path), *script_args(arguments)]
@@ -5160,7 +5622,7 @@ def normalize_text(text: str, workspace: Path) -> str:
             normalized,
         )
     normalized = re.sub(
-        r"<REPO>/tests/fixtures/unica_mcp_script_parity/reference_skills/([^/\s\"']+)/scripts/([^/\s\"']+)",
+        r"<REPO>/tests/fixtures/unica_mcp_script_parity/unica_reference_models/([^/\s\"']+)/scripts/([^/\s\"']+)",
         r"<REPO>/<SKILL_SCRIPT>/\1/\2",
         normalized,
     )
@@ -5188,6 +5650,41 @@ def normalize_snapshot_text(text: str, workspace: Path) -> str:
 
 
 class WindowsParityNormalizationTests(unittest.TestCase):
+    def test_cfe_borrow_execution_separates_case_colliding_extension_root(
+        self,
+    ) -> None:
+        self.assertEqual(
+            project_cc_case_path("cfe-borrow", "ext"),
+            "extension",
+        )
+        self.assertEqual(
+            project_cc_case_path(
+                "cfe-borrow",
+                "{workDir}/ext/Catalogs/Товары.xml",
+            ),
+            "{workDir}/extension/Catalogs/Товары.xml",
+        )
+        self.assertEqual(
+            project_cc_case_path("meta-compile", "ext"),
+            "ext",
+        )
+
+    def test_empty_donor_config_is_projected_to_bound_8_3_27_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            configuration = workspace / "Configuration.xml"
+            configuration.write_text(
+                '<MetaDataObject version="2.17"><Configuration/></MetaDataObject>',
+                encoding="utf-8",
+            )
+
+            project_empty_config_to_8_3_27(workspace)
+
+            self.assertIn(
+                'version="2.20"',
+                configuration.read_text(encoding="utf-8"),
+            )
+
     def test_snapshot_ignores_one_optional_terminal_newline(self) -> None:
         workspace = Path("/parity-workspace")
 
@@ -5256,4 +5753,15 @@ def snapshot_workspace(workspace: Path) -> dict[str, str]:
 
 
 if __name__ == "__main__":
-    unittest.main()
+    cli = argparse.ArgumentParser(add_help=False)
+    cli.add_argument("--write-donor-observations", type=Path)
+    cli_args, unittest_args = cli.parse_known_args()
+    if cli_args.write_donor_observations is not None:
+        if unittest_args:
+            cli.error(
+                "unittest arguments cannot be combined with "
+                "--write-donor-observations"
+            )
+        write_donor_observation_candidates(cli_args.write_donor_observations)
+    else:
+        unittest.main(argv=[sys.argv[0], *unittest_args])

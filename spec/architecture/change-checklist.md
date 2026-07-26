@@ -66,5 +66,9 @@ git diff --check
 ```
 
 BSP parity fixtures are the narrow exception to whitespace normalization: they
-preserve harvested bytes under `.gitattributes` `-text -whitespace`, and their
-manifest hashes are the integrity check.
+preserve their committed bytes under `.gitattributes` `-text -whitespace`.
+Schema-v2 manifests distinguish upstream harvested hashes from hashes of the
+declared immutable CI-fixture profile projection; only schema-v1 direct
+harvests may be called byte-identical to upstream. That fixture derivation is
+not a supported migration or downgrade and must never be offered for user
+source.

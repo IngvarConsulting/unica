@@ -1,6 +1,8 @@
 # Спецификация формата ролей 1С:Предприятия 8.3
 
-Полное описание XML-формата ролей в выгрузке конфигурации. Версии формата: 2.17 (платформа 8.3.20–8.3.24), 2.20 (8.3.27+). Структура идентична, отличается только атрибут `version`.
+> Активный контракт Unica: платформа `8.3.27`, формат выгрузки `2.20`.
+
+Полное описание XML-формата ролей в выгрузке конфигурации для активного формата 2.20. Сравнение с прежним форматом приведено только как историческая справка.
 
 ## Файловая структура
 
@@ -78,7 +80,7 @@ Roles/
         xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"
         xmlns:xs="http://www.w3.org/2001/XMLSchema"
         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-        version="2.17">
+        version="2.20">
     <Role uuid="XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX">
         <Properties>
             <Name>ИмяРоли</Name>
@@ -120,7 +122,7 @@ Roles/
         xmlns:xs="http://www.w3.org/2001/XMLSchema"
         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
         xsi:type="Rights"
-        version="2.17">
+        version="2.20">
     <setForNewObjects>false</setForNewObjects>
     <setForAttributesByDefault>true</setForAttributesByDefault>
     <independentRightsOfChildObjects>false</independentRightsOfChildObjects>
@@ -727,7 +729,7 @@ RLS применяется к правам `Read`, `Update`, `Insert`, `Delete` 
 <?xml version="1.0" encoding="UTF-8"?>
 <MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core"
         xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema"
-        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.17">
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
     <Role uuid="00000000-0000-0000-0000-000000000001">
         <Properties>
             <Name>МояРоль</Name>
@@ -748,7 +750,7 @@ RLS применяется к правам `Read`, `Update`, `Insert`, `Delete` 
 <?xml version="1.0" encoding="UTF-8"?>
 <Rights xmlns="http://v8.1c.ru/8.2/roles" xmlns:xs="http://www.w3.org/2001/XMLSchema"
         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-        xsi:type="Rights" version="2.17">
+        xsi:type="Rights" version="2.20">
     <setForNewObjects>false</setForNewObjects>
     <setForAttributesByDefault>true</setForAttributesByDefault>
     <independentRightsOfChildObjects>false</independentRightsOfChildObjects>
@@ -763,7 +765,7 @@ RLS применяется к правам `Read`, `Update`, `Insert`, `Delete` 
 <?xml version="1.0" encoding="UTF-8"?>
 <Rights xmlns="http://v8.1c.ru/8.2/roles" xmlns:xs="http://www.w3.org/2001/XMLSchema"
         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-        xsi:type="Rights" version="2.17">
+        xsi:type="Rights" version="2.20">
     <setForNewObjects>false</setForNewObjects>
     <setForAttributesByDefault>true</setForAttributesByDefault>
     <independentRightsOfChildObjects>false</independentRightsOfChildObjects>
@@ -834,6 +836,7 @@ RLS применяется к правам `Read`, `Update`, `Insert`, `Delete` 
 
 ---
 
+<!-- legacy-format-reference:start -->
 ## Версии формата
 
 | Платформа | version (метаданные) | version (Rights.xml) | Изменения |
@@ -843,3 +846,4 @@ RLS применяется к правам `Read`, `Update`, `Insert`, `Delete` 
 | 8.3.27 | 2.20 | 2.20 | Только номер версии, структура идентична |
 
 Namespace Rights.xml (`http://v8.1c.ru/8.2/roles`) и namespace метаданных (`http://v8.1c.ru/8.3/MDClasses`) не менялись.
+<!-- legacy-format-reference:end -->

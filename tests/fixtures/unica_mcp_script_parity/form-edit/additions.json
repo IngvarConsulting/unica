@@ -8,7 +8,8 @@
   "commands": [
     {
       "name": "DoSomething",
-      "title": "Do something"
+      "title": "Do something",
+      "action": "DoSomething"
     }
   ],
   "formEvents": [

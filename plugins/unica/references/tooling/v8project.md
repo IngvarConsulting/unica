@@ -45,6 +45,10 @@ build:
 `infobase.connection` is the current runner key. Do not use legacy top-level
 `connection` in `v8project.yaml`.
 
+`basePath` is also removed from the pinned v8-runner contract. Relative
+`workPath`, infobase file paths, and source-set paths are resolved from the
+directory containing the primary config.
+
 `execution_timeout` is the v8-runner operation budget in milliseconds. The
 default is `300000`; v8-runner validates the value in the `1..=86400000` range.
 For a known long operation, change this project config value instead of adding a
@@ -88,7 +92,8 @@ Use the `v8-runner` skill and MCP `unica.runtime.execute` for runtime operations
 | Initialize infobase/workspace | `operation=init` |
 | Load XML sources and update DB | `operation=build` |
 | Force full source load | `operation=build`, `fullRebuild=true` |
-| Dump XML sources | `operation=dump`, `mode=full` |
+| Dump configuration/extension XML sources | synchronous `operation=dump`, `mode=full`; Unica verifies exact platform 8.3.27.x and staged raw format 2.20 before publication |
+| Preview external source-set dump | `operation=dump`, `mode=full`, `sourceSet=<external>`, `dryRun=true`; applied external dump is fail-closed |
 | Preview incremental/selected dump | `operation=dump`, `mode=incremental|partial`, `dryRun=true`; partial also requires `object=TYPE:NAME` or `objects=[...]` |
 | Load `.cf` / `.cfe` artifact | `operation=load`, `path=<file>`, `mode=load|merge` |
 | Export `.cf` / `.cfe` artifact | `operation=make`, `output=<file>` |
@@ -96,6 +101,18 @@ Use the `v8-runner` skill and MCP `unica.runtime.execute` for runtime operations
 | Run syntax checks | `operation=syntax`, `mode=designer-config|designer-modules|edt` |
 | Run tests | `operation=test`, `testRunner=yaxunit|va` |
 | Download configured tools | `operation=tools-download`, `tool=yaxunit|vanessa|client-mcp` |
+
+Windows applied full dump is currently fail-closed until owner-only ACL
+enforcement and handle-safe no-clobber directory publication are implemented;
+preview remains read-only. The supported POSIX route validates physical
+DESIGNER markers, attests the exact installation with sibling
+`ibcmd --version`, and never retains effective configuration or credentials in
+recovery.
+The installation must be immutable to the invoking non-root user: its complete
+tree and ancestry are root-owned, not group/world writable, link-free, and
+ACL-free. User-owned platform installs are rejected before `ibcmd` or
+`v8-runner` executes. ACL verification is supported on macOS/Linux; other Unix
+hosts fail closed.
 
 ## Skill Rules
 
@@ -106,6 +123,8 @@ Use the `v8-runner` skill and MCP `unica.runtime.execute` for runtime operations
 - Treat a platform-generated CDFI sidecar `ConfigDumpInfo.xml` whose root is `ConfigDumpInfo` as local per-infobase runtime state: keep it out of Git and never use it as source-format evidence. A legitimate metadata descriptor (including an external EPF/ERF descriptor) for an object actually named `ConfigDumpInfo` remains source and belongs in Git.
 - Use `execution_timeout` in `v8project.yaml` for long runtime operations; Unica does not expose `timeoutMs` for `unica.runtime.execute`.
 - Do not use `mode=update` for `operation=load`; v8-runner rejects it. Use `mode=load` or `mode=merge` with `settings`.
+- Applied `convert` is blocked until it uses the verified private-stage publication boundary.
+- Do not pass `DumpConfigToFiles` or `LoadConfigFromFiles` through Designer `rawKeys`; Unica rejects these unverified source bypasses.
 - When credentials are absent, try only empty-password `Администратор`, then empty-password `Admin`; if both fail, ask the user.
 - If a command reports a 1C license problem, stop and ask the user to fix licensing. Do not edit license services, HASP settings, registry, or license files.
-- If a runtime flag or debug-server step is missing from `unica.runtime.execute`, treat it as a Unica MCP contract gap. EPF/ERF dump/build flows use external source sets through `unica.runtime.execute`.
+- If a runtime flag or debug-server step is missing from `unica.runtime.execute`, treat it as a Unica MCP contract gap. EPF/ERF build flows use external source sets through `unica.runtime.execute`; their dump flow is preview-only for now.

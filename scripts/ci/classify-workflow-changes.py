@@ -28,6 +28,7 @@ TOOLCHAIN_PATHS = {
 }
 PACKAGE_PATHS = {
     ".agents/plugins/marketplace.json",
+    "plugins/unica/.claude-plugin/plugin.json",
     "plugins/unica/.codex-plugin/plugin.json",
     "plugins/unica/.mcp.json",
     "plugins/unica/bootstrap/launch.sh",
@@ -54,6 +55,9 @@ CI_CONTRACT_PATHS = {
 PLATFORM_CONTRACT_PATHS = {
     "scripts/ci/check-rust-platform-boundary.py",
     "tests/ci/test_rust_platform_boundary.py",
+}
+PLATFORM_SOURCE_PATHS = {
+    "crates/unica-coder/src/infrastructure/platform_xml_owner.rs",
 }
 PLATFORM_PREFIXES = (
     "crates/unica-coder/src/infrastructure/platform/",
@@ -116,6 +120,7 @@ def _is_platform_path(path: str) -> bool:
     )
     return (
         path in PLATFORM_CONTRACT_PATHS
+        or path in PLATFORM_SOURCE_PATHS
         or path.startswith(PLATFORM_PREFIXES)
         or platform_test_directory
         or platform_test_wrapper

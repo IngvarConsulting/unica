@@ -1,15 +1,61 @@
 {
-  "name": "План счетов с признаками учёта",
+  "name": "План счетов: субконто, признаки учёта и предопределённые счета",
+  "preRun": [
+    {
+      "script": "meta-compile/scripts/meta-compile",
+      "input": {
+        "type": "ChartOfCharacteristicTypes",
+        "name": "ВидыСубконто",
+        "valueType": "String(100)",
+        "predefined": ["Номенклатура: String(100)", "Склады: String(100)"]
+      },
+      "args": { "-JsonPath": "{inputFile}", "-OutputDir": "{workDir}" }
+    }
+  ],
   "input": {
     "type": "ChartOfAccounts",
     "name": "Хозрасчетный",
-    "codeLength": 4,
+    "synonym": { "ru": "План счетов бухгалтерского учета", "en": "Chart of accounts" },
+    "codeLength": 8,
     "descriptionLength": 120,
-    "maxExtDimensionCount": 0,
-    "accountingFlags": ["Валютный", "Количественный"]
+    "codeMask": "@@@.@@.@",
+    "extDimensionTypes": "ChartOfCharacteristicTypes.ВидыСубконто",
+    "maxExtDimensionCount": 2,
+    "checkUnique": true,
+    "accountingFlags": [
+      { "name": "Валютный", "synonym": "Валютный учет", "tooltip": "Ведется валютный учет" },
+      "Количественный"
+    ],
+    "extDimensionAccountingFlags": [
+      { "name": "Суммовой", "fillValue": true },
+      "Валютный"
+    ],
+    "predefined": [
+      {
+        "name": "ОсновныеСредства",
+        "code": "01",
+        "description": "Основные средства",
+        "accountType": "Active",
+        "order": " 01",
+        "flags": ["Количественный"],
+        "subconto": ["Номенклатура | Суммовой"],
+        "childItems": [
+          {
+            "name": "ОсновныеСредстваВОрганизации",
+            "code": "01.01",
+            "description": "Основные средства в организации",
+            "accountType": "Active",
+            "order": " 01.01",
+            "flags": ["Количественный"],
+            "subconto": ["Номенклатура | Turnover, Суммовой"]
+          }
+        ]
+      },
+      { "name": "Служебный", "code": "000", "accountType": "ActivePassive", "order": " 00" }
+    ]
   },
   "validatePath": "ChartsOfAccounts/Хозрасчетный",
   "expect": {
-    "files": ["ChartsOfAccounts/Хозрасчетный.xml", "ChartsOfAccounts/Хозрасчетный/Ext/ObjectModule.bsl"]
+    "files": ["ChartsOfAccounts/Хозрасчетный.xml", "ChartsOfAccounts/Хозрасчетный/Ext/Predefined.xml"]
   }
 }

@@ -1,3 +1,4 @@
+use crate::domain::project_sources::ProjectSourceSet;
 use crate::domain::source_roots::{select_default_source_set, ResolvedSourceRoot};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform::filesystem::strip_windows_extended_length_prefix;
@@ -85,6 +86,49 @@ pub(crate) fn normalize_contained_source_root(
     let path = normalize_path_identity(&candidate)?;
     ensure_inside_workspace(&path, &workspace_root)?;
     Ok(path)
+}
+
+pub(crate) fn select_unique_deepest_source_set_match<'a>(
+    target: &Path,
+    matches: Vec<(&'a ProjectSourceSet, PathBuf)>,
+) -> Result<Option<(&'a ProjectSourceSet, PathBuf)>, String> {
+    let mut deepest = deepest_source_set_matches(matches);
+    if deepest.len() > 1 {
+        let descriptions = deepest
+            .iter()
+            .map(|(source_set, root)| {
+                format!(
+                    "`{}` ({:?}, {})",
+                    source_set.name,
+                    source_set.kind,
+                    root.display()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "ambiguous source-set ownership for {}: {} equally specific matches: {descriptions}",
+            target.display(),
+            deepest.len()
+        ));
+    }
+    Ok(deepest.pop())
+}
+
+pub(crate) fn deepest_source_set_matches(
+    matches: Vec<(&ProjectSourceSet, PathBuf)>,
+) -> Vec<(&ProjectSourceSet, PathBuf)> {
+    let Some(deepest_depth) = matches
+        .iter()
+        .map(|(_, root)| root.components().count())
+        .max()
+    else {
+        return Vec::new();
+    };
+    matches
+        .into_iter()
+        .filter(|(_, root)| root.components().count() == deepest_depth)
+        .collect()
 }
 
 fn resolve_explicit(context: &WorkspaceContext, raw: &str) -> Result<ResolvedSourceRoot, String> {

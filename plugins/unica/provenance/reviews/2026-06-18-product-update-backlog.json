@@ -1,19 +1,19 @@
 {
   "schemaVersion": 1,
   "id": "2026-06-18-product-update-backlog",
-  "generatedAt": "2026-07-04",
+  "generatedAt": "2026-07-24",
   "purpose": "Product and dependency update backlog for Unica bundled tools, plugin package dependencies, and release-package inputs.",
   "products": [
     {
       "id": "bsl-analyzer",
       "kind": "bundled-tool",
-      "locked": "v0.2.55",
-      "latest": "v0.2.55",
+      "locked": "v0.2.62",
+      "latest": "v0.2.62",
       "risk": "high",
       "batch": "bsl-analyzer-contract",
       "status": "applied",
       "contractGate": true,
-      "notes": "Updated to v0.2.55 after reviewing v0.2.50, v0.2.53, v0.2.54, and v0.2.55 release assets. The refresh adds MCP startup/search responsiveness, typed metadata substrate and drift refresh work, deterministic diagnostics output, Salsa observability, and hot-path diagnostics/search improvements; Unica still consumes analyzer behavior only through typed unica.code.* graph/diagnostics gates."
+      "notes": "Updated to v0.2.62 after reviewing v0.2.56 through v0.2.62, including the issue #7 extension-analysis implementation. The refresh brings extension-topology and diagnostics fixes plus named-connection metadata work; Unica continues to consume only typed unica.code.* graph/diagnostics gates. It does not expose connection, event-log, execute, debug, rename, or fix-all capabilities. Dependency-aware CFE topology remains deferred until v8-runner #32 provides its shared configuration contract."
     },
     {
       "id": "rlm-tools-bsl",

@@ -4,6 +4,14 @@ use std::time::Duration;
 
 pub(crate) use super::filesystem::{create_dir_symlink_for_test, create_file_symlink_for_test};
 
+pub(crate) fn normalize_path_text_for_test(value: &str) -> String {
+    value.replace('\\', "/")
+}
+
+pub(crate) fn path_text_for_test(path: &Path) -> String {
+    normalize_path_text_for_test(&path.display().to_string())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FileLinkFixtureOutcome {
     Created,

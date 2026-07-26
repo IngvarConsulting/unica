@@ -25,9 +25,13 @@ Python/PowerShell/Bash operation scripts are not accepted runtime backends for
 3. Migrated skills must reference MCP `unica` tools only.
 4. Runtime handlers must return native operation results; they must not expose a
    script `command` fallback for XML/DSL operation backends.
-5. Donor Python scripts may remain only as reference models under
-   `tests/fixtures` for parity tests.
-6. Package metadata, generated native binaries, installers, and CI scripts remain
+5. Locally adapted Python scripts may remain only as Unica-owned reference
+   models under `tests/fixtures/unica_mcp_script_parity/unica_reference_models`
+   for native migration-equivalence tests. They are not pristine donor code.
+6. A separately versioned, byte-for-byte donor snapshot may remain under
+   `tests/fixtures/unica_mcp_script_parity/cc-1c-skills` for reviewed
+   compatibility tests.
+7. Package metadata, generated native binaries, installers, and CI scripts remain
    infrastructure and are not covered by this skill-local removal rule.
 
 ## Неграницы
@@ -36,8 +40,8 @@ Python/PowerShell/Bash operation scripts are not accepted runtime backends for
    native binary entrypoints.
 2. This ADR does not require replacing bundled external engines that remain
    behind internal adapters.
-3. This ADR does not ban parity fixtures that execute donor reference scripts
-   during tests.
+3. This ADR does not ban tests that execute either Unica-owned reference models
+   or scripts from a concrete, reviewed donor snapshot.
 
 ## Последствия
 
@@ -45,7 +49,8 @@ Python/PowerShell/Bash operation scripts are not accepted runtime backends for
    script fallbacks.
 2. Skill tests should reject operation-file workflow guidance.
 3. Native MCP handlers become the target home for XML/JSON DSL behavior.
-4. Documentation must state that operation scripts are reference fixtures only.
+4. Documentation must distinguish adapted Unica reference models from pristine
+   donor snapshots; neither is a runtime backend.
 
 ## План реализации
 
@@ -54,11 +59,12 @@ Python/PowerShell/Bash operation scripts are not accepted runtime backends for
 3. Port generators/removers, then editors and complex CFE/UI operations.
 4. Rewrite each migrated skill to route only through MCP `unica`.
 5. Remove packaged runtime operation scripts after tests pass.
-6. Keep donor scripts only in `tests/fixtures` as the parity source model.
+6. Keep adapted models and pristine donor snapshots in separate
+   `tests/fixtures` trees with different parity contracts.
 
 ## Верификация
 
 - [x] ADR states that operation scripts are not runtime architecture.
 - [x] ADR distinguishes package/runtime entrypoints from skill-local operation files.
 - [x] ADR requires MCP implementation and parity tests before deletion.
-- [x] ADR allows donor scripts only as parity fixtures.
+- [x] ADR distinguishes adapted Unica models from pristine donor snapshots.

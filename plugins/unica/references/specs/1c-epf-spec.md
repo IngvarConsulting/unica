@@ -1,7 +1,9 @@
 # Спецификация XML-формата выгрузки внешней обработки 1С
 
+> Активный контракт Unica: платформа `8.3.27`, формат выгрузки `2.20`.
+
 Формат: XML-выгрузка внешней обработки (ExternalDataProcessor) из конфигуратора 1С:Предприятие 8.3.
-Версия формата: `2.17`.
+Версия формата: `2.20`.
 
 > **Связанная спецификация**: Для внешних отчётов (ExternalReport / ERF) см. [1c-erf-spec.md](1c-erf-spec.md). Формат отчётов основан на формате обработок с дополнительными свойствами для СКД и вариантов.
 
@@ -68,7 +70,7 @@ xmlns="http://v8.1c.ru/8.3/MDClasses"
     xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"
     xmlns:xs="http://www.w3.org/2001/XMLSchema"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-    version="2.17">
+    version="2.20">
 ```
 
 ### 2.2. Описание формы (Form.xml)
@@ -99,7 +101,7 @@ xmlns="http://v8.1c.ru/8.3/xcf/logform"
     xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"
     xmlns:xs="http://www.w3.org/2001/XMLSchema"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-    version="2.17">
+    version="2.20">
 ```
 
 **Ключевое отличие**: файлы метаданных используют `http://v8.1c.ru/8.3/MDClasses`, описание формы — `http://v8.1c.ru/8.3/xcf/logform`.
@@ -110,7 +112,7 @@ xmlns="http://v8.1c.ru/8.3/xcf/logform"
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="..." version="2.17">
+<MetaDataObject xmlns="..." version="2.20">
     <ExternalDataProcessor uuid="<UUID>">
         <InternalInfo>
             <xr:ContainedObject>
@@ -320,7 +322,7 @@ xmlns="http://v8.1c.ru/8.3/xcf/logform"
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="..." version="2.17">
+<MetaDataObject xmlns="..." version="2.20">
     <Form uuid="<UUID>">
         <Properties>
             <Name><ИмяФормы></Name>
@@ -348,7 +350,7 @@ xmlns="http://v8.1c.ru/8.3/xcf/logform"
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="..." version="2.17">
+<MetaDataObject xmlns="..." version="2.20">
     <Template uuid="<UUID>">
         <Properties>
             <Name><ИмяМакета></Name>
@@ -386,7 +388,7 @@ xmlns="http://v8.1c.ru/8.3/xcf/logform"
 ### 6.1. Общая структура
 
 ```xml
-<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" ... version="2.17">
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" ... version="2.20">
     <Title>...</Title>
     <AutoTitle>false</AutoTitle>
     <AutoCommandBar name="ФормаКоманднаяПанель" id="-1">

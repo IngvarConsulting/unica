@@ -35,6 +35,20 @@ TEXT_SUFFIXES = {
     ".yaml",
     ".yml",
 }
+ALLOWED_DONOR_SKD_LINES = {
+    "scripts/ci/refresh-cc-1c-parity.py": {
+        '"skd-compile": "dcs-compile",',
+        '"skd-edit": "dcs-edit",',
+        '"skd-info": "dcs-info",',
+        '"skd-validate": "dcs-validate",',
+    },
+    "tests/ci/test_skill_provenance.py": {
+        '"dcs-compile": ["tests/skills/cases/skd-compile/**"],',
+    },
+    "tests/ci/test_unica_mcp_script_parity.py": {
+        '"skd-compile": "unica.dcs.compile",',
+    },
+}
 
 
 class DcsNamingContractTests(unittest.TestCase):
@@ -71,7 +85,11 @@ class DcsNamingContractTests(unittest.TestCase):
 
             text = self.text_for_naming_scan(path)
             for line_number, line in enumerate(text.splitlines(), start=1):
-                if SKD_IDENTIFIER.search(line):
+                if (
+                    SKD_IDENTIFIER.search(line)
+                    and line.strip()
+                    not in ALLOWED_DONOR_SKD_LINES.get(relative, set())
+                ):
                     violations.append(f"{relative}:{line_number}: {line.strip()}")
                 if DSC_IDENTIFIER.search(line):
                     violations.append(f"{relative}:{line_number}: {line.strip()}")
