@@ -1501,9 +1501,9 @@ fn cache_access_for(operation: &str, event: Option<DomainEventKind>) -> CacheAcc
 mod tests {
     use super::*;
     use crate::composition::testing::{
-        create_file_link_fixture_for_test, prepare_file_for_removal, set_unix_mode_for_test,
-        unix_mode_for_test, with_publication_lock_contention_signal, with_publication_lock_pause,
-        CompileTransaction, FileLinkFixtureOutcome,
+        create_file_link_fixture_for_test, file_identity_for_test, prepare_file_for_removal,
+        set_unix_mode_for_test, unix_mode_for_test, with_publication_lock_contention_signal,
+        with_publication_lock_pause, CompileTransaction, FileLinkFixtureOutcome,
     };
     use serde_json::Map;
     use std::collections::HashSet;
@@ -8896,15 +8896,7 @@ mod tests {
                     snapshot.push((relative, "directory", Vec::new(), None));
                     visit(root, &path, snapshot);
                 } else {
-                    let file = std::fs::File::open(&path).unwrap();
-                    let identity =
-                        crate::infrastructure::platform::filesystem::file_identity(&file)
-                            .ok()
-                            .zip(
-                                crate::infrastructure::platform::filesystem::hard_link_count(&file)
-                                    .ok(),
-                            )
-                            .map(|(identity, links)| format!("{identity:?}; links={links}"));
+                    let identity = file_identity_for_test(&path).unwrap();
                     snapshot.push((relative, "file", std::fs::read(&path).unwrap(), identity));
                 }
             }
