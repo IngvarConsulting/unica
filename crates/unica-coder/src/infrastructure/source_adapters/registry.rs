@@ -314,64 +314,210 @@ fn validate_ready_envelope(
             "ready navigation snapshot revision differs from the captured session",
         ));
     }
-    validate_serialized_envelope_binding(envelope, binding)
+    BindingValidator::new(binding).validate_envelope(envelope)
 }
 
-fn validate_serialized_envelope_binding(
-    envelope: &NavigationEnvelope,
-    binding: &SourceBinding,
-) -> Result<(), SourceAdapterError> {
-    let value = serde_json::to_value(envelope).map_err(|_| {
-        SourceAdapterError::new(
-            SourceAdapterErrorKind::SnapshotInconsistent,
-            "ready navigation envelope cannot be validated against its binding",
-        )
-    })?;
-    validate_serialized_binding_value(&value, binding)
+const MAX_BINDING_VALIDATION_DEPTH: usize = 64;
+const MAX_BINDING_VALIDATION_ITEMS: usize = 65_536;
+
+struct BindingValidator<'a> {
+    binding: &'a SourceBinding,
+    items: usize,
 }
 
-fn validate_serialized_binding_value(
-    value: &serde_json::Value,
-    binding: &SourceBinding,
-) -> Result<(), SourceAdapterError> {
-    match value {
-        serde_json::Value::Array(values) => {
-            for value in values {
-                validate_serialized_binding_value(value, binding)?;
-            }
-        }
-        serde_json::Value::Object(values) => {
-            if values
-                .get("sourceId")
-                .is_some_and(|value| value.as_str() != Some(binding.source_id.as_str()))
-            {
-                return Err(SourceAdapterError::new(
-                    SourceAdapterErrorKind::SnapshotInconsistent,
-                    "ready navigation contains a foreign source reference",
-                ));
-            }
-            if values
-                .get("snapshotRevision")
-                .is_some_and(|value| value.as_str() != Some(binding.revision.as_str()))
-            {
-                return Err(SourceAdapterError::new(
-                    SourceAdapterErrorKind::SnapshotStale,
-                    "ready navigation contains a cursor for another snapshot revision",
-                ));
-            }
-            for value in values.values() {
-                validate_serialized_binding_value(value, binding)?;
-            }
-        }
-        _ => {}
+impl<'a> BindingValidator<'a> {
+    fn new(binding: &'a SourceBinding) -> Self {
+        Self { binding, items: 0 }
     }
-    Ok(())
+
+    fn validate_envelope(
+        mut self,
+        envelope: &NavigationEnvelope,
+    ) -> Result<(), SourceAdapterError> {
+        if let Some(root) = &envelope.root {
+            self.validate_object_ref(root)?;
+        }
+        self.charge(envelope.nodes.len())?;
+        for node in &envelope.nodes {
+            self.validate_node(node)?;
+        }
+        self.charge(envelope.relations.len())?;
+        for page in &envelope.relations {
+            self.validate_group_ref(&page.relation)?;
+            self.charge(page.items.len())?;
+            for item in &page.items {
+                self.validate_node(item)?;
+            }
+            if let Some(cursor) = &page.next_cursor {
+                self.validate_cursor(cursor, &page.relation)?;
+            }
+        }
+        self.charge(envelope.relation_index.len())?;
+        for relation in &envelope.relation_index {
+            self.validate_relation(relation)?;
+        }
+        Ok(())
+    }
+
+    fn charge(&mut self, count: usize) -> Result<(), SourceAdapterError> {
+        self.items = self.items.checked_add(count).ok_or_else(|| {
+            SourceAdapterError::new(
+                SourceAdapterErrorKind::ResourceLimit,
+                "navigation binding validation item accounting overflow",
+            )
+        })?;
+        if self.items > MAX_BINDING_VALIDATION_ITEMS {
+            return Err(SourceAdapterError::new(
+                SourceAdapterErrorKind::ResourceLimit,
+                "navigation binding validation exceeds the item limit",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_node(
+        &mut self,
+        node: &crate::domain::navigation::NavigationNode,
+    ) -> Result<(), SourceAdapterError> {
+        self.validate_object_ref(&node.object_ref)?;
+        self.validate_object_ref(&node.reference)?;
+        self.charge(node.properties.len())?;
+        for property in node.properties.values() {
+            if let Some(value) = &property.value {
+                self.validate_property_value(value, 0)?;
+            }
+        }
+        self.charge(node.actions.len())?;
+        for action in &node.actions {
+            if let Some(target) = &action.target {
+                self.validate_object_ref(target)?;
+            }
+            if let Some(relation) = &action.owning_relation {
+                self.validate_relation_ref(relation)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_relation(
+        &mut self,
+        relation: &crate::domain::navigation::SemanticRelation,
+    ) -> Result<(), SourceAdapterError> {
+        self.validate_relation_ref(&relation.relation_ref)?;
+        self.validate_group_ref(&relation.group_ref)?;
+        self.validate_object_ref(&relation.source)?;
+        self.validate_object_ref(&relation.target)
+    }
+
+    fn validate_group_ref(
+        &self,
+        relation: &crate::domain::navigation::RelationGroupRef,
+    ) -> Result<(), SourceAdapterError> {
+        self.validate_source_id(&relation.source_id)?;
+        self.validate_object_ref(&relation.owner)
+    }
+
+    fn validate_relation_ref(
+        &self,
+        relation: &crate::domain::navigation::RelationRef,
+    ) -> Result<(), SourceAdapterError> {
+        self.validate_source_id(&relation.source_id)
+    }
+
+    fn validate_object_ref(
+        &self,
+        reference: &crate::domain::navigation::ObjectRef,
+    ) -> Result<(), SourceAdapterError> {
+        self.validate_source_id(&reference.source_id)
+    }
+
+    fn validate_source_id(
+        &self,
+        source_id: &crate::domain::source_adapters::SourceId,
+    ) -> Result<(), SourceAdapterError> {
+        if source_id != &self.binding.source_id {
+            return Err(SourceAdapterError::new(
+                SourceAdapterErrorKind::SnapshotInconsistent,
+                "ready navigation contains a foreign source reference",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_cursor(
+        &self,
+        cursor: &crate::domain::navigation::NavigationCursor,
+        group: &crate::domain::navigation::RelationGroupRef,
+    ) -> Result<(), SourceAdapterError> {
+        self.validate_source_id(&cursor.source_id)?;
+        if cursor.snapshot_revision != self.binding.revision {
+            return Err(SourceAdapterError::new(
+                SourceAdapterErrorKind::SnapshotStale,
+                "ready navigation contains a cursor for another snapshot revision",
+            ));
+        }
+        if cursor.target != group.owner.object_key
+            || cursor.relation != group.group_key
+            || cursor.relation_role != group.role
+            || cursor.relation_kind != group.kind
+        {
+            return Err(SourceAdapterError::new(
+                SourceAdapterErrorKind::SnapshotInconsistent,
+                "ready navigation cursor does not belong to its relation group",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_property_value(
+        &mut self,
+        value: &crate::domain::navigation::PropertyValue,
+        depth: usize,
+    ) -> Result<(), SourceAdapterError> {
+        if depth > MAX_BINDING_VALIDATION_DEPTH {
+            return Err(SourceAdapterError::new(
+                SourceAdapterErrorKind::ResourceLimit,
+                "navigation binding validation exceeds the property nesting limit",
+            ));
+        }
+        use crate::domain::navigation::{PropertyValue, TypeVariant};
+        match value {
+            PropertyValue::ObjectRef(reference) => self.validate_object_ref(reference),
+            PropertyValue::List(values) => {
+                self.charge(values.len())?;
+                for value in values {
+                    self.validate_property_value(value, depth + 1)?;
+                }
+                Ok(())
+            }
+            PropertyValue::Structure(values) => {
+                self.charge(values.len())?;
+                for value in values.values() {
+                    self.validate_property_value(value, depth + 1)?;
+                }
+                Ok(())
+            }
+            PropertyValue::TypeSet(types) => {
+                self.charge(types.variants.len())?;
+                for variant in &types.variants {
+                    if let TypeVariant::Primitive { qualifiers, .. } = variant {
+                        self.charge(qualifiers.len())?;
+                        for value in qualifiers.values() {
+                            self.validate_property_value(value, depth + 1)?;
+                        }
+                    }
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::BTreeSet,
+        collections::{BTreeMap, BTreeSet},
         fs,
         path::PathBuf,
         sync::{
@@ -383,8 +529,11 @@ mod tests {
     use crate::{
         domain::{
             navigation::{
-                IdentityStrength, NavigationEnvelope, NavigationStatus, NodeKind, ObjectKey,
-                ObjectRef, SourceAdapterDiagnostic,
+                CapabilityState, IdentityStrength, NavigationCursor, NavigationEnvelope,
+                NavigationNode, NavigationRelationPage, NavigationStatus, NodeKind, ObjectKey,
+                ObjectRef, PropertyCapability, PropertyProvenance, PropertyType, PropertyValue,
+                PropertyValueState, RelationGroupRef, RelationKind, RelationRef, RelationRole,
+                SemanticAction, SemanticProperty, SemanticRelation, SourceAdapterDiagnostic,
             },
             source_adapters::{
                 AdapterManifest, AdapterMaturity, FormatRange, FormatVersion, SnapshotConsistency,
@@ -985,6 +1134,52 @@ mod tests {
     }
 
     #[test]
+    fn typed_identity_fields_fail_closed_without_inspecting_ordinary_data_keys() {
+        for case in [
+            BindingReaderCase::Node,
+            BindingReaderCase::RelationGroup,
+            BindingReaderCase::RelationIndex,
+            BindingReaderCase::RelationItem,
+            BindingReaderCase::CursorSource,
+            BindingReaderCase::CursorRevision,
+            BindingReaderCase::CursorOwner,
+            BindingReaderCase::CursorGroup,
+            BindingReaderCase::NestedObjectRef,
+            BindingReaderCase::ActionTarget,
+        ] {
+            let error = registry_with(
+                vec![probe_match("2.20")],
+                vec![Box::new(BindingTestReader {
+                    manifest: manifest("xml-2.20", exact("2.20")),
+                    case: Some(case),
+                })],
+            )
+            .inspect(input())
+            .unwrap_err();
+            assert_eq!(
+                error.kind,
+                if matches!(case, BindingReaderCase::CursorRevision) {
+                    SourceAdapterErrorKind::SnapshotStale
+                } else {
+                    SourceAdapterErrorKind::SnapshotInconsistent
+                },
+                "case {case:?}",
+            );
+        }
+
+        let navigation = registry_with(
+            vec![probe_match("2.20")],
+            vec![Box::new(BindingTestReader {
+                manifest: manifest("xml-2.20", exact("2.20")),
+                case: None,
+            })],
+        )
+        .inspect(input())
+        .expect("ordinary property and diagnostic keys are not semantic references");
+        assert_eq!(navigation.status, NavigationStatus::Available);
+    }
+
+    #[test]
     fn descriptor_format_must_match_a_pinned_captured_session() {
         let registry = BuiltInSourceAdapterRegistry::with_adapters(
             vec![Box::new(FakeCapture {
@@ -1008,6 +1203,25 @@ mod tests {
 
     struct ForeignReferenceReader {
         manifest: AdapterManifest,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum BindingReaderCase {
+        Node,
+        RelationGroup,
+        RelationIndex,
+        RelationItem,
+        CursorSource,
+        CursorRevision,
+        CursorOwner,
+        CursorGroup,
+        NestedObjectRef,
+        ActionTarget,
+    }
+
+    struct BindingTestReader {
+        manifest: AdapterManifest,
+        case: Option<BindingReaderCase>,
     }
 
     #[test]
@@ -1094,6 +1308,213 @@ mod tests {
                 diagnostics: Vec::new(),
                 relation_index: Vec::new(),
             })
+        }
+    }
+
+    impl SourceReadAdapter for BindingTestReader {
+        fn manifest(&self) -> &AdapterManifest {
+            &self.manifest
+        }
+
+        fn inspect_captured(
+            &self,
+            session: &dyn CapturedSourceSession,
+            descriptor: &SourceDescriptor,
+        ) -> Result<NavigationEnvelope, SourceAdapterError> {
+            let binding = session.binding();
+            let root = bound_reference(binding, "binding-root");
+            let mut envelope = NavigationEnvelope {
+                schema_version: "1".to_string(),
+                status: NavigationStatus::Available,
+                snapshot: Some(SourceSnapshot {
+                    source_id: descriptor.source_id.clone(),
+                    revision: binding.revision.clone(),
+                    consistency: SnapshotConsistency::Consistent,
+                    adapter_id: self.manifest.adapter_id.to_string(),
+                }),
+                root: Some(root.clone()),
+                nodes: vec![bound_node(root.clone())],
+                relations: Vec::new(),
+                diagnostics: Vec::new(),
+                relation_index: Vec::new(),
+            };
+            match self.case {
+                Some(BindingReaderCase::Node) => {
+                    envelope.nodes[0].reference = foreign_reference("foreign-node");
+                }
+                Some(BindingReaderCase::RelationGroup) => {
+                    let mut relation = bound_group(binding, root.clone());
+                    relation.source_id = SourceId::new("workspace:foreign").unwrap();
+                    envelope.relations.push(NavigationRelationPage {
+                        relation,
+                        items: Vec::new(),
+                        next_cursor: None,
+                    });
+                }
+                Some(BindingReaderCase::RelationIndex) => {
+                    let group = bound_group(binding, root.clone());
+                    envelope.relation_index.push(SemanticRelation {
+                        relation_ref: RelationRef::new(
+                            SourceId::new("workspace:foreign").unwrap(),
+                            "foreign-relation",
+                            RelationKind::Contains,
+                        )
+                        .unwrap(),
+                        group_ref: group,
+                        identity_strength: IdentityStrength::Persistent,
+                        kind: RelationKind::Contains,
+                        role: RelationRole::Attributes,
+                        source: root.clone(),
+                        target: root,
+                        capability: envelope.nodes[0].capability.clone(),
+                    });
+                }
+                Some(BindingReaderCase::RelationItem) => {
+                    envelope.relations.push(NavigationRelationPage {
+                        relation: bound_group(binding, root),
+                        items: vec![bound_node(foreign_reference("foreign-item"))],
+                        next_cursor: None,
+                    });
+                }
+                Some(BindingReaderCase::CursorSource)
+                | Some(BindingReaderCase::CursorRevision)
+                | Some(BindingReaderCase::CursorOwner)
+                | Some(BindingReaderCase::CursorGroup) => {
+                    let relation = bound_group(binding, root);
+                    let mut cursor = bound_cursor(binding, &relation);
+                    match self.case.unwrap() {
+                        BindingReaderCase::CursorSource => {
+                            cursor.source_id = SourceId::new("workspace:foreign").unwrap();
+                        }
+                        BindingReaderCase::CursorRevision => {
+                            cursor.snapshot_revision =
+                                SourceRevision::new("sha256:foreign-cursor").unwrap();
+                        }
+                        BindingReaderCase::CursorOwner => {
+                            cursor.target = ObjectKey::new("foreign-owner").unwrap();
+                        }
+                        BindingReaderCase::CursorGroup => {
+                            cursor.relation = RelationRef::new(
+                                binding.source_id.clone(),
+                                "foreign-group",
+                                RelationKind::Contains,
+                            )
+                            .unwrap()
+                            .relation_key;
+                        }
+                        _ => unreachable!(),
+                    }
+                    envelope.relations.push(NavigationRelationPage {
+                        relation,
+                        items: Vec::new(),
+                        next_cursor: Some(cursor),
+                    });
+                }
+                Some(BindingReaderCase::NestedObjectRef) => {
+                    envelope.nodes[0].properties.insert(
+                        "nested".to_string(),
+                        structure_property(PropertyValue::Structure(BTreeMap::from([(
+                            "nested".to_string(),
+                            PropertyValue::List(vec![PropertyValue::ObjectRef(foreign_reference(
+                                "foreign-property",
+                            ))]),
+                        )]))),
+                    );
+                }
+                Some(BindingReaderCase::ActionTarget) => {
+                    envelope.nodes[0]
+                        .actions
+                        .push(SemanticAction::modeled_clone(
+                            foreign_reference("foreign-action"),
+                            None,
+                        ));
+                }
+                None => {
+                    envelope.nodes[0].properties.insert(
+                        "ordinary".to_string(),
+                        structure_property(PropertyValue::Structure(BTreeMap::from([
+                            (
+                                "sourceId".to_string(),
+                                PropertyValue::String("workspace:foreign".to_string()),
+                            ),
+                            (
+                                "snapshotRevision".to_string(),
+                                PropertyValue::String("sha256:foreign".to_string()),
+                            ),
+                        ]))),
+                    );
+                    envelope.diagnostics.push(SourceAdapterDiagnostic {
+                        code: "ordinary_data".to_string(),
+                        message: "ordinary keys are not references".to_string(),
+                        details: Some(serde_json::json!({
+                            "sourceId": "workspace:foreign",
+                            "snapshotRevision": "sha256:foreign",
+                        })),
+                    });
+                }
+            }
+            Ok(envelope)
+        }
+    }
+
+    fn bound_reference(binding: &SourceBinding, key: &str) -> ObjectRef {
+        ObjectRef::new(
+            binding.source_id.clone(),
+            ObjectKey::new(key).unwrap(),
+            IdentityStrength::Persistent,
+            NodeKind::Document,
+            "Bound",
+        )
+    }
+
+    fn foreign_reference(key: &str) -> ObjectRef {
+        ObjectRef::new(
+            SourceId::new("workspace:foreign").unwrap(),
+            ObjectKey::new(key).unwrap(),
+            IdentityStrength::Persistent,
+            NodeKind::Document,
+            "Foreign",
+        )
+    }
+
+    fn bound_node(reference: ObjectRef) -> NavigationNode {
+        NavigationNode::new(reference, CapabilityState::resolved_authorable())
+    }
+
+    fn bound_group(binding: &SourceBinding, owner: ObjectRef) -> RelationGroupRef {
+        RelationGroupRef::new(
+            binding.source_id.clone(),
+            owner,
+            RelationRole::Attributes,
+            RelationKind::Contains,
+        )
+        .unwrap()
+    }
+
+    fn bound_cursor(binding: &SourceBinding, group: &RelationGroupRef) -> NavigationCursor {
+        NavigationCursor::issue(
+            b"binding-test-cursor",
+            binding.source_id.clone(),
+            binding.revision.clone(),
+            group.owner.object_key.clone(),
+            group.clone(),
+            crate::domain::navigation::NavigationSelection {
+                properties: crate::domain::navigation::PropertySelection::All,
+                facets: crate::domain::navigation::FacetSelection::Full,
+                relations: Vec::new(),
+            },
+            1,
+        )
+        .unwrap()
+    }
+
+    fn structure_property(value: PropertyValue) -> SemanticProperty {
+        SemanticProperty {
+            value_type: PropertyType::Structure,
+            value_state: PropertyValueState::Explicit,
+            value: Some(value),
+            provenance: PropertyProvenance::Descriptor,
+            capability: PropertyCapability::ReadOnly,
         }
     }
 }

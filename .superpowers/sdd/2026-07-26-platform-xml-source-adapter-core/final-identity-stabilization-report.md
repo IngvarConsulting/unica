@@ -49,9 +49,9 @@
 ## Verification
 
 - `cargo fmt --all`
-- Focused Rust suites: provider `11`, probe `17`, registry `16`, meta `34`,
+- Focused Rust suites: provider `12`, registry `17`, probe `17`, meta `34`,
   navigation `16`, typed result `1`, projector `19`, certification `5`, and
-  application `96`: `215/215` passed.
+  application `96`: `217/217` passed.
 - `python3.12 -m unittest -q tests/ci/test_unica_skills.py`: `31/31` passed.
 
 ## Boundary note
@@ -61,3 +61,24 @@ as `Items.xml` and `Orders.xml`: the decoder deliberately verifies descriptor
 filename against native identity. The provider test covers byte-identical
 target/revision separation; the native cache/continuation test uses two valid
 sibling descriptors to preserve that invariant.
+
+## Fix Round 1
+
+- Registry binding validation now walks only typed semantic identity-bearing
+  navigation fields. It ignores ordinary property structures and diagnostic
+  JSON keys named `sourceId` or `snapshotRevision`, and enforces a depth limit
+  of `64` plus a bounded typed-item count before recursive descent.
+- The second provider pass retains no duplicate snapshot bytes. It streams each
+  expected read-set file through a fixed `64 KiB` buffer and compares bounded
+  length and SHA-256 evidence against the retained first snapshot. Peak capture
+  memory is at most `64 MiB` retained source bytes plus the fixed buffer and
+  metadata overhead.
+- Both first capture and verification cap every read at
+  `min(8 MiB, aggregate bytes remaining)` plus one sentinel byte. Checked
+  accounting rejects stale growth with `resource_limit` without another large
+  allocation or read.
+- Pre/post regular-file and symlink checks remain in place. The accepted threat
+  boundary remains hostile mutation inside the provider's two-pass capture
+  window; no platform-specific `openat2`-style dependency was introduced.
+- Verification: `cargo fmt --all`; the focused Rust matrix passed `217/217`,
+  and `tests/ci/test_unica_skills.py` passed `31/31`.
