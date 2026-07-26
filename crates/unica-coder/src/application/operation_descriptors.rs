@@ -54,7 +54,6 @@ const EMPTY: &[&str] = &[];
 pub(crate) const CF_PATH: &[&str] = &["ConfigPath", "configPath", "Path", "path"];
 const CONFIG_DIR: &[&str] = &["ConfigDir", "configDir"];
 const OUTPUT_DIR: &[&str] = &["OutputDir", "outputDir"];
-const OUT_FILE: &[&str] = &["OutFile", "outFile"];
 const EXTENSION_PATH: &[&str] = &["ExtensionPath", "extensionPath"];
 pub(crate) const CFE_VALIDATE_PATH: &[&str] = &["ExtensionPath", "extensionPath", "Path", "path"];
 const CFE_BORROW_SOURCE: &[&str] = &["ExtensionPath", "ConfigPath", "extensionPath", "configPath"];
@@ -105,7 +104,6 @@ const PARENT_PATH: &[&str] = &["Parent", "parent"];
 const CF_PATH_GROUP: PathAliasGroup = path_alias_group("ConfigPath", CF_PATH);
 const CONFIG_DIR_GROUP: PathAliasGroup = path_alias_group("ConfigDir", CONFIG_DIR);
 const OUTPUT_DIR_GROUP: PathAliasGroup = path_alias_group("OutputDir", OUTPUT_DIR);
-const OUT_FILE_GROUP: PathAliasGroup = path_alias_group("OutFile", OUT_FILE);
 const EXTENSION_PATH_GROUP: PathAliasGroup = path_alias_group("ExtensionPath", EXTENSION_PATH);
 const CFE_VALIDATE_PATH_GROUP: PathAliasGroup =
     path_alias_group("ExtensionPath", CFE_VALIDATE_PATH);
@@ -125,16 +123,16 @@ const MODULE_PATH_GROUP: PathAliasGroup = path_alias_group("ModulePath", MODULE_
 const PARENT_PATH_GROUP: PathAliasGroup = path_alias_group("Parent", PARENT_PATH);
 
 const CF_EDIT_PATH_GROUPS: &[PathAliasGroup] = &[CF_PATH_GROUP, DEFINITION_FILE_GROUP];
-const CF_READ_PATH_GROUPS: &[PathAliasGroup] = &[CF_PATH_GROUP, OUT_FILE_GROUP];
+const CF_READ_PATH_GROUPS: &[PathAliasGroup] = &[CF_PATH_GROUP];
 const CF_INIT_PATH_GROUPS: &[PathAliasGroup] = &[OUTPUT_DIR_GROUP];
 const SUPPORT_PATH_GROUPS: &[PathAliasGroup] = &[SUPPORT_PATH_GROUP];
 const CFE_TWO_ROOT_PATH_GROUPS: &[PathAliasGroup] = &[EXTENSION_PATH_GROUP, CF_PATH_GROUP];
 const CFE_INIT_PATH_GROUPS: &[PathAliasGroup] = &[CF_PATH_GROUP, CFE_INIT_OUTPUT_GROUP];
 const CFE_PATCH_METHOD_PATH_GROUPS: &[PathAliasGroup] = &[EXTENSION_PATH_GROUP, MODULE_PATH_GROUP];
-const CFE_VALIDATE_PATH_GROUPS: &[PathAliasGroup] = &[CFE_VALIDATE_PATH_GROUP, OUT_FILE_GROUP];
+const CFE_VALIDATE_PATH_GROUPS: &[PathAliasGroup] = &[CFE_VALIDATE_PATH_GROUP];
 const COMPILE_TO_DIR_PATH_GROUPS: &[PathAliasGroup] = &[JSON_PATH_GROUP, OUTPUT_DIR_GROUP];
 const META_EDIT_PATH_GROUPS: &[PathAliasGroup] = &[OBJECT_PATH_GROUP, DEFINITION_FILE_GROUP];
-const OBJECT_READ_PATH_GROUPS: &[PathAliasGroup] = &[OBJECT_PATH_GROUP, OUT_FILE_GROUP];
+const OBJECT_READ_PATH_GROUPS: &[PathAliasGroup] = &[OBJECT_PATH_GROUP];
 const META_REMOVE_PATH_GROUPS: &[PathAliasGroup] = &[CONFIG_DIR_GROUP];
 const SRC_DIR_PATH_GROUPS: &[PathAliasGroup] = &[SRC_DIR_GROUP];
 const OBJECT_PATH_GROUPS: &[PathAliasGroup] = &[OBJECT_PATH_GROUP];
@@ -143,18 +141,18 @@ const FORM_COMPILE_PATH_GROUPS: &[PathAliasGroup] =
 const FORM_EDIT_PATH_GROUPS: &[PathAliasGroup] = &[FORM_PATH_GROUP, JSON_PATH_GROUP];
 const FORM_READ_PATH_GROUPS: &[PathAliasGroup] = &[FORM_PATH_GROUP];
 const INTERFACE_EDIT_PATH_GROUPS: &[PathAliasGroup] = &[CI_PATH_GROUP, DEFINITION_FILE_GROUP];
-const INTERFACE_READ_PATH_GROUPS: &[PathAliasGroup] = &[CI_PATH_GROUP, OUT_FILE_GROUP];
+const INTERFACE_READ_PATH_GROUPS: &[PathAliasGroup] = &[CI_PATH_GROUP];
 const SUBSYSTEM_COMPILE_PATH_GROUPS: &[PathAliasGroup] =
     &[OUTPUT_DIR_GROUP, PARENT_PATH_GROUP, DEFINITION_FILE_GROUP];
 const SUBSYSTEM_EDIT_PATH_GROUPS: &[PathAliasGroup] =
     &[SUBSYSTEM_PATH_GROUP, DEFINITION_FILE_GROUP];
-const SUBSYSTEM_READ_PATH_GROUPS: &[PathAliasGroup] = &[SUBSYSTEM_PATH_GROUP, OUT_FILE_GROUP];
+const SUBSYSTEM_READ_PATH_GROUPS: &[PathAliasGroup] = &[SUBSYSTEM_PATH_GROUP];
 const DCS_COMPILE_PATH_GROUPS: &[PathAliasGroup] = &[OUTPUT_PATH_GROUP, DEFINITION_FILE_GROUP];
 const DCS_EDIT_PATH_GROUPS: &[PathAliasGroup] = &[TEMPLATE_PATH_GROUP, DEFINITION_FILE_GROUP];
-const DCS_READ_PATH_GROUPS: &[PathAliasGroup] = &[TEMPLATE_PATH_GROUP, OUT_FILE_GROUP];
+const DCS_READ_PATH_GROUPS: &[PathAliasGroup] = &[TEMPLATE_PATH_GROUP];
 const MXL_READ_PATH_GROUPS: &[PathAliasGroup] = &[TEMPLATE_PATH_GROUP, SRC_DIR_GROUP];
 const COMPILE_TO_PATH_GROUPS: &[PathAliasGroup] = &[JSON_PATH_GROUP, OUTPUT_PATH_GROUP];
-const RIGHTS_READ_PATH_GROUPS: &[PathAliasGroup] = &[RIGHTS_PATH_GROUP, OUT_FILE_GROUP];
+const RIGHTS_READ_PATH_GROUPS: &[PathAliasGroup] = &[RIGHTS_PATH_GROUP];
 
 pub(crate) fn native_path_alias_groups(operation: &str) -> &'static [PathAliasGroup] {
     match operation {
@@ -220,7 +218,7 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
     descriptor_with_paths(
         "cf-info",
         &["ConfigPath"],
-        OUT_FILE,
+        EMPTY,
         CF_PATH,
         FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::HandlerResolved,
@@ -237,7 +235,7 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
     descriptor_with_paths(
         "cf-validate",
         &["ConfigPath"],
-        OUT_FILE,
+        EMPTY,
         CF_PATH,
         FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::HandlerResolved,
@@ -292,7 +290,7 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
     descriptor_with_paths(
         "cfe-validate",
         CFE_VALIDATE_REQUIRED,
-        OUT_FILE,
+        EMPTY,
         CFE_VALIDATE_PATH,
         FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::HandlerResolved,
@@ -317,7 +315,7 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
     descriptor_with_paths(
         "meta-info",
         OBJECT_PATH_REQUIRED,
-        OUT_FILE,
+        EMPTY,
         OBJECT_PATH,
         FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::HandlerResolved,
@@ -333,7 +331,7 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
     descriptor_with_paths(
         "meta-validate",
         OBJECT_PATH_REQUIRED,
-        OUT_FILE,
+        EMPTY,
         OBJECT_PATH,
         FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::HandlerResolved,
@@ -410,7 +408,7 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
     descriptor_with_paths(
         "interface-validate",
         CI_PATH_REQUIRED,
-        OUT_FILE,
+        EMPTY,
         CI_PATH,
         FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::HandlerResolved,
@@ -438,14 +436,14 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
     descriptor(
         "subsystem-info",
         SUBSYSTEM_PATH_REQUIRED,
-        OUT_FILE,
+        EMPTY,
         SUBSYSTEM_PATH,
         None,
     ),
     descriptor(
         "subsystem-validate",
         SUBSYSTEM_PATH_REQUIRED,
-        OUT_FILE,
+        EMPTY,
         SUBSYSTEM_PATH,
         None,
     ),
@@ -486,14 +484,14 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
     descriptor(
         "dcs-info",
         TEMPLATE_PATH_REQUIRED,
-        OUT_FILE,
+        EMPTY,
         TEMPLATE_PATH,
         None,
     ),
     descriptor_with_paths(
         "dcs-validate",
         TEMPLATE_PATH_REQUIRED,
-        OUT_FILE,
+        EMPTY,
         TEMPLATE_PATH,
         FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::HandlerResolved,
@@ -540,7 +538,7 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
     descriptor_with_paths(
         "role-info",
         RIGHTS_PATH_REQUIRED,
-        OUT_FILE,
+        EMPTY,
         RIGHTS_PATH,
         FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::HandlerResolved,
@@ -549,7 +547,7 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
     descriptor_with_paths(
         "role-validate",
         RIGHTS_PATH_REQUIRED,
-        OUT_FILE,
+        EMPTY,
         RIGHTS_PATH,
         FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::HandlerResolved,

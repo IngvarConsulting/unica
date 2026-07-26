@@ -26,7 +26,6 @@ allowed-tools:
 | CIPath    | да    | —       | Путь к CommandInterface.xml             |
 | Detailed  | нет   | —       | Подробный вывод (все проверки, включая успешные) |
 | MaxErrors | нет   | 30      | Остановиться после N ошибок              |
-| OutFile   | нет   | —       | Записать результат в файл (UTF-8 BOM)   |
 
 ## MCP вызов
 

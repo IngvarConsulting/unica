@@ -54,8 +54,6 @@ pub(crate) struct DcsValidationReporter {
 pub(crate) struct DcsValidationRun {
     pub(crate) ok: bool,
     pub(crate) stdout: String,
-    pub(crate) out_file: Option<PathBuf>,
-    pub(crate) out_file_label: Option<String>,
     pub(crate) artifact: PathBuf,
     pub(crate) errors: Vec<String>,
 }
@@ -125,7 +123,7 @@ pub(crate) fn analyze_dcs_info(
     const NS_SCHEMA: &str = DCS_SCHEMA_NS;
     const NS_SETTINGS: &str = "http://v8.1c.ru/8.1/data-composition-system/settings";
 
-    let result = (|| -> Result<(String, Option<PathBuf>, PathBuf), String> {
+    let result = (|| -> Result<(String, PathBuf), String> {
         let template_path = resolve_dcs_info_path_for_script(args, context)?;
         let resolved_path = template_path
             .canonicalize()
@@ -136,11 +134,10 @@ pub(crate) fn analyze_dcs_info(
         let root = doc.root_element();
         require_dcs_root(root)?;
         let mode = string_arg(args, &["mode", "Mode"]).unwrap_or("overview");
-        let out_file_label = string_arg(args, &["outFile", "OutFile"]).map(ToOwned::to_owned);
-        let out_file = out_file_label
-            .as_ref()
-            .filter(|value| !value.is_empty())
-            .map(|value| absolutize(PathBuf::from(value), &context.cwd));
+        let raw = bool_arg(args, &["raw", "Raw"]);
+        if raw && mode != "query" {
+            return Err("Raw is only supported with Mode=query".to_string());
+        }
         let limit = int_arg(args, &["limit", "Limit"]).unwrap_or(150).max(0) as usize;
         let offset = int_arg(args, &["offset", "Offset"]).unwrap_or(0).max(0) as usize;
         let mut lines = Vec::<String>::new();
@@ -159,6 +156,9 @@ pub(crate) fn analyze_dcs_info(
             }
             "query" => {
                 let name = string_arg(args, &["name", "Name"]);
+                if raw {
+                    return Ok((dcs_info_raw_query(root, NS_SCHEMA, name)?, resolved_path));
+                }
                 dcs_info_query(root, &mut lines, NS_SCHEMA, name)?;
             }
             "fields" => dcs_info_fields(root, &mut lines, NS_SCHEMA),
@@ -201,27 +201,12 @@ pub(crate) fn analyze_dcs_info(
         }
 
         let total_lines = lines.len();
-        if let Some(out_file) = &out_file {
-            if let Some(parent) = out_file.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
-            }
-            write_utf8_bom(out_file, &lines.join("\n"))?;
-            let label = out_file_label.as_deref().unwrap_or("");
-            return Ok((
-                format!("Written {total_lines} lines to {label}\n"),
-                Some(out_file.clone()),
-                resolved_path,
-            ));
-        }
-
         let mut result = if offset > 0 {
             if offset >= total_lines {
                 return Ok((
                     format!(
                         "[INFO] Offset {offset} exceeds total lines ({total_lines}). Nothing to show.\n"
                     ),
-                    None,
                     resolved_path,
                 ));
             }
@@ -239,27 +224,21 @@ pub(crate) fn analyze_dcs_info(
         } else {
             format!("{}\n", result.join("\n"))
         };
-        Ok((stdout, None, resolved_path))
+        Ok((stdout, resolved_path))
     })();
 
     match result {
-        Ok((stdout, out_file, artifact)) => {
-            let mut artifacts = vec![artifact.display().to_string()];
-            if let Some(out_file) = &out_file {
-                artifacts.push(out_file.display().to_string());
-            }
-            AdapterOutcome {
-                ok: true,
-                summary: "unica.dcs.info completed with native DCS inspector".to_string(),
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: Vec::new(),
-                artifacts,
-                stdout: Some(stdout),
-                stderr: None,
-                command: None,
-            }
-        }
+        Ok((stdout, artifact)) => AdapterOutcome {
+            ok: true,
+            summary: "unica.dcs.info completed with native DCS inspector".to_string(),
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: Vec::new(),
+            artifacts: vec![artifact.display().to_string()],
+            stdout: Some(stdout),
+            stderr: None,
+            command: None,
+        },
         Err(error) => AdapterOutcome {
             ok: false,
             summary: "unica.dcs.info failed in native DCS inspector".to_string(),
@@ -648,6 +627,40 @@ pub(crate) fn dcs_info_query(
     ns_schema: &str,
     name: Option<&str>,
 ) -> Result<(), String> {
+    let target = dcs_info_query_target(root, ns_schema, name)?;
+    let query = dcs_child(target, "query", ns_schema)
+        .map(dcs_inner_text)
+        .unwrap_or_default();
+    let name = dcs_child(target, "name", ns_schema)
+        .map(dcs_text_of)
+        .unwrap_or_default();
+    lines.push(format!(
+        "=== Query: {name} ({} lines) ===",
+        query.split('\n').count()
+    ));
+    lines.push(String::new());
+    for line in query.trim().split('\n') {
+        lines.push(line.trim_end().to_string());
+    }
+    Ok(())
+}
+
+pub(crate) fn dcs_info_raw_query(
+    root: roxmltree::Node<'_, '_>,
+    ns_schema: &str,
+    name: Option<&str>,
+) -> Result<String, String> {
+    let target = dcs_info_query_target(root, ns_schema, name)?;
+    Ok(dcs_child(target, "query", ns_schema)
+        .map(dcs_inner_text)
+        .unwrap_or_default())
+}
+
+fn dcs_info_query_target<'a, 'input>(
+    root: roxmltree::Node<'a, 'input>,
+    ns_schema: &str,
+    name: Option<&str>,
+) -> Result<roxmltree::Node<'a, 'input>, String> {
     let mut target = None;
     if let Some(name) = name.filter(|value| !value.is_empty()) {
         for data_set in dcs_children(root, "dataSet", ns_schema) {
@@ -719,21 +732,7 @@ pub(crate) fn dcs_info_query(
         }
         return Err("Dataset has no query element".to_string());
     }
-    let query = dcs_child(target, "query", ns_schema)
-        .map(dcs_inner_text)
-        .unwrap_or_default();
-    let name = dcs_child(target, "name", ns_schema)
-        .map(dcs_text_of)
-        .unwrap_or_default();
-    lines.push(format!(
-        "=== Query: {name} ({} lines) ===",
-        query.split('\n').count()
-    ));
-    lines.push(String::new());
-    for line in query.trim().split('\n') {
-        lines.push(line.trim_end().to_string());
-    }
-    Ok(())
+    Ok(target)
 }
 
 pub(crate) fn dcs_info_fields(
@@ -1575,11 +1574,6 @@ pub(crate) fn validate_dcs(
             .and_then(|value| value.to_str())
             .unwrap_or("")
             .to_string();
-        let out_file_label = string_arg(args, &["outFile", "OutFile"]).map(ToOwned::to_owned);
-        let out_file = out_file_label
-            .as_ref()
-            .filter(|value| !value.is_empty())
-            .map(|value| absolutize(PathBuf::from(value), &context.cwd));
         let detailed = bool_arg(args, &["detailed", "Detailed"]);
         let max_errors = int_arg(args, &["maxErrors", "MaxErrors"])
             .unwrap_or(20)
@@ -1603,8 +1597,6 @@ pub(crate) fn validate_dcs(
                 return Ok(DcsValidationRun {
                     ok: false,
                     stdout: format!("{}\n", report.lines.join("\n")),
-                    out_file,
-                    out_file_label,
                     artifact: resolved_path,
                     errors,
                 });
@@ -1614,13 +1606,7 @@ pub(crate) fn validate_dcs(
         let root = doc.root_element();
         if let Err(error) = require_dcs_root(root) {
             report.error(error);
-            return dcs_validation_finish(
-                report,
-                &file_name,
-                out_file,
-                out_file_label,
-                resolved_path,
-            );
+            return dcs_validation_finish(report, &file_name, resolved_path);
         }
         report.ok("Root element: DataCompositionSchema");
         report.ok("Default namespace correct");
@@ -1667,23 +1653,11 @@ pub(crate) fn validate_dcs(
 
         dcs_validate_data_sources(&mut report, &data_source_nodes);
         if report.stopped {
-            return dcs_validation_finish(
-                report,
-                &file_name,
-                out_file,
-                out_file_label,
-                resolved_path,
-            );
+            return dcs_validation_finish(report, &file_name, resolved_path);
         }
         dcs_validate_data_sets(&mut report, &data_set_nodes, &data_source_names);
         if report.stopped {
-            return dcs_validation_finish(
-                report,
-                &file_name,
-                out_file,
-                out_file_label,
-                resolved_path,
-            );
+            return dcs_validation_finish(report, &file_name, resolved_path);
         }
         for ds in &data_set_nodes {
             let ds_name = dcs_child(*ds, "name", NS_SCHEMA)
@@ -1691,147 +1665,64 @@ pub(crate) fn validate_dcs(
                 .unwrap_or_else(|| "(unnamed)".to_string());
             dcs_validate_data_set_fields(&mut report, *ds, &ds_name);
             if report.stopped {
-                return dcs_validation_finish(
-                    report,
-                    &file_name,
-                    out_file.clone(),
-                    out_file_label.clone(),
-                    resolved_path.clone(),
-                );
+                return dcs_validation_finish(report, &file_name, resolved_path.clone());
             }
         }
         if report.stopped {
-            return dcs_validation_finish(
-                report,
-                &file_name,
-                out_file,
-                out_file_label,
-                resolved_path,
-            );
+            return dcs_validation_finish(report, &file_name, resolved_path);
         }
         dcs_validate_data_set_links(&mut report, root, &data_set_names);
         if report.stopped {
-            return dcs_validation_finish(
-                report,
-                &file_name,
-                out_file,
-                out_file_label,
-                resolved_path,
-            );
+            return dcs_validation_finish(report, &file_name, resolved_path);
         }
         dcs_validate_calculated_fields(&mut report, &calc_field_nodes, &all_field_paths);
         if report.stopped {
-            return dcs_validation_finish(
-                report,
-                &file_name,
-                out_file,
-                out_file_label,
-                resolved_path,
-            );
+            return dcs_validation_finish(report, &file_name, resolved_path);
         }
         dcs_validate_total_fields(&mut report, &total_field_nodes);
         if report.stopped {
-            return dcs_validation_finish(
-                report,
-                &file_name,
-                out_file,
-                out_file_label,
-                resolved_path,
-            );
+            return dcs_validation_finish(report, &file_name, resolved_path);
         }
         dcs_validate_parameters(&mut report, &param_nodes);
         if report.stopped {
-            return dcs_validation_finish(
-                report,
-                &file_name,
-                out_file,
-                out_file_label,
-                resolved_path,
-            );
+            return dcs_validation_finish(report, &file_name, resolved_path);
         }
         dcs_validate_templates(&mut report, &template_nodes);
         if report.stopped {
-            return dcs_validation_finish(
-                report,
-                &file_name,
-                out_file,
-                out_file_label,
-                resolved_path,
-            );
+            return dcs_validation_finish(report, &file_name, resolved_path);
         }
         dcs_validate_group_templates(&mut report, &group_template_nodes, &template_names);
         if report.stopped {
-            return dcs_validation_finish(
-                report,
-                &file_name,
-                out_file,
-                out_file_label,
-                resolved_path,
-            );
+            return dcs_validation_finish(report, &file_name, resolved_path);
         }
         dcs_validate_settings_variants(&mut report, &variant_nodes, &known_fields);
         if report.stopped {
-            return dcs_validation_finish(
-                report,
-                &file_name,
-                out_file,
-                out_file_label,
-                resolved_path,
-            );
+            return dcs_validation_finish(report, &file_name, resolved_path);
         }
         dcs_validate_value_types(&mut report, root);
         if report.stopped {
-            return dcs_validation_finish(
-                report,
-                &file_name,
-                out_file,
-                out_file_label,
-                resolved_path,
-            );
+            return dcs_validation_finish(report, &file_name, resolved_path);
         }
         dcs_validate_value_contents(&mut report, root);
-        dcs_validation_finish(report, &file_name, out_file, out_file_label, resolved_path)
+        dcs_validation_finish(report, &file_name, resolved_path)
     })();
 
     match result {
-        Ok(run) => {
-            let mut stdout = run.stdout.clone();
-            let mut artifacts = vec![run.artifact.display().to_string()];
-            if let Some(out_file) = &run.out_file {
-                if let Err(error) = write_utf8_bom(out_file, run.stdout.trim_end_matches('\n')) {
-                    return AdapterOutcome {
-                        ok: false,
-                        summary: "unica.dcs.validate failed in native DCS validator".to_string(),
-                        changes: Vec::new(),
-                        warnings: Vec::new(),
-                        errors: vec![error.clone()],
-                        artifacts,
-                        stdout: None,
-                        stderr: Some(format!("{error}\n")),
-                        command: None,
-                    };
-                }
-                if let Some(label) = &run.out_file_label {
-                    stdout.push_str(&format!("Written to: {label}\n"));
-                }
-                artifacts.push(out_file.display().to_string());
-            }
-            AdapterOutcome {
-                ok: run.ok,
-                summary: if run.ok {
-                    "unica.dcs.validate completed with native DCS validator".to_string()
-                } else {
-                    "unica.dcs.validate failed in native DCS validator".to_string()
-                },
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: run.errors,
-                artifacts,
-                stdout: Some(stdout),
-                stderr: Some(String::new()),
-                command: None,
-            }
-        }
+        Ok(run) => AdapterOutcome {
+            ok: run.ok,
+            summary: if run.ok {
+                "unica.dcs.validate completed with native DCS validator".to_string()
+            } else {
+                "unica.dcs.validate failed in native DCS validator".to_string()
+            },
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: run.errors,
+            artifacts: vec![run.artifact.display().to_string()],
+            stdout: Some(run.stdout),
+            stderr: Some(String::new()),
+            command: None,
+        },
         Err(error) => AdapterOutcome {
             ok: false,
             summary: "unica.dcs.validate failed in native DCS validator".to_string(),
@@ -1849,16 +1740,12 @@ pub(crate) fn validate_dcs(
 pub(crate) fn dcs_validation_finish(
     report: DcsValidationReporter,
     file_name: &str,
-    out_file: Option<PathBuf>,
-    out_file_label: Option<String>,
     artifact: PathBuf,
 ) -> Result<DcsValidationRun, String> {
     let (ok, stdout, errors) = report.finalize(file_name);
     Ok(DcsValidationRun {
         ok,
         stdout,
-        out_file,
-        out_file_label,
         artifact,
         errors,
     })
@@ -10637,6 +10524,55 @@ mod tests {
             .errors
             .iter()
             .any(|error| error.contains("urn:not-dcs") && error.contains("DataCompositionSchema")));
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn dcs_info_raw_returns_exact_unpaginated_query_text() {
+        let context = temp_context("dcs-info-raw-query");
+        let template_path = context.cwd.join("Template.xml");
+        let query = "  ВЫБРАТЬ 1 КАК Значение  \n|ОБЪЕДИНИТЬ ВСЕ\n|ВЫБРАТЬ 2  ";
+        fs::write(
+            &template_path,
+            base_dcs_xml().replace(
+                "<query>ВЫБРАТЬ Amount КАК Amount</query>",
+                &format!("<query>{query}</query>"),
+            ),
+        )
+        .unwrap();
+        let args = Map::from_iter([
+            ("TemplatePath".to_string(), json!("Template.xml")),
+            ("Mode".to_string(), json!("query")),
+            ("Name".to_string(), json!("НаборДанных1")),
+            ("Raw".to_string(), json!(true)),
+            ("Limit".to_string(), json!(1)),
+            ("Offset".to_string(), json!(100)),
+        ]);
+
+        let outcome = analyze_dcs_info(&args, &context);
+
+        assert!(outcome.ok, "{outcome:?}");
+        assert_eq!(outcome.stdout.as_deref(), Some(query));
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn dcs_info_raw_rejects_non_query_mode() {
+        let context = temp_context("dcs-info-raw-non-query");
+        fs::write(context.cwd.join("Template.xml"), base_dcs_xml()).unwrap();
+        let args = Map::from_iter([
+            ("TemplatePath".to_string(), json!("Template.xml")),
+            ("Mode".to_string(), json!("overview")),
+            ("Raw".to_string(), json!(true)),
+        ]);
+
+        let outcome = analyze_dcs_info(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| error.contains("Raw") && error.contains("Mode=query")));
         let _ = fs::remove_dir_all(&context.cwd);
     }
 

@@ -994,11 +994,11 @@ pub(crate) fn validate_interface(
     const NS_CI: &str = "http://v8.1c.ru/8.3/xcf/extrnprops";
     const NS_XR: &str = "http://v8.1c.ru/8.3/xcf/readable";
 
-    let result = (|| -> Result<(bool, String, String, Option<PathBuf>, PathBuf), String> {
+    let result = (|| -> Result<(bool, String, String, PathBuf), String> {
         let ci_path = resolve_interface_validate_path(args, context)?;
         if !ci_path.exists() {
             let stdout = format!("[ERROR] File not found: {}\n", ci_path.display());
-            return Ok((false, stdout.clone(), String::new(), None, ci_path));
+            return Ok((false, stdout.clone(), String::new(), ci_path));
         }
 
         let context_name = interface_context_name(&ci_path);
@@ -1006,8 +1006,6 @@ pub(crate) fn validate_interface(
         let max_errors = int_arg(args, &["maxErrors", "MaxErrors"])
             .unwrap_or(30)
             .max(0) as usize;
-        let out_file =
-            path_arg(args, &["outFile", "OutFile"]).map(|path| absolutize(path, &context.cwd));
         let mut report = MxlValidationReporter::new(max_errors, detailed);
         let mut all_command_names = Vec::<String>::new();
 
@@ -1024,7 +1022,7 @@ pub(crate) fn validate_interface(
                 report.error(format!("1. XML parse error: {error}"));
                 report.stopped = true;
                 let output = finish_interface_validation(report, &context_name);
-                return Ok((false, output, String::new(), out_file, ci_path));
+                return Ok((false, output, String::new(), ci_path));
             }
         };
 
@@ -1329,42 +1327,31 @@ pub(crate) fn validate_interface(
         }
 
         let ok = report.errors == 0;
-        let mut output = finish_interface_validation(report, &context_name);
-        if let Some(out_file) = &out_file {
-            write_utf8_bom(out_file, &output)?;
-            output.push_str(&format!("Written to: {}\n", out_file.display()));
-        }
-        Ok((ok, output, String::new(), out_file, ci_path))
+        let output = finish_interface_validation(report, &context_name);
+        Ok((ok, output, String::new(), ci_path))
     })();
 
     match result {
-        Ok((ok, stdout, stderr, out_file, artifact)) => {
-            let mut artifacts = vec![artifact.display().to_string()];
-            if let Some(out_file) = out_file {
-                artifacts.push(out_file.display().to_string());
-            }
-            AdapterOutcome {
-                ok,
-                summary: if ok {
-                    "unica.interface.validate completed with native command interface validator"
-                        .to_string()
-                } else {
-                    "unica.interface.validate failed in native command interface validator"
-                        .to_string()
-                },
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: if ok {
-                    Vec::new()
-                } else {
-                    vec![stdout.trim().to_string()]
-                },
-                artifacts,
-                stdout: Some(stdout),
-                stderr: Some(stderr),
-                command: None,
-            }
-        }
+        Ok((ok, stdout, stderr, artifact)) => AdapterOutcome {
+            ok,
+            summary: if ok {
+                "unica.interface.validate completed with native command interface validator"
+                    .to_string()
+            } else {
+                "unica.interface.validate failed in native command interface validator".to_string()
+            },
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: if ok {
+                Vec::new()
+            } else {
+                vec![stdout.trim().to_string()]
+            },
+            artifacts: vec![artifact.display().to_string()],
+            stdout: Some(stdout),
+            stderr: Some(stderr),
+            command: None,
+        },
         Err(error) => AdapterOutcome {
             ok: false,
             summary: "unica.interface.validate failed in native command interface validator"

@@ -122,7 +122,6 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "ObjectPath",
     "Offset",
     "Operation",
-    "OutFile",
     "OutputDir",
     "OutputPath",
     "Parent",
@@ -204,7 +203,6 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "objectPath",
     "offset",
     "operation",
-    "outFile",
     "outputDir",
     "outputPath",
     "parent",
@@ -2142,10 +2140,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` for unica.code.patch; the metadata edit verbs for unica.meta.edit — read the enum published in the tool's own schema.",
     ),
     (
-        "outFile",
-        "Write the tool's text report to this file as UTF-8 with BOM instead of returning it inline; it is a report sink, not a generated artifact — use `outputPath` or `outputDir` for those",
-    ),
-    (
         "output",
         "Workspace-relative destination: the artifact file for make (a publish directory for external source-sets), the conversion directory for convert, and the platform /Out log for a direct-client launch",
     ),
@@ -2207,7 +2201,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "raw",
-        "Declared boolean that no handler reads: `unica.dcs.info` with `Mode=query` always emits the `=== Query: <dataset> ===` header and is still truncated by `limit`/`offset`, so passing it changes nothing (the skill documents it, the code does not implement it).",
+        "`unica.dcs.info` only: supported only with `Mode=query`; true returns the full query text without headers or pagination and ignores `limit`/`offset`.",
     ),
     (
         "rawKeys",
@@ -2758,6 +2752,55 @@ mod tests {
         let error = validate_tool_arguments(tool, &args, false).unwrap_err();
 
         assert!(error.contains("does not accept argument `unknown`"));
+    }
+
+    #[test]
+    fn read_only_native_tools_reject_out_file_arguments() {
+        let required_path = |name: &str| match name {
+            "unica.cf.info" | "unica.cf.validate" => ("ConfigPath", "src"),
+            "unica.cfe.validate" => ("ExtensionPath", "src"),
+            "unica.meta.info" | "unica.meta.validate" => ("ObjectPath", "src/Object.xml"),
+            "unica.interface.validate" => ("CIPath", "src/CommandInterface.xml"),
+            "unica.subsystem.info" | "unica.subsystem.validate" => {
+                ("SubsystemPath", "src/Subsystems/Main.xml")
+            }
+            "unica.dcs.info" | "unica.dcs.validate" => ("TemplatePath", "src/Template.xml"),
+            "unica.role.info" | "unica.role.validate" => ("RightsPath", "src/Rights.xml"),
+            _ => unreachable!("unexpected read-only tool"),
+        };
+
+        for name in [
+            "unica.cf.info",
+            "unica.cf.validate",
+            "unica.cfe.validate",
+            "unica.meta.info",
+            "unica.meta.validate",
+            "unica.interface.validate",
+            "unica.subsystem.info",
+            "unica.subsystem.validate",
+            "unica.dcs.info",
+            "unica.dcs.validate",
+            "unica.role.info",
+            "unica.role.validate",
+        ] {
+            let tool = tools()
+                .into_iter()
+                .find(|tool| tool.name == name)
+                .expect("read-only tool is registered");
+            let (path_key, path) = required_path(name);
+            for argument in ["OutFile", "outFile"] {
+                let args = Map::from_iter([
+                    (path_key.to_string(), json!(path)),
+                    (argument.to_string(), json!("report.txt")),
+                ]);
+
+                let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+                assert!(
+                    error.contains(&format!("does not accept argument `{argument}`")),
+                    "{name}: {error}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -3778,6 +3821,13 @@ mod tests {
         let schema = input_schema_for_tool(&dcs_info);
         assert_eq!(schema["additionalProperties"], false);
         assert_eq!(schema["properties"]["Raw"]["type"], "boolean");
+        let raw_description = schema["properties"]["Raw"]["description"]
+            .as_str()
+            .expect("Raw must describe its query-only behavior");
+        assert!(raw_description.contains("only with `Mode=query`"));
+        assert!(raw_description.contains("full query text"));
+        assert!(!raw_description.contains("changes nothing"));
+        assert!(!raw_description.contains("truncated"));
         assert_eq!(schema["required"], json!([]));
         assert_eq!(
             schema["allOf"],
