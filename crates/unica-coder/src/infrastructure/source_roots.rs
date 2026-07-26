@@ -166,8 +166,12 @@ fn ensure_inside_workspace(path: &Path, workspace_root: &Path) -> Result<(), Str
     ))
 }
 
+/// Stable prefix every source-root rejection carries. Consumers that classify a
+/// readiness failure as caller-fixable match on this instead of a literal.
+pub(crate) const INVALID_SOURCE_ROOT_PREFIX: &str = "invalid_source_root:";
+
 fn invalid_source_root(error: String) -> String {
-    format!("invalid_source_root: {error}")
+    format!("{INVALID_SOURCE_ROOT_PREFIX} {error}")
 }
 
 fn normalize_lexically(path: &Path) -> PathBuf {

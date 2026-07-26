@@ -18,6 +18,7 @@ use crate::infrastructure::runtime_jobs::{
 };
 use crate::infrastructure::source_roots::normalize_path_identity;
 use crate::infrastructure::source_roots::resolve_source_root;
+use crate::infrastructure::source_roots::INVALID_SOURCE_ROOT_PREFIX;
 use crate::infrastructure::workspace::discover_workspace;
 use crate::infrastructure::workspace_index::{
     IndexReadiness, IndexRunner, WorkspaceIndexService, SYSTEM_INDEX_RUNNER,
@@ -1931,12 +1932,18 @@ impl<'a> CodeNavigationAdapter<'a> {
         context: &WorkspaceContext,
         cancellation: &CancellationToken,
     ) -> Result<AdapterOutcome, String> {
+        // Validate the caller-supplied `path` before readiness so an argument
+        // error is never masked by a not-ready index. `sourceDir` stays behind
+        // readiness: it is resolved there under the stable `invalid_source_root:`
+        // contract.
+        let raw_path = required_string(args, "path")?;
+        let path_rel = safe_workspace_rel(context, raw_path)?;
         let readiness = self.rlm_readiness(context, args, cancellation);
         let db_path = match readiness {
             IndexReadiness::Ready { db_path } => db_path,
             other => return Ok(outline_index_unavailable_outcome(tool_name, other)),
         };
-        let candidates = index_path_candidates(context, args, "path")?;
+        let candidates = index_path_candidates_for(context, args, raw_path, path_rel)?;
         let include_methods = args
             .get("includeMethods")
             .and_then(Value::as_bool)
@@ -2920,48 +2927,45 @@ fn index_unavailable_outcome(tool_name: &str, readiness: IndexReadiness) -> Adap
     }
 }
 
+fn index_failure_outcome(tool_name: &str, summary: &str, error: String) -> AdapterOutcome {
+    AdapterOutcome {
+        ok: false,
+        summary: format!("{tool_name} {summary}"),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec![error],
+        artifacts: Vec::new(),
+        stdout: None,
+        stderr: None,
+        command: None,
+    }
+}
+
 fn outline_index_unavailable_outcome(tool_name: &str, readiness: IndexReadiness) -> AdapterOutcome {
     match readiness {
-        IndexReadiness::Building => AdapterOutcome {
-            ok: false,
-            summary: format!("{tool_name} pending RLM index build"),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec!["index_pending: rlm index building".to_string()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: None,
-            command: None,
-        },
-        IndexReadiness::Unavailable(error) if error.starts_with("invalid_source_root:") => {
-            AdapterOutcome {
-                ok: false,
-                summary: format!("{tool_name} rejected invalid source root"),
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: vec![error],
-                artifacts: Vec::new(),
-                stdout: None,
-                stderr: None,
-                command: None,
-            }
+        IndexReadiness::Building => index_failure_outcome(
+            tool_name,
+            "pending RLM index build",
+            "index_pending: rlm index building".to_string(),
+        ),
+        IndexReadiness::Failed(error) | IndexReadiness::Unavailable(error)
+            if error.starts_with(INVALID_SOURCE_ROOT_PREFIX) =>
+        {
+            index_failure_outcome(tool_name, "rejected invalid source root", error)
         }
         other => {
             let warning = readiness_warning(other);
             if let Some(reason) = warning.strip_prefix(CANCELLED_PREFIX) {
                 return AdapterOutcome::cancelled(reason.trim());
             }
-            AdapterOutcome {
-                ok: false,
-                summary: format!("{tool_name} could not read RLM index"),
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: vec![format!("index_unavailable: {warning}")],
-                artifacts: Vec::new(),
-                stdout: None,
-                stderr: None,
-                command: None,
-            }
+            let detail = warning
+                .strip_prefix("rlm index unavailable: ")
+                .unwrap_or(&warning);
+            index_failure_outcome(
+                tool_name,
+                "could not read RLM index",
+                format!("index_unavailable: {detail}"),
+            )
         }
     }
 }
@@ -2999,14 +3003,16 @@ fn read_limit(args: &Map<String, Value>, default: usize) -> usize {
         .unwrap_or(default)
 }
 
-fn index_path_candidates(
+/// Expands an already-validated request path into index lookup candidates.
+/// The caller resolves `raw`/`rel` first so a bad path is reported as a path
+/// error rather than being masked by index readiness.
+fn index_path_candidates_for(
     context: &WorkspaceContext,
     args: &Map<String, Value>,
-    key: &str,
+    raw: &str,
+    rel: String,
 ) -> Result<Vec<String>, String> {
-    let raw = required_string(args, key)?;
     let mut candidates = BTreeSet::new();
-    let rel = safe_workspace_rel(context, raw)?;
     if !rel.is_empty() {
         candidates.insert(rel.clone());
     }
@@ -6133,7 +6139,40 @@ mod tests {
 
         assert!(!outcome.ok);
         assert!(outcome.stdout.is_none());
+        assert_eq!(outcome.errors.len(), 1);
         assert!(outcome.errors[0].starts_with("index_unavailable:"));
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn code_outline_adapter_rejects_escaping_path_before_reading_index_state() {
+        let context = temp_context("outline-escaping-path");
+        let lock_path = context.cache_root.join("locks/bsl_index.lock");
+        fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+        fs::write(&lock_path, "{").unwrap();
+        let index = FakeIndexRunner::default();
+        let grep = FakeProcessRunner {
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+            },
+        };
+        let args = Map::from_iter([("path".to_string(), json!("../outside/Module.bsl"))]);
+
+        let error = CodeNavigationAdapter::with_runners(&index, &grep)
+            .invoke("unica.code.outline", &args, &context, false)
+            .expect_err("an escaping path must be rejected on its own merits");
+
+        assert!(
+            error.contains("resolves outside workspace root"),
+            "a building index must not mask the path rejection: {error}"
+        );
+        assert!(index.commands.borrow().is_empty());
         cleanup_context(&context);
     }
 
