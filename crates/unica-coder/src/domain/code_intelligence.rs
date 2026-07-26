@@ -22,9 +22,6 @@ impl ProviderId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProviderCapability {
     Search,
-    Definition,
-    Outline,
-    ObjectProfile,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -147,6 +144,17 @@ mod tests {
     }
 
     #[test]
+    fn capabilities_match_the_executable_provider_operations() {
+        let capability = ProviderCapability::Search;
+
+        let operation = match capability {
+            ProviderCapability::Search => "search",
+        };
+
+        assert_eq!(operation, "search");
+    }
+
+    #[test]
     fn registry_preserves_injected_search_provider_order() {
         let registry = CodeIntelligenceRegistry::new(vec![
             Arc::new(FakeProvider {
@@ -155,7 +163,7 @@ mod tests {
             }),
             Arc::new(FakeProvider {
                 id: ProviderId::BslAnalyzer,
-                capabilities: vec![ProviderCapability::Definition],
+                capabilities: Vec::new(),
             }),
             Arc::new(FakeProvider {
                 id: ProviderId::GitGrep,
@@ -181,7 +189,7 @@ mod tests {
             }),
             Arc::new(FakeProvider {
                 id: ProviderId::Rlm,
-                capabilities: vec![ProviderCapability::Outline],
+                capabilities: Vec::new(),
             }),
         ];
 
