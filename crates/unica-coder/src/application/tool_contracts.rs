@@ -1095,9 +1095,12 @@ fn validate_code_arguments(
                 .get("mode")
                 .and_then(Value::as_str)
                 .unwrap_or("analyze");
-            if mode == "analyze" && args.contains_key("path") {
+            // `path` scopes a single-file read, which only mode `file` performs.
+            // Every other mode dropped it silently: `analyze` then scanned the
+            // whole source set although the caller had named one file.
+            if mode != "file" && args.contains_key("path") {
                 return Err(format!(
-                    "{} mode `analyze` does not support `path`; use mode `file` for one file",
+                    "{} mode `{mode}` does not support `path`; use mode `file` for one file",
                     tool.name
                 ));
             }
@@ -1116,13 +1119,7 @@ fn validate_code_arguments(
                     DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS,
                 )?;
             }
-            if !dry_run
-                && args
-                    .get("mode")
-                    .and_then(Value::as_str)
-                    .is_some_and(|mode| mode == "file")
-                && !args.contains_key("path")
-            {
+            if !dry_run && mode == "file" && !args.contains_key("path") {
                 return Err(format!(
                     "{} mode `file` requires `path` argument",
                     tool.name
@@ -2170,7 +2167,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "path",
-        "Workspace-relative file path whose meaning is tool-scoped: the required .cf or .cfe artifact for unica.runtime.execute operation load (.epf and .erf are rejected there), the target *Module.bsl or module-relative file for unica.code.patch and the other unica.code.* tools, the canonical alias of the object/config path argument on the native XML tools, and a plain --path passthrough on unica.build.*.",
+        "Workspace-relative file path whose meaning is tool-scoped: the required .cf or .cfe artifact for unica.runtime.execute operation load (.epf and .erf are rejected there), the target *Module.bsl or module-relative file for unica.code.patch and the other unica.code.* tools — on unica.code.diagnostics only mode `file` reads one file, so every other mode rejects `path` instead of ignoring it — the canonical alias of the object/config path argument on the native XML tools, and a plain --path passthrough on unica.build.*.",
     ),
     (
         "position",
@@ -3993,6 +3990,28 @@ mod tests {
         );
         let error = validate_tool_arguments(diagnostics, &args, false).unwrap_err();
         assert!(error.contains("does not support `path`"));
+
+        for mode in ["status", "catalog", "workspace"] {
+            let mut args = Map::new();
+            args.insert("mode".to_string(), json!(mode));
+            args.insert(
+                "path".to_string(),
+                json!("src/CommonModules/Probe/Ext/Module.bsl"),
+            );
+            let error = validate_tool_arguments(diagnostics, &args, false).unwrap_err();
+            assert!(
+                error.contains(&format!("mode `{mode}` does not support `path`")),
+                "mode {mode} must reject `path` instead of dropping it: {error}"
+            );
+        }
+
+        let mut args = Map::new();
+        args.insert("mode".to_string(), json!("file"));
+        args.insert(
+            "path".to_string(),
+            json!("src/CommonModules/Probe/Ext/Module.bsl"),
+        );
+        validate_tool_arguments(diagnostics, &args, false).unwrap();
 
         let mut args = Map::new();
         args.insert("mode".to_string(), json!("raw"));
