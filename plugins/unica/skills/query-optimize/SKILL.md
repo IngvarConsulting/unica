@@ -20,7 +20,7 @@ description: "Оптимизация запросов 1С и СКД. Испол�
 5. Inspect metadata with `unica.meta.profile` when the query is tied to an exact object and you need object modules, subscriptions, roles, functional options, or predefined items. Use `unica.meta.info` for XML-level registers, dimensions, resources, реквизиты, tabular sections, and indexes implied by the platform object type.
 6. Inspect DCS with `unica.dcs.info` when the query lives in a data composition schema.
 7. Search standards with `unica.standards.search` for platform-specific query rules before making a risky rewrite.
-8. Read `references/platform/db-performance.md` when performance depends on DBMS behavior, locks, indexes, temp storage, WAL, TEMPDB, or large table statistics.
+8. Read `../../references/platform/db-performance.md` when performance depends on DBMS behavior, locks, indexes, temp storage, WAL, TEMPDB, or large table statistics.
 9. Optimize one cause at a time: filters before joins, virtual table parameters, temporary table materialization, repeated queries in loops, dot dereference expansion, unbounded selections, and unnecessary totals.
 10. Verify syntax with `unica.runtime.execute` and ask for real trace/log evidence when performance depends on data volume.
 

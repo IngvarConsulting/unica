@@ -22,7 +22,7 @@ description: "Реализация интеграций 1С. Используй 
 
 ## Contract detail
 
-- Read `references/platform/integration-contracts.md` before changing HTTP/SOAP/OData/JSON/XML/file-exchange behavior.
+- Read `../../references/platform/integration-contracts.md` before changing HTTP/SOAP/OData/JSON/XML/file-exchange behavior.
 - Decide state model explicitly: stateless call, authenticated session, queue, exchange message, cursor, or file batch.
 - For OData, JSON, and XML, preserve field names, types, date/number semantics, encoding, null handling, and backward compatibility.
 - Define auth and secret handling before code: token refresh, certificate or OpenID context, storage location, masking, and retry behavior.

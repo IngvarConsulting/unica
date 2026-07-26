@@ -476,6 +476,33 @@ class PackageUnicaPluginTests(unittest.TestCase):
             for link in local_license_links:
                 self.assertTrue((destination / link).is_file(), link)
 
+    def test_documented_reference_resources_are_packaged(self) -> None:
+        module = load_package_module()
+        repo_root = Path(__file__).resolve().parents[2]
+        plugin_src = repo_root / "plugins" / "unica"
+        pattern = re.compile(r"`((?:\.\./)*references/[^`]+?\.md)`")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / "unica"
+            module.copy_tracked_plugin_source(repo_root, plugin_src, destination)
+
+            checked = 0
+            for doc in sorted(destination.rglob("*.md")):
+                relative_doc = doc.relative_to(destination)
+                for link in pattern.findall(doc.read_text(encoding="utf-8")):
+                    checked += 1
+                    # Skill prose resolves from its own directory; the
+                    # `references/` tree links from the plugin root.
+                    candidates = [doc.parent / link]
+                    if relative_doc.parts[0] != "skills":
+                        candidates.append(destination / link)
+                    self.assertTrue(
+                        any(candidate.is_file() for candidate in candidates),
+                        f"{relative_doc}: {link}",
+                    )
+
+            self.assertGreater(checked, 0)
+
     def test_plugin_source_copy_rejects_tracked_source_bin(self) -> None:
         module = load_package_module()
 

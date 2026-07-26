@@ -6,6 +6,12 @@ import unittest
 from pathlib import Path
 
 
+# Documented reference links, in both the plugin-root-relative form used inside
+# the `references/` tree and the doc-relative `../../references/...` form skills
+# must use.
+REFERENCE_LINK_PATTERN = re.compile(r"`((?:\.\./)*references/[^`]+?\.md)`")
+
+
 IN_SCOPE_TOOLS = {
     "cf-edit": "unica.cf.edit",
     "cf-info": "unica.cf.info",
@@ -1340,28 +1346,33 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             *self.skill_root().glob("*/SKILL.md"),
             *self.reference_root().rglob("*.md"),
         ]
-        pattern = re.compile(r"`(references/[^`]+?\.md)`")
         for doc in roots:
             text = doc.read_text(encoding="utf-8")
-            for match in pattern.findall(text):
+            for match in REFERENCE_LINK_PATTERN.findall(text):
                 with self.subTest(doc=doc.relative_to(self.repo_root()), reference=match):
                     local_target = doc.parent / match
                     plugin_target = self.repo_root() / "plugins" / "unica" / match
                     self.assertTrue(local_target.is_file() or plugin_target.is_file())
 
-    def test_platform_help_reference_paths_are_skill_relative(self) -> None:
-        skill = self.skill_root() / "platform-help"
-        skill_text = (skill / "SKILL.md").read_text(encoding="utf-8")
-        references = [
-            "../../references/platform/compatibility-modes.md",
-            "../../references/platform/platform-mechanics.md",
-            "../../references/platform/runtime-diagnostics.md",
-        ]
+    def test_skill_reference_paths_resolve_from_the_skill_directory(self) -> None:
+        """Skill prose is read with the skill directory as the working root.
 
-        for reference in references:
-            with self.subTest(reference=reference):
-                self.assertIn(f"`{reference}`", skill_text)
-                self.assertTrue((skill / reference).is_file())
+        A bare `references/...` link therefore points inside the skill itself,
+        not at the plugin-root `references/` tree, so every link a skill doc
+        carries has to resolve from that doc's own directory.
+        """
+        docs = sorted(self.skill_root().glob("*/**/*.md"))
+        self.assertTrue(docs)
+
+        seen = 0
+        for doc in docs:
+            text = doc.read_text(encoding="utf-8")
+            for match in REFERENCE_LINK_PATTERN.findall(text):
+                seen += 1
+                with self.subTest(doc=doc.relative_to(self.skill_root()), reference=match):
+                    self.assertTrue((doc.parent / match).is_file())
+
+        self.assertGreater(seen, 0)
 
     def test_skills_do_not_use_model_specific_assistant_names(self) -> None:
         forbidden = ["Claude", "claude", "Anthropic", ".claude", "CLAUDE.md"]
