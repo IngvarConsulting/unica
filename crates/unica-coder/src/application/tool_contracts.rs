@@ -2156,7 +2156,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "outputPath",
-        "Path of the single file to generate: the `Form.xml` for `unica.form.compile`, the `Template.xml` for `dcs.compile` and `mxl.compile`, or the JSON for `mxl.decompile`, where omitting it prints to stdout",
+        "Path of the single file to generate: the `Form.xml` for `unica.form.compile` or the `Template.xml` for `unica.dcs.compile` and `unica.mxl.compile`",
     ),
     (
         "parent",
@@ -2715,6 +2715,17 @@ mod tests {
             .filter(|name| name.starts_with(char::is_uppercase))
             .collect();
         assert!(pascal.is_empty(), "keys must be camelCase: {pascal:?}");
+    }
+
+    #[test]
+    fn output_path_description_excludes_read_only_mxl_decompile() {
+        let (_, description) = ARG_DESCRIPTIONS
+            .iter()
+            .find(|(name, _)| *name == "outputPath")
+            .expect("outputPath must have a shared description");
+
+        assert!(description.contains("mxl.compile"));
+        assert!(!description.contains("mxl.decompile"));
     }
 
     #[test]
