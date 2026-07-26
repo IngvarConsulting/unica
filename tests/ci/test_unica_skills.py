@@ -521,6 +521,57 @@ SCENARIO_PRESERVING_TOKENS = {
 }
 
 
+def markdown_routing_units(text: str) -> list[str]:
+    units = []
+    current = []
+    item_start = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
+
+    def flush() -> None:
+        if current:
+            units.append(" ".join(current))
+            current.clear()
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            flush()
+            continue
+        if item_start.match(line):
+            flush()
+        current.append(stripped)
+    flush()
+    return units
+
+
+def find_unsafe_platform_evidence_routes(
+    documents: list[tuple[str, str]],
+) -> list[str]:
+    safe_boundaries = [
+        "development-standard",
+        "development standards",
+        "not platform",
+        "do not present",
+    ]
+    unsafe_routes = []
+
+    for display_path, text in documents:
+        for normalized in markdown_routing_units(text):
+            lowered = normalized.casefold()
+            mentions_standards_tool = "unica.standards." in lowered
+            mentions_platform_evidence = "platform" in lowered or "платформ" in lowered
+            marks_the_source_boundary = any(
+                boundary in lowered for boundary in safe_boundaries
+            )
+            if (
+                mentions_standards_tool
+                and mentions_platform_evidence
+                and not marks_the_source_boundary
+            ):
+                unsafe_routes.append(f"{display_path}: {normalized}")
+
+    return unsafe_routes
+
+
 class UnicaSkillRoutingTests(unittest.TestCase):
     def repo_root(self) -> Path:
         return Path(__file__).resolve().parents[2]
@@ -642,34 +693,15 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         docs = list(self.skill_root().glob("**/*.md")) + list(
             self.reference_root().glob("**/*.md")
         )
-        safe_boundaries = [
-            "development-standard",
-            "development standards",
-            "not platform",
-            "do not present",
-        ]
-        unsafe_routes = []
-
-        for doc_path in docs:
-            text = doc_path.read_text(encoding="utf-8")
-            for paragraph in re.split(r"\n\s*\n", text):
-                normalized = " ".join(line.strip() for line in paragraph.splitlines())
-                lowered = normalized.casefold()
-                mentions_standards_tool = "unica.standards." in lowered
-                mentions_platform_evidence = (
-                    "platform" in lowered or "платформ" in lowered
+        unsafe_routes = find_unsafe_platform_evidence_routes(
+            [
+                (
+                    str(doc_path.relative_to(self.repo_root())),
+                    doc_path.read_text(encoding="utf-8"),
                 )
-                marks_the_source_boundary = any(
-                    boundary in lowered for boundary in safe_boundaries
-                )
-                if (
-                    mentions_standards_tool
-                    and mentions_platform_evidence
-                    and not marks_the_source_boundary
-                ):
-                    unsafe_routes.append(
-                        f"{doc_path.relative_to(self.repo_root())}: {normalized}"
-                    )
+                for doc_path in docs
+            ]
+        )
 
         self.assertEqual(
             unsafe_routes,
@@ -677,6 +709,30 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             "standards tools must not be presented as platform evidence:\n"
             + "\n".join(unsafe_routes),
         )
+
+    def test_route_linter_checks_adjacent_markdown_items_independently(self) -> None:
+        unsafe_routes = find_unsafe_platform_evidence_routes(
+            [
+                (
+                    "masking-fixture.md",
+                    "- Use `unica.standards.search` for platform API rules.\n"
+                    "- Use `unica.standards.search` only for a "
+                    "`development-standard`, not platform evidence.\n",
+                )
+            ]
+        )
+
+        self.assertEqual(len(unsafe_routes), 1)
+        self.assertIn("platform API rules", unsafe_routes[0])
+        self.assertNotIn("development-standard", unsafe_routes[0])
+
+    def test_platform_help_uses_one_contract_gap_label(self) -> None:
+        platform_help = (self.skill_root() / "platform-help" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn("Unica MCP contract gap", platform_help)
+        self.assertIn("platform-help contract gap", platform_help)
 
     def test_all_skills_do_not_expose_internal_mcp_names(self) -> None:
         forbidden = [

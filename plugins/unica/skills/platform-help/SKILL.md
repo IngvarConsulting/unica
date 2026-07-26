@@ -34,7 +34,7 @@ description: "Справка платформы 1С и объектной мод
 ## Stop rules
 
 - Do not present `unica.standards.*` output as proof of platform API behavior or exact method signatures.
-- If the requested platform-help source is not available through public MCP `unica`, report it as a Unica MCP contract gap instead of bypassing the public boundary.
+- If the requested platform-help source is not available through public MCP `unica`, report it as a `platform-help contract gap` instead of bypassing the public boundary.
 
 ## MCP examples
 
