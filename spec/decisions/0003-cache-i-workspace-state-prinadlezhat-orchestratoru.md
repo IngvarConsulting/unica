@@ -20,6 +20,13 @@ The `unica` orchestrator owns workspace state and cache coordination.
    or `UNICA_CACHE_DIR`.
 4. Dry-run calls report cache impact without writing state.
 5. Applied successful mutations may persist cache state changes.
+6. A linked git worktree is a first-class workspace. Workspace identity, the
+   workspace epoch, cache roots, and internal service keys must be derived so
+   that each worktree is isolated from the primary checkout and from every other
+   worktree, and so that a checkout inside a worktree invalidates that
+   worktree's caches exactly like a checkout in a plain clone. Any code that
+   reads git state must resolve `.git` as either a directory or a pointer file;
+   assuming the directory layout is a defect, not a limitation.
 
 ## Неграницы
 
@@ -32,6 +39,10 @@ The `unica` orchestrator owns workspace state and cache coordination.
 1. Every mutating tool needs an event mapping.
 2. Cache behavior must be tested at the orchestrator boundary.
 3. Future lazy rebuild should use the same repository and event model.
+4. Worktree isolation is bought with duplicated index and service state: each
+   worktree pays its own first build. That cost is accepted; sharing state
+   across worktrees would reintroduce the cross-branch staleness this clause
+   forbids.
 
 ## План реализации
 
@@ -44,3 +55,6 @@ The `unica` orchestrator owns workspace state and cache coordination.
 - [x] ADR defines orchestrator ownership.
 - [x] ADR covers dry-run behavior.
 - [x] ADR separates internal engine caches from public coordination.
+- [x] ADR requires worktree-correct workspace identity and cache invalidation.
+      Verify with `cargo test -p unica-coder workspace_epoch` and
+      `cargo test -p unica-coder git_worktree_boundary`.

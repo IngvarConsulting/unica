@@ -50,11 +50,51 @@ fn workspace_fingerprint(root: &Path) -> u64 {
         "v8project.yaml",
         "Configuration.xml",
         "src/Configuration.xml",
-        ".git/HEAD",
     ] {
         hash_path(&mut hasher, root, rel);
     }
+    hash_head(&mut hasher, root);
     hasher.finish()
+}
+
+/// Hashes the HEAD that actually moves when the workspace is checked out.
+///
+/// In a plain checkout `.git` is a directory and HEAD sits inside it. In a
+/// linked worktree `.git` is a file pointing at the per-worktree git directory,
+/// so `root/.git/HEAD` does not exist and the pointer file itself never changes
+/// on checkout. Hashing the literal `.git/HEAD` path therefore freezes the
+/// epoch across branch switches inside a worktree and serves stale caches.
+fn hash_head(hasher: &mut DefaultHasher, root: &Path) {
+    "git-head".hash(hasher);
+    let Some(git_dir) = resolve_git_dir(root) else {
+        0_u8.hash(hasher);
+        return;
+    };
+    // HEAD is small and its contents are the branch identity, so hash the bytes
+    // instead of size plus second-resolution mtime.
+    match std::fs::read(git_dir.join("HEAD")) {
+        Ok(contents) => contents.hash(hasher),
+        Err(_) => 0_u8.hash(hasher),
+    }
+}
+
+fn resolve_git_dir(root: &Path) -> Option<PathBuf> {
+    let dot_git = root.join(".git");
+    let metadata = std::fs::symlink_metadata(&dot_git).ok()?;
+    if metadata.is_dir() {
+        return Some(dot_git);
+    }
+    let pointer = std::fs::read_to_string(&dot_git).ok()?;
+    let target = pointer.lines().next()?.strip_prefix("gitdir:")?.trim();
+    if target.is_empty() {
+        return None;
+    }
+    let target = PathBuf::from(target);
+    Some(if target.is_absolute() {
+        target
+    } else {
+        root.join(target)
+    })
 }
 
 fn hash_path(hasher: &mut DefaultHasher, root: &Path, rel: &str) {
@@ -164,6 +204,34 @@ mod tests {
         std::fs::write(&marker, "format: DESIGNER\nsource-set: []\n").unwrap();
         let changed = discover_workspace(Some(root.clone())).unwrap();
         assert_ne!(first.workspace_epoch, changed.workspace_epoch);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workspace_epoch_tracks_head_inside_a_linked_worktree() {
+        let root = temp_root("unica-workspace-worktree-epoch");
+        let primary_git = root.join("primary/.git");
+        let worktree = root.join("worktrees/feature");
+        let linked_git = primary_git.join("worktrees/feature");
+        std::fs::create_dir_all(&linked_git).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::write(worktree.join("v8project.yaml"), "format: DESIGNER\n").unwrap();
+        std::fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", linked_git.display()),
+        )
+        .unwrap();
+        std::fs::write(linked_git.join("HEAD"), "ref: refs/heads/feature-a\n").unwrap();
+
+        let before = discover_workspace(Some(worktree.clone())).unwrap();
+        std::fs::write(linked_git.join("HEAD"), "ref: refs/heads/feature-b\n").unwrap();
+        let after = discover_workspace(Some(worktree.clone())).unwrap();
+
+        assert_ne!(
+            before.workspace_epoch, after.workspace_epoch,
+            "a checkout inside a linked worktree must invalidate workspace caches"
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }
