@@ -2,10 +2,10 @@
 
 use crate::application::operation_descriptors::SUBSYSTEM_PATH;
 use crate::application::AdapterOutcome;
-use crate::domain::format_profile::{classify_root_version, FormatCompatibility};
+use crate::domain::format_profile::FormatCompatibility;
 use crate::domain::identifiers::is_1c_identifier;
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::platform_xml_owner::root_version_literal;
+use crate::infrastructure::platform_xml_owner::inspect_platform_xml_compatibility;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -957,13 +957,20 @@ pub(crate) fn validate_subsystem(
         };
 
         let root = doc.root_element();
-        let version_literal = root_version_literal(source, root);
-        let version = version_literal.as_deref().unwrap_or("");
-        match classify_root_version(version_literal.as_deref()) {
-            Ok(FormatCompatibility::Supported { .. }) => report.ok("Export format: 2.20"),
-            Ok(compatibility) => report.warn(format_compatibility_warning(&compatibility)),
-            Err(error) => report.error(error.to_string()),
-        }
+        let version = match inspect_platform_xml_compatibility(&xml_path, None) {
+            Ok(compatibility @ FormatCompatibility::Supported { .. }) => {
+                report.ok("Export format: 2.20");
+                compatibility.actual().to_string()
+            }
+            Ok(compatibility) => {
+                report.warn(format_compatibility_warning(&compatibility));
+                compatibility.actual().to_string()
+            }
+            Err(error) => {
+                report.error(error.message);
+                String::new()
+            }
+        };
         let Some(sub) = root.children().find(|node| {
             role_info_element(*node, "Subsystem", Some("http://v8.1c.ru/8.3/MDClasses"))
         }) else {

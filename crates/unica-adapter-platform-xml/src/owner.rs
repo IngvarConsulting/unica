@@ -6,7 +6,18 @@ use std::{
 };
 
 use roxmltree::Document;
-use unica_format_core::source::{SourceAdapterError, SourceAdapterErrorKind, SourceContext};
+use sha2::{Digest, Sha256};
+use unica_format_core::{
+    ports::{
+        FormatCompatibility, LineNumberLengthCapability, OwnerResolutionMode,
+        OwnerResolutionRequest, OwnerResolutionResult, SourceArtifactKind, SourceInputEvidence,
+        SourceOwnerEvidence, SourceOwnerKind,
+    },
+    source::{
+        ConfiguredSourceSetKind, FormatVersion, SourceAdapterError, SourceAdapterErrorKind,
+        SourceContext,
+    },
+};
 
 use crate::versions::v2_20::schema::LEGACY_TOP_LEVEL_METADATA_CLASSES;
 
@@ -59,7 +70,7 @@ pub(crate) struct OwnerResolution {
     pub(crate) provenance: OwnerProvenance,
 }
 
-pub(crate) fn resolve(
+fn resolve_native(
     source: &SourceContext,
     expected_root: Option<(&str, &str)>,
     existing_only: bool,
@@ -107,7 +118,13 @@ pub(crate) fn resolve(
                 owners.push(owner);
             }
         }
-    } else if let Some(wrapper) = external_wrapper(&source_root, &target) {
+    } else if matches!(
+        source.configured_source_set_kind(),
+        Some(ConfiguredSourceSetKind::ExternalProcessor | ConfiguredSourceSetKind::ExternalReport)
+    ) {
+        let Some(wrapper) = external_wrapper(&source_root, &target) else {
+            return Ok(OwnerResolution { owners, provenance });
+        };
         if let Some(owner) = read_optional_owner(&wrapper, &mut provenance)? {
             if seen.insert(owner.path.clone()) {
                 owners.push(owner);
@@ -121,6 +138,163 @@ pub(crate) fn resolve(
     }
 
     Ok(OwnerResolution { owners, provenance })
+}
+
+pub(crate) fn resolve(
+    request: &OwnerResolutionRequest,
+) -> Result<OwnerResolutionResult, SourceAdapterError> {
+    let resolution = resolve_native(
+        &request.source,
+        request.expected_artifact.map(expected_root),
+        matches!(request.mode, OwnerResolutionMode::ExistingForNewOutput),
+    )?;
+    validate_configured_kind(&request.source, &resolution.owners)?;
+    let owners = resolution
+        .owners
+        .iter()
+        .map(owner_evidence)
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut evidence = resolution
+        .provenance
+        .candidates
+        .into_iter()
+        .map(|(path, input)| match input {
+            CandidateInput::Exact(raw) => SourceInputEvidence::ExactFileSha256 {
+                path,
+                sha256: format!("{:x}", Sha256::digest(raw)),
+            },
+            CandidateInput::Absent => SourceInputEvidence::PathAbsent { path },
+        })
+        .collect::<Vec<_>>();
+    evidence.extend(
+        resolution
+            .provenance
+            .directory_memberships
+            .into_iter()
+            .map(
+                |(directory, names)| SourceInputEvidence::DirectoryMembership { directory, names },
+            ),
+    );
+    Ok(OwnerResolutionResult { owners, evidence })
+}
+
+fn expected_root(kind: SourceArtifactKind) -> (&'static str, &'static str) {
+    match kind {
+        SourceArtifactKind::ManagedForm => ("http://v8.1c.ru/8.3/xcf/logform", "Form"),
+        SourceArtifactKind::DataCompositionSchema => (
+            "http://v8.1c.ru/8.1/data-composition-system/schema",
+            "DataCompositionSchema",
+        ),
+        SourceArtifactKind::SpreadsheetDocument => {
+            ("http://v8.1c.ru/8.2/data/spreadsheet", "document")
+        }
+    }
+}
+
+fn validate_configured_kind(
+    source: &SourceContext,
+    owners: &[Owner],
+) -> Result<(), SourceAdapterError> {
+    let Some(expected) = source.configured_source_set_kind() else {
+        return Ok(());
+    };
+    let expected = match expected {
+        ConfiguredSourceSetKind::Configuration => OwnerKind::Configuration,
+        ConfiguredSourceSetKind::Extension => OwnerKind::Extension,
+        ConfiguredSourceSetKind::ExternalProcessor => OwnerKind::ExternalProcessor,
+        ConfiguredSourceSetKind::ExternalReport => OwnerKind::ExternalReport,
+    };
+    if let Some(actual) = owners.iter().map(|owner| owner.kind).find(|kind| {
+        matches!(
+            kind,
+            OwnerKind::Configuration
+                | OwnerKind::Extension
+                | OwnerKind::ExternalProcessor
+                | OwnerKind::ExternalReport
+        )
+    }) {
+        if actual != expected {
+            return Err(error(format!(
+                "configured source-set kind {} does not match platform XML owner kind {}",
+                expected.label(),
+                actual.label()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn owner_evidence(owner: &Owner) -> Result<SourceOwnerEvidence, SourceAdapterError> {
+    let compatibility = crate::versions::v2_20::profile::classify_root_version(
+        owner.version.as_deref(),
+    )
+    .map_err(|format_error| error(format!("{} in {}", format_error, owner.path.display())))?;
+    let (actual, compatibility) = match compatibility {
+        crate::versions::v2_20::profile::FormatCompatibility::Older { actual } => (actual, 0),
+        crate::versions::v2_20::profile::FormatCompatibility::Supported { actual } => (actual, 1),
+        crate::versions::v2_20::profile::FormatCompatibility::Newer { actual } => (actual, 2),
+    };
+    let actual = FormatVersion::parse(&actual.to_string())?;
+    let target = FormatVersion::parse(crate::versions::v2_20::EXPORT_FORMAT)?;
+    let format = match compatibility {
+        0 => FormatCompatibility::Older { actual, target },
+        1 => FormatCompatibility::Supported { actual, target },
+        _ => FormatCompatibility::Newer { actual, target },
+    };
+    Ok(SourceOwnerEvidence {
+        kind: match owner.kind {
+            OwnerKind::Configuration => SourceOwnerKind::Configuration,
+            OwnerKind::Extension => SourceOwnerKind::Extension,
+            OwnerKind::ExternalProcessor => SourceOwnerKind::ExternalProcessor,
+            OwnerKind::ExternalReport => SourceOwnerKind::ExternalReport,
+            OwnerKind::Standalone => SourceOwnerKind::Standalone,
+        },
+        path: owner.path.clone(),
+        format,
+        line_number_length: line_number_length_capability(owner),
+    })
+}
+
+fn line_number_length_capability(owner: &Owner) -> LineNumberLengthCapability {
+    let property_name = match owner.kind {
+        OwnerKind::Configuration => "CompatibilityMode",
+        OwnerKind::Extension => "ConfigurationExtensionCompatibilityMode",
+        _ => return LineNumberLengthCapability::Unknown,
+    };
+    let Ok((_, document)) = parse_document(&owner.path, &owner.raw) else {
+        return LineNumberLengthCapability::Unknown;
+    };
+    let Some(mode) = document
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name() == property_name)
+        .and_then(|node| node.text())
+        .map(str::trim)
+        .filter(|mode| !mode.is_empty())
+    else {
+        return LineNumberLengthCapability::Unknown;
+    };
+    let version = if mode == "DontUse" {
+        parse_platform_version(crate::versions::v2_20::PLATFORM_LINE, '.')
+    } else {
+        mode.strip_prefix("Version")
+            .and_then(|value| parse_platform_version(value, '_'))
+    };
+    match version {
+        Some(version) if version > (8, 3, 26) => LineNumberLengthCapability::Editable,
+        Some(_) => LineNumberLengthCapability::FixedFive,
+        None => LineNumberLengthCapability::Unknown,
+    }
+}
+
+fn parse_platform_version(value: &str, separator: char) -> Option<(u32, u32, u32)> {
+    let mut parts = value.split(separator);
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next().map(str::parse).transpose().ok()?.unwrap_or(0);
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
 }
 
 fn target_candidates(target: &Path) -> Vec<PathBuf> {
@@ -380,6 +554,11 @@ fn known_standalone_root(qname: (Option<&str>, &str)) -> bool {
                 "HomePageWorkArea"
             )
             | (Some("http://v8.1c.ru/8.3/xcf/scheme"), "GraphicalSchema")
+            | (
+                Some("http://v8.1c.ru/8.1/data-composition-system/schema"),
+                "DataCompositionSchema"
+            )
+            | (Some("http://v8.1c.ru/8.2/data/spreadsheet"), "document")
             | (Some("http://v8.1c.ru/8.2/roles"), "Rights")
             | (
                 Some("http://v8.1c.ru/8.2/managed-application/core"),
@@ -516,7 +695,7 @@ mod tests {
             None,
         );
 
-        let resolution = resolve(&source, None, false).unwrap();
+        let resolution = resolve_native(&source, None, false).unwrap();
 
         assert_eq!(
             resolution
@@ -557,7 +736,7 @@ mod tests {
             None,
         );
 
-        let resolution = resolve(&source, None, false).unwrap();
+        let resolution = resolve_native(&source, None, false).unwrap();
 
         assert_eq!(resolution.owners.len(), 1);
         assert_eq!(resolution.owners[0].kind, OwnerKind::ExternalProcessor);
@@ -566,5 +745,193 @@ mod tests {
             fs::canonicalize(root.join("Demo.xml")).unwrap()
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn exact_declared_target_rejects_wrong_root() {
+        let root = temp_root("wrong-exact-root");
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("Schema.xml");
+        fs::write(
+            &target,
+            r#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" version="2.20"/>"#,
+        )
+        .unwrap();
+        let source = context(&root, &target);
+
+        let error = resolve(&OwnerResolutionRequest {
+            source,
+            expected_artifact: Some(SourceArtifactKind::ManagedForm),
+            mode: OwnerResolutionMode::Existing,
+        })
+        .unwrap_err();
+
+        assert!(error.message.contains("expected"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn versionless_inherited_root_is_not_a_version_owner() {
+        let root = temp_root("versionless-inherited");
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("ClientApplicationInterface.xml");
+        fs::write(
+            &target,
+            r#"<ClientApplicationInterface xmlns="http://v8.1c.ru/8.2/managed-application/core"/>"#,
+        )
+        .unwrap();
+
+        let resolution = resolve_native(&context(&root, &target), None, false).unwrap();
+
+        assert!(resolution.owners.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn metadata_owner_requires_exactly_one_direct_artifact() {
+        let root = temp_root("multiple-artifacts");
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("Demo.xml");
+        fs::write(
+            &target,
+            format!(
+                r#"<MetaDataObject xmlns="{MD_CLASSES_NS}" version="2.20"><Document/><Catalog/></MetaDataObject>"#
+            ),
+        )
+        .unwrap();
+
+        let error = resolve_native(&context(&root, &target), None, false).unwrap_err();
+
+        assert!(error.message.contains("exactly one artifact"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn extension_kind_requires_direct_configuration_properties_marker() {
+        let root = temp_root("extension-marker");
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("Configuration.xml");
+        fs::write(
+            &target,
+            format!(
+                r#"<MetaDataObject xmlns="{MD_CLASSES_NS}" version="2.20"><Configuration><Properties><Nested><ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose></Nested></Properties></Configuration></MetaDataObject>"#
+            ),
+        )
+        .unwrap();
+
+        let resolution = resolve_native(&context(&root, &target), None, false).unwrap();
+
+        assert_eq!(resolution.owners[0].kind, OwnerKind::Configuration);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn misleading_config_dump_info_filename_is_parsed_by_content() {
+        let root = temp_root("misleading-sidecar-name");
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("ConfigDumpInfo.xml");
+        fs::write(
+            &target,
+            format!(
+                r#"<MetaDataObject xmlns="{MD_CLASSES_NS}" version="2.20"><ExternalDataProcessor/></MetaDataObject>"#
+            ),
+        )
+        .unwrap();
+
+        let resolution = resolve_native(&context(&root, &root), None, false).unwrap();
+
+        assert_eq!(resolution.owners.len(), 1);
+        assert_eq!(resolution.owners[0].kind, OwnerKind::ExternalProcessor);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn new_output_inherits_versionless_configuration_as_legacy_1_0() {
+        let root = temp_root("legacy-new-output");
+        fs::create_dir_all(root.join("Documents")).unwrap();
+        fs::write(
+            root.join("Configuration.xml"),
+            format!(r#"<MetaDataObject xmlns="{MD_CLASSES_NS}"><Configuration/></MetaDataObject>"#),
+        )
+        .unwrap();
+        let target = root.join("Documents/New.xml");
+
+        let resolution = resolve(&OwnerResolutionRequest {
+            source: context(&root, &target),
+            expected_artifact: None,
+            mode: OwnerResolutionMode::ExistingForNewOutput,
+        })
+        .unwrap();
+
+        assert!(matches!(
+            resolution.owners[0].format,
+            FormatCompatibility::Older { ref actual, .. } if actual.to_string() == "1.0"
+        ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn public_owner_evidence_contains_digest_not_raw_xml() {
+        let root = temp_root("digest-evidence");
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("Demo.xml");
+        fs::write(
+            &target,
+            format!(
+                r#"<MetaDataObject xmlns="{MD_CLASSES_NS}" version="2.20"><Document/></MetaDataObject>"#
+            ),
+        )
+        .unwrap();
+
+        let resolution = resolve(&OwnerResolutionRequest {
+            source: context(&root, &target),
+            expected_artifact: None,
+            mode: OwnerResolutionMode::Existing,
+        })
+        .unwrap();
+
+        assert!(resolution.evidence.iter().any(|evidence| matches!(
+            evidence,
+            SourceInputEvidence::ExactFileSha256 { sha256, .. } if sha256.len() == 64
+        )));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owner_resolution_rejects_symbolic_links() {
+        let root = temp_root("symlink");
+        fs::create_dir_all(&root).unwrap();
+        let real = root.join("Real.xml");
+        let target = root.join("Alias.xml");
+        fs::write(
+            &real,
+            format!(
+                r#"<MetaDataObject xmlns="{MD_CLASSES_NS}" version="2.20"><Document/></MetaDataObject>"#
+            ),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&real, &target).unwrap();
+
+        let error = resolve_native(&context(&root, &target), None, false).unwrap_err();
+
+        assert!(error.message.contains("symbolic link"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn context(root: &Path, target: &Path) -> SourceContext {
+        SourceContext::new(
+            SourceLocation::new(root.to_path_buf(), root.to_path_buf(), target.to_path_buf()),
+            Some("main".to_string()),
+            SourceFamily::PlatformXml,
+            None,
+        )
+    }
+
+    fn temp_root(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "unica-platform-owner-{label}-{}",
+            std::process::id()
+        ))
     }
 }

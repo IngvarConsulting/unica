@@ -1,15 +1,24 @@
 use std::{
-    cell::RefCell,
-    collections::BTreeMap,
-    ffi::OsString,
+    fs,
     path::{Path, PathBuf},
 };
 
+use sha2::{Digest, Sha256};
 use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
-use unica_format_core::source::{SourceContext, SourceFamily, SourceLocation};
+pub(crate) use unica_format_core::ports::{
+    FormatCompatibility, SourceArtifactKind as PlatformXmlRootExpectation,
+    SourceOwnerEvidence as PlatformXmlOwner, SourceOwnerKind as PlatformXmlOwnerKind,
+};
+use unica_format_core::{
+    ports::{
+        FormatInspectionMode, FormatInspectionRequest, OwnerResolutionMode, OwnerResolutionRequest,
+        SourceInputEvidence,
+    },
+    source::{ConfiguredSourceSetKind, SourceContext, SourceFamily, SourceLocation},
+};
 
 use crate::{
-    domain::workspace::WorkspaceContext,
+    domain::{project_sources::SourceSetKind, workspace::WorkspaceContext},
     infrastructure::{
         native_operations::compile_transaction::{CompileTransaction, DirectoryMembershipSelector},
         project_sources::{
@@ -22,46 +31,6 @@ use crate::{
     },
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PlatformXmlOwnerKind {
-    Configuration,
-    Extension,
-    ExternalProcessor,
-    ExternalReport,
-    Standalone,
-}
-
-impl PlatformXmlOwnerKind {
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::Configuration => "configuration",
-            Self::Extension => "extension",
-            Self::ExternalProcessor => "external_processor",
-            Self::ExternalReport => "external_report",
-            Self::Standalone => "standalone",
-        }
-    }
-
-    fn parse(label: &str) -> Option<Self> {
-        match label {
-            "configuration" => Some(Self::Configuration),
-            "extension" => Some(Self::Extension),
-            "external_processor" => Some(Self::ExternalProcessor),
-            "external_report" => Some(Self::ExternalReport),
-            "standalone" => Some(Self::Standalone),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct PlatformXmlOwner {
-    pub kind: PlatformXmlOwnerKind,
-    pub path: PathBuf,
-    pub version: Option<String>,
-    pub raw: Vec<u8>,
-}
-
 #[derive(Debug, Clone)]
 pub(crate) struct PlatformXmlOwnerError {
     pub path: PathBuf,
@@ -69,38 +38,44 @@ pub(crate) struct PlatformXmlOwnerError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum PlatformXmlOwnerCandidateInput {
-    ExactFile(Vec<u8>),
-    Absent,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PlatformXmlOwnerProvenance {
     source_map: ProjectSourceMapProvenance,
-    candidates: BTreeMap<PathBuf, PlatformXmlOwnerCandidateInput>,
-    directory_memberships: BTreeMap<PathBuf, Vec<OsString>>,
+    evidence: Vec<SourceInputEvidence>,
 }
 
 impl PlatformXmlOwnerProvenance {
     pub(crate) fn bind_to(&self, transaction: &mut CompileTransaction) -> Result<(), String> {
         self.source_map.bind_to(transaction)?;
-        for (path, input) in &self.candidates {
-            if transaction.protects_path(path)? {
-                continue;
-            }
-            match input {
-                PlatformXmlOwnerCandidateInput::ExactFile(raw) => {
-                    transaction.guard_or_verify_exact_preimage(path, raw)?;
+        for evidence in &self.evidence {
+            match evidence {
+                SourceInputEvidence::ExactFileSha256 { path, sha256 } => {
+                    if transaction.protects_path(path)? {
+                        continue;
+                    }
+                    let raw = fs::read(path)
+                        .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+                    let actual = format!("{:x}", Sha256::digest(&raw));
+                    if &actual != sha256 {
+                        return Err(format!(
+                            "platform XML owner changed while binding evidence: {}",
+                            path.display()
+                        ));
+                    }
+                    transaction.guard_or_verify_exact_preimage(path, &raw)?;
                 }
-                PlatformXmlOwnerCandidateInput::Absent => transaction.guard_path_absent(path)?,
+                SourceInputEvidence::PathAbsent { path } => {
+                    if !transaction.protects_path(path)? {
+                        transaction.guard_path_absent(path)?;
+                    }
+                }
+                SourceInputEvidence::DirectoryMembership { directory, names } => {
+                    transaction.guard_or_verify_directory_membership(
+                        directory,
+                        DirectoryMembershipSelector::XmlFiles,
+                        names.clone(),
+                    )?;
+                }
             }
-        }
-        for (directory, expected_names) in &self.directory_memberships {
-            transaction.guard_or_verify_directory_membership(
-                directory,
-                DirectoryMembershipSelector::XmlFiles,
-                expected_names.clone(),
-            )?;
         }
         Ok(())
     }
@@ -112,36 +87,12 @@ pub(crate) struct PlatformXmlOwnerResolution {
     pub provenance: PlatformXmlOwnerProvenance,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PlatformXmlRootExpectation {
-    pub(crate) namespace: &'static str,
-    pub(crate) local_name: &'static str,
-}
-
-impl PlatformXmlRootExpectation {
-    pub(crate) const fn new(namespace: &'static str, local_name: &'static str) -> Self {
-        Self {
-            namespace,
-            local_name,
-        }
-    }
-}
-
 pub(crate) const MANAGED_FORM_ROOT: PlatformXmlRootExpectation =
-    PlatformXmlRootExpectation::new("http://v8.1c.ru/8.3/xcf/logform", "Form");
-pub(crate) const DCS_ROOT: PlatformXmlRootExpectation = PlatformXmlRootExpectation::new(
-    "http://v8.1c.ru/8.1/data-composition-system/schema",
-    "DataCompositionSchema",
-);
+    PlatformXmlRootExpectation::ManagedForm;
+pub(crate) const DCS_ROOT: PlatformXmlRootExpectation =
+    PlatformXmlRootExpectation::DataCompositionSchema;
 pub(crate) const MXL_ROOT: PlatformXmlRootExpectation =
-    PlatformXmlRootExpectation::new("http://v8.1c.ru/8.2/data/spreadsheet", "document");
-
-pub(crate) fn root_version_literal(source: &str, root: roxmltree::Node<'_, '_>) -> Option<String> {
-    root.attributes()
-        .find(|attribute| attribute.namespace().is_none() && attribute.name() == "version")
-        .and_then(|attribute| source.get(attribute.range_value()))
-        .map(str::to_owned)
-}
+    PlatformXmlRootExpectation::SpreadsheetDocument;
 
 pub(crate) fn resolve_platform_xml_owners(
     target: &Path,
@@ -163,7 +114,7 @@ pub(crate) fn resolve_platform_xml_owners_with_provenance(
     target: &Path,
     context: &WorkspaceContext,
 ) -> Result<PlatformXmlOwnerResolution, PlatformXmlOwnerError> {
-    resolve(target, context, None, false)
+    resolve(target, context, None, OwnerResolutionMode::Existing)
 }
 
 pub(crate) fn resolve_platform_xml_owners_for_exact_root_with_provenance(
@@ -171,7 +122,12 @@ pub(crate) fn resolve_platform_xml_owners_for_exact_root_with_provenance(
     context: &WorkspaceContext,
     expected_root: PlatformXmlRootExpectation,
 ) -> Result<PlatformXmlOwnerResolution, PlatformXmlOwnerError> {
-    resolve(target, context, Some(expected_root), false)
+    resolve(
+        target,
+        context,
+        Some(expected_root),
+        OwnerResolutionMode::Existing,
+    )
 }
 
 pub(crate) fn resolve_existing_platform_xml_owners_for_new_output(
@@ -186,14 +142,63 @@ pub(crate) fn resolve_existing_platform_xml_owners_for_new_output_with_provenanc
     target: &Path,
     context: &WorkspaceContext,
 ) -> Result<PlatformXmlOwnerResolution, PlatformXmlOwnerError> {
-    resolve(target, context, None, true)
+    resolve(
+        target,
+        context,
+        None,
+        OwnerResolutionMode::ExistingForNewOutput,
+    )
+}
+
+pub(crate) fn inspect_platform_xml_compatibility(
+    target: &Path,
+    _expected_artifact: Option<PlatformXmlRootExpectation>,
+) -> Result<FormatCompatibility, PlatformXmlOwnerError> {
+    let target = normalize_path_identity(target).map_err(|message| PlatformXmlOwnerError {
+        path: target.to_path_buf(),
+        message,
+    })?;
+    let result = PlatformXmlAdapterFactory::new()
+        .registration()
+        .format_inspection
+        .inspect(&FormatInspectionRequest {
+            path: target.clone(),
+            mode: FormatInspectionMode::Versioned,
+        })
+        .map_err(|error| PlatformXmlOwnerError {
+            path: target.clone(),
+            message: error.message,
+        })?;
+    result.compatibility.ok_or_else(|| PlatformXmlOwnerError {
+        path: target,
+        message: "platform XML target has no format-owning root".to_string(),
+    })
+}
+
+pub(crate) fn inspect_platform_xml_versionless(target: &Path) -> Result<(), PlatformXmlOwnerError> {
+    let target = normalize_path_identity(target).map_err(|message| PlatformXmlOwnerError {
+        path: target.to_path_buf(),
+        message,
+    })?;
+    PlatformXmlAdapterFactory::new()
+        .registration()
+        .format_inspection
+        .inspect(&FormatInspectionRequest {
+            path: target.clone(),
+            mode: FormatInspectionMode::Versionless,
+        })
+        .map(|_| ())
+        .map_err(|error| PlatformXmlOwnerError {
+            path: target,
+            message: error.message,
+        })
 }
 
 fn resolve(
     target: &Path,
     context: &WorkspaceContext,
-    expected_root: Option<PlatformXmlRootExpectation>,
-    existing_only: bool,
+    expected_artifact: Option<PlatformXmlRootExpectation>,
+    mode: OwnerResolutionMode,
 ) -> Result<PlatformXmlOwnerResolution, PlatformXmlOwnerError> {
     let target = if target.is_absolute() {
         target.to_path_buf()
@@ -231,10 +236,15 @@ fn resolve(
                 message,
             }
         })?;
-    let (configured_source_set, source_root) = match selected {
-        Some((source_set, source_root)) => (Some(source_set.name.clone()), source_root),
-        None if target.is_dir() => (None, target.clone()),
+    let (configured_source_set, configured_kind, source_root) = match selected {
+        Some((source_set, source_root)) => (
+            Some(source_set.name.clone()),
+            Some(configured_kind(source_set.kind)),
+            source_root,
+        ),
+        None if target.is_dir() => (None, None, target.clone()),
         None => (
+            None,
             None,
             target
                 .parent()
@@ -247,51 +257,34 @@ fn resolve(
         configured_source_set,
         SourceFamily::PlatformXml,
         None,
-    );
-    let owners = RefCell::new(Vec::new());
-    let candidates = RefCell::new(BTreeMap::new());
-    let memberships = RefCell::new(BTreeMap::new());
-    PlatformXmlAdapterFactory::resolve_owners(
-        &source,
-        expected_root.map(|root| (root.namespace, root.local_name)),
-        existing_only,
-        |kind, path, version, raw| {
-            let kind = PlatformXmlOwnerKind::parse(kind)
-                .expect("adapter owner kind labels are a closed contract");
-            owners.borrow_mut().push(PlatformXmlOwner {
-                kind,
-                path: path.to_path_buf(),
-                version: version.map(str::to_string),
-                raw: raw.to_vec(),
-            });
-        },
-        |path, raw| {
-            candidates.borrow_mut().insert(
-                path.to_path_buf(),
-                PlatformXmlOwnerCandidateInput::ExactFile(raw.to_vec()),
-            );
-        },
-        |path| {
-            candidates
-                .borrow_mut()
-                .insert(path.to_path_buf(), PlatformXmlOwnerCandidateInput::Absent);
-        },
-        |directory, names| {
-            memberships
-                .borrow_mut()
-                .insert(directory.to_path_buf(), names.to_vec());
-        },
     )
-    .map_err(|error| PlatformXmlOwnerError {
-        path: target,
-        message: error.message,
-    })?;
+    .with_configured_source_set_kind(configured_kind);
+    let result = PlatformXmlAdapterFactory::new()
+        .registration()
+        .ownership
+        .resolve(&OwnerResolutionRequest {
+            source,
+            expected_artifact,
+            mode,
+        })
+        .map_err(|error| PlatformXmlOwnerError {
+            path: target,
+            message: error.message,
+        })?;
     Ok(PlatformXmlOwnerResolution {
-        owners: owners.into_inner(),
+        owners: result.owners,
         provenance: PlatformXmlOwnerProvenance {
             source_map: source_map_provenance,
-            candidates: candidates.into_inner(),
-            directory_memberships: memberships.into_inner(),
+            evidence: result.evidence,
         },
     })
+}
+
+fn configured_kind(kind: SourceSetKind) -> ConfiguredSourceSetKind {
+    match kind {
+        SourceSetKind::Configuration => ConfiguredSourceSetKind::Configuration,
+        SourceSetKind::Extension => ConfiguredSourceSetKind::Extension,
+        SourceSetKind::ExternalProcessor => ConfiguredSourceSetKind::ExternalProcessor,
+        SourceSetKind::ExternalReport => ConfiguredSourceSetKind::ExternalReport,
+    }
 }

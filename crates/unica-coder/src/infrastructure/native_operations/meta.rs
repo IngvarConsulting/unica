@@ -2,9 +2,7 @@
 
 use crate::application::operation_descriptors::OBJECT_PATH;
 use crate::application::{AdapterOutcome, SupportGuardRequirement};
-use crate::domain::format_profile::{
-    classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
-};
+use crate::domain::format_profile::{FormatCompatibility, ACTIVE_FORMAT_PROFILE};
 use crate::domain::identifiers::is_1c_identifier;
 use crate::domain::navigation::{
     Authorability, CapabilityState, IdentityStrength, NavigationEdge, NavigationGraph,
@@ -25,6 +23,7 @@ use crate::domain::navigation_limits::{
     MAX_NAVIGATION_SELECTOR_STRING_BYTES, MAX_NAVIGATION_SELECT_JSON_BYTES,
     MAX_NAVIGATION_SEMANTIC_STRING_BYTES as SNAPSHOT_CACHE_MAX_SEMANTIC_STRING_BYTES,
 };
+use crate::domain::project_sources::SourceSetKind;
 use crate::domain::source_adapters::{
     source_id_for_configured_source_set, SourceAdapterError, SourceAdapterErrorKind, SourceBinding,
     SourceId,
@@ -32,8 +31,8 @@ use crate::domain::source_adapters::{
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::metadata_kind;
 use crate::infrastructure::platform_xml_owner::{
-    resolve_platform_xml_owners_with_provenance, root_version_literal, PlatformXmlOwnerKind,
-    PlatformXmlOwnerProvenance,
+    inspect_platform_xml_compatibility, resolve_platform_xml_owners_with_provenance,
+    PlatformXmlOwnerKind, PlatformXmlOwnerProvenance,
 };
 use crate::infrastructure::project_sources::discover_project_source_map;
 use roxmltree::Document;
@@ -45,6 +44,7 @@ use std::fs;
 use std::io::{self, ErrorKind, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
+use unica_format_core::ports::LineNumberLengthCapability;
 
 use super::common::*;
 use super::compile_transaction::{
@@ -5890,13 +5890,20 @@ fn meta_validate_one_with_scope(
         check1_ok = false;
     }
 
-    let version_literal = root_version_literal(source, root);
-    match classify_root_version(version_literal.as_deref()) {
-        Ok(FormatCompatibility::Supported { .. }) => report.ok("Export format: 2.20"),
-        Ok(compatibility) => report.warn(format_compatibility_warning(&compatibility)),
-        Err(error) => report.error(error.to_string()),
-    }
-    let version = version_literal.as_deref().unwrap_or("");
+    let version = match inspect_platform_xml_compatibility(&resolved_path, None) {
+        Ok(compatibility @ FormatCompatibility::Supported { .. }) => {
+            report.ok("Export format: 2.20");
+            compatibility.actual().to_string()
+        }
+        Ok(compatibility) => {
+            report.warn(format_compatibility_warning(&compatibility));
+            compatibility.actual().to_string()
+        }
+        Err(error) => {
+            report.error(error.message);
+            String::new()
+        }
+    };
 
     let child_elements = root
         .children()
@@ -9111,6 +9118,20 @@ fn resolve_object_path_binding(
         source_root: canonical_root.clone(),
         target: canonical_target.clone(),
         configured_source_set: Some(source_set.name.clone()),
+        configured_source_set_kind: Some(match source_set.kind {
+            SourceSetKind::Configuration => {
+                crate::domain::source_adapters::ConfiguredSourceSetKind::Configuration
+            }
+            SourceSetKind::Extension => {
+                crate::domain::source_adapters::ConfiguredSourceSetKind::Extension
+            }
+            SourceSetKind::ExternalProcessor => {
+                crate::domain::source_adapters::ConfiguredSourceSetKind::ExternalProcessor
+            }
+            SourceSetKind::ExternalReport => {
+                crate::domain::source_adapters::ConfiguredSourceSetKind::ExternalReport
+            }
+        }),
         declared_family: crate::domain::source_adapters::SourceFamily::PlatformXml,
         declared_format: None,
     };
@@ -9373,6 +9394,20 @@ fn inspect_source_path(
                 source_root: binding.canonical_root.clone(),
                 target: binding.canonical_target.clone(),
                 configured_source_set: Some(binding.name.clone()),
+                configured_source_set_kind: Some(match binding.kind {
+                    SourceSetKind::Configuration => {
+                        crate::domain::source_adapters::ConfiguredSourceSetKind::Configuration
+                    }
+                    SourceSetKind::Extension => {
+                        crate::domain::source_adapters::ConfiguredSourceSetKind::Extension
+                    }
+                    SourceSetKind::ExternalProcessor => {
+                        crate::domain::source_adapters::ConfiguredSourceSetKind::ExternalProcessor
+                    }
+                    SourceSetKind::ExternalReport => {
+                        crate::domain::source_adapters::ConfiguredSourceSetKind::ExternalReport
+                    }
+                }),
                 declared_family: binding.declared_family.clone(),
                 declared_format: binding.declared_format.clone(),
             },
@@ -18937,7 +18972,7 @@ fn meta_edit_line_number_length_policy(
     object_type: &str,
     object_path: &Path,
     context: &WorkspaceContext,
-    transaction: &mut CompileTransaction,
+    _transaction: &mut CompileTransaction,
 ) -> Result<MetaEditLineNumberLengthAuthorization, String> {
     if !meta_line_number_length_is_applicable(object_type) {
         return Ok(MetaEditLineNumberLengthAuthorization {
@@ -18966,43 +19001,26 @@ fn meta_edit_line_number_length_policy(
             provenance: None,
         });
     };
-    if owner.path != object_path {
-        transaction.guard_or_verify_exact_preimage(&owner.path, &owner.raw)?;
-    }
-    let property_name = match owner.kind {
-        PlatformXmlOwnerKind::Configuration => "CompatibilityMode",
-        PlatformXmlOwnerKind::Extension => "ConfigurationExtensionCompatibilityMode",
-        _ => unreachable!("configuration-like owners were filtered above"),
-    };
-    let owner_text = std::str::from_utf8(&owner.raw)
-        .map_err(|error| format!("failed to read {}: {error}", owner.path.display()))?;
-    let document = Document::parse(owner_text.trim_start_matches('\u{feff}'))
-        .map_err(|error| format!("failed to parse {}: {error}", owner.path.display()))?;
-    let Some(mode) = document
-        .descendants()
-        .find(|node| node.is_element() && node.tag_name().name() == property_name)
-        .and_then(|node| node.text())
-        .map(str::trim)
-        .filter(|mode| !mode.is_empty())
-    else {
-        return Ok(MetaEditLineNumberLengthAuthorization {
-            policy: MetaEditLineNumberLengthPolicy::UnknownCompatibility,
-            provenance: None,
-        });
-    };
-
     Ok(MetaEditLineNumberLengthAuthorization {
-        policy: meta_edit_line_number_length_policy_from_mode(mode),
+        policy: match owner.line_number_length {
+            LineNumberLengthCapability::FixedFive => MetaEditLineNumberLengthPolicy::FixedFive,
+            LineNumberLengthCapability::Editable => MetaEditLineNumberLengthPolicy::Editable,
+            LineNumberLengthCapability::Unknown => {
+                MetaEditLineNumberLengthPolicy::UnknownCompatibility
+            }
+        },
         provenance: Some(resolution.provenance),
     })
 }
 
+#[cfg(test)]
 pub(crate) fn meta_edit_line_number_length_policy_from_mode(
     mode: &str,
 ) -> MetaEditLineNumberLengthPolicy {
     meta_edit_line_number_length_policy_for_platform(mode, ACTIVE_FORMAT_PROFILE.platform_line)
 }
 
+#[cfg(test)]
 pub(crate) fn meta_edit_line_number_length_policy_for_platform(
     mode: &str,
     platform_line: &str,
@@ -19023,6 +19041,7 @@ pub(crate) fn meta_edit_line_number_length_policy_for_platform(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn meta_edit_parse_platform_line(value: &str) -> Option<(u32, u32, u32)> {
     let mut parts = value.split('.');
     let major = parts.next()?.parse().ok()?;
@@ -19034,6 +19053,7 @@ pub(crate) fn meta_edit_parse_platform_line(value: &str) -> Option<(u32, u32, u3
     Some((major, minor, patch))
 }
 
+#[cfg(test)]
 pub(crate) fn meta_edit_parse_compatibility_version(value: &str) -> Option<(u32, u32, u32)> {
     let mut parts = value.split('_');
     let major = parts.next()?.parse().ok()?;

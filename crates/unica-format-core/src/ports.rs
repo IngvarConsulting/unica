@@ -1,12 +1,21 @@
 //! Format-neutral ports implemented by concrete source adapters.
 
+use std::{
+    ffi::OsString,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
 use crate::{
     navigation::{
-        CapabilityVector, NavigationEnvelope, NavigationQuery, ObjectRef, PropertyValue,
-        SourceAdapterDiagnostic,
+        Authorability, CapabilityVector, NavigationEnvelope, NavigationQuery, ObjectRef,
+        PropertyValue, SourceAdapterDiagnostic,
     },
     semantic_ids::{SemanticPropertyId, SemanticRelationId},
-    source::{SourceAdapterError, SourceContext, SourceDescriptor, SourceRevision, SourceSnapshot},
+    source::{
+        AdapterManifest, FormatVersion, SourceAdapterError, SourceContext, SourceDescriptor,
+        SourceRevision, SourceSnapshot,
+    },
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +47,234 @@ pub struct FormatReadRequest {
 
 pub trait ReadPort: Send + Sync {
     fn read(&self, request: &FormatReadRequest) -> Result<NavigationEnvelope, SourceAdapterError>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdapterFormatProfile {
+    pub platform_line: &'static str,
+    pub export_format: &'static str,
+    pub legacy_metadata_classes: &'static [&'static str],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormatCompatibilityKind {
+    Older,
+    Supported,
+    Newer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FormatCompatibility {
+    Older {
+        actual: FormatVersion,
+        target: FormatVersion,
+    },
+    Supported {
+        actual: FormatVersion,
+        target: FormatVersion,
+    },
+    Newer {
+        actual: FormatVersion,
+        target: FormatVersion,
+    },
+}
+
+impl FormatCompatibility {
+    pub fn actual(&self) -> &FormatVersion {
+        match self {
+            Self::Older { actual, .. }
+            | Self::Supported { actual, .. }
+            | Self::Newer { actual, .. } => actual,
+        }
+    }
+
+    pub fn target(&self) -> &FormatVersion {
+        match self {
+            Self::Older { target, .. }
+            | Self::Supported { target, .. }
+            | Self::Newer { target, .. } => target,
+        }
+    }
+
+    pub const fn kind(&self) -> FormatCompatibilityKind {
+        match self {
+            Self::Older { .. } => FormatCompatibilityKind::Older,
+            Self::Supported { .. } => FormatCompatibilityKind::Supported,
+            Self::Newer { .. } => FormatCompatibilityKind::Newer,
+        }
+    }
+
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Older { .. } => "older",
+            Self::Supported { .. } => "supported",
+            Self::Newer { .. } => "newer",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceArtifactKind {
+    ManagedForm,
+    DataCompositionSchema,
+    SpreadsheetDocument,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceOwnerKind {
+    Configuration,
+    Extension,
+    ExternalProcessor,
+    ExternalReport,
+    Standalone,
+}
+
+impl SourceOwnerKind {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Configuration => "configuration",
+            Self::Extension => "extension",
+            Self::ExternalProcessor => "external_processor",
+            Self::ExternalReport => "external_report",
+            Self::Standalone => "standalone",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineNumberLengthCapability {
+    FixedFive,
+    Editable,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceOwnerEvidence {
+    pub kind: SourceOwnerKind,
+    pub path: PathBuf,
+    pub format: FormatCompatibility,
+    pub line_number_length: LineNumberLengthCapability,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceInputEvidence {
+    ExactFileSha256 {
+        path: PathBuf,
+        sha256: String,
+    },
+    PathAbsent {
+        path: PathBuf,
+    },
+    DirectoryMembership {
+        directory: PathBuf,
+        names: Vec<OsString>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnerResolutionMode {
+    Existing,
+    ExistingForNewOutput,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnerResolutionRequest {
+    pub source: SourceContext,
+    pub expected_artifact: Option<SourceArtifactKind>,
+    pub mode: OwnerResolutionMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnerResolutionResult {
+    pub owners: Vec<SourceOwnerEvidence>,
+    pub evidence: Vec<SourceInputEvidence>,
+}
+
+pub trait OwnershipPort: Send + Sync {
+    fn resolve(
+        &self,
+        request: &OwnerResolutionRequest,
+    ) -> Result<OwnerResolutionResult, SourceAdapterError>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormatInspectionMode {
+    Versioned,
+    Versionless,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormatInspectionRequest {
+    pub path: PathBuf,
+    pub mode: FormatInspectionMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormatInspectionResult {
+    pub compatibility: Option<FormatCompatibility>,
+}
+
+pub trait FormatInspectionPort: Send + Sync {
+    fn inspect(
+        &self,
+        request: &FormatInspectionRequest,
+    ) -> Result<FormatInspectionResult, SourceAdapterError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SupportSourceState {
+    Absent,
+    Removed,
+    Parsed,
+    Unreadable {
+        context: String,
+        offset: Option<usize>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectiveSupportRule {
+    Absent,
+    Removed,
+    Editable,
+    Locked,
+    ConfigurationReadOnly,
+    UnknownReadOnly,
+    Unreadable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupportVendorEvidence {
+    pub version: String,
+    pub vendor: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupportEvidence {
+    pub source: SupportSourceState,
+    pub effective_rule: EffectiveSupportRule,
+    pub authorability: Authorability,
+    pub global_editing_enabled: Option<bool>,
+    pub rule_counts: [usize; 3],
+    pub vendors: Vec<SupportVendorEvidence>,
+}
+
+pub trait SupportPort: Send + Sync {
+    fn inspect_path(&self, path: &Path, object_uuid: &str) -> SupportEvidence;
+    fn inspect_bytes(&self, bytes: Option<&[u8]>, object_uuid: &str) -> SupportEvidence;
+}
+
+#[derive(Clone)]
+pub struct SourceAdapterRegistration {
+    pub manifest: AdapterManifest,
+    pub profile: AdapterFormatProfile,
+    pub capture: Arc<dyn CapturePort>,
+    pub probe: Arc<dyn ProbePort>,
+    pub read: Arc<dyn ReadPort>,
+    pub ownership: Arc<dyn OwnershipPort>,
+    pub format_inspection: Arc<dyn FormatInspectionPort>,
+    pub support: Arc<dyn SupportPort>,
 }
 
 /// Closed mutation language. Native parser nodes and `serde_json::Value` are

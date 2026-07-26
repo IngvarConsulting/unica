@@ -2,9 +2,8 @@
 
 use crate::application::operation_descriptors::{CFE_VALIDATE_PATH, CF_PATH, RIGHTS_PATH};
 use crate::application::{AdapterOutcome, SupportGuardRequirement};
-use crate::domain::format_profile::{
-    classify_root_version, ExportFormatVersion, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
-};
+use crate::domain::format_profile::{FormatCompatibility, ACTIVE_FORMAT_PROFILE};
+use crate::domain::source_adapters::FormatVersion;
 use crate::domain::workspace::WorkspaceContext;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
@@ -13,6 +12,7 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
+use unica_format_core::ports::{EffectiveSupportRule, SupportSourceState};
 
 use super::compile_transaction::CompileTransaction;
 use super::single_file_publisher::{publish, PublishMode, PublishRequest};
@@ -1406,7 +1406,8 @@ mod mutation_tests {
         format_compatibility_warning, guard_active_format_owner, read_utf8_sig_snapshot,
         utf8_bom_bytes, write_utf8_bom,
     };
-    use crate::domain::format_profile::{ExportFormatVersion, FormatCompatibility};
+    use crate::domain::format_profile::FormatCompatibility;
+    use crate::domain::source_adapters::FormatVersion;
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
     use crate::infrastructure::native_operations::single_file_publisher::{
@@ -1541,7 +1542,8 @@ mod mutation_tests {
     #[test]
     fn older_format_warning_offers_explicit_platform_reexport_without_auto_migration() {
         let warning = format_compatibility_warning(&FormatCompatibility::Older {
-            actual: ExportFormatVersion::parse("2.19").unwrap(),
+            actual: FormatVersion::parse("2.19").unwrap(),
+            target: FormatVersion::parse("2.20").unwrap(),
         });
 
         assert!(
@@ -1556,7 +1558,8 @@ mod mutation_tests {
     #[test]
     fn newer_format_warning_keeps_8_5_roadmap_copy_without_downgrade_offer() {
         let warning = format_compatibility_warning(&FormatCompatibility::Newer {
-            actual: ExportFormatVersion::parse("2.21").unwrap(),
+            actual: FormatVersion::parse("2.21").unwrap(),
+            target: FormatVersion::parse("2.20").unwrap(),
         });
 
         assert!(warning.contains("1C 8.5 support is planned"), "{warning}");
@@ -2028,13 +2031,12 @@ pub(crate) fn extension_name_prefix(config: &Path) -> Option<String> {
 pub(crate) fn detect_format_version(
     target: &Path,
     context: &WorkspaceContext,
-) -> Result<ExportFormatVersion, String> {
+) -> Result<FormatVersion, String> {
     let owners =
         crate::infrastructure::platform_xml_owner::resolve_platform_xml_owners(target, context)
             .map_err(|error| error.message)?;
     require_supported_platform_xml_owners(&owners)?;
-    ExportFormatVersion::parse(ACTIVE_FORMAT_PROFILE.export_format)
-        .map_err(|error| error.to_string())
+    FormatVersion::parse(ACTIVE_FORMAT_PROFILE.export_format).map_err(|error| error.to_string())
 }
 
 /// Re-authorize the current version-owning XML bytes at handler planning time
@@ -2115,11 +2117,6 @@ fn guard_active_format_dependency_targets(
     for provenance in provenances {
         provenance.bind_to(transaction)?;
     }
-    for owner in owners {
-        if !transaction.protects_path(&owner.path)? {
-            transaction.guard_exact_preimage(owner.path, owner.raw)?;
-        }
-    }
     Ok(())
 }
 
@@ -2134,11 +2131,6 @@ pub(crate) fn guard_active_format_containing_owner_for_new_output(
     let owners = resolution.owners;
     require_supported_platform_xml_owners(&owners)?;
     resolution.provenance.bind_to(transaction)?;
-    for owner in owners {
-        if !transaction.protects_path(&owner.path)? {
-            transaction.guard_exact_preimage(owner.path, owner.raw)?;
-        }
-    }
     Ok(())
 }
 
@@ -2214,16 +2206,15 @@ fn require_supported_platform_xml_owners(
     let mut older = None;
     let mut newer = None;
     for owner in owners {
-        match classify_root_version(owner.version.as_deref()) {
-            Ok(FormatCompatibility::Supported { .. }) => {}
-            Ok(compatibility @ FormatCompatibility::Older { .. }) if older.is_none() => {
+        match owner.format.clone() {
+            FormatCompatibility::Supported { .. } => {}
+            compatibility @ FormatCompatibility::Older { .. } if older.is_none() => {
                 older = Some(compatibility);
             }
-            Ok(compatibility @ FormatCompatibility::Newer { .. }) if newer.is_none() => {
+            compatibility @ FormatCompatibility::Newer { .. } if newer.is_none() => {
                 newer = Some(compatibility);
             }
-            Ok(FormatCompatibility::Older { .. } | FormatCompatibility::Newer { .. }) => {}
-            Err(error) => return Err(error.to_string()),
+            FormatCompatibility::Older { .. } | FormatCompatibility::Newer { .. } => {}
         }
     }
     if let Some(compatibility) = newer.or(older) {
@@ -2249,12 +2240,12 @@ pub(crate) fn guard_exact_preimage_if_unprotected(
 
 pub(crate) fn format_compatibility_warning(compatibility: &FormatCompatibility) -> String {
     match compatibility {
-        FormatCompatibility::Older { actual } => format!(
+        FormatCompatibility::Older { actual, .. } => format!(
             "Export format {actual} is older than supported {}. Unica will not migrate it automatically; re-export the source explicitly with 1C:Enterprise {}, then retry.",
             ACTIVE_FORMAT_PROFILE.export_format,
             ACTIVE_FORMAT_PROFILE.platform_line
         ),
-        FormatCompatibility::Newer { actual } => format!(
+        FormatCompatibility::Newer { actual, .. } => format!(
             "Export format {actual} is newer than supported {}; platform 1C 8.5 support is planned in upcoming releases.",
             ACTIVE_FORMAT_PROFILE.export_format
         ),
@@ -2275,7 +2266,50 @@ pub(crate) fn support_state_lines_for_configuration(
         config_path.parent().unwrap_or_else(|| Path::new(""))
     };
     let bin_path = config_dir.join("Ext").join("ParentConfigurations.bin");
-    PlatformXmlAdapterFactory::support_summary_lines(&bin_path, is_extension)
+    let evidence = PlatformXmlAdapterFactory::new()
+        .registration()
+        .support
+        .inspect_path(&bin_path, "");
+    match evidence.source {
+        SupportSourceState::Absent => vec![if is_extension {
+            "Поддержка:      расширение (CFE), правки свободны".to_string()
+        } else {
+            "Поддержка:      не на поддержке (своя конфигурация)".to_string()
+        }],
+        SupportSourceState::Unreadable { .. } => vec![
+            "Поддержка:      состояние ParentConfigurations.bin не удалось прочитать — правки не подтверждены"
+                .to_string(),
+        ],
+        SupportSourceState::Removed => {
+            vec!["Поддержка:      снята с поддержки полностью".to_string()]
+        }
+        SupportSourceState::Parsed if evidence.global_editing_enabled == Some(false) => vec![
+            "Поддержка:      на поддержке".to_string(),
+            "  Возможность изменения: выключена — вся конфигурация read-only (правки заблокированы)"
+                .to_string(),
+            format!("  Конфигураций поставщика: {}", evidence.vendors.len()),
+        ],
+        SupportSourceState::Parsed => {
+            let mut lines = vec![
+                "Поддержка:      на поддержке".to_string(),
+                "  Возможность изменения: включена".to_string(),
+                format!(
+                    "  Объектов: на замке {} / редактируется {} / снято {}",
+                    evidence.rule_counts[0], evidence.rule_counts[1], evidence.rule_counts[2]
+                ),
+                format!("  Конфигураций поставщика: {}", evidence.vendors.len()),
+            ];
+            if evidence.vendors.len() > 1 {
+                for vendor in evidence.vendors {
+                    lines.push(format!(
+                        "  Поставщик: {} — {} {}",
+                        vendor.vendor, vendor.name, vendor.version
+                    ));
+                }
+            }
+            lines
+        }
+    }
 }
 
 pub(crate) fn support_status_for_path(target_path: &Path) -> String {
@@ -2284,10 +2318,24 @@ pub(crate) fn support_status_for_path(target_path: &Path) -> String {
     };
     let object_uuid = support_object_uuid_for_path(target_path)
         .or_else(|| support_root_uuid(&config_dir.join("Configuration.xml")));
-    PlatformXmlAdapterFactory::support_status(
-        &config_dir.join("Ext").join("ParentConfigurations.bin"),
-        object_uuid.as_deref().unwrap_or(""),
-    )
+    let evidence = PlatformXmlAdapterFactory::new()
+        .registration()
+        .support
+        .inspect_path(
+            &config_dir.join("Ext").join("ParentConfigurations.bin"),
+            object_uuid.as_deref().unwrap_or(""),
+        );
+    match evidence.effective_rule {
+        EffectiveSupportRule::Absent => "не на поддержке".to_string(),
+        EffectiveSupportRule::Removed => "снято с поддержки (правки свободны)".to_string(),
+        EffectiveSupportRule::Editable => {
+            "редактируется с сохранением поддержки".to_string()
+        }
+        EffectiveSupportRule::Locked => "на замке — прямая правка сломает обновления; дорабатывай через cfe-* либо включи редактирование объекта".to_string(),
+        EffectiveSupportRule::ConfigurationReadOnly => "конфигурация read-only (возможность изменения выключена) — правки невозможны без включения".to_string(),
+        EffectiveSupportRule::UnknownReadOnly => "состояние нескольких поставщиков нельзя однозначно применить — правки не подтверждены".to_string(),
+        EffectiveSupportRule::Unreadable => "состояние поддержки не удалось прочитать — правки не подтверждены".to_string(),
+    }
 }
 
 /*
@@ -2398,7 +2446,21 @@ pub(crate) fn support_root_uuid_from_bytes(raw: &[u8]) -> Option<String> {
 }
 
 pub(crate) fn parse_support_header(text: &str) -> Option<(u8, usize)> {
-    PlatformXmlAdapterFactory::support_header(text)
+    let evidence = PlatformXmlAdapterFactory::new()
+        .registration()
+        .support
+        .inspect_bytes(Some(text.as_bytes()), "");
+    if !matches!(evidence.source, SupportSourceState::Parsed) {
+        return None;
+    }
+    Some((
+        if evidence.global_editing_enabled? {
+            0
+        } else {
+            1
+        },
+        evidence.vendors.len(),
+    ))
 }
 
 pub(crate) fn extract_xml_attr(text: &str, element: &str, attr: &str) -> Option<String> {

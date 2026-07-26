@@ -3,9 +3,7 @@ use crate::application::operation_descriptors::{
 };
 use crate::application::ports::FormatGuardCheck;
 use crate::application::{AdapterOutcome, ToolHandler, ToolSpec};
-use crate::domain::format_profile::{
-    classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
-};
+use crate::domain::format_profile::{FormatCompatibility, ACTIVE_FORMAT_PROFILE};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::cf::{
     cf_edit_format_dependency_paths, cf_init_planned_xml, cf_init_post_validation_dependency_paths,
@@ -122,28 +120,7 @@ pub(crate) fn evaluate_format_guard(
     let mut older = None;
     let mut newer = None;
     for owner in owners {
-        let compatibility = match classify_root_version(owner.version.as_deref()) {
-            Ok(compatibility) => compatibility,
-            Err(error) => {
-                let diagnostic = json!({
-                    "code": error.code(),
-                    "actualFormat": owner.version,
-                    "targetFormat": ACTIVE_FORMAT_PROFILE.export_format,
-                    "targetPlatform": ACTIVE_FORMAT_PROFILE.platform_line,
-                    "compatibility": "invalid",
-                    "root": owner.path.display().to_string(),
-                    "ownerKind": owner.kind.label(),
-                });
-                return Ok(format_check(
-                    spec,
-                    format!(
-                        "Некорректная версия формата выгрузки в {}",
-                        owner.path.display()
-                    ),
-                    diagnostic,
-                ));
-            }
-        };
+        let compatibility = owner.format.clone();
         match compatibility {
             FormatCompatibility::Supported { .. } => {}
             FormatCompatibility::Older { .. } if older.is_none() => {

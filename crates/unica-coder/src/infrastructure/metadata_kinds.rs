@@ -81,7 +81,7 @@ metadata_kind_registry! {
 }
 
 pub(crate) const METADATA_KIND_TAGS: &[&str] =
-    unica_adapter_platform_xml::PlatformXmlAdapterFactory::legacy_metadata_classes();
+    unica_adapter_platform_xml::PlatformXmlAdapterFactory::profile().legacy_metadata_classes;
 
 pub(crate) fn metadata_kind(tag: &str) -> Option<&'static MetadataKind> {
     METADATA_KINDS.iter().find(|kind| kind.tag == tag)

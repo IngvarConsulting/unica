@@ -1,14 +1,12 @@
 #![allow(dead_code, unused_imports)]
 
 use crate::application::AdapterOutcome;
-use crate::domain::format_profile::{
-    classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
-};
+use crate::domain::format_profile::{FormatCompatibility, ACTIVE_FORMAT_PROFILE};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::{
     metadata_kind, metadata_kind_by_directory, metadata_kind_index, METADATA_KIND_TAGS,
 };
-use crate::infrastructure::platform_xml_owner::root_version_literal;
+use crate::infrastructure::platform_xml_owner::inspect_platform_xml_compatibility;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -201,13 +199,20 @@ fn validate_cf_with_scope(
             ));
             check1_ok = false;
         }
-        let version_literal = root_version_literal(source, root);
-        match classify_root_version(version_literal.as_deref()) {
-            Ok(FormatCompatibility::Supported { .. }) => report.ok("Export format: 2.20"),
-            Ok(compatibility) => report.warn(format_compatibility_warning(&compatibility)),
-            Err(error) => report.error(error.to_string()),
-        }
-        let version = version_literal.as_deref().unwrap_or("");
+        let version = match inspect_platform_xml_compatibility(&resolved_path, None) {
+            Ok(compatibility @ FormatCompatibility::Supported { .. }) => {
+                report.ok("Export format: 2.20");
+                compatibility.actual().to_string()
+            }
+            Ok(compatibility) => {
+                report.warn(format_compatibility_warning(&compatibility));
+                compatibility.actual().to_string()
+            }
+            Err(error) => {
+                report.error(error.message);
+                String::new()
+            }
+        };
 
         let Some(cfg_node) = root
             .children()

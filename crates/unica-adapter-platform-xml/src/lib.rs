@@ -41,7 +41,7 @@ mod factory;
 mod owner;
 mod versions;
 
-pub use factory::{PlatformXmlAdapterFactory, PlatformXmlAdapterRegistration};
+pub use factory::PlatformXmlAdapterFactory;
 
 mod domain {
     pub(crate) use unica_format_core::limits as navigation_limits;

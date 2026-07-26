@@ -3,9 +3,11 @@
 use crate::application::operation_descriptors::{FORM_PATH, OBJECT_PATH};
 use crate::application::AdapterOutcome;
 use crate::domain::form_edit::validate_form_edit_definition;
-use crate::domain::format_profile::{classify_root_version, FormatCompatibility};
+use crate::domain::format_profile::FormatCompatibility;
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::platform_xml_owner::{root_version_literal, MANAGED_FORM_ROOT};
+use crate::infrastructure::platform_xml_owner::{
+    inspect_platform_xml_compatibility, MANAGED_FORM_ROOT,
+};
 use crate::infrastructure::source_roots::normalize_path_identity;
 use roxmltree::Document;
 use serde::Serialize;
@@ -223,11 +225,10 @@ fn validate_form_with_source(
         }
 
         let has_base_form = form_validation_child(root, "BaseForm").is_some();
-        let version_literal = root_version_literal(source, root);
-        match classify_root_version(version_literal.as_deref()) {
+        match inspect_platform_xml_compatibility(&form_path, Some(MANAGED_FORM_ROOT)) {
             Ok(FormatCompatibility::Supported { .. }) => report.ok("Export format: 2.20"),
             Ok(compatibility) => report.warn(format_compatibility_warning(&compatibility)),
-            Err(error) => report.error(error.to_string()),
+            Err(error) => report.error(error.message),
         }
 
         if !report.stopped {

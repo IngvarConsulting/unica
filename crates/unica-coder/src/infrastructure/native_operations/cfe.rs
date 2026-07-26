@@ -1,11 +1,9 @@
 #![allow(dead_code, unused_imports)]
 
 use crate::application::AdapterOutcome;
-use crate::domain::format_profile::{
-    classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
-};
+use crate::domain::format_profile::{FormatCompatibility, ACTIVE_FORMAT_PROFILE};
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::platform_xml_owner::root_version_literal;
+use crate::infrastructure::platform_xml_owner::inspect_platform_xml_compatibility;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::cell::RefCell;
@@ -377,10 +375,9 @@ fn prepare_cfe_borrow_with_trace(
         return Err("No <ChildObjects> element found in extension".to_string());
     }
     let name_prefix = meta_info_child_text(props_el, "NamePrefix").unwrap_or_default();
-    let format_version = ext_doc
-        .root_element()
-        .attribute("version")
-        .unwrap_or(ACTIVE_FORMAT_PROFILE.export_format)
+    let format_version = inspect_platform_xml_compatibility(&ext_path, None)
+        .map_err(|error| error.message)?
+        .actual()
         .to_string();
 
     let items = object_spec
@@ -3727,13 +3724,20 @@ pub(crate) fn validate_cfe(
             ));
             check1_ok = false;
         }
-        let version_literal = root_version_literal(source, root);
-        match classify_root_version(version_literal.as_deref()) {
-            Ok(FormatCompatibility::Supported { .. }) => report.ok("Export format: 2.20"),
-            Ok(compatibility) => report.warn(format_compatibility_warning(&compatibility)),
-            Err(error) => report.error(error.to_string()),
-        }
-        let version = version_literal.as_deref().unwrap_or("");
+        let version = match inspect_platform_xml_compatibility(&resolved_path, None) {
+            Ok(compatibility @ FormatCompatibility::Supported { .. }) => {
+                report.ok("Export format: 2.20");
+                compatibility.actual().to_string()
+            }
+            Ok(compatibility) => {
+                report.warn(format_compatibility_warning(&compatibility));
+                compatibility.actual().to_string()
+            }
+            Err(error) => {
+                report.error(error.message);
+                String::new()
+            }
+        };
 
         let Some(cfg_node) = root
             .children()
@@ -4562,7 +4566,10 @@ fn guard_cfe_active_format_snapshot_set(
     for (path, raw) in snapshots {
         transaction.guard_or_verify_exact_preimage(path, raw)?;
     }
-    let mut snapshots = snapshots.clone();
+    let mut compatibilities = snapshots
+        .keys()
+        .map(|path| inspect_platform_xml_compatibility(path, None).map_err(|error| error.message))
+        .collect::<Result<Vec<_>, _>>()?;
     for target in owner_targets {
         let resolution =
             crate::infrastructure::platform_xml_owner::resolve_platform_xml_owners_with_provenance(
@@ -4571,7 +4578,7 @@ fn guard_cfe_active_format_snapshot_set(
             .map_err(|error| error.message)?;
         resolution.provenance.bind_to(transaction)?;
         for owner in resolution.owners {
-            snapshots.entry(owner.path).or_insert(owner.raw);
+            compatibilities.push(owner.format);
         }
     }
     for output in new_outputs {
@@ -4580,39 +4587,23 @@ fn guard_cfe_active_format_snapshot_set(
             .map_err(|error| error.message)?;
         resolution.provenance.bind_to(transaction)?;
         for owner in resolution.owners {
-            snapshots.entry(owner.path).or_insert(owner.raw);
+            compatibilities.push(owner.format);
         }
     }
 
-    let mut invalid = None;
     let mut newer = None;
     let mut older = None;
-    for (path, raw) in &snapshots {
-        let compatibility = (|| {
-            let text = std::str::from_utf8(raw)
-                .map_err(|error| format!("{} is not valid UTF-8: {error}", path.display()))?;
-            let source = text.trim_start_matches('\u{feff}');
-            let document = Document::parse(source).map_err(|error| {
-                format!("failed to parse platform XML {}: {error}", path.display())
-            })?;
-            let version_literal = root_version_literal(source, document.root_element());
-            classify_root_version(version_literal.as_deref()).map_err(|error| error.to_string())
-        })();
+    for compatibility in compatibilities {
         match compatibility {
-            Ok(FormatCompatibility::Supported { .. }) => {}
-            Ok(compatibility @ FormatCompatibility::Newer { .. }) if newer.is_none() => {
+            FormatCompatibility::Supported { .. } => {}
+            compatibility @ FormatCompatibility::Newer { .. } if newer.is_none() => {
                 newer = Some(compatibility);
             }
-            Ok(compatibility @ FormatCompatibility::Older { .. }) if older.is_none() => {
+            compatibility @ FormatCompatibility::Older { .. } if older.is_none() => {
                 older = Some(compatibility);
             }
-            Ok(FormatCompatibility::Newer { .. } | FormatCompatibility::Older { .. }) => {}
-            Err(error) if invalid.is_none() => invalid = Some(error),
-            Err(_) => {}
+            FormatCompatibility::Newer { .. } | FormatCompatibility::Older { .. } => {}
         }
-    }
-    if let Some(error) = invalid {
-        return Err(error);
     }
     if let Some(compatibility) = newer.or(older) {
         return Err(format_compatibility_warning(&compatibility));
@@ -4923,8 +4914,7 @@ fn cfe_patch_supported_document<'a>(path: &Path, raw: &'a [u8]) -> Result<Docume
     let source = text.trim_start_matches('\u{feff}');
     let document = Document::parse(source)
         .map_err(|error| format!("failed to parse platform XML {}: {error}", path.display()))?;
-    let version_literal = root_version_literal(source, document.root_element());
-    match classify_root_version(version_literal.as_deref()).map_err(|error| error.to_string())? {
+    match inspect_platform_xml_compatibility(path, None).map_err(|error| error.message)? {
         FormatCompatibility::Supported { .. } => Ok(document),
         compatibility => Err(format_compatibility_warning(&compatibility)),
     }

@@ -26,7 +26,9 @@ use crate::infrastructure::platform::filesystem::hard_link_count;
 use crate::infrastructure::platform::filesystem::{
     file_identity, metadata_is_link_or_reparse_point, restrict_stage_to_owner, FileIdentity,
 };
-use crate::infrastructure::platform_xml_owner::root_version_literal;
+use crate::infrastructure::platform_xml_owner::{
+    inspect_platform_xml_compatibility, inspect_platform_xml_versionless, FormatCompatibility,
+};
 use crate::infrastructure::plugin_runtime::find_plugin_root;
 use crate::infrastructure::project_sources::classify_physical_source_inventory;
 use crate::infrastructure::redaction::redactor;
@@ -2953,11 +2955,12 @@ fn validate_required_owner_raw(path: &Path, kind: SourceSetKind, raw: &[u8]) -> 
             path.display()
         ));
     }
-    let version = root_version_literal(source, root);
-    if version.as_deref() != Some(TARGET_EXPORT_FORMAT) {
+    let compatibility =
+        inspect_platform_xml_compatibility(path, None).map_err(|error| error.message)?;
+    if !matches!(compatibility, FormatCompatibility::Supported { .. }) {
         return Err(format!(
             "staged owner export format must be the exact raw literal {TARGET_EXPORT_FORMAT}; found {} in {}",
-            version.as_deref().unwrap_or("<missing>"),
+            compatibility.actual(),
             path.display()
         ));
     }
@@ -3018,22 +3021,18 @@ fn validate_staged_xml(path: &Path, expected: &TreeEntryKind) -> Result<(), Stri
     let local_name = root.tag_name().name();
     match staged_root_version_policy(namespace, local_name) {
         Some(StagedRootVersionPolicy::ExactRootVersion) => {
-            let version = root_version_literal(source, root);
-            if version.as_deref() != Some(TARGET_EXPORT_FORMAT) {
+            let compatibility =
+                inspect_platform_xml_compatibility(path, None).map_err(|error| error.message)?;
+            if !matches!(compatibility, FormatCompatibility::Supported { .. }) {
                 return Err(format!(
                     "staged XML root {{{namespace}}}{local_name} must use the exact raw version literal {TARGET_EXPORT_FORMAT}; found {} (missing means legacy format 1.0) in {}",
-                    version.as_deref().unwrap_or("<missing>"),
+                    compatibility.actual(),
                     path.display()
                 ));
             }
         }
         Some(StagedRootVersionPolicy::Versionless) => {
-            if let Some(version) = root_version_literal(source, root) {
-                return Err(format!(
-                    "staged XML root {{{namespace}}}{local_name} is a registered versionless family and must not declare version={version} in {}",
-                    path.display()
-                ));
-            }
+            inspect_platform_xml_versionless(path).map_err(|error| error.message)?;
         }
         None => {
             return Err(format!(

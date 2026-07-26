@@ -44,6 +44,7 @@ impl SourceLocation {
 pub struct SourceContext {
     location: SourceLocation,
     configured_source_set: Option<String>,
+    configured_source_set_kind: Option<ConfiguredSourceSetKind>,
     declared_family: SourceFamily,
     declared_format: Option<FormatVersion>,
 }
@@ -58,9 +59,18 @@ impl SourceContext {
         Self {
             location,
             configured_source_set,
+            configured_source_set_kind: None,
             declared_family,
             declared_format,
         }
+    }
+
+    pub fn with_configured_source_set_kind(
+        mut self,
+        kind: Option<ConfiguredSourceSetKind>,
+    ) -> Self {
+        self.configured_source_set_kind = kind;
+        self
     }
 
     pub fn location(&self) -> &SourceLocation {
@@ -71,6 +81,10 @@ impl SourceContext {
         self.configured_source_set.as_deref()
     }
 
+    pub fn configured_source_set_kind(&self) -> Option<ConfiguredSourceSetKind> {
+        self.configured_source_set_kind
+    }
+
     pub fn declared_family(&self) -> &SourceFamily {
         &self.declared_family
     }
@@ -78,6 +92,15 @@ impl SourceContext {
     pub fn declared_format(&self) -> Option<&FormatVersion> {
         self.declared_format.as_ref()
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfiguredSourceSetKind {
+    Configuration,
+    Extension,
+    ExternalProcessor,
+    ExternalReport,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -475,5 +498,25 @@ mod tests {
         assert!(first.as_str().starts_with("workspace:encoded-"));
         assert!(first.as_str().is_ascii());
         assert!(!first.as_str().contains("Основная"));
+    }
+
+    #[test]
+    fn source_context_preserves_the_configured_source_set_kind() {
+        let context = SourceContext::new(
+            SourceLocation::new(
+                PathBuf::from("/workspace"),
+                PathBuf::from("/workspace/src"),
+                PathBuf::from("/workspace/src/Demo.xml"),
+            ),
+            Some("external".to_string()),
+            SourceFamily::PlatformXml,
+            None,
+        )
+        .with_configured_source_set_kind(Some(ConfiguredSourceSetKind::ExternalProcessor));
+
+        assert_eq!(
+            context.configured_source_set_kind(),
+            Some(ConfiguredSourceSetKind::ExternalProcessor)
+        );
     }
 }
