@@ -17,7 +17,7 @@ use crate::domain::{
 
 use super::{
     native_model::{
-        NativeEvidenceState, NativeMetadataNode, NativeNodeBacking, NativeNodeState,
+        NativeEvidenceState, NativeMetadataChild, NativeMetadataNode, NativeNodeBacking, NativeNodeState,
         NativeProperty, NativePropertyProvenance, NativePropertyValue, PlatformXmlNativeSnapshot,
         NativeScalarType,
     },
@@ -41,7 +41,7 @@ pub(crate) fn project(
 
     let mut graph = GraphBuilder::new(native, support);
     let root = graph.source_root()?;
-    graph.project_node(&native.root, Some(&root), true)?;
+    graph.project_node(&native.root, Some(&root), RelationRole::Children)?;
     graph.finish(root)
 }
 
@@ -85,11 +85,11 @@ impl<'a> GraphBuilder<'a> {
         self.nodes.push(NavigationNode {
             object_ref: reference.clone(),
             reference: reference.clone(),
-            capability_state: CapabilityState::new(
+            capability_state: Some(CapabilityState::new(
                 ResolutionState::Resolved,
                 Authorability::DerivedReadOnly,
-            ),
-            capability: CapabilityVector {
+            )),
+            capability: Some(CapabilityVector {
                 resolution: ResolutionState::Resolved,
                 identity: reference.identity_strength.clone(),
                 consistency: self.native.source.consistency.clone(),
@@ -97,11 +97,11 @@ impl<'a> GraphBuilder<'a> {
                 format: FormatCompatibility::Compatible,
                 source_access: SourceAccess::ReadOnly,
                 authorability: Authorability::DerivedReadOnly,
-            },
+            }),
             properties: BTreeMap::new(),
-            action_profile: action_profile_for(&NodeKind::SourceRoot),
-            semantic_actions: Vec::new(),
-            actions: vec![modeled_action(SemanticActionKind::Inspect, reference.clone(), None)],
+            action_profile: Some(action_profile_for(&NodeKind::SourceRoot)),
+            semantic_actions: Some(Vec::new()),
+            actions: Some(vec![modeled_action(SemanticActionKind::Inspect, reference.clone(), None)]),
         });
         Ok(reference)
     }
@@ -110,7 +110,7 @@ impl<'a> GraphBuilder<'a> {
         &mut self,
         native_node: &NativeMetadataNode,
         owner: Option<&ObjectRef>,
-        is_root_metadata: bool,
+        owning_role: RelationRole,
     ) -> Result<ObjectRef, SourceAdapterError> {
         let kind = node_kind(native_node);
         let (key, identity) = object_key(
@@ -150,27 +150,28 @@ impl<'a> GraphBuilder<'a> {
         };
         let capability_state = CapabilityState::new(resolution, action_authorability);
         let owning_relation = owner
-            .map(|parent| self.add_contains(parent, &reference, relation_role_for_child(parent, &kind)))
+            .map(|parent| self.add_contains(parent, &reference, owning_role))
             .transpose()?;
         let actions = modeled_actions(&kind, &reference, capability_state, owning_relation.clone());
         self.nodes.push(NavigationNode {
             object_ref: reference.clone(),
             reference: reference.clone(),
-            capability_state,
-            capability,
+            capability_state: Some(capability_state),
+            capability: Some(capability),
             properties: properties(&native_node.properties)?,
-            action_profile: action_profile_for(&kind),
-            semantic_actions: Vec::new(),
-            actions,
+            action_profile: Some(action_profile_for(&kind)),
+            semantic_actions: Some(Vec::new()),
+            actions: Some(actions),
         });
 
-        // The root metadata object is deliberately an ordinary node: its
-        // ownership is the SourceRoot contains relation created above.
-        let _ = is_root_metadata;
         for child in &native_node.children {
-            self.project_node(child, Some(&reference), false)?;
+            self.project_child(child, &reference)?;
         }
         Ok(reference)
+    }
+
+    fn project_child(&mut self, child: &NativeMetadataChild, owner: &ObjectRef) -> Result<ObjectRef, SourceAdapterError> {
+        self.project_node(&child.node, Some(owner), child.role)
     }
 
     fn add_contains(
@@ -245,17 +246,6 @@ impl<'a> GraphBuilder<'a> {
     }
 }
 
-fn relation_role_for_child(owner: &ObjectRef, child: &NodeKind) -> RelationRole {
-    let _ = owner;
-    match child {
-        NodeKind::Attribute => RelationRole::Attributes,
-        NodeKind::TabularSection => RelationRole::TabularSections,
-        NodeKind::Form => RelationRole::Forms,
-        NodeKind::Command => RelationRole::Commands,
-        NodeKind::Template { .. } => RelationRole::Templates,
-        _ => RelationRole::Children,
-    }
-}
 
 fn object_key(
     source_id: &SourceId,
@@ -591,7 +581,7 @@ mod tests {
         let envelope = project_fixture(document_fixture()).unwrap();
 
         assert!(envelope.nodes.iter().all(|node| {
-            node.capability.format == FormatCompatibility::Compatible
+            node.capability.as_ref().is_some_and(|capability| capability.format == FormatCompatibility::Compatible)
         }));
     }
 
@@ -848,16 +838,16 @@ mod tests {
             Vec::new(),
         );
         let mut root = document_fixture();
-        root.children = vec![form];
+        root.children = vec![NativeMetadataChild { role: RelationRole::Forms, node: form }];
 
         let envelope = project_fixture(root).unwrap();
         let form = envelope.node_named(NodeKind::Form, "OrderForm").unwrap();
 
-        assert_eq!(form.capability.coverage, CoverageState::Partial);
-        assert_eq!(form.capability.resolution, ResolutionState::Resolved);
-        assert_eq!(form.capability.authorability, Authorability::Authorable);
-        assert_eq!(form.actions.len(), 1);
-        assert_eq!(form.actions[0].kind, ActionKind::Inspect);
+        assert_eq!(form.capability.as_ref().unwrap().coverage, CoverageState::Partial);
+        assert_eq!(form.capability.as_ref().unwrap().resolution, ResolutionState::Resolved);
+        assert_eq!(form.capability.as_ref().unwrap().authorability, Authorability::Authorable);
+        assert_eq!(form.actions.as_ref().unwrap().len(), 1);
+        assert_eq!(form.actions.as_ref().unwrap()[0].kind, ActionKind::Inspect);
     }
 
     #[test]
@@ -915,8 +905,8 @@ mod tests {
         let before = project(&snapshot, &captured).unwrap();
         let after = project(&snapshot, &after_change).unwrap();
         assert_eq!(
-            before.node_named(NodeKind::Document, "Order").unwrap().capability.authorability,
-            after.node_named(NodeKind::Document, "Order").unwrap().capability.authorability,
+            before.node_named(NodeKind::Document, "Order").unwrap().capability.as_ref().unwrap().authorability,
+            after.node_named(NodeKind::Document, "Order").unwrap().capability.as_ref().unwrap().authorability,
         );
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -972,7 +962,7 @@ mod tests {
             .inspect_provider(&provider, &descriptor)
             .unwrap();
         assert_eq!(
-            envelope.node_named(NodeKind::Document, "Order").unwrap().capability.authorability,
+            envelope.node_named(NodeKind::Document, "Order").unwrap().capability.as_ref().unwrap().authorability,
             Authorability::SupportLocked,
         );
         std::fs::remove_dir_all(root).unwrap();
@@ -1059,8 +1049,19 @@ mod tests {
             name: name.to_string(),
             state: NativeNodeState::ResolvedInline,
             properties,
-            children,
+            children: children.into_iter().map(|node| NativeMetadataChild { role: fixture_child_role(&node), node }).collect(),
             backing: NativeNodeBacking::None,
+        }
+    }
+
+    fn fixture_child_role(node: &NativeMetadataNode) -> RelationRole {
+        match node.class.role {
+            MetadataClassRole::Attribute => RelationRole::Attributes,
+            MetadataClassRole::TabularSection => RelationRole::TabularSections,
+            MetadataClassRole::Form => RelationRole::Forms,
+            MetadataClassRole::Template => RelationRole::Templates,
+            MetadataClassRole::Command => RelationRole::Commands,
+            _ => RelationRole::Children,
         }
     }
 

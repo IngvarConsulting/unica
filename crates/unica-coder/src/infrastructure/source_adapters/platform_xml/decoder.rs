@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        navigation::CoverageState,
+        navigation::{CoverageState, RelationRole},
         source_adapters::{
             SnapshotConsistency, SourceAdapterError, SourceAdapterErrorKind, SourceDescriptor,
             SourceFamily, SourceSnapshot,
@@ -21,7 +21,7 @@ use crate::{
 use super::{
     native_model::{
         NativeContentEvidence, NativeDescriptorEvidence, NativeEvidenceState, NativeForm,
-        NativeMetadataClass, NativeMetadataNode, NativeMxlRootKind, NativeNodeBacking,
+        NativeMetadataChild, NativeMetadataClass, NativeMetadataNode, NativeMxlRootKind, NativeNodeBacking,
         NativeNodeState,
         NativeProperty, NativePropertyProvenance, NativePropertyValue, NativeScalarType,
         NativeRegistrationEvidence, NativeScalarAnnotationIssue, NativeTemplate,
@@ -240,7 +240,10 @@ fn decode_children(
             ));
         }
         complete &= decoded.complete;
-        nodes.push(decoded.node);
+        nodes.push(NativeMetadataChild {
+            role: relation_role_for_child_collection(owner_profile, profile),
+            node: decoded.node,
+        });
     }
     Ok(DecodedChildren { nodes, complete })
 }
@@ -890,8 +893,22 @@ impl DecodeContext {
 }
 
 struct DecodedChildren {
-    nodes: Vec<NativeMetadataNode>,
+    nodes: Vec<NativeMetadataChild>,
     complete: bool,
+}
+
+fn relation_role_for_child_collection(
+    _owner: &'static MetadataClassProfile,
+    child: &'static MetadataClassProfile,
+) -> RelationRole {
+    match child.role {
+        MetadataClassRole::Attribute => RelationRole::Attributes,
+        MetadataClassRole::TabularSection => RelationRole::TabularSections,
+        MetadataClassRole::Form => RelationRole::Forms,
+        MetadataClassRole::Template => RelationRole::Templates,
+        MetadataClassRole::Command => RelationRole::Commands,
+        _ => RelationRole::Children,
+    }
 }
 
 struct ParsedDescriptor {

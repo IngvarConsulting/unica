@@ -595,8 +595,8 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-                "role": {"type": "string", "enum": ["children", "attributes", "tabularSections", "forms", "commands", "templates"]},
-                "kind": {"type": "string", "enum": ["contains", "references"]},
+                "role": {"type": "string", "enum": ["children", "attributes", "tabularSections", "forms", "commands", "templates", "references"]},
+                "kind": {"type": "string", "enum": ["contains", "references"], "default": "contains"},
                 "pageSize": {"type": "integer", "minimum": 1, "maximum": 100}
             },
             "required": ["role"]

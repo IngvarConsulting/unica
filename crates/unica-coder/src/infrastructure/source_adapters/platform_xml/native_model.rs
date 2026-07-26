@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
+use std::ops::Deref;
 
 use uuid::Uuid;
 
-use crate::domain::{navigation::CoverageState, source_adapters::SourceSnapshot};
+use crate::domain::{navigation::{CoverageState, RelationRole}, source_adapters::SourceSnapshot};
 
 use super::schema::MetadataClassRole;
 
@@ -20,8 +21,24 @@ pub(crate) struct NativeMetadataNode {
     pub(crate) name: String,
     pub(crate) state: NativeNodeState,
     pub(crate) properties: BTreeMap<String, NativeProperty>,
-    pub(crate) children: Vec<NativeMetadataNode>,
+    pub(crate) children: Vec<NativeMetadataChild>,
     pub(crate) backing: NativeNodeBacking,
+}
+
+/// Assigned from the owning native collection, never recovered from the target
+/// node kind by a projector.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeMetadataChild {
+    pub(crate) role: RelationRole,
+    pub(crate) node: NativeMetadataNode,
+}
+
+impl Deref for NativeMetadataChild {
+    type Target = NativeMetadataNode;
+
+    fn deref(&self) -> &Self::Target {
+        &self.node
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

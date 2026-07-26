@@ -28,7 +28,7 @@ Use exactly one target mode per request:
 
 ## Selection and relation pages
 
-`select` is optional for bootstrap and object-reference requests. It may select typed properties, facets, and relation roles. Each relation request has a `role` and optional `pageSize`; the default is 25 and the maximum is 100. There is no offset pagination.
+`select` is optional for bootstrap and object-reference requests. It may select typed properties, facets, and relation roles. Each relation request has a `role`, an optional `kind`, and optional `pageSize`; omitted `kind` is exactly `contains` (it never selects reference edges), the default page size is 25 and the maximum is 100. Select `kind: "references"` explicitly for reference edges. There is no offset pagination.
 
 ```json
 {
@@ -67,7 +67,7 @@ schemaVersion, status, snapshot, root, nodes, relations, diagnostics
 
 `status` is `ready` or `unavailable`. A ready result has semantic `root` and `nodes`. A relation page has `relation`, typed child `items`, and optional `nextCursor`.
 
-Each node exposes its semantic object reference, capability state, capabilities, typed properties, action profile, and semantic actions. Property values are typed values rather than rendered XML: inspect `valueState`, `valueType`, `value`, provenance, and capability. Type descriptions are structured type sets, not text expressions. Capabilities state whether inspection or future mutation is modeled, blocked, or unavailable and include resolution, identity strength, snapshot consistency, coverage, format compatibility, source access, and support authorability.
+Each node exposes its semantic object reference and typed properties. Facets control the remaining node fields: `none` omits all capability and action facets; `summary` exposes only `capabilityState` and `actionProfile`; `full` additionally exposes the detailed capability vector, actions, and semantic actions. Property values are typed values rather than rendered XML: inspect `valueState`, `valueType`, `value`, provenance, and capability. Type descriptions are structured type sets, not text expressions. Capabilities state whether inspection or future mutation is modeled, blocked, or unavailable and include resolution, identity strength, snapshot consistency, coverage, format compatibility, source access, and support authorability.
 
 ## Unavailable navigation
 

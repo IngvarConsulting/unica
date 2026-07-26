@@ -313,6 +313,7 @@ pub(crate) enum RelationRole {
     Forms,
     Commands,
     Templates,
+    References,
 }
 
 impl RelationRole {
@@ -324,6 +325,7 @@ impl RelationRole {
             "forms" => Ok(Self::Forms),
             "commands" => Ok(Self::Commands),
             "templates" => Ok(Self::Templates),
+            "references" => Ok(Self::References),
             _ => Err(SourceAdapterError::new(SourceAdapterErrorKind::ProjectionAmbiguous, "invalid relation role")),
         }
     }
@@ -669,12 +671,17 @@ pub(crate) fn semantic_actions_for_relation(
 pub(crate) struct NavigationNode {
     pub(crate) object_ref: ObjectRef,
     pub(crate) reference: ObjectRef,
-    pub(crate) capability_state: CapabilityState,
-    pub(crate) capability: CapabilityVector,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) capability_state: Option<CapabilityState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) capability: Option<CapabilityVector>,
     pub(crate) properties: BTreeMap<String, SemanticProperty>,
-    pub(crate) action_profile: ActionProfile,
-    pub(crate) semantic_actions: Vec<SemanticActionDescriptor>,
-    pub(crate) actions: Vec<SemanticAction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) action_profile: Option<ActionProfile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) semantic_actions: Option<Vec<SemanticActionDescriptor>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) actions: Option<Vec<SemanticAction>>,
 }
 
 impl NavigationNode {
@@ -693,15 +700,17 @@ impl NavigationNode {
         Self {
             object_ref: reference.clone(),
             reference,
-            capability_state,
-            capability,
+            capability_state: Some(capability_state),
+            capability: Some(capability),
             properties: BTreeMap::new(),
-            action_profile,
-            semantic_actions,
-            actions: Vec::new(),
+            action_profile: Some(action_profile),
+            semantic_actions: Some(semantic_actions),
+            actions: Some(Vec::new()),
         }
     }
-    pub(crate) fn semantic_actions(&self) -> &[SemanticActionDescriptor] { &self.semantic_actions }
+    pub(crate) fn semantic_actions(&self) -> &[SemanticActionDescriptor] {
+        self.semantic_actions.as_deref().unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -766,9 +775,9 @@ struct LegacyOwnerSegment {
 #[serde(rename_all = "camelCase")]
 struct LegacyNavigationNode {
     reference: LegacyGraphObjectRef,
-    capability_state: CapabilityState,
-    action_profile: ActionProfile,
-    semantic_actions: Vec<SemanticActionDescriptor>,
+    capability_state: Option<CapabilityState>,
+    action_profile: Option<ActionProfile>,
+    semantic_actions: Option<Vec<SemanticActionDescriptor>>,
 }
 
 #[derive(Serialize)]
@@ -905,7 +914,8 @@ impl NavigationEnvelope {
         self.nodes
             .iter()
             .find(|node| node.object_ref.display_name == name)
-            .and_then(|node| node.actions.iter().find(|action| action.kind == kind))
+            .and_then(|node| node.actions.as_ref())
+            .and_then(|actions| actions.iter().find(|action| action.kind == kind))
     }
 }
 
@@ -1099,8 +1109,7 @@ pub(crate) enum FacetSelection { None, Summary, Full }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RelationSelection {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) kind: Option<RelationKind>,
+    pub(crate) kind: RelationKind,
     pub(crate) role: RelationRole,
     pub(crate) page_size: u16,
 }
@@ -1112,7 +1121,7 @@ impl RelationSelection {
         if page_size == 0 || page_size > 100 {
             return Err(SourceAdapterError::new(SourceAdapterErrorKind::ProjectionAmbiguous, "invalid relation selection"));
         }
-        Ok(Self { kind: None, role, page_size })
+        Ok(Self { kind: RelationKind::Contains, role, page_size })
     }
 }
 
