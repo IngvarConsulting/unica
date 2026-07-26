@@ -43,7 +43,6 @@ pub(crate) struct CfValidationReporter {
 pub(crate) struct CfValidationRun {
     pub(crate) ok: bool,
     pub(crate) stdout: String,
-    pub(crate) out_file: Option<PathBuf>,
     pub(crate) artifact: PathBuf,
     pub(crate) errors: Vec<String>,
 }
@@ -154,8 +153,6 @@ fn validate_cf_with_scope(
     let result = (|| -> Result<CfValidationRun, String> {
         let resolved_path = resolve_cf_read_config_path(args, context)?;
         let config_dir = resolved_path.parent().unwrap_or(context.cwd.as_path());
-        let out_file =
-            path_arg(args, &["outFile", "OutFile"]).map(|path| absolutize(path, &context.cwd));
         let detailed = bool_arg(args, &["detailed", "Detailed"]);
         let owner_shape_only = scope == CfValidationScope::OwnerShape;
         let max_errors = int_arg(args, &["maxErrors", "MaxErrors"])
@@ -175,7 +172,6 @@ fn validate_cf_with_scope(
                 return Ok(CfValidationRun {
                     ok,
                     stdout,
-                    out_file,
                     artifact: resolved_path,
                     errors,
                 });
@@ -195,7 +191,6 @@ fn validate_cf_with_scope(
             return Ok(CfValidationRun {
                 ok,
                 stdout,
-                out_file,
                 artifact: resolved_path,
                 errors,
             });
@@ -223,7 +218,6 @@ fn validate_cf_with_scope(
             return Ok(CfValidationRun {
                 ok,
                 stdout,
-                out_file,
                 artifact: resolved_path,
                 errors,
             });
@@ -263,7 +257,6 @@ fn validate_cf_with_scope(
             return Ok(CfValidationRun {
                 ok,
                 stdout,
-                out_file,
                 artifact: resolved_path,
                 errors,
             });
@@ -334,7 +327,6 @@ fn validate_cf_with_scope(
             return Ok(CfValidationRun {
                 ok,
                 stdout,
-                out_file,
                 artifact: resolved_path,
                 errors,
             });
@@ -424,7 +416,6 @@ fn validate_cf_with_scope(
             return Ok(CfValidationRun {
                 ok,
                 stdout,
-                out_file,
                 artifact: resolved_path,
                 errors,
             });
@@ -576,7 +567,6 @@ fn validate_cf_with_scope(
             return Ok(CfValidationRun {
                 ok,
                 stdout,
-                out_file,
                 artifact: resolved_path,
                 errors,
             });
@@ -644,54 +634,27 @@ fn validate_cf_with_scope(
         Ok(CfValidationRun {
             ok,
             stdout,
-            out_file,
             artifact: resolved_path,
             errors,
         })
     })();
 
     match result {
-        Ok(run) => {
-            let mut stdout = run.stdout.clone();
-            let mut artifacts = vec![run.artifact.display().to_string()];
-            if let Some(out_file) = &run.out_file {
-                match write_utf8_bom(out_file, &run.stdout) {
-                    Ok(()) => {
-                        stdout.push_str(&format!("Written to: {}\n", out_file.display()));
-                        artifacts.push(out_file.display().to_string());
-                    }
-                    Err(error) => {
-                        return AdapterOutcome {
-                            ok: false,
-                            summary: "unica.cf.validate failed in native configuration validator"
-                                .to_string(),
-                            changes: Vec::new(),
-                            warnings: Vec::new(),
-                            errors: vec![error.clone()],
-                            artifacts,
-                            stdout: None,
-                            stderr: Some(format!("{error}\n")),
-                            command: None,
-                        };
-                    }
-                }
-            }
-            AdapterOutcome {
-                ok: run.ok,
-                summary: if run.ok {
-                    "unica.cf.validate completed with native configuration validator".to_string()
-                } else {
-                    "unica.cf.validate failed in native configuration validator".to_string()
-                },
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: run.errors,
-                artifacts,
-                stdout: Some(stdout),
-                stderr: Some(String::new()),
-                command: None,
-            }
-        }
+        Ok(run) => AdapterOutcome {
+            ok: run.ok,
+            summary: if run.ok {
+                "unica.cf.validate completed with native configuration validator".to_string()
+            } else {
+                "unica.cf.validate failed in native configuration validator".to_string()
+            },
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: run.errors,
+            artifacts: vec![run.artifact.display().to_string()],
+            stdout: Some(run.stdout),
+            stderr: Some(String::new()),
+            command: None,
+        },
         Err(error) => AdapterOutcome {
             ok: false,
             summary: "unica.cf.validate failed in native configuration validator".to_string(),
@@ -909,7 +872,7 @@ pub(crate) fn analyze_cf_info(
 ) -> AdapterOutcome {
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
-    let result = (|| -> Result<(String, Option<PathBuf>, PathBuf), String> {
+    let result = (|| -> Result<(String, PathBuf), String> {
         let config_path = resolve_cf_read_config_path(args, context)?;
 
         let text = fs::read_to_string(&config_path)
@@ -937,8 +900,6 @@ pub(crate) fn analyze_cf_info(
 
         let mode = string_arg(args, &["mode", "Mode"]).unwrap_or("overview");
         let section = string_arg(args, &["section", "Section", "name", "Name"]).unwrap_or("");
-        let out_file =
-            path_arg(args, &["outFile", "OutFile"]).map(|path| absolutize(path, &context.cwd));
 
         let version = root.attribute("version").unwrap_or("");
         let cfg_name = cf_prop_text(props, "Name");
@@ -1061,33 +1022,21 @@ pub(crate) fn analyze_cf_info(
         }
 
         let result_text = cf_paginate(lines, args);
-        let mut stdout = format!("{result_text}\n");
-        if let Some(out_file) = &out_file {
-            write_utf8_bom(out_file, &result_text)?;
-            stdout.push_str(&format!("\nWritten to: {}\n", out_file.display()));
-        }
-
-        Ok((stdout, out_file, config_path))
+        Ok((format!("{result_text}\n"), config_path))
     })();
 
     match result {
-        Ok((stdout, out_file, artifact)) => {
-            let mut artifacts = vec![artifact.display().to_string()];
-            if let Some(out_file) = out_file {
-                artifacts.push(out_file.display().to_string());
-            }
-            AdapterOutcome {
-                ok: true,
-                summary: "unica.cf.info completed with native configuration analyzer".to_string(),
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: Vec::new(),
-                artifacts,
-                stdout: Some(stdout),
-                stderr: Some(String::new()),
-                command: None,
-            }
-        }
+        Ok((stdout, artifact)) => AdapterOutcome {
+            ok: true,
+            summary: "unica.cf.info completed with native configuration analyzer".to_string(),
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: Vec::new(),
+            artifacts: vec![artifact.display().to_string()],
+            stdout: Some(stdout),
+            stderr: Some(String::new()),
+            command: None,
+        },
         Err(error) => AdapterOutcome {
             ok: false,
             summary: "unica.cf.info failed in native configuration analyzer".to_string(),

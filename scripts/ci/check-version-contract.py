@@ -17,6 +17,11 @@ def read_version_contract(repo_root: Path) -> dict[str, str]:
             encoding="utf-8"
         )
     )
+    claude_plugin = json.loads(
+        (repo_root / "plugins" / "unica" / ".claude-plugin" / "plugin.json").read_text(
+            encoding="utf-8"
+        )
+    )
     tools_lock = json.loads(
         (repo_root / "plugins" / "unica" / "third-party" / "tools.lock.json").read_text(
             encoding="utf-8"
@@ -29,6 +34,7 @@ def read_version_contract(repo_root: Path) -> dict[str, str]:
     return {
         "workspace": workspace["workspace"]["package"]["version"],
         "plugin": plugin["version"],
+        "claude-plugin": claude_plugin["version"],
         "tools-lock-unica": unica_tools[0]["version"],
     }
 

@@ -87,6 +87,7 @@ class SetupStep:
     script: str
     arguments: dict[str, Any]
     tool: str | None = None
+    stdout_path: str | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -200,7 +201,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "ExtensionPath": "src-cfe/Configuration.xml",
             "Detailed": True,
-            "OutFile": "cfe-validate.txt",
         },
         setup_steps=(
             SetupStep(
@@ -629,7 +629,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "ConfigPath": "src/Configuration.xml",
             "Mode": "overview",
-            "OutFile": "cf-info.txt",
         },
         fixtures=(FileFixture("cf-info/Configuration.xml", "src/Configuration.xml"),),
         expect_ok=True,
@@ -685,7 +684,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "ConfigPath": "src/Configuration.xml",
             "Detailed": True,
-            "OutFile": "cf-validate.txt",
         },
         fixtures=(
             FileFixture("cf-validate/Configuration.xml", "src/Configuration.xml"),
@@ -860,7 +858,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "ObjectPath": "src/Catalogs/ParityCatalog.xml",
             "Mode": "overview",
-            "OutFile": "meta-info.txt",
         },
         setup_steps=(
             SetupStep(
@@ -881,7 +878,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "ObjectPath": "src/Catalogs/ParityCatalog.xml",
             "Detailed": True,
-            "OutFile": "meta-validate.txt",
         },
         setup_steps=(
             SetupStep(
@@ -1474,7 +1470,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "SubsystemPath": "src/Subsystems/Subsystems/ParitySubsystem.xml",
             "Mode": "full",
-            "OutFile": "subsystem-info.txt",
             "Limit": 0,
         },
         setup_steps=(
@@ -1500,7 +1495,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "SubsystemPath": "src/Subsystems/Subsystems/ParitySubsystem.xml",
             "Detailed": True,
-            "OutFile": "subsystem-validate.txt",
         },
         setup_steps=(
             SetupStep(
@@ -1701,7 +1695,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "CIPath": "src/Subsystems/Sales/Ext/CommandInterface.xml",
             "Detailed": True,
-            "OutFile": "interface-validate.txt",
         },
         fixtures=(
             FileFixture(
@@ -1939,7 +1932,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "TemplatePath": "templates/DCS.xml",
             "Mode": "overview",
-            "OutFile": "dcs-info.txt",
         },
         setup_steps=(
             SetupStep(
@@ -2095,7 +2087,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "TemplatePath": "src/Reports/ParityReport/Templates/Main/Ext/Template.xml",
             "Detailed": True,
-            "OutFile": "dcs-validate.txt",
         },
         setup_steps=(
             SetupStep(
@@ -3374,13 +3365,12 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
-        name="mxl-decompile-simple-outfile",
+        name="mxl-decompile-simple-stdout",
         tool="unica.mxl.decompile",
         skill="mxl-decompile",
         script="mxl-decompile.py",
         arguments={
             "TemplatePath": "templates/MXL.xml",
-            "OutputPath": "mxl.json",
         },
         setup_steps=(
             SetupStep(
@@ -3394,7 +3384,6 @@ SUCCESS_SCENARIOS = [
         ),
         fixtures=(FileFixture("mxl-simple.json", "fixtures/mxl-simple.json"),),
         expect_ok=True,
-        compare_files=True,
     ),
     ParityScenario(
         name="mxl-info-text",
@@ -3477,13 +3466,12 @@ SUCCESS_SCENARIOS = [
         expect_ok=True,
     ),
     ParityScenario(
-        name="bsp-mxl-decompile-real-template-outfile",
+        name="bsp-mxl-decompile-real-template-stdout",
         tool="unica.mxl.decompile",
         skill="mxl-decompile",
         script="mxl-decompile.py",
         arguments={
             "TemplatePath": "src/Reports/ParityReport/Templates/Receipt/Ext/Template.xml",
-            "OutputPath": "mxl-bsp.json",
         },
         fixtures=(
             FileFixture(
@@ -3492,7 +3480,6 @@ SUCCESS_SCENARIOS = [
             ),
         ),
         expect_ok=True,
-        compare_files=True,
     ),
     ParityScenario(
         name="bsp-mxl-parity-roundtrip-real-template",
@@ -3510,8 +3497,8 @@ SUCCESS_SCENARIOS = [
                 tool="unica.mxl.decompile",
                 arguments={
                     "TemplatePath": "src/Reports/ParityReport/Templates/Receipt/Ext/Template.xml",
-                    "OutputPath": "mxl-bsp.json",
                 },
+                stdout_path="mxl-bsp.json",
             ),
         ),
         fixtures=(
@@ -3561,7 +3548,6 @@ SUCCESS_SCENARIOS = [
             "RightsPath": "src/Roles/SalesReader/Ext/Rights.xml",
             "Limit": 5,
             "Offset": 1,
-            "OutFile": "role-info.txt",
         },
         fixtures=(
             FileFixture("role-info/SalesReader.xml", "src/Roles/SalesReader.xml"),
@@ -3581,7 +3567,6 @@ SUCCESS_SCENARIOS = [
         arguments={
             "RightsPath": "src/Roles/SalesReader/Ext/Rights.xml",
             "Detailed": True,
-            "OutFile": "role-validate.txt",
         },
         fixtures=(
             FileFixture("role-info/SalesReader.xml", "src/Roles/SalesReader.xml"),
@@ -4044,7 +4029,7 @@ MISSING_INPUT_SCENARIOS = [
         "unica.mxl.decompile",
         "mxl-decompile",
         "mxl-decompile.py",
-        {"TemplatePath": "missing/Template.xml", "OutputPath": "out/mxl.json"},
+        {"TemplatePath": "missing/Template.xml"},
         False,
     ),
     ParityScenario(
@@ -4256,6 +4241,22 @@ DCS_EDIT_REQUIRED_OPS = {
 UUID_RE = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
 )
+
+
+MCP_HANDSHAKE_ID = "unica-ci-handshake"
+MCP_HANDSHAKE = [
+    {
+        "jsonrpc": "2.0",
+        "id": MCP_HANDSHAKE_ID,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "unica-ci", "version": "1"},
+        },
+    },
+    {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+]
 
 
 def dcs_edit_operations_in_args(arguments: dict[str, Any]) -> set[str]:
@@ -4875,12 +4876,20 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                 self.assertTrue(mcp["ok"], json.dumps(mcp, ensure_ascii=False, indent=2))
                 if step.tool in NATIVE_PARITY_TOOLS:
                     self.assertIsNone(mcp.get("command"), f"{step.tool} setup must not use script fallback")
+                if step.stdout_path is not None:
+                    target = workspace / step.stdout_path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(mcp.get("stdout") or "", encoding="utf-8")
             else:
                 result = run_unica_reference_model(step.skill, step.script, step.arguments, workspace)
                 if result.returncode != 0:
                     raise AssertionError(
                         f"setup step {step.skill}/{step.script} failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
                     )
+                if step.stdout_path is not None:
+                    target = workspace / step.stdout_path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(result.stdout, encoding="utf-8")
 
     def prepare_cc_1c_workspace(self, workspace: Path, case: CcSkillCase) -> None:
         setup_name = case.case_data.get("setup") or case.skill_config.get("setup") or "none"
@@ -4990,23 +4999,43 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
 
         threading.Thread(target=read_stdout, daemon=True).start()
         deadline = time.monotonic() + 30
+        def read_response() -> dict[str, Any]:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.fail("timed out waiting for MCP response")
+            try:
+                line = lines.get(timeout=remaining)
+            except queue.Empty:
+                self.fail("timed out waiting for MCP response")
+            if not line:
+                self.fail("MCP process exited before all responses arrived")
+            return json.loads(line)
+
         try:
+            # The rmcp-based server requires the MCP handshake before requests;
+            # perform it unless the scenario drives initialize itself, and wait
+            # for the initialize acknowledgement before sending anything else.
+            if not messages or messages[0].get("method") != "initialize":
+                process.stdin.write(
+                    json.dumps(MCP_HANDSHAKE[0], ensure_ascii=False) + "\n"
+                )
+                process.stdin.flush()
+                handshake_response = read_response()
+                self.assertEqual(
+                    handshake_response.get("id"), MCP_HANDSHAKE_ID, handshake_response
+                )
+                self.assertEqual(
+                    handshake_response["result"]["serverInfo"]["name"], "unica"
+                )
+                process.stdin.write(
+                    json.dumps(MCP_HANDSHAKE[1], ensure_ascii=False) + "\n"
+                )
             for message in messages:
                 process.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
             process.stdin.flush()
 
-            responses = []
-            for _ in messages:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    self.fail("timed out waiting for MCP response")
-                try:
-                    line = lines.get(timeout=remaining)
-                except queue.Empty:
-                    self.fail("timed out waiting for MCP response")
-                if not line:
-                    self.fail("MCP process exited before all responses arrived")
-                responses.append(json.loads(line))
+            expected = sum("id" in message for message in messages)
+            responses = [read_response() for _ in range(expected)]
 
             process.stdin.close()
             return_code = process.wait(timeout=max(0.1, deadline - time.monotonic()))

@@ -38,8 +38,7 @@ allowed-tools:
     "name": "unica.role.info",
     "arguments": {
       "cwd": "<workspace>",
-      "RightsPath": "<path>",
-      "OutFile": "<output.txt>"
+      "RightsPath": "<path>"
     }
   }
 }
@@ -53,9 +52,8 @@ allowed-tools:
 | `-ShowDenied` | нет | Показать запрещённые права (по умолчанию скрыты) |
 | `-Limit` | нет | Макс. строк вывода (по умолчанию `150`). `0` = без ограничений |
 | `-Offset` | нет | Пропустить N строк — для пагинации (по умолчанию `0`) |
-| `-OutFile` | нет | Записать результат в файл (UTF-8 BOM). Без этого — вывод в консоль |
 
-**Важно:** Всегда используй `-OutFile` и читай результат через Read tool. Прямой вывод в консоль через bash ломает кириллицу.
+Результат возвращается в MCP-ответе в UTF-8; для большой роли используй `Limit` и `Offset`.
 
 Для большой роли при усечении вывода:
 ```json
@@ -67,8 +65,7 @@ allowed-tools:
     "arguments": {
       "cwd": "<workspace>",
       "RightsPath": "<path>",
-      "Offset": 150,
-      "OutFile": "<output.txt>"
+      "Offset": 150
     }
   }
 }

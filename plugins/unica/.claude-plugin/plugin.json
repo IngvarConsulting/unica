@@ -1,0 +1,27 @@
+{
+  "name": "unica",
+  "version": "0.10.0",
+  "description": "Practical 1C:Enterprise development workflows for Claude Code.",
+  "author": {
+    "name": "Ingvar Consulting, LLC",
+    "url": "https://ingvar.pro"
+  },
+  "homepage": "https://ingvar.pro/products/unica/en",
+  "repository": "https://github.com/IngvarConsulting/unica",
+  "license": "LGPL-3.0-or-later",
+  "keywords": [
+    "1c",
+    "1c-enterprise",
+    "bsl",
+    "metadata",
+    "epf",
+    "erf",
+    "cfe",
+    "forms",
+    "database",
+    "mcp",
+    "v8-runner",
+    "rlm",
+    "code-analysis"
+  ]
+}

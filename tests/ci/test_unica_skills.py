@@ -115,8 +115,6 @@ SCENARIO_SKILLS = {
         "unica.runtime.execute",
     ],
     "platform-help": [
-        "unica.standards.search",
-        "unica.standards.explain",
         "unica.code.search",
         "unica.project.map",
         "unica.runtime.execute",
@@ -237,7 +235,11 @@ SCENARIO_REQUIRED_TOKENS = {
     "code-review": ["Findings first", "severity", "file/line"],
     "query-optimize": ["СКД", "virtual", "query-in-loop"],
     "test-authoring": ['"testRunner": "yaxunit"', '"testRunner": "va"'],
-    "platform-help": ["Unica MCP contract gap", "method signatures"],
+    "platform-help": [
+        "platform-help contract gap",
+        "development-standard",
+        "method signatures",
+    ],
     "bsp-patterns": ["БСП", "СведенияОВнешнейОбработке"],
     "integration-implement": ["HTTP-сервис", "webhook", "secrets"],
     "autonomous-server": ["HTTP-сервис", "веб-клиент", "external browser-testing tool"],
@@ -306,7 +308,7 @@ TASK_EXAMPLE_ARGUMENT_KEYS = {
     "dcs-info": ["TemplatePath"],
     "dcs-validate": ["TemplatePath"],
     "mxl-compile": ["JsonPath", "OutputPath"],
-    "mxl-decompile": ["TemplatePath", "OutputPath"],
+    "mxl-decompile": ["TemplatePath"],
     "mxl-info": ["TemplatePath", "WithText"],
     "mxl-validate": ["TemplatePath"],
     "role-compile": ["JsonPath", "OutputDir"],
@@ -521,8 +523,65 @@ SCENARIO_PRESERVING_TOKENS = {
         '"MaxParams": 20',
         '"Offset": 150',
     ],
-    "role-info": ['"OutFile": "<output.txt>"', '"Offset": 150'],
+    "role-info": ['"Offset": 150'],
 }
+
+
+def markdown_routing_units(text: str) -> list[str]:
+    units = []
+    current = []
+    item_start = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
+
+    def flush() -> None:
+        if current:
+            units.append(" ".join(current))
+            current.clear()
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            flush()
+            continue
+        if item_start.match(line):
+            flush()
+        current.append(stripped)
+    flush()
+    return [
+        claim.strip()
+        for unit in units
+        for claim in re.split(r"(?<=[.!?;])\s+", unit)
+        if claim.strip()
+    ]
+
+
+def find_unsafe_platform_evidence_routes(
+    documents: list[tuple[str, str]],
+) -> list[str]:
+    safe_boundaries = [
+        "development-standard",
+        "development standards",
+        "not platform",
+        "do not infer",
+        "do not present",
+    ]
+    unsafe_routes = []
+
+    for display_path, text in documents:
+        for normalized in markdown_routing_units(text):
+            lowered = normalized.casefold()
+            mentions_standards_tool = "unica.standards." in lowered
+            mentions_platform_evidence = "platform" in lowered or "платформ" in lowered
+            marks_the_source_boundary = any(
+                boundary in lowered for boundary in safe_boundaries
+            )
+            if (
+                mentions_standards_tool
+                and mentions_platform_evidence
+                and not marks_the_source_boundary
+            ):
+                unsafe_routes.append(f"{display_path}: {normalized}")
+
+    return unsafe_routes
 
 
 class UnicaSkillRoutingTests(unittest.TestCase):
@@ -534,6 +593,30 @@ class UnicaSkillRoutingTests(unittest.TestCase):
 
     def reference_root(self) -> Path:
         return self.repo_root() / "plugins" / "unica" / "references"
+
+    def test_read_only_skills_do_not_offer_outfile(self) -> None:
+        read_only_skills = [
+            "cf-info",
+            "cf-validate",
+            "cfe-validate",
+            "meta-info",
+            "meta-validate",
+            "interface-validate",
+            "subsystem-info",
+            "subsystem-validate",
+            "dcs-info",
+            "dcs-validate",
+            "role-info",
+            "role-validate",
+        ]
+
+        for skill in read_only_skills:
+            with self.subTest(skill=skill):
+                text = (self.skill_root() / skill / "SKILL.md").read_text(
+                    encoding="utf-8"
+                )
+                self.assertNotIn("OutFile", text)
+                self.assertNotIn("outFile", text)
 
     def unica_reference_models_root(self) -> Path:
         return (
@@ -641,6 +724,67 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             with self.subTest(path=doc_path.relative_to(self.repo_root())):
                 self.assertRegex(doc, r"не\s+новее `Version8_3_26`")
                 self.assertNotRegex(doc, r"`Version8_3_26`\s+и старше")
+
+    def test_platform_evidence_is_not_routed_to_standards_tools(self) -> None:
+        docs = list(self.skill_root().glob("**/*.md")) + list(
+            self.reference_root().glob("**/*.md")
+        )
+        unsafe_routes = find_unsafe_platform_evidence_routes(
+            [
+                (
+                    str(doc_path.relative_to(self.repo_root())),
+                    doc_path.read_text(encoding="utf-8"),
+                )
+                for doc_path in docs
+            ]
+        )
+
+        self.assertEqual(
+            unsafe_routes,
+            [],
+            "standards tools must not be presented as platform evidence:\n"
+            + "\n".join(unsafe_routes),
+        )
+
+    def test_route_linter_checks_adjacent_markdown_items_independently(self) -> None:
+        unsafe_routes = find_unsafe_platform_evidence_routes(
+            [
+                (
+                    "masking-fixture.md",
+                    "- Use `unica.standards.search` for platform API rules.\n"
+                    "- Use `unica.standards.search` only for a "
+                    "`development-standard`, not platform evidence.\n",
+                )
+            ]
+        )
+
+        self.assertEqual(len(unsafe_routes), 1)
+        self.assertIn("platform API rules", unsafe_routes[0])
+        self.assertNotIn("development-standard", unsafe_routes[0])
+
+    def test_route_linter_checks_claims_within_one_markdown_item(self) -> None:
+        unsafe_routes = find_unsafe_platform_evidence_routes(
+            [
+                (
+                    "same-item-fixture.md",
+                    "- `unica.standards.search` is a `development-standard`, "
+                    "not platform evidence. Use `unica.standards.search` for "
+                    "platform API rules.\n",
+                )
+            ]
+        )
+
+        self.assertEqual(len(unsafe_routes), 1)
+        self.assertIn("platform API rules", unsafe_routes[0])
+        self.assertNotIn("development-standard", unsafe_routes[0])
+
+    def test_platform_help_uses_one_contract_gap_label(self) -> None:
+        platform_help = (self.skill_root() / "platform-help" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn("Unica MCP contract gap", platform_help)
+        self.assertIn("platform-help contract gap", platform_help)
 
     def test_all_skills_do_not_expose_internal_mcp_names(self) -> None:
         forbidden = [

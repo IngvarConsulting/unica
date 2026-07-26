@@ -26,7 +26,7 @@ Accept explicit journal registration exports, technological log files, copied lo
 2. Build a timeline. Keep clock source and timezone explicit when several files are involved.
 3. Extract module, procedure, metadata object, HTTP path, query text, user/session, and transaction identifiers.
 4. Map log entries back to source with `unica.code.search` and metadata with `unica.meta.info`.
-5. Use `unica.standards.search` or `unica.standards.explain` for diagnostic ids, platform messages, or standards-sensitive recommendations.
+5. Use `unica.standards.search` or `unica.standards.explain` for diagnostic ids and `development-standard` recommendations. The exact meaning of a platform message requires a `platform-help` source; if public MCP `unica` does not expose one, report the contract gap.
 6. Separate root cause from consequences: the first exception/lock/timeout usually matters more than later rollback noise.
 7. For DBMS evidence, preserve lock holder/waiter, SQL text, transaction boundary, process id, session id, wait event, table/index name, and elapsed time together.
 

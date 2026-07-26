@@ -28,6 +28,7 @@ TOOLCHAIN_PATHS = {
 }
 PACKAGE_PATHS = {
     ".agents/plugins/marketplace.json",
+    "plugins/unica/.claude-plugin/plugin.json",
     "plugins/unica/.codex-plugin/plugin.json",
     "plugins/unica/.mcp.json",
     "plugins/unica/bootstrap/launch.sh",

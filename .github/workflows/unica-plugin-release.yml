@@ -310,6 +310,24 @@ jobs:
           --release-tag "$RELEASE_TAG"
           --source-commit "${{ github.sha }}"
           --out-dir dist/thin
+      - name: Require both host contracts in the shared plugin directory
+        run: |
+          test -f dist/thin/marketplace/plugins/unica/.codex-plugin/plugin.json
+          test -f dist/thin/marketplace/plugins/unica/.claude-plugin/plugin.json
+          test -f dist/thin/marketplace/.agents/plugins/marketplace.json
+          test -f dist/thin/marketplace/.claude-plugin/marketplace.json
+      # Pinned to the oldest supported client rather than the latest, so the gate
+      # tests the compatibility floor the README promises instead of a moving
+      # target. 2.1.67 and 2.1.68 reject the catalog's git-subdir source; 2.1.69
+      # is the first release that accepts it.
+      - name: Validate the Claude plugin and catalog
+        env:
+          CLAUDE_CLI_VERSION: 2.1.69
+        run: |
+          npm install -g "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}"
+          test "$(claude --version | cut -d' ' -f1)" = "$CLAUDE_CLI_VERSION"
+          claude plugin validate dist/thin/marketplace/plugins/unica
+          claude plugin validate dist/thin/marketplace
       - uses: actions/upload-artifact@v7
         with:
           name: unica-thin-marketplace

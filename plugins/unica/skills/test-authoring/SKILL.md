@@ -8,7 +8,7 @@ description: "Проектирование и запуск тестов 1С: tes
 ## MCP routing
 
 - Preferred path: use MCP `unica` tools `unica.code.search`, `unica.project.map`, `unica.runtime.execute`, and the relevant `unica.*.info` tools.
-- Use `unica.standards.search` or `unica.standards.explain` when test design depends on a platform or standards rule.
+- Use `unica.standards.search` or `unica.standards.explain` only when test design depends on a `development-standard`. Expected platform API or mechanics require a `platform-help` source; if public MCP `unica` does not expose one, report the contract gap.
 - Do not call internal runtime, analyzer, or package adapters directly. They are hidden behind MCP `unica`.
 
 ## Workflow

@@ -16,7 +16,7 @@ description: "Поиск и применение паттернов БСП. Ис
 1. Identify the BSP subsystem or library pattern by intent, not by guessed module name.
 2. Search existing project usage with `unica.code.search` before writing new code. Prefer local project conventions over generic snippets.
 3. Inspect affected metadata, forms, roles, and external processing registration with `unica.*.info` skills.
-4. Use `unica.standards.search` for platform/BSP guidance when the pattern affects security, rights, background jobs, files, or external calls.
+4. Use `unica.standards.search` only for a `development-standard` that constrains the pattern. Do not treat it as platform or BSP documentation. Exact platform mechanics require a `platform-help` source; if public MCP `unica` does not expose one, report the contract gap. Treat local BSP code as corroborating implementation evidence, not as the platform contract.
 5. Implement the smallest integration point and verify with `unica.runtime.execute` syntax/tests.
 
 ## References

@@ -1,7 +1,7 @@
 ---
 name: mxl-decompile
 description: Декомпиляция табличного документа (MXL) в JSON-определение. Используй когда нужно получить редактируемое описание существующего макета
-argument-hint: <TemplatePath> [OutputPath]
+argument-hint: <TemplatePath>
 allowed-tools:
   - Bash
   - Read
@@ -18,20 +18,19 @@ allowed-tools:
 - Execution path: call MCP `unica` tool `unica.mxl.decompile`; skill-local operation scripts are not part of the workflow.
 - For mutating operations, pass `dryRun: false` only when the user explicitly requested the change; otherwise keep the default dry run.
 
-Принимает Template.xml табличного документа 1С и генерирует компактное JSON-определение (DSL). Обратная операция к MCP `unica.mxl.compile`.
+Принимает Template.xml табличного документа 1С и возвращает компактное JSON-определение (DSL) в ответе MCP. Не создаёт файлов. Обратная операция к MCP `unica.mxl.compile`.
 
 ## Использование
 
-```
-/mxl-decompile <TemplatePath> [OutputPath]
+```text
+/mxl-decompile <TemplatePath>
 ```
 
 ## Параметры
 
-| Параметр     | Обязательный | Описание                                |
-|--------------|:------------:|-----------------------------------------|
-| TemplatePath | да           | Путь к Template.xml                     |
-| OutputPath   | нет          | Путь для JSON (если не указан — stdout) |
+| Параметр     | Обязательный | Описание            |
+|--------------|:------------:|---------------------|
+| TemplatePath | да           | Путь к Template.xml |
 
 ## MCP вызов
 
@@ -43,8 +42,7 @@ allowed-tools:
     "name": "unica.mxl.decompile",
     "arguments": {
       "cwd": "<workspace>",
-      "TemplatePath": "src/Reports/ОтчетПродажи/Templates/ПФ_MXL_Продажи",
-      "OutputPath": "mxl/print-form.json"
+      "TemplatePath": "src/Reports/ОтчетПродажи/Templates/ПФ_MXL_Продажи"
     }
   }
 }
@@ -55,7 +53,7 @@ allowed-tools:
 Декомпиляция существующего макета для анализа или доработки:
 
 1. Ассистент вызывает MCP `unica.mxl.decompile` для получения JSON из Template.xml
-2. Ассистент анализирует или модифицирует JSON (добавляет области, меняет стили)
+2. Ассистент при необходимости сохраняет JSON сам и анализирует или модифицирует его (добавляет области, меняет стили)
 3. Ассистент вызывает MCP `unica.mxl.compile` для генерации нового Template.xml
 4. Ассистент вызывает MCP `unica.mxl.validate` для проверки
 

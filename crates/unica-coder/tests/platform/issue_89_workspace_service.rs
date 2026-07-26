@@ -26,11 +26,12 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
     let mut fixture = Fixture::new();
     let mut mcp = McpProcess::start(&fixture);
 
-    mcp.send(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}));
+    mcp.send(initialize_request());
     assert_eq!(
         mcp.receive_ids(&[1], RESPONSE_DEADLINE)[&1]["result"]["serverInfo"]["name"],
         "unica"
     );
+    mcp.send(json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{}}));
 
     mcp.send(tool_call(
         2,
@@ -72,11 +73,11 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
     ));
     fixture.release_rlm(2);
 
+    // The SDK drops the response of a cancelled request (MCP spec, ADR-0013);
+    // cancellation itself is proven by the RLM process-tree death above.
     let (responses, response_times) =
-        mcp.receive_ids_timed(&[2, 3, 4], RESPONSE_DEADLINE, ping_started);
+        mcp.receive_ids_timed(&[3, 4], RESPONSE_DEADLINE, ping_started);
     assert!(response_times[&4] < Duration::from_secs(2));
-    assert_eq!(responses[&2]["error"]["code"], -32800);
-    assert_eq!(responses[&2]["error"]["message"], "request cancelled");
     assert_tool_ok(
         &responses[&3],
         "completed through internal RLM metadata index",
@@ -147,8 +148,9 @@ fn issue_89_fixture_cleanup_is_bounded_during_assertion_unwind() {
         let fixture = Fixture::new();
         *root_inside.lock().unwrap() = Some(fixture.root.clone());
         let mut mcp = McpProcess::start(&fixture);
-        mcp.send(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}));
+        mcp.send(initialize_request());
         let _ = mcp.receive_ids(&[1], RESPONSE_DEADLINE);
+        mcp.send(json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{}}));
         mcp.send(tool_call(
             2,
             "unica.code.search",
@@ -168,6 +170,19 @@ fn issue_89_fixture_cleanup_is_bounded_during_assertion_unwind() {
         "fixture root survived unwind: {}",
         root.display()
     );
+}
+
+fn initialize_request() -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "issue-89-regression", "version": "1"}
+        }
+    })
 }
 
 fn tool_call(id: u64, name: &str, arguments: Value) -> Value {
