@@ -12,6 +12,16 @@
         "crates/unica-coder/src/infrastructure/native_operations/code.rs",
         "tests/ci/test_unica_skills.py"
       ]
+    },
+    {
+      "skill": "quality-gate",
+      "notes": "Unica-owned workflow skill that routes 1C Quality Gate investigation through existing public unica.* diagnostics, runtime, metadata, standards, and project tools.",
+      "localPaths": [
+        "plugins/unica/skills/quality-gate"
+      ],
+      "contractPaths": [
+        "tests/ci/test_unica_skills.py"
+      ]
     }
   ],
   "upstreams": [

@@ -209,6 +209,15 @@ SCENARIO_SKILLS = {
         "unica.standards.explain",
         "unica.runtime.execute",
     ],
+    "quality-gate": [
+        "unica.project.map",
+        "unica.code.diagnostics",
+        "unica.code.search",
+        "unica.meta.info",
+        "unica.standards.search",
+        "unica.standards.explain",
+        "unica.runtime.execute",
+    ],
 }
 
 SCENARIO_REQUIRED_TOKENS = {
@@ -244,6 +253,16 @@ SCENARIO_REQUIRED_TOKENS = {
     "security-auth-crypto": ["OpenID", "сертификаты", "CryptoPro", "секреты"],
     "data-separation": ["tenant-boundaries", "RLS", "разделители", "безопасные запросы"],
     "release-support": ["сравнение/объединение", "Поставка", "поддержка", "совместимость"],
+    "quality-gate": [
+        "Quality Gate",
+        "YaXUnit",
+        "Vanessa Automation",
+        "БСП",
+        "bootstrap",
+        "журнал регистрации",
+        "технологический журнал",
+        "MCP-first",
+    ],
 }
 
 REPLACED_RUNTIME_SKILLS = {
