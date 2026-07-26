@@ -2946,7 +2946,23 @@ fn outline_index_unavailable_outcome(tool_name: &str, readiness: IndexReadiness)
                 command: None,
             }
         }
-        other => index_unavailable_outcome(tool_name, other),
+        other => {
+            let warning = readiness_warning(other);
+            if let Some(reason) = warning.strip_prefix(CANCELLED_PREFIX) {
+                return AdapterOutcome::cancelled(reason.trim());
+            }
+            AdapterOutcome {
+                ok: false,
+                summary: format!("{tool_name} could not read RLM index"),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![format!("index_unavailable: {warning}")],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: None,
+                command: None,
+            }
+        }
     }
 }
 
@@ -6118,6 +6134,40 @@ mod tests {
         assert!(stdout.contains("header: Smoke module header"));
         assert!(stdout.contains("region PublicApi: 1-5"));
         assert!(stdout.contains("Procedure SmokeProcedure() export"));
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn code_outline_adapter_reports_missing_index_as_failure() {
+        let context = temp_context("outline-missing-index");
+        let index = FakeIndexRunner {
+            outputs: RefCell::new(vec![index_success("Index not found: /tmp/bsl_index.db")]),
+            ..Default::default()
+        };
+        let grep = FakeProcessRunner {
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+            },
+        };
+        let mut args = Map::new();
+        args.insert(
+            "path".to_string(),
+            json!("CommonModules/SmokeModule/Ext/Module.bsl"),
+        );
+
+        let outcome = CodeNavigationAdapter::with_runners(&index, &grep)
+            .invoke("unica.code.outline", &args, &context, false)
+            .unwrap();
+
+        assert!(!outcome.ok);
+        assert!(outcome.stdout.is_none());
+        assert!(outcome.errors[0].starts_with("index_unavailable:"));
         cleanup_context(&context);
     }
 
