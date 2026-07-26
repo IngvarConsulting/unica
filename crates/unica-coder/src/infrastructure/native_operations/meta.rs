@@ -16,10 +16,11 @@ use crate::infrastructure::source_adapters::platform_xml::support::read_support_
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use super::common::*;
 use super::compile_transaction::{CompileTransaction, RegistrationStatus};
@@ -3755,6 +3756,34 @@ enum MetaNavigationTarget {
     Cursor(Value),
 }
 
+const SNAPSHOT_CACHE_CAPACITY: usize = 32;
+const SNAPSHOT_CACHE_MAX_NODES: usize = 4096;
+const SNAPSHOT_CACHE_MAX_RELATIONS: usize = 8192;
+
+#[derive(Clone)]
+struct CachedNavigation {
+    scope: String,
+    source_id: SourceId,
+    revision: crate::domain::source_adapters::SourceRevision,
+    navigation: crate::domain::navigation::NavigationEnvelope,
+}
+
+#[derive(Default)]
+struct SnapshotCache {
+    entries: VecDeque<CachedNavigation>,
+}
+
+static SNAPSHOT_CACHE: OnceLock<Mutex<SnapshotCache>> = OnceLock::new();
+static CURSOR_SECRET: OnceLock<[u8; 16]> = OnceLock::new();
+
+fn cursor_secret() -> &'static [u8; 16] {
+    CURSOR_SECRET.get_or_init(|| *uuid::Uuid::new_v4().as_bytes())
+}
+
+fn snapshot_cache() -> &'static Mutex<SnapshotCache> {
+    SNAPSHOT_CACHE.get_or_init(|| Mutex::new(SnapshotCache::default()))
+}
+
 fn inspect_meta_navigation_inner(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -3765,50 +3794,40 @@ fn inspect_meta_navigation_inner(
             let object_path = resolve_meta_info_path(absolutize(PathBuf::from(path), &context.cwd))
                 .map_err(|_| source_unavailable("metadata target cannot be resolved"))?;
             let source_set = configured_source_set_for_path(&object_path, context)?;
-            let navigation = inspect_source_path(object_path, source_set, context)?;
+            let navigation = inspect_source_path(object_path, source_set.clone(), context)?;
             if matches!(navigation.status, crate::domain::navigation::NavigationStatus::Unavailable) {
                 return Ok(navigation);
             }
+            let snapshot = navigation.snapshot.as_ref().ok_or_else(|| source_unavailable("ready navigation has no snapshot"))?;
+            let (_, source_root) = configured_source_root(&snapshot.source_id, context)?;
+            cache_ready_navigation(navigation.clone(), navigation_scope(context, &source_root))?;
             let target_ref = object_path_target(&navigation)?;
-            let selection = parse_navigation_selection(args.get("select"))?;
-            (navigation, target_ref, selection, None)
+            (navigation, target_ref, parse_navigation_selection(args.get("select"))?, None)
         }
         MetaNavigationTarget::ObjectRef { source_id, object_key, snapshot_revision } => {
-            let selection = parse_navigation_selection(args.get("select"))?;
-            let (navigation, target_ref) = inspect_bound_object(
-                &source_id,
-                &object_key,
-                &snapshot_revision,
-                context,
-            )?;
-            (navigation, target_ref, selection, None)
+            let (navigation, target_ref) = cached_navigation_target(&source_id, &object_key, &snapshot_revision, context)?;
+            (navigation, target_ref, parse_navigation_selection(args.get("select"))?, None)
         }
         MetaNavigationTarget::Cursor(value) => {
+            if args.contains_key("select") {
+                return Err(SourceAdapterError::new(SourceAdapterErrorKind::ProjectionAmbiguous, "cursor mode does not accept select"));
+            }
             let source_id = cursor_source_id(&value)?;
-            let selection = match args.get("select") {
-                Some(value) => parse_navigation_selection(Some(value))?,
-                None => parse_navigation_selection(value.get("selection"))?,
-            };
             let target_key = cursor_target_key(&value)?;
             let requested_revision = cursor_snapshot_revision(&value)?;
-            let (navigation, target_ref) = inspect_bound_object(
-                &source_id,
-                &target_key,
-                &requested_revision,
-                context,
-            )?;
-            let snapshot = navigation.snapshot.as_ref().ok_or_else(|| {
-                source_unavailable("navigation cursor source has no truthful snapshot")
-            })?;
+            let selection = parse_navigation_selection(value.get("selection"))?;
+            let (navigation, target_ref) = cached_navigation_target(&source_id, &target_key, &requested_revision, context)?;
+            let snapshot = navigation.snapshot.as_ref().ok_or_else(|| source_unavailable("navigation cursor source has no truthful snapshot"))?;
             let cursor = crate::domain::navigation::NavigationCursor::decode(
                 value,
+                cursor_secret(),
                 &snapshot.revision,
                 &selection,
-                |source_id, target, relation| {
+                |source_id, target, relation, relation_kind| {
                     source_id == &target_ref.source_id
                         && target == &target_ref.object_key
                         && navigation.relation_index.iter().any(|candidate| {
-                            &candidate.relation_ref.relation_key == relation
+                            &candidate.relation_ref.relation_key == relation && &candidate.kind == relation_kind
                         })
                 },
             )?;
@@ -3832,136 +3851,103 @@ fn parse_meta_navigation_target(args: &Map<String, Value>) -> Result<MetaNavigat
             snapshot_revision: crate::domain::source_adapters::SourceRevision::new(revision)?,
         }),
         (None, None, None, Some(cursor)) if cursor.is_object() => Ok(MetaNavigationTarget::Cursor(cursor.clone())),
-        _ => Err(SourceAdapterError::new(
-            SourceAdapterErrorKind::ProjectionAmbiguous,
-            "meta.info requires exactly one target mode",
-        )),
+        _ => Err(SourceAdapterError::new(SourceAdapterErrorKind::ProjectionAmbiguous, "meta.info requires exactly one target mode")),
     }
+}
+
+fn exact_object<'a>(value: &'a Value, allowed: &[&str], label: &str) -> Result<&'a Map<String, Value>, SourceAdapterError> {
+    let object = value.as_object().ok_or_else(|| SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, format!("{label} must be an object")))?;
+    if object.len() != allowed.len() || object.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err(SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, format!("{label} has unknown or missing fields")));
+    }
+    Ok(object)
 }
 
 fn object_ref_source_id(value: &Value) -> Result<SourceId, SourceAdapterError> {
-    SourceId::new(value.get("sourceId").and_then(Value::as_str).ok_or_else(|| {
-        SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "objectRef has no valid sourceId")
-    })?)
+    let object = exact_object(value, &["sourceId", "objectKey"], "objectRef")?;
+    SourceId::new(object.get("sourceId").and_then(Value::as_str).ok_or_else(|| SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "objectRef has no valid sourceId"))?)
 }
 
 fn object_ref_key(value: &Value) -> Result<ObjectKey, SourceAdapterError> {
-    ObjectKey::new(value.get("objectKey").and_then(Value::as_str).ok_or_else(|| {
-        SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "objectRef has no valid objectKey")
-    })?)
+    let object = exact_object(value, &["sourceId", "objectKey"], "objectRef")?;
+    ObjectKey::new(object.get("objectKey").and_then(Value::as_str).ok_or_else(|| SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "objectRef has no valid objectKey"))?)
 }
 
 fn cursor_source_id(value: &Value) -> Result<SourceId, SourceAdapterError> {
-    SourceId::new(value.get("sourceId").and_then(Value::as_str).ok_or_else(|| {
-        SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor has no valid sourceId")
-    })?)
+    SourceId::new(value.get("sourceId").and_then(Value::as_str).ok_or_else(|| SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor has no valid sourceId"))?)
 }
 
 fn cursor_target_key(value: &Value) -> Result<ObjectKey, SourceAdapterError> {
-    ObjectKey::new(value.get("target").and_then(Value::as_str).ok_or_else(|| {
-        SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor has no valid target")
-    })?)
+    ObjectKey::new(value.get("target").and_then(Value::as_str).ok_or_else(|| SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor has no valid target"))?)
 }
 
 fn cursor_snapshot_revision(value: &Value) -> Result<crate::domain::source_adapters::SourceRevision, SourceAdapterError> {
-    crate::domain::source_adapters::SourceRevision::new(
-        value.get("snapshotRevision").and_then(Value::as_str).ok_or_else(|| {
-            SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor has no valid snapshotRevision")
-        })?,
-    )
+    crate::domain::source_adapters::SourceRevision::new(value.get("snapshotRevision").and_then(Value::as_str).ok_or_else(|| SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor has no valid snapshotRevision"))?)
 }
 
 fn configured_source_set_for_path(path: &Path, context: &WorkspaceContext) -> Result<String, SourceAdapterError> {
-    let source_map = discover_project_source_map(&context.workspace_root)
-        .map_err(|_| source_unavailable("project source map cannot be resolved"))?;
+    let source_map = discover_project_source_map(&context.workspace_root).map_err(|_| source_unavailable("project source map cannot be resolved"))?;
     let normalized_path = normalize_navigation_path(path);
-    source_map
-        .source_sets
-        .into_iter()
-        .filter(|source_set| normalized_path.starts_with(normalize_navigation_path(&context.workspace_root.join(&source_set.path))))
-        .max_by_key(|source_set| source_set.path.len())
-        .map(|source_set| source_set.name)
-        .ok_or_else(|| source_unavailable("metadata target is not in a configured source set"))
+    source_map.source_sets.into_iter().filter(|source_set| normalized_path.starts_with(normalize_navigation_path(&context.workspace_root.join(&source_set.path)))).max_by_key(|source_set| source_set.path.len()).map(|source_set| source_set.name).ok_or_else(|| source_unavailable("metadata target is not in a configured source set"))
 }
 
 fn configured_source_root(source_id: &SourceId, context: &WorkspaceContext) -> Result<(String, PathBuf), SourceAdapterError> {
-    let source_map = discover_project_source_map(&context.workspace_root)
-        .map_err(|_| source_unavailable("project source map cannot be resolved"))?;
-    source_map
-        .source_sets
-        .into_iter()
-        .find_map(|source_set| {
-            let expected = SourceId::new(format!("workspace:{}", source_set.name)).ok()?;
-            (expected == *source_id).then(|| (source_set.name, context.workspace_root.join(source_set.path)))
-        })
-        .ok_or_else(|| source_unavailable("navigation source is unavailable from the project source map"))
+    let source_map = discover_project_source_map(&context.workspace_root).map_err(|_| source_unavailable("project source map cannot be resolved"))?;
+    source_map.source_sets.into_iter().find_map(|source_set| {
+        let expected = SourceId::new(format!("workspace:{}", source_set.name)).ok()?;
+        (expected == *source_id).then(|| (source_set.name, context.workspace_root.join(source_set.path)))
+    }).ok_or_else(|| source_unavailable("navigation source is unavailable from the project source map"))
 }
 
-fn inspect_source_path(
-    target: PathBuf,
-    configured_source_set: String,
-    context: &WorkspaceContext,
-) -> Result<crate::domain::navigation::NavigationEnvelope, SourceAdapterError> {
-    crate::infrastructure::source_adapters::registry::BuiltInSourceAdapterRegistry::new().inspect(
-        crate::infrastructure::source_adapters::SourceInput {
-            workspace_root: context.workspace_root.clone(),
-            target,
-            configured_source_set: Some(configured_source_set),
-        },
-    )
+fn navigation_scope(context: &WorkspaceContext, source_root: &Path) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"unica.meta.navigation.scope.v1\0");
+    digest.update(normalize_navigation_path(&context.workspace_root).as_os_str().as_encoded_bytes());
+    digest.update([0]);
+    digest.update(normalize_navigation_path(source_root).as_os_str().as_encoded_bytes());
+    format!("sha256:{:x}", digest.finalize())
 }
 
-fn inspect_bound_object(
+fn cache_ready_navigation(
+    navigation: crate::domain::navigation::NavigationEnvelope,
+    scope: String,
+) -> Result<(), SourceAdapterError> {
+    let snapshot = navigation.snapshot.as_ref().ok_or_else(|| source_unavailable("ready navigation has no snapshot"))?;
+    if navigation.nodes.len() > SNAPSHOT_CACHE_MAX_NODES || navigation.relation_index.len() > SNAPSHOT_CACHE_MAX_RELATIONS {
+        return Ok(());
+    }
+    let mut cache = snapshot_cache().lock().map_err(|_| source_unavailable("navigation snapshot cache is unavailable"))?;
+    cache.entries.retain(|entry| !(entry.scope == scope && entry.source_id == snapshot.source_id && entry.revision == snapshot.revision));
+    while cache.entries.len() >= SNAPSHOT_CACHE_CAPACITY { cache.entries.pop_front(); }
+    cache.entries.push_back(CachedNavigation { scope, source_id: snapshot.source_id.clone(), revision: snapshot.revision.clone(), navigation });
+    Ok(())
+}
+
+fn cached_navigation_target(
     source_id: &SourceId,
     object_key: &ObjectKey,
-    expected_revision: &crate::domain::source_adapters::SourceRevision,
+    revision: &crate::domain::source_adapters::SourceRevision,
     context: &WorkspaceContext,
 ) -> Result<(crate::domain::navigation::NavigationEnvelope, ObjectRef), SourceAdapterError> {
-    let (source_set, source_root) = configured_source_root(source_id, context)?;
-    let mut candidates = Vec::new();
-    collect_source_xml_files(&source_root, &mut candidates)?;
-    let mut saw_target = false;
-    for candidate in candidates {
-        let navigation = inspect_source_path(candidate, source_set.clone(), context)?;
-        let Some(target) = navigation.nodes.iter().find(|node| {
-            node.object_ref.source_id == *source_id && node.object_ref.object_key == *object_key
-        }).map(|node| node.object_ref.clone()) else {
-            continue;
-        };
-        saw_target = true;
-        if navigation.snapshot.as_ref().is_some_and(|snapshot| snapshot.revision == *expected_revision) {
-            return Ok((navigation, target));
-        }
-    }
-    if saw_target {
-        Err(SourceAdapterError::new(
-            SourceAdapterErrorKind::SnapshotStale,
-            "navigation target snapshot revision is stale",
-        ))
-    } else {
-        Err(source_unavailable("navigation target cannot be re-resolved in the configured source"))
+    let (_, source_root) = configured_source_root(source_id, context)?;
+    let scope = navigation_scope(context, &source_root);
+    let mut cache = snapshot_cache().lock().map_err(|_| source_unavailable("navigation snapshot cache is unavailable"))?;
+    let index = cache.entries.iter().position(|entry| entry.scope == scope && entry.source_id == *source_id && entry.revision == *revision).ok_or_else(|| source_unavailable("navigation snapshot is unavailable; restart navigation from ObjectPath"))?;
+    let entry = cache.entries.remove(index).expect("cache entry index is valid");
+    let navigation = entry.navigation.clone();
+    cache.entries.push_back(entry);
+    let matches = navigation.nodes.iter().filter(|node| node.object_ref.source_id == *source_id && node.object_ref.object_key == *object_key).map(|node| node.object_ref.clone()).collect::<Vec<_>>();
+    match matches.as_slice() {
+        [target] => Ok((navigation, target.clone())),
+        [] => Err(source_unavailable("navigation target is unavailable in the cached snapshot")),
+        _ => Err(SourceAdapterError::new(SourceAdapterErrorKind::IdentityCollision, "cached navigation has duplicate object keys")),
     }
 }
 
-fn collect_source_xml_files(root: &Path, files: &mut Vec<PathBuf>) -> Result<(), SourceAdapterError> {
-    const MAX_XML_CANDIDATES: usize = 2048;
-    if files.len() >= MAX_XML_CANDIDATES {
-        return Err(source_unavailable("configured source exceeds the bounded navigation resolver"));
-    }
-    let entries = fs::read_dir(root).map_err(|_| source_unavailable("configured source cannot be read"))?;
-    for entry in entries {
-        let entry = entry.map_err(|_| source_unavailable("configured source cannot be read"))?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_source_xml_files(&path, files)?;
-        } else if path.extension().and_then(|extension| extension.to_str()).is_some_and(|extension| extension.eq_ignore_ascii_case("xml")) {
-            files.push(path);
-            if files.len() >= MAX_XML_CANDIDATES {
-                return Err(source_unavailable("configured source exceeds the bounded navigation resolver"));
-            }
-        }
-    }
-    Ok(())
+fn inspect_source_path(target: PathBuf, configured_source_set: String, context: &WorkspaceContext) -> Result<crate::domain::navigation::NavigationEnvelope, SourceAdapterError> {
+    crate::infrastructure::source_adapters::registry::BuiltInSourceAdapterRegistry::new().inspect(crate::infrastructure::source_adapters::SourceInput {
+        workspace_root: context.workspace_root.clone(), target, configured_source_set: Some(configured_source_set),
+    })
 }
 
 fn object_path_target(
@@ -3978,7 +3964,7 @@ fn object_path_target(
 }
 
 fn parse_navigation_selection(value: Option<&Value>) -> Result<crate::domain::navigation::NavigationSelection, SourceAdapterError> {
-    use crate::domain::navigation::{FacetSelection, NavigationSelection, PropertySelection, RelationSelection};
+    use crate::domain::navigation::{FacetSelection, NavigationSelection, PropertySelection, RelationKind, RelationSelection};
     let Some(value) = value else {
         return Ok(NavigationSelection {
             properties: PropertySelection::All,
@@ -3990,6 +3976,9 @@ fn parse_navigation_selection(value: Option<&Value>) -> Result<crate::domain::na
         SourceAdapterErrorKind::DecodeCorrupted,
         "select must be an object",
     ))?;
+    if object.keys().any(|key| !matches!(key.as_str(), "properties" | "facets" | "relations")) {
+        return Err(SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "select has unknown fields"));
+    }
     let properties = match object.get("properties") {
         None => PropertySelection::All,
         Some(Value::String(value)) if value == "all" => PropertySelection::All,
@@ -3999,6 +3988,24 @@ fn parse_navigation_selection(value: Option<&Value>) -> Result<crate::domain::na
                 "select.properties values must be strings",
             ))
         }).collect::<Result<_, _>>()?),
+        Some(Value::Object(value)) => {
+            if value.len() != 1 || !value.contains_key("named") {
+                return Err(SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "select.properties has unknown fields"));
+            }
+            let names = value.get("named").and_then(Value::as_array).ok_or_else(|| SourceAdapterError::new(
+                SourceAdapterErrorKind::DecodeCorrupted,
+                "select.properties.named must be an array",
+            ))?;
+            if names.is_empty() {
+                return Err(SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "select.properties.named must not be empty"));
+            }
+            PropertySelection::Named(names.iter().map(|value| {
+                value.as_str().filter(|name| !name.is_empty()).map(str::to_string).ok_or_else(|| SourceAdapterError::new(
+                    SourceAdapterErrorKind::DecodeCorrupted,
+                    "select.properties.named values must be non-empty strings",
+                ))
+            }).collect::<Result<_, _>>()?)
+        }
         _ => return Err(SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "select.properties is invalid")),
     };
     let facets = match object.get("facets").and_then(Value::as_str).unwrap_or("summary") {
@@ -4014,6 +4021,9 @@ fn parse_navigation_selection(value: Option<&Value>) -> Result<crate::domain::na
                 SourceAdapterErrorKind::DecodeCorrupted,
                 "select.relations items must be objects",
             ))?;
+            if relation.keys().any(|key| !matches!(key.as_str(), "role" | "kind" | "pageSize")) {
+                return Err(SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "select.relations item has unknown fields"));
+            }
             let role = relation.get("role").and_then(Value::as_str).ok_or_else(|| SourceAdapterError::new(
                 SourceAdapterErrorKind::DecodeCorrupted,
                 "select.relations item has no role",
@@ -4028,7 +4038,18 @@ fn parse_navigation_selection(value: Option<&Value>) -> Result<crate::domain::na
                     "select.relations pageSize is invalid",
                 ))?),
             };
-            RelationSelection::new(role, page_size)
+            let kind = match relation.get("kind") {
+                None => None,
+                Some(Value::String(value)) => Some(match value.as_str() {
+                    "contains" => RelationKind::Contains,
+                    "references" => RelationKind::References,
+                    _ => return Err(SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "select.relations kind is invalid")),
+                }),
+                Some(_) => return Err(SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "select.relations kind is invalid")),
+            };
+            let mut selection = RelationSelection::new(role, page_size)?;
+            selection.kind = kind;
+            Ok(selection)
         }).collect::<Result<Vec<_>, _>>()?,
         _ => return Err(SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "select.relations is invalid")),
     };
@@ -4041,31 +4062,47 @@ fn materialize_navigation_pages(
     selection: crate::domain::navigation::NavigationSelection,
     cursor: Option<crate::domain::navigation::NavigationCursor>,
 ) -> Result<(), SourceAdapterError> {
-    use crate::domain::navigation::{NavigationRelationPage, RelationKind};
+    use crate::domain::navigation::{FacetSelection, NavigationRelationPage};
     let snapshot = navigation.snapshot.clone().ok_or_else(|| source_unavailable("ready navigation has no snapshot"))?;
     let original_nodes = navigation.nodes.clone();
     let original_relations = navigation.relation_index.clone();
-    let target_node = original_nodes.iter().find(|node| node.object_ref == target).cloned().ok_or_else(|| {
+    let mut target_node = original_nodes.iter().find(|node| node.object_ref == target).cloned().ok_or_else(|| {
         source_unavailable("navigation target cannot be re-resolved")
     })?;
+    if let crate::domain::navigation::PropertySelection::Named(names) = &selection.properties {
+        target_node.properties.retain(|name, _| names.contains(name));
+    }
+    match selection.facets {
+        FacetSelection::None => {
+            target_node.semantic_actions.clear();
+            target_node.actions.clear();
+        }
+        FacetSelection::Summary => target_node.actions.clear(),
+        FacetSelection::Full => {}
+    }
     let mut pages = Vec::new();
     for relation_selection in &selection.relations {
         let matching = original_relations.iter().filter(|relation| {
             relation.source == target
-                && matches!(relation.kind, RelationKind::Contains)
+                && relation_selection.kind.as_ref().is_none_or(|kind| relation.kind == *kind)
                 && relation_role_matches(&relation_selection.role, &relation.target.kind)
         }).collect::<Vec<_>>();
         let Some(first) = matching.first() else { continue; };
-        let start = cursor.as_ref().filter(|cursor| cursor.relation == first.relation_ref.relation_key)
-            .map(|cursor| cursor.next_position as usize).unwrap_or(0);
-        let end = (start + relation_selection.page_size as usize).min(matching.len());
+        let start = match cursor.as_ref().filter(|cursor| cursor.relation == first.relation_ref.relation_key && cursor.relation_kind == first.kind) {
+            Some(cursor) => usize::try_from(cursor.next_position).map_err(|_| SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor position overflows this process"))?,
+            None => 0,
+        };
+        if start > matching.len() {
+            return Err(SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor position is outside the relation page"));
+        }
+        let end = start.checked_add(usize::from(relation_selection.page_size)).ok_or_else(|| SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor position overflow"))?.min(matching.len());
         let items = matching[start.min(matching.len())..end].iter().map(|relation| {
             original_nodes.iter().find(|node| node.object_ref == relation.target).cloned().ok_or_else(|| {
                 SourceAdapterError::new(SourceAdapterErrorKind::IdentityCollision, "relation target has no navigation node")
             })
         }).collect::<Result<Vec<_>, _>>()?;
         let next_cursor = (end < matching.len()).then(|| crate::domain::navigation::NavigationCursor::issue(
-            snapshot.source_id.clone(), snapshot.revision.clone(), target.object_key.clone(),
+            cursor_secret(), snapshot.source_id.clone(), snapshot.revision.clone(), target.object_key.clone(),
             first.relation_ref.clone(), selection.clone(), end as u64,
         )).transpose()?;
         pages.push(NavigationRelationPage { relation: first.relation_ref.clone(), items, next_cursor });
@@ -13110,6 +13147,100 @@ mod tests {
         let result = inspect_meta_navigation(&json!({"cursor": cursor}).as_object().unwrap().clone(), &context).unwrap();
         assert!(matches!(result.status, crate::domain::navigation::NavigationStatus::Unavailable));
         assert_eq!(result.diagnostics[0].code, "decode_corrupted");
+        std::fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn authenticated_cursor_rejects_recomputed_public_selection_hash_and_u64_max_position() {
+        let (context, path) = fixture("2.20", r#"<Attribute><Properties><Name>Code</Name></Properties></Attribute><Attribute><Properties><Name>Description</Name></Properties></Attribute>"#);
+        let first = inspect_meta_navigation(&json!({
+            "ObjectPath": path,
+            "select": {"relations": [{"role": "attributes", "kind": "contains", "pageSize": 1}]}
+        }).as_object().unwrap().clone(), &context).unwrap();
+        let continuation = first.relations[0].next_cursor.clone().unwrap();
+
+        let mut forged = serde_json::to_value(&continuation).unwrap();
+        forged["nextPosition"] = json!(2);
+        forged["selectionHash"] = json!(crate::domain::navigation::normalized_selection_hash(&continuation.selection).unwrap());
+        let forged_result = inspect_meta_navigation(&json!({"cursor": forged}).as_object().unwrap().clone(), &context).unwrap();
+        assert!(matches!(forged_result.status, crate::domain::navigation::NavigationStatus::Unavailable));
+        assert_eq!(forged_result.diagnostics[0].code, "decode_corrupted");
+
+        let overflow = crate::domain::navigation::NavigationCursor::issue(
+            cursor_secret(), continuation.source_id.clone(), continuation.snapshot_revision.clone(),
+            continuation.target.clone(), crate::domain::navigation::RelationRef {
+                source_id: continuation.source_id.clone(), relation_key: continuation.relation.clone(), kind: continuation.relation_kind,
+            }, continuation.selection.clone(), u64::MAX,
+        ).unwrap();
+        let overflow_result = inspect_meta_navigation(&json!({"cursor": serde_json::to_value(overflow).unwrap()}).as_object().unwrap().clone(), &context).unwrap();
+        assert!(matches!(overflow_result.status, crate::domain::navigation::NavigationStatus::Unavailable));
+        assert_eq!(overflow_result.diagnostics[0].code, "decode_corrupted");
+        std::fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn object_ref_cache_miss_and_cross_scope_are_structured_unavailable() {
+        let (first_context, first_path) = fixture("2.20", "<Attribute><Properties><Name>Code</Name></Properties></Attribute>");
+        let first = inspect_meta_navigation(&json!({"ObjectPath": first_path}).as_object().unwrap().clone(), &first_context).unwrap();
+        let snapshot = first.snapshot.clone().unwrap();
+        let root = first.root.clone().unwrap();
+        let missing = inspect_meta_navigation(&json!({
+            "objectRef": {"sourceId": root.source_id.as_str(), "objectKey": root.object_key.as_str()},
+            "snapshotRevision": "sha256:cache-miss"
+        }).as_object().unwrap().clone(), &first_context).unwrap();
+        assert!(matches!(missing.status, crate::domain::navigation::NavigationStatus::Unavailable));
+        assert_eq!(missing.diagnostics[0].code, "source_unavailable");
+
+        let (second_context, _second_path) = fixture("2.20", "<Attribute><Properties><Name>Code</Name></Properties></Attribute>");
+        let cross_scope = inspect_meta_navigation(&json!({
+            "objectRef": {"sourceId": root.source_id.as_str(), "objectKey": root.object_key.as_str()},
+            "snapshotRevision": serde_json::to_value(snapshot.revision).unwrap()
+        }).as_object().unwrap().clone(), &second_context).unwrap();
+        assert!(matches!(cross_scope.status, crate::domain::navigation::NavigationStatus::Unavailable));
+        assert_eq!(cross_scope.diagnostics[0].code, "source_unavailable");
+        std::fs::remove_dir_all(first_context.workspace_root).unwrap();
+        std::fs::remove_dir_all(second_context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn snapshot_cache_evicts_oldest_entry_deterministically() {
+        let (context, path) = fixture("2.20", "<Attribute><Properties><Name>Code</Name></Properties></Attribute>");
+        let navigation = inspect_meta_navigation(&json!({"ObjectPath": path}).as_object().unwrap().clone(), &context).unwrap();
+        let snapshot = navigation.snapshot.clone().unwrap();
+        let mut cache = SnapshotCache::default();
+        for index in 0..=SNAPSHOT_CACHE_CAPACITY {
+            while cache.entries.len() >= SNAPSHOT_CACHE_CAPACITY { cache.entries.pop_front(); }
+            cache.entries.push_back(CachedNavigation {
+                scope: format!("scope-{index}"), source_id: snapshot.source_id.clone(), revision: snapshot.revision.clone(), navigation: navigation.clone(),
+            });
+        }
+        assert_eq!(cache.entries.len(), SNAPSHOT_CACHE_CAPACITY);
+        assert_eq!(cache.entries.front().unwrap().scope, "scope-1");
+        assert_eq!(cache.entries.back().unwrap().scope, format!("scope-{}", SNAPSHOT_CACHE_CAPACITY));
+        std::fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn select_filters_properties_facets_and_relation_kind_at_runtime() {
+        let (context, path) = fixture("2.20", r#"<Attribute><Properties><Name>Code</Name></Properties></Attribute>"#);
+        let selected = inspect_meta_navigation(&json!({
+            "ObjectPath": path,
+            "select": {"properties": ["name"], "facets": "none", "relations": [{"role": "attributes", "kind": "contains", "pageSize": 1}]}
+        }).as_object().unwrap().clone(), &context).unwrap();
+        let serialized = serde_json::to_value(&selected).unwrap();
+        let target = serialized["nodes"].as_array().unwrap().iter().find(|node| node["objectRef"]["displayName"] == "Items").unwrap();
+        assert_eq!(target["properties"].as_object().unwrap().keys().collect::<Vec<_>>(), vec!["name"]);
+        assert!(target["semanticActions"].as_array().unwrap().is_empty());
+        assert_eq!(selected.relations.len(), 1);
+        assert_eq!(selected.relations[0].relation.kind, crate::domain::navigation::RelationKind::Contains);
+
+        let references_only = inspect_meta_navigation(&json!({
+            "ObjectPath": context.workspace_root.join("src/Catalogs/Items.xml"),
+            "select": {"relations": [{"role": "attributes", "kind": "references", "pageSize": 1}]}
+        }).as_object().unwrap().clone(), &context).unwrap();
+        assert!(references_only.relations.is_empty());
+        let runtime_error = parse_navigation_selection(Some(&json!({"relations": [{"role": "attributes", "offset": 0}]}))).unwrap_err();
+        assert_eq!(runtime_error.code(), "decode_corrupted");
         std::fs::remove_dir_all(context.workspace_root).unwrap();
     }
 

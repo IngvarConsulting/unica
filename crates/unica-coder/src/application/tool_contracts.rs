@@ -591,6 +591,53 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
         ]);
     }
     if tool.name == "unica.meta.info" {
+        let relation_selection = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "role": {"type": "string", "minLength": 1},
+                "kind": {"type": "string", "enum": ["contains", "references"]},
+                "pageSize": {"type": "integer", "minimum": 1, "maximum": 100}
+            },
+            "required": ["role"]
+        });
+        let selection = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "properties": {"oneOf": [
+                    {"type": "string", "enum": ["all"]},
+                    {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+                    {"type": "object", "additionalProperties": false, "properties": {"named": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}, "uniqueItems": true}}, "required": ["named"]}
+                ]},
+                "facets": {"type": "string", "enum": ["none", "summary", "full"]},
+                "relations": {"type": "array", "items": relation_selection}
+            }
+        });
+        schema["properties"]["objectRef"] = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {"sourceId": {"type": "string", "minLength": 1}, "objectKey": {"type": "string", "minLength": 1}},
+            "required": ["sourceId", "objectKey"]
+        });
+        schema["properties"]["select"] = selection.clone();
+        schema["properties"]["cursor"] = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "schemaVersion": {"type": "integer", "const": 1},
+                "sourceId": {"type": "string", "minLength": 1},
+                "snapshotRevision": {"type": "string", "minLength": 1},
+                "target": {"type": "string", "minLength": 1},
+                "relation": {"type": "string", "minLength": 1},
+                "relationKind": {"type": "string", "enum": ["contains", "references"]},
+                "selection": selection,
+                "selectionHash": {"type": "string", "minLength": 1},
+                "authTag": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "nextPosition": {"type": "integer", "minimum": 0}
+            },
+            "required": ["schemaVersion", "sourceId", "snapshotRevision", "target", "relation", "relationKind", "selection", "selectionHash", "authTag", "nextPosition"]
+        });
         schema["oneOf"] = json!([
             {"required": ["ObjectPath"], "not": {"anyOf": [
                 {"required": ["objectRef"]}, {"required": ["snapshotRevision"]}, {"required": ["cursor"]}
@@ -600,6 +647,7 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
             ]}},
             {"required": ["cursor"], "not": {"anyOf": [
                 {"required": ["ObjectPath"]}, {"required": ["objectRef"]}, {"required": ["snapshotRevision"]}
+                , {"required": ["select"]}
             ]}}
         ]);
     }

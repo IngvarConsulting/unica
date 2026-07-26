@@ -24,7 +24,7 @@ Use exactly one target mode per request:
 | Expand node | `objectRef`, `snapshotRevision` | Re-resolve a known semantic object in the same captured snapshot. |
 | Continue page | `cursor` | Continue the exact relation page returned earlier. |
 
-`objectRef` is the returned semantic identity with `sourceId` and `objectKey`. It is not a file path. `snapshotRevision` prevents an expansion from silently reading changed metadata. A cursor is opaque, path-free, selection-bound, and snapshot-bound; return it unchanged.
+`objectRef` is the returned semantic identity with `sourceId` and `objectKey`. It is not a file path. `snapshotRevision` prevents an expansion from silently reading changed metadata. A cursor is opaque, path-free, selection-bound, and snapshot-bound; return it unchanged. Continuations are available only for the process lifetime of the captured navigation snapshot. If that bounded snapshot is unavailable after restart or eviction, start again with `ObjectPath`; the result is structured `source_unavailable` or stale-snapshot diagnostics, never a filesystem fallback.
 
 ## Selection and relation pages
 

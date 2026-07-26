@@ -17,6 +17,7 @@ diffy = "0.5.0"
 fs2 = "0.4"
 jsonschema = { version = "0.30", default-features = false }
 flate2 = "1"
+hmac = "0.12"
 libc = "0.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }

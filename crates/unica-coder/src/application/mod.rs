@@ -51,6 +51,20 @@ mod meta_info_contract_tests {
             assert!(properties.contains_key(field), "{field} must be present");
         }
         assert_eq!(schema["oneOf"].as_array().unwrap().len(), 3);
+        assert_eq!(schema["properties"]["objectRef"]["additionalProperties"], false);
+        assert_eq!(schema["properties"]["select"]["additionalProperties"], false);
+        assert_eq!(schema["properties"]["select"]["properties"]["relations"]["items"]["additionalProperties"], false);
+        assert_eq!(schema["properties"]["cursor"]["additionalProperties"], false);
+
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        for invalid in [
+            json!({"ObjectPath": "src/Catalogs/Items.xml", "cursor": {}}),
+            json!({"objectRef": {"sourceId": "workspace:main"}, "snapshotRevision": "sha256:one"}),
+            json!({"objectRef": {"sourceId": "workspace:main", "objectKey": "uuid:one", "extra": true}, "snapshotRevision": "sha256:one"}),
+            json!({"ObjectPath": "src/Catalogs/Items.xml", "select": {"relations": [{"role": "attributes", "offset": 0}]}}),
+        ] {
+            assert!(!validator.is_valid(&invalid), "schema accepted {invalid}");
+        }
     }
 
     #[test]
@@ -6160,7 +6174,7 @@ mod tests {
         removed_uuid: &str,
     ) -> String {
         format!(
-            "\u{feff}{{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"VendorConf\",3,1,0,{config_uuid},{config_uuid},0,0,{locked_uuid},{locked_uuid},2,0,{removed_uuid},{removed_uuid}}}"
+            "\u{feff}{{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"VendorConf\",3,1,1,{config_uuid},{config_uuid},0,0,{locked_uuid},{locked_uuid},2,2,{removed_uuid},{removed_uuid}}}"
         )
     }
 

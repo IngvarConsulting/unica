@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{ser::SerializeStruct, Serialize, Serializer};
+use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -812,9 +813,7 @@ pub(crate) struct NavigationRelationPage {
 pub(crate) struct NavigationEnvelope {
     pub(crate) schema_version: String,
     pub(crate) status: NavigationStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) snapshot: Option<SourceSnapshot>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) root: Option<ObjectRef>,
     pub(crate) nodes: Vec<NavigationNode>,
     pub(crate) relations: Vec<NavigationRelationPage>,
@@ -1038,6 +1037,7 @@ pub(crate) enum FacetSelection { None, Summary, Full }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RelationSelection {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) kind: Option<RelationKind>,
     pub(crate) role: String,
     pub(crate) page_size: u16,
@@ -1062,9 +1062,10 @@ pub(crate) struct NavigationCursor {
     pub(crate) snapshot_revision: SourceRevision,
     pub(crate) target: ObjectKey,
     pub(crate) relation: RelationKey,
+    pub(crate) relation_kind: RelationKind,
     pub(crate) selection: NavigationSelection,
     pub(crate) selection_hash: String,
-    pub(crate) integrity_hash: String,
+    pub(crate) auth_tag: String,
     pub(crate) next_position: u64,
 }
 
@@ -1072,6 +1073,7 @@ impl NavigationCursor {
     pub(crate) const SCHEMA_VERSION: u16 = 1;
 
     pub(crate) fn issue(
+        secret: &[u8],
         source_id: SourceId,
         snapshot_revision: SourceRevision,
         target: ObjectKey,
@@ -1083,25 +1085,20 @@ impl NavigationCursor {
             return Err(SourceAdapterError::new(SourceAdapterErrorKind::SourceUnavailable, "navigation cursor relation belongs to another source"));
         }
         let selection_hash = normalized_selection_hash(&selection)?;
-        let integrity_hash = cursor_integrity_hash(
-            &source_id,
-            &snapshot_revision,
-            &target,
-            &relation.relation_key,
-            &selection_hash,
-            next_position,
-        )?;
-        Ok(Self {
+        let mut cursor = Self {
             schema_version: Self::SCHEMA_VERSION,
             source_id,
             snapshot_revision,
             target,
             relation: relation.relation_key,
-            selection_hash,
-            integrity_hash,
+            relation_kind: relation.kind,
             selection,
+            selection_hash,
+            auth_tag: String::new(),
             next_position,
-        })
+        };
+        cursor.auth_tag = cursor_auth_tag(secret, &cursor)?;
+        Ok(cursor)
     }
 
     pub(crate) fn resume(&self, current_revision: &SourceRevision) -> Result<(), SourceAdapterError> {
@@ -1113,80 +1110,83 @@ impl NavigationCursor {
 
     pub(crate) fn decode<F>(
         value: serde_json::Value,
+        secret: &[u8],
         current_revision: &SourceRevision,
         expected_selection: &NavigationSelection,
         re_resolve: F,
     ) -> Result<Self, SourceAdapterError>
     where
-        F: FnOnce(&SourceId, &ObjectKey, &RelationKey) -> bool,
+        F: FnOnce(&SourceId, &ObjectKey, &RelationKey, &RelationKind) -> bool,
     {
-        let object = value.as_object().ok_or_else(|| SourceAdapterError::new(
-            SourceAdapterErrorKind::DecodeCorrupted,
-            "navigation cursor must be a JSON object",
-        ))?;
-        let string = |name: &str| -> Result<&str, SourceAdapterError> {
-            object.get(name).and_then(serde_json::Value::as_str).ok_or_else(|| SourceAdapterError::new(
-                SourceAdapterErrorKind::DecodeCorrupted,
-                format!("navigation cursor has no valid {name}"),
-            ))
-        };
-        let schema_version = object.get("schemaVersion").and_then(serde_json::Value::as_u64).ok_or_else(|| SourceAdapterError::new(
-            SourceAdapterErrorKind::DecodeCorrupted,
-            "navigation cursor has no valid schemaVersion",
-        ))?;
-        if schema_version != u64::from(Self::SCHEMA_VERSION) {
+        let object = value.as_object().ok_or_else(|| SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor must be a JSON object"))?;
+        let allowed = ["schemaVersion", "sourceId", "snapshotRevision", "target", "relation", "relationKind", "selection", "selectionHash", "authTag", "nextPosition"];
+        if object.keys().any(|key| !allowed.contains(&key.as_str())) || object.len() != allowed.len() {
+            return Err(SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor has unknown or missing fields"));
+        }
+        let string = |name: &str| object.get(name).and_then(serde_json::Value::as_str).ok_or_else(|| SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, format!("navigation cursor has no valid {name}")));
+        if object.get("schemaVersion").and_then(serde_json::Value::as_u64) != Some(u64::from(Self::SCHEMA_VERSION)) {
             return Err(SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "unsupported navigation cursor schema version"));
         }
-        let source_id = SourceId::new(string("sourceId")?)?;
-        let snapshot_revision = SourceRevision::new(string("snapshotRevision")?)?;
-        let target = ObjectKey::new(string("target")?)?;
-        let relation = RelationKey::new(string("relation")?)?;
+        let relation_kind = match string("relationKind")? {
+            "contains" => RelationKind::Contains,
+            "references" => RelationKind::References,
+            _ => return Err(SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor has invalid relationKind")),
+        };
         let selection_hash = string("selectionHash")?.to_string();
         if selection_hash != normalized_selection_hash(expected_selection)? {
             return Err(SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor selectionHash is not normalized"));
         }
-        let next_position = object.get("nextPosition").and_then(serde_json::Value::as_u64).ok_or_else(|| SourceAdapterError::new(
-            SourceAdapterErrorKind::DecodeCorrupted,
-            "navigation cursor has no valid nextPosition",
-        ))?;
-        let integrity_hash = string("integrityHash")?.to_string();
-        let cursor = Self { schema_version: Self::SCHEMA_VERSION, source_id, snapshot_revision, target, relation, selection: expected_selection.clone(), selection_hash, integrity_hash, next_position };
-        if cursor.integrity_hash != cursor_integrity_hash(
-            &cursor.source_id,
-            &cursor.snapshot_revision,
-            &cursor.target,
-            &cursor.relation,
-            &cursor.selection_hash,
-            cursor.next_position,
-        )? {
-            return Err(SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor integrityHash is invalid"));
-        }
+        let cursor = Self {
+            schema_version: Self::SCHEMA_VERSION,
+            source_id: SourceId::new(string("sourceId")?)?,
+            snapshot_revision: SourceRevision::new(string("snapshotRevision")?)?,
+            target: ObjectKey::new(string("target")?)?,
+            relation: RelationKey::new(string("relation")?)?,
+            relation_kind,
+            selection: expected_selection.clone(),
+            selection_hash,
+            auth_tag: string("authTag")?.to_string(),
+            next_position: object.get("nextPosition").and_then(serde_json::Value::as_u64).ok_or_else(|| SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor has no valid nextPosition"))?,
+        };
+        let tag = hex_decode(&cursor.auth_tag)?;
+        let mac = cursor_mac(secret, &cursor)?;
+        mac.verify_slice(&tag).map_err(|_| SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor authentication failed"))?;
         cursor.resume(current_revision)?;
-        if !re_resolve(&cursor.source_id, &cursor.target, &cursor.relation) {
+        if !re_resolve(&cursor.source_id, &cursor.target, &cursor.relation, &cursor.relation_kind) {
             return Err(SourceAdapterError::new(SourceAdapterErrorKind::SourceUnavailable, "navigation cursor target or relation cannot be re-resolved"));
         }
         Ok(cursor)
     }
 }
 
-fn cursor_integrity_hash(
-    source_id: &SourceId,
-    snapshot_revision: &SourceRevision,
-    target: &ObjectKey,
-    relation: &RelationKey,
-    selection_hash: &str,
-    next_position: u64,
-) -> Result<String, SourceAdapterError> {
-    let canonical = serde_json::to_vec(&(source_id, snapshot_revision, target, relation, selection_hash, next_position)).map_err(|error| {
-        SourceAdapterError::new(SourceAdapterErrorKind::ProjectionAmbiguous, format!("cannot serialize navigation cursor: {error}"))
-    })?;
-    let mut digest = Sha256::new();
-    digest.update(b"unica.navigation.cursor.v1\0");
-    digest.update(canonical);
-    Ok(format!("sha256:{:x}", digest.finalize()))
+fn cursor_mac(secret: &[u8], cursor: &NavigationCursor) -> Result<Hmac<Sha256>, SourceAdapterError> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).map_err(|_| SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor key is invalid"))?;
+    let canonical = serde_json::to_vec(&(
+        cursor.schema_version, &cursor.source_id, &cursor.snapshot_revision, &cursor.target,
+        &cursor.relation, &cursor.relation_kind, &cursor.selection, &cursor.selection_hash,
+        cursor.next_position,
+    )).map_err(|error| SourceAdapterError::new(SourceAdapterErrorKind::ProjectionAmbiguous, format!("cannot serialize navigation cursor: {error}")))?;
+    mac.update(b"unica.navigation.cursor.auth.v1\0");
+    mac.update(&canonical);
+    Ok(mac)
 }
 
-fn normalized_selection_hash(selection: &NavigationSelection) -> Result<String, SourceAdapterError> {
+fn cursor_auth_tag(secret: &[u8], cursor: &NavigationCursor) -> Result<String, SourceAdapterError> {
+    Ok(hex_encode(&cursor_mac(secret, cursor)?.finalize().into_bytes()))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn hex_decode(value: &str) -> Result<Vec<u8>, SourceAdapterError> {
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor has invalid authTag"));
+    }
+    (0..value.len()).step_by(2).map(|index| u8::from_str_radix(&value[index..index + 2], 16).map_err(|_| SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor has invalid authTag"))).collect()
+}
+
+pub(crate) fn normalized_selection_hash(selection: &NavigationSelection) -> Result<String, SourceAdapterError> {
     if let PropertySelection::Named(names) = &selection.properties {
         for name in names {
             validate_selection_token(name)?;
@@ -1223,6 +1223,8 @@ fn validate_selection_token(value: &str) -> Result<(), SourceAdapterError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cursor_test_secret() -> &'static [u8] { b"navigation-cursor-test-secret-32b" }
 
     fn source_id(raw: &str) -> SourceId { SourceId::new(raw).unwrap() }
     fn object_key(raw: &str) -> ObjectKey { ObjectKey::new(raw).unwrap() }
@@ -1272,8 +1274,15 @@ mod tests {
     fn navigation_envelope_always_has_a_schema_version_and_status() {
         let envelope = NavigationEnvelope::unavailable(SourceAdapterError::new(SourceAdapterErrorKind::FormatUnsupported, "Platform XML 2.19 has no certified reader"));
         let value = serde_json::to_value(envelope).unwrap();
+        let keys = value.as_object().unwrap().keys().cloned().collect::<BTreeSet<_>>();
+        assert_eq!(keys, BTreeSet::from(["diagnostics".to_string(), "nodes".to_string(), "relations".to_string(), "root".to_string(), "schemaVersion".to_string(), "snapshot".to_string(), "status".to_string()]));
         assert_eq!(value["schemaVersion"], "1");
         assert_eq!(value["status"], "unavailable");
+        assert!(value["snapshot"].is_null());
+        assert!(value["root"].is_null());
+        assert_eq!(value["nodes"], serde_json::json!([]));
+        assert_eq!(value["relations"], serde_json::json!([]));
+        assert!(value.get("graph").is_none());
         assert_eq!(value["diagnostics"][0]["code"], "format_unsupported");
     }
 
@@ -1300,19 +1309,20 @@ mod tests {
 
     #[test]
     fn cursor_is_bound_to_snapshot_revision() {
-        let cursor = NavigationCursor::issue(source_id("workspace:main"), SourceRevision::new("sha256:one").unwrap(), object_key("uuid:11111111-1111-1111-1111-111111111111"), relation_ref(), selection(), 0).unwrap();
+        let cursor = NavigationCursor::issue(cursor_test_secret(), source_id("workspace:main"), SourceRevision::new("sha256:one").unwrap(), object_key("uuid:11111111-1111-1111-1111-111111111111"), relation_ref(), selection(), 0).unwrap();
         let error = cursor.resume(&SourceRevision::new("sha256:two").unwrap()).unwrap_err();
         assert_eq!(error.kind, SourceAdapterErrorKind::SnapshotStale);
     }
 
     #[test]
     fn cursor_decode_validates_schema_hash_and_semantic_resolution() {
-        let cursor = NavigationCursor::issue(source_id("workspace:main"), SourceRevision::new("sha256:one").unwrap(), object_key("uuid:11111111-1111-1111-1111-111111111111"), relation_ref(), selection(), 0).unwrap();
+        let cursor = NavigationCursor::issue(cursor_test_secret(), source_id("workspace:main"), SourceRevision::new("sha256:one").unwrap(), object_key("uuid:11111111-1111-1111-1111-111111111111"), relation_ref(), selection(), 0).unwrap();
         let decoded = NavigationCursor::decode(
             serde_json::to_value(cursor).unwrap(),
+            cursor_test_secret(),
             &SourceRevision::new("sha256:one").unwrap(),
             &selection(),
-            |_source, _target, _relation| true,
+            |_source, _target, _relation, _kind| true,
         ).unwrap();
         assert_eq!(decoded.schema_version, NavigationCursor::SCHEMA_VERSION);
     }
@@ -1322,7 +1332,7 @@ mod tests {
         let target = object_key("uuid:11111111-1111-1111-1111-111111111111");
         let foreign_relation = RelationRef::new(source_id("workspace:other"), "contains:foreign-owner", RelationKind::Contains).unwrap();
         let error = NavigationCursor::issue(
-            source_id("workspace:main"),
+            cursor_test_secret(), source_id("workspace:main"),
             SourceRevision::new("sha256:one").unwrap(),
             target.clone(),
             foreign_relation,
@@ -1332,7 +1342,7 @@ mod tests {
         assert_eq!(error.kind, SourceAdapterErrorKind::SourceUnavailable);
 
         let cursor = NavigationCursor::issue(
-            source_id("workspace:main"),
+            cursor_test_secret(), source_id("workspace:main"),
             SourceRevision::new("sha256:one").unwrap(),
             target.clone(),
             relation_ref(),
@@ -1346,7 +1356,7 @@ mod tests {
     #[test]
     fn cursor_rejects_well_formed_hash_for_a_different_selection() {
         let cursor = NavigationCursor::issue(
-            source_id("workspace:main"),
+            cursor_test_secret(), source_id("workspace:main"),
             SourceRevision::new("sha256:one").unwrap(),
             object_key("uuid:11111111-1111-1111-1111-111111111111"),
             relation_ref(),
@@ -1357,9 +1367,10 @@ mod tests {
         value["selectionHash"] = serde_json::Value::String(format!("sha256:{}", "0".repeat(64)));
         let error = NavigationCursor::decode(
             value,
+            cursor_test_secret(),
             &SourceRevision::new("sha256:one").unwrap(),
             &selection(),
-            |_source, _target, _relation| true,
+            |_source, _target, _relation, _kind| true,
         ).unwrap_err();
         assert_eq!(error.kind, SourceAdapterErrorKind::DecodeCorrupted);
     }
@@ -1379,7 +1390,7 @@ mod tests {
         assert_ne!(normalized_selection_hash(&first).unwrap(), normalized_selection_hash(&second).unwrap());
 
         let cursor = NavigationCursor::issue(
-            source_id("workspace:main"),
+            cursor_test_secret(), source_id("workspace:main"),
             SourceRevision::new("sha256:one").unwrap(),
             object_key("uuid:11111111-1111-1111-1111-111111111111"),
             relation_ref(),
@@ -1388,9 +1399,10 @@ mod tests {
         ).unwrap();
         let error = NavigationCursor::decode(
             serde_json::to_value(cursor).unwrap(),
+            cursor_test_secret(),
             &SourceRevision::new("sha256:one").unwrap(),
             &second,
-            |_source, _target, _relation| true,
+            |_source, _target, _relation, _kind| true,
         ).unwrap_err();
         assert_eq!(error.kind, SourceAdapterErrorKind::DecodeCorrupted);
     }
@@ -1435,14 +1447,4 @@ mod tests {
         assert!(!actions.iter().any(|action| action.action == SemanticActionKind::Remove));
     }
 
-    #[test]
-    fn legacy_graph_serialization_keeps_meta_info_contract_until_task_eight() {
-        let root = node_ref();
-        let child = ObjectRef::new(source_id("workspace:main"), object_key("uuid:22222222-2222-2222-2222-222222222222"), IdentityStrength::Derived, NodeKind::Attribute, "Number");
-        let graph = NavigationGraph::new(Representation::PlatformXml, root.clone(), vec![NavigationNode::new(root.clone(), CapabilityState::resolved_authorable()), NavigationNode::new(child.clone(), CapabilityState::resolved_authorable())], vec![NavigationEdge::new(root, child, RelationKind::Contains, CapabilityState::resolved_authorable())]);
-        let value = serde_json::to_value(graph).unwrap();
-        assert_eq!(value["root"]["sourceSet"], "workspace:main");
-        assert_eq!(value["nodes"][1]["reference"]["ownerChain"][0]["name"], "Order");
-        assert!(value["root"].get("objectKey").is_none());
-    }
 }

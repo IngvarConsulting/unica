@@ -18,6 +18,7 @@ bsl-parser.workspace = true
 bsl-syntax.workspace = true
 diffy.workspace = true
 fs2.workspace = true
+hmac.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
