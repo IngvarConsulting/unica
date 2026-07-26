@@ -202,7 +202,7 @@ fn platform_xml_certification_fails_closed_at_declared_boundaries() {
     );
 
     let unreadable_support = Fixture::certified_document("2.20");
-    unreadable_support.write("src/Documents/ParentConfigurations.bin", "{");
+    unreadable_support.write("src/Ext/ParentConfigurations.bin", "{");
     let navigation = registry
         .inspect(unreadable_support.input())
         .expect("unreadable support remains inspectable but non-authorable");
@@ -229,6 +229,37 @@ fn platform_xml_certification_fails_closed_at_declared_boundaries() {
         &registry,
         invalid_source_map,
         SourceAdapterErrorKind::SourceUnavailable,
+    );
+}
+
+#[test]
+fn real_source_root_support_fixture_projects_locked_authorability() {
+    let fixture = Fixture::document("2.20", "");
+    fixture.write(
+        "src/Configuration.xml",
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="11111111-1111-1111-1111-111111111111"><Properties><Name>Configuration</Name></Properties></Configuration></MetaDataObject>"#,
+    );
+    fixture.write(
+        "src/Documents/Shipment.xml",
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document uuid="22222222-2222-2222-2222-222222222222"><Properties><Name>Shipment</Name></Properties></Document></MetaDataObject>"#,
+    );
+    fixture.write(
+        "src/Ext/ParentConfigurations.bin",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/unica_mcp_script_parity/cc-1c-skills/cases/meta-compile/fixtures/on-support/Ext/ParentConfigurations.bin"
+        )),
+    );
+
+    let navigation = BuiltInSourceAdapterRegistry::new()
+        .inspect(fixture.input())
+        .expect("real support fixture is inspectable");
+    let document = navigation
+        .node_named(NodeKind::Document, "Shipment")
+        .expect("document node");
+    assert_eq!(
+        document.capability.authorability,
+        Authorability::SupportLocked
     );
 }
 
@@ -379,6 +410,7 @@ impl Fixture {
     fn input(&self) -> SourceInput {
         SourceInput {
             workspace_root: self.root.clone(),
+            source_root: self.root.join("src"),
             target: self.target.clone(),
             configured_source_set: None,
         }

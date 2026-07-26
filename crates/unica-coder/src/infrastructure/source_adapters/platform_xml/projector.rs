@@ -21,10 +21,7 @@ use super::{
         NativeNodeState, NativeProperty, NativePropertyProvenance, NativePropertyValue,
         NativeScalarType, PlatformXmlNativeSnapshot,
     },
-    schema::{
-        is_type_property_2_20, parse_type_description_2_20, scalar_property_kind_2_20,
-        MetadataClassRole, ScalarPropertyKind,
-    },
+    schema::{scalar_property_kind_2_20, MetadataClassRole, ScalarPropertyKind},
     support::SupportFacts,
 };
 
@@ -488,14 +485,12 @@ fn project_property(property: &NativeProperty) -> Result<SemanticProperty, Sourc
             Some(*type_annotation),
             provenance,
         )?,
-        NativePropertyValue::RawXml(xml) if is_type_property_2_20(&property.canonical_id) => {
-            SemanticProperty::explicit(
-                PropertyType::TypeSet,
-                PropertyValue::TypeSet(parse_type_description_2_20(xml)?),
-                provenance,
-            )?
-        }
-        NativePropertyValue::RawXml(_) => SemanticProperty::explicit(
+        NativePropertyValue::TypeSet(type_set) => SemanticProperty::explicit(
+            PropertyType::TypeSet,
+            PropertyValue::TypeSet(type_set.clone()),
+            provenance,
+        )?,
+        NativePropertyValue::Structured => SemanticProperty::explicit(
             PropertyType::Unknown,
             PropertyValue::Unknown {
                 summary: "non-scalar XML property".to_string(),
@@ -613,6 +608,8 @@ fn ambiguous(message: impl Into<String>) -> SourceAdapterError {
 mod tests {
     use std::collections::BTreeMap;
 
+    use roxmltree::Document;
+
     use super::*;
     use crate::{
         domain::{
@@ -628,6 +625,18 @@ mod tests {
             support,
         },
     };
+
+    fn type_description(
+        body: &str,
+    ) -> Result<crate::domain::navigation::TypeSetValue, SourceAdapterError> {
+        let xml = format!(
+            "<DataType xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\">{body}</DataType>"
+        );
+        let document = Document::parse(&xml).expect("test type XML");
+        crate::infrastructure::source_adapters::platform_xml::schema::parse_type_description_2_20(
+            document.root_element(),
+        )
+    }
 
     #[test]
     fn root_metadata_object_has_an_owning_relation() {
@@ -708,8 +717,8 @@ mod tests {
 
     #[test]
     fn type_descriptions_accept_declared_qualifiers_and_enum_references() {
-        let type_set = parse_type_description_2_20(
-            "<DataType><Type>xs:string</Type><StringQualifiers><Length>10</Length><AllowedLength>Variable</AllowedLength></StringQualifiers><Type>cfg:EnumRef.Statuses</Type></DataType>",
+        let type_set = type_description(
+            "<v8:Type>xs:string</v8:Type><v8:StringQualifiers><v8:Length>10</v8:Length><v8:AllowedLength>Variable</v8:AllowedLength></v8:StringQualifiers><v8:Type>cfg:EnumRef.Statuses</v8:Type>",
         )
         .unwrap();
 
@@ -736,11 +745,11 @@ mod tests {
     #[test]
     fn incompatible_type_qualifiers_fail_closed() {
         for raw in [
-            "<DataType><Type>xs:boolean</Type><StringQualifiers><Length>10</Length></StringQualifiers></DataType>",
-            "<DataType><Type>CatalogRef.Products</Type><NumberQualifiers><Digits>10</Digits></NumberQualifiers></DataType>",
+            "<v8:Type>xs:boolean</v8:Type><v8:StringQualifiers><v8:Length>10</v8:Length></v8:StringQualifiers>",
+            "<v8:Type>cfg:CatalogRef.Products</v8:Type><v8:NumberQualifiers><v8:Digits>10</v8:Digits></v8:NumberQualifiers>",
         ] {
             assert_eq!(
-                parse_type_description_2_20(raw).unwrap_err().kind,
+                type_description(raw).unwrap_err().kind,
                 SourceAdapterErrorKind::ProjectionAmbiguous,
             );
         }
@@ -958,10 +967,8 @@ mod tests {
 
     #[test]
     fn malformed_or_path_like_type_descriptions_fail_closed_without_leakage() {
-        let error = parse_type_description_2_20(
-            "<DataType><Type>CatalogRef../../tmp/secret</Type></DataType>",
-        )
-        .unwrap_err();
+        let error =
+            type_description("<v8:Type>cfg:CatalogRef../../tmp/secret</v8:Type>").unwrap_err();
 
         assert_eq!(error.kind, SourceAdapterErrorKind::ProjectionAmbiguous);
         assert!(!error.message.contains("/tmp/"));
@@ -1038,7 +1045,12 @@ mod tests {
         let provider = PlatformXmlProvider::open(&root).unwrap();
         let captured =
             support::read_support_facts_bytes(provider.parent_configurations_bytes().as_deref());
-        std::fs::write(root.join("ParentConfigurations.bin"), b"changed-after-open").unwrap();
+        std::fs::create_dir_all(root.join("Ext")).unwrap();
+        std::fs::write(
+            root.join("Ext/ParentConfigurations.bin"),
+            b"changed-after-open",
+        )
+        .unwrap();
         let after_change =
             support::read_support_facts_bytes(provider.parent_configurations_bytes().as_deref());
         let snapshot = PlatformXmlNativeSnapshot {
@@ -1097,12 +1109,20 @@ mod tests {
             ),
         )
         .unwrap();
+        std::fs::write(
+            root.join("Configuration.xml"),
+            format!(
+                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><Configuration uuid=\"{CONFIGURATION}\"><Properties><Name>Configuration</Name></Properties></Configuration></MetaDataObject>"
+            ),
+        )
+        .unwrap();
         let support = |first_state: &str| {
             format!(
-            "{{6,0,1,{PROVIDER},0,{VENDOR_CONFIGURATION},\"1.0\",\"Vendor\",\"VendorConf\",3,1,1,{CONFIGURATION},{CONFIGURATION},0,{first_state},{UUID},{UUID},2,1,{SECOND},{SECOND}}}"
+            "{{6,0,1,{PROVIDER},0,{VENDOR_CONFIGURATION},\"1.0\",\"Vendor\",\"VendorConf\",3,1,0,{CONFIGURATION},{first_state},0,{UUID},{UUID},1,0,{SECOND},{SECOND}}}"
         )
         };
-        std::fs::write(root.join("ParentConfigurations.bin"), support("0")).unwrap();
+        std::fs::create_dir_all(root.join("Ext")).unwrap();
+        std::fs::write(root.join("Ext/ParentConfigurations.bin"), support("0")).unwrap();
         let provider = PlatformXmlProvider::open(&root).unwrap();
         let descriptor = SourceDescriptor {
             source_id: SourceId::new("workspace:main").unwrap(),
@@ -1116,7 +1136,7 @@ mod tests {
                 root_descriptor_digest: provider.digest_relative("Order.xml").unwrap(),
             }),
         };
-        std::fs::write(root.join("ParentConfigurations.bin"), support("1")).unwrap();
+        std::fs::write(root.join("Ext/ParentConfigurations.bin"), support("1")).unwrap();
 
         let envelope = PlatformXmlReadAdapter::new()
             .inspect_provider(&provider, &descriptor)
@@ -1186,8 +1206,12 @@ mod tests {
                     "DataType".to_string(),
                     NativeProperty {
                         canonical_id: "DataType".to_string(),
-                        value: NativePropertyValue::RawXml(
-                            "<DataType><Type>CatalogRef.Products</Type></DataType>".to_string(),
+                        value: NativePropertyValue::TypeSet(
+                            crate::domain::navigation::TypeSetValue {
+                                variants: vec![TypeVariant::Reference {
+                                    target: "Catalog.Products".to_string(),
+                                }],
+                            },
                         ),
                         provenance: NativePropertyProvenance::Explicit,
                     },

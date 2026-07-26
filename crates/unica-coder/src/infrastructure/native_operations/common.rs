@@ -1840,6 +1840,7 @@ pub(crate) fn support_status_for_path(target_path: &Path) -> String {
         EffectiveSupportRule::Editable => "редактируется с сохранением поддержки".to_string(),
         EffectiveSupportRule::Locked => "на замке — прямая правка сломает обновления; дорабатывай через cfe-* либо включи редактирование объекта".to_string(),
         EffectiveSupportRule::ConfigurationReadOnly => "конфигурация read-only (возможность изменения выключена) — правки невозможны без включения".to_string(),
+        EffectiveSupportRule::UnknownReadOnly => "состояние нескольких поставщиков нельзя однозначно применить — правки не подтверждены".to_string(),
         EffectiveSupportRule::Unreadable => "состояние поддержки не удалось прочитать — правки не подтверждены".to_string(),
     }
 }

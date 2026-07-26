@@ -14,7 +14,7 @@ use crate::{
     },
     infrastructure::{
         native_operations::common::is_1c_identifier,
-        source_adapters::{ProbeOutcome, SourceInput, SourceProbe},
+        source_adapters::{ProbeOutcome, SourceInput},
     },
 };
 
@@ -29,8 +29,9 @@ use super::{
     probe::PlatformXmlProbe,
     provider::PlatformXmlProvider,
     schema::{
-        child_metadata_class_profile, metadata_class_profile, scalar_property_kind_2_20,
-        ChildObjectsVocabulary, MetadataClassProfile, MetadataClassRole, ScalarPropertyKind,
+        child_metadata_class_profile, metadata_class_profile, parse_type_description_2_20,
+        scalar_property_kind_2_20, ChildObjectsVocabulary, MetadataClassProfile, MetadataClassRole,
+        ScalarPropertyKind,
     },
 };
 
@@ -44,20 +45,23 @@ const XML_SCHEMA_NAMESPACE: &str = "http://www.w3.org/2001/XMLSchema";
 pub(crate) fn decode_path(
     input: &SourceInput,
 ) -> Result<PlatformXmlNativeSnapshot, SourceAdapterError> {
-    let descriptor = match PlatformXmlProbe::new().probe(input)? {
-        ProbeOutcome::Match(descriptor) => descriptor,
-        ProbeOutcome::NoMatch => {
-            return Err(error(
-                SourceAdapterErrorKind::FormatUnsupported,
-                "source is not Platform XML",
-            ));
-        }
-    };
-    let root = input
+    let provider = PlatformXmlProvider::capture(&input.target, &input.source_root)?;
+    let descriptor_key = input
         .target
-        .parent()
-        .ok_or_else(|| corrupted("Platform XML descriptor has no aggregate root"))?;
-    let provider = PlatformXmlProvider::open(root)?;
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| corrupted("Platform XML descriptor has no UTF-8 file name"))?;
+    let descriptor =
+        match PlatformXmlProbe::new().probe_provider(input, &provider, descriptor_key)? {
+            ProbeOutcome::Match(descriptor) => descriptor,
+            ProbeOutcome::NoMatch => {
+                return Err(error(
+                    SourceAdapterErrorKind::FormatUnsupported,
+                    "source is not Platform XML",
+                ));
+            }
+        };
     decode(&provider, &descriptor)
 }
 
@@ -519,7 +523,7 @@ fn profile_for_node(
 
 fn decode_properties(
     properties: Node<'_, '_>,
-    source_xml: &str,
+    _source_xml: &str,
 ) -> Result<BTreeMap<String, NativeProperty>, SourceAdapterError> {
     let mut decoded = BTreeMap::new();
     for property in properties.children().filter(Node::is_element) {
@@ -534,10 +538,12 @@ fn decode_properties(
             ));
         }
         let (value, provenance) = if property.children().any(|child| child.is_element()) {
-            (
-                NativePropertyValue::RawXml(source_xml[property.range()].to_string()),
-                NativePropertyProvenance::Explicit,
-            )
+            let value = if crate::infrastructure::source_adapters::platform_xml::schema::is_type_property_2_20(&canonical_id) {
+                NativePropertyValue::TypeSet(parse_type_description_2_20(property)?)
+            } else {
+                NativePropertyValue::Structured
+            };
+            (value, NativePropertyProvenance::Explicit)
         } else {
             let value = property.text().unwrap_or_default().trim();
             let scalar = scalar_property_value(&canonical_id, property, value);
@@ -1070,7 +1076,7 @@ mod tests {
         );
         assert_eq!(
             decoded.root.properties["Synonym"].value,
-            NativePropertyValue::RawXml("<Synonym><item>Shipment</item></Synonym>".to_string())
+            NativePropertyValue::Structured
         );
     }
 

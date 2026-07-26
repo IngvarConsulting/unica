@@ -4,7 +4,7 @@ use std::ops::Deref;
 use uuid::Uuid;
 
 use crate::domain::{
-    navigation::{CoverageState, RelationRole},
+    navigation::{CoverageState, RelationRole, TypeSetValue},
     source_adapters::SourceSnapshot,
 };
 
@@ -136,7 +136,10 @@ pub(crate) enum NativePropertyValue {
     UnresolvedScalar {
         issue: NativeScalarAnnotationIssue,
     },
-    RawXml(String),
+    /// A type description is normalized while its original XML node and
+    /// namespace scope are alive.  No detached XML is retained.
+    TypeSet(TypeSetValue),
+    Structured,
     Absent,
     Unresolved,
 }

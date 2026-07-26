@@ -9,13 +9,15 @@ use crate::{
     },
     infrastructure::source_adapters::{
         platform_xml::{
-            probe::PlatformXmlProbe, provider::PlatformXmlProvider, PlatformXmlReadAdapter,
+            probe::PlatformXmlProbe, PlatformXmlCaptureAdapter, PlatformXmlReadAdapter,
         },
-        ProbeOutcome, SourceInput, SourceProbe, SourceReadAdapter,
+        CaptureOutcome, CapturedSourceSession, ProbeOutcome, SourceCaptureAdapter, SourceInput,
+        SourceProbe, SourceReadAdapter,
     },
 };
 
 pub(crate) struct BuiltInSourceAdapterRegistry {
+    capturers: Vec<Box<dyn SourceCaptureAdapter>>,
     probes: Vec<Box<dyn SourceProbe>>,
     readers: Vec<Box<dyn SourceReadAdapter>>,
 }
@@ -23,23 +25,64 @@ pub(crate) struct BuiltInSourceAdapterRegistry {
 impl BuiltInSourceAdapterRegistry {
     pub(crate) fn new() -> Self {
         Self::with_adapters(
+            vec![Box::new(PlatformXmlCaptureAdapter::new())],
             vec![Box::new(PlatformXmlProbe::new())],
             vec![Box::new(PlatformXmlReadAdapter::new())],
         )
     }
 
     pub(crate) fn with_adapters(
+        capturers: Vec<Box<dyn SourceCaptureAdapter>>,
         probes: Vec<Box<dyn SourceProbe>>,
         readers: Vec<Box<dyn SourceReadAdapter>>,
     ) -> Self {
-        Self { probes, readers }
+        Self {
+            capturers,
+            probes,
+            readers,
+        }
     }
 
     pub(crate) fn inspect(
         &self,
         input: SourceInput,
     ) -> Result<NavigationEnvelope, SourceAdapterError> {
-        let descriptor = self.probe(&input)?;
+        let session = self.capture(&input)?;
+        self.inspect_captured(&input, session.as_ref())
+    }
+
+    pub(crate) fn capture(
+        &self,
+        input: &SourceInput,
+    ) -> Result<Box<dyn CapturedSourceSession>, SourceAdapterError> {
+        let sessions = self
+            .capturers
+            .iter()
+            .filter_map(|capturer| match capturer.capture(input) {
+                Ok(CaptureOutcome::NoMatch) => None,
+                Ok(CaptureOutcome::Captured(session)) => Some(Ok(session)),
+                Err(error) => Some(Err(error)),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        match sessions.len() {
+            0 => Err(SourceAdapterError::new(
+                SourceAdapterErrorKind::SourceUnavailable,
+                "no source capture adapter recognized the target",
+            )),
+            1 => Ok(sessions.into_iter().next().expect("one captured session")),
+            _ => Err(SourceAdapterError::new(
+                SourceAdapterErrorKind::ProbeAmbiguous,
+                "multiple source capture adapters recognized the target",
+            )),
+        }
+    }
+
+    pub(crate) fn inspect_captured(
+        &self,
+        input: &SourceInput,
+        session: &dyn CapturedSourceSession,
+    ) -> Result<NavigationEnvelope, SourceAdapterError> {
+        let descriptor = self.probe(input, session)?;
         let candidates = self.compatible_readers(&descriptor);
 
         let Some(reader) = self.select_narrowest_reader(candidates)? else {
@@ -52,49 +95,18 @@ impl BuiltInSourceAdapterRegistry {
             )));
         };
 
-        reader.inspect(&input, &descriptor)
+        reader.inspect_captured(session, &descriptor)
     }
 
-    /// Inspects a Platform XML target from an already captured immutable
-    /// provider. No path is reopened after this entrypoint is called.
-    pub(crate) fn inspect_platform_xml_provider(
+    fn probe(
         &self,
-        input: SourceInput,
-        provider: &PlatformXmlProvider,
-        descriptor_key: &str,
-    ) -> Result<NavigationEnvelope, SourceAdapterError> {
-        let outcome = PlatformXmlProbe::new().probe_provider(&input, provider, descriptor_key)?;
-        let ProbeOutcome::Match(descriptor) = outcome else {
-            return Err(SourceAdapterError::new(
-                SourceAdapterErrorKind::SourceUnavailable,
-                "captured provider did not recognize the target as Platform XML",
-            ));
-        };
-        let Some(reader) = self.select_narrowest_reader(self.compatible_readers(&descriptor))?
-        else {
-            return Ok(NavigationEnvelope::unavailable(SourceAdapterError::new(
-                SourceAdapterErrorKind::FormatUnsupported,
-                format!(
-                    "no reader supports {:?} format {}",
-                    descriptor.family, descriptor.format_version
-                ),
-            )));
-        };
-        reader
-            .inspect_platform_xml_provider(provider, &descriptor)
-            .ok_or_else(|| {
-                SourceAdapterError::new(
-                    SourceAdapterErrorKind::SourceUnavailable,
-                    "selected reader cannot inspect the captured Platform XML provider",
-                )
-            })?
-    }
-
-    fn probe(&self, input: &SourceInput) -> Result<SourceDescriptor, SourceAdapterError> {
+        input: &SourceInput,
+        session: &dyn CapturedSourceSession,
+    ) -> Result<SourceDescriptor, SourceAdapterError> {
         let matches = self
             .probes
             .iter()
-            .filter_map(|probe| match probe.probe(input) {
+            .filter_map(|probe| match probe.probe(input, session) {
                 Ok(ProbeOutcome::NoMatch) => None,
                 Ok(ProbeOutcome::Match(descriptor)) => Some(Ok(descriptor)),
                 Err(error) => Some(Err(error)),
@@ -234,7 +246,8 @@ mod tests {
             },
         },
         infrastructure::source_adapters::{
-            ProbeOutcome, SourceInput, SourceProbe, SourceReadAdapter,
+            CaptureOutcome, CapturedSourceSession, ProbeOutcome, SourceCaptureAdapter, SourceInput,
+            SourceProbe, SourceReadAdapter,
         },
     };
 
@@ -244,6 +257,7 @@ mod tests {
     fn built_in_registry_registers_only_the_platform_xml_probe_and_reader() {
         let registry = BuiltInSourceAdapterRegistry::new();
 
+        assert_eq!(registry.capturers.len(), 1);
         assert_eq!(registry.probes.len(), 1);
         assert_eq!(registry.readers.len(), 1);
         assert_eq!(
@@ -451,12 +465,21 @@ mod tests {
         probes: Vec<Box<dyn SourceProbe>>,
         readers: Vec<Box<dyn SourceReadAdapter>>,
     ) -> BuiltInSourceAdapterRegistry {
-        BuiltInSourceAdapterRegistry::with_adapters(probes, readers)
+        BuiltInSourceAdapterRegistry::with_adapters(
+            vec![Box::new(FakeCapture {
+                session: FakeSession {
+                    family: SourceFamily::PlatformXml,
+                },
+            })],
+            probes,
+            readers,
+        )
     }
 
     fn input() -> SourceInput {
         SourceInput {
             workspace_root: PathBuf::from("/workspace"),
+            source_root: PathBuf::from("/workspace"),
             target: PathBuf::from("/workspace/Configuration.xml"),
             configured_source_set: None,
         }
@@ -553,7 +576,11 @@ mod tests {
     }
 
     impl SourceProbe for FakeProbe {
-        fn probe(&self, _input: &SourceInput) -> Result<ProbeOutcome, SourceAdapterError> {
+        fn probe(
+            &self,
+            _input: &SourceInput,
+            _session: &dyn CapturedSourceSession,
+        ) -> Result<ProbeOutcome, SourceAdapterError> {
             Ok(ProbeOutcome::Match(self.descriptor.clone()))
         }
     }
@@ -567,9 +594,9 @@ mod tests {
             &self.manifest
         }
 
-        fn inspect(
+        fn inspect_captured(
             &self,
-            _input: &SourceInput,
+            _session: &dyn CapturedSourceSession,
             descriptor: &SourceDescriptor,
         ) -> Result<NavigationEnvelope, SourceAdapterError> {
             Ok(NavigationEnvelope {
@@ -603,9 +630,9 @@ mod tests {
             &self.manifest
         }
 
-        fn inspect(
+        fn inspect_captured(
             &self,
-            _input: &SourceInput,
+            _session: &dyn CapturedSourceSession,
             _descriptor: &SourceDescriptor,
         ) -> Result<NavigationEnvelope, SourceAdapterError> {
             Err(self.error.clone())
@@ -622,9 +649,9 @@ mod tests {
             &self.manifest
         }
 
-        fn inspect(
+        fn inspect_captured(
             &self,
-            _input: &SourceInput,
+            _session: &dyn CapturedSourceSession,
             _descriptor: &SourceDescriptor,
         ) -> Result<NavigationEnvelope, SourceAdapterError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
@@ -633,5 +660,65 @@ mod tests {
                 "fallback must not run",
             ))
         }
+    }
+
+    #[derive(Clone)]
+    struct FakeSession {
+        family: SourceFamily,
+    }
+
+    impl CapturedSourceSession for FakeSession {
+        fn source_family(&self) -> SourceFamily {
+            self.family.clone()
+        }
+
+        fn revision(&self) -> Result<SourceRevision, SourceAdapterError> {
+            SourceRevision::new("sha256:fake-session")
+        }
+
+        fn evidence(&self) -> &[String] {
+            &[]
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    struct FakeCapture {
+        session: FakeSession,
+    }
+
+    impl SourceCaptureAdapter for FakeCapture {
+        fn capture(&self, _input: &SourceInput) -> Result<CaptureOutcome, SourceAdapterError> {
+            Ok(CaptureOutcome::Captured(Box::new(self.session.clone())))
+        }
+    }
+
+    #[test]
+    fn captured_second_family_uses_the_common_registry_path_without_platform_branch() {
+        let mut descriptor = descriptor("2.20");
+        descriptor.family = SourceFamily::Cf;
+        let registry = BuiltInSourceAdapterRegistry::with_adapters(
+            vec![Box::new(FakeCapture {
+                session: FakeSession {
+                    family: SourceFamily::Cf,
+                },
+            })],
+            vec![Box::new(FakeProbe { descriptor })],
+            vec![reader_with(
+                "fake-cf",
+                SourceFamily::Cf,
+                exact("2.20"),
+                [],
+                [],
+            )],
+        );
+
+        let navigation = registry
+            .inspect(input())
+            .expect("second family is inspectable");
+
+        assert_eq!(navigation.snapshot.expect("snapshot").adapter_id, "fake-cf");
     }
 }

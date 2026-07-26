@@ -5,12 +5,8 @@ use std::io::Read;
 use std::path::Path;
 
 const MAX_PARENT_CONFIGURATIONS_BYTES: u64 = 1024 * 1024;
-const CERTIFIED_VENDOR_CAPABILITY: &str = "0";
-const CERTIFIED_RULE_SCHEMA: &str = "3";
-const CERTIFIED_RULE_SCOPE: &str = "1";
-const CERTIFIED_OBJECT_RULE_FIELDS: usize = 4;
-const CERTIFIED_OBJECT_RULE_COUNT: usize = 2;
-const CERTIFIED_CONFIGURATION_RULE_FIELDS: usize = 3;
+const MAX_VENDOR_COUNT: usize = 8;
+const MAX_RULES_PER_VENDOR: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SupportParseErrorKind {
@@ -78,6 +74,7 @@ pub(crate) enum EffectiveSupportRule {
     Editable,
     Locked,
     ConfigurationReadOnly,
+    UnknownReadOnly,
     Unreadable,
 }
 
@@ -87,6 +84,7 @@ impl EffectiveSupportRule {
             Self::Absent | Self::Removed | Self::Editable => Authorability::Authorable,
             Self::Locked => Authorability::SupportLocked,
             Self::ConfigurationReadOnly => Authorability::ConfigurationReadOnly,
+            Self::UnknownReadOnly => Authorability::UnknownReadOnly,
             Self::Unreadable => Authorability::UnknownSupportState,
         }
     }
@@ -104,9 +102,14 @@ impl SupportRule {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SupportVendor {
+    pub(crate) provider_uuid: String,
+    pub(crate) vendor_flag: bool,
+    pub(crate) vendor_configuration_uuid: String,
     pub(crate) version: String,
     pub(crate) vendor: String,
     pub(crate) name: String,
+    pub(crate) configuration_rule: Option<(String, SupportRule)>,
+    pub(crate) object_rules: BTreeMap<String, SupportRule>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,6 +119,7 @@ pub(crate) struct SupportFacts {
     global_editing_enabled: Option<bool>,
     configuration_rule: Option<(String, SupportRule)>,
     vendors: Vec<SupportVendor>,
+    multi_vendor_semantics_unproven: bool,
 }
 
 impl SupportFacts {
@@ -125,6 +129,9 @@ impl SupportFacts {
             SupportSourceState::Removed => return EffectiveSupportRule::Removed,
             SupportSourceState::Unreadable { .. } => return EffectiveSupportRule::Unreadable,
             SupportSourceState::Parsed => {}
+        }
+        if self.multi_vendor_semantics_unproven {
+            return EffectiveSupportRule::UnknownReadOnly;
         }
         if self.global_editing_enabled == Some(false) {
             return EffectiveSupportRule::ConfigurationReadOnly;
@@ -255,7 +262,45 @@ pub(crate) fn read_support_facts_bytes(bytes: Option<&[u8]>) -> SupportFacts {
     }
 }
 
+pub(crate) fn read_support_facts_bytes_for_configuration(
+    bytes: Option<&[u8]>,
+    configuration_uuid: &str,
+) -> SupportFacts {
+    match bytes {
+        Some(bytes) if bytes.len() <= 1024 * 1024 => {
+            parse_parent_configurations_for_configuration(bytes, configuration_uuid)
+        }
+        Some(_) => unreadable(SupportParseError::new(
+            SupportParseErrorKind::InputTooLarge,
+            1024 * 1024,
+            "ParentConfigurations.bin",
+        )),
+        None => removed(),
+    }
+}
+
+pub(crate) fn unreadable_configuration_evidence() -> SupportFacts {
+    unreadable(SupportParseError::unknown(
+        SupportParseErrorKind::ConflictingEvidence,
+        "Configuration.xml",
+    ))
+}
+
 pub(crate) fn parse_parent_configurations(input: &[u8]) -> SupportFacts {
+    parse_parent_configurations_with_expected_configuration(input, None)
+}
+
+fn parse_parent_configurations_for_configuration(
+    input: &[u8],
+    configuration_uuid: &str,
+) -> SupportFacts {
+    parse_parent_configurations_with_expected_configuration(input, Some(configuration_uuid))
+}
+
+fn parse_parent_configurations_with_expected_configuration(
+    input: &[u8],
+    expected_configuration_uuid: Option<&str>,
+) -> SupportFacts {
     let original_len = input.len();
     let (input, bom_len) = match input.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
         Some(input) => (input, 3),
@@ -278,7 +323,7 @@ pub(crate) fn parse_parent_configurations(input: &[u8]) -> SupportFacts {
         Ok(root) => root,
         Err(error) => return unreadable(error),
     };
-    match decode_certified_v6(root, original_len) {
+    match decode_certified_v6(root, original_len, expected_configuration_uuid) {
         Ok(facts) => facts,
         Err(error) => unreadable(error),
     }
@@ -287,6 +332,7 @@ pub(crate) fn parse_parent_configurations(input: &[u8]) -> SupportFacts {
 fn decode_certified_v6(
     root: AstValue,
     input_len: usize,
+    expected_configuration_uuid: Option<&str>,
 ) -> Result<SupportFacts, SupportParseError> {
     let AstValue::List { values, offset } = root else {
         return Err(SupportParseError::new(
@@ -316,9 +362,16 @@ fn decode_certified_v6(
             ));
         }
     };
-    let vendor_count = cursor.atom(2, "vendor count")?;
-    match vendor_count.value.as_str() {
-        "0" => {
+    let vendor_count_atom = cursor.atom(2, "vendor count")?;
+    let vendor_count = vendor_count_atom.value.parse::<usize>().map_err(|_| {
+        cursor.error(
+            SupportParseErrorKind::UnknownCode,
+            vendor_count_atom.offset,
+            "vendor count",
+        )
+    })?;
+    match vendor_count {
+        0 => {
             if values.len() != 3 {
                 return Err(cursor.error(
                     SupportParseErrorKind::TrailingData,
@@ -332,77 +385,254 @@ fn decode_certified_v6(
                 global_editing_enabled: Some(global),
                 configuration_rule: None,
                 vendors: Vec::new(),
+                multi_vendor_semantics_unproven: false,
             });
         }
-        "1" => {}
-        _ => {
+        count if count > MAX_VENDOR_COUNT => {
             return Err(cursor.error(
                 SupportParseErrorKind::UnsupportedLayout,
-                vendor_count.offset,
+                vendor_count_atom.offset,
                 "vendor count",
             ))
         }
+        _ => {}
     }
+    let (next, vendors) = parse_vendor_blocks(
+        &values,
+        3,
+        vendor_count,
+        input_len,
+        expected_configuration_uuid,
+    )?;
+    if next != values.len() {
+        return Err(SupportParseError::new(
+            SupportParseErrorKind::TrailingData,
+            values[next].offset(),
+            "vendor blocks",
+        ));
+    }
+    let (configuration_rule, object_rules) = match vendors.as_slice() {
+        [vendor] => (
+            vendor.configuration_rule.clone(),
+            vendor.object_rules.clone(),
+        ),
+        _ => (None, BTreeMap::new()),
+    };
+    Ok(SupportFacts {
+        source: SupportSourceState::Parsed,
+        object_rules,
+        global_editing_enabled: Some(global),
+        configuration_rule,
+        multi_vendor_semantics_unproven: vendors.len() > 1,
+        vendors,
+    })
+}
 
-    let provider_id = cursor.uuid(3, "provider UUID")?;
-    let capability = cursor.atom(4, "provider capability")?;
-    if capability.value != CERTIFIED_VENDOR_CAPABILITY {
-        return Err(cursor.error(
-            SupportParseErrorKind::UnknownCode,
-            capability.offset,
-            "provider capability",
-        ));
-    }
-    cursor.uuid(5, "provider configuration UUID")?;
-    let version = cursor.string(6, "vendor version")?.value.clone();
-    let vendor = cursor.string(7, "vendor name")?.value.clone();
-    let name = cursor.string(8, "vendor configuration name")?.value.clone();
-    let schema = cursor.atom(9, "rule schema")?;
-    if schema.value != CERTIFIED_RULE_SCHEMA {
-        return Err(cursor.error(
-            SupportParseErrorKind::UnknownCode,
-            schema.offset,
-            "rule schema",
-        ));
-    }
-    let scope = cursor.atom(10, "rule scope")?;
-    if scope.value != CERTIFIED_RULE_SCOPE {
-        return Err(cursor.error(
-            SupportParseErrorKind::UnknownCode,
-            scope.offset,
-            "rule scope",
-        ));
-    }
-    let tail = values.get(11..).unwrap_or_default();
-    let layout = CertifiedTailLayout::for_values(tail);
-    let expected_fields = layout.field_count();
-    if tail.len() < expected_fields {
-        return Err(cursor.error(
+fn parse_vendor_blocks(
+    values: &[AstValue],
+    index: usize,
+    remaining_vendors: usize,
+    input_len: usize,
+    expected_configuration_uuid: Option<&str>,
+) -> Result<(usize, Vec<SupportVendor>), SupportParseError> {
+    let header_end = index.checked_add(7).ok_or_else(|| {
+        SupportParseError::new(SupportParseErrorKind::Truncated, input_len, "vendor block")
+    })?;
+    if header_end > values.len() {
+        return Err(SupportParseError::new(
             SupportParseErrorKind::Truncated,
             input_len,
+            "vendor block",
+        ));
+    }
+    let provider_uuid = parse_uuid(&values[index], "provider UUID")?;
+    let vendor_flag = match atom_value(&values[index + 1], "vendor flag")?
+        .value
+        .as_str()
+    {
+        "0" => false,
+        "1" => true,
+        _ => {
+            return Err(SupportParseError::new(
+                SupportParseErrorKind::UnknownCode,
+                values[index + 1].offset(),
+                "vendor flag",
+            ))
+        }
+    };
+    let vendor_configuration_uuid = parse_uuid(&values[index + 2], "vendor configuration UUID")?;
+    let version = match &values[index + 3] {
+        AstValue::String(value) => value.value.clone(),
+        value => {
+            return Err(SupportParseError::new(
+                SupportParseErrorKind::UnexpectedToken,
+                value.offset(),
+                "vendor version",
+            ))
+        }
+    };
+    let vendor = match &values[index + 4] {
+        AstValue::String(value) => value.value.clone(),
+        value => {
+            return Err(SupportParseError::new(
+                SupportParseErrorKind::UnexpectedToken,
+                value.offset(),
+                "vendor name",
+            ))
+        }
+    };
+    let name = match &values[index + 5] {
+        AstValue::String(value) => value.value.clone(),
+        value => {
+            return Err(SupportParseError::new(
+                SupportParseErrorKind::UnexpectedToken,
+                value.offset(),
+                "vendor configuration name",
+            ))
+        }
+    };
+    let rule_count_atom = atom_value(&values[index + 6], "rule count")?;
+    let rule_count = rule_count_atom.value.parse::<usize>().map_err(|_| {
+        SupportParseError::new(
+            SupportParseErrorKind::UnknownCode,
+            rule_count_atom.offset,
+            "rule count",
+        )
+    })?;
+    if rule_count > MAX_RULES_PER_VENDOR {
+        return Err(SupportParseError::new(
+            SupportParseErrorKind::UnsupportedLayout,
+            rule_count_atom.offset,
+            "rule count",
+        ));
+    }
+
+    let mut matches = Vec::new();
+    let mut first_rule_error = None;
+    let mut trailing_candidate = None;
+    for has_configuration_rule in [false, true] {
+        if has_configuration_rule && rule_count == 0 {
+            continue;
+        }
+        let field_count = rule_count
+            .checked_mul(4)
+            .and_then(|count| count.checked_sub(usize::from(has_configuration_rule)))
+            .ok_or_else(|| {
+                SupportParseError::new(
+                    SupportParseErrorKind::UnsupportedLayout,
+                    rule_count_atom.offset,
+                    "rule count",
+                )
+            })?;
+        let rules_end = match header_end.checked_add(field_count) {
+            Some(end) => end,
+            None => continue,
+        };
+        if rules_end > values.len() {
+            continue;
+        }
+        let parsed = parse_vendor_rules(
+            &values[header_end..rules_end],
+            rule_count,
+            has_configuration_rule,
+            expected_configuration_uuid,
+        );
+        let (configuration_rule, object_rules) = match parsed {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                if first_rule_error.is_none() {
+                    first_rule_error = Some(error);
+                }
+                continue;
+            }
+        };
+        let vendor = SupportVendor {
+            provider_uuid: provider_uuid.clone(),
+            vendor_flag,
+            vendor_configuration_uuid: vendor_configuration_uuid.clone(),
+            version: version.clone(),
+            vendor: vendor.clone(),
+            name: name.clone(),
+            configuration_rule,
+            object_rules,
+        };
+        if remaining_vendors == 1 {
+            if rules_end == values.len() {
+                matches.push((rules_end, vec![vendor]));
+            } else if rules_end < values.len() {
+                trailing_candidate = Some(values[rules_end].offset());
+            }
+        } else if let Ok((end, mut rest)) = parse_vendor_blocks(
+            values,
+            rules_end,
+            remaining_vendors - 1,
+            input_len,
+            expected_configuration_uuid,
+        ) {
+            let mut all = vec![vendor];
+            all.append(&mut rest);
+            matches.push((end, all));
+        }
+    }
+    match matches.len() {
+        1 => Ok(matches.pop().expect("one candidate")),
+        0 if trailing_candidate.is_some() => Err(SupportParseError::new(
+            SupportParseErrorKind::TrailingData,
+            trailing_candidate.expect("trailing candidate"),
+            "vendor block",
+        )),
+        0 => Err(first_rule_error.unwrap_or_else(|| {
+            if header_end >= values.len() {
+                SupportParseError::new(
+                    SupportParseErrorKind::Truncated,
+                    input_len,
+                    "rule collection",
+                )
+            } else {
+                SupportParseError::new(
+                    SupportParseErrorKind::UnsupportedLayout,
+                    values[header_end].offset(),
+                    "rule collection",
+                )
+            }
+        })),
+        _ => Err(SupportParseError::new(
+            SupportParseErrorKind::UnsupportedLayout,
+            values[header_end].offset(),
+            "ambiguous vendor rule layout",
+        )),
+    }
+}
+
+fn parse_vendor_rules(
+    values: &[AstValue],
+    rule_count: usize,
+    has_configuration_rule: bool,
+    expected_configuration_uuid: Option<&str>,
+) -> Result<(Option<(String, SupportRule)>, BTreeMap<String, SupportRule>), SupportParseError> {
+    let (configuration_rule, object_values) = if has_configuration_rule {
+        let rule = parse_configuration_rule(&values[..3], expected_configuration_uuid)?;
+        (Some(rule), &values[3..])
+    } else {
+        (None, values)
+    };
+    if object_values.len() != (rule_count - usize::from(has_configuration_rule)) * 4 {
+        return Err(SupportParseError::new(
+            SupportParseErrorKind::UnsupportedLayout,
+            values.first().map(AstValue::offset).unwrap_or(0),
             "rule collection",
         ));
     }
-    if tail.len() > expected_fields {
-        return Err(cursor.error(
-            SupportParseErrorKind::TrailingData,
-            tail[expected_fields].offset(),
-            "certified rule collection",
-        ));
+    let mut seen = BTreeMap::new();
+    if let Some((uuid, rule)) = &configuration_rule {
+        seen.insert(uuid.clone(), *rule);
     }
-    let (configuration_rule, rule_values) = match layout {
-        CertifiedTailLayout::ObjectRules => (None, tail),
-        CertifiedTailLayout::ConfigurationAndObjectRules => (
-            Some(parse_configuration_rule(
-                &tail[..CERTIFIED_CONFIGURATION_RULE_FIELDS],
-            )?),
-            &tail[CERTIFIED_CONFIGURATION_RULE_FIELDS..],
-        ),
-    };
     let mut object_rules = BTreeMap::new();
-    for rule in rule_values.chunks_exact(4) {
+    for rule in object_values.chunks_exact(4) {
         let (object_id, state) = parse_object_rule(rule)?;
-        if object_rules.insert(object_id, state).is_some() {
+        if seen.insert(object_id.clone(), state).is_some()
+            || object_rules.insert(object_id, state).is_some()
+        {
             return Err(SupportParseError::new(
                 SupportParseErrorKind::DuplicateRule,
                 rule[2].offset(),
@@ -410,50 +640,43 @@ fn decode_certified_v6(
             ));
         }
     }
-    debug_assert_eq!(
-        rule_values.len(),
-        CERTIFIED_OBJECT_RULE_FIELDS * CERTIFIED_OBJECT_RULE_COUNT
-    );
-    let _ = provider_id;
-    Ok(SupportFacts {
-        source: SupportSourceState::Parsed,
-        object_rules,
-        global_editing_enabled: Some(global),
-        configuration_rule,
-        vendors: vec![SupportVendor {
-            version,
-            vendor,
-            name,
-        }],
-    })
+    Ok((configuration_rule, object_rules))
 }
 
 fn parse_configuration_rule(
     values: &[AstValue],
+    expected_configuration_uuid: Option<&str>,
 ) -> Result<(String, SupportRule), SupportParseError> {
     let state = parse_rule_state(&values[0], "configuration rule state")?;
-    let object = parse_uuid(&values[1], "configuration rule UUID")?;
-    let owner = parse_uuid(&values[2], "configuration rule owner UUID")?;
-    if object != owner {
+    let marker = atom_value(&values[1], "configuration rule marker")?;
+    if marker.value != "0" {
+        return Err(SupportParseError::new(
+            SupportParseErrorKind::UnknownCode,
+            marker.offset,
+            "configuration rule marker",
+        ));
+    }
+    let configuration = parse_uuid(&values[2], "configuration rule UUID")?;
+    if expected_configuration_uuid.is_some_and(|expected| expected != configuration) {
         return Err(SupportParseError::new(
             SupportParseErrorKind::ConflictingEvidence,
             values[2].offset(),
-            "configuration rule UUIDs",
+            "configuration rule UUID",
         ));
     }
-    Ok((object, state))
+    Ok((configuration, state))
 }
 
 fn parse_object_rule(values: &[AstValue]) -> Result<(String, SupportRule), SupportParseError> {
-    let kind = atom_value(&values[0], "object rule kind")?;
-    if !matches!(kind.value.as_str(), "0" | "2") {
+    let marker = atom_value(&values[1], "object rule marker")?;
+    if marker.value != "0" {
         return Err(SupportParseError::new(
             SupportParseErrorKind::UnknownCode,
-            kind.offset,
-            "object rule kind",
+            marker.offset,
+            "object rule marker",
         ));
     }
-    let state = parse_rule_state(&values[1], "object rule state")?;
+    let state = parse_rule_state(&values[0], "object rule state")?;
     let object = parse_uuid(&values[2], "object rule UUID")?;
     let owner = parse_uuid(&values[3], "object rule owner UUID")?;
     if object != owner {
@@ -479,31 +702,6 @@ fn parse_rule_state(
             value.offset(),
             context,
         )),
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CertifiedTailLayout {
-    ObjectRules,
-    ConfigurationAndObjectRules,
-}
-
-impl CertifiedTailLayout {
-    fn for_values(values: &[AstValue]) -> Self {
-        let object_rule_fields = CERTIFIED_OBJECT_RULE_FIELDS * CERTIFIED_OBJECT_RULE_COUNT;
-        if values.len() > object_rule_fields {
-            Self::ConfigurationAndObjectRules
-        } else {
-            Self::ObjectRules
-        }
-    }
-
-    fn field_count(self) -> usize {
-        let object_rules = CERTIFIED_OBJECT_RULE_FIELDS * CERTIFIED_OBJECT_RULE_COUNT;
-        match self {
-            Self::ObjectRules => object_rules,
-            Self::ConfigurationAndObjectRules => CERTIFIED_CONFIGURATION_RULE_FIELDS + object_rules,
-        }
     }
 }
 
@@ -537,6 +735,7 @@ fn absent() -> SupportFacts {
         global_editing_enabled: None,
         configuration_rule: None,
         vendors: Vec::new(),
+        multi_vendor_semantics_unproven: false,
     }
 }
 
@@ -547,6 +746,7 @@ fn removed() -> SupportFacts {
         global_editing_enabled: Some(true),
         configuration_rule: None,
         vendors: Vec::new(),
+        multi_vendor_semantics_unproven: false,
     }
 }
 
@@ -557,6 +757,7 @@ fn unreadable(error: SupportParseError) -> SupportFacts {
         global_editing_enabled: None,
         configuration_rule: None,
         vendors: Vec::new(),
+        multi_vendor_semantics_unproven: false,
     }
 }
 
@@ -799,38 +1000,131 @@ impl<'a> ProfileCursor<'a> {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_parent_configurations, read_support_facts, EffectiveSupportRule,
-        SupportParseErrorKind, SupportSourceState,
+        parse_parent_configurations, read_support_facts,
+        read_support_facts_bytes_for_configuration, EffectiveSupportRule, SupportParseErrorKind,
+        SupportSourceState,
     };
     use crate::domain::navigation::Authorability;
     use std::fs;
 
-    const PROVIDER: &str = "dddddddd-dddd-dddd-dddd-dddddddddddd";
-    const VENDOR_CONFIGURATION: &str = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
-    const CONFIGURATION: &str = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
-    const FIRST: &str = "cccccccc-cccc-cccc-cccc-cccccccccccc";
-    const SECOND: &str = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+    const PROVIDER: &str = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    const SECOND_PROVIDER: &str = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+    const VENDOR_CONFIGURATION: &str = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+    const SECOND_VENDOR_CONFIGURATION: &str = "dddddddd-dddd-dddd-dddd-dddddddddddd";
+    const CONFIGURATION: &str = "11111111-1111-1111-1111-111111111111";
+    const FIRST: &str = "22222222-2222-2222-2222-222222222222";
+    const SECOND: &str = "33333333-3333-3333-3333-333333333333";
 
     #[test]
-    fn valid_header_with_garbage_body_is_unreadable() {
-        let facts = parse_parent_configurations(b"{6,0,1,garbage}");
-        assert!(matches!(
-            facts.source,
-            SupportSourceState::Unreadable { .. }
+    fn real_v6_vendor_flags_and_rule_count_are_parsed() {
+        for vendor_flag in ["0", "1"] {
+            let facts =
+                parse_parent_configurations(payload(vendor_flag, "0", "0", "0", "2").as_bytes());
+            assert!(matches!(facts.source, SupportSourceState::Parsed));
+            assert_eq!(facts.vendors().len(), 1);
+            assert_eq!(facts.vendors()[0].vendor_flag, vendor_flag == "1");
+            assert_eq!(facts.authorability_for(FIRST), Authorability::SupportLocked);
+            assert_eq!(
+                facts.effective_rule_for(SECOND),
+                EffectiveSupportRule::Locked
+            );
+        }
+    }
+
+    #[test]
+    fn configuration_rule_is_checked_against_configuration_xml_uuid() {
+        let input = payload("0", "0", "1", "0", "1");
+        let valid =
+            read_support_facts_bytes_for_configuration(Some(input.as_bytes()), CONFIGURATION);
+        assert_eq!(valid.authorability_for(FIRST), Authorability::SupportLocked);
+
+        let mismatch = read_support_facts_bytes_for_configuration(
+            Some(input.as_bytes()),
+            "99999999-9999-9999-9999-999999999999",
+        );
+        assert_eq!(
+            unreadable_kind(&mismatch),
+            SupportParseErrorKind::ConflictingEvidence
+        );
+        assert_eq!(
+            unreadable_error(&mismatch).offset,
+            Some(input.find(CONFIGURATION).unwrap())
+        );
+    }
+
+    #[test]
+    fn declared_rule_count_and_record_markers_are_consumed_exactly() {
+        let truncated = payload("0", "0", "0", "0", "1").replace(",3,0,0,", ",4,0,0,");
+        assert_kind(
+            truncated.as_bytes(),
+            SupportParseErrorKind::UnsupportedLayout,
+        );
+
+        let invalid_marker = payload("0", "0", "0", "0", "1").replace(",0,0,2222", ",0,2,2222");
+        assert_kind(
+            invalid_marker.as_bytes(),
+            SupportParseErrorKind::UnknownCode,
+        );
+
+        let mut trailing = payload("0", "0", "0", "0", "1");
+        trailing.pop();
+        trailing.push_str(",surplus}");
+        assert_kind(trailing.as_bytes(), SupportParseErrorKind::TrailingData);
+    }
+
+    #[test]
+    fn repeated_object_uuid_and_conflicting_owner_fail_closed_at_record_offsets() {
+        let duplicate = payload("0", "0", "0", "0", "1").replace(SECOND, FIRST);
+        assert_kind(duplicate.as_bytes(), SupportParseErrorKind::DuplicateRule);
+
+        let conflicting = payload("0", "0", "0", "0", "1").replacen(
+            &format!(",{SECOND},{SECOND}}}"),
+            &format!(",{SECOND},{CONFIGURATION}}}"),
+            1,
+        );
+        assert_kind(
+            conflicting.as_bytes(),
+            SupportParseErrorKind::ConflictingEvidence,
+        );
+    }
+
+    #[test]
+    fn multiple_vendor_facts_are_retained_but_never_grant_authorability() {
+        let input = format!(
+            "{{6,0,2,{PROVIDER},0,{VENDOR_CONFIGURATION},\"1.0\",\"Vendor\",\"One\",1,0,0,{CONFIGURATION},{SECOND_PROVIDER},1,{SECOND_VENDOR_CONFIGURATION},\"2.0\",\"Vendor\",\"Two\",1,1,0,{CONFIGURATION}}}"
+        );
+        let facts =
+            read_support_facts_bytes_for_configuration(Some(input.as_bytes()), CONFIGURATION);
+        assert!(matches!(facts.source, SupportSourceState::Parsed));
+        assert_eq!(facts.vendors().len(), 2);
+        assert_eq!(
+            facts.authorability_for(FIRST),
+            Authorability::UnknownReadOnly
+        );
+    }
+
+    #[test]
+    fn tracked_on_support_fixture_uses_the_real_v6_layout() {
+        let bytes = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/unica_mcp_script_parity/cc-1c-skills/cases/meta-compile/fixtures/on-support/Ext/ParentConfigurations.bin"
         ));
+        let facts = read_support_facts_bytes_for_configuration(Some(bytes), CONFIGURATION);
+        assert!(matches!(facts.source, SupportSourceState::Parsed));
+        assert_eq!(facts.authorability_for(FIRST), Authorability::SupportLocked);
+        assert_eq!(
+            facts.effective_rule_for(SECOND),
+            EffectiveSupportRule::Locked
+        );
     }
 
     #[test]
-    fn missing_snapshot_support_is_consistently_removed() {
-        let facts = super::read_support_facts_bytes(None);
-
-        assert!(matches!(facts.source, SupportSourceState::Removed));
-    }
-
-    #[test]
-    fn oversized_snapshot_whitespace_is_unreadable_before_parsing() {
+    fn missing_snapshot_support_is_removed_and_oversize_fails_closed() {
+        assert!(matches!(
+            super::read_support_facts_bytes(None).source,
+            SupportSourceState::Removed
+        ));
         let facts = super::read_support_facts_bytes(Some(&vec![b' '; 1024 * 1024 + 1]));
-
         assert_eq!(
             unreadable_kind(&facts),
             SupportParseErrorKind::InputTooLarge
@@ -842,236 +1136,23 @@ mod tests {
     }
 
     #[test]
-    fn truncated_object_rule_count_is_unreadable() {
-        assert_kind(b"{6,0,2,{1,0}}", SupportParseErrorKind::UnsupportedLayout);
-    }
-
-    #[test]
-    fn unsupported_version_is_typed() {
-        assert_kind(
-            compact("7", "0", "0", "0", "0", "0").as_bytes(),
-            SupportParseErrorKind::UnsupportedVersion,
-        );
-    }
-
-    #[test]
-    fn unknown_provider_capability_is_typed() {
-        assert_kind(
-            compact("6", "0", "7", "0", "0", "0").as_bytes(),
-            SupportParseErrorKind::UnknownCode,
-        );
-    }
-
-    #[test]
-    fn unknown_object_rule_blocks_authorability() {
-        let facts = parse_parent_configurations(compact("6", "0", "0", "9", "0", "0").as_bytes());
-        assert_eq!(unreadable_kind(&facts), SupportParseErrorKind::UnknownCode);
-        assert_eq!(
-            facts.authorability_for(FIRST),
-            Authorability::UnknownSupportState
-        );
-    }
-
-    #[test]
-    fn valid_shaped_trailing_quadruple_is_typed_trailing_data() {
-        let mut input = compact("6", "0", "0", "1", "0", "0");
-        input.pop();
-        input.push_str(
-            ",0,1,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa}",
-        );
-        assert_kind(input.as_bytes(), SupportParseErrorKind::TrailingData);
-    }
-
-    #[test]
-    fn multiple_vendors_are_rejected_by_certified_profile() {
-        assert_kind(b"{6,0,2}", SupportParseErrorKind::UnsupportedLayout);
-    }
-
-    #[test]
-    fn global_locked_and_object_editable_is_locked() {
-        let facts = parse_parent_configurations(full("0", "1", "1").as_bytes());
-        assert_eq!(facts.authorability_for(FIRST), Authorability::SupportLocked);
-    }
-
-    #[test]
-    fn global_unknown_and_object_absent_is_unreadable() {
-        let facts = parse_parent_configurations(full("9", "1", "1").as_bytes());
-        assert_eq!(unreadable_kind(&facts), SupportParseErrorKind::UnknownCode);
-        assert_eq!(
-            facts.authorability_for(SECOND),
-            Authorability::UnknownSupportState
-        );
-    }
-
-    #[test]
-    fn global_editable_and_object_locked_is_locked() {
-        let facts = parse_parent_configurations(full("1", "0", "1").as_bytes());
-        assert_eq!(facts.authorability_for(FIRST), Authorability::SupportLocked);
-    }
-
-    #[test]
-    fn both_editable_are_authorable() {
-        let facts = parse_parent_configurations(full("1", "1", "1").as_bytes());
-        assert_eq!(facts.authorability_for(FIRST), Authorability::Authorable);
-    }
-
-    #[test]
-    fn zero_vendor_payload_preserves_global_editing_semantics() {
-        let editable = parse_parent_configurations(b"{6,0,0}");
-        assert!(matches!(editable.source, SupportSourceState::Parsed));
-        assert_eq!(
-            editable.effective_rule_for(FIRST),
-            EffectiveSupportRule::Absent
-        );
-        assert_eq!(editable.authorability_for(FIRST), Authorability::Authorable);
-
-        let read_only = parse_parent_configurations(b"{6,1,0}");
-        assert!(matches!(read_only.source, SupportSourceState::Parsed));
-        assert_eq!(
-            read_only.effective_rule_for(FIRST),
-            EffectiveSupportRule::ConfigurationReadOnly
-        );
-        assert_eq!(
-            read_only.authorability_for(FIRST),
-            Authorability::ConfigurationReadOnly
-        );
-    }
-
-    #[test]
-    fn parse_error_offsets_are_original_input_spans() {
-        let bom = parse_parent_configurations(b"\xEF\xBB\xBF{7,0,0}");
-        assert_eq!(unreadable_error(&bom).offset, Some(4));
-
-        let truncated_input = b"{6,0,1";
-        let truncated = parse_parent_configurations(truncated_input);
-        assert_eq!(
-            unreadable_kind(&truncated),
-            SupportParseErrorKind::Truncated
-        );
-        assert_eq!(
-            unreadable_error(&truncated).offset,
-            Some(truncated_input.len())
-        );
-
-        let mut extra = compact("6", "0", "0", "0", "0", "0");
-        extra.pop();
-        extra.push_str(
-            ",0,1,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa}",
-        );
-        let trailing = parse_parent_configurations(extra.as_bytes());
-        assert_eq!(
-            unreadable_kind(&trailing),
-            SupportParseErrorKind::TrailingData
-        );
-        assert_eq!(
-            unreadable_error(&trailing).offset,
-            Some(
-                extra
-                    .rfind(",aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-                    .expect("tail[11]")
-                    + 1
-            )
-        );
-
-        let mut configuration_extra = full("1", "1", "1");
-        configuration_extra.pop();
-        let configuration_first_extra = configuration_extra.len() + 1;
-        configuration_extra.push_str(",surplus}");
-        let configuration_trailing = parse_parent_configurations(configuration_extra.as_bytes());
-        assert_eq!(
-            unreadable_kind(&configuration_trailing),
-            SupportParseErrorKind::TrailingData
-        );
-        assert_eq!(
-            unreadable_error(&configuration_trailing).offset,
-            Some(configuration_first_extra)
-        );
-    }
-
-    #[test]
-    fn malformed_configuration_uuid_selects_configuration_layout() {
-        let input = full("1", "1", "1").replacen(CONFIGURATION, "not-a-uuid", 1);
-        let facts = parse_parent_configurations(input.as_bytes());
-        assert_eq!(unreadable_kind(&facts), SupportParseErrorKind::InvalidUuid);
-        assert_eq!(
-            unreadable_error(&facts).offset,
-            Some(input.find("not-a-uuid").expect("invalid UUID is present"))
-        );
-    }
-
-    #[test]
-    fn bom_prefixed_empty_atom_uses_original_input_offset() {
-        let empty_atom = parse_parent_configurations(b"\xEF\xBB\xBF{6,,0}");
-        assert_eq!(
-            unreadable_kind(&empty_atom),
-            SupportParseErrorKind::UnexpectedToken
-        );
-        assert_eq!(unreadable_error(&empty_atom).offset, Some(6));
-    }
-
-    #[test]
-    fn duplicate_and_conflicting_uuid_evidence_are_typed() {
-        assert_kind(
-            compact("6", "0", "0", "0", "0", "0")
-                .replace(SECOND, FIRST)
-                .as_bytes(),
-            SupportParseErrorKind::DuplicateRule,
-        );
-        let conflicting = compact("6", "0", "0", "0", "0", "0").replace(
-            ",bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb}",
-            ",aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa}",
-        );
-        assert_kind(
-            conflicting.as_bytes(),
-            SupportParseErrorKind::ConflictingEvidence,
-        );
-    }
-
-    #[test]
-    fn nested_lists_are_rejected() {
-        assert_kind(b"{6,0,1,{x}}", SupportParseErrorKind::UnexpectedToken);
-    }
-
-    #[test]
-    fn certified_quoted_strings_preserve_utf8_commas_braces_and_doubled_quotes() {
-        let input = format!(
-            "{{6,0,1,{PROVIDER},0,{VENDOR_CONFIGURATION},\"1,0\",\"Поставщик {{A}} \"\"quoted\"\"\",\"Конфигурация\",3,1,0,0,{FIRST},{FIRST},0,1,{SECOND},{SECOND}}}"
-        );
-        let facts = parse_parent_configurations(input.as_bytes());
-        assert!(matches!(facts.source, SupportSourceState::Parsed));
-        assert_eq!(facts.vendors()[0].vendor, "Поставщик {A} \"quoted\"");
-        assert_eq!(facts.vendors()[0].name, "Конфигурация");
-    }
-
-    #[test]
-    fn bounded_reader_rejects_oversize_input() {
-        let path =
-            std::env::temp_dir().join(format!("unica-support-bounded-{}", std::process::id()));
-        fs::write(&path, vec![b'x'; 1024 * 1024 + 1]).unwrap();
+    fn filesystem_reader_keeps_existing_guard_path_for_regular_real_layout() {
+        let path = std::env::temp_dir().join(format!("unica-support-real-{}", std::process::id()));
+        fs::write(&path, payload("1", "0", "0", "0", "1")).unwrap();
         let facts = read_support_facts(&path);
-        assert_eq!(
-            unreadable_kind(&facts),
-            SupportParseErrorKind::InputTooLarge
-        );
+        assert_eq!(facts.authorability_for(FIRST), Authorability::SupportLocked);
         fs::remove_file(path).unwrap();
     }
 
-    fn compact(
-        version: &str,
-        editing: &str,
-        capability: &str,
-        first_kind: &str,
+    fn payload(
+        vendor_flag: &str,
+        global: &str,
+        configuration_state: &str,
         first_state: &str,
         second_state: &str,
     ) -> String {
         format!(
-            "{{{version},{editing},1,{PROVIDER},{capability},{VENDOR_CONFIGURATION},\"1.0\",\"Vendor\",\"VendorConf\",3,1,{first_kind},{first_state},{FIRST},{FIRST},0,{second_state},{SECOND},{SECOND}}}"
-        )
-    }
-
-    fn full(configuration_state: &str, first_state: &str, second_state: &str) -> String {
-        format!(
-            "{{6,0,1,{PROVIDER},0,{VENDOR_CONFIGURATION},\"1.0\",\"Vendor\",\"VendorConf\",3,1,{configuration_state},{CONFIGURATION},{CONFIGURATION},0,{first_state},{FIRST},{FIRST},2,{second_state},{SECOND},{SECOND}}}"
+            "{{6,{global},1,{PROVIDER},{vendor_flag},{VENDOR_CONFIGURATION},\"1.0\",\"Vendor\",\"VendorConf\",3,{configuration_state},0,{CONFIGURATION},{first_state},0,{FIRST},{FIRST},{second_state},0,{SECOND},{SECOND}}}"
         )
     }
 

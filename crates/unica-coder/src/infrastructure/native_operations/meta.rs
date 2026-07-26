@@ -4013,8 +4013,7 @@ struct ResolvedConfiguredSourceBinding {
     configured_format_raw: Option<String>,
     workspace_epoch: u64,
     scope: String,
-    provider: crate::infrastructure::source_adapters::platform_xml::provider::PlatformXmlProvider,
-    descriptor_key: String,
+    captured_session: Box<dyn crate::infrastructure::source_adapters::CapturedSourceSession>,
     provider_revision: crate::domain::source_adapters::SourceRevision,
 }
 
@@ -4080,20 +4079,16 @@ fn resolve_object_path_binding(
         &configured_format_raw,
         context.workspace_epoch,
     )?;
-    let descriptor_key = canonical_target
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty())
-        .ok_or_else(|| source_unavailable("metadata target does not have a UTF-8 descriptor name"))?
-        .to_string();
-    let capture_root = canonical_target
-        .parent()
-        .ok_or_else(|| source_unavailable("metadata target has no aggregate root"))?;
-    let provider =
-        crate::infrastructure::source_adapters::platform_xml::provider::PlatformXmlProvider::open(
-            capture_root,
-        )?;
-    let provider_revision = provider.revision()?;
+    let capture_input = crate::infrastructure::source_adapters::SourceInput {
+        workspace_root: context.workspace_root.clone(),
+        source_root: canonical_root.clone(),
+        target: canonical_target.clone(),
+        configured_source_set: Some(source_set.name.clone()),
+    };
+    let captured_session =
+        crate::infrastructure::source_adapters::registry::BuiltInSourceAdapterRegistry::new()
+            .capture(&capture_input)?;
+    let provider_revision = captured_session.revision()?;
     let binding = ResolvedConfiguredSourceBinding {
         name: source_set.name,
         source_id,
@@ -4107,8 +4102,7 @@ fn resolve_object_path_binding(
         configured_format_raw,
         workspace_epoch: context.workspace_epoch,
         scope,
-        provider,
-        descriptor_key,
+        captured_session,
         provider_revision,
     };
     verify_captured_provider_binding(&binding)?;
@@ -4175,24 +4169,10 @@ fn resolve_current_source_binding(
 fn verify_captured_provider_binding(
     binding: &ResolvedConfiguredSourceBinding,
 ) -> Result<(), SourceAdapterError> {
-    let capture_root = binding
+    if !binding
         .canonical_target
-        .parent()
-        .ok_or_else(|| source_unavailable("metadata target has no aggregate root"))?;
-    if binding.provider.captured_root() != capture_root
-        || !binding
-            .provider
-            .captured_root()
-            .starts_with(&binding.canonical_root)
-        || !binding
-            .canonical_target
-            .starts_with(&binding.canonical_root)
-        || binding
-            .provider
-            .captured_root()
-            .join(&binding.descriptor_key)
-            != binding.canonical_target
-        || binding.provider.revision()? != binding.provider_revision
+        .starts_with(&binding.canonical_root)
+        || binding.captured_session.revision()? != binding.provider_revision
     {
         return Err(source_unavailable(
             "captured Platform XML provider no longer matches the authorized source binding",
@@ -4331,14 +4311,14 @@ fn inspect_source_path(
 ) -> Result<crate::domain::navigation::NavigationEnvelope, SourceAdapterError> {
     verify_captured_provider_binding(binding)?;
     crate::infrastructure::source_adapters::registry::BuiltInSourceAdapterRegistry::new()
-        .inspect_platform_xml_provider(
-            crate::infrastructure::source_adapters::SourceInput {
+        .inspect_captured(
+            &crate::infrastructure::source_adapters::SourceInput {
                 workspace_root: context.workspace_root.clone(),
+                source_root: binding.canonical_root.clone(),
                 target: binding.canonical_target.clone(),
                 configured_source_set: Some(binding.name.clone()),
             },
-            &binding.provider,
-            &binding.descriptor_key,
+            binding.captured_session.as_ref(),
         )
 }
 

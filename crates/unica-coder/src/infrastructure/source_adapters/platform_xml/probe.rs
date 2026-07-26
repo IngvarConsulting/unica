@@ -17,8 +17,9 @@ use crate::{
                     child_metadata_class_profile, metadata_class_profile, MetadataClassProfile,
                     MetadataClassRole, ROOT_STRUCTURAL_CHILDREN,
                 },
+                PlatformXmlCapturedSession,
             },
-            ProbeOutcome, SourceInput, SourceProbe,
+            CapturedSourceSession, ProbeOutcome, SourceInput, SourceProbe,
         },
     },
 };
@@ -30,6 +31,20 @@ pub(crate) struct PlatformXmlProbe;
 impl PlatformXmlProbe {
     pub(crate) const fn new() -> Self {
         Self
+    }
+
+    #[cfg(test)]
+    fn probe_path(&self, input: &SourceInput) -> Result<ProbeOutcome, SourceAdapterError> {
+        let provider = PlatformXmlProvider::capture(&input.target, &input.source_root)?;
+        let descriptor_key = input
+            .target
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| {
+                unavailable("Platform XML descriptor does not have a UTF-8 file name")
+            })?;
+        self.probe_provider(input, &provider, descriptor_key)
     }
 
     pub(crate) fn probe_provider(
@@ -222,21 +237,16 @@ fn structural_child_name<'a, 'input>(
 }
 
 impl SourceProbe for PlatformXmlProbe {
-    fn probe(&self, input: &SourceInput) -> Result<ProbeOutcome, SourceAdapterError> {
-        let root = input
-            .target
-            .parent()
-            .ok_or_else(|| unavailable("Platform XML descriptor has no aggregate root"))?;
-        let descriptor_key = input
-            .target
-            .file_name()
-            .and_then(|name| name.to_str())
-            .filter(|name| !name.is_empty())
-            .ok_or_else(|| {
-                unavailable("Platform XML descriptor does not have a UTF-8 file name")
-            })?;
-        let provider = PlatformXmlProvider::open(root)?;
-        self.probe_provider(input, &provider, descriptor_key)
+    fn probe(
+        &self,
+        input: &SourceInput,
+        session: &dyn CapturedSourceSession,
+    ) -> Result<ProbeOutcome, SourceAdapterError> {
+        let session = session
+            .as_any()
+            .downcast_ref::<PlatformXmlCapturedSession>()
+            .ok_or_else(|| unavailable("captured session is not Platform XML"))?;
+        self.probe_provider(input, session.provider(), session.descriptor_key())
     }
 }
 
@@ -288,7 +298,7 @@ mod tests {
     use crate::{
         domain::source_adapters::{FormatVersion, SourceAdapterErrorKind, SourceFamily},
         infrastructure::source_adapters::{
-            platform_xml::schema::METADATA_CLASS_PROFILES, ProbeOutcome, SourceInput, SourceProbe,
+            platform_xml::schema::METADATA_CLASS_PROFILES, ProbeOutcome, SourceInput,
         },
     };
 
@@ -550,17 +560,17 @@ mod tests {
         let target = root.join("Configuration.xml");
         fs::write(&target, r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document uuid="11111111-1111-1111-1111-111111111111"/></MetaDataObject>"#).unwrap();
         let first = PlatformXmlProbe::new()
-            .probe(&input(&root, &target, None))
+            .probe_path(&input(&root, &target, None))
             .unwrap();
         fs::write(&target, r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document uuid="11111111-1111-1111-1111-111111111111" changed="yes"/></MetaDataObject>"#).unwrap();
         let second = PlatformXmlProbe::new()
-            .probe(&input(&root, &target, None))
+            .probe_path(&input(&root, &target, None))
             .unwrap();
         assert_eq!(source_id_json(first), source_id_json(second));
 
         fs::write(&target, r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document/></MetaDataObject>"#).unwrap();
         let error = PlatformXmlProbe::new()
-            .probe(&input(&root, &target, None))
+            .probe_path(&input(&root, &target, None))
             .unwrap_err();
         assert_eq!(error.kind, SourceAdapterErrorKind::ProjectionAmbiguous);
     }
@@ -571,7 +581,7 @@ mod tests {
         let target = root.join("Configuration.xml");
         fs::write(&target, r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document/></MetaDataObject>"#).unwrap();
         let error = PlatformXmlProbe::new()
-            .probe(&input(&root, &target, Some("../outside")))
+            .probe_path(&input(&root, &target, Some("../outside")))
             .unwrap_err();
 
         assert_eq!(error.kind, SourceAdapterErrorKind::SourceUnavailable);
@@ -586,7 +596,7 @@ mod tests {
         fs::write(&target, r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document uuid="11111111-1111-1111-1111-111111111111"/></MetaDataObject>"#).unwrap();
 
         let error = PlatformXmlProbe::new()
-            .probe(&input(&root, &target, None))
+            .probe_path(&input(&root, &target, None))
             .unwrap_err();
 
         assert_eq!(error.kind, SourceAdapterErrorKind::SourceUnavailable);
@@ -607,7 +617,7 @@ mod tests {
         let root = fixture_root();
         let target = root.join("Configuration.xml");
         fs::write(&target, bytes).unwrap();
-        PlatformXmlProbe::new().probe(&input(&root, &target, configured_source_set))
+        PlatformXmlProbe::new().probe_path(&input(&root, &target, configured_source_set))
     }
 
     fn input(
@@ -617,6 +627,7 @@ mod tests {
     ) -> SourceInput {
         SourceInput {
             workspace_root: PathBuf::from(root),
+            source_root: PathBuf::from(root),
             target: PathBuf::from(target),
             configured_source_set: configured_source_set.map(str::to_string),
         }

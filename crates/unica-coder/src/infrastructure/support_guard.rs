@@ -74,7 +74,8 @@ pub(crate) fn support_guard_violation(
             }),
             EffectiveSupportRule::Locked
             | EffectiveSupportRule::Editable
-            | EffectiveSupportRule::Absent => Some(SupportGuardViolation {
+            | EffectiveSupportRule::Absent
+            | EffectiveSupportRule::UnknownReadOnly => Some(SupportGuardViolation {
                 code: "not-removed",
                 reason: "объект не снят с поддержки; удаление сломает обновления".to_string(),
                 target_path,
@@ -427,7 +428,7 @@ mod tests {
         fs::create_dir_all(root.join("Ext")).unwrap();
         fs::write(
             root.join("Ext/ParentConfigurations.bin"),
-            "{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"VendorConf\",3,1,0,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,0,1,cccccccc-cccc-cccc-cccc-cccccccccccc,cccccccc-cccc-cccc-cccc-cccccccccccc,2,1,bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb,bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb}",
+            "{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"VendorConf\",2,0,0,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,1,0,cccccccc-cccc-cccc-cccc-cccccccccccc,cccccccc-cccc-cccc-cccc-cccccccccccc}",
         )
         .unwrap();
 
@@ -476,7 +477,7 @@ mod tests {
 
     fn support_payload(object_state: &str) -> String {
         format!(
-            "{{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"VendorConf\",3,1,1,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,0,{object_state},cccccccc-cccc-cccc-cccc-cccccccccccc,cccccccc-cccc-cccc-cccc-cccccccccccc,2,1,bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb,bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb}}"
+            "{{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"VendorConf\",2,1,0,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,{object_state},0,cccccccc-cccc-cccc-cccc-cccccccccccc,cccccccc-cccc-cccc-cccc-cccccccccccc}}"
         )
     }
 }
