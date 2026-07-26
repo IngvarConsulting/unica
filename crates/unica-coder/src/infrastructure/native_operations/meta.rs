@@ -5411,13 +5411,54 @@ mod edit_tests {
         write_mode: &str,
         use_standard_commands: &str,
     ) -> String {
+        // The validator requires an InternalInfo block with seven GeneratedType
+        // entries and a Type block on every dimension; without them validation
+        // fails with unrelated errors before the target warning is checked.
+        let internal_info = concat!(
+            "\t\t<InternalInfo>\n",
+            "\t\t\t<xr:GeneratedType name=\"InformationRegisterRecord.SampleRegister\" category=\"Record\">\n",
+            "\t\t\t\t<xr:TypeId>11111111-1111-4111-8111-111111111111</xr:TypeId>\n",
+            "\t\t\t\t<xr:ValueId>21111111-1111-4111-8111-111111111111</xr:ValueId>\n",
+            "\t\t\t</xr:GeneratedType>\n",
+            "\t\t\t<xr:GeneratedType name=\"InformationRegisterManager.SampleRegister\" category=\"Manager\">\n",
+            "\t\t\t\t<xr:TypeId>12222222-2222-4222-8222-222222222222</xr:TypeId>\n",
+            "\t\t\t\t<xr:ValueId>22222222-2222-4222-8222-222222222222</xr:ValueId>\n",
+            "\t\t\t</xr:GeneratedType>\n",
+            "\t\t\t<xr:GeneratedType name=\"InformationRegisterSelection.SampleRegister\" category=\"Selection\">\n",
+            "\t\t\t\t<xr:TypeId>13333333-3333-4333-8333-333333333333</xr:TypeId>\n",
+            "\t\t\t\t<xr:ValueId>23333333-3333-4333-8333-333333333333</xr:ValueId>\n",
+            "\t\t\t</xr:GeneratedType>\n",
+            "\t\t\t<xr:GeneratedType name=\"InformationRegisterList.SampleRegister\" category=\"List\">\n",
+            "\t\t\t\t<xr:TypeId>14444444-4444-4444-8444-444444444444</xr:TypeId>\n",
+            "\t\t\t\t<xr:ValueId>24444444-4444-4444-8444-444444444444</xr:ValueId>\n",
+            "\t\t\t</xr:GeneratedType>\n",
+            "\t\t\t<xr:GeneratedType name=\"InformationRegisterRecordSet.SampleRegister\" category=\"RecordSet\">\n",
+            "\t\t\t\t<xr:TypeId>15555555-5555-4555-8555-555555555555</xr:TypeId>\n",
+            "\t\t\t\t<xr:ValueId>25555555-5555-4555-8555-555555555555</xr:ValueId>\n",
+            "\t\t\t</xr:GeneratedType>\n",
+            "\t\t\t<xr:GeneratedType name=\"InformationRegisterRecordKey.SampleRegister\" category=\"RecordKey\">\n",
+            "\t\t\t\t<xr:TypeId>16666666-6666-4666-8666-666666666666</xr:TypeId>\n",
+            "\t\t\t\t<xr:ValueId>26666666-6666-4666-8666-666666666666</xr:ValueId>\n",
+            "\t\t\t</xr:GeneratedType>\n",
+            "\t\t\t<xr:GeneratedType name=\"InformationRegisterRecordManager.SampleRegister\" category=\"RecordManager\">\n",
+            "\t\t\t\t<xr:TypeId>17777777-7777-4777-8777-777777777777</xr:TypeId>\n",
+            "\t\t\t\t<xr:ValueId>27777777-7777-4777-8777-777777777777</xr:ValueId>\n",
+            "\t\t\t</xr:GeneratedType>\n",
+            "\t\t</InternalInfo>",
+        );
         let xml = sample_meta_object_xml(
             "InformationRegister",
             "SampleRegister",
             &format!(
                 "\t\t\t<UseStandardCommands>{use_standard_commands}</UseStandardCommands>\n\t\t\t<WriteMode>{write_mode}</WriteMode>"
             ),
-            "\t\t<ChildObjects>\n\t\t\t<Dimension uuid=\"66666666-6666-4666-8666-666666666666\">\n\t\t\t\t<Properties>\n\t\t\t\t\t<Name>SampleDimension</Name>\n\t\t\t\t</Properties>\n\t\t\t</Dimension>\n\t\t</ChildObjects>",
+            "\t\t<ChildObjects>\n\t\t\t<Dimension uuid=\"66666666-6666-4666-8666-666666666666\">\n\t\t\t\t<Properties>\n\t\t\t\t\t<Name>SampleDimension</Name>\n\t\t\t\t\t<Type><v8:Type>xs:string</v8:Type></Type>\n\t\t\t\t</Properties>\n\t\t\t</Dimension>\n\t\t</ChildObjects>",
+        )
+        // Anchor on the register name so the dimension's more deeply indented
+        // <Properties> (SampleDimension) is not matched by the shared substring.
+        .replace(
+            "\t\t<Properties>\n\t\t\t<Name>SampleRegister",
+            &format!("{internal_info}\n\t\t<Properties>\n\t\t\t<Name>SampleRegister"),
         );
         let outcome = validate_registered_object(
             "InformationRegister",
