@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub(crate) use super::filesystem::{create_dir_symlink_for_test, create_file_symlink_for_test};
+use super::filesystem::{file_identity, hard_link_count};
 
 pub(crate) fn normalize_path_text_for_test(value: &str) -> String {
     value.replace('\\', "/")
@@ -24,6 +25,21 @@ pub(crate) fn create_file_link_fixture_for_test(
     target: impl AsRef<Path>,
 ) -> io::Result<FileLinkFixtureOutcome> {
     classify_file_link_fixture_result(create_file_symlink_for_test(source, target))
+}
+
+pub(crate) fn file_identity_for_test(path: &Path) -> io::Result<Option<String>> {
+    let file = std::fs::File::open(path)?;
+    let identity = match file_identity(&file) {
+        Ok(identity) => identity,
+        Err(error) if error.kind() == io::ErrorKind::Unsupported => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let links = match hard_link_count(&file) {
+        Ok(links) => links,
+        Err(error) if error.kind() == io::ErrorKind::Unsupported => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    Ok(Some(format!("{identity:?}; links={links}")))
 }
 
 fn classify_file_link_fixture_result(
@@ -214,7 +230,7 @@ pub(crate) fn wait_for_process_exit(_pid: u32, _timeout: Duration) -> bool {
 mod tests {
     use super::{
         classify_file_link_fixture_result, create_file_link_fixture_for_test,
-        set_unix_mode_for_test, unix_mode_for_test, FileLinkFixtureOutcome,
+        file_identity_for_test, set_unix_mode_for_test, unix_mode_for_test, FileLinkFixtureOutcome,
     };
     use std::fs;
     use std::io;
@@ -262,6 +278,24 @@ mod tests {
             FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
                 eprintln!("[SKIPPED FIXTURE] Windows file-link privilege is unavailable");
             }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn file_identity_fixture_observes_hard_link_aliases_when_supported() {
+        let root = unique_temp_root("file-identity");
+        let source = root.join("source.bin");
+        let alias = root.join("alias.bin");
+        fs::write(&source, b"source").unwrap();
+        fs::hard_link(&source, &alias).unwrap();
+
+        let source_identity = file_identity_for_test(&source).unwrap();
+        let alias_identity = file_identity_for_test(&alias).unwrap();
+
+        assert_eq!(source_identity, alias_identity);
+        if let Some(identity) = source_identity {
+            assert!(identity.contains("links=2"), "{identity}");
         }
         fs::remove_dir_all(root).unwrap();
     }
