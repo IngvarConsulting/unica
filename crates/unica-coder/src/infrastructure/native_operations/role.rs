@@ -513,7 +513,7 @@ pub(crate) fn validate_role(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    let result = (|| -> Result<(bool, String, PathBuf, String), String> {
+    let result = (|| -> Result<(bool, String, PathBuf), String> {
         let rights_path = resolve_role_read_rights_path(args, context)?;
         let detailed = bool_arg(args, &["detailed", "Detailed"]);
 
@@ -524,7 +524,7 @@ pub(crate) fn validate_role(
         if !rights_path.exists() {
             report.error(format!("File not found: {}", rights_path.display()));
             let text = report.lines.join("\n");
-            return Ok((false, text, rights_path, String::new()));
+            return Ok((false, text, rights_path));
         }
 
         let rights_text = fs::read_to_string(&rights_path)
@@ -537,7 +537,7 @@ pub(crate) fn validate_role(
             Err(err) => {
                 report.error(format!("XML parse error: {err}"));
                 let text = report.lines.join("\n");
-                return Ok((false, text, rights_path, String::new()));
+                return Ok((false, text, rights_path));
             }
         };
 
@@ -837,11 +837,11 @@ pub(crate) fn validate_role(
 
         let ok = report.errors == 0;
         let text = report.finish(&inferred_role_name);
-        Ok((ok, text, rights_path, String::new()))
+        Ok((ok, text, rights_path))
     })();
 
     match result {
-        Ok((ok, text, rights_path, error_slot)) => AdapterOutcome {
+        Ok((ok, text, rights_path)) => AdapterOutcome {
             ok,
             summary: if ok {
                 "unica.role.validate completed with native role validator".to_string()
@@ -850,7 +850,11 @@ pub(crate) fn validate_role(
             },
             changes: Vec::new(),
             warnings: Vec::new(),
-            errors: if ok { Vec::new() } else { vec![error_slot] },
+            errors: if ok {
+                Vec::new()
+            } else {
+                vec![text.trim().to_string()]
+            },
             artifacts: vec![rights_path.display().to_string()],
             stdout: Some(format!("{text}\n")),
             stderr: Some(String::new()),
@@ -2103,6 +2107,26 @@ mod role_compile_contract_tests {
         fs::write(root.join("Languages/English.xml"), b"language marker").unwrap();
         fs::write(root.join("Configuration.xml"), &bytes).unwrap();
         bytes
+    }
+
+    #[test]
+    fn role_validate_reports_validation_failures_in_errors() {
+        let workspace = temp_root("validate-errors");
+        let rights_path = workspace.join("missing-rights.xml");
+        let outcome = validate_role(
+            &Map::from_iter([(
+                "RightsPath".to_string(),
+                Value::String(rights_path.display().to_string()),
+            )]),
+            &context(&workspace),
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("File not found"),
+            "{outcome:?}"
+        );
+        fs::remove_dir_all(workspace).unwrap();
     }
 
     #[test]

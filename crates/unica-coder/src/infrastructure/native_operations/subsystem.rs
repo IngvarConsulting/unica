@@ -931,14 +931,14 @@ pub(crate) fn validate_subsystem(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    let result = (|| -> Result<(bool, String, PathBuf, String), String> {
+    let result = (|| -> Result<(bool, String, PathBuf), String> {
         let raw_path = required_path(args, SUBSYSTEM_PATH, "SubsystemPath")?;
         let path = absolutize(raw_path, &context.cwd);
         let detailed = bool_arg(args, &["detailed", "Detailed"]);
         let xml_path = match resolve_subsystem_validate_xml(path) {
             Ok(path) => path,
             Err(stdout) => {
-                return Ok((false, format!("{stdout}\n"), PathBuf::new(), String::new()));
+                return Ok((false, format!("{stdout}\n"), PathBuf::new()));
             }
         };
 
@@ -951,7 +951,7 @@ pub(crate) fn validate_subsystem(
             Err(err) => {
                 report.error(format!("1. XML parse error: {err}"));
                 let result = report.finish("");
-                return Ok((false, result, xml_path, String::new()));
+                return Ok((false, result, xml_path));
             }
         };
 
@@ -968,7 +968,7 @@ pub(crate) fn validate_subsystem(
         }) else {
             report.error("1. Root structure: expected MetaDataObject/Subsystem, not found");
             let result = report.finish("");
-            return Ok((false, result, xml_path, String::new()));
+            return Ok((false, result, xml_path));
         };
         let uuid_val = sub.attribute("uuid").unwrap_or("");
         if !uuid_val.is_empty() && is_valid_uuid(uuid_val) {
@@ -984,7 +984,7 @@ pub(crate) fn validate_subsystem(
         }) else {
             report.error("2. Properties: <Properties> element not found");
             let result = report.finish("");
-            return Ok((false, result, xml_path, String::new()));
+            return Ok((false, result, xml_path));
         };
 
         let required_props = [
@@ -1282,11 +1282,11 @@ pub(crate) fn validate_subsystem(
 
         let ok = report.errors == 0;
         let result = report.finish(&sub_name);
-        Ok((ok, result, xml_path, String::new()))
+        Ok((ok, result, xml_path))
     })();
 
     match result {
-        Ok((ok, text, artifact, error_slot)) => {
+        Ok((ok, text, artifact)) => {
             let artifacts = if artifact.as_os_str().is_empty() {
                 Vec::new()
             } else {
@@ -1301,7 +1301,11 @@ pub(crate) fn validate_subsystem(
                 },
                 changes: Vec::new(),
                 warnings: Vec::new(),
-                errors: if ok { Vec::new() } else { vec![error_slot] },
+                errors: if ok {
+                    Vec::new()
+                } else {
+                    vec![text.trim().to_string()]
+                },
                 artifacts,
                 stdout: Some(text),
                 stderr: Some(String::new()),
@@ -2485,6 +2489,26 @@ mod tests {
         )
         .unwrap();
         path
+    }
+
+    #[test]
+    fn subsystem_validate_reports_validation_failures_in_errors() {
+        let context = temp_context("validate-errors");
+        let subsystem_path = context.cwd.join("missing-subsystem.xml");
+        let outcome = validate_subsystem(
+            &Map::from_iter([(
+                "SubsystemPath".to_string(),
+                Value::String(subsystem_path.display().to_string()),
+            )]),
+            &context,
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("not found"),
+            "{outcome:?}"
+        );
+        fs::remove_dir_all(&context.cwd).unwrap();
     }
 
     #[test]

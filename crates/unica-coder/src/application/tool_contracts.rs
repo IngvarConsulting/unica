@@ -2201,7 +2201,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "raw",
-        "Declared boolean that no handler reads: `unica.dcs.info` with `Mode=query` always emits the `=== Query: <dataset> ===` header and is still truncated by `limit`/`offset`, so passing it changes nothing (the skill documents it, the code does not implement it).",
+        "`unica.dcs.info` only: supported only with `Mode=query`; true returns the full query text without headers or pagination and ignores `limit`/`offset`.",
     ),
     (
         "rawKeys",
@@ -3821,6 +3821,13 @@ mod tests {
         let schema = input_schema_for_tool(&dcs_info);
         assert_eq!(schema["additionalProperties"], false);
         assert_eq!(schema["properties"]["Raw"]["type"], "boolean");
+        let raw_description = schema["properties"]["Raw"]["description"]
+            .as_str()
+            .expect("Raw must describe its query-only behavior");
+        assert!(raw_description.contains("only with `Mode=query`"));
+        assert!(raw_description.contains("full query text"));
+        assert!(!raw_description.contains("changes nothing"));
+        assert!(!raw_description.contains("truncated"));
         assert_eq!(schema["required"], json!([]));
         assert_eq!(
             schema["allOf"],
