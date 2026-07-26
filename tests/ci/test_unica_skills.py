@@ -638,6 +638,46 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 self.assertRegex(doc, r"не\s+новее `Version8_3_26`")
                 self.assertNotRegex(doc, r"`Version8_3_26`\s+и старше")
 
+    def test_platform_evidence_is_not_routed_to_standards_tools(self) -> None:
+        docs = list(self.skill_root().glob("**/*.md")) + list(
+            self.reference_root().glob("**/*.md")
+        )
+        safe_boundaries = [
+            "development-standard",
+            "development standards",
+            "not platform",
+            "do not present",
+        ]
+        unsafe_routes = []
+
+        for doc_path in docs:
+            text = doc_path.read_text(encoding="utf-8")
+            for paragraph in re.split(r"\n\s*\n", text):
+                normalized = " ".join(line.strip() for line in paragraph.splitlines())
+                lowered = normalized.casefold()
+                mentions_standards_tool = "unica.standards." in lowered
+                mentions_platform_evidence = (
+                    "platform" in lowered or "платформ" in lowered
+                )
+                marks_the_source_boundary = any(
+                    boundary in lowered for boundary in safe_boundaries
+                )
+                if (
+                    mentions_standards_tool
+                    and mentions_platform_evidence
+                    and not marks_the_source_boundary
+                ):
+                    unsafe_routes.append(
+                        f"{doc_path.relative_to(self.repo_root())}: {normalized}"
+                    )
+
+        self.assertEqual(
+            unsafe_routes,
+            [],
+            "standards tools must not be presented as platform evidence:\n"
+            + "\n".join(unsafe_routes),
+        )
+
     def test_all_skills_do_not_expose_internal_mcp_names(self) -> None:
         forbidden = [
             "unica-coder",
