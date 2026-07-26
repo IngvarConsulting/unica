@@ -1,10 +1,25 @@
 #![allow(dead_code, unused_imports)]
 
 use crate::application::{AdapterOutcome, SupportGuardRequirement};
+use crate::domain::identifiers::is_1c_identifier;
 use crate::domain::navigation::{
     Authorability, CapabilityState, IdentityStrength, NavigationEdge, NavigationGraph,
     NavigationNode, NodeKind, ObjectKey, ObjectRef, RelationKind, Representation, ResolutionState,
     SemanticActionKind,
+};
+use crate::domain::navigation_limits::{
+    MAX_NAVIGATION_CURSOR_JSON_BYTES, MAX_NAVIGATION_CURSOR_STRING_BYTES,
+    MAX_NAVIGATION_DIAGNOSTICS_BYTES as SNAPSHOT_CACHE_MAX_DIAGNOSTICS_BYTES,
+    MAX_NAVIGATION_DIAGNOSTIC_DETAILS_BYTES as SNAPSHOT_CACHE_MAX_DIAGNOSTIC_DETAILS_BYTES,
+    MAX_NAVIGATION_NESTING_DEPTH as SNAPSHOT_CACHE_MAX_PROPERTY_VALUE_DEPTH,
+    MAX_NAVIGATION_NODES as SNAPSHOT_CACHE_MAX_NODES,
+    MAX_NAVIGATION_PROPERTIES_PER_NODE as SNAPSHOT_CACHE_MAX_PROPERTIES_PER_NODE,
+    MAX_NAVIGATION_PROPERTY_BYTES as SNAPSHOT_CACHE_MAX_PROPERTY_BYTES,
+    MAX_NAVIGATION_PROPERTY_SELECTORS,
+    MAX_NAVIGATION_PROPERTY_VALUE_BYTES as SNAPSHOT_CACHE_MAX_PROPERTY_VALUE_BYTES,
+    MAX_NAVIGATION_RELATIONS as SNAPSHOT_CACHE_MAX_RELATIONS, MAX_NAVIGATION_RELATION_SELECTORS,
+    MAX_NAVIGATION_SELECTOR_STRING_BYTES, MAX_NAVIGATION_SELECT_JSON_BYTES,
+    MAX_NAVIGATION_SEMANTIC_STRING_BYTES as SNAPSHOT_CACHE_MAX_SEMANTIC_STRING_BYTES,
 };
 use crate::domain::source_adapters::{
     source_id_for_configured_source_set, SourceAdapterError, SourceAdapterErrorKind, SourceBinding,
@@ -3764,7 +3779,7 @@ enum MetaNavigationTarget {
         object_key: ObjectKey,
         snapshot_revision: crate::domain::source_adapters::SourceRevision,
     },
-    Cursor(Value),
+    Cursor,
 }
 
 /// Process-lifetime FIFO continuation cache limits. Charges are exactly the
@@ -3772,19 +3787,6 @@ enum MetaNavigationTarget {
 const SNAPSHOT_CACHE_CAPACITY: usize = 64;
 const SNAPSHOT_CACHE_MAX_SNAPSHOT_BYTES: usize = 32 * 1024 * 1024;
 const SNAPSHOT_CACHE_MAX_TOTAL_BYTES: usize = 128 * 1024 * 1024;
-const SNAPSHOT_CACHE_MAX_NODES: usize = 50_000;
-const SNAPSHOT_CACHE_MAX_RELATIONS: usize = 100_000;
-const SNAPSHOT_CACHE_MAX_PROPERTIES_PER_NODE: usize = 512;
-const SNAPSHOT_CACHE_MAX_PROPERTY_BYTES: usize = 1024 * 1024;
-const SNAPSHOT_CACHE_MAX_PROPERTY_VALUE_BYTES: usize = 768 * 1024;
-const SNAPSHOT_CACHE_MAX_SEMANTIC_STRING_BYTES: usize = 512 * 1024;
-/// Maximum serialized bytes for one diagnostic `details` JSON value.
-const SNAPSHOT_CACHE_MAX_DIAGNOSTIC_DETAILS_BYTES: usize = 256 * 1024;
-/// Maximum serialized bytes for all diagnostics retained in one snapshot.
-const SNAPSHOT_CACHE_MAX_DIAGNOSTICS_BYTES: usize = 1024 * 1024;
-/// Maximum nesting depth for retained `PropertyValue` trees.
-const SNAPSHOT_CACHE_MAX_PROPERTY_VALUE_DEPTH: usize = 64;
-
 #[derive(Clone, Copy)]
 struct SnapshotCacheLimits {
     max_entries: usize,
@@ -3995,7 +3997,7 @@ impl CachedNavigation {
             scope: &scope,
             binding: &binding,
             navigation: &navigation,
-            relation_index: &navigation.relation_index,
+            relation_index: navigation.relation_index.as_slice(),
         };
         let charged_bytes = serialized_bytes_with_limit(&charge, limits.max_snapshot_bytes)?;
         Ok(Self {
@@ -4078,7 +4080,7 @@ fn validate_navigation_cache_payload(
     for page in &navigation.relations {
         validate_navigation_relation_page(page, limits)?;
     }
-    for relation in &navigation.relation_index {
+    for relation in navigation.relation_index.iter() {
         validate_semantic_relation(relation, limits.max_semantic_string_bytes)?;
     }
     validate_navigation_diagnostics(&navigation.diagnostics, limits)
@@ -4891,6 +4893,7 @@ fn inspect_meta_navigation_inner(
     cache: &Mutex<SnapshotCache>,
     cursor_secret: &[u8],
 ) -> Result<crate::domain::navigation::NavigationEnvelope, SourceAdapterError> {
+    validate_navigation_public_input(args)?;
     let target = parse_meta_navigation_target(args)?;
     let (navigation, target_ref, selection, cursor, include_cached_diagnostics) = match target {
         MetaNavigationTarget::ObjectPath(path) => {
@@ -4950,17 +4953,18 @@ fn inspect_meta_navigation_inner(
                 false,
             )
         }
-        MetaNavigationTarget::Cursor(value) => {
+        MetaNavigationTarget::Cursor => {
             if args.contains_key("select") {
                 return Err(SourceAdapterError::new(
                     SourceAdapterErrorKind::ProjectionAmbiguous,
                     "cursor mode does not accept select",
                 ));
             }
-            let source_id = cursor_source_id(&value)?;
-            let target_key = cursor_target_key(&value)?;
-            let requested_revision = cursor_snapshot_revision(&value)?;
-            let selection = parse_navigation_selection(value.get("selection"))?;
+            let value = args.get("cursor").expect("cursor target was parsed");
+            crate::domain::navigation::NavigationCursor::authenticate(value, cursor_secret)?;
+            let source_id = cursor_source_id(value)?;
+            let target_key = cursor_target_key(value)?;
+            let requested_revision = cursor_snapshot_revision(value)?;
             let (navigation, target_ref) = cached_navigation_target_in(
                 &source_id,
                 &target_key,
@@ -4971,9 +4975,9 @@ fn inspect_meta_navigation_inner(
             let snapshot = navigation.snapshot.as_ref().ok_or_else(|| {
                 source_unavailable("navigation cursor source has no truthful snapshot")
             })?;
-            let cursor = crate::domain::navigation::NavigationCursor::decode(
+            let selection = parse_navigation_selection(value.get("selection"))?;
+            let cursor = crate::domain::navigation::NavigationCursor::decode_authenticated(
                 value,
-                cursor_secret,
                 &snapshot.revision,
                 &selection,
                 |source_id, target, relation, relation_role, relation_kind| {
@@ -5020,9 +5024,7 @@ fn parse_meta_navigation_target(
             object_key: object_ref_key(object_ref)?,
             snapshot_revision: crate::domain::source_adapters::SourceRevision::new(revision)?,
         }),
-        (None, None, None, Some(cursor)) if cursor.is_object() => {
-            Ok(MetaNavigationTarget::Cursor(cursor.clone()))
-        }
+        (None, None, None, Some(_)) => Ok(MetaNavigationTarget::Cursor),
         _ => Err(SourceAdapterError::new(
             SourceAdapterErrorKind::ProjectionAmbiguous,
             "meta.info requires exactly one target mode",
@@ -5446,8 +5448,9 @@ fn cached_navigation_target_in(
         .collect::<Vec<_>>();
     match matches.as_slice() {
         [target] => Ok((navigation, target.clone())),
-        [] => Err(source_unavailable(
-            "navigation target is unavailable in the cached snapshot",
+        [] => Err(SourceAdapterError::new(
+            SourceAdapterErrorKind::SnapshotStale,
+            "navigation target is absent from the retained snapshot",
         )),
         _ => Err(SourceAdapterError::new(
             SourceAdapterErrorKind::IdentityCollision,
@@ -5504,6 +5507,7 @@ fn parse_navigation_selection(
             relations: vec![RelationSelection::new("children", None)?],
         });
     };
+    preflight_navigation_selection(value)?;
     let object = value.as_object().ok_or_else(|| {
         SourceAdapterError::new(
             SourceAdapterErrorKind::DecodeCorrupted,
@@ -5614,9 +5618,9 @@ fn parse_navigation_selection(
     };
     let relations = match object.get("relations") {
         None => vec![RelationSelection::new("children", None)?],
-        Some(Value::Array(relations)) => relations
-            .iter()
-            .map(|relation| {
+        Some(Value::Array(relations)) => {
+            let mut parsed = Vec::new();
+            for relation in relations {
                 let relation = relation.as_object().ok_or_else(|| {
                     SourceAdapterError::new(
                         SourceAdapterErrorKind::DecodeCorrupted,
@@ -5684,9 +5688,10 @@ fn parse_navigation_selection(
                     )
                 })?;
                 selection.kind = kind;
-                Ok(selection)
-            })
-            .collect::<Result<Vec<_>, _>>()?,
+                parsed.push(selection);
+            }
+            parsed
+        }
         _ => {
             return Err(SourceAdapterError::new(
                 SourceAdapterErrorKind::DecodeCorrupted,
@@ -5740,7 +5745,12 @@ fn materialize_navigation_pages_with_secret(
         .iter()
         .find(|node| node.object_ref == target)
         .cloned()
-        .ok_or_else(|| source_unavailable("navigation target cannot be re-resolved"))?;
+        .ok_or_else(|| {
+            SourceAdapterError::new(
+                SourceAdapterErrorKind::SnapshotStale,
+                "navigation target cannot be re-resolved from the retained snapshot",
+            )
+        })?;
     let target_node = project_selected_node(target_node, &selection);
     let bound_group = cursor
         .as_ref()
@@ -5777,20 +5787,24 @@ fn materialize_navigation_pages_with_secret(
         }) {
             continue;
         }
-        let matching = original_relations
+        let matches_selection = |relation: &crate::domain::navigation::SemanticRelation| {
+            relation.source == target
+                && relation.role == relation_selection.role
+                && relation.kind == relation_selection.kind
+                && bound_group
+                    .as_ref()
+                    .map_or(true, |group| relation.group_ref == *group)
+        };
+        let Some(first) = original_relations
             .iter()
-            .filter(|relation| {
-                relation.source == target
-                    && relation.role == relation_selection.role
-                    && relation.kind == relation_selection.kind
-                    && bound_group
-                        .as_ref()
-                        .map_or(true, |group| relation.group_ref == *group)
-            })
-            .collect::<Vec<_>>();
-        let Some(first) = matching.first() else {
+            .find(|relation| matches_selection(relation))
+        else {
             continue;
         };
+        let matching_len = original_relations
+            .iter()
+            .filter(|relation| matches_selection(relation))
+            .count();
         let start = match (&cursor, &bound_group) {
             (Some(cursor), Some(group)) if first.group_ref == *group => {
                 usize::try_from(cursor.next_position).map_err(|_| {
@@ -5808,7 +5822,7 @@ fn materialize_navigation_pages_with_secret(
                 ));
             }
         };
-        if start > matching.len() {
+        if start > matching_len {
             return Err(SourceAdapterError::new(
                 SourceAdapterErrorKind::DecodeCorrupted,
                 "navigation cursor position is outside the relation page",
@@ -5822,9 +5836,12 @@ fn materialize_navigation_pages_with_secret(
                     "navigation cursor position overflow",
                 )
             })?
-            .min(matching.len());
-        let items = matching[start.min(matching.len())..end]
+            .min(matching_len);
+        let items = original_relations
             .iter()
+            .filter(|relation| matches_selection(relation))
+            .skip(start)
+            .take(end.saturating_sub(start))
             .map(|relation| {
                 navigation
                     .nodes
@@ -5846,7 +5863,7 @@ fn materialize_navigation_pages_with_secret(
                 "navigation cursor position cannot be represented",
             )
         })?;
-        let next_cursor = (end < matching.len())
+        let next_cursor = (end < matching_len)
             .then(|| {
                 crate::domain::navigation::NavigationCursor::issue(
                     cursor_secret,
@@ -5875,8 +5892,131 @@ fn materialize_navigation_pages_with_secret(
         diagnostics: include_cached_diagnostics
             .then(|| navigation.diagnostics.clone())
             .unwrap_or_default(),
-        relation_index: original_relations.clone(),
+        relation_index: std::sync::Arc::clone(&navigation.relation_index),
     })
+}
+
+fn validate_navigation_public_input(args: &Map<String, Value>) -> Result<(), SourceAdapterError> {
+    if let Some(select) = args.get("select") {
+        preflight_navigation_selection(select)?;
+    }
+    if let Some(cursor) = args.get("cursor") {
+        preflight_navigation_json(
+            cursor,
+            MAX_NAVIGATION_CURSOR_JSON_BYTES,
+            MAX_NAVIGATION_CURSOR_STRING_BYTES,
+            "cursor",
+        )?;
+        if let Some(selection) = cursor.get("selection") {
+            preflight_navigation_selection(selection)?;
+        }
+    }
+    Ok(())
+}
+
+fn preflight_navigation_selection(value: &Value) -> Result<(), SourceAdapterError> {
+    preflight_navigation_json(
+        value,
+        MAX_NAVIGATION_SELECT_JSON_BYTES,
+        MAX_NAVIGATION_SELECTOR_STRING_BYTES,
+        "select",
+    )?;
+    let Some(object) = value.as_object() else {
+        return Ok(());
+    };
+    let property_values = object.get("properties").and_then(|value| match value {
+        Value::Array(values) => Some(values),
+        Value::Object(values) => values.get("named").and_then(Value::as_array),
+        _ => None,
+    });
+    if property_values.is_some_and(|values| values.len() > MAX_NAVIGATION_PROPERTY_SELECTORS) {
+        return Err(resource_limit("select has too many property selectors"));
+    }
+    if let Some(values) = property_values {
+        for value in values {
+            if value
+                .as_str()
+                .is_some_and(|value| value.len() > MAX_NAVIGATION_SELECTOR_STRING_BYTES)
+            {
+                return Err(resource_limit(
+                    "select property selector exceeds its byte limit",
+                ));
+            }
+        }
+    }
+    if object
+        .get("relations")
+        .and_then(Value::as_array)
+        .is_some_and(|values| values.len() > MAX_NAVIGATION_RELATION_SELECTORS)
+    {
+        return Err(resource_limit("select has too many relation selectors"));
+    }
+    Ok(())
+}
+
+fn preflight_navigation_json(
+    value: &Value,
+    max_bytes: usize,
+    max_string_bytes: usize,
+    label: &str,
+) -> Result<(), SourceAdapterError> {
+    validate_navigation_json_structure(value, 1, max_string_bytes, label)?;
+    let mut writer = BoundedCountingWriter::new(max_bytes);
+    let serialized = serde_json::to_writer(&mut writer, value);
+    if writer.exceeded {
+        return Err(resource_limit(&format!(
+            "{label} exceeds its JSON byte limit"
+        )));
+    }
+    serialized.map_err(|_| {
+        SourceAdapterError::new(
+            SourceAdapterErrorKind::DecodeCorrupted,
+            format!("{label} cannot be serialized as JSON"),
+        )
+    })?;
+    Ok(())
+}
+
+fn validate_navigation_json_structure(
+    value: &Value,
+    depth: usize,
+    max_string_bytes: usize,
+    label: &str,
+) -> Result<(), SourceAdapterError> {
+    if depth > SNAPSHOT_CACHE_MAX_PROPERTY_VALUE_DEPTH {
+        return Err(resource_limit(&format!(
+            "{label} exceeds navigation nesting limit"
+        )));
+    }
+    match value {
+        Value::String(value) if value.len() > max_string_bytes => Err(resource_limit(&format!(
+            "{label} string exceeds its byte limit"
+        ))),
+        Value::Array(values) => {
+            let child_depth = depth.checked_add(1).ok_or_else(|| {
+                resource_limit(&format!("{label} nesting depth cannot be represented"))
+            })?;
+            for value in values {
+                validate_navigation_json_structure(value, child_depth, max_string_bytes, label)?;
+            }
+            Ok(())
+        }
+        Value::Object(values) => {
+            let child_depth = depth.checked_add(1).ok_or_else(|| {
+                resource_limit(&format!("{label} nesting depth cannot be represented"))
+            })?;
+            for (key, value) in values {
+                if key.len() > max_string_bytes {
+                    return Err(resource_limit(&format!(
+                        "{label} key exceeds its byte limit"
+                    )));
+                }
+                validate_navigation_json_structure(value, child_depth, max_string_bytes, label)?;
+            }
+            Ok(())
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => Ok(()),
+    }
 }
 
 fn project_selected_node(
@@ -15083,6 +15223,34 @@ mod tests {
     }
 
     #[test]
+    fn retained_object_ref_absence_is_snapshot_stale() {
+        let (context, path) = fixture(
+            "2.20",
+            "<Attribute><Properties><Name>Code</Name></Properties></Attribute>",
+        );
+        let first = inspect_meta_navigation(
+            &json!({"ObjectPath": path}).as_object().unwrap().clone(),
+            &context,
+        )
+        .unwrap();
+        let root = first.root.unwrap();
+        let snapshot = first.snapshot.unwrap();
+        let absent = inspect_meta_navigation(
+            &json!({
+                "objectRef": {"sourceId": root.source_id.as_str(), "objectKey": "uuid:00000000-0000-0000-0000-000000000000"},
+                "snapshotRevision": snapshot.revision.as_str(),
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            &context,
+        )
+        .unwrap();
+        assert_eq!(absent.diagnostics[0].code, "snapshot_stale");
+        std::fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
     fn object_ref_cache_miss_and_cross_scope_are_structured_unavailable() {
         let (first_context, first_path) = fixture(
             "2.20",
@@ -15499,7 +15667,7 @@ mod tests {
             reference_to_attribute.kind,
         )
         .unwrap();
-        full.relation_index.push(reference_to_attribute);
+        std::sync::Arc::make_mut(&mut full.relation_index).push(reference_to_attribute);
         let selection = parse_navigation_selection(Some(&json!({"relations": [
             {"role": "attributes", "pageSize": 25},
             {"role": "attributes", "kind": "references", "pageSize": 25}
@@ -15663,6 +15831,127 @@ mod tests {
     }
 
     #[test]
+    fn public_selection_limits_are_checked_before_normalization() {
+        let (context, path) = fixture("2.20", "");
+        let properties = (0..MAX_NAVIGATION_PROPERTY_SELECTORS)
+            .map(|index| Value::String(format!("property{index}")))
+            .collect::<Vec<_>>();
+        let relations = (0..MAX_NAVIGATION_RELATION_SELECTORS)
+            .map(|_| json!({"role": "attributes", "pageSize": 25}))
+            .collect::<Vec<_>>();
+        let accepted = inspect_meta_navigation(
+            &json!({
+                "ObjectPath": path.clone(),
+                "select": {"properties": properties, "relations": relations}
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            &context,
+        )
+        .unwrap();
+        assert!(matches!(
+            accepted.status,
+            crate::domain::navigation::NavigationStatus::Available
+        ));
+
+        for select in [
+            json!({"properties": (0..=MAX_NAVIGATION_PROPERTY_SELECTORS).map(|index| format!("property{index}")).collect::<Vec<_>>() }),
+            json!({"relations": (0..=MAX_NAVIGATION_RELATION_SELECTORS).map(|_| json!({"role": "attributes"})).collect::<Vec<_>>() }),
+            json!({"unknown": vec!["x".repeat(MAX_NAVIGATION_SELECTOR_STRING_BYTES); 600]}),
+        ] {
+            let result = inspect_meta_navigation(
+                &json!({"ObjectPath": path.clone(), "select": select})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                &context,
+            )
+            .unwrap();
+            assert_resource_limit_unavailable(&result);
+        }
+        std::fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn cursor_is_bounded_and_authenticated_before_selection_normalization() {
+        let (context, path) = fixture(
+            "2.20",
+            "<Attribute><Properties><Name>Code</Name></Properties></Attribute><Attribute><Properties><Name>Description</Name></Properties></Attribute>",
+        );
+        let first = inspect_meta_navigation(
+            &json!({
+                "ObjectPath": path,
+                "select": {"relations": [{"role": "attributes", "pageSize": 1}]}
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            &context,
+        )
+        .unwrap();
+        let mut oversized =
+            serde_json::to_value(first.relations[0].next_cursor.clone().unwrap()).unwrap();
+        oversized["selection"]["relations"] = Value::Array(
+            (0..=MAX_NAVIGATION_RELATION_SELECTORS)
+                .map(|_| json!({"role": "attributes"}))
+                .collect(),
+        );
+        let oversized_result = inspect_meta_navigation(
+            &json!({"cursor": oversized}).as_object().unwrap().clone(),
+            &context,
+        )
+        .unwrap();
+        assert_resource_limit_unavailable(&oversized_result);
+
+        let mut tampered =
+            serde_json::to_value(first.relations[0].next_cursor.clone().unwrap()).unwrap();
+        tampered["selection"] = json!({"properties": ["duplicate", "duplicate"]});
+        let tampered_result = inspect_meta_navigation(
+            &json!({"cursor": tampered}).as_object().unwrap().clone(),
+            &context,
+        )
+        .unwrap();
+        assert_eq!(tampered_result.diagnostics[0].code, "decode_corrupted");
+        std::fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn response_shares_the_retained_relation_index_without_copying_pages() {
+        let (context, path) = fixture(
+            "2.20",
+            "<Attribute><Properties><Name>Code</Name></Properties></Attribute><Attribute><Properties><Name>Description</Name></Properties></Attribute>",
+        );
+        let cache = Mutex::new(SnapshotCache::default());
+        let response = inspect_meta_navigation_with_cache(
+            &json!({
+                "ObjectPath": path,
+                "select": {"relations": [{"role": "attributes", "pageSize": 1}]}
+            })
+            .as_object()
+            .unwrap(),
+            &context,
+            &cache,
+            b"shared-relation-index-test-secret",
+        )
+        .unwrap();
+        let cached = cache
+            .lock()
+            .unwrap()
+            .entries
+            .front()
+            .unwrap()
+            .navigation
+            .clone();
+        assert_eq!(response.relations[0].items.len(), 1);
+        assert!(std::sync::Arc::ptr_eq(
+            &response.relation_index,
+            &cached.relation_index,
+        ));
+        std::fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
     fn resource_limited_snapshot_is_public_unavailable_without_references_or_cursor() {
         let (context, path) = fixture(
             "2.20",
@@ -15709,7 +15998,7 @@ mod tests {
         ]);
         navigation.nodes = (0..25_000).map(|_| node.clone()).collect();
         navigation.relations.clear();
-        navigation.relation_index.clear();
+        navigation.relation_index = std::sync::Arc::new(Vec::new());
         navigation.diagnostics.clear();
 
         let cached = CachedNavigation::new(
@@ -15748,7 +16037,7 @@ mod tests {
         )]);
         navigation.nodes = vec![node];
         navigation.relations.clear();
-        navigation.relation_index.clear();
+        navigation.relation_index = std::sync::Arc::new(Vec::new());
         navigation.diagnostics.clear();
 
         let error = CachedNavigation::new(
@@ -16348,7 +16637,7 @@ mod tests {
                 crate::domain::navigation::RelationKind::Contains,
             )
             .unwrap();
-            full.relation_index.push(form);
+            std::sync::Arc::make_mut(&mut full.relation_index).push(form);
         }
         let selection = parse_navigation_selection(Some(&json!({
             "properties": ["name"],

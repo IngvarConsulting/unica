@@ -317,10 +317,12 @@ fn validate_ready_envelope(
     validate_identity_bearing_navigation(binding, envelope)
 }
 
-const MAX_BINDING_VALIDATION_DEPTH: usize = 64;
+const MAX_BINDING_VALIDATION_DEPTH: usize =
+    crate::domain::navigation_limits::MAX_NAVIGATION_NESTING_DEPTH;
 /// Shared maximum count of typed navigation fields and containers that can
 /// carry source or snapshot identity during validation and cache preflight.
-pub(crate) const MAX_IDENTITY_BEARING_VALIDATION_ITEMS: usize = 1_000_000;
+pub(crate) const MAX_IDENTITY_BEARING_VALIDATION_ITEMS: usize =
+    crate::domain::navigation_limits::MAX_NAVIGATION_IDENTITY_ITEMS;
 
 #[derive(Default)]
 pub(crate) struct IdentityValidationBudget {
@@ -396,7 +398,7 @@ impl<'a> BindingValidator<'a> {
             }
         }
         self.charge(envelope.relation_index.len())?;
-        for relation in &envelope.relation_index {
+        for relation in envelope.relation_index.iter() {
             self.validate_relation(relation)?;
         }
         Ok(())
@@ -956,7 +958,7 @@ mod tests {
                     message: descriptor.probe_evidence.join(","),
                     details: None,
                 }],
-                relation_index: Vec::new(),
+                relation_index: std::sync::Arc::new(Vec::new()),
             })
         }
     }
@@ -1235,7 +1237,7 @@ mod tests {
             nodes,
             relations: Vec::new(),
             diagnostics: Vec::new(),
-            relation_index: Vec::new(),
+            relation_index: std::sync::Arc::new(Vec::new()),
         };
 
         validate_identity_bearing_navigation(binding, &envelope).unwrap();
@@ -1348,7 +1350,7 @@ mod tests {
                 nodes: Vec::new(),
                 relations: Vec::new(),
                 diagnostics: Vec::new(),
-                relation_index: Vec::new(),
+                relation_index: std::sync::Arc::new(Vec::new()),
             })
         }
     }
@@ -1382,7 +1384,7 @@ mod tests {
                 nodes: Vec::new(),
                 relations: Vec::new(),
                 diagnostics: Vec::new(),
-                relation_index: Vec::new(),
+                relation_index: std::sync::Arc::new(Vec::new()),
             })
         }
     }
@@ -1412,7 +1414,7 @@ mod tests {
                 nodes: vec![bound_node(root.clone())],
                 relations: Vec::new(),
                 diagnostics: Vec::new(),
-                relation_index: Vec::new(),
+                relation_index: std::sync::Arc::new(Vec::new()),
             };
             match self.case {
                 Some(BindingReaderCase::Node) => {
@@ -1429,7 +1431,7 @@ mod tests {
                 }
                 Some(BindingReaderCase::RelationIndex) => {
                     let group = bound_group(binding, root.clone());
-                    envelope.relation_index.push(SemanticRelation {
+                    std::sync::Arc::make_mut(&mut envelope.relation_index).push(SemanticRelation {
                         relation_ref: RelationRef::new(
                             SourceId::new("workspace:foreign").unwrap(),
                             "foreign-relation",

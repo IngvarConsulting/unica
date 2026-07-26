@@ -6,16 +6,18 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
+        identifiers::is_1c_identifier,
         navigation::{CoverageState, RelationRole},
+        navigation_limits::{
+            MAX_NAVIGATION_IDENTITY_ITEMS, MAX_NAVIGATION_NESTING_DEPTH, MAX_NAVIGATION_NODES,
+            MAX_NAVIGATION_PROPERTIES_PER_NODE, MAX_NAVIGATION_RELATIONS,
+        },
         source_adapters::{
             SnapshotConsistency, SourceAdapterError, SourceAdapterErrorKind, SourceDescriptor,
             SourceFamily, SourceSnapshot,
         },
     },
-    infrastructure::{
-        native_operations::common::is_1c_identifier,
-        source_adapters::{ProbeOutcome, SourceInput},
-    },
+    infrastructure::source_adapters::{ProbeOutcome, SourceInput},
 };
 
 use super::{
@@ -81,6 +83,15 @@ pub(crate) fn decode(
     provider: &PlatformXmlProvider,
     descriptor: &SourceDescriptor,
 ) -> Result<PlatformXmlNativeSnapshot, SourceAdapterError> {
+    let mut context = DecodeContext::default();
+    decode_with_context(provider, descriptor, &mut context)
+}
+
+fn decode_with_context(
+    provider: &PlatformXmlProvider,
+    descriptor: &SourceDescriptor,
+    context: &mut DecodeContext,
+) -> Result<PlatformXmlNativeSnapshot, SourceAdapterError> {
     if descriptor.family != SourceFamily::PlatformXml
         || descriptor.format_version.to_string() != "2.20"
     {
@@ -127,6 +138,7 @@ pub(crate) fn decode(
     let document =
         Document::parse(xml).map_err(|_| corrupted("Platform XML root descriptor is malformed"))?;
     let wrapper = document.root_element();
+    validate_xml_nesting(wrapper, 1)?;
     validate_metadata_wrapper(wrapper)?;
     if wrapper.attribute("version").map(str::trim) != Some("2.20") {
         return Err(error(
@@ -153,8 +165,9 @@ pub(crate) fn decode(
     let base_key = root_key
         .strip_suffix(".xml")
         .ok_or_else(|| corrupted("Platform XML root descriptor is not an XML file"))?;
-    let mut context = DecodeContext::default();
-    let decoded = decode_inline_node(provider, class, profile, base_key, xml, &mut context)?;
+    let decoded = decode_scoped(context, |context| {
+        decode_inline_node(provider, class, profile, base_key, xml, context)
+    })?;
 
     Ok(PlatformXmlNativeSnapshot {
         source: SourceSnapshot {
@@ -182,7 +195,7 @@ fn decode_inline_node(
 ) -> Result<DecodedNode, SourceAdapterError> {
     let properties_node = required_properties(node)?;
     let name = required_name(properties_node)?;
-    let properties = decode_properties(properties_node, source_xml)?;
+    let properties = decode_properties(properties_node, source_xml, context)?;
     let uuid = parse_optional_uuid(node)?;
     context.register_uuid(uuid)?;
     let children = decode_children(provider, node, profile, base_key, source_xml, context)?;
@@ -224,6 +237,8 @@ fn decode_children(
     let mut nodes = Vec::new();
     let mut complete = true;
     for child in child_objects.children().filter(Node::is_element) {
+        context.register_relation()?;
+        context.register_identity_item()?;
         if child.tag_name().namespace() != Some(METADATA_NAMESPACE) {
             return Err(corrupted("Platform XML child class namespace is invalid"));
         }
@@ -231,23 +246,25 @@ fn decode_children(
             .ok_or_else(|| {
                 corrupted("Platform XML child class is not allowed by the schema registry")
             })?;
-        let decoded = if matches!(
-            profile.role,
-            MetadataClassRole::Form | MetadataClassRole::Template
-        ) {
-            decode_backed_registration(provider, child, profile, base_key, source_xml, context)?
-        } else if direct_children(child, "Properties").is_empty() {
-            if owner_profile.child_objects != ChildObjectsVocabulary::ConfigurationTopLevel
-                || profile.role != MetadataClassRole::TopLevelObject
-            {
-                return Err(corrupted(
-                    "inline Platform XML child is missing required Properties",
-                ));
+        let decoded = decode_scoped(context, |context| {
+            if matches!(
+                profile.role,
+                MetadataClassRole::Form | MetadataClassRole::Template
+            ) {
+                decode_backed_registration(provider, child, profile, base_key, source_xml, context)
+            } else if !has_direct_child(child, "Properties") {
+                if owner_profile.child_objects != ChildObjectsVocabulary::ConfigurationTopLevel
+                    || profile.role != MetadataClassRole::TopLevelObject
+                {
+                    return Err(corrupted(
+                        "inline Platform XML child is missing required Properties",
+                    ));
+                }
+                decode_unresolved_registration(child, profile, context)
+            } else {
+                decode_inline_node(provider, child, profile, base_key, source_xml, context)
             }
-            decode_unresolved_registration(child, profile, context)?
-        } else {
-            decode_inline_node(provider, child, profile, base_key, source_xml, context)?
-        };
+        })?;
         let identity = (profile.class_name, decoded.node.name.clone());
         if !identities.insert(identity) {
             return Err(error(
@@ -297,7 +314,7 @@ fn decode_backed_registration(
 ) -> Result<DecodedNode, SourceAdapterError> {
     let registration = registration(node)?;
     let properties = match optional_unique_child(node, "Properties")? {
-        Some(properties) => decode_properties(properties, source_xml)?,
+        Some(properties) => decode_properties(properties, source_xml, context)?,
         None => synthetic_name_property(&registration.name),
     };
     match profile.role {
@@ -504,6 +521,31 @@ fn validate_metadata_wrapper(wrapper: Node<'_, '_>) -> Result<(), SourceAdapterE
     Ok(())
 }
 
+fn validate_xml_nesting(node: Node<'_, '_>, depth: usize) -> Result<(), SourceAdapterError> {
+    if depth > MAX_NAVIGATION_NESTING_DEPTH {
+        return Err(error(
+            SourceAdapterErrorKind::ResourceLimit,
+            "Platform XML nesting depth exceeds navigation limit",
+        ));
+    }
+    for child in node.children().filter(Node::is_element) {
+        let child_depth = depth.checked_add(1).ok_or_else(|| {
+            error(
+                SourceAdapterErrorKind::ResourceLimit,
+                "Platform XML nesting depth overflow",
+            )
+        })?;
+        if child_depth > MAX_NAVIGATION_NESTING_DEPTH {
+            return Err(error(
+                SourceAdapterErrorKind::ResourceLimit,
+                "Platform XML nesting depth exceeds navigation limit",
+            ));
+        }
+        validate_xml_nesting(child, child_depth)?;
+    }
+    Ok(())
+}
+
 fn single_metadata_class<'a, 'input>(
     wrapper: Node<'a, 'input>,
 ) -> Result<Node<'a, 'input>, SourceAdapterError> {
@@ -536,9 +578,11 @@ fn profile_for_node(
 fn decode_properties(
     properties: Node<'_, '_>,
     _source_xml: &str,
+    context: &mut DecodeContext,
 ) -> Result<BTreeMap<String, NativeProperty>, SourceAdapterError> {
     let mut decoded = BTreeMap::new();
     for property in properties.children().filter(Node::is_element) {
+        context.register_property(decoded.len())?;
         if property.tag_name().namespace() != Some(METADATA_NAMESPACE) {
             return Err(corrupted("Platform XML property namespace is invalid"));
         }
@@ -653,31 +697,25 @@ fn synthetic_name_property(name: &str) -> BTreeMap<String, NativeProperty> {
 }
 
 fn registration(node: Node<'_, '_>) -> Result<NativeRegistrationEvidence, SourceAdapterError> {
-    let properties = direct_children(node, "Properties");
+    let properties = optional_unique_child(node, "Properties")?;
     let direct_text = node
         .children()
         .filter(Node::is_text)
         .filter_map(|child| child.text())
         .collect::<String>();
     let direct_text = direct_text.trim();
-    let name = match properties.as_slice() {
-        [] if node.children().any(|child| child.is_element()) => {
+    let name = match properties {
+        None if node.children().any(|child| child.is_element()) => {
             return Err(corrupted(
                 "Platform XML registration has unsupported nested identity",
             ));
         }
-        [] => direct_text.to_string(),
-        [properties] if direct_text.is_empty() => required_name(*properties)?,
-        [_] => {
+        None => direct_text.to_string(),
+        Some(properties) if direct_text.is_empty() => required_name(properties)?,
+        Some(_) => {
             return Err(error(
                 SourceAdapterErrorKind::ProjectionAmbiguous,
                 "Platform XML registration has conflicting identity fields",
-            ));
-        }
-        _ => {
-            return Err(error(
-                SourceAdapterErrorKind::ProjectionAmbiguous,
-                "Platform XML registration has multiple Properties fields",
             ));
         }
     };
@@ -712,16 +750,8 @@ fn unique_scalar(
     parent: Node<'_, '_>,
     local_name: &str,
 ) -> Result<Option<String>, SourceAdapterError> {
-    let nodes = direct_children(parent, local_name);
-    let node = match nodes.as_slice() {
-        [] => return Ok(None),
-        [node] => *node,
-        _ => {
-            return Err(error(
-                SourceAdapterErrorKind::ProjectionAmbiguous,
-                format!("Platform XML field `{local_name}` is ambiguous"),
-            ));
-        }
+    let Some(node) = optional_unique_child(parent, local_name)? else {
+        return Ok(None);
     };
     if node.children().any(|child| child.is_element()) {
         return Err(corrupted(format!(
@@ -747,29 +777,27 @@ fn optional_unique_child<'a, 'input>(
     parent: Node<'a, 'input>,
     local_name: &str,
 ) -> Result<Option<Node<'a, 'input>>, SourceAdapterError> {
-    let children = direct_children(parent, local_name);
-    match children.as_slice() {
-        [] => Ok(None),
-        [child] => Ok(Some(*child)),
-        _ => Err(error(
+    let mut children = parent.children().filter(|child| {
+        child.is_element()
+            && child.tag_name().name() == local_name
+            && child.tag_name().namespace() == Some(METADATA_NAMESPACE)
+    });
+    let child = children.next();
+    if children.next().is_some() {
+        return Err(error(
             SourceAdapterErrorKind::ProjectionAmbiguous,
             format!("Platform XML field `{local_name}` is ambiguous"),
-        )),
+        ));
     }
+    Ok(child)
 }
 
-fn direct_children<'a, 'input>(
-    parent: Node<'a, 'input>,
-    local_name: &str,
-) -> Vec<Node<'a, 'input>> {
-    parent
-        .children()
-        .filter(|child| {
-            child.is_element()
-                && child.tag_name().name() == local_name
-                && child.tag_name().namespace() == Some(METADATA_NAMESPACE)
-        })
-        .collect()
+fn has_direct_child(parent: Node<'_, '_>, local_name: &str) -> bool {
+    parent.children().any(|child| {
+        child.is_element()
+            && child.tag_name().name() == local_name
+            && child.tag_name().namespace() == Some(METADATA_NAMESPACE)
+    })
 }
 
 fn parse_optional_uuid(node: Node<'_, '_>) -> Result<Option<Uuid>, SourceAdapterError> {
@@ -899,10 +927,19 @@ struct DecodedNode {
 #[derive(Default)]
 struct DecodeContext {
     uuids: BTreeSet<Uuid>,
+    native_nodes: usize,
+    relations: usize,
+    properties: usize,
+    identity_items: usize,
+    active_depth: usize,
+    max_active_depth: usize,
 }
 
 impl DecodeContext {
     fn register_uuid(&mut self, uuid: Option<Uuid>) -> Result<(), SourceAdapterError> {
+        if uuid.is_some() {
+            self.register_identity_item()?;
+        }
         if uuid.is_some_and(|uuid| !self.uuids.insert(uuid)) {
             return Err(error(
                 SourceAdapterErrorKind::IdentityCollision,
@@ -911,6 +948,86 @@ impl DecodeContext {
         }
         Ok(())
     }
+
+    fn enter_node(&mut self) -> Result<(), SourceAdapterError> {
+        let depth = self.active_depth.checked_add(1).ok_or_else(|| {
+            error(
+                SourceAdapterErrorKind::ResourceLimit,
+                "Platform XML nesting depth overflow",
+            )
+        })?;
+        if depth > MAX_NAVIGATION_NESTING_DEPTH {
+            return Err(error(
+                SourceAdapterErrorKind::ResourceLimit,
+                "Platform XML nesting depth exceeds navigation limit",
+            ));
+        }
+        Self::increment(&mut self.native_nodes, MAX_NAVIGATION_NODES, "native nodes")?;
+        self.active_depth = depth;
+        self.max_active_depth = self.max_active_depth.max(depth);
+        Ok(())
+    }
+
+    fn leave_node(&mut self) {
+        self.active_depth = self.active_depth.saturating_sub(1);
+    }
+
+    fn register_relation(&mut self) -> Result<(), SourceAdapterError> {
+        Self::increment(
+            &mut self.relations,
+            MAX_NAVIGATION_RELATIONS,
+            "child relations",
+        )
+    }
+
+    fn register_property(&mut self, properties_in_node: usize) -> Result<(), SourceAdapterError> {
+        if properties_in_node >= MAX_NAVIGATION_PROPERTIES_PER_NODE {
+            return Err(error(
+                SourceAdapterErrorKind::ResourceLimit,
+                "Platform XML node has too many scalar properties",
+            ));
+        }
+        Self::increment(
+            &mut self.properties,
+            MAX_NAVIGATION_IDENTITY_ITEMS,
+            "scalar properties",
+        )
+    }
+
+    fn register_identity_item(&mut self) -> Result<(), SourceAdapterError> {
+        Self::increment(
+            &mut self.identity_items,
+            MAX_NAVIGATION_IDENTITY_ITEMS,
+            "identity items",
+        )
+    }
+
+    fn increment(counter: &mut usize, limit: usize, label: &str) -> Result<(), SourceAdapterError> {
+        let next = counter.checked_add(1).ok_or_else(|| {
+            error(
+                SourceAdapterErrorKind::ResourceLimit,
+                format!("Platform XML {label} overflow"),
+            )
+        })?;
+        if next > limit {
+            return Err(error(
+                SourceAdapterErrorKind::ResourceLimit,
+                format!("Platform XML {label} exceed navigation limit {limit}"),
+            ));
+        }
+        *counter = next;
+        Ok(())
+    }
+}
+
+fn decode_scoped<T>(
+    context: &mut DecodeContext,
+    decode: impl FnOnce(&mut DecodeContext) -> Result<T, SourceAdapterError>,
+) -> Result<T, SourceAdapterError> {
+    context.enter_node()?;
+    let result = decode(context);
+    context.leave_node();
+    result
 }
 
 struct DecodedChildren {
@@ -954,7 +1071,7 @@ mod direct_type_property_tests {
         infrastructure::source_adapters::platform_xml::native_model::NativePropertyValue,
     };
 
-    use super::decode_properties;
+    use super::{decode_properties, DecodeContext};
 
     #[test]
     fn direct_inherited_official_qname_is_a_type_set_not_a_scalar() {
@@ -963,7 +1080,8 @@ mod direct_type_property_tests {
         )
         .unwrap();
 
-        let properties = decode_properties(document.root_element(), "").unwrap();
+        let properties =
+            decode_properties(document.root_element(), "", &mut DecodeContext::default()).unwrap();
 
         assert!(matches!(
             &properties["Type"].value,
@@ -978,7 +1096,8 @@ mod direct_type_property_tests {
         )
         .unwrap();
 
-        let error = decode_properties(document.root_element(), "").unwrap_err();
+        let error = decode_properties(document.root_element(), "", &mut DecodeContext::default())
+            .unwrap_err();
 
         assert_eq!(error.kind, SourceAdapterErrorKind::ProjectionAmbiguous);
     }
@@ -990,7 +1109,8 @@ mod direct_type_property_tests {
         )
         .unwrap();
 
-        let error = decode_properties(document.root_element(), "").unwrap_err();
+        let error = decode_properties(document.root_element(), "", &mut DecodeContext::default())
+            .unwrap_err();
 
         assert_eq!(error.kind, SourceAdapterErrorKind::ProjectionAmbiguous);
     }
@@ -1000,6 +1120,7 @@ mod direct_type_property_tests {
 mod tests {
     use std::{
         collections::BTreeSet,
+        fmt::Write,
         fs,
         path::PathBuf,
         sync::atomic::{AtomicU64, Ordering},
@@ -1007,6 +1128,9 @@ mod tests {
 
     use crate::domain::{
         navigation::CoverageState,
+        navigation_limits::{
+            MAX_NAVIGATION_NESTING_DEPTH, MAX_NAVIGATION_NODES, MAX_NAVIGATION_PROPERTIES_PER_NODE,
+        },
         source_adapters::{
             FormatVersion, SnapshotEvidence, SourceAdapterErrorKind, SourceDescriptor,
             SourceFamily, SourceId, SourceRevision,
@@ -1014,8 +1138,9 @@ mod tests {
     };
 
     use super::{
-        decode, NativeEvidenceState, NativeMxlRootKind, NativeNodeBacking, NativeNodeState,
-        NativePropertyProvenance, NativePropertyValue, PlatformXmlProvider,
+        decode, decode_with_context, DecodeContext, NativeEvidenceState, NativeMxlRootKind,
+        NativeNodeBacking, NativeNodeState, NativePropertyProvenance, NativePropertyValue,
+        PlatformXmlProvider,
     };
 
     static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
@@ -1756,6 +1881,100 @@ mod tests {
                 .properties["FillValue"]
                 .value,
             NativePropertyValue::Absent,
+        );
+    }
+
+    #[test]
+    fn native_child_and_property_limits_fail_before_over_limit_construction() {
+        let mut children = String::new();
+        for index in 0..=MAX_NAVIGATION_NODES {
+            write!(
+                children,
+                "<Attribute><Properties><Name>Attribute{index}</Name></Properties></Attribute>"
+            )
+            .unwrap();
+        }
+        let fixture = document_fixture(&format!("<ChildObjects>{children}</ChildObjects>"));
+        let mut context = DecodeContext::default();
+        let error =
+            decode_with_context(&fixture.provider, &fixture.descriptor, &mut context).unwrap_err();
+        assert_eq!(error.kind, SourceAdapterErrorKind::ResourceLimit);
+        assert_eq!(context.native_nodes, MAX_NAVIGATION_NODES);
+
+        let mut properties = String::from("<Properties><Name>Shipment</Name>");
+        for index in 0..MAX_NAVIGATION_PROPERTIES_PER_NODE {
+            write!(properties, "<Property{index}>value</Property{index}>").unwrap();
+        }
+        properties.push_str("</Properties>");
+        let fixture = document_fixture(&properties);
+        let mut context = DecodeContext::default();
+        let error =
+            decode_with_context(&fixture.provider, &fixture.descriptor, &mut context).unwrap_err();
+        assert_eq!(error.kind, SourceAdapterErrorKind::ResourceLimit);
+        assert_eq!(context.properties, MAX_NAVIGATION_PROPERTIES_PER_NODE);
+    }
+
+    #[test]
+    fn at_limit_navigation_fixture_stays_inside_provider_bytes() {
+        let mut children = String::new();
+        for index in 0..(MAX_NAVIGATION_NODES - 2) {
+            write!(
+                children,
+                "<Attribute><Properties><Name>Bounded{index}</Name></Properties></Attribute>"
+            )
+            .unwrap();
+        }
+        let xml = metadata_document(&format!("<ChildObjects>{children}</ChildObjects>"));
+        assert!(xml.len() < super::super::provider::MAX_CAPTURED_FILE_BYTES);
+        let fixture = fixture("Shipment.xml", &[("Shipment.xml", xml)]);
+        let navigation =
+            crate::infrastructure::source_adapters::platform_xml::PlatformXmlReadAdapter::new()
+                .inspect_provider(&fixture.provider, &fixture.descriptor)
+                .unwrap();
+        assert_eq!(navigation.nodes.len(), MAX_NAVIGATION_NODES);
+    }
+
+    #[test]
+    fn deep_native_nesting_stops_before_growing_past_the_shared_limit() {
+        let mut body = String::new();
+        for index in 0..MAX_NAVIGATION_NESTING_DEPTH {
+            write!(
+                body,
+                "<ChildObjects><TabularSection><Properties><Name>Level{index}</Name></Properties>"
+            )
+            .unwrap();
+        }
+        for _ in 0..MAX_NAVIGATION_NESTING_DEPTH {
+            body.push_str("</TabularSection></ChildObjects>");
+        }
+        let fixture = document_fixture(&body);
+        let error = decode(&fixture.provider, &fixture.descriptor).unwrap_err();
+        assert_eq!(error.kind, SourceAdapterErrorKind::ResourceLimit);
+    }
+
+    #[test]
+    fn decoder_uses_the_exact_shared_identifier_grammar() {
+        let valid = fixture(
+            "Ёж_2.xml",
+            &[(
+                "Ёж_2.xml",
+                metadata_document("<Properties><Name>Ёж_2</Name></Properties>"),
+            )],
+        );
+        assert!(decode(&valid.provider, &valid.descriptor).is_ok());
+
+        let invalid = fixture(
+            "Delta.xml",
+            &[(
+                "Delta.xml",
+                metadata_document("<Properties><Name>Δelta</Name></Properties>"),
+            )],
+        );
+        assert_eq!(
+            decode(&invalid.provider, &invalid.descriptor)
+                .unwrap_err()
+                .kind,
+            SourceAdapterErrorKind::DecodeCorrupted
         );
     }
 

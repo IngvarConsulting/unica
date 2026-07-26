@@ -138,7 +138,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use roxmltree::Node;
 
 use crate::domain::{
+    identifiers::is_1c_identifier,
     navigation::{PropertyValue, TypeSetValue, TypeVariant},
+    navigation_limits::MAX_NAVIGATION_TYPE_VARIANTS,
     source_adapters::{SourceAdapterError, SourceAdapterErrorKind},
 };
 
@@ -200,8 +202,8 @@ pub(crate) fn parse_type_description_2_20(
     let mut variants = Vec::new();
     let mut qualifiers = BTreeMap::new();
     let mut qualifier_groups = BTreeSet::new();
-    let children = root.children().filter(Node::is_element).collect::<Vec<_>>();
-    if children.is_empty() {
+    let mut children = root.children().filter(Node::is_element).peekable();
+    if children.peek().is_none() {
         variants.push(parse_type_variant(&text_only(root)?, root)?);
     } else {
         for child in children {
@@ -211,7 +213,14 @@ pub(crate) fn parse_type_description_2_20(
                 ));
             }
             match child.tag_name().name() {
-                "Type" => variants.push(parse_type_variant(&text_only(child)?, child)?),
+                "Type" => {
+                    if variants.len() >= MAX_NAVIGATION_TYPE_VARIANTS {
+                        return Err(resource_limit(
+                            "Platform XML type description has too many variants",
+                        ));
+                    }
+                    variants.push(parse_type_variant(&text_only(child)?, child)?);
+                }
                 "StringQualifiers" => parse_qualifier_group(
                     QualifierGroup::String,
                     child,
@@ -412,7 +421,7 @@ fn parse_type_variant(value: &str, node: Node<'_, '_>) -> Result<TypeVariant, So
     let Some((class, name)) = local.split_once('.') else {
         return Err(projection_error("unsupported Platform XML type variant"));
     };
-    if local.split('.').count() != 2 || !is_identifier(name) {
+    if local.split('.').count() != 2 || !is_1c_identifier(name) {
         return Err(projection_error(
             "invalid Platform XML metadata type target",
         ));
@@ -453,12 +462,6 @@ fn text_only(node: Node<'_, '_>) -> Result<String, SourceAdapterError> {
     Ok(value.to_string())
 }
 
-fn is_identifier(value: &str) -> bool {
-    let mut chars = value.chars();
-    matches!(chars.next(), Some(first) if first.is_alphabetic() || first == '_')
-        && chars.all(|character| character.is_alphanumeric() || character == '_')
-}
-
 fn lower_camel(value: &str) -> String {
     let mut chars = value.chars();
     chars
@@ -477,6 +480,10 @@ fn type_variant_key(value: &TypeVariant) -> String {
 
 fn projection_error(message: &'static str) -> SourceAdapterError {
     SourceAdapterError::new(SourceAdapterErrorKind::ProjectionAmbiguous, message)
+}
+
+fn resource_limit(message: &'static str) -> SourceAdapterError {
+    SourceAdapterError::new(SourceAdapterErrorKind::ResourceLimit, message)
 }
 
 #[cfg(test)]
@@ -556,5 +563,25 @@ mod tests {
             "<DataType xmlns=\"{MD}\" xmlns:v8=\"{V8}\" xmlns:alien=\"urn:alien\"><v8:Type>alien:string</v8:Type></DataType>"
         );
         assert!(parse(&alien_value).is_err());
+    }
+
+    #[test]
+    fn type_reference_and_enumeration_targets_use_the_shared_identifier_grammar() {
+        for class in ["CatalogRef", "EnumRef"] {
+            let valid = format!(
+                "<DataType xmlns=\"{MD}\" xmlns:v8=\"{V8}\" xmlns:cfg=\"{CFG}\"><v8:Type>cfg:{class}.Ёж_2</v8:Type></DataType>"
+            );
+            assert!(
+                parse(&valid).is_ok(),
+                "{class} must accept Russian Cyrillic"
+            );
+            let invalid = format!(
+                "<DataType xmlns=\"{MD}\" xmlns:v8=\"{V8}\" xmlns:cfg=\"{CFG}\"><v8:Type>cfg:{class}.Δelta</v8:Type></DataType>"
+            );
+            assert!(
+                parse(&invalid).is_err(),
+                "{class} must reject unsupported scripts"
+            );
+        }
     }
 }

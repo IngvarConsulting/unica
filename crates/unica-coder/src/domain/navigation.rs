@@ -7,6 +7,10 @@ use serde::{ser::SerializeStruct, Serialize, Serializer};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use super::navigation_limits::{
+    MAX_NAVIGATION_PROPERTY_SELECTORS, MAX_NAVIGATION_RELATION_SELECTORS,
+    MAX_NAVIGATION_SELECTOR_STRING_BYTES,
+};
 use super::source_adapters::{
     SnapshotConsistency, SourceAccess, SourceAdapterError, SourceAdapterErrorKind, SourceId,
     SourceRevision, SourceSnapshot,
@@ -1043,7 +1047,7 @@ pub(crate) struct NavigationEnvelope {
     pub(crate) relations: Vec<NavigationRelationPage>,
     pub(crate) diagnostics: Vec<SourceAdapterDiagnostic>,
     #[serde(skip)]
-    pub(crate) relation_index: Vec<SemanticRelation>,
+    pub(crate) relation_index: std::sync::Arc<Vec<SemanticRelation>>,
 }
 
 impl NavigationEnvelope {
@@ -1056,7 +1060,7 @@ impl NavigationEnvelope {
             nodes: Vec::new(),
             relations: Vec::new(),
             diagnostics: vec![error.into()],
-            relation_index: Vec::new(),
+            relation_index: std::sync::Arc::new(Vec::new()),
         }
     }
 
@@ -1380,6 +1384,18 @@ pub(crate) fn normalize_navigation_selection(
     mut selection: NavigationSelection,
 ) -> Result<NavigationSelection, SourceAdapterError> {
     if let PropertySelection::Named(names) = &selection.properties {
+        if names.len() > MAX_NAVIGATION_PROPERTY_SELECTORS {
+            return Err(resource_limit(
+                "navigation selection has too many property selectors",
+            ));
+        }
+    }
+    if selection.relations.len() > MAX_NAVIGATION_RELATION_SELECTORS {
+        return Err(resource_limit(
+            "navigation selection has too many relation selectors",
+        ));
+    }
+    if let PropertySelection::Named(names) = &selection.properties {
         for name in names {
             validate_selection_token(name)?;
         }
@@ -1490,55 +1506,51 @@ impl NavigationCursor {
     where
         F: FnOnce(&SourceId, &ObjectKey, &RelationKey, &RelationRole, &RelationKind) -> bool,
     {
-        let object = value.as_object().ok_or_else(|| {
+        Self::authenticate(&value, secret)?;
+        Self::decode_authenticated(&value, current_revision, expected_selection, re_resolve)
+    }
+
+    pub(crate) fn authenticate(
+        value: &serde_json::Value,
+        secret: &[u8],
+    ) -> Result<(), SourceAdapterError> {
+        let parts = cursor_wire_parts(value)?;
+        let tag = hex_decode(parts.auth_tag)?;
+        let mac = cursor_mac_parts(
+            secret,
+            parts.schema_version,
+            parts.source_id,
+            parts.snapshot_revision,
+            parts.target,
+            parts.relation,
+            parts.relation_role,
+            parts.relation_kind,
+            parts.selection,
+            parts.selection_hash,
+            parts.next_position,
+        )?;
+        mac.verify_slice(&tag).map_err(|_| {
             SourceAdapterError::new(
                 SourceAdapterErrorKind::DecodeCorrupted,
-                "navigation cursor must be a JSON object",
+                "navigation cursor authentication failed",
             )
-        })?;
-        let allowed = [
-            "schemaVersion",
-            "sourceId",
-            "snapshotRevision",
-            "target",
-            "relation",
-            "relationRole",
-            "relationKind",
-            "selection",
-            "selectionHash",
-            "authTag",
-            "nextPosition",
-        ];
-        if object.keys().any(|key| !allowed.contains(&key.as_str()))
-            || object.len() != allowed.len()
-        {
-            return Err(SourceAdapterError::new(
-                SourceAdapterErrorKind::DecodeCorrupted,
-                "navigation cursor has unknown or missing fields",
-            ));
-        }
-        let string = |name: &str| {
-            object
-                .get(name)
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| {
-                    SourceAdapterError::new(
-                        SourceAdapterErrorKind::DecodeCorrupted,
-                        format!("navigation cursor has no valid {name}"),
-                    )
-                })
-        };
-        if object
-            .get("schemaVersion")
-            .and_then(serde_json::Value::as_u64)
-            != Some(u64::from(Self::SCHEMA_VERSION))
-        {
-            return Err(SourceAdapterError::new(
-                SourceAdapterErrorKind::DecodeCorrupted,
-                "unsupported navigation cursor schema version",
-            ));
-        }
-        let relation_kind = match string("relationKind")? {
+        })
+    }
+
+    pub(crate) fn decode_authenticated<F>(
+        value: &serde_json::Value,
+        current_revision: &SourceRevision,
+        expected_selection: &NavigationSelection,
+        re_resolve: F,
+    ) -> Result<Self, SourceAdapterError>
+    where
+        F: FnOnce(&SourceId, &ObjectKey, &RelationKey, &RelationRole, &RelationKind) -> bool,
+    {
+        let parts = cursor_wire_parts(value)?;
+        let _object = value
+            .as_object()
+            .expect("cursor wire parts require an object");
+        let relation_kind = match parts.relation_kind {
             "contains" => RelationKind::Contains,
             "references" => RelationKind::References,
             _ => {
@@ -1548,13 +1560,13 @@ impl NavigationCursor {
                 ))
             }
         };
-        let relation_role = RelationRole::parse(string("relationRole")?).map_err(|_| {
+        let relation_role = RelationRole::parse(parts.relation_role).map_err(|_| {
             SourceAdapterError::new(
                 SourceAdapterErrorKind::DecodeCorrupted,
                 "navigation cursor has invalid relationRole",
             )
         })?;
-        let selection_hash = string("selectionHash")?.to_string();
+        let selection_hash = parts.selection_hash.to_string();
         if selection_hash != normalized_selection_hash(expected_selection)? {
             return Err(SourceAdapterError::new(
                 SourceAdapterErrorKind::DecodeCorrupted,
@@ -1563,33 +1575,17 @@ impl NavigationCursor {
         }
         let cursor = Self {
             schema_version: Self::SCHEMA_VERSION,
-            source_id: SourceId::new(string("sourceId")?)?,
-            snapshot_revision: SourceRevision::new(string("snapshotRevision")?)?,
-            target: ObjectKey::new(string("target")?)?,
-            relation: RelationKey::new(string("relation")?)?,
+            source_id: SourceId::new(parts.source_id)?,
+            snapshot_revision: SourceRevision::new(parts.snapshot_revision)?,
+            target: ObjectKey::new(parts.target)?,
+            relation: RelationKey::new(parts.relation)?,
             relation_role,
             relation_kind,
             selection: expected_selection.clone(),
             selection_hash,
-            auth_tag: string("authTag")?.to_string(),
-            next_position: object
-                .get("nextPosition")
-                .and_then(serde_json::Value::as_u64)
-                .ok_or_else(|| {
-                    SourceAdapterError::new(
-                        SourceAdapterErrorKind::DecodeCorrupted,
-                        "navigation cursor has no valid nextPosition",
-                    )
-                })?,
+            auth_tag: parts.auth_tag.to_string(),
+            next_position: parts.next_position,
         };
-        let tag = hex_decode(&cursor.auth_tag)?;
-        let mac = cursor_mac(secret, &cursor)?;
-        mac.verify_slice(&tag).map_err(|_| {
-            SourceAdapterError::new(
-                SourceAdapterErrorKind::DecodeCorrupted,
-                "navigation cursor authentication failed",
-            )
-        })?;
         cursor.resume(current_revision)?;
         if !re_resolve(
             &cursor.source_id,
@@ -1611,6 +1607,34 @@ fn cursor_mac(
     secret: &[u8],
     cursor: &NavigationCursor,
 ) -> Result<Hmac<Sha256>, SourceAdapterError> {
+    cursor_mac_parts(
+        secret,
+        cursor.schema_version,
+        cursor.source_id.as_str(),
+        cursor.snapshot_revision.as_str(),
+        cursor.target.as_str(),
+        cursor.relation.as_str(),
+        relation_role_token(cursor.relation_role),
+        relation_kind_token(cursor.relation_kind),
+        &cursor.selection,
+        &cursor.selection_hash,
+        cursor.next_position,
+    )
+}
+
+fn cursor_mac_parts<S: Serialize>(
+    secret: &[u8],
+    schema_version: u16,
+    source_id: &str,
+    snapshot_revision: &str,
+    target: &str,
+    relation: &str,
+    relation_role: &str,
+    relation_kind: &str,
+    selection: S,
+    selection_hash: &str,
+    next_position: u64,
+) -> Result<Hmac<Sha256>, SourceAdapterError> {
     let mut mac = Hmac::<Sha256>::new_from_slice(secret).map_err(|_| {
         SourceAdapterError::new(
             SourceAdapterErrorKind::DecodeCorrupted,
@@ -1618,16 +1642,16 @@ fn cursor_mac(
         )
     })?;
     let canonical = serde_json::to_vec(&(
-        cursor.schema_version,
-        &cursor.source_id,
-        &cursor.snapshot_revision,
-        &cursor.target,
-        &cursor.relation,
-        &cursor.relation_role,
-        &cursor.relation_kind,
-        &cursor.selection,
-        &cursor.selection_hash,
-        cursor.next_position,
+        schema_version,
+        source_id,
+        snapshot_revision,
+        target,
+        relation,
+        relation_role,
+        relation_kind,
+        selection,
+        selection_hash,
+        next_position,
     ))
     .map_err(|error| {
         SourceAdapterError::new(
@@ -1638,6 +1662,112 @@ fn cursor_mac(
     mac.update(b"unica.navigation.cursor.auth.v1\0");
     mac.update(&canonical);
     Ok(mac)
+}
+
+struct CursorWireParts<'a> {
+    schema_version: u16,
+    source_id: &'a str,
+    snapshot_revision: &'a str,
+    target: &'a str,
+    relation: &'a str,
+    relation_role: &'a str,
+    relation_kind: &'a str,
+    selection: &'a serde_json::Value,
+    selection_hash: &'a str,
+    auth_tag: &'a str,
+    next_position: u64,
+}
+
+fn cursor_wire_parts(value: &serde_json::Value) -> Result<CursorWireParts<'_>, SourceAdapterError> {
+    let object = value.as_object().ok_or_else(|| {
+        SourceAdapterError::new(
+            SourceAdapterErrorKind::DecodeCorrupted,
+            "navigation cursor must be a JSON object",
+        )
+    })?;
+    let allowed = [
+        "schemaVersion",
+        "sourceId",
+        "snapshotRevision",
+        "target",
+        "relation",
+        "relationRole",
+        "relationKind",
+        "selection",
+        "selectionHash",
+        "authTag",
+        "nextPosition",
+    ];
+    if object.len() != allowed.len() || object.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err(SourceAdapterError::new(
+            SourceAdapterErrorKind::DecodeCorrupted,
+            "navigation cursor has unknown or missing fields",
+        ));
+    }
+    let string = |name: &str| {
+        object
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                SourceAdapterError::new(
+                    SourceAdapterErrorKind::DecodeCorrupted,
+                    format!("navigation cursor has no valid {name}"),
+                )
+            })
+    };
+    let schema_version = object
+        .get("schemaVersion")
+        .and_then(serde_json::Value::as_u64);
+    if schema_version != Some(u64::from(NavigationCursor::SCHEMA_VERSION)) {
+        return Err(SourceAdapterError::new(
+            SourceAdapterErrorKind::DecodeCorrupted,
+            "unsupported navigation cursor schema version",
+        ));
+    }
+    Ok(CursorWireParts {
+        schema_version: NavigationCursor::SCHEMA_VERSION,
+        source_id: string("sourceId")?,
+        snapshot_revision: string("snapshotRevision")?,
+        target: string("target")?,
+        relation: string("relation")?,
+        relation_role: string("relationRole")?,
+        relation_kind: string("relationKind")?,
+        selection: object.get("selection").ok_or_else(|| {
+            SourceAdapterError::new(
+                SourceAdapterErrorKind::DecodeCorrupted,
+                "navigation cursor has no selection",
+            )
+        })?,
+        selection_hash: string("selectionHash")?,
+        auth_tag: string("authTag")?,
+        next_position: object
+            .get("nextPosition")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| {
+                SourceAdapterError::new(
+                    SourceAdapterErrorKind::DecodeCorrupted,
+                    "navigation cursor has no valid nextPosition",
+                )
+            })?,
+    })
+}
+
+fn relation_role_token(role: RelationRole) -> &'static str {
+    match role {
+        RelationRole::Children => "children",
+        RelationRole::Attributes => "attributes",
+        RelationRole::TabularSections => "tabularSections",
+        RelationRole::Forms => "forms",
+        RelationRole::Commands => "commands",
+        RelationRole::Templates => "templates",
+    }
+}
+
+fn relation_kind_token(kind: RelationKind) -> &'static str {
+    match kind {
+        RelationKind::Contains => "contains",
+        RelationKind::References => "references",
+    }
 }
 
 fn cursor_auth_tag(secret: &[u8], cursor: &NavigationCursor) -> Result<String, SourceAdapterError> {
@@ -1687,13 +1817,20 @@ pub(crate) fn normalized_selection_hash(
 }
 
 fn validate_selection_token(value: &str) -> Result<(), SourceAdapterError> {
-    if value.is_empty() || value.chars().any(char::is_control) {
+    if value.is_empty()
+        || value.len() > MAX_NAVIGATION_SELECTOR_STRING_BYTES
+        || value.chars().any(char::is_control)
+    {
         return Err(SourceAdapterError::new(
             SourceAdapterErrorKind::ProjectionAmbiguous,
             "selection contains an invalid token",
         ));
     }
     Ok(())
+}
+
+fn resource_limit(message: &str) -> SourceAdapterError {
+    SourceAdapterError::new(SourceAdapterErrorKind::ResourceLimit, message)
 }
 
 #[cfg(test)]

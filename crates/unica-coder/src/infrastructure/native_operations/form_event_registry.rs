@@ -8,7 +8,7 @@
 use roxmltree::Node;
 use std::fmt;
 
-use super::common::is_1c_identifier;
+use crate::domain::identifiers::is_1c_identifier;
 
 const FORM_LOGFORM_NS: &str = "http://v8.1c.ru/8.3/xcf/logform";
 const FORM_V8_NS: &str = "http://v8.1c.ru/8.1/data/core";

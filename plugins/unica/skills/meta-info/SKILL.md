@@ -24,11 +24,13 @@ Use exactly one target mode per request:
 | Expand node | `objectRef`, `snapshotRevision` | Re-resolve a known semantic object in the same captured snapshot. |
 | Continue page | `cursor` | Continue the exact relation page returned earlier. |
 
-`objectRef` is the returned semantic identity with `sourceId` and `objectKey`. It is not a file path. `objectRef` plus `snapshotRevision` and a cursor are both continuations of the exact retained immutable snapshot; a cursor is opaque, path-free, and selection-bound, so return it unchanged. Live source drift does not invalidate either continuation or cause a source rescan. `snapshot_stale` means that exact retained snapshot was evicted, lost after restart, does not match the requested revision, or does not match the current authorization scope. `source_unavailable` is reserved for bootstrap failures and current source-map or authorization resolution failures.
+`objectRef` is the returned semantic identity with `sourceId` and `objectKey`. It is not a file path. `objectRef` plus `snapshotRevision` and a cursor are both continuations of the exact retained immutable snapshot; a cursor is opaque, path-free, and selection-bound, so return it unchanged. Live source drift does not invalidate either continuation or cause a source rescan. `snapshot_stale` means that exact retained snapshot was evicted, lost after restart, does not match the requested revision or current authorization scope, or does not retain the requested object reference. `source_unavailable` is reserved for bootstrap failures and current source-map or authorization resolution failures.
 
 ## Selection and relation pages
 
 `select` is optional for bootstrap and object-reference requests. It may select typed properties, facets, and relation roles. Each relation request has a `role`, an optional `kind`, and optional `pageSize`; omitted `kind` is exactly `contains` (it never selects reference edges), the default page size is 25 and the maximum is 100. Select `kind: "references"` explicitly for reference edges. Repeated relation selections are normalized by `(role, kind)` with the smaller page size. There is no offset pagination.
+
+Resource bounds are part of this public contract: `select` accepts at most 256 property selectors and 64 relation selectors; every selector is at most 256 UTF-8 bytes; both `select` and a cursor are at most 128 KiB of JSON and nesting is limited to 64. Cursor fields are capped at 1 KiB. Oversized input is returned as structured `resource_limit`; malformed or unauthenticated cursors are `decode_corrupted`. The cursor is structurally bounded and authenticated before its selection is normalized.
 
 ```json
 {"method": "tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","ObjectPath": "Catalogs/Валюты/Валюты.xml"}}}

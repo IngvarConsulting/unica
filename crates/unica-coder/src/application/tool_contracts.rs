@@ -4,6 +4,11 @@ use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
+use crate::domain::navigation_limits::{
+    MAX_NAVIGATION_CURSOR_STRING_BYTES, MAX_NAVIGATION_PROPERTY_SELECTORS,
+    MAX_NAVIGATION_RELATION_SELECTORS, MAX_NAVIGATION_SELECTOR_STRING_BYTES,
+};
+
 const COMMON_ARGS: &[&str] = &["cwd", "dryRun", "confirm"];
 const CODE_PATCH_ARGS: &[&str] = &[
     "path",
@@ -607,11 +612,11 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
             "properties": {
                 "properties": {"oneOf": [
                     {"type": "string", "enum": ["all"]},
-                    {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
-                    {"type": "object", "additionalProperties": false, "properties": {"named": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}, "uniqueItems": true}}, "required": ["named"]}
+                    {"type": "array", "maxItems": MAX_NAVIGATION_PROPERTY_SELECTORS, "items": {"type": "string", "minLength": 1, "maxLength": MAX_NAVIGATION_SELECTOR_STRING_BYTES}, "uniqueItems": true},
+                    {"type": "object", "additionalProperties": false, "properties": {"named": {"type": "array", "minItems": 1, "maxItems": MAX_NAVIGATION_PROPERTY_SELECTORS, "items": {"type": "string", "minLength": 1, "maxLength": MAX_NAVIGATION_SELECTOR_STRING_BYTES}, "uniqueItems": true}}, "required": ["named"]}
                 ]},
                 "facets": {"type": "string", "enum": ["none", "summary", "full"]},
-                "relations": {"type": "array", "items": relation_selection}
+                "relations": {"type": "array", "maxItems": MAX_NAVIGATION_RELATION_SELECTORS, "items": relation_selection}
             }
         });
         schema["properties"]["objectRef"] = json!({
@@ -626,14 +631,14 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
             "additionalProperties": false,
             "properties": {
                 "schemaVersion": {"type": "integer", "const": 1},
-                "sourceId": {"type": "string", "minLength": 1},
-                "snapshotRevision": {"type": "string", "minLength": 1},
-                "target": {"type": "string", "minLength": 1},
-                "relation": {"type": "string", "minLength": 1},
+                "sourceId": {"type": "string", "minLength": 1, "maxLength": MAX_NAVIGATION_CURSOR_STRING_BYTES},
+                "snapshotRevision": {"type": "string", "minLength": 1, "maxLength": MAX_NAVIGATION_CURSOR_STRING_BYTES},
+                "target": {"type": "string", "minLength": 1, "maxLength": MAX_NAVIGATION_CURSOR_STRING_BYTES},
+                "relation": {"type": "string", "minLength": 1, "maxLength": MAX_NAVIGATION_CURSOR_STRING_BYTES},
                 "relationRole": {"type": "string", "enum": ["children", "attributes", "tabularSections", "forms", "commands", "templates"]},
                 "relationKind": {"type": "string", "enum": ["contains", "references"]},
                 "selection": selection,
-                "selectionHash": {"type": "string", "minLength": 1},
+                "selectionHash": {"type": "string", "minLength": 1, "maxLength": MAX_NAVIGATION_CURSOR_STRING_BYTES},
                 "authTag": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
                 "nextPosition": {"type": "integer", "minimum": 0}
             },
@@ -1577,7 +1582,9 @@ fn property_schema(name: &str) -> Value {
 fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
     if tool.name == "unica.meta.info" {
         return match name {
-            "ObjectPath" | "snapshotRevision" => json!({ "type": "string", "minLength": 1 }),
+            "ObjectPath" | "snapshotRevision" => {
+                json!({ "type": "string", "minLength": 1, "maxLength": MAX_NAVIGATION_CURSOR_STRING_BYTES })
+            }
             "objectRef" | "select" | "cursor" => json!({ "type": "object" }),
             _ => property_schema(name),
         };

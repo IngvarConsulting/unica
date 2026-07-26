@@ -952,30 +952,6 @@ pub(crate) fn looks_like_uuid_prefix(value: &str) -> bool {
         && value.as_bytes().get(8) == Some(&b'-')
 }
 
-pub(crate) fn is_1c_identifier(value: &str) -> bool {
-    let mut chars = value.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !is_1c_identifier_start(first) {
-        return false;
-    }
-    chars.all(is_1c_identifier_part)
-}
-
-pub(crate) fn is_1c_identifier_start(ch: char) -> bool {
-    ch == '_'
-        || ch.is_ascii_alphabetic()
-        || ('А'..='Я').contains(&ch)
-        || ('а'..='я').contains(&ch)
-        || ch == 'Ё'
-        || ch == 'ё'
-}
-
-pub(crate) fn is_1c_identifier_part(ch: char) -> bool {
-    is_1c_identifier_start(ch) || ch.is_ascii_digit()
-}
-
 pub(crate) fn is_subsystem_content_ref(value: &str) -> bool {
     let Some((prefix, rest)) = value.split_once('.') else {
         return false;

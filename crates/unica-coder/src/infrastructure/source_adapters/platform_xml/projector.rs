@@ -12,6 +12,10 @@ use crate::domain::{
         RelationKey, RelationKind, RelationRef, RelationRole, ResolutionState, SemanticAction,
         SemanticActionKind, SemanticProperty, SemanticRelation,
     },
+    navigation_limits::{
+        MAX_NAVIGATION_IDENTITY_ITEMS, MAX_NAVIGATION_NESTING_DEPTH, MAX_NAVIGATION_NODES,
+        MAX_NAVIGATION_PROPERTIES_PER_NODE, MAX_NAVIGATION_RELATIONS, MAX_NAVIGATION_TYPE_VARIANTS,
+    },
     source_adapters::{SourceAccess, SourceAdapterError, SourceAdapterErrorKind, SourceId},
 };
 
@@ -38,6 +42,8 @@ pub(crate) fn project(
         ));
     }
 
+    preflight_native_snapshot(native)?;
+
     let mut graph = GraphBuilder::new(native, support);
     let root = graph.source_root()?;
     graph.project_node(&native.root, Some(&root), RelationRole::Children)?;
@@ -51,6 +57,10 @@ struct GraphBuilder<'a> {
     relations: Vec<SemanticRelation>,
     object_keys: BTreeSet<String>,
     relation_keys: BTreeSet<String>,
+    output_nodes: usize,
+    output_relations: usize,
+    output_properties: usize,
+    output_identity_items: usize,
 }
 
 impl<'a> GraphBuilder<'a> {
@@ -62,10 +72,15 @@ impl<'a> GraphBuilder<'a> {
             relations: Vec::new(),
             object_keys: BTreeSet::new(),
             relation_keys: BTreeSet::new(),
+            output_nodes: 0,
+            output_relations: 0,
+            output_properties: 0,
+            output_identity_items: 0,
         }
     }
 
     fn source_root(&mut self) -> Result<ObjectRef, SourceAdapterError> {
+        self.reserve_output_node()?;
         let (key, identity) = object_key(
             &self.native.source.source_id,
             None,
@@ -116,6 +131,7 @@ impl<'a> GraphBuilder<'a> {
         owner: Option<&ObjectRef>,
         owning_role: RelationRole,
     ) -> Result<ObjectRef, SourceAdapterError> {
+        self.reserve_output_node()?;
         let kind = node_kind(native_node);
         let (key, identity) = object_key(
             &self.native.source.source_id,
@@ -157,12 +173,13 @@ impl<'a> GraphBuilder<'a> {
             .map(|parent| self.add_contains(parent, &reference, owning_role))
             .transpose()?;
         let actions = modeled_actions(&kind, &reference, capability_state, owning_relation.clone());
+        let properties = self.project_properties(&native_node.properties)?;
         self.nodes.push(NavigationNode {
             object_ref: reference.clone(),
             reference: reference.clone(),
             capability_state,
             capability,
-            properties: properties(&native_node.properties)?,
+            properties,
             action_profile: action_profile_for(&kind),
             semantic_actions: Vec::new(),
             actions,
@@ -189,6 +206,8 @@ impl<'a> GraphBuilder<'a> {
         target: &ObjectRef,
         role: RelationRole,
     ) -> Result<RelationRef, SourceAdapterError> {
+        self.reserve_output_relation()?;
+        self.reserve_identity_item()?;
         let relation_key = relation_key(
             &self.native.source.source_id,
             &owner.object_key,
@@ -234,6 +253,7 @@ impl<'a> GraphBuilder<'a> {
     }
 
     fn register_object_key(&mut self, key: &ObjectKey) -> Result<(), SourceAdapterError> {
+        self.reserve_identity_item()?;
         if self.object_keys.insert(key.as_str().to_string()) {
             Ok(())
         } else {
@@ -242,6 +262,49 @@ impl<'a> GraphBuilder<'a> {
                 "duplicate generated semantic object key",
             ))
         }
+    }
+
+    fn reserve_output_node(&mut self) -> Result<(), SourceAdapterError> {
+        reserve(
+            &mut self.output_nodes,
+            MAX_NAVIGATION_NODES,
+            "semantic nodes",
+        )
+    }
+
+    fn reserve_output_relation(&mut self) -> Result<(), SourceAdapterError> {
+        reserve(
+            &mut self.output_relations,
+            MAX_NAVIGATION_RELATIONS,
+            "semantic relations",
+        )
+    }
+
+    fn reserve_identity_item(&mut self) -> Result<(), SourceAdapterError> {
+        reserve(
+            &mut self.output_identity_items,
+            MAX_NAVIGATION_IDENTITY_ITEMS,
+            "semantic identity items",
+        )
+    }
+
+    fn project_properties(
+        &mut self,
+        native: &BTreeMap<String, NativeProperty>,
+    ) -> Result<BTreeMap<String, SemanticProperty>, SourceAdapterError> {
+        let mut projected = BTreeMap::new();
+        for (id, native_property) in native {
+            if projected.len() >= MAX_NAVIGATION_PROPERTIES_PER_NODE {
+                return Err(resource_limit("semantic node has too many properties"));
+            }
+            reserve(
+                &mut self.output_properties,
+                MAX_NAVIGATION_IDENTITY_ITEMS,
+                "semantic properties",
+            )?;
+            projected.insert(property_name(id), project_property(native_property)?);
+        }
+        Ok(projected)
     }
 
     fn finish(self, root: ObjectRef) -> Result<NavigationEnvelope, SourceAdapterError> {
@@ -253,7 +316,7 @@ impl<'a> GraphBuilder<'a> {
             nodes: self.nodes,
             relations: Vec::new(),
             diagnostics: Vec::new(),
-            relation_index: self.relations,
+            relation_index: std::sync::Arc::new(self.relations),
         })
     }
 }
@@ -442,13 +505,89 @@ fn modeled_action(
     }
 }
 
-fn properties(
-    native: &BTreeMap<String, NativeProperty>,
-) -> Result<BTreeMap<String, SemanticProperty>, SourceAdapterError> {
-    native
-        .iter()
-        .map(|(id, native_property)| Ok((property_name(id), project_property(native_property)?)))
-        .collect()
+#[derive(Default)]
+struct NativePreflight {
+    output_nodes: usize,
+    output_relations: usize,
+    properties: usize,
+    identity_items: usize,
+}
+
+fn preflight_native_snapshot(native: &PlatformXmlNativeSnapshot) -> Result<(), SourceAdapterError> {
+    let mut budget = NativePreflight::default();
+    reserve(
+        &mut budget.output_nodes,
+        MAX_NAVIGATION_NODES,
+        "semantic nodes",
+    )?;
+    reserve(
+        &mut budget.identity_items,
+        MAX_NAVIGATION_IDENTITY_ITEMS,
+        "semantic identity items",
+    )?;
+    preflight_native_node(&native.root, 1, &mut budget)
+}
+
+fn preflight_native_node(
+    node: &NativeMetadataNode,
+    depth: usize,
+    budget: &mut NativePreflight,
+) -> Result<(), SourceAdapterError> {
+    if depth > MAX_NAVIGATION_NESTING_DEPTH {
+        return Err(resource_limit(
+            "native snapshot exceeds navigation nesting limit",
+        ));
+    }
+    reserve(
+        &mut budget.output_nodes,
+        MAX_NAVIGATION_NODES,
+        "semantic nodes",
+    )?;
+    reserve(
+        &mut budget.output_relations,
+        MAX_NAVIGATION_RELATIONS,
+        "semantic relations",
+    )?;
+    reserve(
+        &mut budget.identity_items,
+        MAX_NAVIGATION_IDENTITY_ITEMS,
+        "semantic identity items",
+    )?;
+    if node.properties.len() > MAX_NAVIGATION_PROPERTIES_PER_NODE {
+        return Err(resource_limit("native node has too many properties"));
+    }
+    for property in node.properties.values() {
+        reserve(
+            &mut budget.properties,
+            MAX_NAVIGATION_IDENTITY_ITEMS,
+            "semantic properties",
+        )?;
+        if let NativePropertyValue::TypeSet(type_set) = &property.value {
+            if type_set.variants.len() > MAX_NAVIGATION_TYPE_VARIANTS {
+                return Err(resource_limit("native type set has too many variants"));
+            }
+        }
+    }
+    let child_depth = depth
+        .checked_add(1)
+        .ok_or_else(|| resource_limit("native snapshot nesting depth cannot be represented"))?;
+    for child in &node.children {
+        preflight_native_node(&child.node, child_depth, budget)?;
+    }
+    Ok(())
+}
+
+fn reserve(counter: &mut usize, limit: usize, label: &str) -> Result<(), SourceAdapterError> {
+    let next = counter
+        .checked_add(1)
+        .ok_or_else(|| resource_limit(&format!("{label} accounting overflow")))?;
+    if next > limit {
+        return Err(resource_limit(&format!(
+            "{label} exceed navigation limit {limit}"
+        )));
+    }
+    *counter = next;
+    Ok(())
 }
 
 fn property_name(id: &str) -> String {
@@ -604,6 +743,10 @@ fn ambiguous(message: impl Into<String>) -> SourceAdapterError {
     SourceAdapterError::new(SourceAdapterErrorKind::ProjectionAmbiguous, message)
 }
 
+fn resource_limit(message: impl Into<String>) -> SourceAdapterError {
+    SourceAdapterError::new(SourceAdapterErrorKind::ResourceLimit, message)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -676,6 +819,24 @@ mod tests {
             .nodes
             .iter()
             .all(|node| { node.capability.format == FormatCompatibility::Compatible }));
+    }
+
+    #[test]
+    fn native_snapshot_is_preflighted_before_semantic_output_allocation() {
+        use crate::domain::navigation_limits::MAX_NAVIGATION_NODES;
+
+        let mut root = document_fixture();
+        let template = root.children.pop().unwrap();
+        root.children = (0..MAX_NAVIGATION_NODES)
+            .map(|index| {
+                let mut child = template.clone();
+                child.node.uuid = None;
+                child.node.name = format!("Bounded{index}");
+                child
+            })
+            .collect();
+        let error = project_fixture(root).unwrap_err();
+        assert_eq!(error.kind, SourceAdapterErrorKind::ResourceLimit);
     }
 
     #[test]

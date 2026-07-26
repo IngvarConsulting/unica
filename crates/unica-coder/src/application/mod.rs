@@ -77,6 +77,14 @@ mod meta_info_contract_tests {
             .get("uniqueItems")
             .is_none());
         assert_eq!(
+            schema["properties"]["select"]["properties"]["properties"]["oneOf"][1]["maxItems"],
+            256
+        );
+        assert_eq!(
+            schema["properties"]["select"]["properties"]["relations"]["maxItems"],
+            64
+        );
+        assert_eq!(
             schema["properties"]["select"]["properties"]["relations"]["items"]["properties"]
                 ["role"]["enum"],
             json!([
