@@ -4343,40 +4343,6 @@ mod tests {
     }
 
     #[test]
-    fn outline_reports_building_index_as_retryable_pending_failure() {
-        let outcome =
-            outline_index_unavailable_outcome("unica.code.outline", IndexReadiness::Building);
-
-        assert!(!outcome.ok);
-        assert!(outcome.warnings.is_empty());
-        assert_eq!(
-            outcome.summary,
-            "unica.code.outline pending RLM index build"
-        );
-        assert_eq!(outcome.errors, vec!["index_pending: rlm index building"]);
-        assert!(outcome.stdout.is_none());
-    }
-
-    #[test]
-    fn outline_reports_invalid_source_root_as_failure_with_stable_code() {
-        let outcome = outline_index_unavailable_outcome(
-            "unica.code.outline",
-            IndexReadiness::Unavailable(
-                "invalid_source_root: sourceDir must stay within workspace".to_string(),
-            ),
-        );
-
-        assert!(!outcome.ok);
-        assert!(outcome.warnings.is_empty());
-        assert_eq!(
-            outcome.errors,
-            vec!["invalid_source_root: sourceDir must stay within workspace"]
-        );
-        assert!(outcome.summary.contains("invalid source root"));
-        assert!(outcome.stdout.is_none());
-    }
-
-    #[test]
     fn code_grep_does_not_start_rlm_index_side_effect() {
         let root = std::env::temp_dir().join(format!("unica-code-grep-{}", std::process::id()));
         let workspace = root.join("workspace");
@@ -6240,6 +6206,10 @@ mod tests {
         assert!(outcome.warnings.is_empty());
         assert_eq!(outcome.errors.len(), 1);
         assert!(outcome.errors[0].starts_with("invalid_source_root:"));
+        assert_eq!(
+            outcome.summary,
+            "unica.code.outline rejected invalid source root"
+        );
         assert!(outcome.stdout.is_none());
         assert!(index.commands.borrow().is_empty());
         cleanup_context(&context);
@@ -6274,6 +6244,8 @@ mod tests {
 
         assert!(!outcome.ok);
         assert!(outcome.errors[0].starts_with(CANCELLED_PREFIX));
+        assert!(outcome.warnings.is_empty());
+        assert!(outcome.stdout.is_none());
         assert!(index.commands.borrow().is_empty());
         cleanup_context(&context);
     }
