@@ -54,7 +54,10 @@ mod meta_info_contract_tests {
         assert_eq!(schema["properties"]["objectRef"]["additionalProperties"], false);
         assert_eq!(schema["properties"]["select"]["additionalProperties"], false);
         assert_eq!(schema["properties"]["select"]["properties"]["relations"]["items"]["additionalProperties"], false);
+        assert_eq!(schema["properties"]["select"]["properties"]["relations"]["uniqueItems"], true);
+        assert_eq!(schema["properties"]["select"]["properties"]["relations"]["items"]["properties"]["role"]["enum"], json!(["children", "attributes", "tabularSections", "forms", "commands", "templates"]));
         assert_eq!(schema["properties"]["cursor"]["additionalProperties"], false);
+        assert!(schema["properties"]["cursor"]["required"].as_array().unwrap().contains(&json!("relationRole")));
 
         let validator = jsonschema::validator_for(&schema).unwrap();
         for invalid in [

@@ -296,11 +296,37 @@ impl CapabilityState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum RelationKind {
     Contains,
     References,
+}
+
+/// Closed, versioned ownership roles assigned by a certified projector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum RelationRole {
+    Children,
+    Attributes,
+    TabularSections,
+    Forms,
+    Commands,
+    Templates,
+}
+
+impl RelationRole {
+    pub(crate) fn parse(value: &str) -> Result<Self, SourceAdapterError> {
+        match value {
+            "children" => Ok(Self::Children),
+            "attributes" => Ok(Self::Attributes),
+            "tabularSections" => Ok(Self::TabularSections),
+            "forms" => Ok(Self::Forms),
+            "commands" => Ok(Self::Commands),
+            "templates" => Ok(Self::Templates),
+            _ => Err(SourceAdapterError::new(SourceAdapterErrorKind::ProjectionAmbiguous, "invalid relation role")),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -311,14 +337,27 @@ pub(crate) struct RelationRef {
     pub(crate) kind: RelationKind,
 }
 
+/// Page identity for the exact owner/role/kind aggregate, distinct from edge identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RelationGroupRef {
+    pub(crate) source_id: SourceId,
+    pub(crate) group_key: RelationKey,
+    pub(crate) owner: ObjectRef,
+    pub(crate) role: RelationRole,
+    pub(crate) kind: RelationKind,
+}
+
 /// A semantic relation is an independently addressable aggregate.  Its source
 /// and target are opaque semantic references, never native locations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SemanticRelation {
     pub(crate) relation_ref: RelationRef,
+    pub(crate) group_ref: RelationGroupRef,
     pub(crate) identity_strength: IdentityStrength,
     pub(crate) kind: RelationKind,
+    pub(crate) role: RelationRole,
     pub(crate) source: ObjectRef,
     pub(crate) target: ObjectRef,
     pub(crate) capability: CapabilityVector,
@@ -331,6 +370,29 @@ impl RelationRef {
         kind: RelationKind,
     ) -> Result<Self, SourceAdapterError> {
         Ok(Self { source_id, relation_key: RelationKey::new(relation_key)?, kind })
+    }
+}
+
+impl RelationGroupRef {
+    pub(crate) fn new(
+        source_id: SourceId,
+        owner: ObjectRef,
+        role: RelationRole,
+        kind: RelationKind,
+    ) -> Result<Self, SourceAdapterError> {
+        let canonical = serde_json::to_vec(&(&source_id, &owner.object_key, role, kind)).map_err(|error| {
+            SourceAdapterError::new(SourceAdapterErrorKind::ProjectionAmbiguous, format!("cannot serialize relation group: {error}"))
+        })?;
+        let mut digest = Sha256::new();
+        digest.update(b"unica.navigation.relation-group.v1\0");
+        digest.update(canonical);
+        Ok(Self {
+            source_id,
+            group_key: RelationKey::new(format!("group:sha256:{:x}", digest.finalize()))?,
+            owner,
+            role,
+            kind,
+        })
     }
 }
 
@@ -802,7 +864,7 @@ impl From<SourceAdapterError> for SourceAdapterDiagnostic {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct NavigationRelationPage {
-    pub(crate) relation: RelationRef,
+    pub(crate) relation: RelationGroupRef,
     pub(crate) items: Vec<NavigationNode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) next_cursor: Option<NavigationCursor>,
@@ -1039,15 +1101,15 @@ pub(crate) enum FacetSelection { None, Summary, Full }
 pub(crate) struct RelationSelection {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) kind: Option<RelationKind>,
-    pub(crate) role: String,
+    pub(crate) role: RelationRole,
     pub(crate) page_size: u16,
 }
 
 impl RelationSelection {
-    pub(crate) fn new(role: impl Into<String>, page_size: Option<u16>) -> Result<Self, SourceAdapterError> {
-        let role = role.into();
+    pub(crate) fn new(role: impl AsRef<str>, page_size: Option<u16>) -> Result<Self, SourceAdapterError> {
+        let role = RelationRole::parse(role.as_ref())?;
         let page_size = page_size.unwrap_or(25);
-        if role.is_empty() || role.chars().any(char::is_control) || page_size == 0 || page_size > 100 {
+        if page_size == 0 || page_size > 100 {
             return Err(SourceAdapterError::new(SourceAdapterErrorKind::ProjectionAmbiguous, "invalid relation selection"));
         }
         Ok(Self { kind: None, role, page_size })
@@ -1062,6 +1124,7 @@ pub(crate) struct NavigationCursor {
     pub(crate) snapshot_revision: SourceRevision,
     pub(crate) target: ObjectKey,
     pub(crate) relation: RelationKey,
+    pub(crate) relation_role: RelationRole,
     pub(crate) relation_kind: RelationKind,
     pub(crate) selection: NavigationSelection,
     pub(crate) selection_hash: String,
@@ -1077,11 +1140,11 @@ impl NavigationCursor {
         source_id: SourceId,
         snapshot_revision: SourceRevision,
         target: ObjectKey,
-        relation: RelationRef,
+        relation: RelationGroupRef,
         selection: NavigationSelection,
         next_position: u64,
     ) -> Result<Self, SourceAdapterError> {
-        if source_id != relation.source_id {
+        if source_id != relation.source_id || target != relation.owner.object_key {
             return Err(SourceAdapterError::new(SourceAdapterErrorKind::SourceUnavailable, "navigation cursor relation belongs to another source"));
         }
         let selection_hash = normalized_selection_hash(&selection)?;
@@ -1090,7 +1153,8 @@ impl NavigationCursor {
             source_id,
             snapshot_revision,
             target,
-            relation: relation.relation_key,
+            relation: relation.group_key,
+            relation_role: relation.role,
             relation_kind: relation.kind,
             selection,
             selection_hash,
@@ -1116,10 +1180,10 @@ impl NavigationCursor {
         re_resolve: F,
     ) -> Result<Self, SourceAdapterError>
     where
-        F: FnOnce(&SourceId, &ObjectKey, &RelationKey, &RelationKind) -> bool,
+        F: FnOnce(&SourceId, &ObjectKey, &RelationKey, &RelationRole, &RelationKind) -> bool,
     {
         let object = value.as_object().ok_or_else(|| SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor must be a JSON object"))?;
-        let allowed = ["schemaVersion", "sourceId", "snapshotRevision", "target", "relation", "relationKind", "selection", "selectionHash", "authTag", "nextPosition"];
+        let allowed = ["schemaVersion", "sourceId", "snapshotRevision", "target", "relation", "relationRole", "relationKind", "selection", "selectionHash", "authTag", "nextPosition"];
         if object.keys().any(|key| !allowed.contains(&key.as_str())) || object.len() != allowed.len() {
             return Err(SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor has unknown or missing fields"));
         }
@@ -1132,6 +1196,7 @@ impl NavigationCursor {
             "references" => RelationKind::References,
             _ => return Err(SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor has invalid relationKind")),
         };
+        let relation_role = RelationRole::parse(string("relationRole")?).map_err(|_| SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor has invalid relationRole"))?;
         let selection_hash = string("selectionHash")?.to_string();
         if selection_hash != normalized_selection_hash(expected_selection)? {
             return Err(SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor selectionHash is not normalized"));
@@ -1142,6 +1207,7 @@ impl NavigationCursor {
             snapshot_revision: SourceRevision::new(string("snapshotRevision")?)?,
             target: ObjectKey::new(string("target")?)?,
             relation: RelationKey::new(string("relation")?)?,
+            relation_role,
             relation_kind,
             selection: expected_selection.clone(),
             selection_hash,
@@ -1152,7 +1218,7 @@ impl NavigationCursor {
         let mac = cursor_mac(secret, &cursor)?;
         mac.verify_slice(&tag).map_err(|_| SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor authentication failed"))?;
         cursor.resume(current_revision)?;
-        if !re_resolve(&cursor.source_id, &cursor.target, &cursor.relation, &cursor.relation_kind) {
+        if !re_resolve(&cursor.source_id, &cursor.target, &cursor.relation, &cursor.relation_role, &cursor.relation_kind) {
             return Err(SourceAdapterError::new(SourceAdapterErrorKind::SourceUnavailable, "navigation cursor target or relation cannot be re-resolved"));
         }
         Ok(cursor)
@@ -1163,7 +1229,7 @@ fn cursor_mac(secret: &[u8], cursor: &NavigationCursor) -> Result<Hmac<Sha256>, 
     let mut mac = Hmac::<Sha256>::new_from_slice(secret).map_err(|_| SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, "navigation cursor key is invalid"))?;
     let canonical = serde_json::to_vec(&(
         cursor.schema_version, &cursor.source_id, &cursor.snapshot_revision, &cursor.target,
-        &cursor.relation, &cursor.relation_kind, &cursor.selection, &cursor.selection_hash,
+        &cursor.relation, &cursor.relation_role, &cursor.relation_kind, &cursor.selection, &cursor.selection_hash,
         cursor.next_position,
     )).map_err(|error| SourceAdapterError::new(SourceAdapterErrorKind::ProjectionAmbiguous, format!("cannot serialize navigation cursor: {error}")))?;
     mac.update(b"unica.navigation.cursor.auth.v1\0");
@@ -1193,9 +1259,6 @@ pub(crate) fn normalized_selection_hash(selection: &NavigationSelection) -> Resu
         }
     }
     let mut normalized = selection.clone();
-    for relation in &normalized.relations {
-        validate_selection_token(&relation.role)?;
-    }
     normalized.relations.sort_by(|left, right| {
         serde_json::to_vec(left)
             .expect("relation selection is serializable")
@@ -1231,7 +1294,9 @@ mod tests {
     fn node_ref() -> ObjectRef {
         ObjectRef::new(source_id("workspace:main"), object_key("uuid:11111111-1111-1111-1111-111111111111"), IdentityStrength::Persistent, NodeKind::Document, "Order")
     }
-    fn relation_ref() -> RelationRef { RelationRef::new(source_id("workspace:main"), "contains:document-attributes", RelationKind::Contains).unwrap() }
+    fn relation_group_ref() -> RelationGroupRef {
+        RelationGroupRef::new(source_id("workspace:main"), node_ref(), RelationRole::Attributes, RelationKind::Contains).unwrap()
+    }
     fn selection() -> NavigationSelection {
         NavigationSelection {
             properties: PropertySelection::Named(BTreeSet::from(["name".to_string()])),
@@ -1309,20 +1374,20 @@ mod tests {
 
     #[test]
     fn cursor_is_bound_to_snapshot_revision() {
-        let cursor = NavigationCursor::issue(cursor_test_secret(), source_id("workspace:main"), SourceRevision::new("sha256:one").unwrap(), object_key("uuid:11111111-1111-1111-1111-111111111111"), relation_ref(), selection(), 0).unwrap();
+        let cursor = NavigationCursor::issue(cursor_test_secret(), source_id("workspace:main"), SourceRevision::new("sha256:one").unwrap(), object_key("uuid:11111111-1111-1111-1111-111111111111"), relation_group_ref(), selection(), 0).unwrap();
         let error = cursor.resume(&SourceRevision::new("sha256:two").unwrap()).unwrap_err();
         assert_eq!(error.kind, SourceAdapterErrorKind::SnapshotStale);
     }
 
     #[test]
     fn cursor_decode_validates_schema_hash_and_semantic_resolution() {
-        let cursor = NavigationCursor::issue(cursor_test_secret(), source_id("workspace:main"), SourceRevision::new("sha256:one").unwrap(), object_key("uuid:11111111-1111-1111-1111-111111111111"), relation_ref(), selection(), 0).unwrap();
+        let cursor = NavigationCursor::issue(cursor_test_secret(), source_id("workspace:main"), SourceRevision::new("sha256:one").unwrap(), object_key("uuid:11111111-1111-1111-1111-111111111111"), relation_group_ref(), selection(), 0).unwrap();
         let decoded = NavigationCursor::decode(
             serde_json::to_value(cursor).unwrap(),
             cursor_test_secret(),
             &SourceRevision::new("sha256:one").unwrap(),
             &selection(),
-            |_source, _target, _relation, _kind| true,
+            |_source, _target, _relation, _role, _kind| true,
         ).unwrap();
         assert_eq!(decoded.schema_version, NavigationCursor::SCHEMA_VERSION);
     }
@@ -1330,7 +1395,11 @@ mod tests {
     #[test]
     fn cursor_rejects_relation_from_another_source_and_preserves_target() {
         let target = object_key("uuid:11111111-1111-1111-1111-111111111111");
-        let foreign_relation = RelationRef::new(source_id("workspace:other"), "contains:foreign-owner", RelationKind::Contains).unwrap();
+        let foreign_relation = RelationGroupRef::new(
+            source_id("workspace:other"),
+            ObjectRef::new(source_id("workspace:other"), object_key("uuid:22222222-2222-2222-2222-222222222222"), IdentityStrength::Persistent, NodeKind::Document, "Foreign"),
+            RelationRole::Attributes, RelationKind::Contains,
+        ).unwrap();
         let error = NavigationCursor::issue(
             cursor_test_secret(), source_id("workspace:main"),
             SourceRevision::new("sha256:one").unwrap(),
@@ -1345,7 +1414,7 @@ mod tests {
             cursor_test_secret(), source_id("workspace:main"),
             SourceRevision::new("sha256:one").unwrap(),
             target.clone(),
-            relation_ref(),
+            relation_group_ref(),
             selection(),
             44,
         ).unwrap();
@@ -1359,7 +1428,7 @@ mod tests {
             cursor_test_secret(), source_id("workspace:main"),
             SourceRevision::new("sha256:one").unwrap(),
             object_key("uuid:11111111-1111-1111-1111-111111111111"),
-            relation_ref(),
+            relation_group_ref(),
             selection(),
             0,
         ).unwrap();
@@ -1370,7 +1439,7 @@ mod tests {
             cursor_test_secret(),
             &SourceRevision::new("sha256:one").unwrap(),
             &selection(),
-            |_source, _target, _relation, _kind| true,
+            |_source, _target, _relation, _role, _kind| true,
         ).unwrap_err();
         assert_eq!(error.kind, SourceAdapterErrorKind::DecodeCorrupted);
     }
@@ -1380,12 +1449,12 @@ mod tests {
         let first = NavigationSelection {
             properties: PropertySelection::Named(BTreeSet::from(["alpha,beta".to_string()])),
             facets: FacetSelection::Summary,
-            relations: vec![RelationSelection::new("role:with|all,delimiters", Some(25)).unwrap()],
+            relations: vec![RelationSelection::new("attributes", Some(25)).unwrap()],
         };
         let second = NavigationSelection {
             properties: PropertySelection::Named(BTreeSet::from(["alpha".to_string(), "beta".to_string()])),
             facets: FacetSelection::Summary,
-            relations: vec![RelationSelection::new("role:with|all,delimiters", Some(25)).unwrap()],
+            relations: vec![RelationSelection::new("attributes", Some(25)).unwrap()],
         };
         assert_ne!(normalized_selection_hash(&first).unwrap(), normalized_selection_hash(&second).unwrap());
 
@@ -1393,7 +1462,7 @@ mod tests {
             cursor_test_secret(), source_id("workspace:main"),
             SourceRevision::new("sha256:one").unwrap(),
             object_key("uuid:11111111-1111-1111-1111-111111111111"),
-            relation_ref(),
+            relation_group_ref(),
             first,
             0,
         ).unwrap();
@@ -1402,7 +1471,7 @@ mod tests {
             cursor_test_secret(),
             &SourceRevision::new("sha256:one").unwrap(),
             &second,
-            |_source, _target, _relation, _kind| true,
+            |_source, _target, _relation, _role, _kind| true,
         ).unwrap_err();
         assert_eq!(error.kind, SourceAdapterErrorKind::DecodeCorrupted);
     }

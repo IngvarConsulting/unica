@@ -595,7 +595,7 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-                "role": {"type": "string", "minLength": 1},
+                "role": {"type": "string", "enum": ["children", "attributes", "tabularSections", "forms", "commands", "templates"]},
                 "kind": {"type": "string", "enum": ["contains", "references"]},
                 "pageSize": {"type": "integer", "minimum": 1, "maximum": 100}
             },
@@ -611,7 +611,7 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
                     {"type": "object", "additionalProperties": false, "properties": {"named": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}, "uniqueItems": true}}, "required": ["named"]}
                 ]},
                 "facets": {"type": "string", "enum": ["none", "summary", "full"]},
-                "relations": {"type": "array", "items": relation_selection}
+                "relations": {"type": "array", "uniqueItems": true, "items": relation_selection}
             }
         });
         schema["properties"]["objectRef"] = json!({
@@ -630,13 +630,14 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
                 "snapshotRevision": {"type": "string", "minLength": 1},
                 "target": {"type": "string", "minLength": 1},
                 "relation": {"type": "string", "minLength": 1},
+                "relationRole": {"type": "string", "enum": ["children", "attributes", "tabularSections", "forms", "commands", "templates"]},
                 "relationKind": {"type": "string", "enum": ["contains", "references"]},
                 "selection": selection,
                 "selectionHash": {"type": "string", "minLength": 1},
                 "authTag": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
                 "nextPosition": {"type": "integer", "minimum": 0}
             },
-            "required": ["schemaVersion", "sourceId", "snapshotRevision", "target", "relation", "relationKind", "selection", "selectionHash", "authTag", "nextPosition"]
+            "required": ["schemaVersion", "sourceId", "snapshotRevision", "target", "relation", "relationRole", "relationKind", "selection", "selectionHash", "authTag", "nextPosition"]
         });
         schema["oneOf"] = json!([
             {"required": ["ObjectPath"], "not": {"anyOf": [

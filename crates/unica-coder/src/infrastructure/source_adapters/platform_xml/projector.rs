@@ -8,7 +8,8 @@ use crate::domain::{
         action_profile_for, ActionAvailability, Atomicity, Authorability, CapabilityState,
         CapabilityVector, CoverageState, FormatCompatibility, IdentityStrength, NavigationEnvelope,
         NavigationNode, NodeKind, ObjectKey, ObjectRef, PropertyCapability, PropertyProvenance,
-        PropertyType, PropertyValue, RelationKey, RelationKind, RelationRef,
+        PropertyType, PropertyValue, RelationGroupRef, RelationKey, RelationKind, RelationRef,
+        RelationRole,
         ResolutionState, SemanticAction, SemanticActionKind, SemanticProperty, SemanticRelation,
     },
     source_adapters::{SourceAccess, SourceAdapterError, SourceAdapterErrorKind, SourceId},
@@ -149,7 +150,7 @@ impl<'a> GraphBuilder<'a> {
         };
         let capability_state = CapabilityState::new(resolution, action_authorability);
         let owning_relation = owner
-            .map(|parent| self.add_contains(parent, &reference))
+            .map(|parent| self.add_contains(parent, &reference, relation_role_for_child(parent, &kind)))
             .transpose()?;
         let actions = modeled_actions(&kind, &reference, capability_state, owning_relation.clone());
         self.nodes.push(NavigationNode {
@@ -176,6 +177,7 @@ impl<'a> GraphBuilder<'a> {
         &mut self,
         owner: &ObjectRef,
         target: &ObjectRef,
+        role: RelationRole,
     ) -> Result<RelationRef, SourceAdapterError> {
         let relation_key = relation_key(
             &self.native.source.source_id,
@@ -194,10 +196,15 @@ impl<'a> GraphBuilder<'a> {
             relation_key,
             kind: RelationKind::Contains,
         };
+        let group_ref = RelationGroupRef::new(
+            self.native.source.source_id.clone(), owner.clone(), role, RelationKind::Contains,
+        )?;
         self.relations.push(SemanticRelation {
             relation_ref: relation_ref.clone(),
+            group_ref,
             identity_strength: IdentityStrength::Derived,
             kind: RelationKind::Contains,
+            role,
             source: owner.clone(),
             target: target.clone(),
             capability: CapabilityVector {
@@ -235,6 +242,18 @@ impl<'a> GraphBuilder<'a> {
             diagnostics: Vec::new(),
             relation_index: self.relations,
         })
+    }
+}
+
+fn relation_role_for_child(owner: &ObjectRef, child: &NodeKind) -> RelationRole {
+    let _ = owner;
+    match child {
+        NodeKind::Attribute => RelationRole::Attributes,
+        NodeKind::TabularSection => RelationRole::TabularSections,
+        NodeKind::Form => RelationRole::Forms,
+        NodeKind::Command => RelationRole::Commands,
+        NodeKind::Template { .. } => RelationRole::Templates,
+        _ => RelationRole::Children,
     }
 }
 
