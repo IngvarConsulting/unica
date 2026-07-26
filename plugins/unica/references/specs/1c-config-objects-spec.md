@@ -883,16 +883,27 @@ XML-элемент: `<Catalog>`. Категория InternalInfo: CatalogObject,
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
-<PredefinedData xmlns="http://v8.1c.ru/8.3/MDClasses" ...>
-    <Item>
+<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef"
+    xmlns:v8="http://v8.1c.ru/8.1/data/core"
+    xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"
+    xmlns:xs="http://www.w3.org/2001/XMLSchema"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:type="CatalogPredefinedItems" version="2.20">
+    <Item id="c7d2e6fc-3824-4b56-b4be-ae6be4944c0e">
         <Name>ОсновнаяВалюта</Name>
-        <Description>Рубль</Description>
         <Code>643</Code>
+        <Description>Рубль</Description>
         <IsFolder>false</IsFolder>
         <!-- значения реквизитов -->
     </Item>
 </PredefinedData>
 ```
+
+Корень — `PredefinedData` в пространстве имён `http://v8.1c.ru/8.3/xcf/predef`
+(не `MDClasses`), с обязательным `version="2.20"`. `xsi:type` зависит от вида
+владельца: на выгрузках 8.3.27.2074 подтверждены `CatalogPredefinedItems` и
+`PlanOfCharacteristicKindPredefinedItems`. Расширения используют тот же корень —
+см. [1c-extension-spec.md § 8](1c-extension-spec.md).
 
 ---
 
