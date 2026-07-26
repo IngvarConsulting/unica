@@ -1488,7 +1488,7 @@ mod support_state_tests {
         fs::create_dir_all(&ext).expect("create Ext");
         fs::write(
             ext.join("ParentConfigurations.bin"),
-            "{6,0,1,0,0,bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb}",
+            "{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"VendorConf\",3,1,0,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,0,1,bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb,bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb,2,1,cccccccc-cccc-cccc-cccc-cccccccccccc,cccccccc-cccc-cccc-cccc-cccccccccccc}",
         )
         .expect("write locked support state");
         let alias = root.with_extension("alias.xml");

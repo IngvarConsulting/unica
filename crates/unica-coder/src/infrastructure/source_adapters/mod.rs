@@ -7,6 +7,8 @@ use crate::domain::{
 
 pub(crate) mod registry;
 pub(crate) mod platform_xml;
+#[cfg(test)]
+pub(crate) mod certification;
 
 pub(crate) struct SourceInput {
     pub(crate) workspace_root: PathBuf,
