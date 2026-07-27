@@ -1,0 +1,321 @@
+{
+  "schemaVersion": 1,
+  "provenance": "independently-hand-authored-public-navigation-request-response",
+  "families": {
+    "diagnosticDetailsOption": [
+      ["none", {
+        "code": "unavailable",
+        "message": "no details"
+      }],
+      ["some", {
+        "code": "partial",
+        "details": {"ordinal": 1},
+        "message": "with details"
+      }]
+    ],
+    "envelopeRootOption": [
+      ["some", {
+        "displayName": "VariantObject",
+        "identityStrength": "persistent",
+        "kind": "document",
+        "objectKey": "uuid:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "sourceId": "source:public-variants"
+      }],
+      ["none", null]
+    ],
+    "envelopeSnapshotOption": [
+      ["some", {
+        "adapterId": "public-navigation-wire",
+        "consistency": "consistent",
+        "revision": "revision:public-variants",
+        "sourceId": "source:public-variants"
+      }],
+      ["none", null]
+    ],
+    "facetSelection": [
+      ["none", "none"],
+      ["summary", "summary"],
+      ["full", "full"]
+    ],
+    "navigationCursor": [
+      ["opaque", "opaque:cursor"]
+    ],
+    "navigationEnvelope": [
+      ["ready", {
+        "diagnostics": [],
+        "nodes": [],
+        "relations": [],
+        "root": {
+          "displayName": "VariantObject",
+          "identityStrength": "persistent",
+          "kind": "document",
+          "objectKey": "uuid:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "sourceId": "source:public-variants"
+        },
+        "schemaVersion": "1",
+        "snapshot": {
+          "adapterId": "public-navigation-wire",
+          "consistency": "consistent",
+          "revision": "revision:public-variants",
+          "sourceId": "source:public-variants"
+        },
+        "status": "ready"
+      }],
+      ["partial", {
+        "diagnostics": [{
+          "code": "partialCoverage",
+          "details": {"coverage": "partial"},
+          "message": "public navigation coverage is partial"
+        }],
+        "nodes": [],
+        "relations": [],
+        "root": {
+          "displayName": "VariantObject",
+          "identityStrength": "snapshotOnly",
+          "kind": "document",
+          "objectKey": "uuid:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "sourceId": "source:public-variants"
+        },
+        "schemaVersion": "1",
+        "snapshot": {
+          "adapterId": "public-navigation-wire",
+          "consistency": "partial",
+          "revision": "revision:public-variants",
+          "sourceId": "source:public-variants"
+        },
+        "status": "partial"
+      }],
+      ["unavailable", {
+        "diagnostics": [{
+          "code": "sourceUnavailable",
+          "message": "public navigation is unavailable"
+        }],
+        "nodes": [],
+        "relations": [],
+        "root": null,
+        "schemaVersion": "1",
+        "snapshot": null,
+        "status": "unavailable"
+      }]
+    ],
+    "navigationQuery": [
+      ["capturedTarget", {
+        "select": {
+          "facets": "none",
+          "properties": "all",
+          "relations": []
+        },
+        "target": {
+          "capturedTarget": "target:sha256:6c4531db364a826f6d4318021bbb1e2ba5f25e665ef515ca5830e7aed769f117"
+        }
+      }],
+      ["objectPath", {
+        "select": {
+          "facets": "full",
+          "properties": {
+            "named": ["document.number.length", "metadata.name"]
+          },
+          "relations": [
+            {"kind": "contains", "pageSize": 25, "role": "attributes"},
+            {"kind": "references", "pageSize": 100, "role": "basedOn"}
+          ]
+        },
+        "target": {"objectPath": "Documents/Variant.xml"}
+      }],
+      ["objectRef", {
+        "select": {
+          "facets": "full",
+          "properties": {
+            "named": ["document.number.length", "metadata.name"]
+          },
+          "relations": [
+            {"kind": "contains", "pageSize": 25, "role": "attributes"},
+            {"kind": "references", "pageSize": 100, "role": "basedOn"}
+          ]
+        },
+        "target": {
+          "objectRef": {
+            "object_ref": {
+              "displayName": "VariantObject",
+              "identityStrength": "persistent",
+              "kind": "document",
+              "objectKey": "uuid:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+              "sourceId": "source:public-variants"
+            },
+            "snapshot_revision": "revision:public-variants"
+          }
+        }
+      }],
+      ["cursor", {
+        "select": {
+          "facets": "full",
+          "properties": {
+            "named": ["document.number.length", "metadata.name"]
+          },
+          "relations": [
+            {"kind": "contains", "pageSize": 25, "role": "attributes"},
+            {"kind": "references", "pageSize": 100, "role": "basedOn"}
+          ]
+        },
+        "target": {"cursor": "opaque:cursor"}
+      }]
+    ],
+    "navigationSelection": [
+      ["minimal", {
+        "facets": "none",
+        "properties": "all",
+        "relations": []
+      }],
+      ["complete", {
+        "facets": "full",
+        "properties": {
+          "named": ["document.number.length", "metadata.name"]
+        },
+        "relations": [
+          {"kind": "contains", "pageSize": 25, "role": "attributes"},
+          {"kind": "references", "pageSize": 100, "role": "basedOn"}
+        ]
+      }]
+    ],
+    "navigationTarget": [
+      ["capturedTarget", {
+        "capturedTarget": "target:sha256:6c4531db364a826f6d4318021bbb1e2ba5f25e665ef515ca5830e7aed769f117"
+      }],
+      ["objectPath", {"objectPath": "Documents/Variant.xml"}],
+      ["objectRef", {
+        "objectRef": {
+          "object_ref": {
+            "displayName": "VariantObject",
+            "identityStrength": "persistent",
+            "kind": "document",
+            "objectKey": "uuid:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "sourceId": "source:public-variants"
+          },
+          "snapshot_revision": "revision:public-variants"
+        }
+      }],
+      ["cursor", {"cursor": "opaque:cursor"}]
+    ],
+    "numberQualifierOptionShape": [
+      ["signOnly", {"allowedSign": "any"}],
+      ["digitsOnly", {"digits": 8}],
+      ["digitsFraction", {"digits": 8, "fractionDigits": 2}],
+      ["all", {
+        "allowedSign": "nonnegative",
+        "digits": 15,
+        "fractionDigits": 3
+      }]
+    ],
+    "propertySelection": [
+      ["all", "all"],
+      ["namedEmpty", {"named": []}],
+      ["named", {
+        "named": ["document.number.length", "metadata.name"]
+      }]
+    ],
+    "relationPageCursorOption": [
+      ["none", {
+        "items": [],
+        "relation": {
+          "groupKey": "group:public-variants",
+          "kind": "contains",
+          "owner": {
+            "displayName": "VariantObject",
+            "identityStrength": "persistent",
+            "kind": "document",
+            "objectKey": "uuid:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "sourceId": "source:public-variants"
+          },
+          "role": "attributes",
+          "sourceId": "source:public-variants"
+        }
+      }],
+      ["some", {
+        "items": [],
+        "nextCursor": "opaque:cursor",
+        "relation": {
+          "groupKey": "group:public-variants",
+          "kind": "contains",
+          "owner": {
+            "displayName": "VariantObject",
+            "identityStrength": "persistent",
+            "kind": "document",
+            "objectKey": "uuid:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "sourceId": "source:public-variants"
+          },
+          "role": "attributes",
+          "sourceId": "source:public-variants"
+        }
+      }]
+    ],
+    "relationSelection": [
+      ["defaultContains", {
+        "kind": "contains",
+        "pageSize": 25,
+        "role": "attributes"
+      }],
+      ["explicitContainsMinimum", {
+        "kind": "contains",
+        "pageSize": 1,
+        "role": "forms"
+      }],
+      ["explicitReferencesMaximum", {
+        "kind": "references",
+        "pageSize": 100,
+        "role": "basedOn"
+      }]
+    ],
+    "semanticActionOperationBindingOption": [
+      ["none", null],
+      ["some", {"schemaVersion": "1", "tool": "unica.meta.edit"}]
+    ],
+    "semanticActionOwningRelationOption": [
+      ["none", null],
+      ["some", {
+        "kind": "contains",
+        "relationKey": "relation:public-variants",
+        "sourceId": "source:public-variants"
+      }]
+    ],
+    "semanticActionTargetOption": [
+      ["none", null],
+      ["some", {
+        "displayName": "VariantObject",
+        "identityStrength": "snapshotOnly",
+        "kind": "document",
+        "objectKey": "uuid:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "sourceId": "source:public-variants"
+      }]
+    ],
+    "semanticPropertyValueOption": [
+      ["none", {
+        "capability": "unavailable",
+        "provenance": "declared",
+        "type": "string",
+        "valueState": "absent"
+      }],
+      ["some", {
+        "capability": "unknown",
+        "provenance": "declared",
+        "type": "string",
+        "value": {"type": "string", "value": "VariantObject"},
+        "valueState": "explicit"
+      }]
+    ],
+    "stringQualifierOptionShape": [
+      ["lengthOnly", {"length": 8}],
+      ["lengthAndAllowed", {
+        "allowedLength": "variable",
+        "length": 8
+      }]
+    ],
+    "typeVariantQualifiersOption": [
+      ["none", {"kind": "primitive", "primitive": "string"}],
+      ["some", {
+        "kind": "primitive",
+        "primitive": "string",
+        "qualifiers": {"string": {"length": 8}}
+      }]
+    ]
+  }
+}

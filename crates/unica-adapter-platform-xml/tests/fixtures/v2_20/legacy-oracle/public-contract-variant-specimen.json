@@ -523,6 +523,18 @@
       ["stringVariable", {
         "string": {"allowedLength": "variable", "length": 0}
       }],
+      ["stringLengthOnly", {
+        "string": {"length": 8}
+      }],
+      ["numberSignOnly", {
+        "number": {"allowedSign": "any"}
+      }],
+      ["numberDigitsOnly", {
+        "number": {"digits": 8}
+      }],
+      ["numberDigitsFraction", {
+        "number": {"digits": 8, "fractionDigits": 2}
+      }],
       ["numberAny", {
         "number": {"allowedSign": "any", "digits": 10, "fractionDigits": 0}
       }],
@@ -532,6 +544,42 @@
       ["date", {"date": {"dateFractions": "date"}}],
       ["dateTime", {"date": {"dateFractions": "dateTime"}}],
       ["time", {"date": {"dateFractions": "time"}}]
+    ],
+    "typeVariantCaseKind": [
+      ["primitiveBoolean", "primitive"],
+      ["primitiveString", "primitive"],
+      ["primitiveNumber", "primitive"],
+      ["primitiveDate", "primitive"],
+      ["primitiveUuid", "primitive"],
+      ["primitiveOpaque", "primitive"],
+      ["primitiveTable", "primitive"],
+      ["primitiveNull", "primitive"],
+      ["qualifiedStringFixed", "primitive"],
+      ["qualifiedStringVariable", "primitive"],
+      ["qualifiedNumberAny", "primitive"],
+      ["qualifiedNumberNonnegative", "primitive"],
+      ["qualifiedDate", "primitive"],
+      ["qualifiedDateTime", "primitive"],
+      ["qualifiedTime", "primitive"],
+      ["reference", "reference"],
+      ["object", "object"],
+      ["recordSet", "recordSet"],
+      ["manager", "manager"],
+      ["key", "key"],
+      ["enumeration", "enumeration"],
+      ["definedType", "definedType"],
+      ["unknown", "unknown"]
+    ],
+    "typeVariantKind": [
+      ["primitive", "primitive"],
+      ["reference", "reference"],
+      ["object", "object"],
+      ["recordSet", "recordSet"],
+      ["manager", "manager"],
+      ["key", "key"],
+      ["enumeration", "enumeration"],
+      ["definedType", "definedType"],
+      ["unknown", "unknown"]
     ],
     "typeVariant": [
       ["primitiveBoolean", {"kind": "primitive", "primitive": "boolean"}],

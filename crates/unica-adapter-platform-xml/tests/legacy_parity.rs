@@ -33,12 +33,12 @@ use unica_format_core::{
     },
     source::{
         SnapshotConsistency, SourceAccess, SourceAdapterErrorKind, SourceContext, SourceFamily,
-        SourceId, SourceLocation, SourceRevision, SourceSnapshot,
+        SourceId, SourceLocation, SourceRevision, SourceSnapshot, TargetIdentity,
     },
     value::{
         DateFractions, DateQualifiers, NumberQualifiers, NumberSign, PrimitiveTypeKind,
         PropertyType, PropertyValue, StringLength, StringQualifiers, TypeQualifiers, TypeSetValue,
-        TypeVariant,
+        TypeVariant, TypeVariantKind,
     },
 };
 
@@ -123,6 +123,7 @@ fn legacy_oracle_regenerates_and_hashes_every_declared_source_without_adapter_de
         "enumAliasExecutions",
         "fullPublicContractSpecimen",
         "publicContractVariantSpecimen",
+        "publicNavigationWireSpecimen",
         "newOnlyContractBuilder",
         "newOnlyContractSource",
         "enumSourceContexts",
@@ -2659,6 +2660,8 @@ fn fix_round8_public_contract_variant_oracle_is_exhaustive() {
         "numberSign",
         "dateFractions",
         "typeQualifiers",
+        "typeVariantKind",
+        "typeVariantCaseKind",
         "typeVariant",
         "semanticFacetMember",
         "propertyValue",
@@ -2725,8 +2728,180 @@ fn fix_round8_public_contract_variant_oracle_is_exhaustive() {
     assert_static_round_trip::<NumberSign>(families, "numberSign");
     assert_static_round_trip::<DateFractions>(families, "dateFractions");
     assert_static_round_trip::<TypeQualifiers>(families, "typeQualifiers");
+    assert_static_round_trip::<TypeVariantKind>(families, "typeVariantKind");
     assert_static_round_trip::<TypeVariant>(families, "typeVariant");
     assert_static_round_trip::<PropertyValue>(families, "propertyValue");
+
+    let type_wires = actual
+        .iter()
+        .filter(|fact| fact["kind"] == "typeVariant")
+        .map(|fact| fact["value"]["variant"].as_str().unwrap())
+        .collect::<BTreeSet<_>>();
+    let type_case_kinds = actual
+        .iter()
+        .filter(|fact| fact["kind"] == "typeVariantCaseKind")
+        .map(|fact| fact["value"]["variant"].as_str().unwrap())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(type_wires, type_case_kinds);
+    let represented_kinds = actual
+        .iter()
+        .filter(|fact| fact["kind"] == "typeVariantCaseKind")
+        .map(|fact| fact["value"]["wire"].as_str().unwrap())
+        .collect::<BTreeSet<_>>();
+    let closed_kinds = actual
+        .iter()
+        .filter(|fact| fact["kind"] == "typeVariantKind")
+        .map(|fact| fact["value"]["wire"].as_str().unwrap())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(represented_kinds, closed_kinds);
+    for (index, fact) in actual.iter().enumerate() {
+        if fact["kind"] != "typeVariant" {
+            continue;
+        }
+        let variant = fact["value"]["variant"].as_str().unwrap();
+        let mut missing = actual.clone();
+        missing.remove(index);
+        assert_comparator_rejects(
+            &expected,
+            &missing,
+            &format!("missing type wire {variant}"),
+        );
+        let mut wrong_payload = actual.clone();
+        wrong_payload[index]["value"]["wire"] = json!({"kind": "wrong"});
+        assert_comparator_rejects(
+            &expected,
+            &wrong_payload,
+            &format!("wrong type wire payload {variant}"),
+        );
+    }
+}
+
+#[test]
+fn fix_round9_public_navigation_request_and_response_wire_is_complete() {
+    let specimen: Value = serde_json::from_slice(
+        &fs::read(oracle_root().join("public-navigation-wire-specimen.json"))
+            .expect("independent public navigation request/response specimen"),
+    )
+    .unwrap();
+    assert_eq!(specimen["schemaVersion"], 1);
+    assert_eq!(
+        specimen["provenance"],
+        "independently-hand-authored-public-navigation-request-response"
+    );
+    let families = specimen["families"].as_object().unwrap();
+    let required_families = [
+        "navigationTarget",
+        "propertySelection",
+        "facetSelection",
+        "relationSelection",
+        "navigationSelection",
+        "navigationQuery",
+        "navigationCursor",
+        "navigationEnvelope",
+        "envelopeSnapshotOption",
+        "envelopeRootOption",
+        "diagnosticDetailsOption",
+        "relationPageCursorOption",
+        "semanticActionTargetOption",
+        "semanticActionOwningRelationOption",
+        "semanticActionOperationBindingOption",
+        "semanticPropertyValueOption",
+        "typeVariantQualifiersOption",
+        "stringQualifierOptionShape",
+        "numberQualifierOptionShape",
+    ];
+    assert_eq!(
+        families.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+        required_families.into_iter().collect(),
+        "request/response wire families must be exact"
+    );
+
+    let expected = static_variant_facts(families);
+    let actual = public_navigation_wire_facts();
+    compare_fact_multisets(&expected, &actual)
+        .unwrap_or_else(|diff| panic!("public navigation wire drifted:\n{diff}"));
+
+    for (index, fact) in actual.iter().enumerate() {
+        let family = fact["kind"].as_str().unwrap();
+        let variant = fact["value"]["variant"].as_str().unwrap();
+        let mut missing = actual.clone();
+        missing.remove(index);
+        assert_comparator_rejects(
+            &expected,
+            &missing,
+            &format!("missing {family}.{variant} branch"),
+        );
+
+        let mut wrong = actual.clone();
+        wrong[index]["value"]["wire"] = json!({"wrongPayload": family});
+        assert_comparator_rejects(
+            &expected,
+            &wrong,
+            &format!("wrong {family}.{variant} payload"),
+        );
+    }
+    for family in families.keys() {
+        let index = actual
+            .iter()
+            .position(|fact| fact["kind"] == *family)
+            .unwrap_or_else(|| panic!("typed navigation inventory omitted {family}"));
+        let mut extra = actual.clone();
+        let mut extra_fact = extra[index].clone();
+        extra_fact["value"]["variant"] = json!("futureBranch");
+        extra.push(extra_fact);
+        assert_comparator_rejects(&expected, &extra, &format!("extra {family} branch"));
+    }
+
+    assert_static_round_trip::<StrictNavigationTargetWire>(families, "navigationTarget");
+    assert_static_round_trip::<StrictPropertySelectionWire>(families, "propertySelection");
+    assert_static_round_trip::<StrictFacetSelectionWire>(families, "facetSelection");
+    assert_static_round_trip::<StrictRelationSelectionWire>(families, "relationSelection");
+    assert_static_round_trip::<StrictNavigationSelectionWire>(families, "navigationSelection");
+    assert_static_round_trip::<StrictNavigationQueryWire>(families, "navigationQuery");
+    assert_static_round_trip::<StrictNavigationEnvelopeWire>(families, "navigationEnvelope");
+    assert_static_round_trip::<Option<StrictSourceSnapshotWire>>(
+        families,
+        "envelopeSnapshotOption",
+    );
+    assert_static_round_trip::<Option<StrictObjectRefWire>>(families, "envelopeRootOption");
+    assert_static_round_trip::<StrictDiagnosticWire>(families, "diagnosticDetailsOption");
+    assert_static_round_trip::<StrictRelationPageWire>(families, "relationPageCursorOption");
+    assert_static_round_trip::<Option<StrictObjectRefWire>>(
+        families,
+        "semanticActionTargetOption",
+    );
+    assert_static_round_trip::<Option<StrictRelationRefWire>>(
+        families,
+        "semanticActionOwningRelationOption",
+    );
+    assert_static_round_trip::<Option<StrictOperationBindingWire>>(
+        families,
+        "semanticActionOperationBindingOption",
+    );
+    assert_static_round_trip::<StrictSemanticPropertyWire>(
+        families,
+        "semanticPropertyValueOption",
+    );
+    assert_static_round_trip::<TypeVariant>(families, "typeVariantQualifiersOption");
+    assert_static_round_trip::<StringQualifiers>(families, "stringQualifierOptionShape");
+    assert_static_round_trip::<NumberQualifiers>(families, "numberQualifierOptionShape");
+    for entry in families["navigationQuery"].as_array().unwrap() {
+        let query: StrictNavigationQueryWire =
+            serde_json::from_value(entry[1].clone()).unwrap();
+        query.validate();
+    }
+
+    let mut extra_field = families["navigationQuery"][0][1].clone();
+    extra_field["futureField"] = json!(true);
+    assert!(serde_json::from_value::<StrictNavigationQueryWire>(extra_field).is_err());
+    let mut unknown_target = families["navigationQuery"][0][1].clone();
+    unknown_target["target"] = json!({"futureTarget": "opaque"});
+    assert!(serde_json::from_value::<StrictNavigationQueryWire>(unknown_target).is_err());
+    let mut extra_envelope_field = families["navigationEnvelope"][0][1].clone();
+    extra_envelope_field["futureField"] = json!(true);
+    assert!(
+        serde_json::from_value::<StrictNavigationEnvelopeWire>(extra_envelope_field).is_err()
+    );
 }
 
 #[test]
@@ -3979,6 +4154,19 @@ fn public_contract_variant_facts() -> Vec<Value> {
         DateFractions::DateTime => "dateTime",
         DateFractions::Time => "time",
     );
+    push_closed_enum_family!(
+        facts,
+        "typeVariantKind",
+        TypeVariantKind::Primitive => "primitive",
+        TypeVariantKind::Reference => "reference",
+        TypeVariantKind::Object => "object",
+        TypeVariantKind::RecordSet => "recordSet",
+        TypeVariantKind::Manager => "manager",
+        TypeVariantKind::Key => "key",
+        TypeVariantKind::Enumeration => "enumeration",
+        TypeVariantKind::DefinedType => "definedType",
+        TypeVariantKind::Unknown => "unknown",
+    );
 
     push_object_ref_identity_variants(&mut facts);
     push_capability_state_variants(&mut facts);
@@ -4215,6 +4403,28 @@ fn type_qualifier_specimens() -> Vec<(&'static str, TypeQualifiers)> {
             ),
         ),
         (
+            "stringLengthOnly",
+            TypeQualifiers::String(StringQualifiers::new(Some(8), None).unwrap()),
+        ),
+        (
+            "numberSignOnly",
+            TypeQualifiers::Number(
+                NumberQualifiers::new(None, None, Some(NumberSign::Any)).unwrap(),
+            ),
+        ),
+        (
+            "numberDigitsOnly",
+            TypeQualifiers::Number(
+                NumberQualifiers::new(Some(8), None, None).unwrap(),
+            ),
+        ),
+        (
+            "numberDigitsFraction",
+            TypeQualifiers::Number(
+                NumberQualifiers::new(Some(8), Some(2), None).unwrap(),
+            ),
+        ),
+        (
             "numberAny",
             TypeQualifiers::Number(
                 NumberQualifiers::new(Some(10), Some(0), Some(NumberSign::Any)).unwrap(),
@@ -4401,6 +4611,19 @@ fn type_variant_specimens() -> Vec<(&'static str, TypeVariant)> {
 
 fn push_type_variant_variants(facts: &mut Vec<Value>) {
     for (variant, value) in type_variant_specimens() {
+        let kind = value.kind();
+        match kind {
+            TypeVariantKind::Primitive => {}
+            TypeVariantKind::Reference => {}
+            TypeVariantKind::Object => {}
+            TypeVariantKind::RecordSet => {}
+            TypeVariantKind::Manager => {}
+            TypeVariantKind::Key => {}
+            TypeVariantKind::Enumeration => {}
+            TypeVariantKind::DefinedType => {}
+            TypeVariantKind::Unknown => {}
+        }
+        push_variant(facts, "typeVariantCaseKind", variant, &kind);
         push_variant(facts, "typeVariant", variant, &value);
     }
 }
@@ -4644,4 +4867,689 @@ fn push_relation_page_shape_variants(facts: &mut Vec<Value>) {
         "withCursor",
         wire,
     ));
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StrictObjectRefWire {
+    source_id: String,
+    object_key: String,
+    identity_strength: String,
+    kind: String,
+    display_name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum StrictNavigationStatusWire {
+    #[serde(rename = "ready")]
+    Available,
+    Partial,
+    Unavailable,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StrictSourceSnapshotWire {
+    source_id: String,
+    revision: String,
+    consistency: SnapshotConsistencyWire,
+    adapter_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum SnapshotConsistencyWire {
+    Consistent,
+    Partial,
+    Changed,
+    Unverifiable,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StrictDiagnosticWire {
+    code: String,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StrictRelationGroupWire {
+    source_id: String,
+    group_key: String,
+    owner: StrictObjectRefWire,
+    role: String,
+    kind: RelationKind,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StrictRelationPageWire {
+    relation: StrictRelationGroupWire,
+    items: Vec<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_cursor: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StrictRelationRefWire {
+    source_id: String,
+    relation_key: String,
+    kind: RelationKind,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StrictOperationBindingWire {
+    tool: String,
+    schema_version: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StrictSemanticPropertyWire {
+    #[serde(rename = "type")]
+    value_type: PropertyType,
+    value_state: PropertyValueState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    value: Option<PropertyValue>,
+    provenance: PropertyProvenance,
+    capability: PropertyCapability,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StrictNavigationEnvelopeWire {
+    schema_version: String,
+    status: StrictNavigationStatusWire,
+    snapshot: Option<StrictSourceSnapshotWire>,
+    root: Option<StrictObjectRefWire>,
+    nodes: Vec<Value>,
+    relations: Vec<Value>,
+    diagnostics: Vec<StrictDiagnosticWire>,
+}
+
+impl StrictObjectRefWire {
+    fn validate(&self) {
+        SourceId::new(self.source_id.clone()).unwrap();
+        ObjectKey::new(self.object_key.clone()).unwrap();
+        assert!(matches!(
+            self.identity_strength.as_str(),
+            "persistent" | "derived" | "snapshotOnly"
+        ));
+        assert!(SemanticObjectKind::parse(&self.kind).is_some());
+        assert!(!self.display_name.is_empty());
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+enum StrictNavigationTargetWire {
+    CapturedTarget(String),
+    ObjectPath(String),
+    ObjectRef {
+        object_ref: StrictObjectRefWire,
+        snapshot_revision: String,
+    },
+    Cursor(String),
+}
+
+impl StrictNavigationTargetWire {
+    fn validate(&self) {
+        match self {
+            Self::CapturedTarget(value) => {
+                assert!(value.starts_with("target:sha256:"));
+            }
+            Self::ObjectPath(value) => {
+                TargetIdentity::from_normalized_relative_path(value).unwrap();
+            }
+            Self::ObjectRef {
+                object_ref,
+                snapshot_revision,
+            } => {
+                object_ref.validate();
+                SourceRevision::new(snapshot_revision.clone()).unwrap();
+            }
+            Self::Cursor(value) => {
+                assert!(!value.is_empty() && !value.chars().any(char::is_control));
+            }
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+enum StrictPropertySelectionWire {
+    All,
+    Named(BTreeSet<String>),
+}
+
+impl StrictPropertySelectionWire {
+    fn validate(&self) {
+        match self {
+            Self::All => {}
+            Self::Named(values) => {
+                assert!(values
+                    .iter()
+                    .all(|value| SemanticPropertyId::parse(value).is_some()));
+            }
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum StrictFacetSelectionWire {
+    None,
+    Summary,
+    Full,
+}
+
+impl StrictFacetSelectionWire {
+    fn validate(&self) {
+        match self {
+            Self::None => {}
+            Self::Summary => {}
+            Self::Full => {}
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StrictRelationSelectionWire {
+    kind: RelationKind,
+    role: String,
+    page_size: u16,
+}
+
+impl StrictRelationSelectionWire {
+    fn validate(&self) {
+        match self.kind {
+            RelationKind::Contains => {}
+            RelationKind::References => {}
+        }
+        assert!(SemanticRelationId::parse(&self.role).is_some());
+        assert!((1..=100).contains(&self.page_size));
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StrictNavigationSelectionWire {
+    properties: StrictPropertySelectionWire,
+    facets: StrictFacetSelectionWire,
+    relations: Vec<StrictRelationSelectionWire>,
+}
+
+impl StrictNavigationSelectionWire {
+    fn validate(&self) {
+        self.properties.validate();
+        self.facets.validate();
+        for relation in &self.relations {
+            relation.validate();
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StrictNavigationQueryWire {
+    target: StrictNavigationTargetWire,
+    select: StrictNavigationSelectionWire,
+}
+
+impl StrictNavigationQueryWire {
+    fn validate(&self) {
+        self.target.validate();
+        self.select.validate();
+    }
+}
+
+fn variant_target_identity() -> TargetIdentity {
+    TargetIdentity::from_normalized_relative_path("Documents/Variant.xml").unwrap()
+}
+
+fn minimal_navigation_selection() -> NavigationSelection {
+    NavigationSelection {
+        properties: PropertySelection::All,
+        facets: FacetSelection::None,
+        relations: Vec::new(),
+    }
+}
+
+fn complete_navigation_selection() -> NavigationSelection {
+    NavigationSelection {
+        properties: PropertySelection::Named(BTreeSet::from([
+            SemanticPropertyId::DOCUMENT_NUMBER_LENGTH,
+            SemanticPropertyId::METADATA_NAME,
+        ])),
+        facets: FacetSelection::Full,
+        relations: vec![
+            RelationSelection::new(SemanticRelationId::ATTRIBUTES, None).unwrap(),
+            RelationSelection {
+                kind: RelationKind::References,
+                role: SemanticRelationId::BASED_ON,
+                page_size: 100,
+            },
+        ],
+    }
+}
+
+fn public_navigation_cursor() -> NavigationCursor {
+    NavigationCursor::issue(
+        b"public-navigation-wire-secret",
+        variant_source_id(),
+        SourceRevision::new("revision:public-variants").unwrap(),
+        ObjectKey::new("uuid:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap(),
+        variant_relation_group(),
+        complete_navigation_selection(),
+        1,
+    )
+    .unwrap()
+}
+
+fn public_navigation_targets() -> Vec<(&'static str, NavigationTarget)> {
+    vec![
+        (
+            "capturedTarget",
+            NavigationTarget::CapturedTarget(variant_target_identity()),
+        ),
+        (
+            "objectPath",
+            NavigationTarget::ObjectPath("Documents/Variant.xml".to_string()),
+        ),
+        (
+            "objectRef",
+            NavigationTarget::ObjectRef {
+                object_ref: variant_object_ref(IdentityStrength::Persistent),
+                snapshot_revision: SourceRevision::new("revision:public-variants").unwrap(),
+            },
+        ),
+        ("cursor", NavigationTarget::Cursor(public_navigation_cursor())),
+    ]
+}
+
+fn navigation_target_wire(target: &NavigationTarget) -> Value {
+    let variant = match target {
+        NavigationTarget::CapturedTarget(_) => "capturedTarget",
+        NavigationTarget::ObjectPath(_) => "objectPath",
+        NavigationTarget::ObjectRef { .. } => "objectRef",
+        NavigationTarget::Cursor(_) => "cursor",
+    };
+    let mut wire = serde_json::to_value(target).unwrap();
+    if variant == "cursor" {
+        wire["cursor"] = json!("opaque:cursor");
+    }
+    wire
+}
+
+fn push_navigation_request_variants(facts: &mut Vec<Value>) {
+    for (declared, target) in public_navigation_targets() {
+        let matched = match &target {
+            NavigationTarget::CapturedTarget(_) => "capturedTarget",
+            NavigationTarget::ObjectPath(_) => "objectPath",
+            NavigationTarget::ObjectRef { .. } => "objectRef",
+            NavigationTarget::Cursor(_) => "cursor",
+        };
+        assert_eq!(declared, matched);
+        facts.push(variant_fact(
+            "navigationTarget",
+            declared,
+            navigation_target_wire(&target),
+        ));
+    }
+
+    for (declared, selection) in [
+        ("all", PropertySelection::All),
+        ("namedEmpty", PropertySelection::Named(BTreeSet::new())),
+        (
+            "named",
+            PropertySelection::Named(BTreeSet::from([
+                SemanticPropertyId::DOCUMENT_NUMBER_LENGTH,
+                SemanticPropertyId::METADATA_NAME,
+            ])),
+        ),
+    ] {
+        let matched = match &selection {
+            PropertySelection::All => "all",
+            PropertySelection::Named(values) if values.is_empty() => "namedEmpty",
+            PropertySelection::Named(_) => "named",
+        };
+        assert_eq!(declared, matched);
+        push_variant(facts, "propertySelection", declared, &selection);
+    }
+
+    push_closed_enum_family!(
+        facts,
+        "facetSelection",
+        FacetSelection::None => "none",
+        FacetSelection::Summary => "summary",
+        FacetSelection::Full => "full",
+    );
+
+    for (variant, selection) in [
+        (
+            "defaultContains",
+            RelationSelection::new(SemanticRelationId::ATTRIBUTES, None).unwrap(),
+        ),
+        (
+            "explicitContainsMinimum",
+            RelationSelection::new(SemanticRelationId::FORMS, Some(1)).unwrap(),
+        ),
+        (
+            "explicitReferencesMaximum",
+            RelationSelection {
+                kind: RelationKind::References,
+                role: SemanticRelationId::BASED_ON,
+                page_size: 100,
+            },
+        ),
+    ] {
+        match selection.kind {
+            RelationKind::Contains => {}
+            RelationKind::References => {}
+        }
+        push_variant(facts, "relationSelection", variant, &selection);
+    }
+
+    for (variant, selection) in [
+        ("minimal", minimal_navigation_selection()),
+        ("complete", complete_navigation_selection()),
+    ] {
+        push_variant(facts, "navigationSelection", variant, &selection);
+    }
+
+    for (variant, target) in public_navigation_targets() {
+        let query = NavigationQuery {
+            target,
+            select: if variant == "capturedTarget" {
+                minimal_navigation_selection()
+            } else {
+                complete_navigation_selection()
+            },
+        };
+        let mut wire = serde_json::to_value(query).unwrap();
+        if variant == "cursor" {
+            wire["target"]["cursor"] = json!("opaque:cursor");
+        }
+        facts.push(variant_fact("navigationQuery", variant, wire));
+    }
+
+    facts.push(variant_fact(
+        "navigationCursor",
+        "opaque",
+        json!("opaque:cursor"),
+    ));
+}
+
+fn navigation_envelope_specimens() -> Vec<(&'static str, NavigationEnvelope)> {
+    let ready_snapshot = SourceSnapshot {
+        source_id: variant_source_id(),
+        revision: SourceRevision::new("revision:public-variants").unwrap(),
+        consistency: SnapshotConsistency::Consistent,
+        adapter_id: "public-navigation-wire".to_string(),
+    };
+    let partial_snapshot = SourceSnapshot {
+        consistency: SnapshotConsistency::Partial,
+        ..ready_snapshot.clone()
+    };
+    vec![
+        (
+            "ready",
+            NavigationEnvelope {
+                schema_version: "1".to_string(),
+                status: NavigationStatus::Available,
+                snapshot: Some(ready_snapshot),
+                root: Some(variant_object_ref(IdentityStrength::Persistent)),
+                nodes: Vec::new(),
+                relations: Vec::new(),
+                diagnostics: Vec::new(),
+                relation_index: std::sync::Arc::new(Vec::new()),
+            },
+        ),
+        (
+            "partial",
+            NavigationEnvelope {
+                schema_version: "1".to_string(),
+                status: NavigationStatus::Partial,
+                snapshot: Some(partial_snapshot),
+                root: Some(variant_object_ref(IdentityStrength::SnapshotOnly)),
+                nodes: Vec::new(),
+                relations: Vec::new(),
+                diagnostics: vec![
+                    unica_format_core::navigation::SourceAdapterDiagnostic {
+                        code: "partialCoverage".to_string(),
+                        message: "public navigation coverage is partial".to_string(),
+                        details: Some(json!({"coverage": "partial"})),
+                    },
+                ],
+                relation_index: std::sync::Arc::new(Vec::new()),
+            },
+        ),
+        (
+            "unavailable",
+            NavigationEnvelope {
+                schema_version: "1".to_string(),
+                status: NavigationStatus::Unavailable,
+                snapshot: None,
+                root: None,
+                nodes: Vec::new(),
+                relations: Vec::new(),
+                diagnostics: vec![
+                    unica_format_core::navigation::SourceAdapterDiagnostic {
+                        code: "sourceUnavailable".to_string(),
+                        message: "public navigation is unavailable".to_string(),
+                        details: None,
+                    },
+                ],
+                relation_index: std::sync::Arc::new(Vec::new()),
+            },
+        ),
+    ]
+}
+
+fn push_navigation_response_variants(facts: &mut Vec<Value>) {
+    let envelopes = navigation_envelope_specimens();
+    for (variant, envelope) in &envelopes {
+        push_variant(facts, "navigationEnvelope", variant, envelope);
+    }
+    push_variant(
+        facts,
+        "envelopeSnapshotOption",
+        "some",
+        &envelopes[0].1.snapshot,
+    );
+    push_variant(
+        facts,
+        "envelopeSnapshotOption",
+        "none",
+        &envelopes[2].1.snapshot,
+    );
+    push_variant(
+        facts,
+        "envelopeRootOption",
+        "some",
+        &envelopes[0].1.root,
+    );
+    push_variant(
+        facts,
+        "envelopeRootOption",
+        "none",
+        &envelopes[2].1.root,
+    );
+
+    let diagnostics = [
+        (
+            "none",
+            unica_format_core::navigation::SourceAdapterDiagnostic {
+                code: "unavailable".to_string(),
+                message: "no details".to_string(),
+                details: None,
+            },
+        ),
+        (
+            "some",
+            unica_format_core::navigation::SourceAdapterDiagnostic {
+                code: "partial".to_string(),
+                message: "with details".to_string(),
+                details: Some(json!({"ordinal": 1})),
+            },
+        ),
+    ];
+    for (variant, diagnostic) in diagnostics {
+        push_variant(facts, "diagnosticDetailsOption", variant, &diagnostic);
+    }
+
+    let without_cursor = NavigationRelationPage {
+        relation: variant_relation_group(),
+        items: Vec::new(),
+        next_cursor: None,
+    };
+    push_variant(
+        facts,
+        "relationPageCursorOption",
+        "none",
+        &without_cursor,
+    );
+    let with_cursor = NavigationRelationPage {
+        relation: variant_relation_group(),
+        items: Vec::new(),
+        next_cursor: Some(public_navigation_cursor()),
+    };
+    let mut with_cursor_wire = serde_json::to_value(with_cursor).unwrap();
+    with_cursor_wire["nextCursor"] = json!("opaque:cursor");
+    facts.push(variant_fact(
+        "relationPageCursorOption",
+        "some",
+        with_cursor_wire,
+    ));
+
+    for (variant, value) in [
+        ("none", None),
+        (
+            "some",
+            Some(variant_object_ref(IdentityStrength::SnapshotOnly)),
+        ),
+    ] {
+        push_variant(facts, "semanticActionTargetOption", variant, &value);
+    }
+    for (variant, value) in [
+        ("none", None),
+        ("some", Some(variant_relation_ref())),
+    ] {
+        push_variant(
+            facts,
+            "semanticActionOwningRelationOption",
+            variant,
+            &value,
+        );
+    }
+    for (variant, value) in [
+        ("none", None),
+        (
+            "some",
+            Some(OperationBinding {
+                tool: "unica.meta.edit".to_string(),
+                schema_version: "1".to_string(),
+            }),
+        ),
+    ] {
+        push_variant(
+            facts,
+            "semanticActionOperationBindingOption",
+            variant,
+            &value,
+        );
+    }
+
+    let absent = SemanticProperty::absent(SemanticPropertyId::METADATA_NAME);
+    let explicit = SemanticProperty::explicit(
+        SemanticPropertyId::METADATA_NAME,
+        PropertyValue::String("VariantObject".to_string()),
+    )
+    .unwrap();
+    push_variant(
+        facts,
+        "semanticPropertyValueOption",
+        "none",
+        &absent,
+    );
+    push_variant(
+        facts,
+        "semanticPropertyValueOption",
+        "some",
+        &explicit,
+    );
+
+    let no_qualifiers = TypeVariant::primitive(PrimitiveTypeKind::String, None).unwrap();
+    let with_qualifiers = TypeVariant::primitive(
+        PrimitiveTypeKind::String,
+        Some(TypeQualifiers::String(
+            StringQualifiers::new(Some(8), None).unwrap(),
+        )),
+    )
+    .unwrap();
+    push_variant(
+        facts,
+        "typeVariantQualifiersOption",
+        "none",
+        &no_qualifiers,
+    );
+    push_variant(
+        facts,
+        "typeVariantQualifiersOption",
+        "some",
+        &with_qualifiers,
+    );
+
+    for (variant, value) in [
+        (
+            "lengthOnly",
+            StringQualifiers::new(Some(8), None).unwrap(),
+        ),
+        (
+            "lengthAndAllowed",
+            StringQualifiers::new(Some(8), Some(StringLength::Variable)).unwrap(),
+        ),
+    ] {
+        push_variant(facts, "stringQualifierOptionShape", variant, &value);
+    }
+    for (variant, value) in [
+        (
+            "signOnly",
+            NumberQualifiers::new(None, None, Some(NumberSign::Any)).unwrap(),
+        ),
+        (
+            "digitsOnly",
+            NumberQualifiers::new(Some(8), None, None).unwrap(),
+        ),
+        (
+            "digitsFraction",
+            NumberQualifiers::new(Some(8), Some(2), None).unwrap(),
+        ),
+        (
+            "all",
+            NumberQualifiers::new(
+                Some(15),
+                Some(3),
+                Some(NumberSign::Nonnegative),
+            )
+            .unwrap(),
+        ),
+    ] {
+        push_variant(facts, "numberQualifierOptionShape", variant, &value);
+    }
+}
+
+fn public_navigation_wire_facts() -> Vec<Value> {
+    let mut facts = Vec::new();
+    push_navigation_request_variants(&mut facts);
+    push_navigation_response_variants(&mut facts);
+    facts.sort_by_key(canonical_json);
+    facts
 }

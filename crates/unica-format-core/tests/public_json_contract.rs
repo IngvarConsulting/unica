@@ -14,6 +14,7 @@ use unica_format_core::{
     source::{SnapshotConsistency, SourceId, SourceRevision, SourceSnapshot},
     value::{
         PropertyValue, StringLength, StringQualifiers, TypeQualifiers, TypeSetValue, TypeVariant,
+        TypeVariantKind,
     },
 };
 
@@ -218,4 +219,63 @@ fn every_property_value_state_uses_the_neutral_envelope() {
             "unresolved"
         ]
     );
+}
+
+#[test]
+fn type_variant_exposes_a_closed_compiler_exhaustive_discriminant() {
+    let cases = [
+        (
+            TypeVariant::primitive(
+                unica_format_core::value::PrimitiveTypeKind::Boolean,
+                None,
+            )
+            .unwrap(),
+            TypeVariantKind::Primitive,
+        ),
+        (
+            TypeVariant::reference(SemanticObjectKind::Catalog, "Products").unwrap(),
+            TypeVariantKind::Reference,
+        ),
+        (
+            TypeVariant::object(SemanticObjectKind::Document, "SalesOrder").unwrap(),
+            TypeVariantKind::Object,
+        ),
+        (
+            TypeVariant::record_set(SemanticObjectKind::InformationRegister, "Prices")
+                .unwrap(),
+            TypeVariantKind::RecordSet,
+        ),
+        (
+            TypeVariant::manager(SemanticObjectKind::Catalog, "Products").unwrap(),
+            TypeVariantKind::Manager,
+        ),
+        (
+            TypeVariant::key(SemanticObjectKind::AccumulationRegister, "Balances")
+                .unwrap(),
+            TypeVariantKind::Key,
+        ),
+        (
+            TypeVariant::enumeration("Status").unwrap(),
+            TypeVariantKind::Enumeration,
+        ),
+        (
+            TypeVariant::defined_type("Identifier").unwrap(),
+            TypeVariantKind::DefinedType,
+        ),
+        (TypeVariant::unknown(), TypeVariantKind::Unknown),
+    ];
+    for (value, expected) in cases {
+        let label = match value.kind() {
+            TypeVariantKind::Primitive => "primitive",
+            TypeVariantKind::Reference => "reference",
+            TypeVariantKind::Object => "object",
+            TypeVariantKind::RecordSet => "recordSet",
+            TypeVariantKind::Manager => "manager",
+            TypeVariantKind::Key => "key",
+            TypeVariantKind::Enumeration => "enumeration",
+            TypeVariantKind::DefinedType => "definedType",
+            TypeVariantKind::Unknown => "unknown",
+        };
+        assert_eq!(value.kind(), expected, "{label}");
+    }
 }

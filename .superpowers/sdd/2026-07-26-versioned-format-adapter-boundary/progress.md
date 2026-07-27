@@ -67,3 +67,5 @@ Task 5: fix round 6 review failed — spreadsheet template owner is still inferr
 Task 5: fix round 7 started (base de4d9410).
 Task 5: fix round 7 review failed — full public-contract specimen is structurally deep but not variant-complete across identities, coverage/resolution/status/capability/action profiles, and PropertyValue variants; report overstates static-specimen regeneration.
 Task 5: fix round 8 started (base 4997a5bc).
+Task 5: fix round 8 review failed — public NavigationQuery unions and unavailable envelope option shape omitted; TypeVariant wire list is manual and not compile-exhaustive against private TypeVariantValue.
+Task 5: fix round 9 started (base 143eed58).

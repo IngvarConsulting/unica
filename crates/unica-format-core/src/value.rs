@@ -599,6 +599,27 @@ pub struct TypeVariant {
     value: TypeVariantValue,
 }
 
+/// Closed, format-neutral discriminant for the semantic type-variant union.
+///
+/// The payload remains encapsulated by `TypeVariant`; this kind exists so
+/// public contract inventories can be compiler-exhaustive without exposing
+/// native aliases or invalid constructor combinations.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "camelCase")]
+pub enum TypeVariantKind {
+    Primitive,
+    Reference,
+    Object,
+    RecordSet,
+    Manager,
+    Key,
+    Enumeration,
+    DefinedType,
+    Unknown,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum TypeVariantValue {
     Primitive {
@@ -618,6 +639,20 @@ enum TypeVariantValue {
 }
 
 impl TypeVariant {
+    pub const fn kind(&self) -> TypeVariantKind {
+        match &self.value {
+            TypeVariantValue::Primitive { .. } => TypeVariantKind::Primitive,
+            TypeVariantValue::Reference(_) => TypeVariantKind::Reference,
+            TypeVariantValue::Object(_) => TypeVariantKind::Object,
+            TypeVariantValue::RecordSet(_) => TypeVariantKind::RecordSet,
+            TypeVariantValue::Manager(_) => TypeVariantKind::Manager,
+            TypeVariantValue::Key(_) => TypeVariantKind::Key,
+            TypeVariantValue::Enumeration(_) => TypeVariantKind::Enumeration,
+            TypeVariantValue::DefinedType(_) => TypeVariantKind::DefinedType,
+            TypeVariantValue::Unknown { .. } => TypeVariantKind::Unknown,
+        }
+    }
+
     pub fn primitive(
         kind: PrimitiveTypeKind,
         qualifiers: Option<TypeQualifiers>,

@@ -508,7 +508,7 @@
     {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/generate_oracle.py",
       "role": "oracleGenerator",
-      "sha256": "d1cb43cf16a33370d640d392a1589a68d60d2cb76c0d6786e2a8ada1e4c1909d"
+      "sha256": "4370538fa2de425baf9dca3d11020c8a3e85fb86948637b453e77c674465bf08"
     },
     {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/inputs.json",
@@ -518,7 +518,12 @@
     {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/public-contract-variant-specimen.json",
       "role": "publicContractVariantSpecimen",
-      "sha256": "512b107672d00e9b753986520bcdf629b11574916534ada8222dbb07ab77efe2"
+      "sha256": "b8cdc949b17a75f3adf0bc78b862057cd9d5dd5edc3a4f134f4bd3bce1c99c24"
+    },
+    {
+      "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/public-navigation-wire-specimen.json",
+      "role": "publicNavigationWireSpecimen",
+      "sha256": "bf4b6618f31636cd768b71ad807d47b42d5efb2dcd6e7eea7b0e86681f893a44"
     },
     {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/AccountingRegister.txt",
