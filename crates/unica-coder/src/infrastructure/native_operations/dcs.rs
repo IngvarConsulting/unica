@@ -150,6 +150,7 @@ pub(crate) fn analyze_dcs_info(
                     &mut lines,
                     NS_SCHEMA,
                     NS_SETTINGS,
+                    &context.workspace_root,
                 );
                 dcs_info_overview_hints(root, &mut lines, NS_SCHEMA, NS_SETTINGS);
             }
@@ -190,6 +191,7 @@ pub(crate) fn analyze_dcs_info(
                     &mut lines,
                     NS_SCHEMA,
                     NS_SETTINGS,
+                    &context.workspace_root,
                 )?;
             }
             other => {
@@ -259,6 +261,7 @@ pub(crate) fn dcs_info_overview(
     lines: &mut Vec<String>,
     ns_schema: &str,
     ns_settings: &str,
+    authorized_root: &Path,
 ) {
     let template_name = dcs_info_template_name(resolved_path);
     let total_xml_lines = text.lines().count();
@@ -267,7 +270,7 @@ pub(crate) fn dcs_info_overview(
     ));
     lines.push(format!(
         "Поддержка: {}",
-        support_status_for_path(resolved_path)
+        support_status_for_path(resolved_path, authorized_root)
     ));
     lines.push(String::new());
 
@@ -1167,8 +1170,17 @@ pub(crate) fn dcs_info_full(
     lines: &mut Vec<String>,
     ns_schema: &str,
     ns_settings: &str,
+    authorized_root: &Path,
 ) -> Result<(), String> {
-    dcs_info_overview(root, resolved_path, text, lines, ns_schema, ns_settings);
+    dcs_info_overview(
+        root,
+        resolved_path,
+        text,
+        lines,
+        ns_schema,
+        ns_settings,
+        authorized_root,
+    );
     lines.push(String::new());
     lines.push("--- query ---".to_string());
     lines.push(String::new());

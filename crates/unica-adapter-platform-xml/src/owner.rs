@@ -31,6 +31,12 @@ pub(crate) enum OwnerKind {
     Standalone,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SnapshotOwner {
+    pub(crate) kind: OwnerKind,
+    pub(crate) version: Option<String>,
+}
+
 impl OwnerKind {
     pub(crate) const fn label(self) -> &'static str {
         match self {
@@ -469,6 +475,14 @@ fn parse_owner(path: &Path, raw: Vec<u8>) -> Result<Owner, SourceAdapterError> {
         path: path.to_path_buf(),
         version: root_version_literal(source, root),
         raw,
+    })
+}
+
+pub(crate) fn parse_snapshot_owner(raw: &[u8]) -> Result<SnapshotOwner, SourceAdapterError> {
+    let owner = parse_owner(Path::new("<captured-source>"), raw.to_vec())?;
+    Ok(SnapshotOwner {
+        kind: owner.kind,
+        version: owner.version,
     })
 }
 

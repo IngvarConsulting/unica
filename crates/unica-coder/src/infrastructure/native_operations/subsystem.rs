@@ -1379,7 +1379,10 @@ pub(crate) fn analyze_subsystem_info(
                         append_subsystem_overview(&mut lines, &data);
                         lines.insert(
                             1,
-                            format!("Поддержка: {}", support_status_for_path(&xml_path)),
+                            format!(
+                                "Поддержка: {}",
+                                support_status_for_path(&xml_path, &context.workspace_root)
+                            ),
                         );
                     }
                     "content" => append_subsystem_content(&mut lines, &data, name_filter),
@@ -1387,7 +1390,10 @@ pub(crate) fn analyze_subsystem_info(
                         append_subsystem_overview(&mut lines, &data);
                         lines.insert(
                             1,
-                            format!("Поддержка: {}", support_status_for_path(&xml_path)),
+                            format!(
+                                "Поддержка: {}",
+                                support_status_for_path(&xml_path, &context.workspace_root)
+                            ),
                         );
                         lines.push(String::new());
                         lines.push("--- content ---".to_string());

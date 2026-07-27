@@ -1645,7 +1645,7 @@ mod support_state_tests {
     fn absent_parent_configurations_remains_not_supported_and_unblocked() {
         let (root, target) = support_fixture("absent");
 
-        assert_eq!(support_status_for_path(&target), "не на поддержке");
+        assert_eq!(support_status_for_path(&target, &root), "не на поддержке");
         assert_eq!(
             support_guard_violation(&target, SupportGuardRequirement::Editable),
             None
@@ -1666,7 +1666,7 @@ mod support_state_tests {
         .expect("write malformed support state");
 
         assert_eq!(
-            support_status_for_path(&target),
+            support_status_for_path(&target, &root),
             "состояние поддержки не удалось прочитать — правки не подтверждены"
         );
         let violation = support_guard_violation(&target, SupportGuardRequirement::Editable)
@@ -1686,7 +1686,7 @@ mod support_state_tests {
             .expect("write malformed short support state");
 
         assert_eq!(
-            support_status_for_path(&target),
+            support_status_for_path(&target, &root),
             "состояние поддержки не удалось прочитать — правки не подтверждены"
         );
         assert_eq!(
@@ -1707,7 +1707,7 @@ mod support_state_tests {
         fs::write(ext.join("ParentConfigurations.bin"), []).expect("write empty support state");
 
         assert_eq!(
-            support_status_for_path(&target),
+            support_status_for_path(&target, &root),
             "снято с поддержки (правки свободны)"
         );
         assert_eq!(
@@ -1727,7 +1727,7 @@ mod support_state_tests {
             .expect("write zero-vendor read-only state");
 
         assert_eq!(
-            support_status_for_path(&target),
+            support_status_for_path(&target, &root),
             "конфигурация read-only (возможность изменения выключена) — правки невозможны без включения"
         );
         assert_eq!(
@@ -1747,7 +1747,7 @@ mod support_state_tests {
             .expect("create non-regular support state");
 
         assert_eq!(
-            support_status_for_path(&target),
+            support_status_for_path(&target, &root),
             "состояние поддержки не удалось прочитать — правки не подтверждены"
         );
         let violation = support_guard_violation(&target, SupportGuardRequirement::Editable)
@@ -1760,7 +1760,7 @@ mod support_state_tests {
 
     #[cfg(unix)]
     #[test]
-    fn symlinked_target_uses_the_same_locked_support_state_as_the_guard() {
+    fn symlinked_target_is_unreadable_and_fail_closed() {
         use std::os::unix::fs::symlink;
 
         let (root, target) = support_fixture("symlink");
@@ -1775,10 +1775,13 @@ mod support_state_tests {
         symlink(&target, &alias).expect("create fixture symlink");
         let linked_target = alias;
 
-        assert!(support_status_for_path(&linked_target).starts_with("на замке"));
+        assert_eq!(
+            support_status_for_path(&linked_target, &root),
+            "состояние поддержки не удалось прочитать — правки не подтверждены"
+        );
         let violation = support_guard_violation(&linked_target, SupportGuardRequirement::Editable)
-            .expect("locked symlink target must be blocked");
-        assert_eq!(violation.code, "locked");
+            .expect("symlinked target must be blocked before support state is read");
+        assert_eq!(violation.code, "support-state-unreadable");
 
         fs::remove_file(&linked_target).expect("remove fixture symlink");
         fs::remove_dir_all(root).expect("clean fixture");
@@ -2330,80 +2333,73 @@ pub(crate) fn support_state_lines_for_configuration(
     config_path: &Path,
     is_extension: bool,
 ) -> Vec<String> {
-    let config_dir = if config_path.is_dir() {
-        config_path
-    } else {
-        config_path.parent().unwrap_or_else(|| Path::new(""))
+    let result = inspect_authorability(
+        config_path,
+        config_path.parent().unwrap_or_else(|| Path::new("")),
+    );
+    let Some(result) = result else {
+        return vec!["Поддержка:      состояние поддержки не удалось прочитать — правки не подтверждены".to_string()];
     };
-    let Ok(evidence) = inspect_support_state(config_dir, "") else {
-        return vec![
-            "Поддержка:      состояние ParentConfigurations.bin не удалось прочитать — правки не подтверждены"
-                .to_string(),
-        ];
-    };
-    match evidence.source {
-        SupportSourceState::Absent => vec![if is_extension {
-            "Поддержка:      расширение (CFE), правки свободны".to_string()
+    let summary = result.summary();
+    match summary.state() {
+        unica_format_core::ports::SupportState::Absent => vec![if is_extension {
+            "Поддержка:      расширение, правки свободны".to_string()
         } else {
-            "Поддержка:      не на поддержке (своя конфигурация)".to_string()
+            "Поддержка:      не на поддержке".to_string()
         }],
-        SupportSourceState::Unreadable { .. } => vec![
-            "Поддержка:      состояние ParentConfigurations.bin не удалось прочитать — правки не подтверждены"
-                .to_string(),
-        ],
-        SupportSourceState::Removed => {
+        unica_format_core::ports::SupportState::Removed => {
             vec!["Поддержка:      снята с поддержки полностью".to_string()]
         }
-        SupportSourceState::Parsed if evidence.global_editing_enabled == Some(false) => vec![
-            "Поддержка:      на поддержке".to_string(),
-            "  Возможность изменения: выключена — вся конфигурация read-only (правки заблокированы)"
-                .to_string(),
-            format!("  Конфигураций поставщика: {}", evidence.vendors.len()),
+        unica_format_core::ports::SupportState::Unreadable
+        | unica_format_core::ports::SupportState::UnknownReadOnly => vec![
+            "Поддержка:      состояние поддержки не удалось прочитать — правки не подтверждены".to_string(),
         ],
-        SupportSourceState::Parsed => {
-            let mut lines = vec![
+        _ if summary.editing_enabled() == Some(false) => vec![
+            "Поддержка:      на поддержке".to_string(),
+            "  Возможность изменения: выключена".to_string(),
+            format!("  Конфигураций поставщика: {}", summary.vendor_count()),
+        ],
+        _ => {
+            let counts = summary.rule_counts();
+            vec![
                 "Поддержка:      на поддержке".to_string(),
                 "  Возможность изменения: включена".to_string(),
-                format!(
-                    "  Объектов: на замке {} / редактируется {} / снято {}",
-                    evidence.rule_counts[0], evidence.rule_counts[1], evidence.rule_counts[2]
-                ),
-                format!("  Конфигураций поставщика: {}", evidence.vendors.len()),
-            ];
-            if evidence.vendors.len() > 1 {
-                for vendor in evidence.vendors {
-                    lines.push(format!(
-                        "  Поставщик: {} — {} {}",
-                        vendor.vendor, vendor.name, vendor.version
-                    ));
-                }
-            }
-            lines
+                format!("  Объектов: на замке {} / редактируется {} / снято {}", counts[0], counts[1], counts[2]),
+                format!("  Конфигураций поставщика: {}", summary.vendor_count()),
+            ]
         }
     }
 }
 
-pub(crate) fn support_status_for_path(target_path: &Path) -> String {
-    let Some(config_dir) = find_support_config_dir(target_path) else {
-        return "не на поддержке".to_string();
-    };
-    let object_uuid = support_object_uuid_for_path(target_path)
-        .or_else(|| support_root_uuid(&config_dir.join("Configuration.xml")));
-    let Ok(evidence) = inspect_support_state(&config_dir, object_uuid.as_deref().unwrap_or(""))
-    else {
+pub(crate) fn support_status_for_path(target_path: &Path, authorized_root: &Path) -> String {
+    let Some(result) = inspect_authorability(target_path, authorized_root) else {
         return "состояние поддержки не удалось прочитать — правки не подтверждены".to_string();
     };
-    match evidence.effective_rule {
-        EffectiveSupportRule::Absent => "не на поддержке".to_string(),
-        EffectiveSupportRule::Removed => "снято с поддержки (правки свободны)".to_string(),
-        EffectiveSupportRule::Editable => {
-            "редактируется с сохранением поддержки".to_string()
-        }
-        EffectiveSupportRule::Locked => "на замке — прямая правка сломает обновления; дорабатывай через cfe-* либо включи редактирование объекта".to_string(),
-        EffectiveSupportRule::ConfigurationReadOnly => "конфигурация read-only (возможность изменения выключена) — правки невозможны без включения".to_string(),
-        EffectiveSupportRule::UnknownReadOnly => "состояние нескольких поставщиков нельзя однозначно применить — правки не подтверждены".to_string(),
-        EffectiveSupportRule::Unreadable => "состояние поддержки не удалось прочитать — правки не подтверждены".to_string(),
+    match result.summary().state() {
+        unica_format_core::ports::SupportState::Absent => "не на поддержке".to_string(),
+        unica_format_core::ports::SupportState::Removed => "снято с поддержки (правки свободны)".to_string(),
+        unica_format_core::ports::SupportState::Editable => "редактируется с сохранением поддержки".to_string(),
+        unica_format_core::ports::SupportState::Locked => "на замке — прямая правка запрещена политикой поддержки".to_string(),
+        unica_format_core::ports::SupportState::ConfigurationReadOnly => "конфигурация read-only (возможность изменения выключена) — правки невозможны без включения".to_string(),
+        unica_format_core::ports::SupportState::UnknownReadOnly
+        | unica_format_core::ports::SupportState::Unreadable => "состояние поддержки не удалось прочитать — правки не подтверждены".to_string(),
     }
+}
+
+fn inspect_authorability(
+    target_path: &Path,
+    authorized_root: &Path,
+) -> Option<unica_format_core::ports::AuthorabilityResult> {
+    use unica_format_core::ports::{AuthorabilityRequest, AuthorabilityRequirement};
+    let factory = PlatformXmlAdapterFactory::new();
+    let session = factory.capture_unscoped_source(
+        target_path,
+        authorized_root,
+        unica_format_core::ports::OwnerResolutionMode::Existing,
+    );
+    factory.authorability_port().inspect(
+        &AuthorabilityRequest::new(session, AuthorabilityRequirement::Editable),
+    ).ok()
 }
 
 /*
@@ -2412,150 +2408,6 @@ pub(crate) fn support_status_for_path(target_path: &Path) -> String {
  */
 pub(crate) fn is_uuid_text(value: &str) -> bool {
     uuid::Uuid::parse_str(value).is_ok()
-}
-
-pub(crate) fn find_support_config_dir(target_path: &Path) -> Option<PathBuf> {
-    let target_path = target_path
-        .canonicalize()
-        .unwrap_or_else(|_| target_path.to_path_buf());
-    let mut current = if target_path.is_dir() {
-        target_path
-    } else {
-        target_path.parent()?.to_path_buf()
-    };
-    for _ in 0..20 {
-        if current
-            .join("Ext")
-            .join("ParentConfigurations.bin")
-            .exists()
-            || current.join("Configuration.xml").exists()
-        {
-            return Some(current);
-        }
-        let Some(parent) = current.parent() else {
-            break;
-        };
-        if parent == current {
-            break;
-        }
-        current = parent.to_path_buf();
-    }
-    None
-}
-
-pub(crate) fn support_uuid_dependency_paths(target_path: &Path) -> Vec<PathBuf> {
-    let mut dependencies = Vec::new();
-    if target_path.is_file()
-        && target_path
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
-    {
-        dependencies.push(target_path.to_path_buf());
-        if support_root_uuid(target_path).is_some() {
-            return dependencies;
-        }
-    }
-    let mut current = if target_path.is_dir() {
-        target_path.to_path_buf()
-    } else {
-        let Some(parent) = target_path.parent() else {
-            return dependencies;
-        };
-        parent.to_path_buf()
-    };
-    for _ in 0..20 {
-        let candidate = current.with_extension("xml");
-        if candidate.is_file() && !dependencies.contains(&candidate) {
-            dependencies.push(candidate.clone());
-            if support_root_uuid(&candidate).is_some() {
-                return dependencies;
-            }
-        }
-        let Some(parent) = current.parent() else {
-            break;
-        };
-        if parent == current {
-            break;
-        }
-        current = parent.to_path_buf();
-    }
-    dependencies
-}
-
-pub(crate) fn support_uuid_dependency_path(target_path: &Path) -> Option<PathBuf> {
-    support_uuid_dependency_paths(target_path)
-        .into_iter()
-        .find(|path| support_root_uuid(path).is_some())
-}
-
-pub(crate) fn support_object_uuid_for_path(target_path: &Path) -> Option<String> {
-    support_uuid_dependency_path(target_path)
-        .as_deref()
-        .and_then(support_root_uuid)
-}
-
-pub(crate) fn support_root_uuid(xml_path: &Path) -> Option<String> {
-    let raw = fs::read(xml_path).ok()?;
-    support_root_uuid_from_bytes(&raw)
-}
-
-pub(crate) fn support_root_uuid_from_bytes(raw: &[u8]) -> Option<String> {
-    let text = std::str::from_utf8(raw).ok()?;
-    let doc = Document::parse(text.trim_start_matches('\u{feff}')).ok()?;
-    let root = doc.root_element();
-    if let Some(uuid) = root.attribute("uuid") {
-        return Some(uuid.to_ascii_lowercase());
-    }
-    root.children()
-        .find(|node| node.is_element() && node.attribute("uuid").is_some())
-        .and_then(|node| node.attribute("uuid"))
-        .map(str::to_ascii_lowercase)
-}
-
-pub(crate) fn parse_support_header(path: &Path) -> Option<(u8, usize)> {
-    let config_dir = path.parent()?.parent()?;
-    let evidence = inspect_support_state(config_dir, "").ok()?;
-    if !matches!(evidence.source, SupportSourceState::Parsed) {
-        return None;
-    }
-    Some((
-        if evidence.global_editing_enabled? {
-            0
-        } else {
-            1
-        },
-        evidence.vendors.len(),
-    ))
-}
-
-pub(crate) fn inspect_support_state(
-    config_dir: &Path,
-    object_uuid: &str,
-) -> Result<unica_format_core::ports::SupportEvidence, unica_format_core::source::SourceAdapterError>
-{
-    let target = config_dir.join("Ext").join("ParentConfigurations.bin");
-    let object = if object_uuid.is_empty() {
-        None
-    } else {
-        Some(unica_format_core::navigation::ObjectKey::new(object_uuid)?)
-    };
-    PlatformXmlAdapterFactory::new()
-        .registration()
-        .support
-        .inspect(&unica_format_core::ports::SupportInspectionRequest {
-            source: unica_format_core::source::SourceContext::new(
-                unica_format_core::source::SourceLocation::new(
-                    config_dir.to_path_buf(),
-                    config_dir.to_path_buf(),
-                    target,
-                ),
-                None,
-                unica_format_core::source::SourceFamily::PlatformXml,
-                None,
-            ),
-            object,
-        })
 }
 
 pub(crate) fn extract_xml_attr(text: &str, element: &str, attr: &str) -> Option<String> {

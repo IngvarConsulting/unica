@@ -1,4 +1,8 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use unica_format_core::{
     navigation::{NavigationSelection, NavigationTarget},
@@ -6,8 +10,9 @@ use unica_format_core::{
         AdapterFormatProfile, CapturePort, CaptureResult, CapturedSource, EffectiveSupportRule,
         FormatCompatibility, FormatInspectionMode, FormatInspectionPort, FormatInspectionRequest,
         FormatInspectionResult, FormatReadRequest, OperationalAdapterRegistration,
-        OwnerResolutionRequest, OwnerResolutionResult, OwnershipPort, ProbePort, ProbeResult,
-        PublicationHostPort, ReadPort, SourceAdapterRegistration, SupportEvidence,
+        OperationalSourceSession, OwnerResolutionMode, OwnerResolutionRequest,
+        OwnerResolutionResult, OwnershipPort, ProbePort, ProbeResult, ReadPort,
+        SourceAdapterRegistration, SupportEvidence,
         SupportInspectionRequest, SupportPort, SupportSourceState, SupportVendorEvidence,
     },
     source::{SourceAdapterError, SourceAdapterErrorKind, SourceContext, SourceFamily},
@@ -23,19 +28,11 @@ impl PlatformXmlAdapterFactory {
         Self
     }
 
-    pub const fn platform_line() -> &'static str {
-        v2_20::PLATFORM_LINE
-    }
-
-    pub const fn export_format() -> &'static str {
-        v2_20::EXPORT_FORMAT
-    }
-
     pub fn registration(self) -> SourceAdapterRegistration {
         let adapter = Arc::new(PlatformXmlAdapter);
         SourceAdapterRegistration {
             manifest: v2_20::manifest(),
-            profile: Self::profile(),
+            profile: adapter_profile(),
             capture: adapter.clone(),
             probe: adapter.clone(),
             read: adapter.clone(),
@@ -45,18 +42,108 @@ impl PlatformXmlAdapterFactory {
         }
     }
 
-    pub fn operational_registration(
-        self,
-        host: Arc<dyn PublicationHostPort>,
-    ) -> OperationalAdapterRegistration {
+    pub fn operational_registration(self) -> OperationalAdapterRegistration {
         let guards = Arc::new(crate::guards::PlatformXmlGuards);
-        OperationalAdapterRegistration {
-            compatibility: guards.clone(),
-            source_compatibility: guards.clone(),
-            authorability: guards,
-            validation_context: Arc::new(crate::validation::PlatformXmlValidation),
-            publication: Arc::new(crate::publication::PlatformXmlPublication::new(host)),
-        }
+        OperationalAdapterRegistration::new(
+            guards.clone(),
+            guards.clone(),
+            guards,
+            Arc::new(crate::validation::PlatformXmlValidation),
+            Arc::new(crate::publication::PlatformXmlPublication::new()),
+        )
+    }
+
+    pub fn capture_operational_source(
+        self,
+        source: &SourceContext,
+        mode: OwnerResolutionMode,
+    ) -> OperationalSourceSession {
+        OperationalSourceSession::new(v2_20::operations::PlatformOperationSession::capture(
+            source, mode,
+        ))
+    }
+
+    pub fn capture_validation_source(
+        self,
+        source: &SourceContext,
+        mode: OwnerResolutionMode,
+    ) -> OperationalSourceSession {
+        OperationalSourceSession::new(
+            v2_20::operations::PlatformOperationSession::capture_validation(source, mode),
+        )
+    }
+
+    pub fn capture_unscoped_source(
+        self,
+        target: &Path,
+        authorized_root: &Path,
+        mode: OwnerResolutionMode,
+    ) -> OperationalSourceSession {
+        OperationalSourceSession::new(v2_20::operations::PlatformOperationSession::capture_unscoped(
+            target,
+            authorized_root,
+            mode,
+        ))
+    }
+
+    pub fn capture_unscoped_validation_source(
+        self,
+        target: &Path,
+        authorized_root: &Path,
+        mode: OwnerResolutionMode,
+    ) -> OperationalSourceSession {
+        OperationalSourceSession::new(
+            v2_20::operations::PlatformOperationSession::capture_unscoped_validation(
+                target,
+                authorized_root,
+                mode,
+            ),
+        )
+    }
+
+    #[allow(clippy::type_complexity, clippy::too_many_arguments)]
+    pub fn capture_publication_session<R, S, L>(
+        self,
+        operation_name: &str,
+        args: &serde_json::Map<String, serde_json::Value>,
+        workspace_root: &Path,
+        cwd: &Path,
+        run: R,
+        resolve: S,
+        lock: L,
+    ) -> OperationalSourceSession
+    where
+        R: Fn(
+                &Path,
+                &[String],
+                &Path,
+                Option<Duration>,
+                &unica_format_core::ports::OperationCancellation,
+            ) -> Result<(bool, String, String, String, bool, bool, bool), String>
+            + Send
+            + Sync
+            + 'static,
+        S: Fn(&Path, &str, bool) -> Result<(PathBuf, Vec<String>), String>
+            + Send
+            + Sync
+            + 'static,
+        L: Fn(
+                &[PathBuf],
+                &mut dyn FnMut() -> Result<Vec<String>, String>,
+            ) -> Result<Result<Vec<String>, String>, String>
+            + Send
+            + Sync
+            + 'static,
+    {
+        crate::publication::capture_publication_session(
+            operation_name,
+            args,
+            workspace_root,
+            cwd,
+            run,
+            resolve,
+            lock,
+        )
     }
 
     pub fn compatibility_port(self) -> Arc<dyn unica_format_core::ports::CompatibilityPort> {
@@ -79,71 +166,18 @@ impl PlatformXmlAdapterFactory {
         Arc::new(crate::validation::PlatformXmlValidation)
     }
 
-    #[doc(hidden)]
-    pub fn validation_type_uses_list_presentation(value: &str) -> bool {
-        crate::validation::type_uses_list_presentation(value)
-    }
-
-    #[doc(hidden)]
-    pub fn validation_types_with_list_presentation() -> &'static [&'static str] {
-        crate::validation::types_with_list_presentation()
-    }
-
-    #[doc(hidden)]
-    pub fn scan_validation_registrars(
-        documents_dir: &std::path::Path,
-        register_reference: &str,
-    ) -> Result<(Vec<PathBuf>, bool), String> {
-        crate::validation::scan_registrar_documents(documents_dir, register_reference)
-    }
-
-    #[doc(hidden)]
-    pub fn normalize_metadata_category(value: &str) -> Option<&'static str> {
-        crate::guards::normalize_metadata_category(value)
-    }
-
-    #[doc(hidden)]
-    pub fn registered_subsystem_names(
-        path: &std::path::Path,
-    ) -> Result<std::collections::HashSet<String>, String> {
-        crate::guards::registered_subsystem_names(path)
-    }
-
-    pub fn profile() -> AdapterFormatProfile {
-        AdapterFormatProfile {
-            platform_line: v2_20::PLATFORM_LINE,
-            export_format: v2_20::EXPORT_FORMAT,
-            legacy_metadata_classes: v2_20::metadata_classes(),
-        }
-    }
-
-    #[doc(hidden)]
-    pub fn validate_2_20_coverage_manifest(raw: &str) -> Result<(), SourceAdapterError> {
+    pub fn validate_coverage_manifest(raw: &str) -> Result<(), SourceAdapterError> {
         v2_20::validate_coverage_manifest(raw)
     }
 }
 
 struct PlatformXmlAdapter;
 
-#[cfg(test)]
-mod profile_contract_tests {
-    use super::PlatformXmlAdapterFactory;
-
-    const PLATFORM_LINE: &str = PlatformXmlAdapterFactory::platform_line();
-    const EXPORT_FORMAT: &str = PlatformXmlAdapterFactory::export_format();
-
-    #[test]
-    fn version_identity_accessors_remain_const_usable() {
-        assert_eq!(PLATFORM_LINE, "8.3.27");
-        assert_eq!(EXPORT_FORMAT, "2.20");
-    }
-
-    #[test]
-    fn metadata_classes_come_from_the_authoritative_runtime_registry() {
-        assert_eq!(
-            PlatformXmlAdapterFactory::profile().legacy_metadata_classes,
-            crate::versions::v2_20::metadata_classes()
-        );
+fn adapter_profile() -> AdapterFormatProfile {
+    AdapterFormatProfile {
+        platform_line: v2_20::PLATFORM_LINE,
+        export_format: v2_20::EXPORT_FORMAT,
+        legacy_metadata_classes: v2_20::metadata_classes(),
     }
 }
 

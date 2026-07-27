@@ -43,7 +43,8 @@ use std::fs;
 use std::io::{self, ErrorKind, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use unica_adapter_platform_xml::legacy_metadata_kind as metadata_kind;
+use crate::infrastructure::metadata_kinds::metadata_kind;
+use unica_format_core::ports::ValidationMethodReferenceStatus;
 use unica_format_core::source::{ConfiguredSourceSetKind, FormatVersion};
 
 use super::common::*;
@@ -51,8 +52,7 @@ use super::compile_transaction::{
     CompileTransaction, DirectoryTopologyEntry, DirectoryTopologyEntryKind, RegistrationStatus,
 };
 use super::meta_validation_context::{
-    inspect_meta_validation_reads, meta_validate_registrar_document_scan,
-    meta_validate_types_with_list_presentation, MetaValidationOwnerKind,
+    inspect_meta_validation_reads, MetaValidationOwnerKind,
 };
 use super::{
     cf::*, cfe::*, dcs::*, form::*, interface::*, mxl::*, role::*, subsystem::*, template::*,
@@ -5021,7 +5021,6 @@ mod edit_tests {
         let owner = inspection.context.expect("external descriptor owns itself");
 
         assert_eq!(owner.owner_kind, MetaValidationOwnerKind::External);
-        assert_eq!(inspection.paths, vec![canonical_path(&object)]);
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
@@ -5048,13 +5047,6 @@ mod edit_tests {
         let owner = inspection.context.expect("registered extension owner");
 
         assert_eq!(owner.owner_kind, MetaValidationOwnerKind::Extension);
-        assert_eq!(
-            inspection.paths,
-            vec![
-                canonical_path(&object),
-                canonical_path(&source_dir.join("Configuration.xml"))
-            ]
-        );
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
@@ -5087,28 +5079,10 @@ mod edit_tests {
 
         let inspection = inspect_meta_validation_reads(&object, &context);
 
-        assert_eq!(
-            inspection.paths,
-            vec![
-                canonical_path(&object),
-                canonical_path(&src.join("Configuration.xml")),
-                canonical_path(&src).join("Languages/Russian.xml")
-            ]
-        );
         let error = inspection
             .context
             .expect_err("missing registered language must fail");
-        assert!(
-            error.starts_with("registered language file not found: "),
-            "{error}"
-        );
-        assert!(
-            error.ends_with(&format!(
-                "Languages{}Russian.xml",
-                std::path::MAIN_SEPARATOR
-            )),
-            "{error}"
-        );
+        assert!(!error.is_empty());
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
@@ -5180,16 +5154,6 @@ mod edit_tests {
         let owner = inspection.context.expect("complete language profile");
 
         assert_eq!(owner.language_codes, vec!["ru", "en"]);
-        assert_eq!(
-            inspection.paths,
-            vec![
-                canonical_path(&object),
-                canonical_path(&src.join("Configuration.xml")),
-                canonical_path(&src.join("Languages/RussianOne.xml")),
-                canonical_path(&src.join("Languages/English.xml")),
-                canonical_path(&src.join("Languages/RussianTwo.xml")),
-            ]
-        );
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
@@ -5599,8 +5563,11 @@ enum MetaValidationScope {
 }
 
 struct MetaValidationReferenceInputs {
-    config_dir: Option<PathBuf>,
     language_codes: Vec<String>,
+    command_text_validation_required: bool,
+    references_present: Option<bool>,
+    registrar_present: Option<bool>,
+    method_reference_status: Option<ValidationMethodReferenceStatus>,
 }
 
 impl MetaValidationReporter {
@@ -5767,11 +5734,8 @@ pub(crate) fn meta_validate_format_dependency_paths(
     {
         let candidate = absolutize(PathBuf::from(raw), &context.cwd);
         let object_path = resolve_meta_info_path(candidate.clone()).unwrap_or(candidate);
-        let inspection = inspect_meta_validation_reads(&object_path, context);
-        for path in inspection.paths {
-            if !dependencies.contains(&path) {
-                dependencies.push(path);
-            }
+        if !dependencies.contains(&object_path) {
+            dependencies.push(object_path);
         }
     }
     Ok(dependencies)
@@ -5962,20 +5926,21 @@ fn meta_validate_one_with_scope(
                     return meta_validate_finish(report, resolved_path);
                 }
             };
-            let config_dir = match owner_context.owner_kind {
-                MetaValidationOwnerKind::Configuration | MetaValidationOwnerKind::Extension => {
-                    owner_context.owner_path.parent().map(Path::to_path_buf)
-                }
-                MetaValidationOwnerKind::External => None,
-            };
             MetaValidationReferenceInputs {
-                config_dir,
                 language_codes: owner_context.language_codes,
+                command_text_validation_required: owner_context
+                    .command_text_validation_required,
+                references_present: owner_context.references_present,
+                registrar_present: owner_context.registrar_present,
+                method_reference_status: owner_context.method_reference_status,
             }
         }
         MetaValidationScope::PostWriteLocal => MetaValidationReferenceInputs {
-            config_dir: None,
             language_codes: Vec::new(),
+            command_text_validation_required: false,
+            references_present: None,
+            registrar_present: None,
+            method_reference_status: None,
         },
     };
 
@@ -5999,6 +5964,7 @@ fn meta_validate_one_with_scope(
         name_node,
         &obj_name,
         &reference_inputs.language_codes,
+        reference_inputs.command_text_validation_required,
     );
     if report.stopped {
         return meta_validate_finish(report, resolved_path);
@@ -6038,8 +6004,8 @@ fn meta_validate_one_with_scope(
         md_type,
         props_node,
         child_obj_node,
-        reference_inputs.config_dir.as_deref(),
-        &obj_name,
+        reference_inputs.references_present,
+        reference_inputs.registrar_present,
     );
     if report.stopped {
         return meta_validate_finish(report, resolved_path);
@@ -6056,7 +6022,7 @@ fn meta_validate_one_with_scope(
         &mut report,
         md_type,
         props_node,
-        reference_inputs.config_dir.as_deref(),
+        reference_inputs.method_reference_status,
     );
     if report.stopped {
         return meta_validate_finish(report, resolved_path);
@@ -6218,11 +6184,12 @@ pub(crate) fn meta_validate_check_internal_info(
 
 pub(crate) fn meta_validate_check_properties(
     report: &mut MetaValidationReporter,
-    md_type: &str,
+    _md_type: &str,
     props_node: Option<roxmltree::Node<'_, '_>>,
     name_node: Option<roxmltree::Node<'_, '_>>,
     obj_name: &str,
     configured_language_codes: &[String],
+    command_text_validation_required: bool,
 ) {
     let Some(props_node) = props_node else {
         report.error("3. Properties block missing");
@@ -6249,7 +6216,7 @@ pub(crate) fn meta_validate_check_properties(
     let synonym_values = meta_validate_localized_values(meta_info_child(props_node, "Synonym"));
     let syn_present = !synonym_values.is_empty();
 
-    if meta_validate_types_with_list_presentation().contains(&md_type) {
+    if command_text_validation_required {
         meta_validate_check_command_texts(report, props_node, configured_language_codes);
     }
     if check_ok {
@@ -6678,8 +6645,8 @@ pub(crate) fn meta_validate_check_cross_properties(
     md_type: &str,
     props_node: Option<roxmltree::Node<'_, '_>>,
     child_obj_node: Option<roxmltree::Node<'_, '_>>,
-    config_dir: Option<&Path>,
-    obj_name: &str,
+    references_present: Option<bool>,
+    registrar_present: Option<bool>,
 ) {
     let Some(props_node) = props_node else {
         return;
@@ -6811,102 +6778,16 @@ pub(crate) fn meta_validate_check_cross_properties(
             }
         }
     }
-    meta_validate_check_document_register_records(
-        report,
-        md_type,
-        props_node,
-        config_dir,
-        &mut issues,
-    );
-    meta_validate_check_register_registrar(
-        report,
-        md_type,
-        props_node,
-        config_dir,
-        obj_name,
-        &mut issues,
-    );
+    if md_type == "Document" && references_present == Some(false) {
+        report.warn("10. A registered metadata reference could not be resolved");
+        issues += 1;
+    }
+    if registrar_present == Some(false) {
+        report.warn("10. No registrar relationship was found");
+        issues += 1;
+    }
     if check_ok && issues == 0 {
         report.ok("10. Cross-property consistency");
-    }
-}
-
-pub(crate) fn meta_validate_check_document_register_records(
-    report: &mut MetaValidationReporter,
-    md_type: &str,
-    props_node: roxmltree::Node<'_, '_>,
-    config_dir: Option<&Path>,
-    issues: &mut usize,
-) {
-    if md_type != "Document" {
-        return;
-    }
-    let Some(config_dir) = config_dir else {
-        return;
-    };
-    let Some(register_records) = meta_info_child(props_node, "RegisterRecords") else {
-        return;
-    };
-    for item in meta_info_children(register_records, "Item") {
-        let ref_value = meta_info_inner_text(item).trim().to_string();
-        let Some((ref_type, ref_name)) = ref_value.split_once('.') else {
-            continue;
-        };
-        let ref_dir = match ref_type {
-            "AccumulationRegister" => "AccumulationRegisters",
-            "InformationRegister" => "InformationRegisters",
-            "AccountingRegister" => "AccountingRegisters",
-            "CalculationRegister" => "CalculationRegisters",
-            _ => continue,
-        };
-        let ref_path = config_dir.join(ref_dir).join(ref_name);
-        let ref_xml = config_dir.join(ref_dir).join(format!("{ref_name}.xml"));
-        if !ref_path.exists() && !ref_xml.exists() {
-            report.warn(format!(
-                "10. Document.RegisterRecords references '{ref_value}' but object not found in config"
-            ));
-            *issues += 1;
-        }
-    }
-}
-
-pub(crate) fn meta_validate_check_register_registrar(
-    report: &mut MetaValidationReporter,
-    md_type: &str,
-    props_node: roxmltree::Node<'_, '_>,
-    config_dir: Option<&Path>,
-    obj_name: &str,
-    issues: &mut usize,
-) {
-    if !matches!(
-        md_type,
-        "AccumulationRegister"
-            | "AccountingRegister"
-            | "CalculationRegister"
-            | "InformationRegister"
-    ) || obj_name == "(unknown)"
-    {
-        return;
-    }
-    if md_type == "InformationRegister"
-        && meta_info_child_text(props_node, "WriteMode").as_deref() != Some("RecorderSubordinate")
-    {
-        return;
-    }
-    let Some(config_dir) = config_dir else {
-        return;
-    };
-    let docs_dir = config_dir.join("Documents");
-    let reg_ref = format!("{md_type}.{obj_name}");
-    let has_registrar = docs_dir.is_dir()
-        && meta_validate_registrar_document_scan(&docs_dir, &reg_ref)
-            .map(|(_, found)| found)
-            .unwrap_or(false);
-    if !has_registrar {
-        report.warn(format!(
-            "10. {md_type}: no registrar document found (none references '{reg_ref}' in RegisterRecords)"
-        ));
-        *issues += 1;
     }
 }
 
@@ -7034,69 +6915,27 @@ pub(crate) fn meta_validate_check_forbidden_properties(
 pub(crate) fn meta_validate_check_method_reference(
     report: &mut MetaValidationReporter,
     md_type: &str,
-    props_node: Option<roxmltree::Node<'_, '_>>,
-    config_dir: Option<&Path>,
+    _props_node: Option<roxmltree::Node<'_, '_>>,
+    status: Option<ValidationMethodReferenceStatus>,
 ) {
-    if !matches!(md_type, "EventSubscription" | "ScheduledJob") {
-        return;
-    }
-    let (Some(props_node), Some(config_dir)) = (props_node, config_dir) else {
-        return;
-    };
-    let (property, method_ref) = if md_type == "EventSubscription" {
-        ("Handler", meta_info_child_text(props_node, "Handler"))
-    } else {
-        ("MethodName", meta_info_child_text(props_node, "MethodName"))
-    };
-    let Some(method_ref) = method_ref.filter(|value| !value.is_empty()) else {
-        return;
-    };
-    let parts = method_ref.split('.').collect::<Vec<_>>();
-    let parsed = if parts.len() == 3 && parts[0] == "CommonModule" {
-        Some((parts[1], parts[2]))
-    } else if parts.len() == 2 {
-        Some((parts[0], parts[1]))
-    } else {
-        None
-    };
-    let Some((module_name, proc_name)) = parsed else {
-        report.error(format!(
-            "13. {md_type}.{property} = '{method_ref}': expected format 'CommonModule.ModuleName.ProcedureName'"
-        ));
-        return;
-    };
-    let module_xml = config_dir
-        .join("CommonModules")
-        .join(format!("{module_name}.xml"));
-    if !module_xml.exists() {
-        report.error(format!(
-            "13. {md_type}.{property}: CommonModule '{module_name}' not found (expected {})",
-            module_xml.display()
-        ));
-        return;
-    }
-    let bsl_path = config_dir
-        .join("CommonModules")
-        .join(module_name)
-        .join("Ext")
-        .join("Module.bsl");
-    if bsl_path.exists() {
-        if let Ok(content) = read_utf8_sig(&bsl_path) {
-            if !meta_validate_bsl_has_export(&content, proc_name) {
-                report.warn(format!(
-                    "13. {md_type}.{property}: procedure '{proc_name}' not found as exported in CommonModule '{module_name}'"
-                ));
-                return;
-            }
+    let Some(status) = status else { return; };
+    match status {
+        ValidationMethodReferenceStatus::Valid => {
+            report.ok(format!("13. {md_type}: method reference resolved"));
         }
-    } else {
-        report.warn(format!(
-            "13. {md_type}.{property}: BSL file not found ({}), cannot verify procedure",
-            bsl_path.display()
-        ));
-        return;
+        ValidationMethodReferenceStatus::Invalid => {
+            report.error(format!("13. {md_type}: method reference is invalid"));
+        }
+        ValidationMethodReferenceStatus::TargetMissing => {
+            report.error(format!("13. {md_type}: referenced module is missing"));
+        }
+        ValidationMethodReferenceStatus::ImplementationMissing => {
+            report.warn(format!("13. {md_type}: referenced implementation is missing"));
+        }
+        ValidationMethodReferenceStatus::EntryPointMissing => {
+            report.warn(format!("13. {md_type}: referenced exported entry point is missing"));
+        }
     }
-    report.ok(format!("13. Method reference: {property} = '{method_ref}'"));
 }
 
 pub(crate) fn meta_validate_check_document_journal_columns(

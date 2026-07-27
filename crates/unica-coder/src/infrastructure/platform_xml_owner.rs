@@ -1,6 +1,6 @@
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 use sha2::{Digest, Sha256};
@@ -10,8 +10,8 @@ pub(crate) use unica_format_core::ports::{
 };
 use unica_format_core::{
     ports::{
-        CompatibilityTarget, FormatInspectionMode, FormatInspectionRequest, OwnerResolutionMode,
-        OwnerResolutionRequest, SourceInputEvidence,
+        FormatInspectionMode, FormatInspectionRequest, OperationalSourceSession,
+        OwnerResolutionMode, OwnerResolutionRequest, SourceInputEvidence,
     },
     source::{ConfiguredSourceSetKind, SourceContext, SourceFamily, SourceLocation},
 };
@@ -32,7 +32,6 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub(crate) struct PlatformXmlOwnerError {
-    pub path: PathBuf,
     pub message: String,
 }
 
@@ -110,10 +109,8 @@ pub(crate) fn resolve_existing_platform_xml_owners_for_new_output_with_provenanc
 pub(crate) fn inspect_platform_xml_compatibility(
     target: &Path,
 ) -> Result<FormatCompatibility, PlatformXmlOwnerError> {
-    let target = normalize_path_identity(target).map_err(|message| PlatformXmlOwnerError {
-        path: target.to_path_buf(),
-        message,
-    })?;
+    let target =
+        normalize_path_identity(target).map_err(|message| PlatformXmlOwnerError { message })?;
     let result = PlatformXmlAdapterFactory::new()
         .registration()
         .format_inspection
@@ -122,11 +119,9 @@ pub(crate) fn inspect_platform_xml_compatibility(
             mode: FormatInspectionMode::Versioned,
         })
         .map_err(|error| PlatformXmlOwnerError {
-            path: target.clone(),
             message: error.message,
         })?;
     result.compatibility.ok_or_else(|| PlatformXmlOwnerError {
-        path: target,
         message: "platform XML target has no format-owning root".to_string(),
     })
 }
@@ -137,13 +132,11 @@ fn resolve(
     mode: OwnerResolutionMode,
 ) -> Result<PlatformXmlOwnerResolution, PlatformXmlOwnerError> {
     let (source, source_map_provenance) = operation_source_context(target, context)?;
-    let target = source.location().target().to_path_buf();
     let result = PlatformXmlAdapterFactory::new()
         .registration()
         .ownership
         .resolve(&OwnerResolutionRequest { source, mode })
         .map_err(|error| PlatformXmlOwnerError {
-            path: target,
             message: error.message,
         })?;
     Ok(PlatformXmlOwnerResolution {
@@ -159,16 +152,48 @@ pub(crate) fn compatibility_target(
     target: &Path,
     context: &WorkspaceContext,
     mode: OwnerResolutionMode,
-) -> Result<CompatibilityTarget, PlatformXmlOwnerError> {
-    operation_source_context(target, context)
-        .map(|(source, _)| CompatibilityTarget { source, mode })
+    validation_scope: bool,
+) -> Result<OperationalSourceSession, PlatformXmlOwnerError> {
+    operation_source_context(target, context).map(|(source, _)| {
+        let factory = PlatformXmlAdapterFactory::new();
+        if source.configured_source_set().is_some() {
+            if validation_scope {
+                factory.capture_validation_source(&source, mode)
+            } else {
+                factory.capture_operational_source(&source, mode)
+            }
+        } else if validation_scope {
+            factory.capture_unscoped_validation_source(
+                source.location().target(),
+                source.location().workspace_root(),
+                mode,
+            )
+        } else {
+            factory.capture_unscoped_source(
+                source.location().target(),
+                source.location().workspace_root(),
+                mode,
+            )
+        }
+    })
 }
 
-pub(crate) fn validation_source_context(
+pub(crate) fn validation_source_session(
     target: &Path,
     context: &WorkspaceContext,
-) -> Result<SourceContext, PlatformXmlOwnerError> {
-    operation_source_context(target, context).map(|(source, _)| source)
+) -> Result<OperationalSourceSession, PlatformXmlOwnerError> {
+    operation_source_context(target, context).map(|(source, _)| {
+        let factory = PlatformXmlAdapterFactory::new();
+        if source.configured_source_set().is_some() {
+            factory.capture_validation_source(&source, OwnerResolutionMode::Existing)
+        } else {
+            factory.capture_unscoped_validation_source(
+                source.location().target(),
+                source.location().workspace_root(),
+                OwnerResolutionMode::Existing,
+            )
+        }
+    })
 }
 
 fn operation_source_context(
@@ -180,37 +205,24 @@ fn operation_source_context(
     } else {
         context.cwd.join(target)
     };
-    let target = normalize_path_identity(&target).map_err(|message| PlatformXmlOwnerError {
-        path: target.clone(),
-        message,
-    })?;
+    let target =
+        normalize_path_identity(&target).map_err(|message| PlatformXmlOwnerError { message })?;
     let (source_map, source_map_provenance) = discover_project_source_map_with_provenance(
         &context.workspace_root,
     )
-    .map_err(|message| PlatformXmlOwnerError {
-        path: context.workspace_root.clone(),
-        message,
-    })?;
+    .map_err(|message| PlatformXmlOwnerError { message })?;
     let mut containing = Vec::new();
     for source_set in &source_map.source_sets {
         let source_root =
-            normalize_contained_source_root(&context.workspace_root, &source_set.path).map_err(
-                |message| PlatformXmlOwnerError {
-                    path: context.workspace_root.join(&source_set.path),
-                    message,
-                },
-            )?;
+            normalize_contained_source_root(&context.workspace_root, &source_set.path)
+                .map_err(|message| PlatformXmlOwnerError { message })?;
         if target.starts_with(&source_root) {
             containing.push((source_set, source_root));
         }
     }
     let selected =
-        select_unique_deepest_source_set_match(&target, containing).map_err(|message| {
-            PlatformXmlOwnerError {
-                path: target.clone(),
-                message,
-            }
-        })?;
+        select_unique_deepest_source_set_match(&target, containing)
+            .map_err(|message| PlatformXmlOwnerError { message })?;
     let has_explicit_source_map = source_map.config_path.is_some();
     let (configured_source_set, configured_kind, source_root) = match selected {
         Some((source_set, source_root)) => (

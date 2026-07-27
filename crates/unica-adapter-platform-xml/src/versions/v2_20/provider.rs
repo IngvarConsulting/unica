@@ -36,6 +36,14 @@ pub(crate) struct PlatformXmlProvider {
     captured_source_root: PathBuf,
 }
 
+pub(crate) struct AuthorizedOperationalLocation {
+    pub(crate) target: PathBuf,
+    pub(crate) boundary: PathBuf,
+    pub(crate) target_is_directory: bool,
+    pub(crate) nearest_existing_directory: PathBuf,
+    pub(crate) configuration_root: Option<PathBuf>,
+}
+
 impl PlatformXmlProvider {
     pub(crate) const fn coverage_manifest_json() -> &'static str {
         include_str!("coverage.json")
@@ -51,6 +59,184 @@ impl PlatformXmlProvider {
         source_root: impl AsRef<Path>,
     ) -> Result<Self, SourceAdapterError> {
         Self::capture_with_hook(target.as_ref(), source_root.as_ref(), || {})
+    }
+
+    pub(crate) fn capture_operational(
+        target: impl AsRef<Path>,
+        source_root: impl AsRef<Path>,
+        allow_missing_target: bool,
+    ) -> Result<Self, SourceAdapterError> {
+        Self::capture_operational_with_hook(
+            target.as_ref(),
+            source_root.as_ref(),
+            allow_missing_target,
+            || {},
+        )
+    }
+
+    pub(crate) fn authorize_unscoped_target(
+        target: &Path,
+        authorized_root: &Path,
+    ) -> Result<AuthorizedOperationalLocation, SourceAdapterError> {
+        Self::authorize_unscoped_target_with_hook(target, authorized_root, || {})
+    }
+
+    fn authorize_unscoped_target_with_hook(
+        target: &Path,
+        authorized_root: &Path,
+        after_authorization: impl FnOnce(),
+    ) -> Result<AuthorizedOperationalLocation, SourceAdapterError> {
+        ensure_directory(authorized_root)?;
+        let boundary =
+            fs::canonicalize(authorized_root).map_err(|_| unavailable("authorized root"))?;
+        let requested_target = if target.is_absolute() {
+            target.to_path_buf()
+        } else {
+            authorized_root.join(target)
+        };
+        let (lexical_root, relative) =
+            if let Ok(relative) = requested_target.strip_prefix(authorized_root) {
+                (authorized_root, relative)
+            } else if let Ok(relative) = requested_target.strip_prefix(&boundary) {
+                (boundary.as_path(), relative)
+            } else {
+                return Err(unavailable(
+                    "target is outside the authorized workspace boundary",
+                ));
+            };
+        if !relative.as_os_str().is_empty() {
+            normalized_relative_key(relative)?;
+        }
+        authorize_operational_target(&requested_target, lexical_root, &boundary, true)?;
+        after_authorization();
+        let target = boundary.join(relative);
+        let target_is_directory = match fs::symlink_metadata(&requested_target) {
+            Ok(metadata) => metadata.is_dir(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                target.extension().is_none()
+            }
+            Err(_) => return Err(unavailable("target path")),
+        };
+        let mut current = if target_is_directory {
+            Some(target.as_path())
+        } else {
+            target.parent()
+        };
+        let mut configuration_root = None;
+        let mut nearest_existing_directory = None;
+        while let Some(directory) = current {
+            if !directory.starts_with(&boundary) {
+                break;
+            }
+            let directory_exists = match fs::symlink_metadata(directory) {
+                Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                    return Err(unavailable(
+                        "authorized source ancestor must be a regular directory",
+                    ))
+                }
+                Ok(_) => {
+                    if nearest_existing_directory.is_none() {
+                        nearest_existing_directory = Some(directory.to_path_buf());
+                    }
+                    true
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                Err(_) => return Err(unavailable("authorized source ancestor")),
+            };
+            let candidate = directory.join("Configuration.xml");
+            match directory_exists
+                .then(|| fs::symlink_metadata(&candidate))
+                .transpose()
+            {
+                Ok(None) => {}
+                Ok(Some(metadata))
+                    if metadata.file_type().is_symlink() || !metadata.is_file() =>
+                {
+                    return Err(unavailable(
+                        "authorized configuration evidence must be a regular file",
+                    ))
+                }
+                Ok(Some(_)) => {
+                    configuration_root = Some(directory.to_path_buf());
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err(unavailable("authorized configuration evidence")),
+            }
+            if directory == boundary {
+                break;
+            }
+            current = directory.parent();
+        }
+        Ok(AuthorizedOperationalLocation {
+            target,
+            boundary,
+            target_is_directory,
+            nearest_existing_directory: nearest_existing_directory.unwrap_or_else(|| {
+                unreachable!("the authorized boundary is an existing directory")
+            }),
+            configuration_root,
+        })
+    }
+
+    fn capture_operational_with_hook(
+        target: &Path,
+        source_root: &Path,
+        allow_missing_target: bool,
+        after_first_capture: impl FnOnce(),
+    ) -> Result<Self, SourceAdapterError> {
+        ensure_directory(source_root)?;
+        let captured_source_root =
+            fs::canonicalize(source_root).map_err(|_| unavailable("source root"))?;
+        let requested_target = if target.is_absolute() {
+            target.to_path_buf()
+        } else {
+            source_root.join(target)
+        };
+        let relative = requested_target
+            .strip_prefix(source_root)
+            .map_err(|_| unavailable("target is outside the authorized source root"))?;
+        let target_key = if relative.as_os_str().is_empty() {
+            "Configuration.xml".to_string()
+        } else {
+            normalized_relative_key(relative)?
+        };
+        let before_target = authorize_operational_target(
+            &requested_target,
+            source_root,
+            &captured_source_root,
+            allow_missing_target,
+        )?;
+        let first =
+            capture_contents(&captured_source_root, &captured_source_root, true)?;
+        after_first_capture();
+        verify_contents(
+            &captured_source_root,
+            &captured_source_root,
+            true,
+            &first,
+        )?;
+        let after_target = authorize_operational_target(
+            &requested_target,
+            source_root,
+            &captured_source_root,
+            allow_missing_target,
+        )?;
+        if before_target != after_target {
+            return Err(stale());
+        }
+        let target_identity = TargetIdentity::from_normalized_relative_path(&target_key)?;
+        let revision = revision_for(&first, &target_identity)?;
+        Ok(Self {
+            files: first.files,
+            configuration: first.configuration,
+            parent_configurations: first.parent_configurations,
+            revision,
+            target_identity,
+            descriptor_key: target_key,
+            captured_root: captured_source_root.clone(),
+            captured_source_root,
+        })
     }
 
     #[cfg(test)]
@@ -244,6 +430,55 @@ fn ensure_directory(path: &Path) -> Result<(), SourceAdapterError> {
     Ok(())
 }
 
+fn authorize_operational_target(
+    requested_target: &Path,
+    source_root: &Path,
+    captured_source_root: &Path,
+    allow_missing_target: bool,
+) -> Result<Option<PathBuf>, SourceAdapterError> {
+    let relative = requested_target
+        .strip_prefix(source_root)
+        .map_err(|_| unavailable("target is outside the authorized source root"))?;
+    let mut requested_cursor = source_root.to_path_buf();
+    let mut canonical_cursor = captured_source_root.to_path_buf();
+    let mut missing = false;
+    for component in relative.components() {
+        let Component::Normal(component) = component else {
+            return Err(unavailable("target contains an invalid path component"));
+        };
+        requested_cursor.push(component);
+        canonical_cursor.push(component);
+        if missing {
+            continue;
+        }
+        match fs::symlink_metadata(&requested_cursor) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(unavailable("target path must not contain symbolic links"))
+            }
+            Ok(_) => {
+                let canonical = fs::canonicalize(&requested_cursor)
+                    .map_err(|_| unavailable("target path identity"))?;
+                if canonical != canonical_cursor || !canonical.starts_with(captured_source_root) {
+                    return Err(unavailable("target canonical identity is inconsistent"));
+                }
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound && allow_missing_target =>
+            {
+                missing = true;
+            }
+            Err(_) => return Err(unavailable("target path")),
+        }
+    }
+    if missing {
+        Ok(None)
+    } else {
+        fs::canonicalize(requested_target)
+            .map(Some)
+            .map_err(|_| unavailable("target path identity"))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CaptureContents {
     files: BTreeMap<String, Arc<[u8]>>,
@@ -390,11 +625,21 @@ fn capture_contents(
         }
     }
     let configuration = if root_capture {
+        if directories.contains("Configuration.xml") {
+            return Err(unavailable(
+                "authorized configuration evidence must be a regular file",
+            ));
+        }
         files.get("Configuration.xml").cloned()
     } else {
         capture_optional_regular_file(source_root, "Configuration.xml", &mut budget)?
     };
     let parent_configurations = if root_capture {
+        if directories.contains("Ext/ParentConfigurations.bin") {
+            return Err(unavailable(
+                "authorized support evidence must be a regular file",
+            ));
+        }
         files.get("Ext/ParentConfigurations.bin").cloned()
     } else {
         capture_optional_regular_file(source_root, "Ext/ParentConfigurations.bin", &mut budget)?
@@ -949,6 +1194,200 @@ fn revision_for(
         }
     }
     SourceRevision::new(format!("sha256:{:x}", digest.finalize()))
+}
+
+#[cfg(test)]
+mod operational_capture_tests {
+    use super::PlatformXmlProvider;
+    use std::{
+        fs,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        },
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    fn temp_root(label: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "unica-operational-capture-{label}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
+
+    fn fixture(label: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let root = temp_root(label);
+        fs::create_dir_all(root.join("Ext")).unwrap();
+        let owner = root.join("Configuration.xml");
+        fs::write(&owner, b"<owner/>").unwrap();
+        fs::write(root.join("Ext/ParentConfigurations.bin"), b"first").unwrap();
+        (root, owner)
+    }
+
+    #[test]
+    fn operational_capture_rejects_support_evidence_changed_during_capture() {
+        let (root, owner) = fixture("support-race");
+        let support = root.join("Ext/ParentConfigurations.bin");
+
+        let result = PlatformXmlProvider::capture_operational_with_hook(
+            &owner,
+            &root,
+            false,
+            || fs::write(&support, b"second").unwrap(),
+        );
+
+        assert!(result.is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn operational_capture_rejects_support_symlink_swap() {
+        use std::os::unix::fs::symlink;
+
+        let (root, owner) = fixture("support-symlink-race");
+        let support = root.join("Ext/ParentConfigurations.bin");
+        let outside = temp_root("support-symlink-race-outside");
+        fs::write(&outside, b"outside").unwrap();
+
+        let result = PlatformXmlProvider::capture_operational_with_hook(
+            &owner,
+            &root,
+            false,
+            || {
+                fs::remove_file(&support).unwrap();
+                symlink(&outside, &support).unwrap();
+            },
+        );
+
+        assert!(result.is_err());
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_file(outside).unwrap();
+    }
+
+    #[test]
+    fn operational_capture_authorizes_containment_before_reading() {
+        let (root, _) = fixture("authorize-first");
+        let outside = temp_root("authorize-first-outside");
+        fs::create_dir_all(&outside).unwrap();
+        let target = outside.join("Object.xml");
+        fs::write(&target, b"outside").unwrap();
+        let hook_called = Arc::new(AtomicBool::new(false));
+        let hook_probe = hook_called.clone();
+
+        let result = PlatformXmlProvider::capture_operational_with_hook(
+            &target,
+            &root,
+            false,
+            move || hook_probe.store(true, Ordering::SeqCst),
+        );
+
+        assert!(result.is_err());
+        assert!(!hook_called.load(Ordering::SeqCst));
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn unscoped_owner_probe_runs_only_after_target_authorization() {
+        let root = temp_root("unscoped-authorize-first");
+        let target = root.join("Nested/Object.xml");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, b"<object/>").unwrap();
+        let owner = root.join("Configuration.xml");
+        let owner_for_hook = owner.clone();
+
+        let location = PlatformXmlProvider::authorize_unscoped_target_with_hook(
+            &target,
+            &root,
+            move || fs::write(owner_for_hook, b"<owner/>").unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            location.configuration_root.unwrap(),
+            root.canonicalize().unwrap()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unscoped_out_of_root_target_is_rejected_before_owner_probe() {
+        let root = temp_root("unscoped-out-of-root");
+        let outside = temp_root("unscoped-out-of-root-target");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let target = outside.join("Object.xml");
+        fs::write(&target, b"<object/>").unwrap();
+        let hook_called = Arc::new(AtomicBool::new(false));
+        let hook_probe = hook_called.clone();
+
+        let result = PlatformXmlProvider::authorize_unscoped_target_with_hook(
+            &target,
+            &root,
+            move || hook_probe.store(true, Ordering::SeqCst),
+        );
+
+        assert!(result.is_err());
+        assert!(!hook_called.load(Ordering::SeqCst));
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unscoped_owner_symlink_swap_after_authorization_is_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_root("unscoped-owner-swap");
+        let outside = temp_root("unscoped-owner-swap-outside");
+        let target = root.join("Nested/Object.xml");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, b"<object/>").unwrap();
+        fs::write(&outside, b"<owner/>").unwrap();
+        let owner = root.join("Configuration.xml");
+        let outside_for_hook = outside.clone();
+
+        let result = PlatformXmlProvider::authorize_unscoped_target_with_hook(
+            &target,
+            &root,
+            move || symlink(&outside_for_hook, &owner).unwrap(),
+        );
+
+        assert!(result.is_err());
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_file(outside).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unscoped_target_canonical_mismatch_is_rejected_before_owner_probe() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_root("unscoped-target-mismatch");
+        let real = root.join("Real");
+        fs::create_dir_all(&real).unwrap();
+        fs::write(real.join("Object.xml"), b"<object/>").unwrap();
+        symlink(&real, root.join("Alias")).unwrap();
+        let target = root.join("Alias/Object.xml");
+        let hook_called = Arc::new(AtomicBool::new(false));
+        let hook_probe = hook_called.clone();
+
+        let result = PlatformXmlProvider::authorize_unscoped_target_with_hook(
+            &target,
+            &root,
+            move || hook_probe.store(true, Ordering::SeqCst),
+        );
+
+        assert!(result.is_err());
+        assert!(!hook_called.load(Ordering::SeqCst));
+        fs::remove_dir_all(root).unwrap();
+    }
+
 }
 
 fn unavailable(message: &str) -> SourceAdapterError {

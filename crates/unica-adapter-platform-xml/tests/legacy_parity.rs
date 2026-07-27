@@ -770,7 +770,7 @@ fn fix_round6_rights_target_crosswalk_equals_runtime_supported_top_level_registr
 fn coverage_manifest_is_runtime_checked_and_rejects_every_authority_mutation() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/versions/v2_20/coverage.json");
     let raw = fs::read_to_string(path).unwrap();
-    PlatformXmlAdapterFactory::validate_2_20_coverage_manifest(&raw)
+    PlatformXmlAdapterFactory::validate_coverage_manifest(&raw)
         .expect("checked-in coverage must exactly match runtime dispatch");
 
     assert_manifest_mutation_rejected(&raw, "removed property", |manifest| {
@@ -2224,7 +2224,7 @@ fn assert_manifest_mutation_rejected(
     let mut manifest: Value = serde_json::from_str(raw).unwrap();
     mutate(&mut manifest);
     assert!(
-        PlatformXmlAdapterFactory::validate_2_20_coverage_manifest(
+        PlatformXmlAdapterFactory::validate_coverage_manifest(
             &serde_json::to_string(&manifest).unwrap()
         )
         .is_err(),

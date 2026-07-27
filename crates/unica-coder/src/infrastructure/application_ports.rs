@@ -17,77 +17,18 @@ use crate::infrastructure::native_operations::single_file_publisher::{
 };
 use crate::infrastructure::native_operations::NativeOperationAdapter;
 use crate::infrastructure::plugin_runtime::find_plugin_root;
-use crate::infrastructure::redaction::redactor;
 use crate::infrastructure::workspace_services::WorkspaceServiceManager;
 use crate::infrastructure::workspace_state::WorkspaceStateRepository;
 use serde_json::{Map, Value};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::PathBuf;
 use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
 use unica_application::OperationalPolicyService;
 use unica_format_core::ports::{
-    PublicationHostPort, PublicationInvocation, PublicationLockResult, PublicationProcessCommand,
-    PublicationProcessOutput, PublicationRequest, ResolvedPublicationTool,
+    FormatDiagnosticCode, PublicationArtifact, PublicationChange, PublicationCleanup,
+    PublicationInvocation, PublicationRecovery, PublicationRequest, PublicationResult,
+    PublicationStatus,
 };
 pub(crate) struct InfrastructureApplicationPorts;
-
-struct InfrastructurePublicationHost;
-
-impl PublicationHostPort for InfrastructurePublicationHost {
-    fn run_process(
-        &self,
-        command: &PublicationProcessCommand,
-    ) -> Result<PublicationProcessOutput, String> {
-        system_process_runner()
-            .run(&ProcessCommand {
-                program: command.program.clone(),
-                args: command.args.clone(),
-                cwd: command.cwd.clone(),
-                timeout: command.timeout,
-                cancellation: command.cancellation.clone(),
-            })
-            .map(|output| PublicationProcessOutput {
-                status_success: output.status_success,
-                status: output.status,
-                stdout: output.stdout,
-                stderr: output.stderr,
-                timed_out: output.timed_out,
-                cancelled: output.cancelled,
-                stdout_truncated: output.stdout_truncated,
-            })
-    }
-
-    fn resolve_bundled_tool(
-        &self,
-        cwd: &Path,
-        tool: &str,
-        require_executable: bool,
-    ) -> Result<ResolvedPublicationTool, String> {
-        let plugin_root = find_plugin_root(cwd).ok_or_else(|| {
-            "could not locate Unica plugin root for publication adapter lookup".to_string()
-        })?;
-        resolve_bundled_tool(&plugin_root, tool, require_executable).map(|resolved| {
-            ResolvedPublicationTool {
-                program: resolved.program,
-                warnings: resolved.warnings,
-            }
-        })
-    }
-
-    fn with_exclusive_publication_lock(
-        &self,
-        targets: &[PathBuf],
-        action: &mut dyn FnMut() -> Result<Vec<String>, String>,
-    ) -> Result<PublicationLockResult, String> {
-        with_publication_locks_mode(targets, PublicationTreeLockMode::Exclusive, |_| action())
-            .map(PublicationLockResult::Action)
-            .map_err(|error| error.to_string())
-    }
-
-    fn redact(&self, text: &str) -> String {
-        redactor(text)
-    }
-}
 
 impl ApplicationPorts for InfrastructureApplicationPorts {
     fn discover_workspace(
@@ -296,61 +237,121 @@ fn invoke_verified_full_dump(
     context: &WorkspaceContext,
     cancellation: &CancellationToken,
 ) -> Result<AdapterOutcome, String> {
-    const ALLOWED: &[&str] = &[
-        "cwd",
-        "dryRun",
-        "confirm",
-        "operation",
-        "config",
-        "workdir",
-        "mode",
-        "sourceSet",
-        "extension",
-    ];
-    let unsupported_arguments = args
-        .keys()
-        .filter(|key| !ALLOWED.contains(&key.as_str()))
-        .cloned()
-        .collect();
-    let request = PublicationRequest {
-        operation_name: operation_name.to_string(),
-        invocation,
-        workspace_root: context.workspace_root.clone(),
-        cwd: context.cwd.clone(),
-        config: args
-            .get("config")
-            .and_then(Value::as_str)
-            .map(PathBuf::from),
-        workdir: args
-            .get("workdir")
-            .and_then(Value::as_str)
-            .map(PathBuf::from),
-        source_set: args
-            .get("sourceSet")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        extension: args
-            .get("extension")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        unsupported_arguments,
-        cancellation: cancellation.clone(),
-    };
-    let registration = PlatformXmlAdapterFactory::new()
-        .operational_registration(Arc::new(InfrastructurePublicationHost));
-    OperationalPolicyService::publish(registration.publication.as_ref(), &request)
-        .map(|result| AdapterOutcome {
-            ok: result.ok,
-            summary: result.summary,
-            changes: result.changes,
-            warnings: result.warnings,
-            errors: result.errors,
-            artifacts: result.artifacts,
-            stdout: result.stdout,
-            stderr: result.stderr,
-            command: result.command,
-        })
+    let factory = PlatformXmlAdapterFactory::new();
+    let session = factory.capture_publication_session(
+        operation_name,
+        args,
+        &context.workspace_root,
+        &context.cwd,
+        |program, args, cwd, timeout, cancellation| {
+            system_process_runner()
+                .run(&ProcessCommand {
+                    program: program.to_path_buf(),
+                    args: args.to_vec(),
+                    cwd: cwd.to_path_buf(),
+                    timeout,
+                    cancellation: cancellation.clone(),
+                })
+                .map(|output| {
+                    (
+                        output.status_success,
+                        output.status,
+                        output.stdout,
+                        output.stderr,
+                        output.timed_out,
+                        output.cancelled,
+                        output.stdout_truncated,
+                    )
+                })
+        },
+        |cwd, tool, require_executable| {
+            let plugin_root = find_plugin_root(cwd).ok_or_else(|| {
+                "publication runtime is unavailable".to_string()
+            })?;
+            resolve_bundled_tool(&plugin_root, tool, require_executable)
+                .map(|resolved| (resolved.program, resolved.warnings))
+        },
+        |targets, action| {
+            with_publication_locks_mode(
+                targets,
+                PublicationTreeLockMode::Exclusive,
+                |_| action(),
+            )
+            .map_err(|_| "publication lock failed".to_string())
+        },
+    );
+    let request = PublicationRequest::new(session, invocation, cancellation.clone());
+    let registration = factory.operational_registration();
+    OperationalPolicyService::publish(registration.publication(), &request)
+        .map(publication_outcome)
         .map_err(|error| error.to_string())
+}
+
+fn publication_outcome(result: PublicationResult) -> AdapterOutcome {
+    let mut artifacts = result
+        .artifacts()
+        .iter()
+        .map(|artifact| match artifact {
+            PublicationArtifact::PublishedSource => "publishedSource".to_string(),
+            PublicationArtifact::RecoveryState => "recoveryState".to_string(),
+        })
+        .collect::<Vec<_>>();
+    artifacts.extend([
+        format!("publication.status={:?}", result.status()),
+        format!("publication.cancellation={:?}", result.cancellation()),
+        format!("publication.rollback={:?}", result.rollback()),
+        format!("publication.cleanup={:?}", result.cleanup()),
+        format!("publication.recovery={:?}", result.recovery()),
+    ]);
+    let errors = result
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| publication_diagnostic_message(diagnostic.code()).to_string())
+        .collect::<Vec<_>>();
+    let summary = match result.status() {
+        PublicationStatus::Published => "Full source publication completed.",
+        PublicationStatus::Cancelled => "Full source publication was cancelled.",
+        PublicationStatus::Failed if result.recovery() == PublicationRecovery::Required => {
+            "Full source publication failed and requires recovery."
+        }
+        PublicationStatus::Failed if result.cleanup() == PublicationCleanup::Failed => {
+            "Full source publication failed during private cleanup."
+        }
+        PublicationStatus::Failed => "Full source publication failed.",
+    };
+    AdapterOutcome {
+        ok: result.status() == PublicationStatus::Published,
+        summary: summary.to_string(),
+        changes: result
+            .changes()
+            .iter()
+            .map(|change| match change {
+                PublicationChange::FullSourceReplaced => "full source replaced".to_string(),
+            })
+            .collect(),
+        warnings: Vec::new(),
+        errors: errors.clone(),
+        artifacts,
+        stdout: None,
+        stderr: (!errors.is_empty()).then(|| format!("{}\n", errors.join("\n"))),
+        command: None,
+    }
+}
+
+fn publication_diagnostic_message(code: FormatDiagnosticCode) -> &'static str {
+    match code {
+        FormatDiagnosticCode::PublicationCancelled => "Publication was cancelled.",
+        FormatDiagnosticCode::PublicationRecoveryRequired => {
+            "Publication requires recovery before another write."
+        }
+        FormatDiagnosticCode::PublicationCleanupFailed => {
+            "Publication could not complete private cleanup."
+        }
+        FormatDiagnosticCode::PublicationFailed => {
+            "Publication failed before a verified source replacement completed."
+        }
+        _ => "Publication could not be completed safely.",
+    }
 }
 
 fn verified_full_dump_invocation(
@@ -371,6 +372,158 @@ fn verified_full_dump_invocation(
             Some(PublicationInvocation::RuntimeExecute)
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod task7_fix_round1_publication_tests {
+    use super::{invoke_verified_full_dump, publication_outcome};
+    use crate::domain::{cancellation::CancellationToken, workspace::WorkspaceContext};
+    use serde_json::{json, Map};
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+    use unica_format_core::ports::{
+        FormatDiagnostic, FormatDiagnosticCode, PublicationArtifact, PublicationCancellation,
+        PublicationChange, PublicationCleanup, PublicationInvocation, PublicationRecovery,
+        PublicationResult, PublicationRollback, PublicationStatus,
+    };
+
+    #[test]
+    fn cancelled_publication_json_preserves_typed_state_without_paths_or_native_keys() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "unica-task7-public-json-{}-{nanos}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".cache"),
+            workspace_epoch: 1,
+        };
+        let args = Map::from_iter([
+            ("config".to_string(), json!("/private/unix/Configuration.xml")),
+            ("workdir".to_string(), json!(r"C:\private\workspace")),
+            ("nativeTag".to_string(), json!("MetaDataObject")),
+        ]);
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        let outcome = invoke_verified_full_dump(
+            "alternate.publish",
+            PublicationInvocation::BuildDump,
+            &args,
+            &context,
+            &cancellation,
+        )
+        .unwrap();
+        let public = serde_json::to_string(&outcome).unwrap();
+
+        for forbidden in [
+            root.to_string_lossy().as_ref(),
+            "/private/unix",
+            r"C:\private\workspace",
+            "Configuration.xml",
+            "MetaDataObject",
+            "ParentConfigurations.bin",
+            "8.3.27",
+            "2.20",
+        ] {
+            assert!(!public.contains(forbidden), "leaked {forbidden}: {public}");
+        }
+        for expected in [
+            "publication.status=Cancelled",
+            "publication.cancellation=BeforeExecution",
+            "publication.rollback=NotNeeded",
+            "publication.cleanup=Completed",
+            "publication.recovery=NotRequired",
+        ] {
+            assert!(public.contains(expected), "missing {expected}: {public}");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn every_publication_outcome_ignores_path_bearing_free_form_text() {
+        let diagnostic = |code| {
+            FormatDiagnostic::new(
+                code,
+                r"/private/source/Configuration.xml C:\private\source MetaDataObject 2.20 8.3.27",
+            )
+        };
+        let cases = [
+            PublicationResult::new(
+                PublicationStatus::Published,
+                PublicationCancellation::NotRequested,
+                PublicationRollback::NotNeeded,
+                PublicationCleanup::Completed,
+                PublicationRecovery::NotRequired,
+                "/private/source/Configuration.xml",
+                Vec::new(),
+                vec![PublicationChange::FullSourceReplaced],
+                vec![PublicationArtifact::PublishedSource],
+            )
+            .unwrap(),
+            PublicationResult::new(
+                PublicationStatus::Cancelled,
+                PublicationCancellation::BeforePublication,
+                PublicationRollback::NotNeeded,
+                PublicationCleanup::Completed,
+                PublicationRecovery::NotRequired,
+                r"C:\private\source",
+                vec![diagnostic(FormatDiagnosticCode::PublicationCancelled)],
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap(),
+            PublicationResult::new(
+                PublicationStatus::Failed,
+                PublicationCancellation::NotRequested,
+                PublicationRollback::NotNeeded,
+                PublicationCleanup::Failed,
+                PublicationRecovery::Required,
+                "MetaDataObject",
+                vec![diagnostic(FormatDiagnosticCode::PublicationCleanupFailed)],
+                Vec::new(),
+                vec![PublicationArtifact::RecoveryState],
+            )
+            .unwrap(),
+            PublicationResult::new(
+                PublicationStatus::Failed,
+                PublicationCancellation::DuringPublication,
+                PublicationRollback::Failed,
+                PublicationCleanup::RetainedForRecovery,
+                PublicationRecovery::Required,
+                "Ext/ParentConfigurations.bin",
+                vec![diagnostic(
+                    FormatDiagnosticCode::PublicationRecoveryRequired,
+                )],
+                Vec::new(),
+                vec![PublicationArtifact::RecoveryState],
+            )
+            .unwrap(),
+        ];
+
+        for result in cases {
+            let public = serde_json::to_string(&publication_outcome(result)).unwrap();
+            for forbidden in [
+                "/private/source",
+                r"C:\private\source",
+                "Configuration.xml",
+                "MetaDataObject",
+                "ParentConfigurations.bin",
+                "8.3.27",
+                "2.20",
+            ] {
+                assert!(!public.contains(forbidden), "leaked {forbidden}: {public}");
+            }
+        }
     }
 }
 

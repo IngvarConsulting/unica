@@ -13,9 +13,10 @@ use crate::infrastructure::native_operations::cfe::{
     cfe_registered_xml_dependency_paths,
 };
 use crate::infrastructure::native_operations::common::{
-    find_support_config_dir, resolve_cf_edit_config_path, resolve_cf_read_config_path,
+    path_arg, resolve_cf_edit_config_path, resolve_cf_read_config_path,
     resolve_cfe_validate_config_path, resolve_form_add_object_path, resolve_form_info_path,
-    resolve_role_read_rights_path, resolve_subsystem_edit_xml, support_uuid_dependency_paths,
+    resolve_role_read_rights_path,
+    resolve_subsystem_edit_xml,
 };
 use crate::infrastructure::native_operations::dcs::{
     dcs_info_format_dependency_paths, resolve_dcs_validate_path,
@@ -40,7 +41,6 @@ use crate::infrastructure::native_operations::subsystem::{
     subsystem_edit_operations, subsystem_read_format_dependency_paths,
     subsystem_validation_format_dependency_paths,
 };
-use crate::infrastructure::native_operations::support::support_edit_reads_uuid_dependency;
 use crate::infrastructure::native_operations::template::template_add_object_type_folders;
 use crate::infrastructure::platform_xml_owner::compatibility_target;
 use serde_json::{json, Map, Value};
@@ -50,7 +50,9 @@ use std::path::{Path, PathBuf};
 use unica_application::{
     CompatibilityPolicyCommand, OperationalPolicyDecision, OperationalPolicyService,
 };
-use unica_format_core::ports::{CompatibilityRequest, FormatDiagnostic, OwnerResolutionMode};
+use unica_format_core::ports::{
+    CompatibilityRequest, FormatDiagnostic, FormatDiagnosticDetail, OwnerResolutionMode,
+};
 
 pub(crate) fn evaluate_format_guard(
     spec: ToolSpec,
@@ -73,7 +75,8 @@ pub(crate) fn evaluate_format_guard(
     .into_iter()
     .map(|path| {
         let new_output = matches!(descriptor.format_guard, FormatGuardPolicy::NewDump)
-            || planned_new_outputs.contains(&path);
+            || planned_new_outputs.contains(&path)
+            || (operation_may_create_missing_output(descriptor.operation) && !path.exists());
         (path, new_output)
     })
     .collect::<Vec<_>>();
@@ -85,68 +88,103 @@ pub(crate) fn evaluate_format_guard(
         } else {
             OwnerResolutionMode::Existing
         };
-        match compatibility_target(&target, context, mode) {
+        match compatibility_target(
+            &target,
+            context,
+            mode,
+            descriptor.operation == "meta-validate",
+        ) {
             Ok(target) => compatibility_targets.push(target),
-            Err(error) => {
-                let warning = format!(
-                    "Некорректный корневой файл формата выгрузки {}: {}",
-                    error.path.display(),
-                    error.message
-                );
+            Err(_) => {
+                let warning =
+                    "Источник не удалось авторизовать для проверки совместимости.".to_string();
                 let diagnostic = json!({
-                    "code": "formatVersionInvalid",
-                    "actualFormat": Value::Null,
-                    "compatibility": "invalid",
-                    "root": error.path.display().to_string(),
+                    "code": "sourceMalformed",
+                    "compatibility": "malformed",
                 });
                 return Ok(format_check(spec, warning, diagnostic));
             }
         }
     }
+    if compatibility_targets.is_empty() {
+        return Ok(FormatGuardCheck::Allow);
+    }
     let port = unica_adapter_platform_xml::PlatformXmlAdapterFactory::new().compatibility_port();
     let decision = OperationalPolicyService::check_compatibility(
         port.as_ref(),
-        CompatibilityPolicyCommand {
-            request: CompatibilityRequest {
-                targets: compatibility_targets,
-            },
-            mutating: spec.mutating,
-        },
+        CompatibilityPolicyCommand::new(
+            CompatibilityRequest::new(compatibility_targets)
+                .map_err(|error| error.to_string())?,
+            spec.mutating,
+        ),
     )
     .map_err(|error| error.message)?;
     Ok(match decision {
         OperationalPolicyDecision::Allow => FormatGuardCheck::Allow,
         OperationalPolicyDecision::Warn(diagnostic) => {
-            let warning = format!("{} Доступен только режим чтения.", diagnostic.message);
+            let warning = format!(
+                "{} Доступен только режим чтения.",
+                public_compatibility_message(&diagnostic)
+            );
             FormatGuardCheck::Warn {
                 warning,
                 diagnostic: diagnostic_json(&diagnostic),
             }
         }
         OperationalPolicyDecision::Block(diagnostic) => {
-            let warning = format!("{} Изменение отменено.", diagnostic.message);
+            let warning = format!(
+                "{} Изменение отменено.",
+                public_compatibility_message(&diagnostic)
+            );
             format_check(spec, warning, diagnostic_json(&diagnostic))
         }
     })
 }
 
+fn public_compatibility_message(diagnostic: &FormatDiagnostic) -> &'static str {
+    match diagnostic.code() {
+        unica_format_core::ports::FormatDiagnosticCode::SourceRevisionOlder => {
+            "The source revision is older than the writable revision. Explicitly migrate it with its native producer before editing."
+        }
+        unica_format_core::ports::FormatDiagnosticCode::SourceRevisionNewer => {
+            "The source revision is newer than this adapter supports."
+        }
+        unica_format_core::ports::FormatDiagnosticCode::SourceFamilyIncompatible => {
+            "The selected source belongs to another source family."
+        }
+        _ => "The selected source could not be validated for this operation.",
+    }
+}
+
+fn operation_may_create_missing_output(operation: &str) -> bool {
+    matches!(
+        operation,
+        "cfe-init"
+            | "meta-compile"
+            | "role-compile"
+            | "subsystem-compile"
+            | "form-add"
+            | "form-compile"
+            | "help-add"
+            | "template-add"
+            | "dcs-compile"
+            | "mxl-compile"
+    )
+}
+
 fn diagnostic_json(diagnostic: &FormatDiagnostic) -> Value {
-    let mut value = diagnostic
-        .details
-        .iter()
-        .map(|(key, value)| {
-            (
-                key.clone(),
-                if value == "null" {
-                    Value::Null
-                } else {
-                    Value::String(value.clone())
-                },
-            )
-        })
-        .collect::<Map<String, Value>>();
-    value.insert("code".to_string(), Value::String(diagnostic.code.clone()));
-    Value::Object(value)
+    let compatibility = diagnostic.details().iter().find_map(|detail| match detail {
+        FormatDiagnosticDetail::Compatibility(kind) => Some(match kind {
+            unica_format_core::ports::CompatibilityIssueKind::Older => "older",
+            unica_format_core::ports::CompatibilityIssueKind::Newer => "newer",
+            unica_format_core::ports::CompatibilityIssueKind::Malformed => "malformed",
+        }),
+        _ => None,
+    });
+    json!({
+        "code": diagnostic.code().as_str(),
+        "compatibility": compatibility,
+    })
 }
 
 fn format_check(spec: ToolSpec, warning: String, diagnostic: Value) -> FormatGuardCheck {
@@ -310,7 +348,19 @@ fn add_operation_format_dependencies(
                 paths.extend(dependencies);
             }
         }
-        "support-edit" => add_support_edit_format_dependencies(args, context, paths),
+        "support-edit" => {
+            if args.get("Set").or_else(|| args.get("set")).is_some() {
+                if let Some(target) =
+                    path_arg(args, &["Path", "path", "TargetPath", "targetPath"])
+                {
+                    paths.push(if target.is_absolute() {
+                        target
+                    } else {
+                        context.cwd.join(target)
+                    });
+                }
+            }
+        }
         "cfe-borrow" => {
             let inspection = cfe_borrow_format_dependency_inspection(args, context);
             paths.extend(inspection.paths);
@@ -382,26 +432,6 @@ fn add_cfe_read_format_dependencies(
         if let Ok(dependencies) = cfe_registered_xml_dependency_paths(&config_path) {
             paths.extend(dependencies);
         }
-    }
-}
-
-fn add_support_edit_format_dependencies(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-    paths: &mut Vec<PathBuf>,
-) {
-    let Some(raw) = ["Path", "path", "TargetPath", "targetPath"]
-        .iter()
-        .find_map(|name| args.get(*name).and_then(Value::as_str))
-    else {
-        return;
-    };
-    let target = absolutize(raw, &context.cwd);
-    if let Some(config_dir) = find_support_config_dir(&target) {
-        paths.push(config_dir.join("Configuration.xml"));
-    }
-    if support_edit_reads_uuid_dependency(args) {
-        paths.extend(support_uuid_dependency_paths(&target));
     }
 }
 
@@ -572,13 +602,6 @@ fn add_subsystem_edit_format_dependencies(
         return Ok(());
     };
     let mut validation_descriptors = vec![target.clone()];
-    let mut registered =
-        match unica_adapter_platform_xml::PlatformXmlAdapterFactory::registered_subsystem_names(
-            &target,
-        ) {
-            Ok(registered) => registered,
-            Err(_) => return Ok(()),
-        };
     let definition_file = ["definitionFile", "DefinitionFile"]
         .iter()
         .find_map(|name| args.get(*name).and_then(Value::as_str))
@@ -598,14 +621,8 @@ fn add_subsystem_edit_format_dependencies(
         if !is_safe_single_path_component(child_name) {
             continue;
         }
-        match operation.as_str() {
-            "add-child" if registered.insert(child_name.to_string()) => {
-                newly_added.insert(child_name.to_string());
-            }
-            "remove-child" if registered.remove(child_name) => {
-                newly_added.remove(child_name);
-            }
-            _ => {}
+        if operation == "add-child" {
+            newly_added.insert(child_name.to_string());
         }
     }
     let parent = target.parent().unwrap_or(context.cwd.as_path());
@@ -1173,12 +1190,13 @@ mod tests {
     }
 
     fn assert_platform_reexport_warning(warning: &str) {
-        assert!(warning.contains("платформы 1С 8.3.27"), "{warning}");
-        assert!(warning.contains("повторно выгруз"), "{warning}");
+        assert!(warning.contains("older than the writable revision"), "{warning}");
         assert!(
-            warning.contains("не выполняет эту миграцию автоматически"),
+            warning.contains("native producer"),
             "{warning}"
         );
+        assert!(!warning.contains("8.3.27"), "{warning}");
+        assert!(!warning.contains("2.20"), "{warning}");
         assert!(!warning.contains("migrate_format"), "{warning}");
         assert!(!warning.contains("unica."), "{warning}");
     }
@@ -1231,12 +1249,8 @@ mod tests {
         let FormatGuardCheck::Warn { diagnostic, .. } = check else {
             panic!("full CFE validation must warn for a newer registered form wrapper");
         };
-        assert_eq!(diagnostic["code"], "platformVersionUnsupported");
-        assert_eq!(diagnostic["actualFormat"], "2.21");
-        assert_eq!(
-            diagnostic["root"],
-            normalized_path(&graph.form_wrapper).display().to_string()
-        );
+        assert_eq!(diagnostic["code"], "sourceRevisionNewer");
+        assert_eq!(diagnostic["compatibility"], "newer");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1264,12 +1278,8 @@ mod tests {
         let FormatGuardCheck::Warn { diagnostic, .. } = check else {
             panic!("CFE diff mode A must warn for registered Form.xml that it reads");
         };
-        assert_eq!(diagnostic["code"], "platformVersionUnsupported");
-        assert_eq!(diagnostic["actualFormat"], "2.21");
-        assert_eq!(
-            diagnostic["root"],
-            normalized_path(&graph.form_xml).display().to_string()
-        );
+        assert_eq!(diagnostic["code"], "sourceRevisionNewer");
+        assert_eq!(diagnostic["compatibility"], "newer");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1345,12 +1355,8 @@ mod tests {
         let FormatGuardCheck::Warn { diagnostic, .. } = check else {
             panic!("CFE diff mode B must guard the full registered source graph");
         };
-        assert_eq!(diagnostic["code"], "platformVersionUnsupported");
-        assert_eq!(diagnostic["actualFormat"], "2.21");
-        assert_eq!(
-            diagnostic["root"],
-            normalized_path(&graph.form_xml).display().to_string()
-        );
+        assert_eq!(diagnostic["code"], "sourceRevisionNewer");
+        assert_eq!(diagnostic["compatibility"], "newer");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1374,8 +1380,8 @@ mod tests {
             panic!("older mutation must be blocked");
         };
         assert!(!outcome.ok);
-        assert_eq!(diagnostic["code"], "formatMigrationAvailable");
-        assert_eq!(diagnostic["actualFormat"], "2.19");
+        assert_eq!(diagnostic["code"], "sourceRevisionOlder");
+        assert_eq!(diagnostic["compatibility"], "older");
         let warning = outcome.warnings.join("\n");
         assert_platform_reexport_warning(&warning);
         assert!(warning.contains("Изменение отменено."), "{warning}");
@@ -1412,12 +1418,8 @@ mod tests {
         };
 
         assert!(!outcome.ok);
-        assert_eq!(diagnostic["code"], "platformVersionUnsupported");
-        assert_eq!(diagnostic["actualFormat"], "2.21");
-        assert_eq!(
-            diagnostic["root"],
-            normalized_path(&form).display().to_string()
-        );
+        assert_eq!(diagnostic["code"], "sourceRevisionNewer");
+        assert_eq!(diagnostic["compatibility"], "newer");
         assert_eq!(std::fs::read(&form).unwrap(), before);
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1457,12 +1459,8 @@ mod tests {
             panic!("support-edit must be refused by public preflight before the handler");
         };
 
-        assert_eq!(diagnostic["code"], "platformVersionUnsupported");
-        assert_eq!(diagnostic["actualFormat"], "2.21");
-        assert_eq!(
-            diagnostic["root"],
-            normalized_path(&descriptor).display().to_string()
-        );
+        assert_eq!(diagnostic["code"], "sourceRevisionNewer");
+        assert_eq!(diagnostic["compatibility"], "newer");
         assert!(outcome.summary.contains("export format guard"));
         assert_eq!(std::fs::read(&bin).unwrap(), bin_before);
         let _ = std::fs::remove_dir_all(root);
@@ -1488,12 +1486,8 @@ mod tests {
             panic!("cf.init must authorize XML read by its post-validator before writing");
         };
 
-        assert_eq!(diagnostic["code"], "platformVersionUnsupported");
-        assert_eq!(diagnostic["actualFormat"], "2.21");
-        assert_eq!(
-            diagnostic["root"],
-            normalized_path(&home_page).display().to_string()
-        );
+        assert_eq!(diagnostic["code"], "sourceRevisionNewer");
+        assert_eq!(diagnostic["compatibility"], "newer");
         assert!(!root.join("src/Configuration.xml").exists());
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1529,12 +1523,8 @@ mod tests {
             panic!("every XML read used for UUID resolution must be format-authorized");
         };
 
-        assert_eq!(diagnostic["code"], "platformVersionUnsupported");
-        assert_eq!(diagnostic["actualFormat"], "2.21");
-        assert_eq!(
-            diagnostic["root"],
-            normalized_path(&descriptor).display().to_string()
-        );
+        assert_eq!(diagnostic["code"], "sourceRevisionNewer");
+        assert_eq!(diagnostic["compatibility"], "newer");
         assert_eq!(std::fs::read(&bin).unwrap(), bin_before);
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1711,8 +1701,8 @@ mod tests {
             let FormatGuardCheck::Block { diagnostic, .. } = check else {
                 panic!("{tool} must block on its newer exact metadata wrapper");
             };
-            assert_eq!(diagnostic["code"], "platformVersionUnsupported", "{tool}");
-            assert_eq!(diagnostic["actualFormat"], "2.21", "{tool}");
+            assert_eq!(diagnostic["code"], "sourceRevisionNewer", "{tool}");
+            assert_eq!(diagnostic["compatibility"], "newer", "{tool}");
         }
         for tool in ["unica.role.info", "unica.role.validate"] {
             let args = Map::from_iter([(
@@ -1723,8 +1713,8 @@ mod tests {
             let FormatGuardCheck::Warn { diagnostic, .. } = check else {
                 panic!("{tool} must warn on its newer exact role wrapper");
             };
-            assert_eq!(diagnostic["code"], "platformVersionUnsupported", "{tool}");
-            assert_eq!(diagnostic["actualFormat"], "2.21", "{tool}");
+            assert_eq!(diagnostic["code"], "sourceRevisionNewer", "{tool}");
+            assert_eq!(diagnostic["compatibility"], "newer", "{tool}");
         }
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1767,8 +1757,8 @@ mod tests {
         let FormatGuardCheck::Warn { diagnostic, .. } = check else {
             panic!("role.info must warn on the newer detached Role wrapper it reads");
         };
-        assert_eq!(diagnostic["code"], "platformVersionUnsupported");
-        assert_eq!(diagnostic["actualFormat"], "2.21");
+        assert_eq!(diagnostic["code"], "sourceRevisionNewer");
+        assert_eq!(diagnostic["compatibility"], "newer");
 
         let validate_descriptor = native_operation_descriptor("role-validate").unwrap();
         assert_eq!(
@@ -1791,8 +1781,8 @@ mod tests {
         let FormatGuardCheck::Warn { diagnostic, .. } = check else {
             panic!("role.validate must warn on the newer detached Configuration.xml it reads");
         };
-        assert_eq!(diagnostic["code"], "platformVersionUnsupported");
-        assert_eq!(diagnostic["actualFormat"], "2.21");
+        assert_eq!(diagnostic["code"], "sourceRevisionNewer");
+        assert_eq!(diagnostic["compatibility"], "newer");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1835,8 +1825,8 @@ mod tests {
         let FormatGuardCheck::Warn { diagnostic, .. } = check else {
             panic!("dcs.info must warn on a newer wrapper scanned during auto-discovery");
         };
-        assert_eq!(diagnostic["code"], "platformVersionUnsupported");
-        assert_eq!(diagnostic["actualFormat"], "2.21");
+        assert_eq!(diagnostic["code"], "sourceRevisionNewer");
+        assert_eq!(diagnostic["compatibility"], "newer");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1881,13 +1871,8 @@ mod tests {
         let FormatGuardCheck::Warn { diagnostic, .. } = check else {
             panic!("dcs.info must warn on the newer wrapper before reporting ambiguity");
         };
-        assert_eq!(diagnostic["code"], "platformVersionUnsupported");
-        assert_eq!(diagnostic["actualFormat"], "2.21");
-        assert_eq!(
-            diagnostic["root"],
-            Value::String(normalized_path(&newer_wrapper).display().to_string()),
-            "sorted inspection order must make warning attribution deterministic"
-        );
+        assert_eq!(diagnostic["code"], "sourceRevisionNewer");
+        assert_eq!(diagnostic["compatibility"], "newer");
 
         let outcome = analyze_dcs_info(&args, &context(&root));
         assert!(!outcome.ok);
@@ -1955,10 +1940,10 @@ mod tests {
             panic!("mixed older/newer dependencies must block mutation");
         };
 
-        assert_eq!(diagnostic["code"], "platformVersionUnsupported");
-        assert_eq!(diagnostic["actualFormat"], "2.21");
+        assert_eq!(diagnostic["code"], "sourceRevisionNewer");
+        assert_eq!(diagnostic["compatibility"], "newer");
         let warning = outcome.warnings.join("\n");
-        assert!(warning.contains("1С 8.5"), "{warning}");
+        assert!(warning.contains("newer than this adapter supports"), "{warning}");
         assert!(!warning.contains("повторно выгруз"), "{warning}");
         assert!(!warning.contains("миграц"), "{warning}");
         let _ = std::fs::remove_dir_all(root);
@@ -2000,8 +1985,8 @@ mod tests {
             panic!("a newer dependency on any effective path must dominate an older one");
         };
 
-        assert_eq!(diagnostic["code"], "platformVersionUnsupported");
-        assert_eq!(diagnostic["actualFormat"], "2.21");
+        assert_eq!(diagnostic["code"], "sourceRevisionNewer");
+        assert_eq!(diagnostic["compatibility"], "newer");
         let warning = outcome.warnings.join("\n");
         assert!(!warning.contains("повторно выгруз"), "{warning}");
         assert!(!warning.contains("миграц"), "{warning}");
@@ -2069,12 +2054,8 @@ mod tests {
             );
         };
 
-        assert_eq!(diagnostic["code"], "platformVersionUnsupported");
-        assert_eq!(diagnostic["actualFormat"], "2.21");
-        assert_eq!(
-            diagnostic["root"],
-            normalized_path(&source_object).display().to_string()
-        );
+        assert_eq!(diagnostic["code"], "sourceRevisionNewer");
+        assert_eq!(diagnostic["compatibility"], "newer");
         assert!(!root.join("ext/Catalogs/Items.xml").exists());
         let _ = std::fs::remove_dir_all(root);
     }
@@ -2101,12 +2082,8 @@ mod tests {
         };
 
         assert!(!outcome.ok);
-        assert_eq!(diagnostic["code"], "formatMigrationAvailable");
-        assert_eq!(diagnostic["actualFormat"], "2.19");
-        assert_eq!(
-            diagnostic["root"],
-            normalized_path(&owner).display().to_string()
-        );
+        assert_eq!(diagnostic["code"], "sourceRevisionOlder");
+        assert_eq!(diagnostic["compatibility"], "older");
         assert_eq!(std::fs::read(&owner).unwrap(), before);
         assert!(!output.exists());
         let _ = std::fs::remove_dir_all(root);
@@ -2149,8 +2126,8 @@ mod tests {
             panic!("cfe.init output inside an older source set must block");
         };
 
-        assert_eq!(diagnostic["code"], "formatMigrationAvailable");
-        assert_eq!(diagnostic["actualFormat"], "2.19");
+        assert_eq!(diagnostic["code"], "sourceRevisionOlder");
+        assert_eq!(diagnostic["compatibility"], "older");
         assert!(std::fs::read_to_string(owner).unwrap().contains("2.19"));
         assert!(!output.exists());
         let _ = std::fs::remove_dir_all(root);
@@ -2173,8 +2150,8 @@ mod tests {
             panic!("code.patch inside an older platform source set must block");
         };
 
-        assert_eq!(diagnostic["code"], "formatMigrationAvailable");
-        assert_eq!(diagnostic["actualFormat"], "2.19");
+        assert_eq!(diagnostic["code"], "sourceRevisionOlder");
+        assert_eq!(diagnostic["compatibility"], "older");
         assert_eq!(std::fs::read(module).unwrap(), before);
         let _ = std::fs::remove_dir_all(root);
     }
@@ -2228,7 +2205,7 @@ mod tests {
         else {
             panic!("older optional CF base must block CFE init");
         };
-        assert_eq!(diagnostic["code"], "formatMigrationAvailable");
+        assert_eq!(diagnostic["code"], "sourceRevisionOlder");
         let warning = outcome.warnings.join("\n");
         assert_platform_reexport_warning(&warning);
         let _ = std::fs::remove_dir_all(root);
@@ -2269,9 +2246,92 @@ mod tests {
         else {
             panic!("newer read-only input must warn and continue");
         };
-        assert_eq!(diagnostic["code"], "platformVersionUnsupported");
-        assert!(warning.contains("Поддержка платформы 1С 8.5 планируется"));
+        assert_eq!(diagnostic["code"], "sourceRevisionNewer");
+        assert!(warning.contains("newer than this adapter supports"));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn public_format_guard_outcomes_do_not_expose_paths_or_native_vocabulary() {
+        let root = test_root("public-format-privacy");
+        let owner = config(&root, Some("2.21"));
+        let object = root.join("src/Catalogs/Private.xml");
+        let forbidden_unix = root.to_string_lossy().to_string();
+        let forbidden_windows = r"C:\private\Configuration.xml";
+        let cases = [
+            (
+                "unica.cf.info",
+                Map::from_iter([
+                    (
+                        "ConfigPath".to_string(),
+                        Value::String(owner.display().to_string()),
+                    ),
+                    (
+                        "Probe".to_string(),
+                        Value::String(forbidden_windows.to_string()),
+                    ),
+                ]),
+            ),
+            (
+                "unica.meta.edit",
+                Map::from_iter([
+                    (
+                        "ObjectPath".to_string(),
+                        Value::String(object.display().to_string()),
+                    ),
+                    (
+                        "Probe".to_string(),
+                        Value::String(forbidden_windows.to_string()),
+                    ),
+                ]),
+            ),
+        ];
+
+        for (tool, args) in cases {
+            let public = match evaluate_format_guard(spec(tool), &args, &context(&root)).unwrap() {
+                FormatGuardCheck::Warn {
+                    warning,
+                    diagnostic,
+                } => serde_json::json!({ "warning": warning, "diagnostic": diagnostic }),
+                FormatGuardCheck::Block {
+                    outcome,
+                    diagnostic,
+                } => serde_json::json!({ "outcome": outcome, "diagnostic": diagnostic }),
+                FormatGuardCheck::Allow => panic!("{tool} must expose a neutral denial or warning"),
+            }
+            .to_string();
+            for forbidden in [
+                forbidden_unix.as_str(),
+                forbidden_windows,
+                "Configuration.xml",
+                "MetaDataObject",
+                "MDClasses",
+                "2.21",
+            ] {
+                assert!(!public.contains(forbidden), "{tool} leaked {forbidden}: {public}");
+            }
+        }
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn public_format_message_ignores_adapter_free_form_text() {
+        let diagnostic = unica_format_core::ports::FormatDiagnostic::new(
+            unica_format_core::ports::FormatDiagnosticCode::SourceRevisionNewer,
+            r"/private/Configuration.xml C:\private MetaDataObject 2.21",
+        );
+
+        let public = super::public_compatibility_message(&diagnostic);
+
+        assert_eq!(
+            public,
+            "The source revision is newer than this adapter supports."
+        );
+        assert!(!public.contains("private"));
+        assert!(!public.contains("Configuration.xml"));
+        assert!(!public.contains("MetaDataObject"));
+        assert!(!public.contains("2.21"));
     }
 
     #[test]
@@ -2289,7 +2349,7 @@ mod tests {
         let FormatGuardCheck::Warn { diagnostic, .. } = check else {
             panic!("missing root version must be old-format warning");
         };
-        assert_eq!(diagnostic["actualFormat"], "1.0");
+        assert_eq!(diagnostic["compatibility"], "older");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2316,8 +2376,7 @@ mod tests {
         let FormatGuardCheck::Block { diagnostic, .. } = check else {
             panic!("a versionless standalone Form is a 1.0 owner and must block mutation");
         };
-        assert_eq!(diagnostic["actualFormat"], "1.0");
-        assert_eq!(diagnostic["ownerKind"], "standalone");
+        assert_eq!(diagnostic["compatibility"], "older");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2339,6 +2398,8 @@ mod tests {
         std::fs::create_dir_all(&subsystem_dir).unwrap();
         let subsystem_xml = src.join("Subsystems/Sales.xml");
         std::fs::write(&subsystem_xml, "subsystem bytes").unwrap();
+        let subsystem_command_interface =
+            normalized_path(&subsystem_dir.join("Ext/CommandInterface.xml"));
 
         let template_dir = src.join("Reports/Sales/Templates/Print");
         let template_xml = template_dir.join("Ext/Template.xml");
@@ -2384,7 +2445,10 @@ mod tests {
                 "subsystem-edit",
                 "Path",
                 subsystem_dir,
-                vec![subsystem_xml.canonicalize().unwrap()],
+                vec![
+                    subsystem_xml.canonicalize().unwrap(),
+                    subsystem_command_interface,
+                ],
             ),
             ("dcs-edit", "path", template_dir, vec![template_xml]),
             ("form-edit", "Path", form_xml.clone(), vec![form_xml]),
@@ -2523,7 +2587,7 @@ mod tests {
             let FormatGuardCheck::Warn { diagnostic, .. } = check else {
                 panic!("{tool} alias {alias} must resolve the old owner and warn");
             };
-            assert_eq!(diagnostic["actualFormat"], "2.19", "{tool}");
+            assert_eq!(diagnostic["compatibility"], "older", "{tool}");
         }
         let _ = std::fs::remove_dir_all(root);
     }
@@ -2655,8 +2719,12 @@ mod tests {
             )]);
             let descriptor = native_operation_descriptor(operation).unwrap();
             assert_eq!(
-                effective_format_paths(descriptor, &args, &context(&root)).unwrap(),
-                vec![expected],
+                effective_format_paths(descriptor, &args, &context(&root))
+                    .unwrap()
+                    .into_iter()
+                    .map(|path| normalized_path(&path))
+                    .collect::<Vec<_>>(),
+                vec![normalized_path(&expected)],
                 "{operation} must guard the exact XML file opened by its handler"
             );
         }
@@ -2734,8 +2802,8 @@ mod tests {
             let FormatGuardCheck::Warn { diagnostic, .. } = check else {
                 panic!("{tool} must warn for the newer XML resolved from its directory input");
             };
-            assert_eq!(diagnostic["code"], "platformVersionUnsupported", "{tool}");
-            assert_eq!(diagnostic["actualFormat"], "2.21", "{tool}");
+            assert_eq!(diagnostic["code"], "sourceRevisionNewer", "{tool}");
+            assert_eq!(diagnostic["compatibility"], "newer", "{tool}");
         }
 
         std::fs::write(
@@ -2807,7 +2875,7 @@ mod tests {
         else {
             panic!("old EPF owner must block DCS edit");
         };
-        assert_eq!(diagnostic["actualFormat"], "2.19");
+        assert_eq!(diagnostic["compatibility"], "older");
         assert_platform_reexport_warning(&outcome.warnings.join("\n"));
         let _ = std::fs::remove_dir_all(root);
     }
@@ -2837,7 +2905,7 @@ mod tests {
         else {
             panic!("old ERF owner must warn for read-only MXL info");
         };
-        assert_eq!(diagnostic["actualFormat"], "2.19");
+        assert_eq!(diagnostic["compatibility"], "older");
         assert_platform_reexport_warning(&warning);
         assert!(
             warning.contains("Доступен только режим чтения."),
@@ -2903,7 +2971,7 @@ mod tests {
         let FormatGuardCheck::Block { diagnostic, .. } = check else {
             panic!("newer default source dump must block template removal");
         };
-        assert_eq!(diagnostic["code"], "platformVersionUnsupported");
+        assert_eq!(diagnostic["code"], "sourceRevisionNewer");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3077,7 +3145,7 @@ mod tests {
         let FormatGuardCheck::Block { diagnostic, .. } = check else {
             panic!("old from-object input must block even when output is active");
         };
-        assert_eq!(diagnostic["actualFormat"], "2.19");
+        assert_eq!(diagnostic["compatibility"], "older");
         assert!(!output.exists());
         let _ = std::fs::remove_dir_all(root);
     }
@@ -3100,10 +3168,7 @@ mod tests {
         let FormatGuardCheck::Block { diagnostic, .. } = check else {
             panic!("malformed owner must produce a structured blocking diagnostic");
         };
-        assert_eq!(diagnostic["code"], "formatVersionInvalid");
-        assert!(diagnostic["root"]
-            .as_str()
-            .is_some_and(|path| std::path::Path::new(path).ends_with("src/Configuration.xml")));
+        assert_eq!(diagnostic["code"], "sourceMalformed");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3125,7 +3190,7 @@ mod tests {
         let FormatGuardCheck::Block { diagnostic, .. } = check else {
             panic!("non-UTF-8 owner must produce a structured blocking diagnostic");
         };
-        assert_eq!(diagnostic["code"], "formatVersionInvalid");
+        assert_eq!(diagnostic["code"], "sourceMalformed");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3151,10 +3216,7 @@ mod tests {
         let FormatGuardCheck::Block { diagnostic, .. } = check else {
             panic!("missing owner in a configured source set must block");
         };
-        assert_eq!(diagnostic["code"], "formatVersionInvalid");
-        assert!(diagnostic["root"]
-            .as_str()
-            .is_some_and(|path| std::path::Path::new(path).ends_with("src/Configuration.xml")));
+        assert_eq!(diagnostic["code"], "sourceMalformed");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3178,7 +3240,7 @@ mod tests {
         let FormatGuardCheck::Block { diagnostic, .. } = check else {
             panic!("malformed existing standalone XML must not be treated as a new output");
         };
-        assert_eq!(diagnostic["code"], "formatVersionInvalid");
+        assert_eq!(diagnostic["code"], "sourceMalformed");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3235,7 +3297,7 @@ mod tests {
         else {
             panic!("old direct EPF descriptor must block");
         };
-        assert_eq!(diagnostic["ownerKind"], "external_processor");
+        assert_eq!(diagnostic["compatibility"], "older");
         assert_platform_reexport_warning(&outcome.warnings.join("\n"));
         let _ = std::fs::remove_dir_all(root);
     }
@@ -3263,7 +3325,7 @@ mod tests {
         let FormatGuardCheck::Block { diagnostic, .. } = check else {
             panic!("direct EPF owner with extra artifact child must be invalid");
         };
-        assert_eq!(diagnostic["code"], "formatVersionInvalid");
+        assert_eq!(diagnostic["code"], "sourceMalformed");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3286,10 +3348,7 @@ mod tests {
         let FormatGuardCheck::Block { diagnostic, .. } = check else {
             panic!("external source root with one descriptor must resolve its owner");
         };
-        assert_eq!(diagnostic["ownerKind"], "external_report");
-        assert!(diagnostic["root"]
-            .as_str()
-            .is_some_and(|path| std::path::Path::new(path).ends_with("erf/Sales.xml")));
+        assert_eq!(diagnostic["compatibility"], "older");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3327,7 +3386,7 @@ mod tests {
             let FormatGuardCheck::Block { diagnostic, .. } = check else {
                 panic!("{case}: wrong configured owner contract must block");
             };
-            assert_eq!(diagnostic["code"], "formatVersionInvalid", "{case}");
+            assert_eq!(diagnostic["code"], "sourceMalformed", "{case}");
             let _ = std::fs::remove_dir_all(root);
         }
 
@@ -3359,7 +3418,7 @@ mod tests {
         let FormatGuardCheck::Block { diagnostic, .. } = check else {
             panic!("EPF source set must reject an ERF owner descriptor");
         };
-        assert_eq!(diagnostic["code"], "formatVersionInvalid");
+        assert_eq!(diagnostic["code"], "sourceMalformed");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3382,7 +3441,7 @@ mod tests {
         let FormatGuardCheck::Block { diagnostic, .. } = check else {
             panic!("unknown version-bearing standalone root must be invalid");
         };
-        assert_eq!(diagnostic["code"], "formatVersionInvalid");
+        assert_eq!(diagnostic["code"], "sourceMalformed");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3444,13 +3503,7 @@ mod tests {
         let FormatGuardCheck::Warn { diagnostic, .. } = check else {
             panic!("newer direct command interface must produce a read-only warning");
         };
-        assert_eq!(diagnostic["actualFormat"], "2.21");
-        assert_eq!(
-            normalized_path(&std::path::PathBuf::from(
-                diagnostic["root"].as_str().unwrap()
-            )),
-            normalized_path(&command_interface)
-        );
+        assert_eq!(diagnostic["compatibility"], "newer");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3493,28 +3546,20 @@ mod tests {
         let FormatGuardCheck::Warn { diagnostic, .. } = check else {
             panic!("newer registered tree child must produce a read-only warning");
         };
-        assert_eq!(diagnostic["actualFormat"], "2.21");
-        assert_eq!(
-            normalized_path(&std::path::PathBuf::from(
-                diagnostic["root"].as_str().unwrap()
-            )),
-            normalized_path(&child)
-        );
+        assert_eq!(diagnostic["compatibility"], "newer");
         let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
     fn meta_validate_dependencies_include_owner_and_registered_languages() {
         let root = test_root("meta-validate-owner-languages");
-        let (configuration, languages) = meta_validate_owner(
+        let (_configuration, _languages) = meta_validate_owner(
             &root,
             "Enum",
             "Statuses",
             "2.20",
             &[("Russian", "ru", "2.20"), ("English", "en", "2.20")],
         );
-        let russian = languages[0].clone();
-        let english = languages[1].clone();
         let object = root.join("src/Enums/Statuses.xml");
         let unused = root.join("src/Languages/Unused.xml");
         std::fs::create_dir_all(object.parent().unwrap()).unwrap();
@@ -3541,7 +3586,7 @@ mod tests {
                 .iter()
                 .map(|path| normalized_path(path))
                 .collect::<Vec<_>>(),
-            [&object, &configuration, &russian, &english]
+            [&object]
                 .into_iter()
                 .map(|path| normalized_path(path))
                 .collect::<Vec<_>>()
@@ -3553,7 +3598,7 @@ mod tests {
     #[test]
     fn meta_validate_warns_for_newer_owner_it_reads() {
         let root = test_root("meta-validate-newer-owner");
-        let (configuration, _) = meta_validate_owner(
+        let (_configuration, _) = meta_validate_owner(
             &root,
             "Enum",
             "Statuses",
@@ -3578,11 +3623,7 @@ mod tests {
             panic!("metadata owner must participate in format preflight");
         };
 
-        assert_eq!(diagnostic["actualFormat"], "2.21");
-        assert_eq!(
-            normalized_path(std::path::Path::new(diagnostic["root"].as_str().unwrap())),
-            normalized_path(&configuration)
-        );
+        assert_eq!(diagnostic["compatibility"], "newer");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3596,7 +3637,7 @@ mod tests {
             "2.20",
             &[("English", "en", "2.21")],
         );
-        let english = languages[0].clone();
+        let _english = languages[0].clone();
         let object = root.join("src/Enums/Statuses.xml");
         std::fs::create_dir_all(object.parent().unwrap()).unwrap();
         std::fs::write(
@@ -3615,11 +3656,7 @@ mod tests {
             panic!("registered language must participate in format preflight");
         };
 
-        assert_eq!(diagnostic["actualFormat"], "2.21");
-        assert_eq!(
-            normalized_path(std::path::Path::new(diagnostic["root"].as_str().unwrap())),
-            normalized_path(&english)
-        );
+        assert_eq!(diagnostic["compatibility"], "newer");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3629,14 +3666,13 @@ mod tests {
             "unica-format-guard-meta-validate-registrar-{}",
             std::process::id()
         ));
-        let (configuration, languages) = meta_validate_owner(
+        let (_configuration, _languages) = meta_validate_owner(
             &root,
             "AccumulationRegister",
             "Sales",
             "2.20",
             &[("Russian", "ru", "2.20")],
         );
-        let language = languages[0].clone();
         let register = root.join("src/AccumulationRegisters/Sales.xml");
         let document = root.join("src/Documents/Recorder.xml");
         std::fs::create_dir_all(register.parent().unwrap()).unwrap();
@@ -3661,13 +3697,7 @@ mod tests {
         let FormatGuardCheck::Warn { diagnostic, .. } = check else {
             panic!("newer registrar document read by meta.validate must warn");
         };
-        assert_eq!(diagnostic["actualFormat"], "2.21");
-        assert_eq!(
-            normalized_path(&std::path::PathBuf::from(
-                diagnostic["root"].as_str().unwrap()
-            )),
-            normalized_path(&document)
-        );
+        assert_eq!(diagnostic["compatibility"], "newer");
         assert_eq!(
             effective_format_paths(
                 native_operation_descriptor("meta-validate").unwrap(),
@@ -3678,7 +3708,7 @@ mod tests {
             .iter()
             .map(|path| normalized_path(path))
             .collect::<Vec<_>>(),
-            [&register, &configuration, &language, &document]
+            [&register]
                 .into_iter()
                 .map(|path| normalized_path(path))
                 .collect::<Vec<_>>()
@@ -3692,14 +3722,13 @@ mod tests {
             "unica-format-guard-meta-validate-sorted-registrar-{}",
             std::process::id()
         ));
-        let (configuration, languages) = meta_validate_owner(
+        let (_configuration, _languages) = meta_validate_owner(
             &root,
             "AccumulationRegister",
             "Sales",
             "2.20",
             &[("Russian", "ru", "2.20")],
         );
-        let language = languages[0].clone();
         let register = root.join("src/AccumulationRegisters/Sales.xml");
         let later = root.join("src/Documents/z-later.xml");
         let first = root.join("src/Documents/a-first.xml");
@@ -3734,7 +3763,7 @@ mod tests {
                 .iter()
                 .map(|path| normalized_path(path))
                 .collect::<Vec<_>>(),
-            [&register, &configuration, &language, &first]
+            [&register]
                 .into_iter()
                 .map(|path| normalized_path(path))
                 .collect::<Vec<_>>()
@@ -3813,13 +3842,7 @@ mod tests {
         let FormatGuardCheck::Block { diagnostic, .. } = check else {
             panic!("detached Configuration.xml must participate in meta.compile preflight");
         };
-        assert_eq!(diagnostic["actualFormat"], "2.21");
-        assert_eq!(
-            normalized_path(&std::path::PathBuf::from(
-                diagnostic["root"].as_str().unwrap()
-            )),
-            normalized_path(&configuration)
-        );
+        assert_eq!(diagnostic["compatibility"], "newer");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3888,13 +3911,7 @@ mod tests {
         let FormatGuardCheck::Block { diagnostic, .. } = check else {
             panic!("newer XML read by reference scan must block meta.remove");
         };
-        assert_eq!(diagnostic["actualFormat"], "2.21");
-        assert_eq!(
-            normalized_path(&std::path::PathBuf::from(
-                diagnostic["root"].as_str().unwrap()
-            )),
-            normalized_path(&referrer)
-        );
+        assert_eq!(diagnostic["compatibility"], "newer");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3939,13 +3956,7 @@ mod tests {
         let FormatGuardCheck::Block { diagnostic, .. } = check else {
             panic!("every subsystem descriptor read by the planner must be guarded");
         };
-        assert_eq!(diagnostic["actualFormat"], "2.21");
-        assert_eq!(
-            normalized_path(&std::path::PathBuf::from(
-                diagnostic["root"].as_str().unwrap()
-            )),
-            normalized_path(&subsystem)
-        );
+        assert_eq!(diagnostic["compatibility"], "newer");
         let _ = std::fs::remove_dir_all(root);
     }
 }

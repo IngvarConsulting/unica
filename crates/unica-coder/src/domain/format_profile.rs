@@ -1,4 +1,3 @@
-use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
 pub use unica_format_core::ports::FormatCompatibility;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8,8 +7,9 @@ pub struct FormatProfile {
 }
 
 pub const ACTIVE_FORMAT_PROFILE: FormatProfile = FormatProfile {
-    platform_line: PlatformXmlAdapterFactory::platform_line(),
-    export_format: PlatformXmlAdapterFactory::export_format(),
+    // Task 8 moves these writer-serialization constants into the adapter.
+    platform_line: "8.3.27",
+    export_format: "2.20",
 };
 
 #[cfg(test)]

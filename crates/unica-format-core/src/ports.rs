@@ -3,12 +3,11 @@
 use std::{
     any::Any,
     ffi::OsString,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    time::Duration,
 };
 
 use crate::{
@@ -19,7 +18,7 @@ use crate::{
     semantic_ids::{SemanticPropertyId, SemanticRelationId},
     source::{
         AdapterManifest, ConfiguredSourceSetKind, FormatVersion, SourceAdapterError, SourceBinding,
-        SourceContext, SourceDescriptor, SourceFamily, SourceRevision, SourceSnapshot,
+        SourceContext, SourceDescriptor, SourceRevision, SourceSnapshot,
     },
 };
 
@@ -392,32 +391,74 @@ pub trait CapabilityPort: Send + Sync {
     ) -> Result<CapabilityResult, SourceAdapterError>;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FormatDiagnostic {
-    pub code: String,
-    pub message: String,
-    pub details: std::collections::BTreeMap<String, String>,
+#[derive(Clone)]
+pub struct OperationalSourceSession {
+    state: Arc<dyn Any + Send + Sync>,
 }
 
-impl FormatDiagnostic {
-    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
-        Self {
-            code: code.into(),
-            message: message.into(),
-            details: std::collections::BTreeMap::new(),
-        }
+impl std::fmt::Debug for OperationalSourceSession {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("OperationalSourceSession(<opaque>)")
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompatibilityTarget {
-    pub source: SourceContext,
-    pub mode: OwnerResolutionMode,
+impl OperationalSourceSession {
+    pub fn new<T>(state: T) -> Self
+    where
+        T: Any + Send + Sync,
+    {
+        Self {
+            state: Arc::new(state),
+        }
+    }
+
+    pub fn adapter_state<T>(&self) -> Option<&T>
+    where
+        T: Any + Send + Sync,
+    {
+        self.state.downcast_ref::<T>()
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompatibilityRequest {
-    pub targets: Vec<CompatibilityTarget>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormatDiagnosticCode {
+    SourceRevisionOlder,
+    SourceRevisionNewer,
+    SourceMalformed,
+    SourceFamilyIncompatible,
+    SupportStateUnreadable,
+    SupportCapabilityDisabled,
+    SupportLocked,
+    SupportRemovalRequired,
+    ValidationContextUnavailable,
+    ValidationReferenceMissing,
+    ValidationRegistrarMissing,
+    PublicationFailed,
+    PublicationCancelled,
+    PublicationRecoveryRequired,
+    PublicationCleanupFailed,
+}
+
+impl FormatDiagnosticCode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SourceRevisionOlder => "sourceRevisionOlder",
+            Self::SourceRevisionNewer => "sourceRevisionNewer",
+            Self::SourceMalformed => "sourceMalformed",
+            Self::SourceFamilyIncompatible => "sourceFamilyIncompatible",
+            Self::SupportStateUnreadable => "supportStateUnreadable",
+            Self::SupportCapabilityDisabled => "supportCapabilityDisabled",
+            Self::SupportLocked => "supportLocked",
+            Self::SupportRemovalRequired => "supportRemovalRequired",
+            Self::ValidationContextUnavailable => "validationContextUnavailable",
+            Self::ValidationReferenceMissing => "validationReferenceMissing",
+            Self::ValidationRegistrarMissing => "validationRegistrarMissing",
+            Self::PublicationFailed => "publicationFailed",
+            Self::PublicationCancelled => "publicationCancelled",
+            Self::PublicationRecoveryRequired => "publicationRecoveryRequired",
+            Self::PublicationCleanupFailed => "publicationCleanupFailed",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -427,19 +468,142 @@ pub enum CompatibilityIssueKind {
     Malformed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SupportState {
+    Absent,
+    Removed,
+    Editable,
+    Locked,
+    ConfigurationReadOnly,
+    UnknownReadOnly,
+    Unreadable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidationIssueKind {
+    SourceUnreadable,
+    OwnerUnavailable,
+    RegistrationMissing,
+    LanguageProfileMissing,
+    ReferenceMissing,
+    RegistrarMissing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidationMethodReferenceStatus {
+    Valid,
+    Invalid,
+    TargetMissing,
+    ImplementationMissing,
+    EntryPointMissing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormatDiagnosticDetail {
+    Compatibility(CompatibilityIssueKind),
+    Support(SupportState),
+    Validation(ValidationIssueKind),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormatDiagnostic {
+    code: FormatDiagnosticCode,
+    message: String,
+    details: Vec<FormatDiagnosticDetail>,
+}
+
+impl FormatDiagnostic {
+    pub fn new(code: FormatDiagnosticCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            details: Vec::new(),
+        }
+    }
+
+    pub fn with_detail(mut self, detail: FormatDiagnosticDetail) -> Self {
+        if !self.details.contains(&detail) {
+            self.details.push(detail);
+        }
+        self
+    }
+
+    pub const fn code(&self) -> FormatDiagnosticCode {
+        self.code
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub fn details(&self) -> &[FormatDiagnosticDetail] {
+        &self.details
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CompatibilityRequest {
+    sessions: Vec<OperationalSourceSession>,
+}
+
+impl CompatibilityRequest {
+    pub fn new(sessions: Vec<OperationalSourceSession>) -> Result<Self, OperationalContractError> {
+        if sessions.is_empty() {
+            return Err(OperationalContractError::EmptyRequest);
+        }
+        Ok(Self { sessions })
+    }
+
+    pub fn sessions(&self) -> &[OperationalSourceSession] {
+        &self.sessions
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompatibilityIssue {
-    pub kind: CompatibilityIssueKind,
-    pub diagnostic: FormatDiagnostic,
-    pub actual_format: Option<FormatVersion>,
-    pub target_format: Option<FormatVersion>,
-    pub producer_version: Option<FormatVersion>,
-    pub source_kind: Option<ConfiguredSourceSetKind>,
+    kind: CompatibilityIssueKind,
+    diagnostic: FormatDiagnostic,
+}
+
+impl CompatibilityIssue {
+    pub fn new(kind: CompatibilityIssueKind, diagnostic: FormatDiagnostic) -> Self {
+        Self { kind, diagnostic }
+    }
+
+    pub const fn kind(&self) -> CompatibilityIssueKind {
+        self.kind
+    }
+
+    pub fn diagnostic(&self) -> &FormatDiagnostic {
+        &self.diagnostic
+    }
+
+    pub fn into_diagnostic(self) -> FormatDiagnostic {
+        self.diagnostic
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompatibilityResult {
-    pub issue: Option<CompatibilityIssue>,
+    issue: Option<CompatibilityIssue>,
+}
+
+impl CompatibilityResult {
+    pub const fn compatible() -> Self {
+        Self { issue: None }
+    }
+
+    pub fn incompatible(issue: CompatibilityIssue) -> Self {
+        Self { issue: Some(issue) }
+    }
+
+    pub fn issue(&self) -> Option<&CompatibilityIssue> {
+        self.issue.as_ref()
+    }
+
+    pub fn into_issue(self) -> Option<CompatibilityIssue> {
+        self.issue
+    }
 }
 
 pub trait CompatibilityPort: Send + Sync {
@@ -449,27 +613,48 @@ pub trait CompatibilityPort: Send + Sync {
     ) -> Result<CompatibilityResult, SourceAdapterError>;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceCompatibilityEvidence {
-    Detected {
-        source_set_name: String,
-        family: Option<SourceFamily>,
-        invalid: bool,
-    },
-    DeclaredProjectFormat {
-        value: Option<String>,
-    },
+    Compatible,
+    AlternateFamily,
+    Ambiguous,
+    UnsupportedDeclaration,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceCompatibilityRequest {
-    pub operation_name: String,
-    pub evidence: SourceCompatibilityEvidence,
+    evidence: SourceCompatibilityEvidence,
+}
+
+impl SourceCompatibilityRequest {
+    pub const fn new(evidence: SourceCompatibilityEvidence) -> Self {
+        Self { evidence }
+    }
+
+    pub const fn evidence(&self) -> SourceCompatibilityEvidence {
+        self.evidence
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceCompatibilityResult {
-    pub diagnostic: Option<FormatDiagnostic>,
+    diagnostic: Option<FormatDiagnostic>,
+}
+
+impl SourceCompatibilityResult {
+    pub const fn compatible() -> Self {
+        Self { diagnostic: None }
+    }
+
+    pub fn incompatible(diagnostic: FormatDiagnostic) -> Self {
+        Self {
+            diagnostic: Some(diagnostic),
+        }
+    }
+
+    pub fn into_diagnostic(self) -> Option<FormatDiagnostic> {
+        self.diagnostic
+    }
 }
 
 pub trait SourceCompatibilityPort: Send + Sync {
@@ -485,23 +670,126 @@ pub enum AuthorabilityRequirement {
     Removed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct AuthorabilityRequest {
-    pub source: SourceContext,
-    pub requirement: AuthorabilityRequirement,
+    session: OperationalSourceSession,
+    requirement: AuthorabilityRequirement,
+}
+
+impl AuthorabilityRequest {
+    pub const fn new(
+        session: OperationalSourceSession,
+        requirement: AuthorabilityRequirement,
+    ) -> Self {
+        Self {
+            session,
+            requirement,
+        }
+    }
+
+    pub fn session(&self) -> &OperationalSourceSession {
+        &self.session
+    }
+
+    pub const fn requirement(&self) -> AuthorabilityRequirement {
+        self.requirement
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorabilityViolation {
-    pub diagnostic: FormatDiagnostic,
-    pub target: PathBuf,
-    pub source_root: PathBuf,
+    diagnostic: FormatDiagnostic,
+}
+
+impl AuthorabilityViolation {
+    pub const fn new(diagnostic: FormatDiagnostic) -> Self {
+        Self { diagnostic }
+    }
+
+    pub fn diagnostic(&self) -> &FormatDiagnostic {
+        &self.diagnostic
+    }
+
+    pub fn into_diagnostic(self) -> FormatDiagnostic {
+        self.diagnostic
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupportSummary {
+    state: SupportState,
+    editing_enabled: Option<bool>,
+    vendor_count: usize,
+    rule_counts: [usize; 3],
+}
+
+impl SupportSummary {
+    pub const fn new(
+        state: SupportState,
+        editing_enabled: Option<bool>,
+        vendor_count: usize,
+        rule_counts: [usize; 3],
+    ) -> Self {
+        Self {
+            state,
+            editing_enabled,
+            vendor_count,
+            rule_counts,
+        }
+    }
+
+    pub const fn state(&self) -> SupportState {
+        self.state
+    }
+
+    pub const fn editing_enabled(&self) -> Option<bool> {
+        self.editing_enabled
+    }
+
+    pub const fn vendor_count(&self) -> usize {
+        self.vendor_count
+    }
+
+    pub const fn rule_counts(&self) -> [usize; 3] {
+        self.rule_counts
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorabilityResult {
-    pub authorability: Authorability,
-    pub violation: Option<AuthorabilityViolation>,
+    authorability: Authorability,
+    summary: SupportSummary,
+    violation: Option<AuthorabilityViolation>,
+}
+
+impl AuthorabilityResult {
+    pub const fn new(
+        authorability: Authorability,
+        summary: SupportSummary,
+        violation: Option<AuthorabilityViolation>,
+    ) -> Self {
+        Self {
+            authorability,
+            summary,
+            violation,
+        }
+    }
+
+    pub const fn authorability(&self) -> Authorability {
+        self.authorability
+    }
+
+    pub fn summary(&self) -> &SupportSummary {
+        &self.summary
+    }
+
+    pub fn violation(&self) -> Option<&AuthorabilityViolation> {
+        self.violation.as_ref()
+    }
+
+    pub fn into_violation(self) -> Option<AuthorabilityViolation> {
+        self.violation
+    }
 }
 
 pub trait AuthorabilityPort: Send + Sync {
@@ -520,22 +808,118 @@ pub enum ValidationOwnerKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidationContext {
-    pub owner_kind: ValidationOwnerKind,
-    pub owner_root: PathBuf,
-    pub language_codes: Vec<String>,
-    pub registrar_present: Option<bool>,
+    owner_kind: ValidationOwnerKind,
+    language_codes: Vec<String>,
+    command_text_validation_required: bool,
+    references_present: Option<bool>,
+    registrar_present: Option<bool>,
+    method_reference_status: Option<ValidationMethodReferenceStatus>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl ValidationContext {
+    pub fn new(
+        owner_kind: ValidationOwnerKind,
+        language_codes: Vec<String>,
+        command_text_validation_required: bool,
+        references_present: Option<bool>,
+        registrar_present: Option<bool>,
+        method_reference_status: Option<ValidationMethodReferenceStatus>,
+    ) -> Result<Self, OperationalContractError> {
+        if language_codes.iter().any(|code| {
+            code.is_empty()
+                || code.len() > 32
+                || !code
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '-'
+                        || character == '_')
+        }) {
+            return Err(OperationalContractError::InvalidSemanticValue);
+        }
+        Ok(Self {
+            owner_kind,
+            language_codes,
+            command_text_validation_required,
+            references_present,
+            registrar_present,
+            method_reference_status,
+        })
+    }
+
+    pub const fn owner_kind(&self) -> ValidationOwnerKind {
+        self.owner_kind
+    }
+
+    pub fn language_codes(&self) -> &[String] {
+        &self.language_codes
+    }
+
+    pub const fn command_text_validation_required(&self) -> bool {
+        self.command_text_validation_required
+    }
+
+    pub const fn references_present(&self) -> Option<bool> {
+        self.references_present
+    }
+
+    pub const fn registrar_present(&self) -> Option<bool> {
+        self.registrar_present
+    }
+
+    pub const fn method_reference_status(&self) -> Option<ValidationMethodReferenceStatus> {
+        self.method_reference_status
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct ValidationContextRequest {
-    pub source: SourceContext,
+    session: OperationalSourceSession,
+}
+
+impl ValidationContextRequest {
+    pub const fn new(session: OperationalSourceSession) -> Self {
+        Self { session }
+    }
+
+    pub fn session(&self) -> &OperationalSourceSession {
+        &self.session
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidationContextResult {
-    pub dependencies: Vec<PathBuf>,
-    pub context: Option<ValidationContext>,
-    pub diagnostics: Vec<FormatDiagnostic>,
+    context: Option<ValidationContext>,
+    diagnostics: Vec<FormatDiagnostic>,
+}
+
+impl ValidationContextResult {
+    pub fn valid(context: ValidationContext) -> Self {
+        Self {
+            context: Some(context),
+            diagnostics: Vec::new(),
+        }
+    }
+
+    pub fn invalid(diagnostics: Vec<FormatDiagnostic>) -> Result<Self, OperationalContractError> {
+        if diagnostics.is_empty() {
+            return Err(OperationalContractError::EmptyDiagnostics);
+        }
+        Ok(Self {
+            context: None,
+            diagnostics,
+        })
+    }
+
+    pub fn context(&self) -> Option<&ValidationContext> {
+        self.context.as_ref()
+    }
+
+    pub fn into_context(self) -> Option<ValidationContext> {
+        self.context
+    }
+
+    pub fn diagnostics(&self) -> &[FormatDiagnostic] {
+        &self.diagnostics
+    }
 }
 
 pub trait ValidationContextPort: Send + Sync {
@@ -568,50 +952,179 @@ pub enum PublicationInvocation {
     RuntimeExecute,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublicationStatus {
+    Published,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublicationCancellation {
+    NotRequested,
+    BeforeExecution,
+    DuringExecution,
+    BeforePublication,
+    DuringPublication,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublicationRollback {
+    NotNeeded,
+    Performed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublicationCleanup {
+    Completed,
+    Failed,
+    RetainedForRecovery,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublicationRecovery {
+    NotRequired,
+    Required,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublicationChange {
+    FullSourceReplaced,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublicationArtifact {
+    PublishedSource,
+    RecoveryState,
+}
+
 #[derive(Debug, Clone)]
 pub struct PublicationRequest {
-    pub operation_name: String,
-    pub invocation: PublicationInvocation,
-    pub workspace_root: PathBuf,
-    pub cwd: PathBuf,
-    pub config: Option<PathBuf>,
-    pub workdir: Option<PathBuf>,
-    pub source_set: Option<String>,
-    pub extension: Option<String>,
-    pub unsupported_arguments: Vec<String>,
-    pub cancellation: OperationCancellation,
+    session: OperationalSourceSession,
+    invocation: PublicationInvocation,
+    cancellation: OperationCancellation,
+}
+
+impl PublicationRequest {
+    pub const fn new(
+        session: OperationalSourceSession,
+        invocation: PublicationInvocation,
+        cancellation: OperationCancellation,
+    ) -> Self {
+        Self {
+            session,
+            invocation,
+            cancellation,
+        }
+    }
+
+    pub fn session(&self) -> &OperationalSourceSession {
+        &self.session
+    }
+
+    pub const fn invocation(&self) -> PublicationInvocation {
+        self.invocation
+    }
+
+    pub fn cancellation(&self) -> &OperationCancellation {
+        &self.cancellation
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublicationResult {
-    pub ok: bool,
-    pub cancelled: bool,
-    pub recovery_required: bool,
-    pub summary: String,
-    pub changes: Vec<String>,
-    pub warnings: Vec<String>,
-    pub errors: Vec<String>,
-    pub artifacts: Vec<String>,
-    pub stdout: Option<String>,
-    pub stderr: Option<String>,
-    pub command: Option<Vec<String>>,
+    status: PublicationStatus,
+    cancellation: PublicationCancellation,
+    rollback: PublicationRollback,
+    cleanup: PublicationCleanup,
+    recovery: PublicationRecovery,
+    summary: String,
+    diagnostics: Vec<FormatDiagnostic>,
+    changes: Vec<PublicationChange>,
+    artifacts: Vec<PublicationArtifact>,
 }
 
 impl PublicationResult {
-    pub fn cancelled(summary: impl Into<String>) -> Self {
-        Self {
-            ok: false,
-            cancelled: true,
-            recovery_required: false,
-            summary: summary.into(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: Vec::new(),
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: None,
-            command: None,
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        status: PublicationStatus,
+        cancellation: PublicationCancellation,
+        rollback: PublicationRollback,
+        cleanup: PublicationCleanup,
+        recovery: PublicationRecovery,
+        summary: impl Into<String>,
+        diagnostics: Vec<FormatDiagnostic>,
+        changes: Vec<PublicationChange>,
+        artifacts: Vec<PublicationArtifact>,
+    ) -> Result<Self, OperationalContractError> {
+        let valid = match status {
+            PublicationStatus::Published => {
+                cancellation == PublicationCancellation::NotRequested
+                    && recovery == PublicationRecovery::NotRequired
+                    && rollback != PublicationRollback::Failed
+                    && cleanup == PublicationCleanup::Completed
+                    && diagnostics.is_empty()
+            }
+            PublicationStatus::Cancelled => {
+                cancellation != PublicationCancellation::NotRequested
+                    && rollback != PublicationRollback::Failed
+            }
+            PublicationStatus::Failed => !diagnostics.is_empty(),
+        } && (rollback != PublicationRollback::Failed
+            || recovery == PublicationRecovery::Required)
+            && (cleanup == PublicationCleanup::Completed
+                || recovery == PublicationRecovery::Required);
+        if !valid {
+            return Err(OperationalContractError::InvalidStateCombination);
         }
+        Ok(Self {
+            status,
+            cancellation,
+            rollback,
+            cleanup,
+            recovery,
+            summary: summary.into(),
+            diagnostics,
+            changes,
+            artifacts,
+        })
+    }
+
+    pub const fn status(&self) -> PublicationStatus {
+        self.status
+    }
+
+    pub const fn cancellation(&self) -> PublicationCancellation {
+        self.cancellation
+    }
+
+    pub const fn rollback(&self) -> PublicationRollback {
+        self.rollback
+    }
+
+    pub const fn cleanup(&self) -> PublicationCleanup {
+        self.cleanup
+    }
+
+    pub const fn recovery(&self) -> PublicationRecovery {
+        self.recovery
+    }
+
+    pub fn summary(&self) -> &str {
+        &self.summary
+    }
+
+    pub fn diagnostics(&self) -> &[FormatDiagnostic] {
+        &self.diagnostics
+    }
+
+    pub fn changes(&self) -> &[PublicationChange] {
+        &self.changes
+    }
+
+    pub fn artifacts(&self) -> &[PublicationArtifact] {
+        &self.artifacts
     }
 }
 
@@ -622,64 +1135,70 @@ pub trait PublicationPort: Send + Sync {
     ) -> Result<PublicationResult, SourceAdapterError>;
 }
 
-#[derive(Debug, Clone)]
-pub struct PublicationProcessCommand {
-    pub program: PathBuf,
-    pub args: Vec<String>,
-    pub cwd: PathBuf,
-    pub timeout: Option<Duration>,
-    pub cancellation: OperationCancellation,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationalContractError {
+    EmptyRequest,
+    EmptyDiagnostics,
+    InvalidSemanticValue,
+    InvalidStateCombination,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PublicationProcessOutput {
-    pub status_success: bool,
-    pub status: String,
-    pub stdout: String,
-    pub stderr: String,
-    pub timed_out: bool,
-    pub cancelled: bool,
-    pub stdout_truncated: bool,
+impl std::fmt::Display for OperationalContractError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::EmptyRequest => "operational request must contain at least one session",
+            Self::EmptyDiagnostics => "invalid operational result requires a diagnostic",
+            Self::InvalidSemanticValue => "operational semantic value is invalid",
+            Self::InvalidStateCombination => "operational result state combination is invalid",
+        })
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedPublicationTool {
-    pub program: PathBuf,
-    pub warnings: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PublicationLockResult {
-    Action(Result<Vec<String>, String>),
-}
-
-pub trait PublicationHostPort: Send + Sync {
-    fn run_process(
-        &self,
-        command: &PublicationProcessCommand,
-    ) -> Result<PublicationProcessOutput, String>;
-
-    fn resolve_bundled_tool(
-        &self,
-        cwd: &Path,
-        tool: &str,
-        require_executable: bool,
-    ) -> Result<ResolvedPublicationTool, String>;
-
-    fn with_exclusive_publication_lock(
-        &self,
-        targets: &[PathBuf],
-        action: &mut dyn FnMut() -> Result<Vec<String>, String>,
-    ) -> Result<PublicationLockResult, String>;
-
-    fn redact(&self, text: &str) -> String;
-}
+impl std::error::Error for OperationalContractError {}
 
 #[derive(Clone)]
 pub struct OperationalAdapterRegistration {
-    pub compatibility: Arc<dyn CompatibilityPort>,
-    pub source_compatibility: Arc<dyn SourceCompatibilityPort>,
-    pub authorability: Arc<dyn AuthorabilityPort>,
-    pub validation_context: Arc<dyn ValidationContextPort>,
-    pub publication: Arc<dyn PublicationPort>,
+    compatibility: Arc<dyn CompatibilityPort>,
+    source_compatibility: Arc<dyn SourceCompatibilityPort>,
+    authorability: Arc<dyn AuthorabilityPort>,
+    validation_context: Arc<dyn ValidationContextPort>,
+    publication: Arc<dyn PublicationPort>,
+}
+
+impl OperationalAdapterRegistration {
+    pub fn new(
+        compatibility: Arc<dyn CompatibilityPort>,
+        source_compatibility: Arc<dyn SourceCompatibilityPort>,
+        authorability: Arc<dyn AuthorabilityPort>,
+        validation_context: Arc<dyn ValidationContextPort>,
+        publication: Arc<dyn PublicationPort>,
+    ) -> Self {
+        Self {
+            compatibility,
+            source_compatibility,
+            authorability,
+            validation_context,
+            publication,
+        }
+    }
+
+    pub fn compatibility(&self) -> &dyn CompatibilityPort {
+        self.compatibility.as_ref()
+    }
+
+    pub fn source_compatibility(&self) -> &dyn SourceCompatibilityPort {
+        self.source_compatibility.as_ref()
+    }
+
+    pub fn authorability(&self) -> &dyn AuthorabilityPort {
+        self.authorability.as_ref()
+    }
+
+    pub fn validation_context(&self) -> &dyn ValidationContextPort {
+        self.validation_context.as_ref()
+    }
+
+    pub fn publication(&self) -> &dyn PublicationPort {
+        self.publication.as_ref()
+    }
 }

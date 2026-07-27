@@ -265,7 +265,7 @@ pub(crate) fn analyze_role_info(
         lines.push(header);
         lines.push(format!(
             "Поддержка: {}",
-            support_status_for_path(&rights_path)
+            support_status_for_path(&rights_path, &context.workspace_root)
         ));
         lines.push(String::new());
         lines.push(format!(

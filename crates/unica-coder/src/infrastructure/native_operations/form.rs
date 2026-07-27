@@ -1455,7 +1455,7 @@ pub(crate) fn analyze_form_info(
         lines.push(header);
         lines.push(format!(
             "Поддержка: {}",
-            support_status_for_path(&form_path)
+            support_status_for_path(&form_path, &context.workspace_root)
         ));
 
         let prop_names = [

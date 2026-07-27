@@ -29,14 +29,29 @@ pub enum MetadataNavigationTarget {
 
 #[derive(Debug, Clone)]
 pub struct CompatibilityPolicyCommand {
-    pub request: CompatibilityRequest,
-    pub mutating: bool,
+    request: CompatibilityRequest,
+    mutating: bool,
+}
+
+impl CompatibilityPolicyCommand {
+    pub const fn new(request: CompatibilityRequest, mutating: bool) -> Self {
+        Self { request, mutating }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct AuthorabilityPolicyCommand {
-    pub request: AuthorabilityRequest,
-    pub enforcement: GuardEnforcement,
+    request: AuthorabilityRequest,
+    enforcement: GuardEnforcement,
+}
+
+impl AuthorabilityPolicyCommand {
+    pub const fn new(request: AuthorabilityRequest, enforcement: GuardEnforcement) -> Self {
+        Self {
+            request,
+            enforcement,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,10 +86,12 @@ impl OperationalPolicyService {
         command: CompatibilityPolicyCommand,
     ) -> Result<OperationalPolicyDecision, SourceAdapterError> {
         let result = port.inspect(&command.request)?;
-        Ok(match result.issue {
+        Ok(match result.into_issue() {
             None => OperationalPolicyDecision::Allow,
-            Some(issue) if command.mutating => OperationalPolicyDecision::Block(issue.diagnostic),
-            Some(issue) => OperationalPolicyDecision::Warn(issue.diagnostic),
+            Some(issue) if command.mutating => {
+                OperationalPolicyDecision::Block(issue.into_diagnostic())
+            }
+            Some(issue) => OperationalPolicyDecision::Warn(issue.into_diagnostic()),
         })
     }
 
@@ -83,7 +100,7 @@ impl OperationalPolicyService {
         request: &SourceCompatibilityRequest,
     ) -> Result<OperationalPolicyDecision, SourceAdapterError> {
         let result = port.inspect_source(request)?;
-        Ok(match result.diagnostic {
+        Ok(match result.into_diagnostic() {
             Some(diagnostic) => OperationalPolicyDecision::Block(diagnostic),
             None => OperationalPolicyDecision::Allow,
         })
@@ -95,7 +112,9 @@ impl OperationalPolicyService {
     ) -> Result<OperationalPolicyDecision, SourceAdapterError> {
         let result = port.inspect(&command.request)?;
         Ok(Self::decide_authorability(
-            result.violation.map(|item| item.diagnostic),
+            result
+                .into_violation()
+                .map(|violation| violation.into_diagnostic()),
             command.enforcement,
         ))
     }

@@ -14,6 +14,7 @@ use unica_format_core::{
 
 pub(crate) mod decoder;
 pub(crate) mod native_model;
+pub(crate) mod operations;
 pub(crate) mod probe;
 pub(crate) mod profile;
 pub(crate) mod projector;

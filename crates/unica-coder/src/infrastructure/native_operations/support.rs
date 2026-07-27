@@ -1,17 +1,143 @@
 use crate::application::AdapterOutcome;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
+use roxmltree::Document;
 use serde_json::{Map, Value};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
+use unica_format_core::ports::SupportSourceState;
 
 use super::common::{
-    absolutize, find_support_config_dir, guard_active_format_dependencies,
-    guard_exact_preimage_if_unprotected, is_uuid_text, parse_support_header, path_arg,
-    support_root_uuid_from_bytes, support_uuid_dependency_paths,
+    absolutize, guard_active_format_dependencies, guard_exact_preimage_if_unprotected,
+    is_uuid_text, path_arg,
 };
 use super::compile_transaction::{CompileTransaction, DirectoryMembershipSelector};
+
+fn find_support_config_dir(target_path: &Path) -> Option<PathBuf> {
+    let target_path = target_path
+        .canonicalize()
+        .unwrap_or_else(|_| target_path.to_path_buf());
+    let mut current = if target_path.is_dir() {
+        target_path
+    } else {
+        target_path.parent()?.to_path_buf()
+    };
+    for _ in 0..20 {
+        if current
+            .join("Ext")
+            .join("ParentConfigurations.bin")
+            .exists()
+            || current.join("Configuration.xml").exists()
+        {
+            return Some(current);
+        }
+        let parent = current.parent()?;
+        if parent == current {
+            break;
+        }
+        current = parent.to_path_buf();
+    }
+    None
+}
+
+fn support_uuid_dependency_paths(target_path: &Path) -> Vec<PathBuf> {
+    let mut dependencies = Vec::new();
+    if target_path.is_file()
+        && target_path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+    {
+        dependencies.push(target_path.to_path_buf());
+        if support_root_uuid(target_path).is_some() {
+            return dependencies;
+        }
+    }
+    let mut current = if target_path.is_dir() {
+        target_path.to_path_buf()
+    } else {
+        let Some(parent) = target_path.parent() else {
+            return dependencies;
+        };
+        parent.to_path_buf()
+    };
+    for _ in 0..20 {
+        let candidate = current.with_extension("xml");
+        if candidate.is_file() && !dependencies.contains(&candidate) {
+            dependencies.push(candidate.clone());
+            if support_root_uuid(&candidate).is_some() {
+                return dependencies;
+            }
+        }
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        if parent == current {
+            break;
+        }
+        current = parent.to_path_buf();
+    }
+    dependencies
+}
+
+fn support_root_uuid(xml_path: &Path) -> Option<String> {
+    support_root_uuid_from_bytes(&fs::read(xml_path).ok()?)
+}
+
+fn support_root_uuid_from_bytes(raw: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(raw).ok()?;
+    let document = Document::parse(text.trim_start_matches('\u{feff}')).ok()?;
+    let root = document.root_element();
+    root.attribute("uuid")
+        .or_else(|| {
+            root.children()
+                .find(|node| node.is_element() && node.attribute("uuid").is_some())
+                .and_then(|node| node.attribute("uuid"))
+        })
+        .map(str::to_ascii_lowercase)
+}
+
+fn parse_support_header(path: &Path) -> Option<(u8, usize)> {
+    let config_dir = path.parent()?.parent()?;
+    let evidence = inspect_support_state(config_dir).ok()?;
+    if !matches!(evidence.source, SupportSourceState::Parsed) {
+        return None;
+    }
+    Some((
+        if evidence.global_editing_enabled? {
+            0
+        } else {
+            1
+        },
+        evidence.vendors.len(),
+    ))
+}
+
+fn inspect_support_state(
+    config_dir: &Path,
+) -> Result<unica_format_core::ports::SupportEvidence, unica_format_core::source::SourceAdapterError>
+{
+    PlatformXmlAdapterFactory::new()
+        .registration()
+        .support
+        .inspect(&unica_format_core::ports::SupportInspectionRequest {
+            source: unica_format_core::source::SourceContext::new(
+                unica_format_core::source::SourceLocation::new(
+                    config_dir.to_path_buf(),
+                    config_dir.to_path_buf(),
+                    config_dir
+                        .join("Ext")
+                        .join("ParentConfigurations.bin"),
+                ),
+                None,
+                unica_format_core::source::SourceFamily::PlatformXml,
+                None,
+            ),
+            object: None,
+        })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SupportCapability {
@@ -304,10 +430,6 @@ fn support_edit_action(args: &Map<String, Value>) -> Result<SupportEditAction, S
             .map(SupportEditAction::Set)
             .ok_or_else(|| "Set must be one of: editable, off-support, locked".to_string()),
     }
-}
-
-pub(crate) fn support_edit_reads_uuid_dependency(args: &Map<String, Value>) -> bool {
-    matches!(support_edit_action(args), Ok(SupportEditAction::Set(_)))
 }
 
 fn string_arg(args: &Map<String, Value>, names: &[&str]) -> Option<String> {

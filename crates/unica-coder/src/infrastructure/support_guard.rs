@@ -6,12 +6,12 @@ use crate::application::{AdapterOutcome, ToolHandler, ToolSpec};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::common::{absolutize, path_arg, required_string};
 use crate::infrastructure::native_operations::{meta, template};
-use crate::infrastructure::platform_xml_owner::validation_source_context;
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use unica_application::{GuardEnforcement, OperationalPolicyDecision, OperationalPolicyService};
-use unica_format_core::ports::{AuthorabilityRequest, AuthorabilityRequirement, FormatDiagnostic};
-use unica_format_core::source::SourceContext;
+use unica_format_core::ports::{
+    AuthorabilityRequest, AuthorabilityRequirement, FormatDiagnostic, FormatDiagnosticCode,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SupportGuardMode {
@@ -34,59 +34,79 @@ fn support_guard_violation_with_context(
     requirement: SupportGuardRequirement,
     context: &WorkspaceContext,
 ) -> Option<SupportGuardViolation> {
-    let target_path = target_path
-        .canonicalize()
-        .unwrap_or_else(|_| target_path.to_path_buf());
-    let source = match validation_source_context(&target_path, context) {
-        Ok(source) => source,
-        Err(error) => {
+    let target_path = target_path.to_path_buf();
+    let session = unica_adapter_platform_xml::PlatformXmlAdapterFactory::new()
+        .capture_unscoped_source(
+            &target_path,
+            &context.workspace_root,
+            unica_format_core::ports::OwnerResolutionMode::Existing,
+        );
+    support_guard_violation_for_session(
+        session,
+        requirement,
+        target_path,
+        context.workspace_root.clone(),
+    )
+}
+
+fn support_guard_violation_for_session(
+    session: unica_format_core::ports::OperationalSourceSession,
+    requirement: SupportGuardRequirement,
+    target_path: PathBuf,
+    fallback_root: PathBuf,
+) -> Option<SupportGuardViolation> {
+    let port = unica_adapter_platform_xml::PlatformXmlAdapterFactory::new().authorability_port();
+    let request = AuthorabilityRequest::new(
+        session,
+        match requirement {
+            SupportGuardRequirement::Editable => AuthorabilityRequirement::Editable,
+            SupportGuardRequirement::Removed => AuthorabilityRequirement::Removed,
+        },
+    );
+    let result = match port.inspect(&request) {
+        Ok(result) => result,
+        Err(_) => {
             return Some(SupportGuardViolation {
                 code: "support-state-unreadable",
-                reason: error.message,
+                reason:
+                    "состояние поддержки не удалось прочитать — правки не подтверждены"
+                        .to_string(),
                 target_path,
-                config_dir: context.workspace_root.clone(),
-                support_state_path: context.workspace_root.clone(),
+                config_dir: fallback_root.clone(),
+                support_state_path: fallback_root,
             })
         }
     };
-    support_guard_violation_for_source(source, requirement, &context.workspace_root)
-}
-
-fn support_guard_violation_for_source(
-    source: SourceContext,
-    requirement: SupportGuardRequirement,
-    fallback_root: &Path,
-) -> Option<SupportGuardViolation> {
-    let port = unica_adapter_platform_xml::PlatformXmlAdapterFactory::new().authorability_port();
-    let result = port
-        .inspect(&AuthorabilityRequest {
-            source,
-            requirement: match requirement {
-                SupportGuardRequirement::Editable => AuthorabilityRequirement::Editable,
-                SupportGuardRequirement::Removed => AuthorabilityRequirement::Removed,
-            },
-        })
-        .ok()?;
-    result.violation.map(|violation| {
-        let code = match violation.diagnostic.code.as_str() {
-            "capability-off" => "capability-off",
-            "not-removed" => "not-removed",
-            "locked" => "locked",
+    result.into_violation().map(|violation| {
+        let diagnostic = violation.into_diagnostic();
+        let code = match diagnostic.code() {
+            FormatDiagnosticCode::SupportCapabilityDisabled => "capability-off",
+            FormatDiagnosticCode::SupportRemovalRequired => "not-removed",
+            FormatDiagnosticCode::SupportLocked => "locked",
             _ => "support-state-unreadable",
         };
+        let reason = public_support_diagnostic_message(&diagnostic).to_string();
         SupportGuardViolation {
             code,
-            reason: violation.diagnostic.message,
-            target_path: violation.target,
-            config_dir: violation.source_root,
-            support_state_path: violation
-                .diagnostic
-                .details
-                .get("supportStatePath")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| fallback_root.to_path_buf()),
+            reason,
+            target_path,
+            config_dir: fallback_root.clone(),
+            support_state_path: fallback_root,
         }
     })
+}
+
+fn public_support_diagnostic_message(diagnostic: &FormatDiagnostic) -> &'static str {
+    match diagnostic.code() {
+        FormatDiagnosticCode::SupportCapabilityDisabled => {
+            "Source editing is disabled by support policy."
+        }
+        FormatDiagnosticCode::SupportRemovalRequired => {
+            "The object must be removed from support before this operation."
+        }
+        FormatDiagnosticCode::SupportLocked => "The object is locked by support policy.",
+        _ => "состояние поддержки не удалось прочитать — правки не подтверждены",
+    }
 }
 
 #[cfg(test)]
@@ -94,28 +114,26 @@ pub(crate) fn support_guard_violation(
     target_path: &Path,
     requirement: SupportGuardRequirement,
 ) -> Option<SupportGuardViolation> {
-    use unica_format_core::source::{SourceFamily, SourceLocation};
-
-    let target_path = target_path
-        .canonicalize()
-        .unwrap_or_else(|_| target_path.to_path_buf());
-    let source_root = target_path
-        .ancestors()
-        .find(|ancestor| ancestor.join("Configuration.xml").is_file())?
+    let target_path = target_path.to_path_buf();
+    let authorized_root = target_path
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or_else(|| Path::new(""))
         .to_path_buf();
-    support_guard_violation_for_source(
-        SourceContext::new(
-            SourceLocation::new(
-                source_root.clone(),
-                source_root.clone(),
-                target_path.clone(),
-            ),
-            None,
-            SourceFamily::PlatformXml,
-            None,
-        ),
+    let session = unica_adapter_platform_xml::PlatformXmlAdapterFactory::new()
+        .capture_unscoped_source(
+            &target_path,
+            &authorized_root,
+            unica_format_core::ports::OwnerResolutionMode::Existing,
+        );
+    support_guard_violation_for_session(
+        session,
         requirement,
-        &source_root,
+        target_path.clone(),
+        target_path
+            .parent()
+            .unwrap_or_else(|| Path::new(""))
+            .to_path_buf(),
     )
 }
 
@@ -136,18 +154,21 @@ pub(crate) fn evaluate_support_guard(
         SupportGuardMode::Warn => GuardEnforcement::Warn,
         SupportGuardMode::Deny => GuardEnforcement::Deny,
     };
-    let mut diagnostic = FormatDiagnostic::new(violation.code, violation.reason.clone());
-    diagnostic.details.insert(
-        "target".to_string(),
-        violation.target_path.display().to_string(),
+    let diagnostic = FormatDiagnostic::new(
+        match violation.code {
+            "capability-off" => FormatDiagnosticCode::SupportCapabilityDisabled,
+            "not-removed" => FormatDiagnosticCode::SupportRemovalRequired,
+            "locked" => FormatDiagnosticCode::SupportLocked,
+            _ => FormatDiagnosticCode::SupportStateUnreadable,
+        },
+        violation.reason.clone(),
     );
     Ok(
         match OperationalPolicyService::decide_authorability(Some(diagnostic), enforcement) {
             OperationalPolicyDecision::Allow => SupportGuardCheck::Allow,
             OperationalPolicyDecision::Warn(_) => SupportGuardCheck::Warn(format!(
-                "[support guard] ПРЕДУПРЕЖДЕНИЕ: {}. Цель: {}",
-                violation.reason,
-                violation.target_path.display()
+                "[support guard] ПРЕДУПРЕЖДЕНИЕ: {}",
+                violation.reason
             )),
             OperationalPolicyDecision::Block(_) => SupportGuardCheck::Block(
                 support_guard_blocked_outcome(spec, &violation, requirement),
@@ -164,6 +185,14 @@ fn support_guard_target(
     let ToolHandler::NativeOperation { operation, .. } = spec.handler else {
         return None;
     };
+    support_guard_target_for_operation(operation, args, context)
+}
+
+pub(crate) fn support_guard_target_for_operation(
+    operation: &str,
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Option<(PathBuf, SupportGuardRequirement)> {
     let policy = native_operation_descriptor(operation)?.support_guard?;
     match policy {
         SupportGuardPolicy::PathArgs { names, requirement } => {
@@ -317,12 +346,10 @@ fn support_guard_blocked_outcome(
     violation: &SupportGuardViolation,
     requirement: SupportGuardRequirement,
 ) -> AdapterOutcome {
-    let target = violation.target_path.display();
     if violation.code == "support-state-unreadable" {
         let message = format!(
-            "[support-guard] Редактирование отклонено: состояние поддержки для объекта «{target}» нельзя достоверно прочитать.\nСостояние: {}.\nПроверьте или восстановите {}. Пока состояние поддержки не прочитано, правки заблокированы.",
-            violation.reason,
-            violation.support_state_path.display(),
+            "[support-guard] Редактирование отклонено: состояние поддержки нельзя достоверно прочитать.\nСостояние: {}. Пока состояние поддержки не прочитано, правки заблокированы.",
+            violation.reason
         );
         return AdapterOutcome {
             ok: false,
@@ -330,7 +357,7 @@ fn support_guard_blocked_outcome(
             changes: Vec::new(),
             warnings: Vec::new(),
             errors: vec![message.clone()],
-            artifacts: vec![violation.target_path.display().to_string()],
+            artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{message}\n")),
             command: None,
@@ -342,29 +369,18 @@ fn support_guard_blocked_outcome(
         "Снять проверку для этой базы: editingAllowedCheck = warn|off в .v8-project.json.";
     let (state, fix) = match violation.code {
         "capability-off" => (
-            format!(
-                "Состояние: у всей конфигурации выключена возможность изменения (режим read-only «из коробки») — поэтому объект «{target}» редактировать нельзя."
-            ),
-            format!(
-                "Либо снять защиту явно (навык support-edit, два шага):\n  support-edit -Path \"{}\" -Capability on — включить возможность изменения (объекты пока остаются на замке);\n  support-edit -Path \"{target}\" -Set editable — открыть этот объект для редактирования.\n  Изменение применяется в базу полной загрузкой выгрузки и обходит механизм обновлений вендора.",
-                violation.config_dir.display()
-            ),
+            "Состояние: у всей конфигурации выключена возможность изменения.".to_string(),
+            "Либо явно включить изменение конфигурации и затем разрешить изменение объекта."
+                .to_string(),
         ),
         "not-removed" if requirement == SupportGuardRequirement::Removed => (
-            format!(
-                "Состояние: объект «{target}» на поддержке (не снят с поддержки) — его удаление разорвёт обновления вендора."
-            ),
-            format!(
-                "Либо сначала снять объект с поддержки, затем удалять:\n  support-edit -Path \"{target}\" -Set off-support — объект уходит из-под обновлений, после этого удаление безопасно."
-            ),
+            "Состояние: объект не снят с поддержки; удаление разорвёт обновления поставщика."
+                .to_string(),
+            "Либо сначала явно снять объект с поддержки, затем повторить удаление.".to_string(),
         ),
         _ => (
-            format!(
-                "Состояние: объект «{target}» на замке (возможность изменения конфигурации включена, но сам объект не редактируется)."
-            ),
-            format!(
-                "Либо разрешить редактирование этого объекта (навык support-edit, выбрать одно):\n  support-edit -Path \"{target}\" -Set editable — редактировать и дальше получать обновления вендора (возможны конфликты слияния);\n  support-edit -Path \"{target}\" -Set off-support — снять с поддержки: обновления по объекту больше не приходят."
-            ),
+            "Состояние: объект заблокирован политикой поддержки.".to_string(),
+            "Либо явно разрешить редактирование объекта или снять его с поддержки.".to_string(),
         ),
     };
     let message = format!("{head}\n{state}\n{cfe}\n{fix}\n{off_note}");
@@ -374,7 +390,7 @@ fn support_guard_blocked_outcome(
         changes: Vec::new(),
         warnings: Vec::new(),
         errors: vec![message.clone()],
-        artifacts: vec![violation.target_path.display().to_string()],
+        artifacts: Vec::new(),
         stdout: None,
         stderr: Some(format!("{message}\n")),
         command: None,
@@ -383,7 +399,10 @@ fn support_guard_blocked_outcome(
 
 #[cfg(test)]
 mod tests {
-    use super::{support_guard_blocked_outcome, support_guard_violation, SupportGuardViolation};
+    use super::{
+        public_support_diagnostic_message, support_guard_blocked_outcome,
+        support_guard_violation, SupportGuardViolation,
+    };
     use crate::application::{SupportGuardRequirement, ToolHandler, ToolSpec};
     use crate::domain::cache::CacheAccess;
     use std::fs;
@@ -420,6 +439,33 @@ mod tests {
             "{message}"
         );
         assert!(!message.contains("на замке"), "{message}");
+        let public = serde_json::to_string(&outcome).unwrap();
+        for forbidden in [
+            "/workspace/src/Documents/Shipment.xml",
+            "/workspace/src",
+            "/workspace/src/Ext/ParentConfigurations.bin",
+            "Configuration.xml",
+            "ParentConfigurations.bin",
+            "MetaDataObject",
+            r"C:\private\source",
+        ] {
+            assert!(!public.contains(forbidden), "leaked {forbidden}: {public}");
+        }
+    }
+
+    #[test]
+    fn public_support_message_ignores_adapter_free_form_text() {
+        let diagnostic = unica_format_core::ports::FormatDiagnostic::new(
+            unica_format_core::ports::FormatDiagnosticCode::SupportLocked,
+            r"/private/Configuration.xml C:\private MetaDataObject",
+        );
+
+        let public = public_support_diagnostic_message(&diagnostic);
+
+        assert_eq!(public, "The object is locked by support policy.");
+        assert!(!public.contains("private"));
+        assert!(!public.contains("Configuration.xml"));
+        assert!(!public.contains("MetaDataObject"));
     }
 
     #[test]

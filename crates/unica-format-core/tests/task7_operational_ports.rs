@@ -1,12 +1,12 @@
-use std::{path::PathBuf, sync::Arc, time::Duration};
-
 use unica_format_core::{
+    navigation::Authorability,
     ports::{
-        AuthorabilityPort, CompatibilityPort, OperationCancellation, PublicationHostPort,
-        PublicationLockResult, PublicationPort, PublicationProcessCommand,
-        PublicationProcessOutput, ResolvedPublicationTool, ValidationContextPort,
+        AuthorabilityPort, CompatibilityIssueKind, CompatibilityPort, FormatDiagnostic,
+        FormatDiagnosticCode, FormatDiagnosticDetail, OperationCancellation,
+        OperationalSourceSession, PublicationCancellation, PublicationCleanup, PublicationPort,
+        PublicationRecovery, PublicationResult, PublicationRollback, PublicationStatus,
+        SupportState, ValidationContext, ValidationContextPort, ValidationOwnerKind,
     },
-    source::{SourceContext, SourceFamily, SourceLocation},
 };
 
 fn assert_port<T: ?Sized + Send + Sync>() {}
@@ -17,7 +17,6 @@ fn task7_operational_boundaries_are_format_neutral_ports() {
     assert_port::<dyn AuthorabilityPort>();
     assert_port::<dyn ValidationContextPort>();
     assert_port::<dyn PublicationPort>();
-    assert_port::<dyn PublicationHostPort>();
 }
 
 #[test]
@@ -30,86 +29,109 @@ fn task7_cancellation_is_shared_without_a_host_domain_type() {
     assert!(second.is_cancelled());
 }
 
+#[derive(Debug)]
+struct AlternateSourceRevision {
+    generation: u64,
+}
+
 #[test]
-fn task7_source_paths_are_inert_request_data_not_public_navigation_data() {
-    let source = SourceContext::new(
-        SourceLocation::new(
-            PathBuf::from("/private/workspace"),
-            PathBuf::from("/private/workspace/source"),
-            PathBuf::from("/private/workspace/source/Object.native"),
-        ),
-        Some("alternate".to_string()),
-        SourceFamily::Edt,
-        None,
-    );
+fn task7_operational_source_session_is_opaque_and_format_agnostic() {
+    let session = OperationalSourceSession::new(AlternateSourceRevision { generation: 7 });
 
     assert_eq!(
-        source.location().target(),
-        PathBuf::from("/private/workspace/source/Object.native")
+        session
+            .adapter_state::<AlternateSourceRevision>()
+            .unwrap()
+            .generation,
+        7
     );
-    assert!(unica_format_core::navigation::ObjectKey::new(
-        source.location().target().display().to_string()
+    assert_eq!(format!("{session:?}"), "OperationalSourceSession(<opaque>)");
+}
+
+#[test]
+fn task7_diagnostics_have_closed_codes_and_allowlisted_details() {
+    let diagnostic = FormatDiagnostic::new(
+        FormatDiagnosticCode::SourceRevisionOlder,
+        "alternate source revision needs migration",
+    )
+    .with_detail(FormatDiagnosticDetail::Compatibility(
+        CompatibilityIssueKind::Older,
+    ));
+
+    assert_eq!(diagnostic.code().as_str(), "sourceRevisionOlder");
+    assert_eq!(
+        diagnostic.details(),
+        &[FormatDiagnosticDetail::Compatibility(
+            CompatibilityIssueKind::Older
+        )]
+    );
+}
+
+#[test]
+fn task7_validation_context_rejects_non_semantic_language_values() {
+    assert!(ValidationContext::new(
+        ValidationOwnerKind::Aggregate,
+        vec!["/private/source".to_string()],
+        true,
+        None,
+        None,
+        None,
+    )
+    .is_err());
+    assert!(ValidationContext::new(
+        ValidationOwnerKind::Aggregate,
+        vec!["ru".to_string(), "en-US".to_string()],
+        true,
+        Some(true),
+        Some(false),
+        None,
+    )
+    .is_ok());
+}
+
+#[test]
+fn task7_publication_lifecycle_rejects_impossible_combinations() {
+    assert!(PublicationResult::new(
+        PublicationStatus::Published,
+        PublicationCancellation::DuringExecution,
+        PublicationRollback::NotNeeded,
+        PublicationCleanup::Completed,
+        PublicationRecovery::NotRequired,
+        "published",
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )
+    .is_err());
+    assert!(PublicationResult::new(
+        PublicationStatus::Failed,
+        PublicationCancellation::NotRequested,
+        PublicationRollback::Failed,
+        PublicationCleanup::Completed,
+        PublicationRecovery::NotRequired,
+        "failed",
+        vec![FormatDiagnostic::new(
+            FormatDiagnosticCode::PublicationFailed,
+            "failed",
+        )],
+        Vec::new(),
+        Vec::new(),
     )
     .is_err());
 }
 
-struct FakeHost;
-
-impl PublicationHostPort for FakeHost {
-    fn run_process(
-        &self,
-        command: &PublicationProcessCommand,
-    ) -> Result<PublicationProcessOutput, String> {
-        assert_eq!(command.timeout, Some(Duration::from_secs(1)));
-        Ok(PublicationProcessOutput {
-            status_success: true,
-            status: "0".to_string(),
-            stdout: "ok".to_string(),
-            stderr: String::new(),
-            timed_out: false,
-            cancelled: false,
-            stdout_truncated: false,
-        })
-    }
-
-    fn resolve_bundled_tool(
-        &self,
-        _cwd: &std::path::Path,
-        _tool: &str,
-        _require_executable: bool,
-    ) -> Result<ResolvedPublicationTool, String> {
-        Ok(ResolvedPublicationTool {
-            program: PathBuf::from("/private/tool"),
-            warnings: Vec::new(),
-        })
-    }
-
-    fn with_exclusive_publication_lock(
-        &self,
-        _targets: &[PathBuf],
-        action: &mut dyn FnMut() -> Result<Vec<String>, String>,
-    ) -> Result<PublicationLockResult, String> {
-        Ok(PublicationLockResult::Action(action()))
-    }
-
-    fn redact(&self, text: &str) -> String {
-        text.replace("secret", "<redacted>")
-    }
-}
-
 #[test]
-fn task7_publication_host_is_injectable_without_native_format_types() {
-    let host: Arc<dyn PublicationHostPort> = Arc::new(FakeHost);
-    let output = host
-        .run_process(&PublicationProcessCommand {
-            program: PathBuf::from("/private/tool"),
-            args: vec!["run".to_string()],
-            cwd: PathBuf::from("/private/workspace"),
-            timeout: Some(Duration::from_secs(1)),
-            cancellation: OperationCancellation::new(),
-        })
-        .unwrap();
-
-    assert!(output.status_success);
-    assert_eq!(host.redact("token=secret"), "token=<redacted>");
+fn task7_support_state_is_closed_semantic_evidence() {
+    let summary = unica_format_core::ports::SupportSummary::new(
+        SupportState::Unreadable,
+        None,
+        0,
+        [0; 3],
+    );
+    let result = unica_format_core::ports::AuthorabilityResult::new(
+        Authorability::UnknownSupportState,
+        summary,
+        None,
+    );
+    assert_eq!(result.summary().state(), SupportState::Unreadable);
 }

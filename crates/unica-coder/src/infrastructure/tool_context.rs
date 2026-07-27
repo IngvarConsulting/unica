@@ -11,7 +11,6 @@ use std::path::{Component, Path, PathBuf};
 use unica_application::{OperationalPolicyDecision, OperationalPolicyService};
 use unica_format_core::{
     ports::{SourceCompatibilityEvidence, SourceCompatibilityRequest},
-    source::SourceFamily,
 };
 
 pub(crate) fn validate_tool_context(
@@ -127,15 +126,15 @@ fn validates_compile_preview_like_apply(tool: ToolSpec) -> bool {
 }
 
 fn validate_external_project_format(
-    tool: ToolSpec,
+    _tool: ToolSpec,
     source_map: &ProjectSourceMap,
 ) -> Result<(), String> {
-    enforce_source_compatibility(SourceCompatibilityRequest {
-        operation_name: tool.name.to_string(),
-        evidence: SourceCompatibilityEvidence::DeclaredProjectFormat {
-            value: source_map.configured_format_raw.clone(),
-        },
-    })
+    let evidence = match source_map.configured_format_raw.as_deref() {
+        None | Some("DESIGNER") => SourceCompatibilityEvidence::Compatible,
+        Some("EDT") => SourceCompatibilityEvidence::AlternateFamily,
+        Some(_) => SourceCompatibilityEvidence::UnsupportedDeclaration,
+    };
+    enforce_source_compatibility(SourceCompatibilityRequest::new(evidence))
 }
 
 fn validate_initializer_destination(
@@ -199,34 +198,31 @@ fn validate_initializer_destination(
 }
 
 fn validate_platform_xml_source_format(
-    tool: ToolSpec,
+    _tool: ToolSpec,
     source_set: &crate::domain::project_sources::ProjectSourceSet,
 ) -> Result<(), String> {
-    let (family, invalid) = match source_set.source_format {
-        SourceFormat::PlatformXml => (Some(SourceFamily::PlatformXml), false),
-        SourceFormat::Edt => (Some(SourceFamily::Edt), false),
-        SourceFormat::Unknown => (None, false),
-        SourceFormat::Invalid => (None, true),
+    let evidence = match source_set.source_format {
+        SourceFormat::PlatformXml | SourceFormat::Unknown => {
+            SourceCompatibilityEvidence::Compatible
+        }
+        SourceFormat::Edt => SourceCompatibilityEvidence::AlternateFamily,
+        SourceFormat::Invalid => SourceCompatibilityEvidence::Ambiguous,
     };
-    enforce_source_compatibility(SourceCompatibilityRequest {
-        operation_name: tool.name.to_string(),
-        evidence: SourceCompatibilityEvidence::Detected {
-            source_set_name: source_set.name.clone(),
-            family,
-            invalid,
-        },
-    })
+    enforce_source_compatibility(SourceCompatibilityRequest::new(evidence))
 }
 
 fn enforce_source_compatibility(request: SourceCompatibilityRequest) -> Result<(), String> {
-    let port =
-        unica_adapter_platform_xml::PlatformXmlAdapterFactory::new().source_compatibility_port();
-    match OperationalPolicyService::check_source_compatibility(port.as_ref(), &request)
+    let registration =
+        unica_adapter_platform_xml::PlatformXmlAdapterFactory::new().operational_registration();
+    match OperationalPolicyService::check_source_compatibility(
+        registration.source_compatibility(),
+        &request,
+    )
         .map_err(|error| error.message)?
     {
         OperationalPolicyDecision::Allow => Ok(()),
         OperationalPolicyDecision::Warn(diagnostic)
-        | OperationalPolicyDecision::Block(diagnostic) => Err(diagnostic.message),
+        | OperationalPolicyDecision::Block(diagnostic) => Err(diagnostic.message().to_string()),
     }
 }
 

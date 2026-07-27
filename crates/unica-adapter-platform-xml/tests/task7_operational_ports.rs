@@ -1,58 +1,31 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use serde_json::{json, Map, Value};
 use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
 use unica_format_core::{
+    navigation::Authorability,
     ports::{
         AuthorabilityRequest, AuthorabilityRequirement, CompatibilityIssueKind,
-        CompatibilityRequest, CompatibilityTarget, OperationCancellation, OwnerResolutionMode,
-        PublicationHostPort, PublicationLockResult, PublicationProcessCommand,
-        PublicationProcessOutput, ResolvedPublicationTool, ValidationContextRequest,
+        CompatibilityRequest, FormatDiagnosticCode, OperationCancellation, OwnerResolutionMode,
+        PublicationCancellation, PublicationInvocation, PublicationRequest, PublicationStatus,
+        SupportState, ValidationContextRequest, ValidationIssueKind,
     },
     source::{SourceContext, SourceFamily, SourceLocation},
 };
 
-struct NoopPublicationHost;
-
-impl PublicationHostPort for NoopPublicationHost {
-    fn run_process(
-        &self,
-        _command: &PublicationProcessCommand,
-    ) -> Result<PublicationProcessOutput, String> {
-        Err("process execution is not expected in guard tests".to_string())
-    }
-
-    fn resolve_bundled_tool(
-        &self,
-        _cwd: &Path,
-        _tool: &str,
-        _require_executable: bool,
-    ) -> Result<ResolvedPublicationTool, String> {
-        Err("tool resolution is not expected in guard tests".to_string())
-    }
-
-    fn with_exclusive_publication_lock(
-        &self,
-        _targets: &[PathBuf],
-        action: &mut dyn FnMut() -> Result<Vec<String>, String>,
-    ) -> Result<PublicationLockResult, String> {
-        Ok(PublicationLockResult::Action(action()))
-    }
-
-    fn redact(&self, text: &str) -> String {
-        text.to_string()
-    }
-}
-
-fn source(root: &Path, target: &Path) -> SourceContext {
+fn source(root: &Path, target: &Path, family: SourceFamily) -> SourceContext {
     SourceContext::new(
         SourceLocation::new(root.to_path_buf(), root.to_path_buf(), target.to_path_buf()),
         Some("main".to_string()),
-        SourceFamily::PlatformXml,
+        family,
         None,
     )
 }
@@ -63,7 +36,7 @@ fn temp_root(label: &str) -> PathBuf {
         .unwrap()
         .as_nanos();
     std::env::temp_dir().join(format!(
-        "unica-task7-{label}-{}-{nanos}",
+        "unica-task7-fix1-{label}-{}-{nanos}",
         std::process::id()
     ))
 }
@@ -74,17 +47,24 @@ fn write_owner(root: &Path, version: &str) -> PathBuf {
     fs::write(
         &owner,
         format!(
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="{version}"><Configuration><Properties><Name>Configuration</Name></Properties></Configuration></MetaDataObject>"#
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="{version}"><Configuration uuid="00000000-0000-0000-0000-000000000001"><Properties><Name>Configuration</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#
         ),
     )
     .unwrap();
     owner
 }
 
+fn capture(root: &Path, target: &Path) -> unica_format_core::ports::OperationalSourceSession {
+    PlatformXmlAdapterFactory::new().capture_operational_source(
+        &source(root, target, SourceFamily::PlatformXml),
+        OwnerResolutionMode::Existing,
+    )
+}
+
 #[test]
 fn task7_compatibility_port_classifies_supported_older_newer_and_malformed_profiles() {
-    let operations =
-        PlatformXmlAdapterFactory::new().operational_registration(Arc::new(NoopPublicationHost));
+    let factory = PlatformXmlAdapterFactory::new();
+    let operations = factory.operational_registration();
 
     for (version, expected) in [
         ("2.20", None),
@@ -95,101 +75,227 @@ fn task7_compatibility_port_classifies_supported_older_newer_and_malformed_profi
         let root = temp_root(version);
         let owner = write_owner(&root, version);
         let result = operations
-            .compatibility
-            .inspect(&CompatibilityRequest {
-                targets: vec![CompatibilityTarget {
-                    source: source(&root, &owner),
-                    mode: OwnerResolutionMode::Existing,
-                }],
-            })
+            .compatibility()
+            .inspect(
+                &CompatibilityRequest::new(vec![capture(&root, &owner)]).unwrap(),
+            )
             .unwrap();
-        assert_eq!(result.issue.map(|issue| issue.kind), expected, "{version}");
+        assert_eq!(result.issue().map(|issue| issue.kind()), expected, "{version}");
         fs::remove_dir_all(root).unwrap();
     }
 }
 
 #[test]
-fn task7_authorability_port_fails_closed_for_malformed_support_state() {
-    let root = temp_root("support-malformed");
+fn task7_authorability_distinguishes_absent_support_from_unreadable_support() {
+    let root = temp_root("support-states");
     let owner = write_owner(&root, "2.20");
+    let operations = PlatformXmlAdapterFactory::new().operational_registration();
+
+    let absent = operations
+        .authorability()
+        .inspect(&AuthorabilityRequest::new(
+            capture(&root, &owner),
+            AuthorabilityRequirement::Editable,
+        ))
+        .unwrap();
+    assert_eq!(absent.summary().state(), SupportState::Absent);
+    assert_eq!(absent.authorability(), Authorability::Authorable);
+    assert!(absent.violation().is_none());
+
     fs::create_dir_all(root.join("Ext")).unwrap();
     fs::write(root.join("Ext/ParentConfigurations.bin"), "<broken-support").unwrap();
-    let operations =
-        PlatformXmlAdapterFactory::new().operational_registration(Arc::new(NoopPublicationHost));
-
-    let result = operations
-        .authorability
-        .inspect(&AuthorabilityRequest {
-            source: source(&root, &owner),
-            requirement: AuthorabilityRequirement::Editable,
-        })
+    let unreadable = operations
+        .authorability()
+        .inspect(&AuthorabilityRequest::new(
+            capture(&root, &owner),
+            AuthorabilityRequirement::Editable,
+        ))
         .unwrap();
-
-    assert!(result.violation.is_some());
-    assert_ne!(
-        result.authorability,
-        unica_format_core::navigation::Authorability::Authorable
+    assert_eq!(unreadable.summary().state(), SupportState::Unreadable);
+    assert_eq!(
+        unreadable.violation().unwrap().diagnostic().code(),
+        FormatDiagnosticCode::SupportStateUnreadable
     );
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn task7_validation_context_returns_bounded_diagnostics_for_malformed_metadata() {
+fn task7_authorability_fails_closed_for_capture_containment_family_and_read_errors() {
+    let root = temp_root("support-errors");
+    let owner = write_owner(&root, "2.20");
+    let outside = temp_root("outside");
+    let outside_owner = write_owner(&outside, "2.20");
+    let factory = PlatformXmlAdapterFactory::new();
+    let operations = factory.operational_registration();
+
+    let mut sessions = vec![
+        factory.capture_operational_source(
+            &source(&root, &owner, SourceFamily::Edt),
+            OwnerResolutionMode::Existing,
+        ),
+        factory.capture_operational_source(
+            &source(&root, &outside_owner, SourceFamily::PlatformXml),
+            OwnerResolutionMode::Existing,
+        ),
+    ];
+    fs::create_dir_all(root.join("Ext/ParentConfigurations.bin")).unwrap();
+    sessions.push(capture(&root, &owner));
+
+    for session in sessions {
+        let result = operations
+            .authorability()
+            .inspect(&AuthorabilityRequest::new(
+                session,
+                AuthorabilityRequirement::Editable,
+            ))
+            .unwrap();
+        assert_eq!(result.summary().state(), SupportState::Unreadable);
+        assert_eq!(
+            result.violation().unwrap().diagnostic().code(),
+            FormatDiagnosticCode::SupportStateUnreadable
+        );
+    }
+
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(outside).unwrap();
+}
+
+#[test]
+fn task7_authorability_fails_closed_when_present_support_cannot_bind_to_target() {
+    let root = temp_root("support-target-inspection");
+    let owner = write_owner(&root, "2.20");
+    fs::create_dir_all(root.join("Ext")).unwrap();
+    fs::write(
+        root.join("Ext/ParentConfigurations.bin"),
+        "{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"VendorConf\",1,1,0,00000000-0000-0000-0000-000000000001}",
+    )
+    .unwrap();
+    fs::write(
+        &owner,
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Configuration</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+    )
+    .unwrap();
+
+    let result = PlatformXmlAdapterFactory::new()
+        .operational_registration()
+        .authorability()
+        .inspect(&AuthorabilityRequest::new(
+            capture(&root, &owner),
+            AuthorabilityRequirement::Editable,
+        ))
+        .unwrap();
+
+    assert_eq!(result.summary().state(), SupportState::Unreadable);
+    assert_eq!(
+        result.violation().unwrap().diagnostic().code(),
+        FormatDiagnosticCode::SupportStateUnreadable
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn task7_authorability_rejects_symlinked_support_evidence() {
+    use std::os::unix::fs::symlink;
+
+    let root = temp_root("support-symlink");
+    let owner = write_owner(&root, "2.20");
+    let outside = temp_root("support-symlink-outside");
+    fs::create_dir_all(root.join("Ext")).unwrap();
+    fs::write(&outside, b"support").unwrap();
+    symlink(&outside, root.join("Ext/ParentConfigurations.bin")).unwrap();
+
+    let operations = PlatformXmlAdapterFactory::new().operational_registration();
+    let result = operations
+        .authorability()
+        .inspect(&AuthorabilityRequest::new(
+            capture(&root, &owner),
+            AuthorabilityRequirement::Editable,
+        ))
+        .unwrap();
+    assert_eq!(result.summary().state(), SupportState::Unreadable);
+
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_file(outside).unwrap();
+}
+
+#[test]
+fn task7_validation_context_returns_closed_diagnostic_for_malformed_metadata() {
     let root = temp_root("validation-malformed");
     fs::create_dir_all(&root).unwrap();
     let object = root.join("Broken.xml");
     fs::write(&object, "<MetaDataObject").unwrap();
-    let operations =
-        PlatformXmlAdapterFactory::new().operational_registration(Arc::new(NoopPublicationHost));
+    let operations = PlatformXmlAdapterFactory::new().operational_registration();
 
     let result = operations
-        .validation_context
-        .inspect(&ValidationContextRequest {
-            source: source(&root, &object),
-        })
+        .validation_context()
+        .inspect(&ValidationContextRequest::new(capture(&root, &object)))
         .unwrap();
 
-    assert!(result.context.is_none());
-    assert_eq!(result.diagnostics.len(), 1);
-    assert!(!result.diagnostics[0].message.contains("<MetaDataObject"));
-    assert_eq!(result.dependencies, vec![object]);
+    assert!(result.context().is_none());
+    assert_eq!(result.diagnostics().len(), 1);
+    assert!(matches!(
+        result.diagnostics()[0].details(),
+        [unica_format_core::ports::FormatDiagnosticDetail::Validation(
+            ValidationIssueKind::SourceUnreadable
+        )]
+    ));
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn task7_operation_results_never_serialize_source_locations_into_navigation() {
+fn task7_publication_cancellation_is_explicit_and_public_result_is_path_free() {
+    let root = temp_root("publication-cancel");
+    fs::create_dir_all(&root).unwrap();
     let cancellation = OperationCancellation::new();
-    assert!(!cancellation.is_cancelled());
-    let root = temp_root("path-privacy");
-    let owner = write_owner(&root, "2.20");
-    let registration = PlatformXmlAdapterFactory::new().registration();
-    let captured = match registration
-        .capture
-        .capture(&source(&root, &owner))
-        .unwrap()
-    {
-        unica_format_core::ports::CaptureResult::Captured(captured) => captured,
-        unica_format_core::ports::CaptureResult::NoMatch => panic!("expected capture"),
-    };
-    let navigation = registration
-        .read
-        .read(&unica_format_core::ports::FormatReadRequest {
-            query: unica_format_core::navigation::NavigationQuery {
-                target: unica_format_core::navigation::NavigationTarget::CapturedTarget(
-                    captured.binding().target_identity.clone(),
-                ),
-                select: unica_format_core::navigation::NavigationSelection {
-                    properties: unica_format_core::navigation::PropertySelection::All,
-                    facets: unica_format_core::navigation::FacetSelection::Full,
-                    relations: Vec::new(),
-                },
-            },
-            captured,
-        })
+    cancellation.cancel();
+    let called = Arc::new(AtomicBool::new(false));
+    let called_by_runner = called.clone();
+    let args = Map::from_iter([
+        ("config".to_string(), json!("/private/unix/Configuration.xml")),
+        ("workdir".to_string(), json!(r"C:\private\workspace")),
+        ("nativeTag".to_string(), Value::String("MetaDataObject".to_string())),
+    ]);
+    let factory = PlatformXmlAdapterFactory::new();
+    let session = factory.capture_publication_session(
+        "alternate.publish",
+        &args,
+        &root,
+        &root,
+        move |_, _, _, _, _| {
+            called_by_runner.store(true, Ordering::SeqCst);
+            Err("runner must not be called".to_string())
+        },
+        |_, _, _| Err("resolver must not be called".to_string()),
+        |_, _| Err("lock must not be called".to_string()),
+    );
+    let result = factory
+        .operational_registration()
+        .publication()
+        .publish(&PublicationRequest::new(
+            session,
+            PublicationInvocation::BuildDump,
+            cancellation,
+        ))
         .unwrap();
 
-    assert!(!serde_json::to_string(&navigation)
-        .unwrap()
-        .contains(&root.display().to_string()));
+    assert_eq!(result.status(), PublicationStatus::Cancelled);
+    assert_eq!(
+        result.cancellation(),
+        PublicationCancellation::BeforeExecution
+    );
+    assert!(!called.load(Ordering::SeqCst));
+    let public = format!("{result:?}");
+    for forbidden in [
+        root.to_string_lossy().as_ref(),
+        "/private/unix",
+        r"C:\private\workspace",
+        "Configuration.xml",
+        "MetaDataObject",
+        "2.20",
+        "8.3.27",
+    ] {
+        assert!(!public.contains(forbidden), "leaked {forbidden}: {public}");
+    }
     fs::remove_dir_all(root).unwrap();
 }

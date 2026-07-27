@@ -270,7 +270,6 @@ mod tests {
     use super::PlatformXmlProbe;
     use crate::{
         domain::source_adapters::{FormatVersion, SourceAdapterErrorKind, SourceFamily},
-        factory::PlatformXmlAdapterFactory,
         versions::v2_20::{ProbeOutcome, SourceInput},
     };
 
@@ -468,7 +467,7 @@ mod tests {
 
     #[test]
     fn every_shared_supported_class_has_a_minimal_probe_descriptor() {
-        for class in PlatformXmlAdapterFactory::profile().legacy_metadata_classes {
+        for class in super::super::metadata_classes() {
             let outcome = probe_fixture(
                 &format!(r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{class}/></MetaDataObject>"#),
                 Some("main"),

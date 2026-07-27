@@ -11,11 +11,8 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use unica_adapter_platform_xml::{
-    legacy_metadata_kind as metadata_kind,
-    legacy_metadata_kind_by_directory as metadata_kind_by_directory,
-    legacy_metadata_kind_index as metadata_kind_index,
-    legacy_metadata_kind_tags as metadata_kind_tags,
+use crate::infrastructure::metadata_kinds::{
+    metadata_kind, metadata_kind_by_directory, metadata_kind_index, metadata_kind_tags,
 };
 
 use super::common::*;
