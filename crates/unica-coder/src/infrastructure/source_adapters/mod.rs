@@ -1,8 +1,7 @@
 use std::path::PathBuf;
 
 use crate::domain::source_adapters::{
-    ConfiguredSourceSetKind, FormatVersion, SourceBinding, SourceContext, SourceFamily,
-    SourceLocation, SourceSnapshot,
+    ConfiguredSourceSetKind, FormatVersion, SourceContext, SourceFamily, SourceLocation,
 };
 
 pub(crate) mod registry;
@@ -31,10 +30,4 @@ impl SourceInput {
         )
         .with_configured_source_set_kind(self.configured_source_set_kind)
     }
-}
-
-pub(crate) trait CapturedSourceSession: Send + Sync {
-    fn binding(&self) -> &SourceBinding;
-    fn source(&self) -> &SourceContext;
-    fn snapshot(&self) -> &SourceSnapshot;
 }

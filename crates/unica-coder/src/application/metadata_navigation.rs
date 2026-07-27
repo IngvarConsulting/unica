@@ -3,7 +3,6 @@ use std::{collections::BTreeSet, io::Write};
 use serde_json::Value;
 use unica_format_core::{
     limits::{
-        MAX_NAVIGATION_CURSOR_JSON_BYTES, MAX_NAVIGATION_CURSOR_STRING_BYTES,
         MAX_NAVIGATION_NESTING_DEPTH, MAX_NAVIGATION_PROPERTY_SELECTORS,
         MAX_NAVIGATION_RELATION_SELECTORS, MAX_NAVIGATION_SELECTOR_STRING_BYTES,
         MAX_NAVIGATION_SELECT_JSON_BYTES,
@@ -14,8 +13,6 @@ use unica_format_core::{
     },
     source::{SourceAdapterError, SourceAdapterErrorKind},
 };
-
-use crate::navigation::resource_limit;
 
 pub(crate) fn parse_navigation_selection(
     value: Option<&Value>,
@@ -154,27 +151,6 @@ fn parse_named_properties(
         }
     }
     Ok(PropertySelection::Named(names))
-}
-
-pub(crate) fn preflight_navigation_command(
-    selection: Option<&Value>,
-    cursor: Option<&Value>,
-) -> Result<(), SourceAdapterError> {
-    if let Some(select) = selection {
-        preflight_navigation_selection(select)?;
-    }
-    if let Some(cursor) = cursor {
-        preflight_navigation_json(
-            cursor,
-            MAX_NAVIGATION_CURSOR_JSON_BYTES,
-            MAX_NAVIGATION_CURSOR_STRING_BYTES,
-            "cursor",
-        )?;
-        if let Some(selection) = cursor.get("selection") {
-            preflight_navigation_selection(selection)?;
-        }
-    }
-    Ok(())
 }
 
 pub(crate) fn preflight_navigation_selection(value: &Value) -> Result<(), SourceAdapterError> {
@@ -317,6 +293,71 @@ impl Write for BoundedCountingWriter {
 
 fn decode_error(message: &str) -> SourceAdapterError {
     SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, message)
+}
+
+fn resource_limit(message: &str) -> SourceAdapterError {
+    SourceAdapterError::new(SourceAdapterErrorKind::ResourceLimit, message)
+}
+
+pub(crate) fn metadata_navigation_command(
+    args: &serde_json::Map<String, Value>,
+) -> Result<unica_application::MetadataNavigationCommand, SourceAdapterError> {
+    use unica_application::{MetadataNavigationCommand, MetadataNavigationTarget};
+    use unica_format_core::{
+        navigation::{ObjectKey, OpaqueNavigationCursor},
+        source::{SourceId, SourceRevision},
+    };
+
+    let selection = args
+        .get("select")
+        .map(|selection| parse_navigation_selection(Some(selection)))
+        .transpose()?;
+    let object_path = args
+        .get("ObjectPath")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty());
+    let object_ref = args.get("objectRef");
+    let snapshot_revision = args
+        .get("snapshotRevision")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty());
+    let cursor = args.get("cursor");
+    let target = match (object_path, object_ref, snapshot_revision, cursor) {
+        (Some(_), None, None, None) => MetadataNavigationTarget::Source,
+        (None, Some(object_ref), Some(revision), None) => {
+            let object = object_ref
+                .as_object()
+                .filter(|object| {
+                    object.len() == 2
+                        && object.contains_key("sourceId")
+                        && object.contains_key("objectKey")
+                })
+                .ok_or_else(|| decode_error("objectRef has unknown or missing fields"))?;
+            MetadataNavigationTarget::ObjectRef {
+                source_id: SourceId::new(
+                    object
+                        .get("sourceId")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| decode_error("objectRef has no valid sourceId"))?,
+                )?,
+                object_key: ObjectKey::new(
+                    object
+                        .get("objectKey")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| decode_error("objectRef has no valid objectKey"))?,
+                )?,
+                snapshot_revision: SourceRevision::new(revision)?,
+            }
+        }
+        (None, None, None, Some(cursor)) => {
+            MetadataNavigationTarget::Cursor(OpaqueNavigationCursor::from_transport(cursor.clone()))
+        }
+        _ => return Err(decode_error("meta.info requires exactly one target mode")),
+    };
+    if matches!(target, MetadataNavigationTarget::Cursor(_)) && selection.is_some() {
+        return Err(decode_error("cursor mode does not accept select"));
+    }
+    Ok(MetadataNavigationCommand { target, selection })
 }
 
 #[cfg(test)]

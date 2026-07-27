@@ -1,12 +1,11 @@
 use std::sync::{Arc, Mutex};
 
-use serde_json::Value;
 use unica_format_core::{
     navigation::{
-        FacetSelection, NavigationCursor, NavigationEnvelope, NavigationFacetVisibility,
-        NavigationNode, NavigationQuery, NavigationRelationPage, NavigationSelection,
-        NavigationStatus, NavigationTarget, ObjectKey, ObjectRef, PropertySelection,
-        SemanticRelation,
+        normalize_navigation_selection, FacetSelection, NavigationCursor, NavigationEnvelope,
+        NavigationFacetVisibility, NavigationNode, NavigationQuery, NavigationRelationPage,
+        NavigationSelection, NavigationStatus, NavigationTarget, ObjectKey, ObjectRef,
+        PropertySelection, SemanticRelation,
     },
     ports::{CaptureResult, FormatReadRequest, ProbeResult, SourceAdapterRegistration},
     source::{
@@ -17,12 +16,11 @@ use unica_format_core::{
 
 use crate::{
     commands::{MetadataNavigationCommand, MetadataNavigationTarget},
-    selection::{parse_navigation_selection, preflight_navigation_command},
     snapshot_cache::{CachedNavigation, SnapshotCache, SnapshotCacheAdmission},
 };
 
 pub trait SourceRegistrationResolver: Send + Sync {
-    fn locate(&self, object_path: &str) -> Result<LocatedSource, SourceAdapterError>;
+    fn locate(&self) -> Result<LocatedSource, SourceAdapterError>;
 
     fn authorize_continuation(
         &self,
@@ -74,101 +72,117 @@ impl MetadataNavigationService {
         command: MetadataNavigationCommand,
         resolver: &dyn SourceRegistrationResolver,
     ) -> Result<NavigationEnvelope, SourceAdapterError> {
-        let cursor_value = match &command.target {
-            MetadataNavigationTarget::Cursor(value) => Some(value),
-            _ => None,
-        };
-        preflight_navigation_command(command.selection.as_ref(), cursor_value)?;
-        let (navigation, target_ref, selection, cursor, include_cached_diagnostics) =
-            match command.target {
-                MetadataNavigationTarget::ObjectPath(path) => {
-                    let located = resolver.locate(&path)?;
-                    let (navigation, binding) = inspect_located_source(&located)?;
-                    if navigation.status == NavigationStatus::Unavailable {
-                        return Ok(navigation);
-                    }
-                    let navigation = match self.cache_ready_navigation(
-                        navigation,
-                        &binding,
-                        &located.authorization_scope,
-                    )? {
-                        SnapshotCacheAdmission::Admitted(navigation) => navigation,
-                        SnapshotCacheAdmission::ResourceLimit => {
-                            return Err(resource_limit(
-                                "navigation snapshot exceeds continuation cache limits",
-                            ));
-                        }
-                    };
-                    let target_ref = object_path_target(navigation.as_ref())?;
-                    (
-                        navigation,
-                        target_ref,
-                        parse_navigation_selection(command.selection.as_ref())?,
-                        None,
-                        true,
-                    )
+        let (
+            navigation,
+            target_ref,
+            target_identity,
+            selection,
+            cursor,
+            include_cached_diagnostics,
+        ) = match command.target {
+            MetadataNavigationTarget::Source => {
+                let located = resolver.locate()?;
+                let (navigation, binding) = inspect_located_source(&located)?;
+                if navigation.status == NavigationStatus::Unavailable {
+                    return Ok(navigation);
                 }
-                MetadataNavigationTarget::ObjectRef {
-                    source_id,
-                    object_key,
-                    snapshot_revision,
-                } => {
-                    let (navigation, target_ref) = self.cached_navigation_target(
-                        &source_id,
-                        &object_key,
-                        &snapshot_revision,
-                        resolver,
-                    )?;
-                    (
-                        navigation,
-                        target_ref,
-                        parse_navigation_selection(command.selection.as_ref())?,
-                        None,
-                        false,
-                    )
-                }
-                MetadataNavigationTarget::Cursor(value) => {
-                    if command.selection.is_some() {
-                        return Err(SourceAdapterError::new(
-                            SourceAdapterErrorKind::ProjectionAmbiguous,
-                            "cursor mode does not accept select",
+                let navigation = match self.cache_ready_navigation(
+                    navigation,
+                    &binding,
+                    &located.authorization_scope,
+                )? {
+                    SnapshotCacheAdmission::Admitted(navigation) => navigation,
+                    SnapshotCacheAdmission::ResourceLimit => {
+                        return Err(resource_limit(
+                            "navigation snapshot exceeds continuation cache limits",
                         ));
                     }
-                    NavigationCursor::authenticate(&value, &self.cursor_secret)?;
-                    let source_id = cursor_source_id(&value)?;
-                    let target_key = cursor_target_key(&value)?;
-                    let requested_revision = cursor_snapshot_revision(&value)?;
-                    let (navigation, target_ref) = self.cached_navigation_target(
-                        &source_id,
-                        &target_key,
-                        &requested_revision,
-                        resolver,
-                    )?;
-                    let snapshot = navigation.snapshot.as_ref().ok_or_else(|| {
-                        source_unavailable("navigation cursor source has no truthful snapshot")
-                    })?;
-                    let selection = parse_navigation_selection(value.get("selection"))?;
-                    let cursor = NavigationCursor::decode_authenticated(
-                        &value,
-                        &snapshot.revision,
-                        &selection,
-                        |source_id, target, relation, relation_role, relation_kind| {
-                            source_id == &target_ref.source_id
-                                && target == &target_ref.object_key
-                                && navigation.relation_index.iter().any(|candidate| {
-                                    candidate.source == target_ref
-                                        && &candidate.group_ref.group_key == relation
-                                        && &candidate.role == relation_role
-                                        && &candidate.kind == relation_kind
-                                })
-                        },
-                    )?;
-                    (navigation, target_ref, selection, Some(cursor), false)
+                };
+                let target_ref = object_path_target(navigation.as_ref())?;
+                (
+                    navigation,
+                    target_ref,
+                    binding.target_identity,
+                    normalize_navigation_selection(
+                        command
+                            .selection
+                            .unwrap_or_else(default_navigation_selection),
+                    )?,
+                    None,
+                    true,
+                )
+            }
+            MetadataNavigationTarget::ObjectRef {
+                source_id,
+                object_key,
+                snapshot_revision,
+            } => {
+                let (navigation, target_ref, target_identity) = self.cached_navigation_target(
+                    &source_id,
+                    &object_key,
+                    &snapshot_revision,
+                    None,
+                    resolver,
+                )?;
+                (
+                    navigation,
+                    target_ref,
+                    target_identity,
+                    normalize_navigation_selection(
+                        command
+                            .selection
+                            .unwrap_or_else(default_navigation_selection),
+                    )?,
+                    None,
+                    false,
+                )
+            }
+            MetadataNavigationTarget::Cursor(value) => {
+                if command.selection.is_some() {
+                    return Err(SourceAdapterError::new(
+                        SourceAdapterErrorKind::ProjectionAmbiguous,
+                        "cursor mode does not accept select",
+                    ));
                 }
-            };
+                let cursor = value.authenticate(&self.cursor_secret)?;
+                let (navigation, target_ref, target_identity) = self.cached_navigation_target(
+                    &cursor.source_id,
+                    &cursor.target,
+                    &cursor.snapshot_revision,
+                    Some(&cursor.target_identity),
+                    resolver,
+                )?;
+                let snapshot = navigation.snapshot.as_ref().ok_or_else(|| {
+                    source_unavailable("navigation cursor source has no truthful snapshot")
+                })?;
+                let selection = cursor.selection.clone();
+                let cursor = cursor.validate_resume(
+                    &snapshot.revision,
+                    |source_id, target, relation, relation_role, relation_kind| {
+                        source_id == &target_ref.source_id
+                            && target == &target_ref.object_key
+                            && navigation.relation_index.iter().any(|candidate| {
+                                candidate.source == target_ref
+                                    && &candidate.group_ref.group_key == relation
+                                    && &candidate.role == relation_role
+                                    && &candidate.kind == relation_kind
+                            })
+                    },
+                )?;
+                (
+                    navigation,
+                    target_ref,
+                    target_identity,
+                    selection,
+                    Some(cursor),
+                    false,
+                )
+            }
+        };
         materialize_navigation_pages_with_secret(
             navigation.as_ref(),
             target_ref,
+            target_identity,
             selection,
             cursor,
             &self.cursor_secret,
@@ -215,8 +229,9 @@ impl MetadataNavigationService {
         source_id: &SourceId,
         object_key: &ObjectKey,
         revision: &SourceRevision,
+        requested_target_identity: Option<&TargetIdentity>,
         resolver: &dyn SourceRegistrationResolver,
-    ) -> Result<(Arc<NavigationEnvelope>, ObjectRef), SourceAdapterError> {
+    ) -> Result<(Arc<NavigationEnvelope>, ObjectRef, TargetIdentity), SourceAdapterError> {
         let authorization = resolver.authorize_continuation(source_id)?;
         if authorization.source_id != *source_id {
             return Err(source_unavailable(
@@ -227,8 +242,22 @@ impl MetadataNavigationService {
             .cache
             .lock()
             .map_err(|_| source_unavailable("navigation snapshot cache is unavailable"))?;
+        let target_identity = match requested_target_identity {
+            Some(target_identity) => target_identity.clone(),
+            None => cache.resolve_target_identity(
+                &authorization.authorization_scope,
+                source_id,
+                revision,
+                object_key,
+            )?,
+        };
         let navigation = cache
-            .navigation(&authorization.authorization_scope, source_id, revision)
+            .navigation(
+                &authorization.authorization_scope,
+                source_id,
+                &target_identity,
+                revision,
+            )
             .ok_or_else(|| {
                 SourceAdapterError::new(
                     SourceAdapterErrorKind::SnapshotStale,
@@ -244,7 +273,7 @@ impl MetadataNavigationService {
             .map(|node| node.object_ref.clone())
             .collect::<Vec<_>>();
         match matches.as_slice() {
-            [target] => Ok((navigation, target.clone())),
+            [target] => Ok((navigation, target.clone(), target_identity)),
             [] => Err(SourceAdapterError::new(
                 SourceAdapterErrorKind::SnapshotStale,
                 "navigation target is absent from the retained snapshot",
@@ -260,29 +289,24 @@ impl MetadataNavigationService {
 fn inspect_located_source(
     located: &LocatedSource,
 ) -> Result<(NavigationEnvelope, SourceBinding), SourceAdapterError> {
-    let snapshot = match located.registration.capture.capture(&located.source)? {
+    let captured = match located.registration.capture.capture(&located.source)? {
         CaptureResult::NoMatch => {
             return Err(source_unavailable(
                 "no source capture adapter recognized the target",
             ))
         }
-        CaptureResult::Captured(snapshot) => snapshot,
+        CaptureResult::Captured(captured) => captured,
     };
-    let binding = SourceBinding::new(
-        snapshot.source_id.clone(),
-        located.source.declared_family().clone(),
-        located.source.declared_format().cloned(),
-        located.target_identity.clone(),
-        snapshot.revision.clone(),
-    );
+    let binding = captured.binding().clone();
     if binding.source_id != located.expected_source_id
         || binding.family != located.registration.manifest.source_family
+        || binding.target_identity != located.target_identity
     {
         return Err(source_unavailable(
             "captured source binding does not match the authorized source set",
         ));
     }
-    let descriptor = match located.registration.probe.probe(&located.source)? {
+    let descriptor = match located.registration.probe.probe(&captured)? {
         ProbeResult::NoMatch => {
             return Err(source_unavailable("no source probe recognized the target"))
         }
@@ -301,12 +325,10 @@ fn inspect_located_source(
             binding,
         ));
     }
-    let target_path = source_target_path(&located.source)?;
     let envelope = located.registration.read.read(&FormatReadRequest {
-        source: located.source.clone(),
-        snapshot,
+        captured,
         query: NavigationQuery {
-            target: NavigationTarget::ObjectPath(target_path),
+            target: NavigationTarget::CapturedTarget(binding.target_identity.clone()),
             select: NavigationSelection {
                 properties: PropertySelection::All,
                 facets: FacetSelection::Full,
@@ -402,47 +424,15 @@ fn validate_ready_envelope(
     crate::snapshot_cache::validate_identity_bearing_navigation(binding, envelope)
 }
 
-fn source_target_path(source: &SourceContext) -> Result<String, SourceAdapterError> {
-    let path = source
-        .location()
-        .target()
-        .strip_prefix(source.location().source_root())
-        .map_err(|_| source_unavailable("source target is outside its source root"))?
-        .to_str()
-        .ok_or_else(|| source_unavailable("source target path is not UTF-8"))?
-        .replace('\\', "/");
-    Ok(if path.is_empty() {
-        "source".to_string()
-    } else {
-        path
-    })
-}
-
-fn cursor_source_id(value: &Value) -> Result<SourceId, SourceAdapterError> {
-    SourceId::new(
-        value
-            .get("sourceId")
-            .and_then(Value::as_str)
-            .ok_or_else(|| decode_error("navigation cursor has no valid sourceId"))?,
-    )
-}
-
-fn cursor_target_key(value: &Value) -> Result<ObjectKey, SourceAdapterError> {
-    ObjectKey::new(
-        value
-            .get("target")
-            .and_then(Value::as_str)
-            .ok_or_else(|| decode_error("navigation cursor has no valid target"))?,
-    )
-}
-
-fn cursor_snapshot_revision(value: &Value) -> Result<SourceRevision, SourceAdapterError> {
-    SourceRevision::new(
-        value
-            .get("snapshotRevision")
-            .and_then(Value::as_str)
-            .ok_or_else(|| decode_error("navigation cursor has no valid snapshotRevision"))?,
-    )
+fn default_navigation_selection() -> NavigationSelection {
+    NavigationSelection {
+        properties: PropertySelection::All,
+        facets: FacetSelection::Summary,
+        relations: vec![
+            unica_format_core::navigation::RelationSelection::new("children", None)
+                .expect("default relation selection"),
+        ],
+    }
 }
 
 pub(crate) fn object_path_target(
@@ -464,6 +454,7 @@ pub(crate) fn object_path_target(
 pub(crate) fn materialize_navigation_pages_with_secret(
     navigation: &NavigationEnvelope,
     target: ObjectRef,
+    target_identity: TargetIdentity,
     selection: NavigationSelection,
     cursor: Option<NavigationCursor>,
     cursor_secret: &[u8],
@@ -586,10 +577,11 @@ pub(crate) fn materialize_navigation_pages_with_secret(
             .map_err(|_| decode_error("navigation cursor position cannot be represented"))?;
         let next_cursor = (end < matching_len)
             .then(|| {
-                NavigationCursor::issue(
+                NavigationCursor::issue_bound(
                     cursor_secret,
                     snapshot.source_id.clone(),
                     snapshot.revision.clone(),
+                    target_identity.clone(),
                     target.object_key.clone(),
                     first.group_ref.clone(),
                     selection.clone(),
@@ -648,7 +640,7 @@ fn decode_error(message: &str) -> SourceAdapterError {
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::{collections::BTreeSet, path::PathBuf, sync::Mutex};
+    use std::{any::Any, collections::BTreeSet, path::PathBuf, sync::Mutex};
     use unica_format_core::{
         navigation::{
             Authorability, CapabilityState, IdentityStrength, NodeKind, PropertyCapability,
@@ -657,9 +649,10 @@ mod tests {
             SemanticRelation, SourceAdapterDiagnostic,
         },
         ports::{
-            AdapterFormatProfile, CapturePort, FormatInspectionPort, FormatInspectionRequest,
-            FormatInspectionResult, OwnerResolutionRequest, OwnerResolutionResult, OwnershipPort,
-            ProbePort, ReadPort, SupportEvidence, SupportInspectionRequest, SupportPort,
+            AdapterFormatProfile, CapturePort, CapturedSource, CapturedSourceSession,
+            FormatInspectionPort, FormatInspectionRequest, FormatInspectionResult,
+            OwnerResolutionRequest, OwnerResolutionResult, OwnershipPort, ProbePort, ReadPort,
+            SupportEvidence, SupportInspectionRequest, SupportPort,
         },
         source::{
             AdapterManifest, AdapterMaturity, FormatRange, FormatVersion, SnapshotConsistency,
@@ -670,23 +663,66 @@ mod tests {
     struct FakePort {
         envelope: Mutex<NavigationEnvelope>,
         format: FormatVersion,
+        target_identity: Mutex<TargetIdentity>,
+    }
+
+    struct FakeCapturedSession {
+        source: SourceContext,
+        snapshot: SourceSnapshot,
+        binding: SourceBinding,
+        envelope: NavigationEnvelope,
+        format: FormatVersion,
+    }
+
+    impl CapturedSourceSession for FakeCapturedSession {
+        fn source(&self) -> &SourceContext {
+            &self.source
+        }
+
+        fn snapshot(&self) -> &SourceSnapshot {
+            &self.snapshot
+        }
+
+        fn binding(&self) -> &SourceBinding {
+            &self.binding
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
     }
 
     impl CapturePort for FakePort {
-        fn capture(&self, _source: &SourceContext) -> Result<CaptureResult, SourceAdapterError> {
-            Ok(CaptureResult::Captured(
-                self.envelope.lock().unwrap().snapshot.clone().unwrap(),
-            ))
+        fn capture(&self, source: &SourceContext) -> Result<CaptureResult, SourceAdapterError> {
+            let envelope = self.envelope.lock().unwrap().clone();
+            let snapshot = envelope.snapshot.clone().unwrap();
+            let binding = SourceBinding::new(
+                snapshot.source_id.clone(),
+                SourceFamily::PlatformXml,
+                None,
+                self.target_identity.lock().unwrap().clone(),
+                snapshot.revision.clone(),
+            );
+            Ok(CaptureResult::Captured(CapturedSource::new(
+                FakeCapturedSession {
+                    source: source.clone(),
+                    snapshot,
+                    binding,
+                    envelope,
+                    format: self.format.clone(),
+                },
+            )))
         }
     }
 
     impl ProbePort for FakePort {
-        fn probe(&self, _source: &SourceContext) -> Result<ProbeResult, SourceAdapterError> {
-            let snapshot = self.envelope.lock().unwrap().snapshot.clone().unwrap();
+        fn probe(&self, captured: &CapturedSource) -> Result<ProbeResult, SourceAdapterError> {
+            let session = captured.adapter_state::<FakeCapturedSession>().unwrap();
+            let snapshot = session.snapshot.clone();
             Ok(ProbeResult::Match(SourceDescriptor {
                 source_id: snapshot.source_id,
                 family: SourceFamily::PlatformXml,
-                format_version: self.format.clone(),
+                format_version: session.format.clone(),
                 producer_version: None,
                 detected_features: BTreeSet::new(),
                 probe_evidence: vec!["fake erased probe".to_string()],
@@ -701,9 +737,14 @@ mod tests {
     impl ReadPort for FakePort {
         fn read(
             &self,
-            _request: &FormatReadRequest,
+            request: &FormatReadRequest,
         ) -> Result<NavigationEnvelope, SourceAdapterError> {
-            Ok(self.envelope.lock().unwrap().clone())
+            Ok(request
+                .captured
+                .adapter_state::<FakeCapturedSession>()
+                .unwrap()
+                .envelope
+                .clone())
         }
     }
 
@@ -735,17 +776,17 @@ mod tests {
     }
 
     struct FakeResolver {
-        located: LocatedSource,
+        located: Mutex<LocatedSource>,
         scope: Mutex<String>,
         unavailable: bool,
     }
 
     impl SourceRegistrationResolver for FakeResolver {
-        fn locate(&self, _object_path: &str) -> Result<LocatedSource, SourceAdapterError> {
+        fn locate(&self) -> Result<LocatedSource, SourceAdapterError> {
             if self.unavailable {
                 Err(source_unavailable("project source map cannot be resolved"))
             } else {
-                Ok(self.located.clone())
+                Ok(self.located.lock().unwrap().clone())
             }
         }
 
@@ -775,6 +816,9 @@ mod tests {
             let port = Arc::new(FakePort {
                 envelope: Mutex::new(envelope),
                 format: FormatVersion::parse(format).unwrap(),
+                target_identity: Mutex::new(
+                    TargetIdentity::from_normalized_relative_path("Catalogs/Items.xml").unwrap(),
+                ),
             });
             let registration = registration(port.clone());
             let workspace = PathBuf::from("/authorized/workspace");
@@ -799,7 +843,7 @@ mod tests {
             Self {
                 service: MetadataNavigationService::new(b"application-test-cursor-secret".to_vec()),
                 resolver: FakeResolver {
-                    located,
+                    located: Mutex::new(located),
                     scope: Mutex::new("scope:one".to_string()),
                     unavailable: false,
                 },
@@ -812,9 +856,12 @@ mod tests {
         }
 
         fn first_page(&self, page_size: u16) -> NavigationEnvelope {
-            self.inspect(path_command(Some(json!({
-                "relations": [{"role": "attributes", "pageSize": page_size}]
-            }))))
+            self.inspect(path_command(Some(selection(
+                PropertySelection::All,
+                FacetSelection::Summary,
+                RelationKind::Contains,
+                page_size,
+            ))))
         }
     }
 
@@ -971,17 +1018,44 @@ mod tests {
         }
     }
 
-    fn path_command(selection: Option<Value>) -> MetadataNavigationCommand {
+    fn path_command(selection: Option<NavigationSelection>) -> MetadataNavigationCommand {
         MetadataNavigationCommand {
-            target: MetadataNavigationTarget::ObjectPath("Catalogs/Items.xml".to_string()),
+            target: MetadataNavigationTarget::Source,
             selection,
         }
     }
 
     fn cursor_command(cursor: NavigationCursor) -> MetadataNavigationCommand {
         MetadataNavigationCommand {
-            target: MetadataNavigationTarget::Cursor(serde_json::to_value(cursor).unwrap()),
+            target: MetadataNavigationTarget::Cursor(
+                unica_format_core::navigation::OpaqueNavigationCursor::from_transport(
+                    serde_json::to_value(cursor).unwrap(),
+                ),
+            ),
             selection: None,
+        }
+    }
+
+    fn opaque_cursor(
+        value: serde_json::Value,
+    ) -> unica_format_core::navigation::OpaqueNavigationCursor {
+        unica_format_core::navigation::OpaqueNavigationCursor::from_transport(value)
+    }
+
+    fn selection(
+        properties: PropertySelection,
+        facets: FacetSelection,
+        kind: RelationKind,
+        page_size: u16,
+    ) -> NavigationSelection {
+        let mut relation =
+            unica_format_core::navigation::RelationSelection::new("attributes", Some(page_size))
+                .unwrap();
+        relation.kind = kind;
+        NavigationSelection {
+            properties,
+            facets,
+            relations: vec![relation],
         }
     }
 
@@ -1073,7 +1147,7 @@ mod tests {
         cursor["nextPosition"] = json!(99);
         assert_unavailable(
             &harness.inspect(MetadataNavigationCommand {
-                target: MetadataNavigationTarget::Cursor(cursor),
+                target: MetadataNavigationTarget::Cursor(opaque_cursor(cursor)),
                 selection: None,
             }),
             "decode_corrupted",
@@ -1089,7 +1163,7 @@ mod tests {
         forged["nextPosition"] = json!(u64::MAX);
         assert_unavailable(
             &harness.inspect(MetadataNavigationCommand {
-                target: MetadataNavigationTarget::Cursor(forged),
+                target: MetadataNavigationTarget::Cursor(opaque_cursor(forged)),
                 selection: None,
             }),
             "decode_corrupted",
@@ -1157,6 +1231,41 @@ mod tests {
     }
 
     #[test]
+    fn shared_source_and_revision_never_cross_hit_between_target_identities() {
+        let harness = Harness::new(2, "2.20");
+        let first = harness.first_page(1);
+        let first_cursor = first.relations[0].next_cursor.clone().unwrap();
+        let second_identity =
+            TargetIdentity::from_normalized_relative_path("Catalogs/Other.xml").unwrap();
+        *harness.port.target_identity.lock().unwrap() = second_identity.clone();
+        harness.resolver.located.lock().unwrap().target_identity = second_identity;
+        let mut second_envelope = fixture_envelope(2);
+        second_envelope.nodes[0]
+            .properties
+            .insert("name".to_string(), string_property("Other"));
+        *harness.port.envelope.lock().unwrap() = second_envelope;
+        let second = harness.first_page(1);
+        assert_eq!(
+            second.nodes[0].properties["name"].value,
+            Some(PropertyValue::String("Other".to_string()))
+        );
+
+        let continued = harness.inspect(cursor_command(first_cursor));
+        assert_eq!(continued.root, first.root);
+        assert_eq!(
+            continued.nodes[0].properties["name"].value,
+            Some(PropertyValue::String("Items".to_string()))
+        );
+        assert_unavailable(
+            &harness.inspect(object_command(
+                &first,
+                first.root.as_ref().unwrap().object_key.clone(),
+            )),
+            "identity_collision",
+        );
+    }
+
+    #[test]
     fn continuation_scope_changes_when_configured_symlink_retargets() {
         let harness = Harness::new(1, "2.20");
         let first = harness.inspect(path_command(None));
@@ -1218,7 +1327,11 @@ mod tests {
             .map(|index| format!("property{index}"))
             .collect::<Vec<_>>();
         assert_unavailable(
-            &harness.inspect(path_command(Some(json!({"properties": properties})))),
+            &harness.inspect(path_command(Some(NavigationSelection {
+                properties: PropertySelection::Named(properties.into_iter().collect()),
+                facets: FacetSelection::Summary,
+                relations: Vec::new(),
+            }))),
             "resource_limit",
         );
     }
@@ -1232,7 +1345,7 @@ mod tests {
         cursor["selection"] = json!({"properties": ["duplicate", "duplicate"]});
         assert_unavailable(
             &harness.inspect(MetadataNavigationCommand {
-                target: MetadataNavigationTarget::Cursor(cursor),
+                target: MetadataNavigationTarget::Cursor(opaque_cursor(cursor)),
                 selection: None,
             }),
             "decode_corrupted",
@@ -1266,11 +1379,12 @@ mod tests {
     #[test]
     fn cursor_resume_materializes_only_its_bound_group_and_keeps_full_selection() {
         let harness = Harness::new(3, "2.20");
-        let first = harness.inspect(path_command(Some(json!({
-            "properties": ["name"],
-            "facets": "none",
-            "relations": [{"role": "attributes", "pageSize": 1}]
-        }))));
+        let first = harness.inspect(path_command(Some(selection(
+            PropertySelection::Named(BTreeSet::from(["name".to_string()])),
+            FacetSelection::None,
+            RelationKind::Contains,
+            1,
+        ))));
         let cursor = first.relations[0].next_cursor.clone().unwrap();
         assert_eq!(cursor.selection.relations.len(), 1);
         let second = harness.inspect(cursor_command(cursor));
@@ -1285,19 +1399,23 @@ mod tests {
     #[test]
     fn select_filters_properties_facets_and_relation_kind_at_runtime() {
         let harness = Harness::new(1, "2.20");
-        let selected = harness.inspect(path_command(Some(json!({
-            "properties": ["name"],
-            "facets": "none",
-            "relations": [{"role": "attributes", "kind": "contains", "pageSize": 1}]
-        }))));
+        let selected = harness.inspect(path_command(Some(selection(
+            PropertySelection::Named(BTreeSet::from(["name".to_string()])),
+            FacetSelection::None,
+            RelationKind::Contains,
+            1,
+        ))));
         assert_eq!(selected.nodes[0].properties.len(), 1);
         assert_eq!(
             selected.nodes[0].facet_visibility,
             NavigationFacetVisibility::None
         );
-        let references = harness.inspect(path_command(Some(json!({
-            "relations": [{"role": "attributes", "kind": "references", "pageSize": 1}]
-        }))));
+        let references = harness.inspect(path_command(Some(selection(
+            PropertySelection::All,
+            FacetSelection::Summary,
+            RelationKind::References,
+            1,
+        ))));
         assert!(references.relations.is_empty());
     }
 }

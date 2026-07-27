@@ -13,10 +13,12 @@ pub(crate) use tool_contracts::{
     DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS, DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
 };
 
+mod metadata_navigation;
 pub(crate) mod operation_descriptors;
 mod outcome;
 pub(crate) mod ports;
 pub(crate) mod tool_contracts;
+pub(crate) use metadata_navigation::metadata_navigation_command;
 pub use tool_contracts::input_schema_for_tool;
 
 #[derive(Debug, Clone, Copy)]
@@ -233,61 +235,6 @@ impl UnicaApplication {
             .ok_or_else(|| format!("unknown unica tool: {name}"))?;
         call_tool(spec, args, self.ports.as_ref(), &cancellation)
     }
-}
-
-pub(crate) fn metadata_navigation_command(
-    args: &Map<String, Value>,
-) -> Result<unica_application::MetadataNavigationCommand, String> {
-    use unica_application::{MetadataNavigationCommand, MetadataNavigationTarget};
-    use unica_format_core::{
-        navigation::ObjectKey,
-        source::{SourceId, SourceRevision},
-    };
-
-    let selection = args.get("select").cloned();
-    let object_path = args
-        .get("ObjectPath")
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty());
-    let object_ref = args.get("objectRef");
-    let snapshot_revision = args
-        .get("snapshotRevision")
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty());
-    let cursor = args.get("cursor");
-    let target = match (object_path, object_ref, snapshot_revision, cursor) {
-        (Some(path), None, None, None) => MetadataNavigationTarget::ObjectPath(path.to_string()),
-        (None, Some(object_ref), Some(revision), None) => {
-            let object = object_ref
-                .as_object()
-                .filter(|object| {
-                    object.len() == 2
-                        && object.contains_key("sourceId")
-                        && object.contains_key("objectKey")
-                })
-                .ok_or_else(|| "objectRef has unknown or missing fields".to_string())?;
-            MetadataNavigationTarget::ObjectRef {
-                source_id: SourceId::new(
-                    object
-                        .get("sourceId")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| "objectRef has no valid sourceId".to_string())?,
-                )
-                .map_err(|error| error.message)?,
-                object_key: ObjectKey::new(
-                    object
-                        .get("objectKey")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| "objectRef has no valid objectKey".to_string())?,
-                )
-                .map_err(|error| error.message)?,
-                snapshot_revision: SourceRevision::new(revision).map_err(|error| error.message)?,
-            }
-        }
-        (None, None, None, Some(cursor)) => MetadataNavigationTarget::Cursor(cursor.clone()),
-        _ => return Err("meta.info requires exactly one target mode".to_string()),
-    };
-    Ok(MetadataNavigationCommand { target, selection })
 }
 
 pub fn tools() -> Vec<ToolSpec> {
@@ -6993,10 +6940,11 @@ mod tests {
         let info = UnicaApplication::new()
             .call_tool("unica.meta.info", &info_args)
             .unwrap();
-        assert!(info
-            .stdout
-            .unwrap()
-            .contains("редактируется с сохранением поддержки"));
+        let data = info.data.unwrap();
+        assert_eq!(
+            data["navigation"]["nodes"][0]["capabilityState"]["authorability"],
+            "authorable"
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }

@@ -47,10 +47,10 @@ fn public_registration_reads_platform_xml_2_20_through_core_ports() {
         None,
     );
     let registration = PlatformXmlAdapterFactory::new().registration();
-    let CaptureResult::Captured(snapshot) = registration.capture.capture(&source).unwrap() else {
+    let CaptureResult::Captured(captured) = registration.capture.capture(&source).unwrap() else {
         panic!("Platform XML source must be captured");
     };
-    let ProbeResult::Match(descriptor) = registration.probe.probe(&source).unwrap() else {
+    let ProbeResult::Match(descriptor) = registration.probe.probe(&captured).unwrap() else {
         panic!("Platform XML descriptor must be recognized");
     };
     assert_eq!(descriptor.format_version.to_string(), "2.20");
@@ -58,10 +58,11 @@ fn public_registration_reads_platform_xml_2_20_through_core_ports() {
     let envelope = registration
         .read
         .read(&FormatReadRequest {
-            source,
-            snapshot,
+            captured: captured.clone(),
             query: NavigationQuery {
-                target: NavigationTarget::ObjectPath("Documents/Shipment.xml".to_string()),
+                target: NavigationTarget::CapturedTarget(
+                    captured.binding().target_identity.clone(),
+                ),
                 select: NavigationSelection {
                     properties: PropertySelection::All,
                     facets: FacetSelection::Full,
@@ -80,6 +81,61 @@ fn public_registration_reads_platform_xml_2_20_through_core_ports() {
         registration.manifest.required_features,
         BTreeSet::<String>::new()
     );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn captured_session_projects_initial_bytes_across_capture_probe_and_read_mutation() {
+    let root = fixture_root("immutable-captured-session");
+    let source_root = root.join("src");
+    fs::create_dir_all(source_root.join("Documents")).unwrap();
+    let target = source_root.join("Documents/Shipment.xml");
+    let document = |name: &str| {
+        format!(
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document uuid="11111111-1111-1111-1111-111111111111"><Properties><Name>{name}</Name></Properties></Document></MetaDataObject>"#
+        )
+    };
+    fs::write(&target, document("Shipment")).unwrap();
+    let source = SourceContext::new(
+        SourceLocation::new(root.clone(), source_root, target.clone()),
+        Some("main".to_string()),
+        SourceFamily::PlatformXml,
+        None,
+    );
+    let registration = PlatformXmlAdapterFactory::new().registration();
+    let CaptureResult::Captured(captured) = registration.capture.capture(&source).unwrap() else {
+        panic!("Platform XML source must be captured");
+    };
+
+    fs::write(&target, document("MutatedBeforeProbe")).unwrap();
+    let ProbeResult::Match(_) = registration.probe.probe(&captured).unwrap() else {
+        panic!("captured Platform XML descriptor must remain recognized");
+    };
+    fs::write(&target, document("MutatedBeforeRead")).unwrap();
+
+    let envelope = registration
+        .read
+        .read(&FormatReadRequest {
+            captured: captured.clone(),
+            query: NavigationQuery {
+                target: NavigationTarget::CapturedTarget(
+                    captured.binding().target_identity.clone(),
+                ),
+                select: full_selection(),
+            },
+        })
+        .expect("read must use the retained capture instead of reopening the filesystem");
+
+    assert!(envelope
+        .nodes
+        .iter()
+        .any(|node| node.object_ref.display_name == "Shipment"));
+    assert!(!envelope.nodes.iter().any(|node| {
+        matches!(
+            node.object_ref.display_name.as_str(),
+            "MutatedBeforeProbe" | "MutatedBeforeRead"
+        )
+    }));
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -262,7 +318,7 @@ fn assert_mixed_external_owners(label: &str, owners: &[(&str, &str)], expected_s
 
 #[test]
 fn read_port_rejects_every_unsupported_navigation_target() {
-    let (root, source, snapshot) = captured_fixture("unsupported-query-targets");
+    let (root, captured) = captured_fixture("unsupported-query-targets");
     let registration = PlatformXmlAdapterFactory::new().registration();
     let selection = full_selection();
     let object_ref = ObjectRef::new(
@@ -278,6 +334,7 @@ fn read_port_rejects_every_unsupported_navigation_target() {
         schema_version: NavigationCursor::SCHEMA_VERSION,
         source_id: SourceId::new("workspace:main").unwrap(),
         snapshot_revision: SourceRevision::new("sha256:test").unwrap(),
+        target_identity: captured.binding().target_identity.clone(),
         target: ObjectKey::new("document:Shipment").unwrap(),
         relation: RelationKey::new("children").unwrap(),
         relation_role: RelationRole::Children,
@@ -291,7 +348,7 @@ fn read_port_rejects_every_unsupported_navigation_target() {
         NavigationTarget::ObjectPath("Documents/Other.xml".to_string()),
         NavigationTarget::ObjectRef {
             object_ref,
-            snapshot_revision: snapshot.revision.clone(),
+            snapshot_revision: captured.snapshot().revision.clone(),
         },
         NavigationTarget::Cursor(cursor),
     ];
@@ -300,8 +357,7 @@ fn read_port_rejects_every_unsupported_navigation_target() {
         let error = registration
             .read
             .read(&FormatReadRequest {
-                source: source.clone(),
-                snapshot: snapshot.clone(),
+                captured: captured.clone(),
                 query: NavigationQuery {
                     target,
                     select: selection.clone(),
@@ -313,13 +369,7 @@ fn read_port_rejects_every_unsupported_navigation_target() {
     fs::remove_dir_all(root).unwrap();
 }
 
-fn captured_fixture(
-    label: &str,
-) -> (
-    std::path::PathBuf,
-    SourceContext,
-    unica_format_core::source::SourceSnapshot,
-) {
+fn captured_fixture(label: &str) -> (std::path::PathBuf, unica_format_core::ports::CapturedSource) {
     let root = fixture_root(label);
     let source_root = root.join("src");
     fs::create_dir_all(source_root.join("Documents")).unwrap();
@@ -336,7 +386,7 @@ fn captured_fixture(
         None,
     )
     .with_configured_source_set_kind(Some(ConfiguredSourceSetKind::Configuration));
-    let CaptureResult::Captured(snapshot) = PlatformXmlAdapterFactory::new()
+    let CaptureResult::Captured(captured) = PlatformXmlAdapterFactory::new()
         .registration()
         .capture
         .capture(&source)
@@ -344,7 +394,7 @@ fn captured_fixture(
     else {
         panic!("fixture must be captured");
     };
-    (root, source, snapshot)
+    (root, captured)
 }
 
 fn fixture_root(label: &str) -> std::path::PathBuf {

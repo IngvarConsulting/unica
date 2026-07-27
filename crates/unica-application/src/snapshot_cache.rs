@@ -17,7 +17,10 @@ use unica_format_core::{
         MAX_NAVIGATION_SEMANTIC_STRING_BYTES as SNAPSHOT_CACHE_MAX_SEMANTIC_STRING_BYTES,
     },
     navigation::{NavigationEnvelope, NavigationNode, ObjectRef},
-    source::{SourceAdapterError, SourceAdapterErrorKind, SourceBinding, SourceId},
+    source::{
+        SourceAdapterError, SourceAdapterErrorKind, SourceBinding, SourceId, SourceRevision,
+        TargetIdentity,
+    },
 };
 
 use crate::navigation::{resource_limit, source_unavailable};
@@ -143,16 +146,54 @@ impl SnapshotCache {
         &self,
         scope: &str,
         source_id: &SourceId,
-        revision: &unica_format_core::source::SourceRevision,
+        target_identity: &TargetIdentity,
+        revision: &SourceRevision,
     ) -> Option<std::sync::Arc<unica_format_core::navigation::NavigationEnvelope>> {
         self.entries
             .iter()
             .find(|entry| {
                 entry.scope == scope
                     && entry.binding.source_id == *source_id
+                    && entry.binding.target_identity == *target_identity
                     && entry.binding.revision == *revision
             })
             .map(|entry| std::sync::Arc::clone(&entry.navigation))
+    }
+
+    pub(crate) fn resolve_target_identity(
+        &self,
+        scope: &str,
+        source_id: &SourceId,
+        revision: &SourceRevision,
+        object_key: &unica_format_core::navigation::ObjectKey,
+    ) -> Result<TargetIdentity, SourceAdapterError> {
+        let mut identities = self
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.scope == scope
+                    && entry.binding.source_id == *source_id
+                    && entry.binding.revision == *revision
+                    && entry.navigation.nodes.iter().any(|node| {
+                        node.object_ref.source_id == *source_id
+                            && node.object_ref.object_key == *object_key
+                    })
+            })
+            .map(|entry| entry.binding.target_identity.clone())
+            .collect::<Vec<_>>();
+        identities.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        identities.dedup();
+        match identities.as_slice() {
+            [identity] => Ok(identity.clone()),
+            [] => Err(SourceAdapterError::new(
+                SourceAdapterErrorKind::SnapshotStale,
+                "continuation target identity is absent from retained snapshots",
+            )),
+            _ => Err(SourceAdapterError::new(
+                SourceAdapterErrorKind::IdentityCollision,
+                "continuation target identity is ambiguous across retained snapshots",
+            )),
+        }
     }
 
     pub(crate) fn remove_at(
@@ -463,6 +504,7 @@ fn validate_navigation_cursor(
 ) -> Result<(), SourceAdapterError> {
     validate_semantic_string(cursor.source_id.as_str(), limit)?;
     validate_semantic_string(cursor.snapshot_revision.as_str(), limit)?;
+    validate_semantic_string(cursor.target_identity.as_str(), limit)?;
     validate_semantic_string(cursor.target.as_str(), limit)?;
     validate_semantic_string(cursor.relation.as_str(), limit)?;
     validate_relation_role(cursor.relation_role)?;
@@ -1251,6 +1293,12 @@ impl<'a> BindingValidator<'a> {
         group: &unica_format_core::navigation::RelationGroupRef,
     ) -> Result<(), SourceAdapterError> {
         self.validate_source_id(&cursor.source_id)?;
+        if cursor.target_identity != self.binding.target_identity {
+            return Err(SourceAdapterError::new(
+                SourceAdapterErrorKind::SnapshotStale,
+                "ready navigation cursor belongs to another captured target",
+            ));
+        }
         if cursor.snapshot_revision != self.binding.revision {
             return Err(SourceAdapterError::new(
                 SourceAdapterErrorKind::SnapshotStale,
@@ -1748,7 +1796,67 @@ mod tests {
         assert_eq!(cache.entries.front().unwrap().scope, "scope-6");
         assert_eq!(cache.entries.back().unwrap().scope, "scope-7");
         assert!(cache
-            .navigation("scope-0", &binding.source_id, &binding.revision)
+            .navigation(
+                "scope-0",
+                &binding.source_id,
+                &binding.target_identity,
+                &binding.revision,
+            )
             .is_none());
+    }
+
+    #[test]
+    fn lookup_fails_closed_when_targets_share_scope_source_and_revision() {
+        let (first_binding, first_navigation) = fixture();
+        let mut second_binding = first_binding.clone();
+        second_binding.target_identity =
+            unica_format_core::source::TargetIdentity::from_normalized_relative_path(
+                "Catalogs/Other.xml",
+            )
+            .unwrap();
+        let mut second_navigation = first_navigation.clone();
+        second_navigation.root.as_mut().unwrap().display_name = "Other".to_string();
+        second_navigation.nodes[0].object_ref.display_name = "Other".to_string();
+        second_navigation.nodes[0].reference.display_name = "Other".to_string();
+        let mut cache = SnapshotCache::default();
+        let second_identity = second_binding.target_identity.clone();
+        for (binding, navigation) in [
+            (first_binding.clone(), first_navigation),
+            (second_binding, second_navigation),
+        ] {
+            cache
+                .admit(
+                    CachedNavigation::new(
+                        "shared-scope".to_string(),
+                        binding,
+                        navigation,
+                        cache.limits,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+
+        let first = cache
+            .navigation(
+                "shared-scope",
+                &first_binding.source_id,
+                &first_binding.target_identity,
+                &first_binding.revision,
+            )
+            .unwrap();
+        let second = cache
+            .navigation(
+                "shared-scope",
+                &first_binding.source_id,
+                &second_identity,
+                &first_binding.revision,
+            )
+            .unwrap();
+        assert_ne!(
+            first.root.as_ref().unwrap().display_name,
+            second.root.as_ref().unwrap().display_name,
+            "target-aware lookups must not cross-hit"
+        );
     }
 }

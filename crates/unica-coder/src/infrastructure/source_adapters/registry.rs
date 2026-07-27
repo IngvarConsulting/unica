@@ -7,16 +7,16 @@ use unica_format_core::{
         NavigationTarget, PropertySelection,
     },
     ports::{
-        CapturePort, CaptureResult, FormatReadRequest, ProbePort, ProbeResult, ReadPort,
-        SourceAdapterRegistration,
+        CapturePort, CaptureResult, CapturedSource, FormatReadRequest, ProbePort, ProbeResult,
+        ReadPort, SourceAdapterRegistration,
     },
     source::{
         AdapterManifest, SourceAdapterError, SourceAdapterErrorKind, SourceBinding,
-        SourceDescriptor, SourceFamily, TargetIdentity,
+        SourceDescriptor, SourceFamily,
     },
 };
 
-use crate::infrastructure::source_adapters::{CapturedSourceSession, SourceInput};
+use crate::infrastructure::source_adapters::SourceInput;
 
 struct RegisteredCapture {
     family: SourceFamily,
@@ -95,15 +95,15 @@ impl BuiltInSourceAdapterRegistry {
     #[cfg(test)]
     fn inspect(&self, input: SourceInput) -> Result<NavigationEnvelope, SourceAdapterError> {
         let session = self.capture(&input)?;
-        self.inspect_captured(&input, session.as_ref())
+        self.inspect_captured(&input, &session)
     }
 
     pub(crate) fn capture(
         &self,
         input: &SourceInput,
-    ) -> Result<Box<dyn CapturedSourceSession>, SourceAdapterError> {
+    ) -> Result<CapturedSource, SourceAdapterError> {
         let source = input.source_context();
-        let mut snapshots = Vec::new();
+        let mut sessions = Vec::new();
         for capture in self
             .capturers
             .iter()
@@ -111,42 +111,26 @@ impl BuiltInSourceAdapterRegistry {
         {
             match capture.port.capture(&source)? {
                 CaptureResult::NoMatch => {}
-                CaptureResult::Captured(snapshot) => snapshots.push(snapshot),
+                CaptureResult::Captured(session) => sessions.push(session),
             }
         }
-        let snapshot = match snapshots.len() {
-            0 => {
-                return Err(SourceAdapterError::new(
-                    SourceAdapterErrorKind::SourceUnavailable,
-                    "no source capture adapter recognized the target",
-                ))
-            }
-            1 => snapshots.pop().expect("one captured snapshot"),
-            _ => {
-                return Err(SourceAdapterError::new(
-                    SourceAdapterErrorKind::ProbeAmbiguous,
-                    "multiple source capture adapters recognized the target",
-                ))
-            }
-        };
-        let binding = SourceBinding::new(
-            snapshot.source_id.clone(),
-            input.declared_family.clone(),
-            input.declared_format.clone(),
-            TargetIdentity::from_normalized_relative_path(&target_path(input)?)?,
-            snapshot.revision.clone(),
-        );
-        Ok(Box::new(CoreCapturedSession {
-            source,
-            snapshot,
-            binding,
-        }))
+        match sessions.len() {
+            0 => Err(SourceAdapterError::new(
+                SourceAdapterErrorKind::SourceUnavailable,
+                "no source capture adapter recognized the target",
+            )),
+            1 => Ok(sessions.pop().expect("one captured session")),
+            _ => Err(SourceAdapterError::new(
+                SourceAdapterErrorKind::ProbeAmbiguous,
+                "multiple source capture adapters recognized the target",
+            )),
+        }
     }
 
     pub(crate) fn inspect_captured(
         &self,
         input: &SourceInput,
-        session: &dyn CapturedSourceSession,
+        session: &CapturedSource,
     ) -> Result<NavigationEnvelope, SourceAdapterError> {
         let descriptor = self.probe(input, session)?;
         let candidates = self.compatible_readers(&descriptor);
@@ -160,10 +144,9 @@ impl BuiltInSourceAdapterRegistry {
             )));
         };
         let envelope = reader.port.read(&FormatReadRequest {
-            source: session.source().clone(),
-            snapshot: session.snapshot().clone(),
+            captured: session.clone(),
             query: NavigationQuery {
-                target: NavigationTarget::ObjectPath(target_path(input)?),
+                target: NavigationTarget::CapturedTarget(session.binding().target_identity.clone()),
                 select: NavigationSelection {
                     properties: PropertySelection::All,
                     facets: FacetSelection::Full,
@@ -178,7 +161,7 @@ impl BuiltInSourceAdapterRegistry {
     fn probe(
         &self,
         input: &SourceInput,
-        session: &dyn CapturedSourceSession,
+        session: &CapturedSource,
     ) -> Result<SourceDescriptor, SourceAdapterError> {
         let mut matches = Vec::new();
         for probe in self
@@ -186,7 +169,7 @@ impl BuiltInSourceAdapterRegistry {
             .iter()
             .filter(|probe| probe.family == input.declared_family)
         {
-            if let ProbeResult::Match(descriptor) = probe.port.probe(session.source())? {
+            if let ProbeResult::Match(descriptor) = probe.port.probe(session)? {
                 validate_probe_descriptor(input, session, &descriptor)?;
                 matches.push(descriptor);
             }
@@ -305,54 +288,9 @@ fn same_descriptor(left: &SourceDescriptor, right: &SourceDescriptor) -> bool {
         && left.snapshot_evidence == right.snapshot_evidence
 }
 
-fn target_path(input: &SourceInput) -> Result<String, SourceAdapterError> {
-    let path = input
-        .target
-        .strip_prefix(&input.source_root)
-        .map_err(|_| {
-            SourceAdapterError::new(
-                SourceAdapterErrorKind::SourceUnavailable,
-                "source target is outside its source root",
-            )
-        })?
-        .to_str()
-        .ok_or_else(|| {
-            SourceAdapterError::new(
-                SourceAdapterErrorKind::SourceUnavailable,
-                "source target path is not UTF-8",
-            )
-        })?
-        .replace('\\', "/");
-    Ok(if path.is_empty() {
-        "source".to_string()
-    } else {
-        path
-    })
-}
-
-struct CoreCapturedSession {
-    source: unica_format_core::source::SourceContext,
-    snapshot: unica_format_core::source::SourceSnapshot,
-    binding: SourceBinding,
-}
-
-impl CapturedSourceSession for CoreCapturedSession {
-    fn binding(&self) -> &SourceBinding {
-        &self.binding
-    }
-
-    fn source(&self) -> &unica_format_core::source::SourceContext {
-        &self.source
-    }
-
-    fn snapshot(&self) -> &unica_format_core::source::SourceSnapshot {
-        &self.snapshot
-    }
-}
-
 fn validate_probe_descriptor(
     input: &SourceInput,
-    session: &dyn CapturedSourceSession,
+    session: &CapturedSource,
     descriptor: &SourceDescriptor,
 ) -> Result<(), SourceAdapterError> {
     if descriptor.family != input.declared_family
@@ -388,7 +326,7 @@ fn validate_probe_descriptor(
 
 fn validate_ready_envelope(
     envelope: &NavigationEnvelope,
-    session: &dyn CapturedSourceSession,
+    session: &CapturedSource,
     manifest: &AdapterManifest,
 ) -> Result<(), SourceAdapterError> {
     if envelope.status != NavigationStatus::Available {
@@ -582,6 +520,12 @@ impl<'a> BindingValidator<'a> {
         group: &crate::domain::navigation::RelationGroupRef,
     ) -> Result<(), SourceAdapterError> {
         self.validate_source_id(&cursor.source_id)?;
+        if cursor.target_identity != self.binding.target_identity {
+            return Err(SourceAdapterError::new(
+                SourceAdapterErrorKind::SnapshotStale,
+                "ready navigation cursor belongs to another captured target",
+            ));
+        }
         if cursor.snapshot_revision != self.binding.revision {
             return Err(SourceAdapterError::new(
                 SourceAdapterErrorKind::SnapshotStale,
@@ -649,7 +593,10 @@ impl<'a> BindingValidator<'a> {
 #[cfg(test)]
 mod registry_tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::{
+        any::Any,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
     use unica_format_core::{
         navigation::{
             CapabilityState, IdentityStrength, NavigationCursor, NavigationNode,
@@ -660,18 +607,58 @@ mod registry_tests {
         },
         source::{
             AdapterMaturity, FormatRange, FormatVersion, SnapshotConsistency, SnapshotEvidence,
-            SourceAccess, SourceId, SourceRevision, SourceSnapshot,
+            SourceAccess, SourceId, SourceRevision, SourceSnapshot, TargetIdentity,
         },
     };
 
     struct StubCapture;
 
+    struct StubCapturedSession {
+        source: unica_format_core::source::SourceContext,
+        snapshot: SourceSnapshot,
+        binding: SourceBinding,
+    }
+
+    impl unica_format_core::ports::CapturedSourceSession for StubCapturedSession {
+        fn source(&self) -> &unica_format_core::source::SourceContext {
+            &self.source
+        }
+
+        fn snapshot(&self) -> &SourceSnapshot {
+            &self.snapshot
+        }
+
+        fn binding(&self) -> &SourceBinding {
+            &self.binding
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
     impl CapturePort for StubCapture {
         fn capture(
             &self,
-            _source: &unica_format_core::source::SourceContext,
+            source: &unica_format_core::source::SourceContext,
         ) -> Result<CaptureResult, SourceAdapterError> {
-            Ok(CaptureResult::Captured(snapshot("capture")))
+            let snapshot = snapshot("capture");
+            let binding = SourceBinding::new(
+                snapshot.source_id.clone(),
+                SourceFamily::PlatformXml,
+                None,
+                unica_format_core::source::TargetIdentity::from_normalized_relative_path(
+                    "Demo.xml",
+                )?,
+                snapshot.revision.clone(),
+            );
+            Ok(CaptureResult::Captured(CapturedSource::new(
+                StubCapturedSession {
+                    source: source.clone(),
+                    snapshot,
+                    binding,
+                },
+            )))
         }
     }
 
@@ -681,11 +668,8 @@ mod registry_tests {
     }
 
     impl ProbePort for StubProbe {
-        fn probe(
-            &self,
-            _source: &unica_format_core::source::SourceContext,
-        ) -> Result<ProbeResult, SourceAdapterError> {
-            let snapshot = snapshot("capture");
+        fn probe(&self, captured: &CapturedSource) -> Result<ProbeResult, SourceAdapterError> {
+            let snapshot = captured.snapshot().clone();
             Ok(ProbeResult::Match(SourceDescriptor {
                 source_id: snapshot.source_id,
                 family: SourceFamily::PlatformXml,
@@ -829,7 +813,7 @@ mod registry_tests {
         let input = input();
         let session = registry.capture(&input).unwrap();
 
-        let descriptor = registry.probe(&input, session.as_ref()).unwrap();
+        let descriptor = registry.probe(&input, &session).unwrap();
 
         assert_eq!(descriptor.probe_evidence, vec!["alpha", "zeta"]);
     }
@@ -869,6 +853,7 @@ mod registry_tests {
             schema_version: NavigationCursor::SCHEMA_VERSION,
             source_id: snapshot.source_id.clone(),
             snapshot_revision: SourceRevision::new("sha256:foreign").unwrap(),
+            target_identity: binding.target_identity.clone(),
             target: owner.object_key.clone(),
             relation: relation.group_key.clone(),
             relation_role: relation.role,
@@ -1243,10 +1228,7 @@ mod registry_tests {
     }
 
     impl ProbePort for FeatureProbe {
-        fn probe(
-            &self,
-            _source: &unica_format_core::source::SourceContext,
-        ) -> Result<ProbeResult, SourceAdapterError> {
+        fn probe(&self, _captured: &CapturedSource) -> Result<ProbeResult, SourceAdapterError> {
             Ok(ProbeResult::Match(test_descriptor(
                 SourceFamily::PlatformXml,
                 self.features.clone(),
@@ -1259,10 +1241,7 @@ mod registry_tests {
     }
 
     impl ProbePort for FamilyProbe {
-        fn probe(
-            &self,
-            _source: &unica_format_core::source::SourceContext,
-        ) -> Result<ProbeResult, SourceAdapterError> {
+        fn probe(&self, _captured: &CapturedSource) -> Result<ProbeResult, SourceAdapterError> {
             Ok(ProbeResult::Match(test_descriptor(
                 self.family.clone(),
                 BTreeSet::new(),
@@ -1285,12 +1264,12 @@ mod registry_tests {
             &self,
             request: &FormatReadRequest,
         ) -> Result<NavigationEnvelope, SourceAdapterError> {
-            let source_id = request.snapshot.source_id.clone();
+            let source_id = request.captured.snapshot().source_id.clone();
             let revision = match self.case {
                 ReadyReaderCase::StaleRevision => {
                     SourceRevision::new("sha256:stale-reader").unwrap()
                 }
-                ReadyReaderCase::ForeignRoot => request.snapshot.revision.clone(),
+                ReadyReaderCase::ForeignRoot => request.captured.snapshot().revision.clone(),
             };
             let root = matches!(self.case, ReadyReaderCase::ForeignRoot).then(|| {
                 ObjectRef::new(
@@ -1330,10 +1309,7 @@ mod registry_tests {
     }
 
     impl ProbePort for ForeignProbe {
-        fn probe(
-            &self,
-            _source: &unica_format_core::source::SourceContext,
-        ) -> Result<ProbeResult, SourceAdapterError> {
+        fn probe(&self, _captured: &CapturedSource) -> Result<ProbeResult, SourceAdapterError> {
             let mut descriptor = test_descriptor(SourceFamily::PlatformXml, BTreeSet::new());
             match self.case {
                 ForeignProbeCase::Source => {

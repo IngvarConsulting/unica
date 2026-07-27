@@ -1,10 +1,10 @@
 #![allow(dead_code)]
 
-use std::collections::BTreeSet;
+use std::{any::Any, collections::BTreeSet};
 
 use unica_format_core::{
     navigation::NavigationEnvelope,
-    ports::{CaptureResult, ProbeResult},
+    ports::{CaptureResult, CapturedSource, CapturedSourceSession, ProbeResult},
     source::{
         source_id_for_configured_source_set, AdapterManifest, AdapterMaturity, FormatRange,
         FormatVersion, SnapshotConsistency, SourceAccess, SourceAdapterError,
@@ -34,6 +34,31 @@ pub(crate) struct SourceInput {
 }
 
 pub(crate) struct PlatformXmlReadAdapter;
+
+struct PlatformXmlCapturedSession {
+    source: SourceContext,
+    snapshot: SourceSnapshot,
+    binding: SourceBinding,
+    provider: provider::PlatformXmlProvider,
+}
+
+impl CapturedSourceSession for PlatformXmlCapturedSession {
+    fn source(&self) -> &SourceContext {
+        &self.source
+    }
+
+    fn snapshot(&self) -> &SourceSnapshot {
+        &self.snapshot
+    }
+
+    fn binding(&self) -> &SourceBinding {
+        &self.binding
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
 
 impl PlatformXmlReadAdapter {
     pub(crate) const fn new() -> Self {
@@ -110,38 +135,55 @@ pub(crate) fn capture(source: &SourceContext) -> Result<CaptureResult, SourceAda
     if source.declared_family() != &SourceFamily::PlatformXml {
         return Ok(CaptureResult::NoMatch);
     }
-    let (_, binding) = capture_provider(source)?;
-    Ok(CaptureResult::Captured(SourceSnapshot {
+    let (provider, binding) = capture_provider(source)?;
+    let snapshot = SourceSnapshot {
         source_id: binding.source_id,
         revision: binding.revision,
         consistency: SnapshotConsistency::Consistent,
         adapter_id: manifest().adapter_id.to_string(),
-    }))
+    };
+    let binding = SourceBinding::new(
+        snapshot.source_id.clone(),
+        SourceFamily::PlatformXml,
+        source.declared_format().cloned(),
+        provider.target_identity().clone(),
+        snapshot.revision.clone(),
+    );
+    Ok(CaptureResult::Captured(CapturedSource::new(
+        PlatformXmlCapturedSession {
+            source: source.clone(),
+            snapshot,
+            binding,
+            provider,
+        },
+    )))
 }
 
-pub(crate) fn probe(source: &SourceContext) -> Result<ProbeResult, SourceAdapterError> {
-    if source.declared_family() != &SourceFamily::PlatformXml {
-        return Ok(ProbeResult::NoMatch);
-    }
-    let (provider, binding) = capture_provider(source)?;
-    probe::probe_provider(&provider, provider.descriptor_key(), &binding)
+pub(crate) fn probe(captured: &CapturedSource) -> Result<ProbeResult, SourceAdapterError> {
+    let session = captured_session(captured)?;
+    probe::probe_provider(
+        &session.provider,
+        session.provider.descriptor_key(),
+        &session.binding,
+    )
 }
 
-pub(crate) fn read(
-    source: &SourceContext,
-    snapshot: &SourceSnapshot,
-) -> Result<NavigationEnvelope, SourceAdapterError> {
-    let (provider, binding) = capture_provider(source)?;
-    if snapshot.adapter_id != manifest().adapter_id
-        || snapshot.source_id != binding.source_id
-        || snapshot.revision != binding.revision
+pub(crate) fn read(captured: &CapturedSource) -> Result<NavigationEnvelope, SourceAdapterError> {
+    let session = captured_session(captured)?;
+    if session.snapshot.adapter_id != manifest().adapter_id
+        || session.snapshot.source_id != session.binding.source_id
+        || session.snapshot.revision != session.binding.revision
     {
         return Err(SourceAdapterError::new(
             SourceAdapterErrorKind::SnapshotStale,
-            "Platform XML source changed after capture",
+            "Platform XML captured session binding is inconsistent",
         ));
     }
-    let descriptor = match probe::probe_provider(&provider, provider.descriptor_key(), &binding)? {
+    let descriptor = match probe::probe_provider(
+        &session.provider,
+        session.provider.descriptor_key(),
+        &session.binding,
+    )? {
         ProbeResult::Match(descriptor) => descriptor,
         ProbeResult::NoMatch => {
             return Err(SourceAdapterError::new(
@@ -159,11 +201,11 @@ pub(crate) fn read(
             ),
         )));
     }
-    let native = decoder::decode(&provider, &descriptor)?;
-    let support_bytes = provider.parent_configurations_bytes();
+    let native = decoder::decode(&session.provider, &descriptor)?;
+    let support_bytes = session.provider.parent_configurations_bytes();
     let support = match support_bytes.as_deref() {
         None => support::read_support_facts_bytes(None),
-        Some(bytes) => match provider.configuration_uuid() {
+        Some(bytes) => match session.provider.configuration_uuid() {
             Ok(configuration_uuid) => support::read_support_facts_bytes_for_configuration(
                 Some(bytes),
                 &configuration_uuid,
@@ -172,6 +214,19 @@ pub(crate) fn read(
         },
     };
     projector::project(&native, &support)
+}
+
+fn captured_session(
+    captured: &CapturedSource,
+) -> Result<&PlatformXmlCapturedSession, SourceAdapterError> {
+    captured
+        .adapter_state::<PlatformXmlCapturedSession>()
+        .ok_or_else(|| {
+            SourceAdapterError::new(
+                SourceAdapterErrorKind::SourceUnavailable,
+                "Platform XML adapter received another adapter's captured session",
+            )
+        })
 }
 
 pub(crate) const fn metadata_classes() -> &'static [&'static str] {

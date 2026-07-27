@@ -39,9 +39,16 @@ impl NativeOperationAdapter {
         mutating: bool,
     ) -> Result<NativeOperationResult, String> {
         if !mutating && operation == "meta-info" {
-            let command = metadata_navigation_command(args)?;
-            let resolver = HostMetadataSourceResolver { context };
-            let navigation = metadata_navigation_service().inspect(command, &resolver);
+            let navigation = match metadata_navigation_command(args) {
+                Ok(command) => {
+                    let resolver = HostMetadataSourceResolver {
+                        context,
+                        object_path: args.get("ObjectPath").and_then(Value::as_str),
+                    };
+                    metadata_navigation_service().inspect(command, &resolver)
+                }
+                Err(error) => unica_format_core::navigation::NavigationEnvelope::unavailable(error),
+            };
             return Ok(NativeOperationResult {
                 adapter: AdapterOutcome::ok("semantic metadata navigation inspected"),
                 data: Some(json!({ "navigation": navigation })),
@@ -89,10 +96,14 @@ fn metadata_navigation_service() -> &'static MetadataNavigationService {
 
 struct HostMetadataSourceResolver<'a> {
     context: &'a WorkspaceContext,
+    object_path: Option<&'a str>,
 }
 
 impl SourceRegistrationResolver for HostMetadataSourceResolver<'_> {
-    fn locate(&self, object_path: &str) -> Result<LocatedSource, SourceAdapterError> {
+    fn locate(&self) -> Result<LocatedSource, SourceAdapterError> {
+        let object_path = self
+            .object_path
+            .ok_or_else(|| source_unavailable("metadata target path is unavailable"))?;
         let requested = PathBuf::from(object_path);
         let requested = if requested.is_absolute() {
             requested
@@ -360,12 +371,149 @@ mod tests {
         std::fs::remove_dir_all(unsupported_context.workspace_root).unwrap();
     }
 
-    fn fixture(version: &str) -> (WorkspaceContext, PathBuf) {
-        let root = std::env::temp_dir().join(format!(
-            "unica-meta-typed-gateway-{}-{}",
+    #[test]
+    fn malformed_runtime_targets_return_structured_navigation_unavailable() {
+        let (context, path) = fixture("2.20");
+        let cases = [
+            json!({}),
+            json!({"ObjectPath": path, "cursor": {}}),
+            json!({"objectRef": {"sourceId": "workspace:main", "objectKey": "uuid:items"}}),
+            json!({
+                "objectRef": {"sourceId": "workspace:main"},
+                "snapshotRevision": "sha256:fixture"
+            }),
+            json!({
+                "objectRef": {
+                    "sourceId": "workspace:main",
+                    "objectKey": "Catalogs/Items.xml"
+                },
+                "snapshotRevision": "sha256:fixture"
+            }),
+        ];
+
+        for args in cases {
+            let result = NativeOperationAdapter::invoke_with_data(
+                "meta-info",
+                "unica.meta.info",
+                args.as_object().unwrap(),
+                &context,
+                false,
+                false,
+            )
+            .expect("runtime gateway failures must stay inside data.navigation");
+            let navigation = &result.data.unwrap()["navigation"];
+            assert_eq!(navigation["status"], "unavailable", "{args}");
+            assert!(
+                navigation["diagnostics"]
+                    .as_array()
+                    .is_some_and(|diagnostics| !diagnostics.is_empty()),
+                "{args}"
+            );
+        }
+        std::fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn real_host_resolver_invalidates_continuation_after_epoch_and_source_set_kind_change() {
+        let (mut context, path) = fixture("2.20");
+        let first = invoke_navigation(&context, json!({"ObjectPath": path}));
+
+        context.workspace_epoch += 1;
+        let after_epoch = invoke_navigation(&context, continuation_args(&first));
+        assert_eq!(after_epoch["status"], "unavailable");
+
+        context.workspace_epoch -= 1;
+        std::fs::write(
+            context.workspace_root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: EXTENSION\n    path: src\n",
+        )
+        .unwrap();
+        let after_kind = invoke_navigation(&context, continuation_args(&first));
+        assert_eq!(after_kind["status"], "unavailable");
+        std::fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn real_host_resolver_invalidates_continuation_after_configured_symlink_retarget() {
+        use std::os::unix::fs::symlink;
+
+        let root = fixture_root("symlink-retarget");
+        let first_root = root.join("first");
+        let second_root = root.join("second");
+        for source_root in [&first_root, &second_root] {
+            std::fs::create_dir_all(source_root.join("Catalogs")).unwrap();
+            std::fs::write(
+                source_root.join("Configuration.xml"),
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"><Properties><Name>Configuration</Name></Properties></Configuration></MetaDataObject>"#,
+            )
+            .unwrap();
+            std::fs::write(
+                source_root.join("Catalogs/Items.xml"),
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="11111111-1111-1111-1111-111111111111"><Properties><Name>Items</Name></Properties></Catalog></MetaDataObject>"#,
+            )
+            .unwrap();
+        }
+        let configured = root.join("configured");
+        symlink(&first_root, &configured).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: configured\n",
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let first = invoke_navigation(
+            &context,
+            json!({"ObjectPath": configured.join("Catalogs/Items.xml")}),
+        );
+        std::fs::remove_file(&configured).unwrap();
+        symlink(&second_root, &configured).unwrap();
+
+        let continuation = invoke_navigation(&context, continuation_args(&first));
+        assert_eq!(continuation["status"], "unavailable");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn invoke_navigation(context: &WorkspaceContext, args: Value) -> Value {
+        NativeOperationAdapter::invoke_with_data(
+            "meta-info",
+            "unica.meta.info",
+            args.as_object().unwrap(),
+            context,
+            false,
+            false,
+        )
+        .unwrap()
+        .data
+        .unwrap()["navigation"]
+            .clone()
+    }
+
+    fn continuation_args(navigation: &Value) -> Value {
+        json!({
+            "objectRef": {
+                "sourceId": navigation["root"]["sourceId"].clone(),
+                "objectKey": navigation["root"]["objectKey"].clone(),
+            },
+            "snapshotRevision": navigation["snapshot"]["revision"].clone(),
+        })
+    }
+
+    fn fixture_root(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "unica-meta-typed-gateway-{label}-{}-{}",
             std::process::id(),
             NEXT_GATEWAY_FIXTURE.fetch_add(1, Ordering::Relaxed),
-        ));
+        ))
+    }
+
+    fn fixture(version: &str) -> (WorkspaceContext, PathBuf) {
+        let root = fixture_root("fixture");
         let src = root.join("src");
         let path = src.join("Catalogs/Items.xml");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

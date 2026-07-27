@@ -3,17 +3,18 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use hmac::{Hmac, Mac};
-use serde::{ser::SerializeStruct, Serialize, Serializer};
+use serde::{ser::SerializeStruct, Deserialize, Serialize, Serializer};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::limits::{
-    MAX_NAVIGATION_PROPERTY_SELECTORS, MAX_NAVIGATION_RELATION_SELECTORS,
-    MAX_NAVIGATION_SELECTOR_STRING_BYTES,
+    MAX_NAVIGATION_CURSOR_JSON_BYTES, MAX_NAVIGATION_CURSOR_STRING_BYTES,
+    MAX_NAVIGATION_NESTING_DEPTH, MAX_NAVIGATION_PROPERTY_SELECTORS,
+    MAX_NAVIGATION_RELATION_SELECTORS, MAX_NAVIGATION_SELECTOR_STRING_BYTES,
 };
 use crate::source::{
     SnapshotConsistency, SourceAccess, SourceAdapterError, SourceAdapterErrorKind, SourceId,
-    SourceRevision, SourceSnapshot,
+    SourceRevision, SourceSnapshot, TargetIdentity,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -305,7 +306,7 @@ impl CapabilityState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RelationKind {
     Contains,
@@ -313,7 +314,7 @@ pub enum RelationKind {
 }
 
 /// Closed, versioned ownership roles assigned by a certified projector.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RelationRole {
     Children,
@@ -1308,6 +1309,7 @@ fn property_value_matches(value_type: &PropertyType, value: &PropertyValue) -> b
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum NavigationTarget {
+    CapturedTarget(TargetIdentity),
     ObjectPath(String),
     ObjectRef {
         object_ref: ObjectRef,
@@ -1323,7 +1325,7 @@ pub struct NavigationQuery {
     pub select: NavigationSelection,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NavigationSelection {
     pub properties: PropertySelection,
@@ -1331,14 +1333,14 @@ pub struct NavigationSelection {
     pub relations: Vec<RelationSelection>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PropertySelection {
     All,
     Named(BTreeSet<String>),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum FacetSelection {
     None,
@@ -1346,7 +1348,7 @@ pub enum FacetSelection {
     Full,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RelationSelection {
     pub kind: RelationKind,
@@ -1431,6 +1433,7 @@ pub struct NavigationCursor {
     pub schema_version: u16,
     pub source_id: SourceId,
     pub snapshot_revision: SourceRevision,
+    pub target_identity: TargetIdentity,
     pub target: ObjectKey,
     pub relation: RelationKey,
     pub relation_role: RelationRole,
@@ -1441,6 +1444,30 @@ pub struct NavigationCursor {
     pub next_position: u64,
 }
 
+#[derive(Debug, Clone)]
+pub struct OpaqueNavigationCursor(serde_json::Value);
+
+impl OpaqueNavigationCursor {
+    pub fn from_transport(value: serde_json::Value) -> Self {
+        Self(value)
+    }
+
+    pub fn authenticate(&self, secret: &[u8]) -> Result<NavigationCursor, SourceAdapterError> {
+        preflight_cursor_transport(&self.0)?;
+        NavigationCursor::authenticate(&self.0, secret)?;
+        let selection = serde_json::from_value::<NavigationSelection>(
+            self.0
+                .get("selection")
+                .cloned()
+                .ok_or_else(|| decode_cursor_error("navigation cursor has no selection"))?,
+        )
+        .map_err(|_| decode_cursor_error("navigation cursor has invalid selection"))?;
+        let selection = normalize_navigation_selection(selection)
+            .map_err(|_| decode_cursor_error("navigation cursor has invalid selection"))?;
+        NavigationCursor::decode_claims(&self.0, &selection)
+    }
+}
+
 impl NavigationCursor {
     pub const SCHEMA_VERSION: u16 = 1;
 
@@ -1448,6 +1475,32 @@ impl NavigationCursor {
         secret: &[u8],
         source_id: SourceId,
         snapshot_revision: SourceRevision,
+        target: ObjectKey,
+        relation: RelationGroupRef,
+        selection: NavigationSelection,
+        next_position: u64,
+    ) -> Result<Self, SourceAdapterError> {
+        let target_identity = TargetIdentity::from_authenticated_value(format!(
+            "target:object-key:{}",
+            target.as_str()
+        ))?;
+        Self::issue_bound(
+            secret,
+            source_id,
+            snapshot_revision,
+            target_identity,
+            target,
+            relation,
+            selection,
+            next_position,
+        )
+    }
+
+    pub fn issue_bound(
+        secret: &[u8],
+        source_id: SourceId,
+        snapshot_revision: SourceRevision,
+        target_identity: TargetIdentity,
         target: ObjectKey,
         relation: RelationGroupRef,
         selection: NavigationSelection,
@@ -1465,6 +1518,7 @@ impl NavigationCursor {
             schema_version: Self::SCHEMA_VERSION,
             source_id,
             snapshot_revision,
+            target_identity,
             target,
             relation: relation.group_key,
             relation_role: relation.role,
@@ -1513,6 +1567,7 @@ impl NavigationCursor {
             parts.schema_version,
             parts.source_id,
             parts.snapshot_revision,
+            parts.target_identity,
             parts.target,
             parts.relation,
             parts.relation_role,
@@ -1537,10 +1592,15 @@ impl NavigationCursor {
     where
         F: FnOnce(&SourceId, &ObjectKey, &RelationKey, &RelationRole, &RelationKind) -> bool,
     {
+        let cursor = Self::decode_claims(value, expected_selection)?;
+        cursor.validate_resume(current_revision, re_resolve)
+    }
+
+    fn decode_claims(
+        value: &serde_json::Value,
+        expected_selection: &NavigationSelection,
+    ) -> Result<Self, SourceAdapterError> {
         let parts = cursor_wire_parts(value)?;
-        let _object = value
-            .as_object()
-            .expect("cursor wire parts require an object");
         let relation_kind = match parts.relation_kind {
             "contains" => RelationKind::Contains,
             "references" => RelationKind::References,
@@ -1568,6 +1628,7 @@ impl NavigationCursor {
             schema_version: Self::SCHEMA_VERSION,
             source_id: SourceId::new(parts.source_id)?,
             snapshot_revision: SourceRevision::new(parts.snapshot_revision)?,
+            target_identity: TargetIdentity::from_authenticated_value(parts.target_identity)?,
             target: ObjectKey::new(parts.target)?,
             relation: RelationKey::new(parts.relation)?,
             relation_role,
@@ -1577,6 +1638,18 @@ impl NavigationCursor {
             auth_tag: parts.auth_tag.to_string(),
             next_position: parts.next_position,
         };
+        Ok(cursor)
+    }
+
+    pub fn validate_resume<F>(
+        self,
+        current_revision: &SourceRevision,
+        re_resolve: F,
+    ) -> Result<Self, SourceAdapterError>
+    where
+        F: FnOnce(&SourceId, &ObjectKey, &RelationKey, &RelationRole, &RelationKind) -> bool,
+    {
+        let cursor = self;
         cursor.resume(current_revision)?;
         if !re_resolve(
             &cursor.source_id,
@@ -1603,6 +1676,7 @@ fn cursor_mac(
         cursor.schema_version,
         cursor.source_id.as_str(),
         cursor.snapshot_revision.as_str(),
+        cursor.target_identity.as_str(),
         cursor.target.as_str(),
         cursor.relation.as_str(),
         relation_role_token(cursor.relation_role),
@@ -1617,6 +1691,7 @@ struct CursorAuthClaims<'a> {
     schema_version: u16,
     source_id: &'a str,
     snapshot_revision: &'a str,
+    target_identity: &'a str,
     target: &'a str,
     relation: &'a str,
     relation_role: &'a str,
@@ -1630,6 +1705,7 @@ fn cursor_mac_parts(
     schema_version: u16,
     source_id: &str,
     snapshot_revision: &str,
+    target_identity: &str,
     target: &str,
     relation: &str,
     relation_role: &str,
@@ -1647,6 +1723,7 @@ fn cursor_mac_parts(
         schema_version,
         source_id,
         snapshot_revision,
+        target_identity,
         target,
         relation,
         relation_role,
@@ -1669,6 +1746,7 @@ struct CursorWireParts<'a> {
     schema_version: u16,
     source_id: &'a str,
     snapshot_revision: &'a str,
+    target_identity: &'a str,
     target: &'a str,
     relation: &'a str,
     relation_role: &'a str,
@@ -1689,6 +1767,7 @@ fn cursor_wire_parts(value: &serde_json::Value) -> Result<CursorWireParts<'_>, S
         "schemaVersion",
         "sourceId",
         "snapshotRevision",
+        "targetIdentity",
         "target",
         "relation",
         "relationRole",
@@ -1728,6 +1807,7 @@ fn cursor_wire_parts(value: &serde_json::Value) -> Result<CursorWireParts<'_>, S
         schema_version: NavigationCursor::SCHEMA_VERSION,
         source_id: string("sourceId")?,
         snapshot_revision: string("snapshotRevision")?,
+        target_identity: string("targetIdentity")?,
         target: string("target")?,
         relation: string("relation")?,
         relation_role: string("relationRole")?,
@@ -1768,6 +1848,55 @@ fn cursor_auth_tag(secret: &[u8], cursor: &NavigationCursor) -> Result<String, S
     Ok(hex_encode(
         &cursor_mac(secret, cursor)?.finalize().into_bytes(),
     ))
+}
+
+fn preflight_cursor_transport(value: &serde_json::Value) -> Result<(), SourceAdapterError> {
+    fn visit(value: &serde_json::Value, depth: usize) -> Result<(), SourceAdapterError> {
+        if depth > MAX_NAVIGATION_NESTING_DEPTH {
+            return Err(resource_limit("navigation cursor exceeds nesting limit"));
+        }
+        match value {
+            serde_json::Value::String(value)
+                if value.len() > MAX_NAVIGATION_CURSOR_STRING_BYTES =>
+            {
+                Err(resource_limit(
+                    "navigation cursor string exceeds its byte limit",
+                ))
+            }
+            serde_json::Value::Array(values) => {
+                for value in values {
+                    visit(value, depth + 1)?;
+                }
+                Ok(())
+            }
+            serde_json::Value::Object(values) => {
+                for (key, value) in values {
+                    if key.len() > MAX_NAVIGATION_CURSOR_STRING_BYTES {
+                        return Err(resource_limit(
+                            "navigation cursor field exceeds its byte limit",
+                        ));
+                    }
+                    visit(value, depth + 1)?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    visit(value, 1)?;
+    let bytes = serde_json::to_vec(value)
+        .map_err(|_| decode_cursor_error("navigation cursor cannot be serialized"))?;
+    if bytes.len() > MAX_NAVIGATION_CURSOR_JSON_BYTES {
+        return Err(resource_limit(
+            "navigation cursor exceeds its JSON byte limit",
+        ));
+    }
+    Ok(())
+}
+
+fn decode_cursor_error(message: &str) -> SourceAdapterError {
+    SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, message)
 }
 
 fn hex_encode(bytes: &[u8]) -> String {

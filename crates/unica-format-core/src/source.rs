@@ -316,6 +316,14 @@ impl TargetIdentity {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    pub(crate) fn from_authenticated_value(
+        raw: impl Into<String>,
+    ) -> Result<Self, SourceAdapterError> {
+        let raw = raw.into();
+        validate_source_value(&raw, "target identity")?;
+        Ok(Self(raw))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

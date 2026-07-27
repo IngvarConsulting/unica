@@ -1,6 +1,6 @@
 //! Format-neutral ports implemented by concrete source adapters.
 
-use std::{ffi::OsString, path::PathBuf, sync::Arc};
+use std::{any::Any, ffi::OsString, path::PathBuf, sync::Arc};
 
 use crate::{
     navigation::{
@@ -9,8 +9,8 @@ use crate::{
     },
     semantic_ids::{SemanticPropertyId, SemanticRelationId},
     source::{
-        AdapterManifest, ConfiguredSourceSetKind, FormatVersion, SourceAdapterError, SourceContext,
-        SourceDescriptor, SourceRevision, SourceSnapshot,
+        AdapterManifest, ConfiguredSourceSetKind, FormatVersion, SourceAdapterError, SourceBinding,
+        SourceContext, SourceDescriptor, SourceRevision, SourceSnapshot,
     },
 };
 
@@ -21,23 +21,53 @@ pub enum ProbeResult {
 }
 
 pub trait ProbePort: Send + Sync {
-    fn probe(&self, source: &SourceContext) -> Result<ProbeResult, SourceAdapterError>;
+    fn probe(&self, captured: &CapturedSource) -> Result<ProbeResult, SourceAdapterError>;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+pub trait CapturedSourceSession: Send + Sync {
+    fn source(&self) -> &SourceContext;
+    fn snapshot(&self) -> &SourceSnapshot;
+    fn binding(&self) -> &SourceBinding;
+    fn as_any(&self) -> &dyn Any;
+}
+
+#[derive(Clone)]
+pub struct CapturedSource(Arc<dyn CapturedSourceSession>);
+
+impl CapturedSource {
+    pub fn new(session: impl CapturedSourceSession + 'static) -> Self {
+        Self(Arc::new(session))
+    }
+
+    pub fn source(&self) -> &SourceContext {
+        self.0.source()
+    }
+
+    pub fn snapshot(&self) -> &SourceSnapshot {
+        self.0.snapshot()
+    }
+
+    pub fn binding(&self) -> &SourceBinding {
+        self.0.binding()
+    }
+
+    pub fn adapter_state<T: Any>(&self) -> Option<&T> {
+        self.0.as_any().downcast_ref()
+    }
+}
+
 pub enum CaptureResult {
     NoMatch,
-    Captured(SourceSnapshot),
+    Captured(CapturedSource),
 }
 
 pub trait CapturePort: Send + Sync {
     fn capture(&self, source: &SourceContext) -> Result<CaptureResult, SourceAdapterError>;
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct FormatReadRequest {
-    pub source: SourceContext,
-    pub snapshot: SourceSnapshot,
+    pub captured: CapturedSource,
     pub query: NavigationQuery,
 }
 

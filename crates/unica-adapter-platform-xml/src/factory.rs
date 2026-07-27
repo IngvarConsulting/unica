@@ -3,7 +3,7 @@ use std::{path::PathBuf, sync::Arc};
 use unica_format_core::{
     navigation::{NavigationSelection, NavigationTarget},
     ports::{
-        AdapterFormatProfile, CapturePort, CaptureResult, EffectiveSupportRule,
+        AdapterFormatProfile, CapturePort, CaptureResult, CapturedSource, EffectiveSupportRule,
         FormatCompatibility, FormatInspectionMode, FormatInspectionPort, FormatInspectionRequest,
         FormatInspectionResult, FormatReadRequest, OwnerResolutionRequest, OwnerResolutionResult,
         OwnershipPort, ProbePort, ProbeResult, ReadPort, SourceAdapterRegistration,
@@ -55,8 +55,8 @@ impl CapturePort for PlatformXmlAdapter {
 }
 
 impl ProbePort for PlatformXmlAdapter {
-    fn probe(&self, source: &SourceContext) -> Result<ProbeResult, SourceAdapterError> {
-        v2_20::probe(source)
+    fn probe(&self, captured: &CapturedSource) -> Result<ProbeResult, SourceAdapterError> {
+        v2_20::probe(captured)
     }
 }
 
@@ -66,7 +66,7 @@ impl ReadPort for PlatformXmlAdapter {
         request: &FormatReadRequest,
     ) -> Result<unica_format_core::navigation::NavigationEnvelope, SourceAdapterError> {
         validate_query(request)?;
-        v2_20::read(&request.source, &request.snapshot)
+        v2_20::read(&request.captured)
     }
 }
 
@@ -245,21 +245,17 @@ fn canonical_directory(path: &std::path::Path) -> Result<PathBuf, SourceAdapterE
 }
 
 fn validate_query(request: &FormatReadRequest) -> Result<(), SourceAdapterError> {
-    let expected = request
-        .source
-        .location()
-        .target()
-        .strip_prefix(request.source.location().source_root())
-        .ok()
-        .and_then(|path| path.to_str())
-        .filter(|path| !path.is_empty())
-        .unwrap_or("source")
-        .replace('\\', "/");
     match &request.query.target {
-        NavigationTarget::ObjectPath(path) if path == &expected => {}
+        NavigationTarget::CapturedTarget(identity)
+            if identity == &request.captured.binding().target_identity => {}
+        NavigationTarget::CapturedTarget(_) => {
+            return Err(capability_error(
+                "Platform XML reads only the captured target identity",
+            ))
+        }
         NavigationTarget::ObjectPath(_) => {
             return Err(capability_error(
-                "Platform XML 2.20 reads only the captured target path",
+                "Platform XML reads require a captured target identity",
             ))
         }
         NavigationTarget::ObjectRef { .. } => {
