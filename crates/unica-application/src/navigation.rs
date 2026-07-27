@@ -1155,6 +1155,51 @@ mod tests {
     }
 
     #[test]
+    fn cursor_unknown_selection_field_is_structured_unavailable() {
+        let harness = Harness::new(2, "2.20");
+        let first = harness.first_page(1);
+        let mut cursor =
+            serde_json::to_value(first.relations[0].next_cursor.clone().unwrap()).unwrap();
+        cursor["selection"]["relations"][0]["unknown"] = json!(true);
+
+        assert_unavailable(
+            &harness.inspect(MetadataNavigationCommand {
+                target: MetadataNavigationTarget::Cursor(opaque_cursor(cursor)),
+                selection: None,
+            }),
+            "decode_corrupted",
+        );
+    }
+
+    #[test]
+    fn cursor_duplicate_selection_field_is_structured_unavailable() {
+        let harness = Harness::new(2, "2.20");
+        let first = harness.first_page(1);
+        let cursor = first.relations[0].next_cursor.clone().unwrap();
+        let raw = serde_json::to_string(&cursor).unwrap();
+        let selection = serde_json::to_string(&cursor.selection).unwrap();
+        let duplicated = selection.replacen(
+            "\"properties\":",
+            "\"properties\":\"all\",\"properties\":",
+            1,
+        );
+        let tampered = raw.replacen(&selection, &duplicated, 1);
+        assert_ne!(tampered, raw);
+
+        assert_unavailable(
+            &harness.inspect(MetadataNavigationCommand {
+                target: MetadataNavigationTarget::Cursor(
+                    unica_format_core::navigation::OpaqueNavigationCursor::from_transport_json(
+                        tampered.into_bytes(),
+                    ),
+                ),
+                selection: None,
+            }),
+            "decode_corrupted",
+        );
+    }
+
+    #[test]
     fn authenticated_cursor_rejects_recomputed_public_selection_hash_and_u64_max_position() {
         let harness = Harness::new(2, "2.20");
         let first = harness.first_page(1);
@@ -1337,7 +1382,7 @@ mod tests {
     }
 
     #[test]
-    fn cursor_is_bounded_and_authenticated_before_selection_normalization() {
+    fn cursor_is_bounded_before_strict_selection_decoding() {
         let harness = Harness::new(2, "2.20");
         let first = harness.first_page(1);
         let mut cursor =
