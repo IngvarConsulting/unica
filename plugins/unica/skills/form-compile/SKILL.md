@@ -218,6 +218,8 @@ allowed-tools:
 |------|----------|
 | `path` | DataPath (привязка к реквизиту-таблице) |
 | `columns: [...]` | Колонки — массив элементов (обычно `input`) |
+| `representation` | `"List"`, `"Tree"` или `"HierarchicalList"` (регистр нормализуется) |
+| `autoInsertNewRow: true` | Автоматически добавлять новую строку; `false` является платформенным default и XML-тег не создаёт |
 | `changeRowSet: true` | Разрешить добавление/удаление строк |
 | `changeRowOrder: true` | Разрешить перемещение строк |
 | `height` | Высота в строках таблицы |
