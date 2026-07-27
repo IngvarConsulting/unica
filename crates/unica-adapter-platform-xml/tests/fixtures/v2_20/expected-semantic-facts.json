@@ -1,37 +1,231 @@
 {
   "allKinds": [
-    ["configuration", "CorpusConfiguration"], ["language", "CorpusLanguage"],
-    ["subsystem", "CorpusSubsystem"], ["styleItem", "CorpusStyleItem"],
-    ["style", "CorpusStyle"], ["commonPicture", "CorpusPicture"],
-    ["sessionParameter", "CorpusSessionParameter"], ["role", "CorpusRole"],
-    ["commonTemplate", "CorpusCommonTemplate"], ["filterCriterion", "CorpusFilterCriterion"],
-    ["commonModule", "CorpusCommonModule"], ["bot", "CorpusBot"],
-    ["commonAttribute", "CorpusCommonAttribute"], ["exchangePlan", "CorpusExchangePlan"],
-    ["xdtoPackage", "CorpusXdtoPackage"], ["webService", "CorpusWebService"],
-    ["httpService", "CorpusHttpService"], ["webServiceReference", "CorpusWebServiceReference"],
-    ["eventSubscription", "CorpusEventSubscription"], ["scheduledJob", "CorpusScheduledJob"],
-    ["settingsStorage", "CorpusSettingsStorage"], ["functionalOption", "CorpusFunctionalOption"],
-    ["functionalOptionsParameter", "CorpusFunctionalOptionsParameter"], ["definedType", "CorpusDefinedType"],
-    ["commonCommand", "CorpusCommonCommand"], ["commandGroup", "CorpusCommandGroup"],
-    ["constant", "CorpusConstant"], ["commonForm", "CorpusCommonForm"],
-    ["catalog", "CorpusCatalog"], ["document", "CorpusDocument"],
-    ["documentNumerator", "CorpusDocumentNumerator"], ["sequence", "CorpusSequence"],
-    ["documentJournal", "CorpusDocumentJournal"], ["enumeration", "CorpusEnumeration"],
-    ["report", "CorpusReport"], ["dataProcessor", "CorpusDataProcessor"],
-    ["informationRegister", "CorpusInformationRegister"], ["accumulationRegister", "CorpusAccumulationRegister"],
-    ["chartOfCharacteristicTypes", "CorpusChartOfCharacteristicTypes"], ["chartOfAccounts", "CorpusChartOfAccounts"],
-    ["accountingRegister", "CorpusAccountingRegister"], ["chartOfCalculationTypes", "CorpusChartOfCalculationTypes"],
-    ["calculationRegister", "CorpusCalculationRegister"], ["businessProcess", "CorpusBusinessProcess"],
-    ["task", "CorpusTask"], ["integrationService", "CorpusIntegrationService"]
+    [
+      "configuration",
+      "CorpusConfiguration"
+    ],
+    [
+      "language",
+      "CorpusLanguage"
+    ],
+    [
+      "subsystem",
+      "CorpusSubsystem"
+    ],
+    [
+      "styleItem",
+      "CorpusStyleItem"
+    ],
+    [
+      "style",
+      "CorpusStyle"
+    ],
+    [
+      "commonPicture",
+      "CorpusPicture"
+    ],
+    [
+      "sessionParameter",
+      "CorpusSessionParameter"
+    ],
+    [
+      "role",
+      "CorpusRole"
+    ],
+    [
+      "commonTemplate",
+      "CorpusCommonTemplate"
+    ],
+    [
+      "filterCriterion",
+      "CorpusFilterCriterion"
+    ],
+    [
+      "commonModule",
+      "CorpusCommonModule"
+    ],
+    [
+      "bot",
+      "CorpusBot"
+    ],
+    [
+      "commonAttribute",
+      "CorpusCommonAttribute"
+    ],
+    [
+      "exchangePlan",
+      "CorpusExchangePlan"
+    ],
+    [
+      "xdtoPackage",
+      "CorpusXdtoPackage"
+    ],
+    [
+      "webService",
+      "CorpusWebService"
+    ],
+    [
+      "httpService",
+      "CorpusHttpService"
+    ],
+    [
+      "webServiceReference",
+      "CorpusWebServiceReference"
+    ],
+    [
+      "eventSubscription",
+      "CorpusEventSubscription"
+    ],
+    [
+      "scheduledJob",
+      "CorpusScheduledJob"
+    ],
+    [
+      "settingsStorage",
+      "CorpusSettingsStorage"
+    ],
+    [
+      "functionalOption",
+      "CorpusFunctionalOption"
+    ],
+    [
+      "functionalOptionsParameter",
+      "CorpusFunctionalOptionsParameter"
+    ],
+    [
+      "definedType",
+      "CorpusDefinedType"
+    ],
+    [
+      "commonCommand",
+      "CorpusCommonCommand"
+    ],
+    [
+      "commandGroup",
+      "CorpusCommandGroup"
+    ],
+    [
+      "constant",
+      "CorpusConstant"
+    ],
+    [
+      "commonForm",
+      "CorpusCommonForm"
+    ],
+    [
+      "catalog",
+      "CorpusCatalog"
+    ],
+    [
+      "document",
+      "CorpusDocument"
+    ],
+    [
+      "documentNumerator",
+      "CorpusDocumentNumerator"
+    ],
+    [
+      "sequence",
+      "CorpusSequence"
+    ],
+    [
+      "documentJournal",
+      "CorpusDocumentJournal"
+    ],
+    [
+      "enumeration",
+      "CorpusEnumeration"
+    ],
+    [
+      "report",
+      "CorpusReport"
+    ],
+    [
+      "dataProcessor",
+      "CorpusDataProcessor"
+    ],
+    [
+      "informationRegister",
+      "CorpusInformationRegister"
+    ],
+    [
+      "accumulationRegister",
+      "CorpusAccumulationRegister"
+    ],
+    [
+      "chartOfCharacteristicTypes",
+      "CorpusChartOfCharacteristicTypes"
+    ],
+    [
+      "chartOfAccounts",
+      "CorpusChartOfAccounts"
+    ],
+    [
+      "accountingRegister",
+      "CorpusAccountingRegister"
+    ],
+    [
+      "chartOfCalculationTypes",
+      "CorpusChartOfCalculationTypes"
+    ],
+    [
+      "calculationRegister",
+      "CorpusCalculationRegister"
+    ],
+    [
+      "businessProcess",
+      "CorpusBusinessProcess"
+    ],
+    [
+      "task",
+      "CorpusTask"
+    ],
+    [
+      "integrationService",
+      "CorpusIntegrationService"
+    ]
+  ],
+  "allKindsEnvelopeFacts": [
+    "coverage:Partial=47",
+    "diagnostic:partialCoverage=1",
+    "status:Partial"
   ],
   "realFixtureNodes": [
-    ["Catalogs/Валюты.xml", "catalog", "Валюты"],
-    ["CommonModules/GoogleПереводчик.xml", "commonModule", "GoogleПереводчик"],
-    ["Documents/АктОбУничтоженииПерсональныхДанных.xml", "document", "АктОбУничтоженииПерсональныхДанных"],
-    ["Enums/ВажностьПроблемыУчета.xml", "enumeration", "ВажностьПроблемыУчета"],
-    ["InformationRegisters/АдминистративнаяИерархия.xml", "informationRegister", "АдминистративнаяИерархия"],
-    ["Languages/Русский.xml", "language", "Русский"],
-    ["Reports/АнализВерсийОбъектов.xml", "report", "АнализВерсийОбъектов"]
+    [
+      "Catalogs/Валюты.xml",
+      "catalog",
+      "Валюты"
+    ],
+    [
+      "CommonModules/GoogleПереводчик.xml",
+      "commonModule",
+      "GoogleПереводчик"
+    ],
+    [
+      "Documents/АктОбУничтоженииПерсональныхДанных.xml",
+      "document",
+      "АктОбУничтоженииПерсональныхДанных"
+    ],
+    [
+      "Enums/ВажностьПроблемыУчета.xml",
+      "enumeration",
+      "ВажностьПроблемыУчета"
+    ],
+    [
+      "InformationRegisters/АдминистративнаяИерархия.xml",
+      "informationRegister",
+      "АдминистративнаяИерархия"
+    ],
+    [
+      "Languages/Русский.xml",
+      "language",
+      "Русский"
+    ],
+    [
+      "Reports/АнализВерсийОбъектов.xml",
+      "report",
+      "АнализВерсийОбъектов"
+    ]
   ],
   "currencyFacts": [
     "property:catalog:Валюты:catalog.hierarchy.enabled=false",
@@ -42,78 +236,511 @@
   ],
   "realFixtureFacts": {
     "Catalogs/Валюты.xml": [
-      "property:catalog:Валюты:catalog.code.length=3",
-      "property:catalog:Валюты:catalog.description.length=10",
-      "relation:attributes:catalog:Валюты:attribute:ОсновнаяВалюта",
-      "relation:tabularSections:catalog:Валюты:tabularSection:Представления",
-      "relation:columns:tabularSection:Представления:attribute:КодЯзыка",
-      "property:attribute:ОсновнаяВалюта:field.fillChecking=showError",
-      "property:attribute:ОсновнаяВалюта:field.indexing=index",
-      "property:attribute:ОсновнаяВалюта:field.required=true"
+      "coverage:Partial=16",
+      "diagnostic:unmappedSemanticFact=221",
+      "node:attribute:ЗагружаетсяИзИнтернета",
+      "node:attribute:КодЯзыка",
+      "node:attribute:НаименованиеПолное",
+      "node:attribute:Наценка",
+      "node:attribute:ОсновнаяВалюта",
+      "node:attribute:ПараметрыПрописи",
+      "node:attribute:СпособУстановкиКурса",
+      "node:attribute:ФормулаРасчетаКурса",
+      "node:catalog:Валюты",
+      "node:form:ПараметрыПрописиВалюты_en",
+      "node:form:ПараметрыПрописиВалютыНаДругихЯзыках",
+      "node:form:ФормаСписка",
+      "node:form:ФормаЭлемента",
+      "node:tabularSection:Представления",
+      "property:attribute:ЗагружаетсяИзИнтернета:field.fillChecking={\"type\":\"enum\",\"value\":\"dontCheck\"}",
+      "property:attribute:ЗагружаетсяИзИнтернета:field.fillValue={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:ЗагружаетсяИзИнтернета:field.indexing={\"type\":\"enum\",\"value\":\"dontIndex\"}",
+      "property:attribute:ЗагружаетсяИзИнтернета:field.multiLine={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:ЗагружаетсяИзИнтернета:field.required={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:ЗагружаетсяИзИнтернета:field.type={\"type\":\"typeSet\",\"value\":{\"variants\":[{\"kind\":\"primitive\",\"primitive\":\"boolean\"}]}}",
+      "property:attribute:ЗагружаетсяИзИнтернета:field.use={\"type\":\"enum\",\"value\":\"forItem\"}",
+      "property:attribute:ЗагружаетсяИзИнтернета:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Загружается из Интернета\"}}",
+      "property:attribute:КодЯзыка:field.fillChecking={\"type\":\"enum\",\"value\":\"dontCheck\"}",
+      "property:attribute:КодЯзыка:field.indexing={\"type\":\"enum\",\"value\":\"index\"}",
+      "property:attribute:КодЯзыка:field.multiLine={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:КодЯзыка:field.required={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:КодЯзыка:field.type={\"type\":\"typeSet\",\"value\":{\"variants\":[{\"kind\":\"primitive\",\"primitive\":\"string\",\"qualifiers\":{\"string\":{\"length\":10,\"allowedLength\":\"variable\"}}}]}}",
+      "property:attribute:КодЯзыка:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Код языка\"}}",
+      "property:attribute:НаименованиеПолное:field.fillChecking={\"type\":\"enum\",\"value\":\"showError\"}",
+      "property:attribute:НаименованиеПолное:field.fillValue={\"type\":\"string\",\"value\":\"\"}",
+      "property:attribute:НаименованиеПолное:field.indexing={\"type\":\"enum\",\"value\":\"dontIndex\"}",
+      "property:attribute:НаименованиеПолное:field.multiLine={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:НаименованиеПолное:field.required={\"type\":\"boolean\",\"value\":true}",
+      "property:attribute:НаименованиеПолное:field.type={\"type\":\"typeSet\",\"value\":{\"variants\":[{\"kind\":\"primitive\",\"primitive\":\"string\",\"qualifiers\":{\"string\":{\"length\":50,\"allowedLength\":\"variable\"}}}]}}",
+      "property:attribute:НаименованиеПолное:field.use={\"type\":\"enum\",\"value\":\"forItem\"}",
+      "property:attribute:НаименованиеПолное:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Наименование валюты\"}}",
+      "property:attribute:Наценка:field.fillChecking={\"type\":\"enum\",\"value\":\"dontCheck\"}",
+      "property:attribute:Наценка:field.fillValue={\"type\":\"decimal\",\"value\":\"0.0\"}",
+      "property:attribute:Наценка:field.indexing={\"type\":\"enum\",\"value\":\"dontIndex\"}",
+      "property:attribute:Наценка:field.multiLine={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:Наценка:field.required={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:Наценка:field.type={\"type\":\"typeSet\",\"value\":{\"variants\":[{\"kind\":\"primitive\",\"primitive\":\"number\",\"qualifiers\":{\"number\":{\"digits\":10,\"fractionDigits\":2,\"allowedSign\":\"any\"}}}]}}",
+      "property:attribute:Наценка:field.use={\"type\":\"enum\",\"value\":\"forItem\"}",
+      "property:attribute:Наценка:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Наценка\"}}",
+      "property:attribute:ОсновнаяВалюта:field.fillChecking={\"type\":\"enum\",\"value\":\"showError\"}",
+      "property:attribute:ОсновнаяВалюта:field.fillValue={\"type\":\"emptyReference\"}",
+      "property:attribute:ОсновнаяВалюта:field.indexing={\"type\":\"enum\",\"value\":\"index\"}",
+      "property:attribute:ОсновнаяВалюта:field.multiLine={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:ОсновнаяВалюта:field.required={\"type\":\"boolean\",\"value\":true}",
+      "property:attribute:ОсновнаяВалюта:field.type={\"type\":\"typeSet\",\"value\":{\"variants\":[{\"kind\":\"reference\",\"target\":{\"kind\":\"catalog\",\"name\":\"Валюты\"}}]}}",
+      "property:attribute:ОсновнаяВалюта:field.use={\"type\":\"enum\",\"value\":\"forItem\"}",
+      "property:attribute:ОсновнаяВалюта:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Основная валюта\"}}",
+      "property:attribute:ПараметрыПрописи:field.fillChecking={\"type\":\"enum\",\"value\":\"dontCheck\"}",
+      "property:attribute:ПараметрыПрописи:field.fillValue={\"type\":\"string\",\"value\":\"\"}",
+      "property:attribute:ПараметрыПрописи:field.indexing={\"type\":\"enum\",\"value\":\"dontIndex\"}",
+      "property:attribute:ПараметрыПрописи:field.multiLine={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:ПараметрыПрописи:field.required={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:ПараметрыПрописи:field.type={\"type\":\"typeSet\",\"value\":{\"variants\":[{\"kind\":\"primitive\",\"primitive\":\"string\",\"qualifiers\":{\"string\":{\"length\":200,\"allowedLength\":\"variable\"}}}]}}",
+      "property:attribute:ПараметрыПрописи:field.use={\"type\":\"enum\",\"value\":\"forItem\"}",
+      "property:attribute:ПараметрыПрописи:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Параметры прописи\"}}",
+      "property:attribute:СпособУстановкиКурса:field.fillChecking={\"type\":\"enum\",\"value\":\"showError\"}",
+      "property:attribute:СпособУстановкиКурса:field.fillValue={\"type\":\"null\"}",
+      "property:attribute:СпособУстановкиКурса:field.indexing={\"type\":\"enum\",\"value\":\"dontIndex\"}",
+      "property:attribute:СпособУстановкиКурса:field.multiLine={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:СпособУстановкиКурса:field.required={\"type\":\"boolean\",\"value\":true}",
+      "property:attribute:СпособУстановкиКурса:field.type={\"type\":\"typeSet\",\"value\":{\"variants\":[{\"kind\":\"enumeration\",\"target\":{\"kind\":\"enumeration\",\"name\":\"СпособыУстановкиКурсаВалюты\"}}]}}",
+      "property:attribute:СпособУстановкиКурса:field.use={\"type\":\"enum\",\"value\":\"forItem\"}",
+      "property:attribute:СпособУстановкиКурса:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Способ установки курса\"}}",
+      "property:attribute:ФормулаРасчетаКурса:field.fillChecking={\"type\":\"enum\",\"value\":\"showError\"}",
+      "property:attribute:ФормулаРасчетаКурса:field.fillValue={\"type\":\"string\",\"value\":\"\"}",
+      "property:attribute:ФормулаРасчетаКурса:field.indexing={\"type\":\"enum\",\"value\":\"dontIndex\"}",
+      "property:attribute:ФормулаРасчетаКурса:field.multiLine={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:ФормулаРасчетаКурса:field.required={\"type\":\"boolean\",\"value\":true}",
+      "property:attribute:ФормулаРасчетаКурса:field.type={\"type\":\"typeSet\",\"value\":{\"variants\":[{\"kind\":\"primitive\",\"primitive\":\"string\",\"qualifiers\":{\"string\":{\"length\":100,\"allowedLength\":\"variable\"}}}]}}",
+      "property:attribute:ФормулаРасчетаКурса:field.use={\"type\":\"enum\",\"value\":\"forItem\"}",
+      "property:attribute:ФормулаРасчетаКурса:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Формула расчета курса\"}}",
+      "property:catalog:Валюты:catalog.code.length={\"type\":\"integer\",\"value\":3}",
+      "property:catalog:Валюты:catalog.description.length={\"type\":\"integer\",\"value\":10}",
+      "property:catalog:Валюты:catalog.hierarchy.enabled={\"type\":\"boolean\",\"value\":false}",
+      "property:catalog:Валюты:catalog.hierarchy.levelCount={\"type\":\"integer\",\"value\":2}",
+      "property:catalog:Валюты:catalog.hierarchy.levelLimit.enabled={\"type\":\"boolean\",\"value\":false}",
+      "property:catalog:Валюты:catalog.hierarchy.levelLimit=absent",
+      "property:catalog:Валюты:catalog.hierarchy.type={\"type\":\"enum\",\"value\":\"hierarchyOfGroupsAndItems\"}",
+      "property:catalog:Валюты:command.useStandard={\"type\":\"boolean\",\"value\":true}",
+      "property:catalog:Валюты:help.includeInContents={\"type\":\"boolean\",\"value\":true}",
+      "property:catalog:Валюты:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Валюты\"}}",
+      "property:catalog:Валюты:presentation.object={\"type\":\"localizedString\",\"value\":{\"ru\":\"Валюта\"}}",
+      "property:form:ПараметрыПрописиВалюты_en:backing.content.available={\"type\":\"boolean\",\"value\":false}",
+      "property:form:ПараметрыПрописиВалюты_en:backing.content.opaque={\"type\":\"boolean\",\"value\":false}",
+      "property:form:ПараметрыПрописиВалюты_en:backing.descriptor.available={\"type\":\"boolean\",\"value\":false}",
+      "property:form:ПараметрыПрописиВалютыНаДругихЯзыках:backing.content.available={\"type\":\"boolean\",\"value\":false}",
+      "property:form:ПараметрыПрописиВалютыНаДругихЯзыках:backing.content.opaque={\"type\":\"boolean\",\"value\":false}",
+      "property:form:ПараметрыПрописиВалютыНаДругихЯзыках:backing.descriptor.available={\"type\":\"boolean\",\"value\":false}",
+      "property:form:ФормаСписка:backing.content.available={\"type\":\"boolean\",\"value\":false}",
+      "property:form:ФормаСписка:backing.content.opaque={\"type\":\"boolean\",\"value\":false}",
+      "property:form:ФормаСписка:backing.descriptor.available={\"type\":\"boolean\",\"value\":false}",
+      "property:form:ФормаЭлемента:backing.content.available={\"type\":\"boolean\",\"value\":false}",
+      "property:form:ФормаЭлемента:backing.content.opaque={\"type\":\"boolean\",\"value\":false}",
+      "property:form:ФормаЭлемента:backing.descriptor.available={\"type\":\"boolean\",\"value\":false}",
+      "property:tabularSection:Представления:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Представления\"}}",
+      "property:tabularSection:Представления:tabularSection.lineNumberLength={\"type\":\"integer\",\"value\":5}",
+      "relation:attributes:Contains:catalog:Валюты:attribute:ЗагружаетсяИзИнтернета",
+      "relation:attributes:Contains:catalog:Валюты:attribute:НаименованиеПолное",
+      "relation:attributes:Contains:catalog:Валюты:attribute:Наценка",
+      "relation:attributes:Contains:catalog:Валюты:attribute:ОсновнаяВалюта",
+      "relation:attributes:Contains:catalog:Валюты:attribute:ПараметрыПрописи",
+      "relation:attributes:Contains:catalog:Валюты:attribute:СпособУстановкиКурса",
+      "relation:attributes:Contains:catalog:Валюты:attribute:ФормулаРасчетаКурса",
+      "relation:columns:Contains:tabularSection:Представления:attribute:КодЯзыка",
+      "relation:columns:Contains:tabularSection:Представления:attribute:ПараметрыПрописи",
+      "relation:forms:Contains:catalog:Валюты:form:ПараметрыПрописиВалюты_en",
+      "relation:forms:Contains:catalog:Валюты:form:ПараметрыПрописиВалютыНаДругихЯзыках",
+      "relation:forms:Contains:catalog:Валюты:form:ФормаСписка",
+      "relation:forms:Contains:catalog:Валюты:form:ФормаЭлемента",
+      "relation:tabularSections:Contains:catalog:Валюты:tabularSection:Представления",
+      "status:Partial"
     ],
     "CommonModules/GoogleПереводчик.xml": [
-      "property:commonModule:GoogleПереводчик:module.global=false",
-      "property:commonModule:GoogleПереводчик:module.clientManagedApplication=false",
-      "property:commonModule:GoogleПереводчик:module.server=true",
-      "property:commonModule:GoogleПереводчик:module.externalConnection=true",
-      "property:commonModule:GoogleПереводчик:module.clientOrdinaryApplication=true",
-      "property:commonModule:GoogleПереводчик:module.serverCall=false",
-      "property:commonModule:GoogleПереводчик:module.privileged=false",
-      "property:commonModule:GoogleПереводчик:module.returnValuesReuse=dontUse"
+      "coverage:Partial=2",
+      "diagnostic:unmappedSemanticFact=1",
+      "node:commonModule:GoogleПереводчик",
+      "property:commonModule:GoogleПереводчик:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Google переводчик\"}}",
+      "property:commonModule:GoogleПереводчик:module.clientManagedApplication={\"type\":\"boolean\",\"value\":false}",
+      "property:commonModule:GoogleПереводчик:module.clientOrdinaryApplication={\"type\":\"boolean\",\"value\":true}",
+      "property:commonModule:GoogleПереводчик:module.externalConnection={\"type\":\"boolean\",\"value\":true}",
+      "property:commonModule:GoogleПереводчик:module.global={\"type\":\"boolean\",\"value\":false}",
+      "property:commonModule:GoogleПереводчик:module.privileged={\"type\":\"boolean\",\"value\":false}",
+      "property:commonModule:GoogleПереводчик:module.returnValuesReuse={\"type\":\"enum\",\"value\":\"dontUse\"}",
+      "property:commonModule:GoogleПереводчик:module.server={\"type\":\"boolean\",\"value\":true}",
+      "property:commonModule:GoogleПереводчик:module.serverCall={\"type\":\"boolean\",\"value\":false}",
+      "status:Partial"
     ],
     "Documents/АктОбУничтоженииПерсональныхДанных.xml": [
-      "property:document:АктОбУничтоженииПерсональныхДанных:document.number.type=string",
-      "property:document:АктОбУничтоженииПерсональныхДанных:document.number.length=11",
-      "property:document:АктОбУничтоженииПерсональныхДанных:document.number.periodicity=year",
-      "property:document:АктОбУничтоженииПерсональныхДанных:document.number.auto=true",
-      "property:document:АктОбУничтоженииПерсональныхДанных:document.posting.mode=allow",
-      "relation:attributes:document:АктОбУничтоженииПерсональныхДанных:attribute:Организация",
-      "relation:tabularSections:document:АктОбУничтоженииПерсональныхДанных:tabularSection:КатегорииДанных",
-      "relation:columns:tabularSection:КатегорииДанных:attribute:Категория",
-      "relation:forms:document:АктОбУничтоженииПерсональныхДанных:form:ФормаДокумента",
-      "relation:templates:document:АктОбУничтоженииПерсональныхДанных:template:ПФ_MXL_АктОбУничтоженииПерсональныхДанных"
+      "coverage:Partial=31",
+      "diagnostic:unmappedSemanticFact=449",
+      "node:attribute:ДатаУничтожения",
+      "node:attribute:Значение",
+      "node:attribute:ИмяОбъекта",
+      "node:attribute:Категория",
+      "node:attribute:КоличествоОбъектов",
+      "node:attribute:Комментарий",
+      "node:attribute:НаименованиеИнформационнойСистемы",
+      "node:attribute:НаименованиеОрганизации",
+      "node:attribute:Организация",
+      "node:attribute:Ответственный",
+      "node:attribute:ОтветственныйЗаОбработкуПерсональныхДанных",
+      "node:attribute:ПричинаУничтожения",
+      "node:attribute:Свойство",
+      "node:attribute:СпособУничтожения",
+      "node:attribute:Субъект",
+      "node:attribute:ТекстоваяСтрока",
+      "node:attribute:ФИООтветственногоЗаОбработкуПДн",
+      "node:attribute:ФИОСубъекта",
+      "node:attribute:ЮридическийАдресОрганизации",
+      "node:document:АктОбУничтоженииПерсональныхДанных",
+      "node:form:ФормаДокумента",
+      "node:form:ФормаСписка",
+      "node:tabularSection:ДополнительныеРеквизиты",
+      "node:tabularSection:КатегорииДанных",
+      "node:tabularSection:ОбъектыСУничтожаемымиДанными",
+      "node:template:ДанныеПечати",
+      "node:template:ПФ_MXL_АктОбУничтоженииПерсональныхДанных",
+      "node:template:ПФ_MXL_ВыгрузкаИзЖурнала",
+      "property:attribute:ДатаУничтожения:field.fillChecking={\"type\":\"enum\",\"value\":\"showError\"}",
+      "property:attribute:ДатаУничтожения:field.fillValue={\"type\":\"null\"}",
+      "property:attribute:ДатаУничтожения:field.indexing={\"type\":\"enum\",\"value\":\"dontIndex\"}",
+      "property:attribute:ДатаУничтожения:field.multiLine={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:ДатаУничтожения:field.required={\"type\":\"boolean\",\"value\":true}",
+      "property:attribute:ДатаУничтожения:field.type={\"type\":\"typeSet\",\"value\":{\"variants\":[{\"kind\":\"primitive\",\"primitive\":\"date\",\"qualifiers\":{\"date\":{\"dateFractions\":\"date\"}}}]}}",
+      "property:attribute:ДатаУничтожения:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Дата уничтожения ПДн\"}}",
+      "property:attribute:Значение:field.fillChecking={\"type\":\"enum\",\"value\":\"dontCheck\"}",
+      "property:attribute:Значение:field.indexing={\"type\":\"enum\",\"value\":\"dontIndex\"}",
+      "property:attribute:Значение:field.multiLine={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:Значение:field.required={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:Значение:field.type={\"type\":\"typeSet\",\"value\":{\"variants\":[{\"kind\":\"reference\",\"target\":{\"kind\":\"chartOfCharacteristicTypes\",\"name\":\"ДополнительныеРеквизитыИСведения\"}}]}}",
+      "property:attribute:Значение:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Значение\"}}",
+      "property:attribute:ИмяОбъекта:field.fillChecking={\"type\":\"enum\",\"value\":\"dontCheck\"}",
+      "property:attribute:ИмяОбъекта:field.indexing={\"type\":\"enum\",\"value\":\"dontIndex\"}",
+      "property:attribute:ИмяОбъекта:field.multiLine={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:ИмяОбъекта:field.required={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:ИмяОбъекта:field.type={\"type\":\"typeSet\",\"value\":{\"variants\":[{\"kind\":\"primitive\",\"primitive\":\"string\",\"qualifiers\":{\"string\":{\"length\":0,\"allowedLength\":\"variable\"}}}]}}",
+      "property:attribute:ИмяОбъекта:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Имя объекта\"}}",
+      "property:attribute:Категория:field.fillChecking={\"type\":\"enum\",\"value\":\"dontCheck\"}",
+      "property:attribute:Категория:field.indexing={\"type\":\"enum\",\"value\":\"dontIndex\"}",
+      "property:attribute:Категория:field.multiLine={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:Категория:field.required={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:Категория:field.type={\"type\":\"typeSet\",\"value\":{\"variants\":[{\"kind\":\"primitive\",\"primitive\":\"string\",\"qualifiers\":{\"string\":{\"length\":0,\"allowedLength\":\"variable\"}}}]}}",
+      "property:attribute:Категория:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Категория\"}}",
+      "property:attribute:КоличествоОбъектов:field.fillChecking={\"type\":\"enum\",\"value\":\"dontCheck\"}",
+      "property:attribute:КоличествоОбъектов:field.indexing={\"type\":\"enum\",\"value\":\"dontIndex\"}",
+      "property:attribute:КоличествоОбъектов:field.multiLine={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:КоличествоОбъектов:field.required={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:КоличествоОбъектов:field.type={\"type\":\"typeSet\",\"value\":{\"variants\":[{\"kind\":\"primitive\",\"primitive\":\"number\",\"qualifiers\":{\"number\":{\"digits\":10,\"fractionDigits\":0,\"allowedSign\":\"any\"}}}]}}",
+      "property:attribute:КоличествоОбъектов:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Количество объектов\"}}",
+      "property:attribute:Комментарий:field.fillChecking={\"type\":\"enum\",\"value\":\"dontCheck\"}",
+      "property:attribute:Комментарий:field.fillValue={\"type\":\"string\",\"value\":\"\"}",
+      "property:attribute:Комментарий:field.indexing={\"type\":\"enum\",\"value\":\"dontIndex\"}",
+      "property:attribute:Комментарий:field.multiLine={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:Комментарий:field.required={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:Комментарий:field.type={\"type\":\"typeSet\",\"value\":{\"variants\":[{\"kind\":\"primitive\",\"primitive\":\"string\",\"qualifiers\":{\"string\":{\"length\":0,\"allowedLength\":\"variable\"}}}]}}",
+      "property:attribute:Комментарий:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Комментарий\"}}",
+      "property:attribute:НаименованиеИнформационнойСистемы:field.fillChecking={\"type\":\"enum\",\"value\":\"dontCheck\"}",
+      "property:attribute:НаименованиеИнформационнойСистемы:field.fillValue={\"type\":\"null\"}",
+      "property:attribute:НаименованиеИнформационнойСистемы:field.indexing={\"type\":\"enum\",\"value\":\"dontIndex\"}",
+      "property:attribute:НаименованиеИнформационнойСистемы:field.multiLine={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:НаименованиеИнформационнойСистемы:field.required={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:НаименованиеИнформационнойСистемы:field.type={\"type\":\"typeSet\",\"value\":{\"variants\":[{\"kind\":\"primitive\",\"primitive\":\"string\",\"qualifiers\":{\"string\":{\"length\":0,\"allowedLength\":\"variable\"}}}]}}",
+      "property:attribute:НаименованиеИнформационнойСистемы:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Наименование информационной системы\"}}",
+      "property:attribute:НаименованиеОрганизации:field.fillChecking={\"type\":\"enum\",\"value\":\"dontCheck\"}",
+      "property:attribute:НаименованиеОрганизации:field.fillValue={\"type\":\"string\",\"value\":\"\"}",
+      "property:attribute:НаименованиеОрганизации:field.indexing={\"type\":\"enum\",\"value\":\"dontIndex\"}",
+      "property:attribute:НаименованиеОрганизации:field.multiLine={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:НаименованиеОрганизации:field.required={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:НаименованиеОрганизации:field.type={\"type\":\"typeSet\",\"value\":{\"variants\":[{\"kind\":\"primitive\",\"primitive\":\"string\",\"qualifiers\":{\"string\":{\"length\":0,\"allowedLength\":\"variable\"}}}]}}",
+      "property:attribute:НаименованиеОрганизации:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Наименование организации\"}}",
+      "property:attribute:Организация:field.fillChecking={\"type\":\"enum\",\"value\":\"showError\"}",
+      "property:attribute:Организация:field.fillValue={\"type\":\"null\"}",
+      "property:attribute:Организация:field.indexing={\"type\":\"enum\",\"value\":\"dontIndex\"}",
+      "property:attribute:Организация:field.multiLine={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:Организация:field.required={\"type\":\"boolean\",\"value\":true}",
+      "property:attribute:Организация:field.type={\"type\":\"typeSet\",\"value\":{\"variants\":[{\"kind\":\"definedType\",\"target\":{\"kind\":\"definedType\",\"name\":\"Организация\"}}]}}",
+      "property:attribute:Организация:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Организация\"}}",
+      "property:attribute:Ответственный:field.fillChecking={\"type\":\"enum\",\"value\":\"dontCheck\"}",
+      "property:attribute:Ответственный:field.fillValue={\"type\":\"null\"}",
+      "property:attribute:Ответственный:field.indexing={\"type\":\"enum\",\"value\":\"dontIndex\"}",
+      "property:attribute:Ответственный:field.multiLine={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:Ответственный:field.required={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:Ответственный:field.type={\"type\":\"typeSet\",\"value\":{\"variants\":[{\"kind\":\"reference\",\"target\":{\"kind\":\"catalog\",\"name\":\"Пользователи\"}}]}}",
+      "property:attribute:Ответственный:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Ответственный\"}}",
+      "property:attribute:ОтветственныйЗаОбработкуПерсональныхДанных:field.fillChecking={\"type\":\"enum\",\"value\":\"dontCheck\"}",
+      "property:attribute:ОтветственныйЗаОбработкуПерсональныхДанных:field.fillValue={\"type\":\"null\"}",
+      "property:attribute:ОтветственныйЗаОбработкуПерсональныхДанных:field.indexing={\"type\":\"enum\",\"value\":\"dontIndex\"}",
+      "property:attribute:ОтветственныйЗаОбработкуПерсональныхДанных:field.multiLine={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:ОтветственныйЗаОбработкуПерсональныхДанных:field.required={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:ОтветственныйЗаОбработкуПерсональныхДанных:field.type={\"type\":\"typeSet\",\"value\":{\"variants\":[{\"kind\":\"reference\",\"target\":{\"kind\":\"catalog\",\"name\":\"Пользователи\"}}]}}",
+      "property:attribute:ОтветственныйЗаОбработкуПерсональныхДанных:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Ответственный за обработку персональных данных\"}}",
+      "property:attribute:ПричинаУничтожения:field.fillChecking={\"type\":\"enum\",\"value\":\"dontCheck\"}",
+      "property:attribute:ПричинаУничтожения:field.fillValue={\"type\":\"null\"}",
+      "property:attribute:ПричинаУничтожения:field.indexing={\"type\":\"enum\",\"value\":\"dontIndex\"}",
+      "property:attribute:ПричинаУничтожения:field.multiLine={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:ПричинаУничтожения:field.required={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:ПричинаУничтожения:field.type={\"type\":\"typeSet\",\"value\":{\"variants\":[{\"kind\":\"primitive\",\"primitive\":\"string\",\"qualifiers\":{\"string\":{\"length\":0,\"allowedLength\":\"variable\"}}}]}}",
+      "property:attribute:ПричинаУничтожения:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Причина уничтожения ПДн\"}}",
+      "property:attribute:Свойство:field.fillChecking={\"type\":\"enum\",\"value\":\"dontCheck\"}",
+      "property:attribute:Свойство:field.indexing={\"type\":\"enum\",\"value\":\"dontIndex\"}",
+      "property:attribute:Свойство:field.multiLine={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:Свойство:field.required={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:Свойство:field.type={\"type\":\"typeSet\",\"value\":{\"variants\":[{\"kind\":\"reference\",\"target\":{\"kind\":\"chartOfCharacteristicTypes\",\"name\":\"ДополнительныеРеквизитыИСведения\"}}]}}",
+      "property:attribute:Свойство:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Свойство\"}}",
+      "property:attribute:СпособУничтожения:field.fillChecking={\"type\":\"enum\",\"value\":\"dontCheck\"}",
+      "property:attribute:СпособУничтожения:field.fillValue={\"type\":\"null\"}",
+      "property:attribute:СпособУничтожения:field.indexing={\"type\":\"enum\",\"value\":\"dontIndex\"}",
+      "property:attribute:СпособУничтожения:field.multiLine={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:СпособУничтожения:field.required={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:СпособУничтожения:field.type={\"type\":\"typeSet\",\"value\":{\"variants\":[{\"kind\":\"primitive\",\"primitive\":\"string\",\"qualifiers\":{\"string\":{\"length\":0,\"allowedLength\":\"variable\"}}}]}}",
+      "property:attribute:СпособУничтожения:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Способ уничтожения ПДн\"}}",
+      "property:attribute:Субъект:field.fillChecking={\"type\":\"enum\",\"value\":\"showError\"}",
+      "property:attribute:Субъект:field.fillValue={\"type\":\"null\"}",
+      "property:attribute:Субъект:field.indexing={\"type\":\"enum\",\"value\":\"dontIndex\"}",
+      "property:attribute:Субъект:field.multiLine={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:Субъект:field.required={\"type\":\"boolean\",\"value\":true}",
+      "property:attribute:Субъект:field.type={\"type\":\"typeSet\",\"value\":{\"variants\":[{\"kind\":\"definedType\",\"target\":{\"kind\":\"definedType\",\"name\":\"СубъектПерсональныхДанных\"}}]}}",
+      "property:attribute:Субъект:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Субъект\"}}",
+      "property:attribute:ТекстоваяСтрока:field.fillChecking={\"type\":\"enum\",\"value\":\"dontCheck\"}",
+      "property:attribute:ТекстоваяСтрока:field.indexing={\"type\":\"enum\",\"value\":\"dontIndex\"}",
+      "property:attribute:ТекстоваяСтрока:field.multiLine={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:ТекстоваяСтрока:field.required={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:ТекстоваяСтрока:field.type={\"type\":\"typeSet\",\"value\":{\"variants\":[{\"kind\":\"primitive\",\"primitive\":\"string\",\"qualifiers\":{\"string\":{\"length\":0,\"allowedLength\":\"variable\"}}}]}}",
+      "property:attribute:ТекстоваяСтрока:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Текстовая строка\"}}",
+      "property:attribute:ФИООтветственногоЗаОбработкуПДн:field.fillChecking={\"type\":\"enum\",\"value\":\"dontCheck\"}",
+      "property:attribute:ФИООтветственногоЗаОбработкуПДн:field.fillValue={\"type\":\"string\",\"value\":\"\"}",
+      "property:attribute:ФИООтветственногоЗаОбработкуПДн:field.indexing={\"type\":\"enum\",\"value\":\"dontIndex\"}",
+      "property:attribute:ФИООтветственногоЗаОбработкуПДн:field.multiLine={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:ФИООтветственногоЗаОбработкуПДн:field.required={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:ФИООтветственногоЗаОбработкуПДн:field.type={\"type\":\"typeSet\",\"value\":{\"variants\":[{\"kind\":\"primitive\",\"primitive\":\"string\",\"qualifiers\":{\"string\":{\"length\":150,\"allowedLength\":\"variable\"}}}]}}",
+      "property:attribute:ФИООтветственногоЗаОбработкуПДн:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"ФИО ответственного\"}}",
+      "property:attribute:ФИОСубъекта:field.fillChecking={\"type\":\"enum\",\"value\":\"dontCheck\"}",
+      "property:attribute:ФИОСубъекта:field.fillValue={\"type\":\"string\",\"value\":\"\"}",
+      "property:attribute:ФИОСубъекта:field.indexing={\"type\":\"enum\",\"value\":\"dontIndex\"}",
+      "property:attribute:ФИОСубъекта:field.multiLine={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:ФИОСубъекта:field.required={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:ФИОСубъекта:field.type={\"type\":\"typeSet\",\"value\":{\"variants\":[{\"kind\":\"primitive\",\"primitive\":\"string\",\"qualifiers\":{\"string\":{\"length\":150,\"allowedLength\":\"variable\"}}}]}}",
+      "property:attribute:ФИОСубъекта:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"ФИО субъекта\"}}",
+      "property:attribute:ЮридическийАдресОрганизации:field.fillChecking={\"type\":\"enum\",\"value\":\"dontCheck\"}",
+      "property:attribute:ЮридическийАдресОрганизации:field.fillValue={\"type\":\"string\",\"value\":\"\"}",
+      "property:attribute:ЮридическийАдресОрганизации:field.indexing={\"type\":\"enum\",\"value\":\"dontIndex\"}",
+      "property:attribute:ЮридическийАдресОрганизации:field.multiLine={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:ЮридическийАдресОрганизации:field.required={\"type\":\"boolean\",\"value\":false}",
+      "property:attribute:ЮридическийАдресОрганизации:field.type={\"type\":\"typeSet\",\"value\":{\"variants\":[{\"kind\":\"primitive\",\"primitive\":\"string\",\"qualifiers\":{\"string\":{\"length\":150,\"allowedLength\":\"variable\"}}}]}}",
+      "property:attribute:ЮридическийАдресОрганизации:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Юридический адрес организации\"}}",
+      "property:document:АктОбУничтоженииПерсональныхДанных:document.number.auto={\"type\":\"boolean\",\"value\":true}",
+      "property:document:АктОбУничтоженииПерсональныхДанных:document.number.length={\"type\":\"integer\",\"value\":11}",
+      "property:document:АктОбУничтоженииПерсональныхДанных:document.number.periodicity={\"type\":\"enum\",\"value\":\"year\"}",
+      "property:document:АктОбУничтоженииПерсональныхДанных:document.number.type={\"type\":\"enum\",\"value\":\"string\"}",
+      "property:document:АктОбУничтоженииПерсональныхДанных:document.posting.mode={\"type\":\"enum\",\"value\":\"allow\"}",
+      "property:document:АктОбУничтоженииПерсональныхДанных:document.realTimePosting.mode={\"type\":\"enum\",\"value\":\"deny\"}",
+      "property:document:АктОбУничтоженииПерсональныхДанных:document.registerRecordsDeletion.mode={\"type\":\"enum\",\"value\":\"deleteOnReversal\"}",
+      "property:document:АктОбУничтоженииПерсональныхДанных:document.registerRecordsWritingOnPost.mode={\"type\":\"enum\",\"value\":\"writeSelected\"}",
+      "property:document:АктОбУничтоженииПерсональныхДанных:help.includeInContents={\"type\":\"boolean\",\"value\":false}",
+      "property:document:АктОбУничтоженииПерсональныхДанных:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Акт об уничтожении персональных данных\"}}",
+      "property:document:АктОбУничтоженииПерсональныхДанных:presentation.list={\"type\":\"localizedString\",\"value\":{\"ru\":\"Акты об уничтожении персональных данных\"}}",
+      "property:form:ФормаДокумента:backing.content.available={\"type\":\"boolean\",\"value\":false}",
+      "property:form:ФормаДокумента:backing.content.opaque={\"type\":\"boolean\",\"value\":false}",
+      "property:form:ФормаДокумента:backing.descriptor.available={\"type\":\"boolean\",\"value\":false}",
+      "property:form:ФормаСписка:backing.content.available={\"type\":\"boolean\",\"value\":false}",
+      "property:form:ФормаСписка:backing.content.opaque={\"type\":\"boolean\",\"value\":false}",
+      "property:form:ФормаСписка:backing.descriptor.available={\"type\":\"boolean\",\"value\":false}",
+      "property:tabularSection:ДополнительныеРеквизиты:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Дополнительные реквизиты\"}}",
+      "property:tabularSection:ДополнительныеРеквизиты:tabularSection.lineNumberLength={\"type\":\"integer\",\"value\":5}",
+      "property:tabularSection:КатегорииДанных:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Категории данных\"}}",
+      "property:tabularSection:КатегорииДанных:tabularSection.lineNumberLength={\"type\":\"integer\",\"value\":5}",
+      "property:tabularSection:ОбъектыСУничтожаемымиДанными:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Объекты с уничтожаемыми данными\"}}",
+      "property:tabularSection:ОбъектыСУничтожаемымиДанными:tabularSection.lineNumberLength={\"type\":\"integer\",\"value\":5}",
+      "property:template:ДанныеПечати:backing.content.available={\"type\":\"boolean\",\"value\":false}",
+      "property:template:ДанныеПечати:backing.content.opaque={\"type\":\"boolean\",\"value\":false}",
+      "property:template:ДанныеПечати:backing.descriptor.available={\"type\":\"boolean\",\"value\":false}",
+      "property:template:ПФ_MXL_АктОбУничтоженииПерсональныхДанных:backing.content.available={\"type\":\"boolean\",\"value\":false}",
+      "property:template:ПФ_MXL_АктОбУничтоженииПерсональныхДанных:backing.content.opaque={\"type\":\"boolean\",\"value\":false}",
+      "property:template:ПФ_MXL_АктОбУничтоженииПерсональныхДанных:backing.descriptor.available={\"type\":\"boolean\",\"value\":false}",
+      "property:template:ПФ_MXL_ВыгрузкаИзЖурнала:backing.content.available={\"type\":\"boolean\",\"value\":false}",
+      "property:template:ПФ_MXL_ВыгрузкаИзЖурнала:backing.content.opaque={\"type\":\"boolean\",\"value\":false}",
+      "property:template:ПФ_MXL_ВыгрузкаИзЖурнала:backing.descriptor.available={\"type\":\"boolean\",\"value\":false}",
+      "relation:attributes:Contains:document:АктОбУничтоженииПерсональныхДанных:attribute:ДатаУничтожения",
+      "relation:attributes:Contains:document:АктОбУничтоженииПерсональныхДанных:attribute:Комментарий",
+      "relation:attributes:Contains:document:АктОбУничтоженииПерсональныхДанных:attribute:НаименованиеИнформационнойСистемы",
+      "relation:attributes:Contains:document:АктОбУничтоженииПерсональныхДанных:attribute:НаименованиеОрганизации",
+      "relation:attributes:Contains:document:АктОбУничтоженииПерсональныхДанных:attribute:Организация",
+      "relation:attributes:Contains:document:АктОбУничтоженииПерсональныхДанных:attribute:Ответственный",
+      "relation:attributes:Contains:document:АктОбУничтоженииПерсональныхДанных:attribute:ОтветственныйЗаОбработкуПерсональныхДанных",
+      "relation:attributes:Contains:document:АктОбУничтоженииПерсональныхДанных:attribute:ПричинаУничтожения",
+      "relation:attributes:Contains:document:АктОбУничтоженииПерсональныхДанных:attribute:СпособУничтожения",
+      "relation:attributes:Contains:document:АктОбУничтоженииПерсональныхДанных:attribute:Субъект",
+      "relation:attributes:Contains:document:АктОбУничтоженииПерсональныхДанных:attribute:ФИООтветственногоЗаОбработкуПДн",
+      "relation:attributes:Contains:document:АктОбУничтоженииПерсональныхДанных:attribute:ФИОСубъекта",
+      "relation:attributes:Contains:document:АктОбУничтоженииПерсональныхДанных:attribute:ЮридическийАдресОрганизации",
+      "relation:columns:Contains:tabularSection:ДополнительныеРеквизиты:attribute:Значение",
+      "relation:columns:Contains:tabularSection:ДополнительныеРеквизиты:attribute:Свойство",
+      "relation:columns:Contains:tabularSection:ДополнительныеРеквизиты:attribute:ТекстоваяСтрока",
+      "relation:columns:Contains:tabularSection:КатегорииДанных:attribute:ИмяОбъекта",
+      "relation:columns:Contains:tabularSection:КатегорииДанных:attribute:Категория",
+      "relation:columns:Contains:tabularSection:КатегорииДанных:attribute:Субъект",
+      "relation:columns:Contains:tabularSection:ОбъектыСУничтожаемымиДанными:attribute:ИмяОбъекта",
+      "relation:columns:Contains:tabularSection:ОбъектыСУничтожаемымиДанными:attribute:КоличествоОбъектов",
+      "relation:forms:Contains:document:АктОбУничтоженииПерсональныхДанных:form:ФормаДокумента",
+      "relation:forms:Contains:document:АктОбУничтоженииПерсональныхДанных:form:ФормаСписка",
+      "relation:tabularSections:Contains:document:АктОбУничтоженииПерсональныхДанных:tabularSection:ДополнительныеРеквизиты",
+      "relation:tabularSections:Contains:document:АктОбУничтоженииПерсональныхДанных:tabularSection:КатегорииДанных",
+      "relation:tabularSections:Contains:document:АктОбУничтоженииПерсональныхДанных:tabularSection:ОбъектыСУничтожаемымиДанными",
+      "relation:templates:Contains:document:АктОбУничтоженииПерсональныхДанных:template:ДанныеПечати",
+      "relation:templates:Contains:document:АктОбУничтоженииПерсональныхДанных:template:ПФ_MXL_АктОбУничтоженииПерсональныхДанных",
+      "relation:templates:Contains:document:АктОбУничтоженииПерсональныхДанных:template:ПФ_MXL_ВыгрузкаИзЖурнала",
+      "status:Partial"
     ],
     "Enums/ВажностьПроблемыУчета.xml": [
-      "property:enumeration:ВажностьПроблемыУчета:metadata.comment=\"Определяет значимость проблемы, выявленной при проверке\"",
-      "relation:enumValues:enumeration:ВажностьПроблемыУчета:enumerationValue:Ошибка",
-      "relation:enumValues:enumeration:ВажностьПроблемыУчета:enumerationValue:Предупреждение",
-      "relation:enumValues:enumeration:ВажностьПроблемыУчета:enumerationValue:ВажнаяИнформация",
-      "relation:enumValues:enumeration:ВажностьПроблемыУчета:enumerationValue:Информация",
-      "relation:enumValues:enumeration:ВажностьПроблемыУчета:enumerationValue:ПолезныйСовет"
+      "coverage:Partial=7",
+      "diagnostic:unmappedSemanticFact=16",
+      "node:enumeration:ВажностьПроблемыУчета",
+      "node:enumerationValue:ВажнаяИнформация",
+      "node:enumerationValue:Информация",
+      "node:enumerationValue:Ошибка",
+      "node:enumerationValue:ПолезныйСовет",
+      "node:enumerationValue:Предупреждение",
+      "property:enumeration:ВажностьПроблемыУчета:metadata.comment={\"type\":\"string\",\"value\":\"Определяет значимость проблемы, выявленной при проверке\"}",
+      "property:enumeration:ВажностьПроблемыУчета:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Важность проблемы учета\"}}",
+      "property:enumerationValue:ВажнаяИнформация:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Важная информация\"}}",
+      "property:enumerationValue:Информация:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Информация\"}}",
+      "property:enumerationValue:Ошибка:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Ошибка\"}}",
+      "property:enumerationValue:ПолезныйСовет:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Полезный совет\"}}",
+      "property:enumerationValue:Предупреждение:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Предупреждение\"}}",
+      "relation:enumValues:Contains:enumeration:ВажностьПроблемыУчета:enumerationValue:ВажнаяИнформация",
+      "relation:enumValues:Contains:enumeration:ВажностьПроблемыУчета:enumerationValue:Информация",
+      "relation:enumValues:Contains:enumeration:ВажностьПроблемыУчета:enumerationValue:Ошибка",
+      "relation:enumValues:Contains:enumeration:ВажностьПроблемыУчета:enumerationValue:ПолезныйСовет",
+      "relation:enumValues:Contains:enumeration:ВажностьПроблемыУчета:enumerationValue:Предупреждение",
+      "status:Partial"
     ],
     "InformationRegisters/АдминистративнаяИерархия.xml": [
-      "property:informationRegister:АдминистративнаяИерархия:register.periodicity=nonperiodical",
-      "property:informationRegister:АдминистративнаяИерархия:register.writeMode=independent",
-      "relation:dimensions:informationRegister:АдминистративнаяИерархия:dimension:Идентификатор",
-      "relation:dimensions:informationRegister:АдминистративнаяИерархия:dimension:РодительскийИдентификатор",
-      "property:dimension:РодительскийИдентификатор:field.mainFilter=true",
-      "property:dimension:РодительскийИдентификатор:field.indexing=index"
+      "coverage:Partial=5",
+      "diagnostic:unmappedSemanticFact=81",
+      "node:dimension:Идентификатор",
+      "node:dimension:КодСубъектаРФ",
+      "node:dimension:РодительскийИдентификатор",
+      "node:informationRegister:АдминистративнаяИерархия",
+      "property:dimension:Идентификатор:field.denyIncompleteValues={\"type\":\"boolean\",\"value\":false}",
+      "property:dimension:Идентификатор:field.fillChecking={\"type\":\"enum\",\"value\":\"dontCheck\"}",
+      "property:dimension:Идентификатор:field.fillValue={\"type\":\"null\"}",
+      "property:dimension:Идентификатор:field.indexing={\"type\":\"enum\",\"value\":\"dontIndex\"}",
+      "property:dimension:Идентификатор:field.mainFilter={\"type\":\"boolean\",\"value\":true}",
+      "property:dimension:Идентификатор:field.master={\"type\":\"boolean\",\"value\":false}",
+      "property:dimension:Идентификатор:field.multiLine={\"type\":\"boolean\",\"value\":false}",
+      "property:dimension:Идентификатор:field.required={\"type\":\"boolean\",\"value\":false}",
+      "property:dimension:Идентификатор:field.type={\"type\":\"typeSet\",\"value\":{\"variants\":[{\"kind\":\"primitive\",\"primitive\":\"uuid\"}]}}",
+      "property:dimension:Идентификатор:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Идентификатор\"}}",
+      "property:dimension:КодСубъектаРФ:field.denyIncompleteValues={\"type\":\"boolean\",\"value\":false}",
+      "property:dimension:КодСубъектаРФ:field.fillChecking={\"type\":\"enum\",\"value\":\"dontCheck\"}",
+      "property:dimension:КодСубъектаРФ:field.fillValue={\"type\":\"null\"}",
+      "property:dimension:КодСубъектаРФ:field.indexing={\"type\":\"enum\",\"value\":\"index\"}",
+      "property:dimension:КодСубъектаРФ:field.mainFilter={\"type\":\"boolean\",\"value\":true}",
+      "property:dimension:КодСубъектаРФ:field.master={\"type\":\"boolean\",\"value\":false}",
+      "property:dimension:КодСубъектаРФ:field.multiLine={\"type\":\"boolean\",\"value\":false}",
+      "property:dimension:КодСубъектаРФ:field.required={\"type\":\"boolean\",\"value\":false}",
+      "property:dimension:КодСубъектаРФ:field.type={\"type\":\"typeSet\",\"value\":{\"variants\":[{\"kind\":\"primitive\",\"primitive\":\"number\",\"qualifiers\":{\"number\":{\"digits\":2,\"fractionDigits\":0,\"allowedSign\":\"any\"}}}]}}",
+      "property:dimension:КодСубъектаРФ:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Код субъекта РФ\"}}",
+      "property:dimension:РодительскийИдентификатор:field.denyIncompleteValues={\"type\":\"boolean\",\"value\":false}",
+      "property:dimension:РодительскийИдентификатор:field.fillChecking={\"type\":\"enum\",\"value\":\"dontCheck\"}",
+      "property:dimension:РодительскийИдентификатор:field.fillValue={\"type\":\"null\"}",
+      "property:dimension:РодительскийИдентификатор:field.indexing={\"type\":\"enum\",\"value\":\"index\"}",
+      "property:dimension:РодительскийИдентификатор:field.mainFilter={\"type\":\"boolean\",\"value\":true}",
+      "property:dimension:РодительскийИдентификатор:field.master={\"type\":\"boolean\",\"value\":false}",
+      "property:dimension:РодительскийИдентификатор:field.multiLine={\"type\":\"boolean\",\"value\":false}",
+      "property:dimension:РодительскийИдентификатор:field.required={\"type\":\"boolean\",\"value\":false}",
+      "property:dimension:РодительскийИдентификатор:field.type={\"type\":\"typeSet\",\"value\":{\"variants\":[{\"kind\":\"primitive\",\"primitive\":\"uuid\"}]}}",
+      "property:dimension:РодительскийИдентификатор:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Родительский идентификатор\"}}",
+      "property:informationRegister:АдминистративнаяИерархия:help.includeInContents={\"type\":\"boolean\",\"value\":false}",
+      "property:informationRegister:АдминистративнаяИерархия:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Административная иерархия\"}}",
+      "property:informationRegister:АдминистративнаяИерархия:register.periodicity={\"type\":\"enum\",\"value\":\"nonperiodical\"}",
+      "property:informationRegister:АдминистративнаяИерархия:register.writeMode={\"type\":\"enum\",\"value\":\"independent\"}",
+      "relation:dimensions:Contains:informationRegister:АдминистративнаяИерархия:dimension:Идентификатор",
+      "relation:dimensions:Contains:informationRegister:АдминистративнаяИерархия:dimension:КодСубъектаРФ",
+      "relation:dimensions:Contains:informationRegister:АдминистративнаяИерархия:dimension:РодительскийИдентификатор",
+      "status:Partial"
     ],
     "Languages/Русский.xml": [
-      "property:language:Русский:metadata.name=\"Русский\""
+      "coverage:Partial=2",
+      "diagnostic:unmappedSemanticFact=1",
+      "node:language:Русский",
+      "property:language:Русский:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Русский\"}}",
+      "status:Partial"
     ],
     "Reports/АнализВерсийОбъектов.xml": [
-      "property:report:АнализВерсийОбъектов:report.mainDataCompositionSchema=\"Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных\"",
-      "relation:templates:report:АнализВерсийОбъектов:template:ОсновнаяСхемаКомпоновкиДанных",
-      "property:template:ОсновнаяСхемаКомпоновкиДанных:template.type=dataCompositionSchema",
-      "property:template:ОсновнаяСхемаКомпоновкиДанных:backing.descriptor.available=true",
-      "property:template:ОсновнаяСхемаКомпоновкиДанных:backing.content.available=true",
-      "property:template:ОсновнаяСхемаКомпоновкиДанных:backing.content.opaque=true"
+      "coverage:Partial=3",
+      "diagnostic:unmappedSemanticFact=11",
+      "node:report:АнализВерсийОбъектов",
+      "node:template:ОсновнаяСхемаКомпоновкиДанных",
+      "property:report:АнализВерсийОбъектов:help.includeInContents={\"type\":\"boolean\",\"value\":false}",
+      "property:report:АнализВерсийОбъектов:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Анализ версий объектов\"}}",
+      "property:report:АнализВерсийОбъектов:report.mainDataCompositionSchema={\"type\":\"string\",\"value\":\"Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных\"}",
+      "property:template:ОсновнаяСхемаКомпоновкиДанных:backing.content.available={\"type\":\"boolean\",\"value\":true}",
+      "property:template:ОсновнаяСхемаКомпоновкиДанных:backing.content.opaque={\"type\":\"boolean\",\"value\":true}",
+      "property:template:ОсновнаяСхемаКомпоновкиДанных:backing.descriptor.available={\"type\":\"boolean\",\"value\":true}",
+      "property:template:ОсновнаяСхемаКомпоновкиДанных:backing.descriptor.uuid={\"type\":\"uuid\",\"value\":\"9111e28e-c1c7-414b-9288-61bd06a04d04\"}",
+      "property:template:ОсновнаяСхемаКомпоновкиДанных:metadata.synonym={\"type\":\"localizedString\",\"value\":{\"ru\":\"Основная схема компоновки данных\"}}",
+      "property:template:ОсновнаяСхемаКомпоновкиДанных:template.type={\"type\":\"enum\",\"value\":\"dataCompositionSchema\"}",
+      "relation:templates:Contains:report:АнализВерсийОбъектов:template:ОсновнаяСхемаКомпоновкиДанных",
+      "status:Partial"
     ]
   },
   "enumSemanticInventory": [
-    "allow", "balance", "binaryData", "dataCompositionSchema", "day", "deny",
-    "dontCheck", "dontIndex", "dontUse", "duringRequest", "duringSession", "forItem",
-    "geographicalSchema", "graphicalSchema", "hierarchyOfGroupsAndItems", "hierarchyOfItems",
-    "htmlDocument", "in", "inOut", "independent", "index", "indexWithAdditionalOrder",
-    "managed", "month", "nonperiodical", "number", "ordinary", "out", "quarter",
-    "recorderPosition", "recorderSubordinate", "second", "showError", "spreadsheetDocument",
-    "string", "textDocument", "turnovers", "use", "year"
+    "string",
+    "number",
+    "nonperiodical",
+    "second",
+    "day",
+    "month",
+    "quarter",
+    "year",
+    "wholeCollection",
+    "recorderPosition",
+    "allow",
+    "deny",
+    "deleteOnReversal",
+    "writeSelected",
+    "hierarchyOfItems",
+    "hierarchyOfGroupsAndItems",
+    "balance",
+    "turnovers",
+    "independent",
+    "recorderSubordinate",
+    "dontCheck",
+    "showError",
+    "dontIndex",
+    "index",
+    "indexWithAdditionalOrder",
+    "use",
+    "dontUse",
+    "forItem",
+    "groupOnly",
+    "groupsAndItems",
+    "duringRequest",
+    "duringSession",
+    "in",
+    "out",
+    "inOut",
+    "managed",
+    "ordinary",
+    "dataCompositionSchema",
+    "spreadsheetDocument",
+    "binaryData",
+    "textDocument",
+    "htmlDocument",
+    "geographicalSchema",
+    "graphicalSchema"
   ],
   "typeAliasInventory": [
-    "xmlSchema:string:string:", "xmlSchema:boolean:boolean:", "xmlSchema:decimal:number:",
-    "xmlSchema:date:date:", "xmlSchema:dateTime:date:", "dataCore:UUID:uuid:",
-    "dataCore:ValueStorage:opaque:", "dataCore:Null:null:", "dataCore:ValueTable:table:",
+    "xmlSchema:string:string:",
+    "xmlSchema:boolean:boolean:",
+    "xmlSchema:decimal:number:",
+    "xmlSchema:date:date:",
+    "xmlSchema:dateTime:date:",
+    "dataCore:UUID:uuid:",
+    "dataCore:ValueStorage:opaque:",
+    "dataCore:Null:null:",
+    "dataCore:ValueTable:table:",
     "currentConfiguration:CatalogRef:reference:catalog",
     "currentConfiguration:DocumentRef:reference:document",
     "currentConfiguration:ExchangePlanRef:reference:exchangePlan",
@@ -165,5 +792,530 @@
     "currentConfiguration:DataProcessorManager:manager:dataProcessor",
     "currentConfiguration:EnumManager:manager:enumeration",
     "currentConfiguration:ConstantManager:manager:constant"
+  ],
+  "enumAliasInventory": [
+    {
+      "semantic": "string",
+      "nativeAliases": [
+        "String",
+        "string"
+      ],
+      "propertyIds": [
+        "document.number.type"
+      ]
+    },
+    {
+      "semantic": "number",
+      "nativeAliases": [
+        "Number",
+        "number"
+      ],
+      "propertyIds": [
+        "document.number.type"
+      ]
+    },
+    {
+      "semantic": "nonperiodical",
+      "nativeAliases": [
+        "Nonperiodical",
+        "nonperiodical"
+      ],
+      "propertyIds": [
+        "register.periodicity"
+      ]
+    },
+    {
+      "semantic": "second",
+      "nativeAliases": [
+        "Second",
+        "second"
+      ],
+      "propertyIds": [
+        "register.periodicity"
+      ]
+    },
+    {
+      "semantic": "day",
+      "nativeAliases": [
+        "Day",
+        "day"
+      ],
+      "propertyIds": [
+        "document.number.periodicity",
+        "register.periodicity"
+      ]
+    },
+    {
+      "semantic": "month",
+      "nativeAliases": [
+        "Month",
+        "month"
+      ],
+      "propertyIds": [
+        "document.number.periodicity",
+        "register.periodicity"
+      ]
+    },
+    {
+      "semantic": "quarter",
+      "nativeAliases": [
+        "Quarter",
+        "quarter"
+      ],
+      "propertyIds": [
+        "document.number.periodicity",
+        "register.periodicity"
+      ]
+    },
+    {
+      "semantic": "year",
+      "nativeAliases": [
+        "Year",
+        "year"
+      ],
+      "propertyIds": [
+        "document.number.periodicity",
+        "register.periodicity"
+      ]
+    },
+    {
+      "semantic": "wholeCollection",
+      "nativeAliases": [
+        "WholeCatalog"
+      ],
+      "propertyIds": [
+        "document.number.periodicity"
+      ]
+    },
+    {
+      "semantic": "recorderPosition",
+      "nativeAliases": [
+        "RecorderPosition",
+        "recorderPosition"
+      ],
+      "propertyIds": [
+        "register.periodicity"
+      ]
+    },
+    {
+      "semantic": "allow",
+      "nativeAliases": [
+        "Allow",
+        "allow"
+      ],
+      "propertyIds": [
+        "document.posting.mode",
+        "document.realTimePosting.mode"
+      ]
+    },
+    {
+      "semantic": "deny",
+      "nativeAliases": [
+        "Deny",
+        "deny"
+      ],
+      "propertyIds": [
+        "document.posting.mode",
+        "document.realTimePosting.mode"
+      ]
+    },
+    {
+      "semantic": "deleteOnReversal",
+      "nativeAliases": [
+        "AutoDeleteOnUnpost"
+      ],
+      "propertyIds": [
+        "document.registerRecordsDeletion.mode"
+      ]
+    },
+    {
+      "semantic": "writeSelected",
+      "nativeAliases": [
+        "WriteSelected"
+      ],
+      "propertyIds": [
+        "document.registerRecordsWritingOnPost.mode"
+      ]
+    },
+    {
+      "semantic": "hierarchyOfItems",
+      "nativeAliases": [
+        "HierarchyOfItems",
+        "hierarchyOfItems",
+        "HierarchyItems"
+      ],
+      "propertyIds": [
+        "catalog.hierarchy.type"
+      ]
+    },
+    {
+      "semantic": "hierarchyOfGroupsAndItems",
+      "nativeAliases": [
+        "HierarchyOfGroupsAndItems",
+        "hierarchyOfGroupsAndItems",
+        "HierarchyFoldersAndItems"
+      ],
+      "propertyIds": [
+        "catalog.hierarchy.type"
+      ]
+    },
+    {
+      "semantic": "balance",
+      "nativeAliases": [
+        "Balance",
+        "balance",
+        "Balances"
+      ],
+      "propertyIds": [
+        "register.type"
+      ]
+    },
+    {
+      "semantic": "turnovers",
+      "nativeAliases": [
+        "Turnovers",
+        "turnovers"
+      ],
+      "propertyIds": [
+        "register.type"
+      ]
+    },
+    {
+      "semantic": "independent",
+      "nativeAliases": [
+        "Independent",
+        "independent"
+      ],
+      "propertyIds": [
+        "register.writeMode"
+      ]
+    },
+    {
+      "semantic": "recorderSubordinate",
+      "nativeAliases": [
+        "RecorderSubordinate",
+        "recorderSubordinate"
+      ],
+      "propertyIds": [
+        "register.writeMode"
+      ]
+    },
+    {
+      "semantic": "dontCheck",
+      "nativeAliases": [
+        "DontCheck",
+        "dontCheck"
+      ],
+      "propertyIds": [
+        "field.fillChecking"
+      ]
+    },
+    {
+      "semantic": "showError",
+      "nativeAliases": [
+        "ShowError",
+        "showError"
+      ],
+      "propertyIds": [
+        "field.fillChecking"
+      ]
+    },
+    {
+      "semantic": "dontIndex",
+      "nativeAliases": [
+        "DontIndex",
+        "dontIndex"
+      ],
+      "propertyIds": [
+        "field.indexing"
+      ]
+    },
+    {
+      "semantic": "index",
+      "nativeAliases": [
+        "Index",
+        "index"
+      ],
+      "propertyIds": [
+        "field.indexing"
+      ]
+    },
+    {
+      "semantic": "indexWithAdditionalOrder",
+      "nativeAliases": [
+        "IndexWithAdditionalOrder",
+        "indexWithAdditionalOrder"
+      ],
+      "propertyIds": [
+        "field.indexing"
+      ]
+    },
+    {
+      "semantic": "use",
+      "nativeAliases": [
+        "Use",
+        "use"
+      ],
+      "propertyIds": [
+        "httpService.reuseSessions",
+        "webService.reuseSessions"
+      ]
+    },
+    {
+      "semantic": "dontUse",
+      "nativeAliases": [
+        "DontUse",
+        "dontUse"
+      ],
+      "propertyIds": [
+        "module.returnValuesReuse",
+        "httpService.reuseSessions",
+        "webService.reuseSessions"
+      ]
+    },
+    {
+      "semantic": "forItem",
+      "nativeAliases": [
+        "ForItem",
+        "forItem"
+      ],
+      "propertyIds": [
+        "field.use"
+      ]
+    },
+    {
+      "semantic": "groupOnly",
+      "nativeAliases": [
+        "ForFolder"
+      ],
+      "propertyIds": [
+        "field.use"
+      ]
+    },
+    {
+      "semantic": "groupsAndItems",
+      "nativeAliases": [
+        "ForFolderAndItem"
+      ],
+      "propertyIds": [
+        "field.use"
+      ]
+    },
+    {
+      "semantic": "duringRequest",
+      "nativeAliases": [
+        "DuringRequest",
+        "duringRequest"
+      ],
+      "propertyIds": [
+        "module.returnValuesReuse"
+      ]
+    },
+    {
+      "semantic": "duringSession",
+      "nativeAliases": [
+        "DuringSession",
+        "duringSession"
+      ],
+      "propertyIds": [
+        "module.returnValuesReuse"
+      ]
+    },
+    {
+      "semantic": "in",
+      "nativeAliases": [
+        "In",
+        "in"
+      ],
+      "propertyIds": [
+        "webService.parameter.direction"
+      ]
+    },
+    {
+      "semantic": "out",
+      "nativeAliases": [
+        "Out",
+        "out"
+      ],
+      "propertyIds": [
+        "webService.parameter.direction"
+      ]
+    },
+    {
+      "semantic": "inOut",
+      "nativeAliases": [
+        "InOut",
+        "inOut"
+      ],
+      "propertyIds": [
+        "webService.parameter.direction"
+      ]
+    },
+    {
+      "semantic": "managed",
+      "nativeAliases": [
+        "Managed"
+      ],
+      "propertyIds": [
+        "form.type"
+      ]
+    },
+    {
+      "semantic": "ordinary",
+      "nativeAliases": [
+        "Ordinary"
+      ],
+      "propertyIds": [
+        "form.type"
+      ]
+    },
+    {
+      "semantic": "dataCompositionSchema",
+      "nativeAliases": [
+        "DataCompositionSchema"
+      ],
+      "propertyIds": [
+        "template.type"
+      ]
+    },
+    {
+      "semantic": "spreadsheetDocument",
+      "nativeAliases": [
+        "SpreadsheetDocument"
+      ],
+      "propertyIds": [
+        "template.type"
+      ]
+    },
+    {
+      "semantic": "binaryData",
+      "nativeAliases": [
+        "BinaryData"
+      ],
+      "propertyIds": [
+        "template.type"
+      ]
+    },
+    {
+      "semantic": "textDocument",
+      "nativeAliases": [
+        "TextDocument"
+      ],
+      "propertyIds": [
+        "template.type"
+      ]
+    },
+    {
+      "semantic": "htmlDocument",
+      "nativeAliases": [
+        "HTMLDocument"
+      ],
+      "propertyIds": [
+        "template.type"
+      ]
+    },
+    {
+      "semantic": "geographicalSchema",
+      "nativeAliases": [
+        "GeographicalSchema"
+      ],
+      "propertyIds": [
+        "template.type"
+      ]
+    },
+    {
+      "semantic": "graphicalSchema",
+      "nativeAliases": [
+        "GraphicalSchema"
+      ],
+      "propertyIds": [
+        "template.type"
+      ]
+    }
+  ],
+  "rightsFacts": [
+    "coverage:Complete=9",
+    "node:accessPermission:Products:1",
+    "node:accessPermission:Products:2",
+    "node:accessPermission:Products:3",
+    "node:accessPermission:SalesOrder:4",
+    "node:accessPermission:SalesOrder:5",
+    "node:accessPermission:SalesOrder:6",
+    "node:accessRestrictionTemplate:OnlyOwn(&CurrentUser)",
+    "node:role:SalesReader",
+    "property:accessPermission:Products:1:access.permission.allowed={\"type\":\"boolean\",\"value\":true}",
+    "property:accessPermission:Products:1:access.permission.name={\"type\":\"string\",\"value\":\"Read\"}",
+    "property:accessPermission:Products:2:access.permission.allowed={\"type\":\"boolean\",\"value\":true}",
+    "property:accessPermission:Products:2:access.permission.name={\"type\":\"string\",\"value\":\"View\"}",
+    "property:accessPermission:Products:2:access.restriction.conditions={\"type\":\"list\",\"value\":[{\"type\":\"string\",\"value\":\"Products.Owner = &CurrentUser\"}]}",
+    "property:accessPermission:Products:3:access.permission.allowed={\"type\":\"boolean\",\"value\":false}",
+    "property:accessPermission:Products:3:access.permission.name={\"type\":\"string\",\"value\":\"Update\"}",
+    "property:accessPermission:SalesOrder:4:access.permission.allowed={\"type\":\"boolean\",\"value\":true}",
+    "property:accessPermission:SalesOrder:4:access.permission.name={\"type\":\"string\",\"value\":\"Read\"}",
+    "property:accessPermission:SalesOrder:5:access.permission.allowed={\"type\":\"boolean\",\"value\":true}",
+    "property:accessPermission:SalesOrder:5:access.permission.name={\"type\":\"string\",\"value\":\"Posting\"}",
+    "property:accessPermission:SalesOrder:6:access.permission.allowed={\"type\":\"boolean\",\"value\":false}",
+    "property:accessPermission:SalesOrder:6:access.permission.name={\"type\":\"string\",\"value\":\"Deletion\"}",
+    "property:accessRestrictionTemplate:OnlyOwn(&CurrentUser):access.restriction.conditions={\"type\":\"list\",\"value\":[{\"type\":\"string\",\"value\":\"Owner = &CurrentUser\"}]}",
+    "property:role:SalesReader:access.attributes.defaultAllowed={\"type\":\"boolean\",\"value\":true}",
+    "property:role:SalesReader:access.childObjects.independent={\"type\":\"boolean\",\"value\":false}",
+    "property:role:SalesReader:access.newObjects.defaultAllowed={\"type\":\"boolean\",\"value\":false}",
+    "property:role:SalesReader:backing.content.available={\"type\":\"boolean\",\"value\":true}",
+    "relation:accessPermissions:Contains:role:SalesReader:accessPermission:Products:1",
+    "relation:accessPermissions:Contains:role:SalesReader:accessPermission:Products:2",
+    "relation:accessPermissions:Contains:role:SalesReader:accessPermission:Products:3",
+    "relation:accessPermissions:Contains:role:SalesReader:accessPermission:SalesOrder:4",
+    "relation:accessPermissions:Contains:role:SalesReader:accessPermission:SalesOrder:5",
+    "relation:accessPermissions:Contains:role:SalesReader:accessPermission:SalesOrder:6",
+    "relation:accessTarget:References:accessPermission:Products:1:catalog:Products",
+    "relation:accessTarget:References:accessPermission:Products:2:catalog:Products",
+    "relation:accessTarget:References:accessPermission:Products:3:catalog:Products",
+    "relation:accessTarget:References:accessPermission:SalesOrder:4:document:SalesOrder",
+    "relation:accessTarget:References:accessPermission:SalesOrder:5:document:SalesOrder",
+    "relation:accessTarget:References:accessPermission:SalesOrder:6:document:SalesOrder",
+    "relation:restrictionTemplates:Contains:role:SalesReader:accessRestrictionTemplate:OnlyOwn(&CurrentUser)",
+    "status:Available"
+  ],
+  "ownedArtifactFacts": [
+    "coverage:Partial=4",
+    "diagnostic:partialCoverage=1",
+    "node:form:MainForm",
+    "node:report:ArtifactReport",
+    "node:template:MainSchema",
+    "property:form:MainForm:backing.content.available={\"type\":\"boolean\",\"value\":true}",
+    "property:form:MainForm:backing.content.opaque={\"type\":\"boolean\",\"value\":true}",
+    "property:form:MainForm:backing.descriptor.available={\"type\":\"boolean\",\"value\":true}",
+    "property:form:MainForm:backing.descriptor.uuid={\"type\":\"uuid\",\"value\":\"20000000-0000-0000-0000-000000000002\"}",
+    "property:form:MainForm:form.type={\"type\":\"enum\",\"value\":\"managed\"}",
+    "property:template:MainSchema:backing.content.available={\"type\":\"boolean\",\"value\":true}",
+    "property:template:MainSchema:backing.content.opaque={\"type\":\"boolean\",\"value\":true}",
+    "property:template:MainSchema:backing.descriptor.available={\"type\":\"boolean\",\"value\":true}",
+    "property:template:MainSchema:backing.descriptor.uuid={\"type\":\"uuid\",\"value\":\"20000000-0000-0000-0000-000000000003\"}",
+    "property:template:MainSchema:template.type={\"type\":\"enum\",\"value\":\"dataCompositionSchema\"}",
+    "relation:forms:Contains:report:ArtifactReport:form:MainForm",
+    "relation:templates:Contains:report:ArtifactReport:template:MainSchema",
+    "status:Partial"
+  ],
+  "commonFormFacts": [
+    "coverage:Partial=2",
+    "diagnostic:partialCoverage=1",
+    "node:commonForm:CommonDashboard",
+    "property:commonForm:CommonDashboard:backing.content.available={\"type\":\"boolean\",\"value\":true}",
+    "property:commonForm:CommonDashboard:backing.content.opaque={\"type\":\"boolean\",\"value\":true}",
+    "property:commonForm:CommonDashboard:backing.descriptor.available={\"type\":\"boolean\",\"value\":true}",
+    "property:commonForm:CommonDashboard:backing.descriptor.uuid={\"type\":\"uuid\",\"value\":\"30000000-0000-0000-0000-000000000001\"}",
+    "property:commonForm:CommonDashboard:form.type={\"type\":\"enum\",\"value\":\"managed\"}",
+    "status:Partial"
+  ],
+  "commonTemplateFacts": [
+    "coverage:Partial=2",
+    "diagnostic:partialCoverage=1",
+    "node:commonTemplate:CommonLayout",
+    "property:commonTemplate:CommonLayout:backing.content.available={\"type\":\"boolean\",\"value\":true}",
+    "property:commonTemplate:CommonLayout:backing.content.opaque={\"type\":\"boolean\",\"value\":true}",
+    "property:commonTemplate:CommonLayout:backing.descriptor.available={\"type\":\"boolean\",\"value\":true}",
+    "property:commonTemplate:CommonLayout:backing.descriptor.uuid={\"type\":\"uuid\",\"value\":\"40000000-0000-0000-0000-000000000001\"}",
+    "property:commonTemplate:CommonLayout:template.type={\"type\":\"enum\",\"value\":\"binaryData\"}",
+    "status:Partial"
   ]
 }

@@ -54,11 +54,16 @@ pub(crate) fn parse_type_description_2_20(
         ));
     }
     let mut variants = Vec::new();
+    let mut unknown_ordinal = 0u32;
     let mut qualifiers = BTreeMap::new();
     let mut qualifier_groups = BTreeSet::new();
     let mut children = root.children().filter(Node::is_element).peekable();
     if children.peek().is_none() {
-        variants.push(parse_type_variant(&text_only(root)?, root)?);
+        variants.push(parse_type_variant(
+            &text_only(root)?,
+            root,
+            &mut unknown_ordinal,
+        )?);
     } else {
         for child in children {
             if child.tag_name().namespace() != Some(DATA_CORE_NAMESPACE) {
@@ -73,7 +78,11 @@ pub(crate) fn parse_type_description_2_20(
                             "Platform XML type description has too many variants",
                         ));
                     }
-                    variants.push(parse_type_variant(&text_only(child)?, child)?);
+                    variants.push(parse_type_variant(
+                        &text_only(child)?,
+                        child,
+                        &mut unknown_ordinal,
+                    )?);
                 }
                 "StringQualifiers" => parse_qualifier_group(
                     QualifierGroup::String,
@@ -287,7 +296,11 @@ fn parse_qualifiers(
     Ok(())
 }
 
-fn parse_type_variant(value: &str, node: Node<'_, '_>) -> Result<TypeVariant, SourceAdapterError> {
+fn parse_type_variant(
+    value: &str,
+    node: Node<'_, '_>,
+    unknown_ordinal: &mut u32,
+) -> Result<TypeVariant, SourceAdapterError> {
     let (prefix, local) = value
         .split_once(':')
         .filter(|(prefix, local)| !prefix.is_empty() && !local.is_empty() && !local.contains(':'))
@@ -307,7 +320,7 @@ fn parse_type_variant(value: &str, node: Node<'_, '_>) -> Result<TypeVariant, So
     };
     let (alias, target) = if native_namespace == NativeTypeNamespace::CurrentConfiguration {
         let Some((alias, target)) = local.split_once('.') else {
-            return Ok(TypeVariant::unknown());
+            return unknown_type_variant(unknown_ordinal);
         };
         if local.split('.').count() != 2 || !is_1c_identifier(target) {
             return Err(projection_error(
@@ -319,7 +332,7 @@ fn parse_type_variant(value: &str, node: Node<'_, '_>) -> Result<TypeVariant, So
         (local, None)
     };
     let Some(mapping) = super::semantic_map::type_alias(native_namespace, alias) else {
-        return Ok(TypeVariant::unknown());
+        return unknown_type_variant(unknown_ordinal);
     };
     match (mapping.category, target) {
         (TypeAliasCategory::Primitive(kind), None) => TypeVariant::primitive(kind, None)
@@ -340,8 +353,16 @@ fn parse_type_variant(value: &str, node: Node<'_, '_>) -> Result<TypeVariant, So
             .map_err(|_| projection_error("invalid semantic enumeration target")),
         (TypeAliasCategory::DefinedType, Some(target)) => TypeVariant::defined_type(target)
             .map_err(|_| projection_error("invalid semantic defined-type target")),
-        _ => Ok(TypeVariant::unknown()),
+        _ => unknown_type_variant(unknown_ordinal),
     }
+}
+
+fn unknown_type_variant(ordinal: &mut u32) -> Result<TypeVariant, SourceAdapterError> {
+    *ordinal = ordinal
+        .checked_add(1)
+        .ok_or_else(|| resource_limit("too many unknown Platform XML type variants"))?;
+    TypeVariant::unknown_with_ordinal(*ordinal)
+        .map_err(|_| projection_error("invalid semantic unknown type ordinal"))
 }
 
 fn text_only(node: Node<'_, '_>) -> Result<String, SourceAdapterError> {

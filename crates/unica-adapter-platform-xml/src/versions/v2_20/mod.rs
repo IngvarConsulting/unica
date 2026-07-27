@@ -102,6 +102,10 @@ pub(crate) fn manifest() -> AdapterManifest {
     }
 }
 
+pub(crate) fn validate_coverage_manifest(raw: &str) -> Result<(), SourceAdapterError> {
+    semantic_map::validate_coverage_manifest(raw)
+}
+
 fn capture_provider(
     source: &SourceContext,
 ) -> Result<(provider::PlatformXmlProvider, SourceBinding), SourceAdapterError> {

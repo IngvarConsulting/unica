@@ -187,6 +187,7 @@ pub enum PropertyType {
     ObjectRef,
     List,
     Structure,
+    EmptyReference,
     Null,
     Unknown,
 }
@@ -611,7 +612,9 @@ enum TypeVariantValue {
     Key(SemanticTypeTarget),
     Enumeration(SemanticTypeTarget),
     DefinedType(SemanticTypeTarget),
-    Unknown,
+    Unknown {
+        ordinal: u32,
+    },
 }
 
 impl TypeVariant {
@@ -733,8 +736,19 @@ impl TypeVariant {
 
     pub const fn unknown() -> Self {
         Self {
-            value: TypeVariantValue::Unknown,
+            value: TypeVariantValue::Unknown { ordinal: 1 },
         }
+    }
+
+    pub fn unknown_with_ordinal(ordinal: u32) -> Result<Self, SemanticValueError> {
+        if ordinal == 0 {
+            return Err(SemanticValueError::new(
+                "semantic unknown type ordinal must be positive",
+            ));
+        }
+        Ok(Self {
+            value: TypeVariantValue::Unknown { ordinal },
+        })
     }
 
     pub fn defined_type(name: impl Into<String>) -> Result<Self, SemanticValueError> {
@@ -754,7 +768,14 @@ impl TypeVariant {
     }
 
     pub const fn is_unknown(&self) -> bool {
-        matches!(self.value, TypeVariantValue::Unknown)
+        matches!(self.value, TypeVariantValue::Unknown { .. })
+    }
+
+    pub const fn unknown_ordinal(&self) -> Option<u32> {
+        match self.value {
+            TypeVariantValue::Unknown { ordinal } => Some(ordinal),
+            _ => None,
+        }
     }
 
     pub fn qualifiers(&self) -> Option<&TypeQualifiers> {
@@ -773,7 +794,7 @@ impl TypeVariant {
             | TypeVariantValue::Key(target)
             | TypeVariantValue::Enumeration(target)
             | TypeVariantValue::DefinedType(target) => Some(target),
-            TypeVariantValue::Primitive { .. } | TypeVariantValue::Unknown => None,
+            TypeVariantValue::Primitive { .. } | TypeVariantValue::Unknown { .. } => None,
         }
     }
 
@@ -810,7 +831,9 @@ impl TypeVariant {
             TypeVariantValue::Enumeration(_) | TypeVariantValue::DefinedType(_) => Err(
                 SemanticValueError::new("semantic type target kind is inconsistent"),
             ),
-            TypeVariantValue::Unknown => Ok(()),
+            TypeVariantValue::Unknown { ordinal } => {
+                Self::unknown_with_ordinal(*ordinal).map(|_| ())
+            }
         }
     }
 }
@@ -849,7 +872,9 @@ impl Serialize for TypeVariant {
             DefinedType {
                 target: &'a SemanticTypeTarget,
             },
-            Unknown,
+            Unknown {
+                ordinal: u32,
+            },
         }
 
         self.validate().map_err(S::Error::custom)?;
@@ -865,7 +890,9 @@ impl Serialize for TypeVariant {
             TypeVariantValue::Key(target) => Wire::Key { target },
             TypeVariantValue::Enumeration(target) => Wire::Enumeration { target },
             TypeVariantValue::DefinedType(target) => Wire::DefinedType { target },
-            TypeVariantValue::Unknown => Wire::Unknown,
+            TypeVariantValue::Unknown { ordinal } => Wire::Unknown {
+                ordinal: *ordinal,
+            },
         }
         .serialize(serializer)
     }
@@ -911,7 +938,9 @@ impl<'de> Deserialize<'de> for TypeVariant {
             DefinedType {
                 target: TargetWire,
             },
-            Unknown,
+            Unknown {
+                ordinal: u32,
+            },
         }
 
         fn target_kind<E: serde::de::Error>(target: &TargetWire) -> Result<SemanticObjectKind, E> {
@@ -954,7 +983,7 @@ impl<'de> Deserialize<'de> for TypeVariant {
                 }
                 Self::defined_type(target.name)
             }
-            Wire::Unknown => Ok(Self::unknown()),
+            Wire::Unknown { ordinal } => Self::unknown_with_ordinal(ordinal),
         }
         .map_err(D::Error::custom)
     }
@@ -974,6 +1003,7 @@ pub enum PropertyValue {
     ObjectRef(ObjectRef),
     List(Vec<PropertyValue>),
     Structure(BTreeMap<String, PropertyValue>),
+    EmptyReference,
     Null,
     Unknown { summary: String },
 }
@@ -993,6 +1023,7 @@ impl PropertyValue {
             Self::ObjectRef(_) => PropertyType::ObjectRef,
             Self::List(_) => PropertyType::List,
             Self::Structure(_) => PropertyType::Structure,
+            Self::EmptyReference => PropertyType::EmptyReference,
             Self::Null => PropertyType::Null,
             Self::Unknown { .. } => PropertyType::Unknown,
         }
@@ -1057,6 +1088,7 @@ impl PropertyValue {
             | Self::EnumSymbol(_)
             | Self::Date(_)
             | Self::ObjectRef(_)
+            | Self::EmptyReference
             | Self::Null
             | Self::Unknown { .. } => Ok(()),
         }
@@ -1089,6 +1121,7 @@ impl Serialize for PropertyValue {
             ObjectRef(&'a ObjectRef),
             List(&'a [PropertyValue]),
             Structure(&'a BTreeMap<String, PropertyValue>),
+            EmptyReference,
             Null,
             Unknown(UnknownRef<'a>),
         }
@@ -1107,6 +1140,7 @@ impl Serialize for PropertyValue {
             Self::ObjectRef(value) => Wire::ObjectRef(value),
             Self::List(value) => Wire::List(value),
             Self::Structure(value) => Wire::Structure(value),
+            Self::EmptyReference => Wire::EmptyReference,
             Self::Null => Wire::Null,
             Self::Unknown { summary } => Wire::Unknown(UnknownRef { summary }),
         }
@@ -1156,18 +1190,22 @@ impl<'de> Deserialize<'de> for PropertyValue {
             ObjectRef(ObjectRefWire),
             List(Vec<PropertyValue>),
             Structure(BTreeMap<String, PropertyValue>),
+            EmptyReference,
             Null,
             Unknown(UnknownWire),
         }
 
         let raw = StrictJsonValue::deserialize(deserializer)?.into_json();
-        if raw.get("type").and_then(serde_json::Value::as_str) == Some("null")
+        if matches!(
+            raw.get("type").and_then(serde_json::Value::as_str),
+            Some("null" | "emptyReference")
+        )
             && raw
                 .as_object()
                 .is_some_and(|value| value.contains_key("value"))
         {
             return Err(D::Error::custom(
-                "semantic null value cannot carry a payload",
+                "payload-free semantic value cannot carry a payload",
             ));
         }
         let wire = serde_json::from_value::<Wire>(raw).map_err(D::Error::custom)?;
@@ -1211,6 +1249,7 @@ impl<'de> Deserialize<'de> for PropertyValue {
             }
             Wire::List(value) => Self::List(value),
             Wire::Structure(value) => Self::Structure(value),
+            Wire::EmptyReference => Self::EmptyReference,
             Wire::Null => Self::Null,
             Wire::Unknown(value) => Self::Unknown {
                 summary: value.summary,

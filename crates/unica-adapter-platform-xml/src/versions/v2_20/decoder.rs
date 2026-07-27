@@ -230,10 +230,11 @@ fn decode_inline_node(
             MetadataClassRole::Unknown | MetadataClassRole::Unsupported
         );
     let mut native_node = NativeMetadataNode {
-            class: native_class(profile),
-            uuid,
-            name,
-            state: NativeNodeState::ResolvedInline,
+        class: native_class(profile),
+        uuid,
+        name,
+        occurrence: None,
+        state: NativeNodeState::ResolvedInline,
             properties: properties.properties,
             references: properties.references,
             children: Vec::new(),
@@ -273,17 +274,15 @@ fn decode_children(
             unmapped_facts: 0,
         });
     };
-    if owner_profile.child_objects == ChildObjectsVocabulary::None {
-        return Err(corrupted(
-            "Platform XML class contains ChildObjects forbidden by the schema registry",
-        ));
-    }
-
     let mut identities = BTreeSet::new();
     let mut nodes = Vec::new();
     let mut complete = true;
     let mut unmapped_facts = 0usize;
-    for child in child_objects.children().filter(Node::is_element) {
+    for (position, child) in child_objects
+        .children()
+        .filter(Node::is_element)
+        .enumerate()
+    {
         context.register_relation()?;
         context.register_identity_item()?;
         if child.tag_name().namespace() != Some(METADATA_NAMESPACE) {
@@ -293,12 +292,19 @@ fn decode_children(
             .ok_or_else(|| {
                 corrupted("Platform XML child class is not allowed by the schema registry")
             })?;
+        if owner_profile.child_objects == ChildObjectsVocabulary::None
+            && profile.role != MetadataClassRole::Unknown
+        {
+            return Err(corrupted(
+                "Platform XML class contains a registered child forbidden by the schema registry",
+            ));
+        }
         let Some(role) = semantic_map::child_relation_role(owner_profile, profile) else {
             complete = false;
             unmapped_facts += 1;
             continue;
         };
-        let decoded = decode_scoped(context, |context| {
+        let mut decoded = decode_scoped(context, |context| {
             if matches!(
                 profile.role,
                 MetadataClassRole::Form | MetadataClassRole::Template
@@ -320,11 +326,29 @@ fn decode_children(
                 decode_inline_node(provider, child, profile, base_key, source_xml, context)
             }
         })?;
+        if profile.role == MetadataClassRole::Unknown {
+            let occurrence = u32::try_from(position + 1)
+                .map_err(|_| {
+                    error(
+                        SourceAdapterErrorKind::ResourceLimit,
+                        "too many Platform XML child occurrences",
+                    )
+                })?;
+            decoded.node.occurrence = Some(occurrence);
+            decoded.node.properties.insert(
+                "@unknownOccurrence".to_string(),
+                native_property(
+                    "@unknownOccurrence",
+                    NativePropertyValue::Scalar(occurrence.to_string()),
+                ),
+            );
+            decoded.node.unmapped_facts += 1;
+        }
         let identity = (
             child.tag_name().name().to_string(),
             decoded.node.name.clone(),
         );
-        if !identities.insert(identity) {
+        if profile.role != MetadataClassRole::Unknown && !identities.insert(identity) {
             return Err(error(
                 SourceAdapterErrorKind::IdentityCollision,
                 "Platform XML owner has duplicate child identities of the same class",
@@ -356,6 +380,7 @@ fn decode_unresolved_registration(
             class: native_class(profile),
             uuid: registration.uuid,
             name: registration.name.clone(),
+            occurrence: None,
             state: NativeNodeState::UnresolvedRegistration {
                 registration: registration.clone(),
             },
@@ -382,8 +407,16 @@ fn decode_backed_registration(
         Some(properties) => decode_properties_for_profile(properties, profile, context)?,
         None => DecodedProperties::synthetic_name(&registration.name),
     };
-    match profile.role {
-        MetadataClassRole::Form => {
+    let backing = semantic_map::backing_mapping(profile.kind).ok_or_else(|| {
+        corrupted("schema-backed registration has no coverage-registry backing mapping")
+    })?;
+    match backing.kind {
+        semantic_map::BackingKind::Form => {
+            if profile.role != MetadataClassRole::Form {
+                return Err(corrupted(
+                    "form backing mapping disagrees with the metadata role",
+                ));
+            }
             let descriptor_key = format!("{base_key}/Forms/{}.xml", registration.name);
             let content_key = format!("{base_key}/Forms/{}/Ext/Form.xml", registration.name);
             let (descriptor, descriptor_properties) = match snapshot_file(provider, &descriptor_key)
@@ -430,6 +463,7 @@ fn decode_backed_registration(
                     class: native_class(profile),
                     uuid: effective_uuid,
                     name: registration.name.clone(),
+                    occurrence: None,
                     state,
                     properties: properties.properties,
                     references: properties.references,
@@ -444,7 +478,12 @@ fn decode_backed_registration(
                 complete,
             })
         }
-        MetadataClassRole::Template => {
+        semantic_map::BackingKind::Template => {
+            if profile.role != MetadataClassRole::Template {
+                return Err(corrupted(
+                    "template backing mapping disagrees with the metadata role",
+                ));
+            }
             let descriptor_key = format!("{base_key}/Templates/{}.xml", registration.name);
             let (descriptor, descriptor_properties) =
                 match snapshot_file(provider, &descriptor_key) {
@@ -544,6 +583,7 @@ fn decode_backed_registration(
                     class: native_class(profile),
                     uuid: effective_uuid,
                     name: registration.name.clone(),
+                    occurrence: None,
                     state,
                     properties: properties.properties,
                     references: properties.references,
@@ -560,7 +600,9 @@ fn decode_backed_registration(
                 complete,
             })
         }
-        _ => unreachable!("schema-backed registrations are Form or Template"),
+        semantic_map::BackingKind::Rights => Err(corrupted(
+            "rights backing cannot be decoded as a child registration",
+        )),
     }
 }
 
@@ -705,6 +747,9 @@ fn decode_properties_for_profile(
         }
         let (value, value_complete) = decode_property_value(property, mapping)?;
         complete &= value_complete;
+        if mapping.is_some() && !value_complete {
+            unmapped_facts += 1;
+        }
         let provenance = if matches!(value, NativePropertyValue::Absent) {
             NativePropertyProvenance::Absent
         } else if matches!(
@@ -785,10 +830,15 @@ fn decode_property_value(
         }
         value_kind => {
             let value = property.text().unwrap_or_default().trim();
-            Ok((
-                scalar_property_value(Some(value_kind), property, value),
-                true,
-            ))
+            let value = scalar_property_value(Some(value_kind), property, value);
+            let complete = !matches!(
+                value,
+                NativePropertyValue::Unresolved
+                    | NativePropertyValue::UnresolvedScalar { .. }
+                    | NativePropertyValue::ReadableUnknownScalar { .. }
+                    | NativePropertyValue::Structured
+            );
+            Ok((value, complete))
         }
     }
 }
@@ -943,11 +993,16 @@ fn scalar_property_value(
     let Some((prefix, local_name)) = annotation.split_once(':') else {
         return unresolved_scalar(NativeScalarAnnotationIssue::Unknown);
     };
-    if prefix.is_empty()
-        || local_name.is_empty()
-        || local_name.contains(':')
-        || property.lookup_namespace_uri(Some(prefix)) != Some(XML_SCHEMA_NAMESPACE)
-    {
+    if prefix.is_empty() || local_name.is_empty() || local_name.contains(':') {
+        return unresolved_scalar(NativeScalarAnnotationIssue::Unknown);
+    }
+    let Some(namespace) = property.lookup_namespace_uri(Some(prefix)) else {
+        return unresolved_scalar(NativeScalarAnnotationIssue::Unknown);
+    };
+    if namespace == READABLE_NAMESPACE && local_name == "DesignTimeRef" {
+        return design_time_reference_value(value);
+    }
+    if namespace != XML_SCHEMA_NAMESPACE {
         return unresolved_scalar(NativeScalarAnnotationIssue::Unknown);
     }
     let type_annotation = match local_name {
@@ -965,6 +1020,28 @@ fn scalar_property_value(
     NativePropertyValue::AnnotatedScalar {
         value: value.to_string(),
         type_annotation,
+    }
+}
+
+fn design_time_reference_value(value: &str) -> NativePropertyValue {
+    let parts = value.split('.').collect::<Vec<_>>();
+    if parts.len() == 3
+        && parts[2] == "EmptyRef"
+        && is_1c_identifier(parts[1])
+        && semantic_map::reference_kind(parts[0]).is_some()
+    {
+        return NativePropertyValue::EmptyReference;
+    }
+    let target = parts
+        .len()
+        .checked_sub(2)
+        .and_then(|index| parts.get(index))
+        .copied()
+        .filter(|candidate| is_1c_identifier(candidate))
+        .unwrap_or("readable-reference");
+    NativePropertyValue::ReadableUnknownScalar {
+        category: super::native_model::NativeUnknownScalarCategory::Reference,
+        values: vec![target.to_string()],
     }
 }
 
@@ -1135,8 +1212,11 @@ fn apply_inline_backing(
     complete: &mut bool,
     context: &mut DecodeContext,
 ) -> Result<(), SourceAdapterError> {
-    match profile.kind {
-        SemanticObjectKind::Role => {
+    let Some(mapping) = semantic_map::backing_mapping(profile.kind) else {
+        return Ok(());
+    };
+    match (mapping.kind, profile.source) {
+        (semantic_map::BackingKind::Rights, _) => {
             let rights_key = format!("{base_key}/Ext/Rights.xml");
             let Some(bytes) = snapshot_file(provider, &rights_key) else {
                 node.backing = NativeNodeBacking::Rights(content_evidence(
@@ -1158,7 +1238,7 @@ fn apply_inline_backing(
             ));
             *complete &= decoded.complete;
         }
-        SemanticObjectKind::CommonForm => {
+        (semantic_map::BackingKind::Form, MappingSource::Native) => {
             let content_key = format!("{base_key}/Ext/Form.xml");
             let content = match snapshot_file(provider, &content_key) {
                 Some(bytes) => {
@@ -1185,7 +1265,7 @@ fn apply_inline_backing(
             });
             *complete = false;
         }
-        SemanticObjectKind::CommonTemplate => {
+        (semantic_map::BackingKind::Template, MappingSource::Native) => {
             let descriptor_type = node
                 .properties
                 .get("TemplateType")
@@ -1246,7 +1326,15 @@ fn apply_inline_backing(
             });
             *complete = false;
         }
-        _ => {}
+        (
+            semantic_map::BackingKind::Form | semantic_map::BackingKind::Template,
+            MappingSource::Derived,
+        ) => {}
+        _ => {
+            return Err(corrupted(
+                "coverage-registry backing mapping has no decoder dispatch",
+            ))
+        }
     }
     Ok(())
 }
@@ -1277,6 +1365,39 @@ fn decode_rights(
     let mut properties = BTreeMap::new();
     let mut complete = true;
     let mut unmapped_facts = 0usize;
+    let mut root_unknown = RightsUnknownEvidence::default();
+    audit_rights_attributes(
+        root,
+        &[
+            (None, "version"),
+            (None, "setForNewObjects"),
+            (None, "setForAttributesByDefault"),
+            (None, "independentRightsOfChildObjects"),
+            (Some(XML_SCHEMA_INSTANCE_NAMESPACE), "type"),
+        ],
+        &mut root_unknown,
+    );
+    match root.attribute("version") {
+        Some("2.17") => {}
+        Some(value) => root_unknown.record_value(value),
+        None => root_unknown.record_marker(),
+    }
+    match root.attribute((XML_SCHEMA_INSTANCE_NAMESPACE, "type")) {
+        Some("Rights") => {}
+        Some(value) => root_unknown.record_value(value),
+        None => root_unknown.record_marker(),
+    }
+    audit_rights_children(
+        root,
+        &[
+            "setForNewObjects",
+            "setForAttributesByDefault",
+            "independentRightsOfChildObjects",
+            "object",
+            "restrictionTemplate",
+        ],
+        &mut root_unknown,
+    );
     for (native, semantic_key) in [
         ("setForNewObjects", "@rightsNewObjectsDefault"),
         ("setForAttributesByDefault", "@rightsAttributesDefault"),
@@ -1285,20 +1406,26 @@ fn decode_rights(
             "@rightsChildObjectsIndependent",
         ),
     ] {
-        match rights_scalar(root, native).as_deref().and_then(parse_boolean) {
-            Some(value) => {
-                properties.insert(
-                    semantic_key.to_string(),
-                    native_property(
-                        semantic_key,
-                        NativePropertyValue::Scalar(value.to_string()),
-                    ),
-                );
+        let raw = rights_scalar_checked(root, native, true, &mut root_unknown);
+        let value = raw.as_deref().and_then(parse_boolean);
+        if value.is_none() {
+            match raw {
+                Some(value) => root_unknown.record_value(&value),
+                None => root_unknown.record_marker(),
             }
-            None => {
-                complete = false;
-                unmapped_facts += 1;
-            }
+            properties.insert(
+                semantic_key.to_string(),
+                native_property(semantic_key, NativePropertyValue::Unresolved),
+            );
+            complete = false;
+        } else {
+            properties.insert(
+                semantic_key.to_string(),
+                native_property(
+                    semantic_key,
+                    NativePropertyValue::Scalar(value.unwrap().to_string()),
+                ),
+            );
         }
     }
 
@@ -1311,37 +1438,58 @@ fn decode_rights(
         .expect("coverage registry maps access restriction templates");
     let mut children = Vec::new();
     let mut ordinal = 0usize;
-    for object in rights_children(root, "object") {
-        let Some(raw_target) = rights_scalar(object, "name") else {
-            complete = false;
-            unmapped_facts += 1;
-            continue;
+    for (object_ordinal, object) in rights_children(root, "object").enumerate() {
+        let mut object_unknown = RightsUnknownEvidence::default();
+        audit_rights_attributes(object, &[], &mut object_unknown);
+        audit_rights_children(object, &["name", "right"], &mut object_unknown);
+        let raw_target = rights_scalar_checked(object, "name", false, &mut object_unknown);
+        let (target_kind, target_name, target_complete) = match raw_target {
+            Some(raw_target) => decode_rights_target(&raw_target),
+            None => {
+                object_unknown.record_marker();
+                (
+                    SemanticObjectKind::Unknown,
+                    format!("unknown-target-{}", object_ordinal + 1),
+                    false,
+                )
+            }
         };
-        let (target_kind, target_name, target_complete) = decode_rights_target(&raw_target);
-        complete &= target_complete;
-        unmapped_facts += usize::from(!target_complete);
+        if !target_complete {
+            complete = false;
+        }
         for right in rights_children(object, "right") {
             ordinal += 1;
-            let Some(permission_name) = rights_scalar(right, "name") else {
-                complete = false;
-                unmapped_facts += 1;
-                continue;
-            };
-            let permission_value = rights_scalar(right, "value");
+            let mut permission_unknown = RightsUnknownEvidence::default();
+            audit_rights_attributes(right, &[], &mut permission_unknown);
+            audit_rights_children(
+                right,
+                &["name", "value", "restrictionByCondition"],
+                &mut permission_unknown,
+            );
+            let permission_name = rights_scalar_checked(
+                right,
+                "name",
+                false,
+                &mut permission_unknown,
+            )
+            .unwrap_or_else(|| {
+                permission_unknown.record_marker();
+                format!("unknown-permission-{ordinal}")
+            });
+            let permission_value =
+                rights_scalar_checked(right, "value", false, &mut permission_unknown);
             let permission_allowed = permission_value.as_deref().and_then(parse_boolean);
             if permission_allowed.is_none() {
+                match permission_value {
+                    Some(value) => permission_unknown.record_value(&value),
+                    None => permission_unknown.record_marker(),
+                }
                 complete = false;
-                unmapped_facts += 1;
             }
-            let restrictions = right
-                .children()
-                .filter(Node::is_element)
-                .filter(|child| {
-                    child.tag_name().namespace() == Some(RIGHTS_NAMESPACE)
-                        && !matches!(child.tag_name().name(), "name" | "value")
-                })
-                .flat_map(readable_leaf_values)
-                .collect::<Vec<_>>();
+            let restrictions = decode_rights_conditions(right, &mut permission_unknown);
+            if permission_unknown.facts > 0 {
+                complete = false;
+            }
             let mut permission_properties = synthetic_name_property(&format!(
                 "{target_name}:{permission_name}:{ordinal}"
             ));
@@ -1370,6 +1518,11 @@ fn decode_rights(
                     ),
                 );
             }
+            insert_rights_unknown_evidence(
+                &mut permission_properties,
+                "@unknownRightsPermission",
+                &permission_unknown,
+            );
             context.register_relation()?;
             context.register_identity_item()?;
             let permission_node = decode_scoped(context, |_context| {
@@ -1377,6 +1530,7 @@ fn decode_rights(
                     class: native_class(permission_profile),
                     uuid: None,
                     name: format!("{target_name}:{ordinal}"),
+                    occurrence: None,
                     state: NativeNodeState::ResolvedInline,
                     properties: permission_properties,
                     references: vec![NativeReferenceRelation {
@@ -1388,7 +1542,8 @@ fn decode_rights(
                     }],
                     children: Vec::new(),
                     unmapped_facts: usize::from(!target_complete)
-                        + usize::from(permission_allowed.is_none()),
+                        + usize::from(permission_allowed.is_none())
+                        + permission_unknown.facts,
                     backing: NativeNodeBacking::None,
                 })
             })?;
@@ -1397,22 +1552,21 @@ fn decode_rights(
                 node: permission_node,
             });
         }
+        if object_unknown.facts > 0 {
+            complete = false;
+            root_unknown.extend(object_unknown);
+        }
     }
     for template in rights_children(root, "restrictionTemplate") {
-        let Some(name) = rights_scalar(template, "name") else {
-            complete = false;
-            unmapped_facts += 1;
-            continue;
-        };
-        let restrictions = template
-            .children()
-            .filter(Node::is_element)
-            .filter(|child| {
-                child.tag_name().namespace() == Some(RIGHTS_NAMESPACE)
-                    && child.tag_name().name() != "name"
-            })
-            .flat_map(readable_leaf_values)
-            .collect::<Vec<_>>();
+        let mut template_unknown = RightsUnknownEvidence::default();
+        audit_rights_attributes(template, &[], &mut template_unknown);
+        audit_rights_children(template, &["name", "condition"], &mut template_unknown);
+        let name = rights_scalar_checked(template, "name", false, &mut template_unknown)
+            .unwrap_or_else(|| {
+                template_unknown.record_marker();
+                format!("unknown-template-{}", children.len() + 1)
+            });
+        let restrictions = decode_direct_rights_conditions(template, &mut template_unknown);
         let mut template_properties = synthetic_name_property(&name);
         if !restrictions.is_empty() {
             template_properties.insert(
@@ -1423,6 +1577,14 @@ fn decode_rights(
                 ),
             );
         }
+        insert_rights_unknown_evidence(
+            &mut template_properties,
+            "@unknownRightsTemplate",
+            &template_unknown,
+        );
+        if template_unknown.facts > 0 {
+            complete = false;
+        }
         context.register_relation()?;
         context.register_identity_item()?;
         let template_node = decode_scoped(context, |_context| {
@@ -1430,11 +1592,12 @@ fn decode_rights(
                 class: native_class(template_profile),
                 uuid: None,
                 name,
+                occurrence: None,
                 state: NativeNodeState::ResolvedInline,
                 properties: template_properties,
                 references: Vec::new(),
                 children: Vec::new(),
-                unmapped_facts: 0,
+                unmapped_facts: template_unknown.facts,
                 backing: NativeNodeBacking::None,
             })
         })?;
@@ -1443,32 +1606,10 @@ fn decode_rights(
             node: template_node,
         });
     }
-    let known_root_children = [
-        "setForNewObjects",
-        "setForAttributesByDefault",
-        "independentRightsOfChildObjects",
-        "object",
-        "restrictionTemplate",
-    ];
-    let unknown_values = root
-        .children()
-        .filter(Node::is_element)
-        .filter(|child| {
-            child.tag_name().namespace() != Some(RIGHTS_NAMESPACE)
-                || !known_root_children.contains(&child.tag_name().name())
-        })
-        .flat_map(readable_leaf_values)
-        .collect::<Vec<_>>();
-    if !unknown_values.is_empty() {
-        properties.insert(
-            "@unknownRights".to_string(),
-            native_property(
-                "@unknownRights",
-                NativePropertyValue::StringList(unknown_values),
-            ),
-        );
+    if root_unknown.facts > 0 {
+        insert_rights_unknown_evidence(&mut properties, "@unknownRights", &root_unknown);
         complete = false;
-        unmapped_facts += 1;
+        unmapped_facts += root_unknown.facts;
     }
     Ok(DecodedRights {
         properties,
@@ -1476,6 +1617,74 @@ fn decode_rights(
         complete,
         unmapped_facts,
     })
+}
+
+#[derive(Default)]
+struct RightsUnknownEvidence {
+    values: Vec<String>,
+    facts: usize,
+}
+
+impl RightsUnknownEvidence {
+    fn record_value(&mut self, value: &str) {
+        let value = value.trim();
+        self.facts += 1;
+        self.values.push(if value.is_empty() {
+            format!("extension-occurrence-{}", self.facts)
+        } else {
+            value.to_string()
+        });
+    }
+
+    fn record_marker(&mut self) {
+        self.facts += 1;
+        self.values
+            .push(format!("extension-occurrence-{}", self.facts));
+    }
+
+    fn record_node(&mut self, node: Node<'_, '_>) {
+        let values = readable_leaf_values(node);
+        if values.is_empty() {
+            self.record_marker();
+        } else {
+            for value in values {
+                self.record_value(&value);
+            }
+        }
+    }
+
+    fn extend(&mut self, other: Self) {
+        self.facts += other.facts;
+        self.values.extend(other.values);
+    }
+}
+
+fn audit_rights_attributes(
+    node: Node<'_, '_>,
+    allowed: &[(Option<&str>, &str)],
+    unknown: &mut RightsUnknownEvidence,
+) {
+    for attribute in node.attributes() {
+        if !allowed.iter().any(|(namespace, name)| {
+            attribute.namespace() == *namespace && attribute.name() == *name
+        }) {
+            unknown.record_value(attribute.value());
+        }
+    }
+}
+
+fn audit_rights_children(
+    node: Node<'_, '_>,
+    allowed: &[&str],
+    unknown: &mut RightsUnknownEvidence,
+) {
+    for child in node.children().filter(Node::is_element) {
+        if child.tag_name().namespace() != Some(RIGHTS_NAMESPACE)
+            || !allowed.contains(&child.tag_name().name())
+        {
+            unknown.record_node(child);
+        }
+    }
 }
 
 fn rights_children<'a, 'input>(
@@ -1489,28 +1698,100 @@ fn rights_children<'a, 'input>(
     })
 }
 
-fn rights_scalar(parent: Node<'_, '_>, name: &str) -> Option<String> {
-    parent
-        .attribute(name)
+fn rights_scalar_checked(
+    parent: Node<'_, '_>,
+    name: &str,
+    allow_attribute: bool,
+    unknown: &mut RightsUnknownEvidence,
+) -> Option<String> {
+    let attribute = allow_attribute.then(|| parent.attribute(name)).flatten();
+    let children = parent
+        .children()
+        .filter(|child| {
+            child.is_element()
+                && child.tag_name().namespace() == Some(RIGHTS_NAMESPACE)
+                && child.tag_name().name() == name
+        })
+        .collect::<Vec<_>>();
+    if usize::from(attribute.is_some()) + children.len() != 1 {
+        if let Some(value) = attribute {
+            unknown.record_value(value);
+        }
+        for child in children {
+            unknown.record_node(child);
+        }
+        return None;
+    }
+    if let Some(value) = attribute {
+        return Some(value.trim().to_string()).filter(|value| !value.is_empty());
+    }
+    let child = children[0];
+    audit_rights_attributes(child, &[], unknown);
+    if child.children().any(|nested| nested.is_element()) {
+        unknown.record_node(child);
+        return None;
+    }
+    child
+        .text()
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
-        .or_else(|| {
-            let mut children = parent.children().filter(|child| {
-                child.is_element()
-                    && child.tag_name().namespace() == Some(RIGHTS_NAMESPACE)
-                    && child.tag_name().name() == name
-            });
-            let child = children.next()?;
-            if children.next().is_some() || child.children().any(|nested| nested.is_element()) {
-                return None;
-            }
-            child
-                .text()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-        })
+}
+
+fn decode_rights_conditions(
+    right: Node<'_, '_>,
+    unknown: &mut RightsUnknownEvidence,
+) -> Vec<String> {
+    let mut conditions = Vec::new();
+    for restriction in rights_children(right, "restrictionByCondition") {
+        audit_rights_attributes(restriction, &[], unknown);
+        audit_rights_children(restriction, &["condition"], unknown);
+        let before = conditions.len();
+        conditions.extend(decode_direct_rights_conditions(restriction, unknown));
+        if conditions.len() == before {
+            unknown.record_marker();
+        }
+    }
+    conditions
+}
+
+fn decode_direct_rights_conditions(
+    parent: Node<'_, '_>,
+    unknown: &mut RightsUnknownEvidence,
+) -> Vec<String> {
+    let mut conditions = Vec::new();
+    for condition in rights_children(parent, "condition") {
+        audit_rights_attributes(condition, &[], unknown);
+        if condition.children().any(|child| child.is_element()) {
+            unknown.record_node(condition);
+            continue;
+        }
+        match condition
+            .text()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            Some(value) => conditions.push(value.to_string()),
+            None => unknown.record_marker(),
+        }
+    }
+    conditions
+}
+
+fn insert_rights_unknown_evidence(
+    properties: &mut BTreeMap<String, NativeProperty>,
+    key: &str,
+    unknown: &RightsUnknownEvidence,
+) {
+    if unknown.facts > 0 {
+        properties.insert(
+            key.to_string(),
+            native_property(
+                key,
+                NativePropertyValue::StringList(unknown.values.clone()),
+            ),
+        );
+    }
 }
 
 fn parse_boolean(value: &str) -> Option<bool> {
@@ -1523,16 +1804,25 @@ fn parse_boolean(value: &str) -> Option<bool> {
 
 fn decode_rights_target(value: &str) -> (SemanticObjectKind, String, bool) {
     let Some((native_class, name)) = value.split_once('.') else {
+        let name = if is_1c_identifier(value) {
+            value.to_string()
+        } else {
+            "unknown-target".to_string()
+        };
         return (
             SemanticObjectKind::Unknown,
-            "unknown-target".to_string(),
+            name,
             false,
         );
     };
     if value.split('.').count() != 2 || !is_1c_identifier(name) {
+        let readable_name = value
+            .split('.')
+            .find(|part| is_1c_identifier(part))
+            .unwrap_or("unknown-target");
         return (
             SemanticObjectKind::Unknown,
-            "unknown-target".to_string(),
+            readable_name.to_string(),
             false,
         );
     }

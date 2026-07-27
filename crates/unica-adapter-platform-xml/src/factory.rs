@@ -44,6 +44,11 @@ impl PlatformXmlAdapterFactory {
             legacy_metadata_classes: v2_20::metadata_classes(),
         }
     }
+
+    #[doc(hidden)]
+    pub fn validate_2_20_coverage_manifest(raw: &str) -> Result<(), SourceAdapterError> {
+        v2_20::validate_coverage_manifest(raw)
+    }
 }
 
 struct PlatformXmlAdapter;

@@ -68,6 +68,7 @@ impl SemanticPropertyDefinition {
                 PropertyType::ObjectRef => &[PropertyType::ObjectRef],
                 PropertyType::List => &[PropertyType::List],
                 PropertyType::Structure => &[PropertyType::Structure],
+                PropertyType::EmptyReference => &[PropertyType::EmptyReference],
                 PropertyType::Null => &[PropertyType::Null],
                 PropertyType::Unknown => &[PropertyType::Unknown],
             },
@@ -120,6 +121,7 @@ const FILL_VALUE_TYPES: &[PropertyType] = &[
     PropertyType::ObjectRef,
     PropertyType::List,
     PropertyType::Structure,
+    PropertyType::EmptyReference,
     PropertyType::Null,
     PropertyType::Unknown,
 ];

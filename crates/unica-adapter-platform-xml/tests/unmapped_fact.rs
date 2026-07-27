@@ -1,4 +1,9 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeSet,
+    fs,
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
 use unica_format_core::{
@@ -8,6 +13,8 @@ use unica_format_core::{
     source::{SourceContext, SourceFamily, SourceLocation},
     value::PropertyValue,
 };
+
+static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn unknown_native_root_is_readable_unknown_and_partial() {
@@ -24,6 +31,53 @@ fn unknown_child_is_retained_through_the_neutral_relation() {
     assert!(envelope.relation_index.iter().any(|relation| relation.role == SemanticRelationId::UNKNOWN
         && relation.target.kind == SemanticObjectKind::Unknown && relation.target.display_name == "NestedUnknown"));
     assert_neutral(&envelope);
+}
+
+#[test]
+fn unknown_children_under_no_vocabulary_owners_preserve_occurrence_and_position() {
+    for (owner_class, owner_name, owner_kind) in [
+        ("Attribute", "AttributeOwner", SemanticObjectKind::Attribute),
+        ("Form", "FormOwner", SemanticObjectKind::Form),
+        ("Template", "TemplateOwner", SemanticObjectKind::Template),
+    ] {
+        let xml = format!(
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{owner_class} uuid="72000000-0000-0000-0000-000000000001"><Properties><Name>{owner_name}</Name></Properties><ChildObjects><FutureChild><Properties><Name>Repeated</Name><Payload>first-readable-value</Payload></Properties></FutureChild><FutureChild><Properties><Name>Repeated</Name><Payload>second-readable-value</Payload></Properties></FutureChild></ChildObjects></{owner_class}></MetaDataObject>"#
+        );
+        let envelope = read_inline(
+            &format!("unknown-owner-{owner_name}"),
+            &format!("{owner_name}.xml"),
+            &xml,
+        );
+        assert_eq!(envelope.status, NavigationStatus::Partial, "{owner_name}");
+        assert!(envelope.nodes.iter().any(|node| {
+            node.object_ref.kind == owner_kind && node.object_ref.display_name == owner_name
+        }));
+        let unknown = envelope
+            .nodes
+            .iter()
+            .filter(|node| {
+                node.object_ref.kind == SemanticObjectKind::Unknown
+                    && node.object_ref.display_name == "Repeated"
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(unknown.len(), 2, "{owner_name} must retain both occurrences");
+        assert_ne!(unknown[0].object_ref.object_key, unknown[1].object_ref.object_key);
+        let ordinals = unknown
+            .iter()
+            .map(|node| {
+                let value = node.properties[&SemanticPropertyId::UNKNOWN_FACTS]
+                    .value()
+                    .expect("unknown occurrence evidence");
+                let json = serde_json::to_string(value).unwrap();
+                assert!(!json.contains("FutureChild"));
+                json
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(ordinals.len(), 2, "neutral occurrence evidence must distinguish duplicates");
+        assert!(ordinals.iter().any(|value| value.contains("first-readable-value")));
+        assert!(ordinals.iter().any(|value| value.contains("second-readable-value")));
+        assert_neutral(&envelope);
+    }
 }
 
 #[test]
@@ -50,7 +104,44 @@ fn unknown_type_variant_remains_in_the_type_set_and_marks_partial() {
     assert_eq!(envelope.status, NavigationStatus::Partial);
     let attribute = envelope.nodes.iter().find(|node| node.object_ref.display_name == "MysteryType").unwrap();
     let PropertyValue::TypeSet(types) = attribute.properties[&SemanticPropertyId::FIELD_TYPE].value().expect("readable type set") else { panic!("type set"); };
-    assert!(serde_json::to_string(types).unwrap().contains("\"kind\":\"unknown\""));
+    let json = serde_json::to_string(types).unwrap();
+    assert_eq!(json.matches("\"kind\":\"unknown\"").count(), 2);
+    assert!(json.contains("\"ordinal\":1"));
+    assert!(json.contains("\"ordinal\":2"));
+    assert!(!json.contains("FutureRecord"));
+    assert!(!json.contains("AnotherFuture"));
+}
+
+#[test]
+fn unknown_design_time_reference_retains_neutral_readable_evidence() {
+    let envelope = read_inline(
+        "unknown-design-time-reference",
+        "UnknownReference.xml",
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20"><Catalog uuid="73000000-0000-0000-0000-000000000001"><Properties><Name>UnknownReference</Name></Properties><ChildObjects><Attribute uuid="73000000-0000-0000-0000-000000000002"><Properties><Name>FirstReference</Name><FillValue xsi:type="xr:DesignTimeRef">Catalog.FirstTarget.FutureRef</FillValue></Properties></Attribute><Attribute uuid="73000000-0000-0000-0000-000000000003"><Properties><Name>SecondReference</Name><FillValue xsi:type="xr:DesignTimeRef">Catalog.SecondTarget.AnotherRef</FillValue></Properties></Attribute></ChildObjects></Catalog></MetaDataObject>"#,
+    );
+    assert_eq!(envelope.status, NavigationStatus::Partial);
+    let first = node_by_name(&envelope, "FirstReference");
+    let second = node_by_name(&envelope, "SecondReference");
+    let first = serde_json::to_string(
+        first.properties[&SemanticPropertyId::FIELD_FILL_VALUE]
+            .value()
+            .expect("first readable unknown reference"),
+    )
+    .unwrap();
+    let second = serde_json::to_string(
+        second.properties[&SemanticPropertyId::FIELD_FILL_VALUE]
+            .value()
+            .expect("second readable unknown reference"),
+    )
+    .unwrap();
+    assert_ne!(first, second);
+    assert!(first.contains("FirstTarget"));
+    assert!(second.contains("SecondTarget"));
+    for native in ["Catalog", "DesignTimeRef", "FutureRef", "AnotherRef", "xr:"] {
+        assert!(!first.contains(native));
+        assert!(!second.contains(native));
+    }
+    assert_neutral(&envelope);
 }
 
 #[test]
@@ -80,6 +171,28 @@ fn read_path(source_root: &Path, target: &Path) -> NavigationEnvelope {
     let registration = PlatformXmlAdapterFactory::new().registration();
     let CaptureResult::Captured(captured) = registration.capture.capture(&source).expect("unknown readable XML must probe") else { panic!("fixture must be captured"); };
     registration.read.read(&FormatReadRequest { captured: captured.clone(), query: NavigationQuery { target: NavigationTarget::CapturedTarget(captured.binding().target_identity.clone()), select: NavigationSelection { properties: PropertySelection::All, facets: FacetSelection::Full, relations: Vec::new() } } }).expect("unknown readable XML must project")
+}
+
+fn read_inline(label: &str, file_name: &str, xml: &str) -> NavigationEnvelope {
+    let root = std::env::temp_dir().join(format!(
+        "unica-platform-xml-task5-fix2-{label}-{}-{}",
+        std::process::id(),
+        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let target = root.join(file_name);
+    fs::write(&target, xml).unwrap();
+    let envelope = read_path(&root, &target);
+    fs::remove_dir_all(root).unwrap();
+    envelope
+}
+
+fn node_by_name<'a>(envelope: &'a NavigationEnvelope, name: &str) -> &'a unica_format_core::navigation::NavigationNode {
+    envelope
+        .nodes
+        .iter()
+        .find(|node| node.object_ref.display_name == name)
+        .unwrap_or_else(|| panic!("missing node {name}"))
 }
 
 fn tracked_root() -> PathBuf { PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v2_20") }

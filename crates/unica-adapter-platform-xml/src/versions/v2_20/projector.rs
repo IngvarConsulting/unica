@@ -141,12 +141,15 @@ impl<'a> GraphBuilder<'a> {
     ) -> Result<ObjectRef, SourceAdapterError> {
         self.reserve_output_node()?;
         let kind = node_kind(native_node)?;
+        let identity_name = native_node
+            .occurrence
+            .map(|occurrence| format!("{}#{occurrence}", native_node.name));
         let (key, identity) = object_key(
             &self.native.source.source_id,
             owner.map(|value| &value.object_key),
             kind.clone(),
             native_node.uuid,
-            &native_node.name,
+            identity_name.as_deref().unwrap_or(&native_node.name),
         )?;
         self.register_object_key(&key)?;
         let reference = ObjectRef::new(
@@ -431,7 +434,10 @@ impl<'a> GraphBuilder<'a> {
                 continue;
             };
             let property = project_property(mapping, native_property)?;
-            incomplete |= matches!(property.value_type(), PropertyType::Unknown)
+            incomplete |= matches!(
+                &native_property.value,
+                NativePropertyValue::ReadableUnknownScalar { .. }
+            ) || matches!(property.value_type(), PropertyType::Unknown)
                 || matches!(
                     property.value_state(),
                     crate::domain::navigation::PropertyValueState::Unresolved
@@ -875,29 +881,28 @@ fn node_coverage(node: &NativeMetadataNode, snapshot_coverage: CoverageState) ->
     if !matches!(snapshot_coverage, CoverageState::Complete) {
         return CoverageState::Partial;
     }
-    if node.class.role == MetadataClassRole::Unknown
-        && semantic_map::is_intentionally_partial(node.class.kind, "unknownSemantic")
-    {
-        return CoverageState::Partial;
-    }
-    if semantic_map::is_intentionally_partial(node.class.kind, "opaqueContent")
-        && matches!(
-            &node.backing,
-            NativeNodeBacking::Form(_) | NativeNodeBacking::Template(_)
-        )
-    {
-        return CoverageState::Partial;
-    }
-    if semantic_map::is_intentionally_partial(node.class.kind, "unknownValueVariant")
-        && node.properties.values().any(|property| {
-            matches!(
-                &property.value,
-                NativePropertyValue::TypeSet(value)
-                    if value.variants().iter().any(|variant| variant.is_unknown())
-            )
-        })
-    {
-        return CoverageState::Partial;
+    for reason in semantic_map::intentional_partial_reasons(node.class.kind) {
+        let applies = match reason {
+            semantic_map::IntentionalPartialReason::UnknownSemantic => {
+                node.class.role == MetadataClassRole::Unknown
+            }
+            semantic_map::IntentionalPartialReason::OpaqueContent => matches!(
+                &node.backing,
+                NativeNodeBacking::Form(_) | NativeNodeBacking::Template(_)
+            ),
+            semantic_map::IntentionalPartialReason::UnknownValueVariant => {
+                node.properties.values().any(|property| {
+                    matches!(
+                        &property.value,
+                        NativePropertyValue::TypeSet(value)
+                            if value.variants().iter().any(|variant| variant.is_unknown())
+                    )
+                })
+            }
+        };
+        if applies {
+            return CoverageState::Partial;
+        }
     }
     match &node.backing {
         NativeNodeBacking::Rights(content)
@@ -1090,6 +1095,10 @@ fn readable_unknown_fact(property: &NativeProperty) -> PropertyValue {
                 .collect(),
         ),
         NativePropertyValue::Null => PropertyValue::Null,
+        NativePropertyValue::EmptyReference => PropertyValue::EmptyReference,
+        NativePropertyValue::ReadableUnknownScalar { category, values } => {
+            readable_unknown_scalar(*category, values)
+        }
         NativePropertyValue::Absent => PropertyValue::Unknown {
             summary: "absent".to_string(),
         },
@@ -1117,6 +1126,16 @@ fn project_property(
         NativePropertyValue::Absent => SemanticProperty::absent(semantic_id),
         NativePropertyValue::Unresolved => SemanticProperty::unresolved(semantic_id),
         NativePropertyValue::UnresolvedScalar { .. } => SemanticProperty::unresolved(semantic_id),
+        NativePropertyValue::EmptyReference => SemanticProperty::explicit(
+            semantic_id,
+            PropertyValue::EmptyReference,
+        )?,
+        NativePropertyValue::ReadableUnknownScalar { category, values } => {
+            SemanticProperty::explicit(
+                semantic_id,
+                readable_unknown_scalar(*category, values),
+            )?
+        }
         NativePropertyValue::Scalar(value) => {
             scalar_property(mapping, value, None)?
         }
@@ -1152,6 +1171,31 @@ fn project_property(
     Ok(projected)
 }
 
+fn readable_unknown_scalar(
+    category: super::native_model::NativeUnknownScalarCategory,
+    values: &[String],
+) -> PropertyValue {
+    let category = match category {
+        super::native_model::NativeUnknownScalarCategory::Reference => "reference",
+    };
+    PropertyValue::Structure(BTreeMap::from([
+        (
+            "category".to_string(),
+            PropertyValue::String(category.to_string()),
+        ),
+        (
+            "evidence".to_string(),
+            PropertyValue::List(
+                values
+                    .iter()
+                    .cloned()
+                    .map(PropertyValue::String)
+                    .collect(),
+            ),
+        ),
+    ]))
+}
+
 fn scalar_property(
     mapping: &PropertyMapping,
     value: &str,
@@ -1160,7 +1204,7 @@ fn scalar_property(
     let semantic_id = mapping.semantic_id;
     let definition = crate::domain::navigation::property_definition(semantic_id);
     if definition.allowed_types() == [PropertyType::Enum] {
-        return Ok(semantic_map::enum_value(value)
+        return Ok(semantic_map::enum_value(semantic_id, value)
             .map(PropertyValue::EnumSymbol)
             .map(|value| SemanticProperty::explicit(semantic_id, value))
             .transpose()?

@@ -51,3 +51,5 @@ Task 5: fix round 1 implemented.
 - Independent frozen-parity commit: `6463ec51efc10a79f47af0da204690606280203b`.
 - Scoped validation: `cargo test -p unica-adapter-platform-xml --test legacy_parity --test unmapped_fact` passed (13 tests, 0 failures, no warnings).
 - Fix-round evidence, parity inventory, decisions, and intentional gaps are appended to `task-5-report.md`.
+Task 5: fix round 1 review failed — registry still omits relation-property/backing authority; DesignTimeRef EmptyRef is lost; legacy enum vocabulary incomplete; Rights extensions can yield false ready; unknown children under no-vocabulary roles still corrupt; parity checks subsets instead of exact information sets.
+Task 5: fix round 2 started (base d7fb6a78).

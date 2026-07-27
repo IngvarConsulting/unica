@@ -22,6 +22,7 @@ pub(crate) struct NativeMetadataNode {
     pub(crate) class: NativeMetadataClass,
     pub(crate) uuid: Option<Uuid>,
     pub(crate) name: String,
+    pub(crate) occurrence: Option<u32>,
     pub(crate) state: NativeNodeState,
     pub(crate) properties: BTreeMap<String, NativeProperty>,
     pub(crate) references: Vec<NativeReferenceRelation>,
@@ -152,6 +153,11 @@ pub(crate) enum NativePropertyValue {
     UnresolvedScalar {
         issue: NativeScalarAnnotationIssue,
     },
+    EmptyReference,
+    ReadableUnknownScalar {
+        category: NativeUnknownScalarCategory,
+        values: Vec<String>,
+    },
     /// A type description is normalized while its original XML node and
     /// namespace scope are alive.  No detached XML is retained.
     TypeSet(TypeSetValue),
@@ -161,6 +167,11 @@ pub(crate) enum NativePropertyValue {
     Structured,
     Absent,
     Unresolved,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeUnknownScalarCategory {
+    Reference,
 }
 
 /// Normalized schema-relevant `xsi:type` evidence for scalar XML values.

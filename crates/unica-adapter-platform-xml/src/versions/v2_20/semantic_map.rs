@@ -103,6 +103,7 @@ struct ChildMapping {
 struct EnumAlias {
     semantic: SemanticEnumValue,
     native_aliases: Vec<String>,
+    property_ids: Vec<SemanticPropertyId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,10 +151,25 @@ pub(crate) struct BackingMapping {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct IntentionalPartialCase {
     object_kinds: Vec<NodeKind>,
-    reason: String,
+    reason: IntentionalPartialReason,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum IntentionalPartialReason {
+    OpaqueContent,
+    UnknownSemantic,
+    UnknownValueVariant,
+}
+
+impl IntentionalPartialReason {
+    const ALL: [Self; 3] = [
+        Self::OpaqueContent,
+        Self::UnknownSemantic,
+        Self::UnknownValueVariant,
+    ];
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct CoverageRegistry {
     objects: Vec<MetadataClassProfile>,
     properties: Vec<PropertyMapping>,
@@ -227,6 +243,7 @@ struct RawChildMapping {
 struct RawEnumAlias {
     semantic: String,
     native_aliases: Vec<String>,
+    property_ids: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -302,15 +319,81 @@ impl CoverageRegistry {
             })
         }), "per-kind property mapping")?;
         ensure_unique(self.relation_properties.iter().flat_map(|entry| entry.object_kinds.iter().flat_map(move |kind| entry.native_names.iter().map(move |name| format!("{}:{name}", kind.as_str())))), "relation-property mapping")?;
+        ensure_unique(self.enum_aliases.iter().map(|entry| entry.semantic), "semantic enum mapping")?;
         ensure_unique(self.enum_aliases.iter().flat_map(|entry| entry.native_aliases.iter().cloned()), "enum alias")?;
         ensure_unique(self.type_variants.iter().map(|entry| format!("{:?}:{}", entry.namespace, entry.alias)), "type alias")?;
         ensure_unique(self.backing_artifacts.iter().flat_map(|entry| entry.object_kinds.iter().map(|kind| kind.as_str())), "backing mapping")?;
-        ensure_unique(self.intentional_partial_cases.iter().flat_map(|entry| entry.object_kinds.iter().map(move |kind| format!("{}:{}", kind.as_str(), entry.reason.as_str()))), "intentional partial case")?;
-        if self.objects.is_empty() || self.properties.is_empty() || self.children.is_empty()
+        ensure_unique(self.intentional_partial_cases.iter().flat_map(|entry| entry.object_kinds.iter().map(move |kind| (*kind, entry.reason))), "intentional partial case")?;
+        if self.objects.is_empty() || self.properties.is_empty() || self.relation_properties.is_empty()
+            || self.children.is_empty()
             || self.enum_aliases.is_empty() || self.type_variants.is_empty()
             || self.backing_artifacts.is_empty() || self.intentional_partial_cases.is_empty()
         {
             return Err(invalid_registry("coverage registry has an empty required section"));
+        }
+        let covered_enums = self
+            .enum_aliases
+            .iter()
+            .map(|entry| entry.semantic)
+            .collect::<BTreeSet<_>>();
+        let closed_enums = SemanticEnumValue::ALL
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        if covered_enums != closed_enums {
+            return Err(invalid_registry(
+                "coverage registry enum inventory is not exhaustive",
+            ));
+        }
+        for alias in &self.enum_aliases {
+            if alias.native_aliases.is_empty()
+                || alias.native_aliases.iter().any(|value| value.trim().is_empty())
+                || alias.property_ids.is_empty()
+            {
+                return Err(invalid_registry(
+                    "coverage registry enum aliases and applicability must be nonempty",
+                ));
+            }
+            for property_id in &alias.property_ids {
+                if !self.properties.iter().any(|property| {
+                    property.semantic_id == *property_id
+                        && property.value_kind == NativeValueKind::Enum
+                }) {
+                    return Err(invalid_registry(
+                        "coverage registry enum applicability is not an enum property",
+                    ));
+                }
+            }
+        }
+        for property in self
+            .properties
+            .iter()
+            .filter(|property| property.value_kind == NativeValueKind::Enum)
+        {
+            if !self
+                .enum_aliases
+                .iter()
+                .any(|alias| alias.property_ids.contains(&property.semantic_id))
+            {
+                return Err(invalid_registry(
+                    "coverage registry enum property has no declared aliases",
+                ));
+            }
+        }
+        let partial_reasons = self
+            .intentional_partial_cases
+            .iter()
+            .map(|entry| entry.reason)
+            .collect::<BTreeSet<_>>();
+        if partial_reasons
+            != IntentionalPartialReason::ALL
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>()
+        {
+            return Err(invalid_registry(
+                "coverage registry intentional-partial reasons are not exhaustive",
+            ));
         }
         Ok(())
     }
@@ -331,8 +414,18 @@ fn parse_kind(raw: &str) -> Result<NodeKind, SourceAdapterError> {
 }
 
 fn parse_kinds(raw: Vec<String>) -> Result<(Vec<NodeKind>, bool), SourceAdapterError> {
+    if raw.is_empty() {
+        return Err(invalid_registry(
+            "coverage registry applicability must be nonempty",
+        ));
+    }
     if raw == ["*"] {
         return Ok((Vec::new(), true));
+    }
+    if raw.iter().any(|value| value == "*") {
+        return Err(invalid_registry(
+            "coverage registry wildcard applicability must stand alone",
+        ));
     }
     Ok((raw.iter().map(|value| parse_kind(value)).collect::<Result<_, _>>()?, false))
 }
@@ -376,6 +469,11 @@ fn parse_child_vocabulary(raw: &str) -> Result<ChildObjectsVocabulary, SourceAda
 }
 
 fn convert_object(raw: RawObjectMapping) -> Result<MetadataClassProfile, SourceAdapterError> {
+    if raw.native_class.trim().is_empty() {
+        return Err(invalid_registry(
+            "coverage registry native object class must be nonempty",
+        ));
+    }
     Ok(MetadataClassProfile {
         class_name: raw.native_class,
         kind: parse_kind(&raw.kind)?,
@@ -391,6 +489,13 @@ fn convert_object(raw: RawObjectMapping) -> Result<MetadataClassProfile, SourceA
 }
 
 fn convert_property(raw: RawPropertyMapping) -> Result<PropertyMapping, SourceAdapterError> {
+    if raw.native_names.is_empty()
+        || raw.native_names.iter().any(|value| value.trim().is_empty())
+    {
+        return Err(invalid_registry(
+            "coverage registry property aliases must be nonempty",
+        ));
+    }
     let (object_kinds, all_object_kinds) = parse_kinds(raw.object_kinds)?;
     Ok(PropertyMapping {
         object_kinds,
@@ -413,6 +518,13 @@ fn convert_property(raw: RawPropertyMapping) -> Result<PropertyMapping, SourceAd
 }
 
 fn convert_relation_property(raw: RawRelationPropertyMapping) -> Result<RelationPropertyMapping, SourceAdapterError> {
+    if raw.native_names.is_empty()
+        || raw.native_names.iter().any(|value| value.trim().is_empty())
+    {
+        return Err(invalid_registry(
+            "coverage registry relation aliases must be nonempty",
+        ));
+    }
     let (object_kinds, all) = parse_kinds(raw.object_kinds)?;
     if all { return Err(invalid_registry("relation-property mapping must be per-kind")); }
     Ok(RelationPropertyMapping {
@@ -423,6 +535,19 @@ fn convert_relation_property(raw: RawRelationPropertyMapping) -> Result<Relation
 }
 
 fn convert_child(raw: RawChildMapping) -> Result<ChildMapping, SourceAdapterError> {
+    if raw.owner_kinds.is_empty() && raw.owner_roles.is_empty() {
+        return Err(invalid_registry(
+            "coverage registry child owner applicability must be nonempty",
+        ));
+    }
+    if raw.child_kinds.is_empty()
+        && raw.child_roles.is_empty()
+        && raw.owner_roles != ["unknown"]
+    {
+        return Err(invalid_registry(
+            "coverage registry child applicability must be nonempty",
+        ));
+    }
     Ok(ChildMapping {
         owner_kinds: raw.owner_kinds.iter().map(|value| parse_kind(value)).collect::<Result<_, _>>()?,
         owner_roles: raw.owner_roles.iter().map(|value| parse_role(value)).collect::<Result<_, _>>()?,
@@ -437,10 +562,24 @@ fn convert_enum(raw: RawEnumAlias) -> Result<EnumAlias, SourceAdapterError> {
     Ok(EnumAlias {
         semantic: SemanticEnumValue::parse(&raw.semantic).ok_or_else(|| invalid_registry("coverage registry enum is not closed"))?,
         native_aliases: raw.native_aliases,
+        property_ids: raw
+            .property_ids
+            .iter()
+            .map(|value| {
+                SemanticPropertyId::parse(value).ok_or_else(|| {
+                    invalid_registry("coverage registry enum property is not closed")
+                })
+            })
+            .collect::<Result<_, _>>()?,
     })
 }
 
 fn convert_type(raw: RawTypeAlias) -> Result<TypeAliasMapping, SourceAdapterError> {
+    if raw.alias.trim().is_empty() {
+        return Err(invalid_registry(
+            "coverage registry type alias must be nonempty",
+        ));
+    }
     let namespace = match raw.namespace.as_str() {
         "xmlSchema" => NativeTypeNamespace::XmlSchema,
         "dataCore" => NativeTypeNamespace::DataCore,
@@ -488,8 +627,19 @@ fn convert_backing(raw: RawBackingMapping) -> Result<BackingMapping, SourceAdapt
 
 fn convert_partial(raw: RawPartialCase) -> Result<IntentionalPartialCase, SourceAdapterError> {
     let (object_kinds, all) = parse_kinds(raw.object_kinds)?;
-    if all || raw.reason.is_empty() { return Err(invalid_registry("intentional partial case is invalid")); }
-    Ok(IntentionalPartialCase { object_kinds, reason: raw.reason })
+    let reason = match raw.reason.as_str() {
+        "opaqueContent" => IntentionalPartialReason::OpaqueContent,
+        "unknownSemantic" => IntentionalPartialReason::UnknownSemantic,
+        "unknownValueVariant" => IntentionalPartialReason::UnknownValueVariant,
+        _ => return Err(invalid_registry("intentional partial case is invalid")),
+    };
+    if all {
+        return Err(invalid_registry("intentional partial case is invalid"));
+    }
+    Ok(IntentionalPartialCase {
+        object_kinds,
+        reason,
+    })
 }
 
 pub(crate) fn validate_coverage_registry() -> Result<(), SourceAdapterError> {
@@ -575,9 +725,11 @@ pub(crate) fn validate_coverage_registry() -> Result<(), SourceAdapterError> {
         ));
     }
     for alias in &registry.enum_aliases {
-        for native in &alias.native_aliases {
-            if enum_value(native) != Some(alias.semantic) {
-                return Err(invalid_registry("enum registry lookup is not bijective"));
+        for property_id in &alias.property_ids {
+            for native in &alias.native_aliases {
+                if enum_value(*property_id, native) != Some(alias.semantic) {
+                    return Err(invalid_registry("enum registry lookup is not bijective"));
+                }
             }
         }
     }
@@ -595,7 +747,7 @@ pub(crate) fn validate_coverage_registry() -> Result<(), SourceAdapterError> {
     }
     for partial in &registry.intentional_partial_cases {
         for kind in &partial.object_kinds {
-            if !is_intentionally_partial(*kind, &partial.reason) {
+            if !intentional_partial_reasons(*kind).any(|reason| reason == partial.reason) {
                 return Err(invalid_registry(
                     "intentional-partial registry lookup is not bijective",
                 ));
@@ -603,6 +755,16 @@ pub(crate) fn validate_coverage_registry() -> Result<(), SourceAdapterError> {
         }
     }
     Ok(())
+}
+
+pub(crate) fn validate_coverage_manifest(raw: &str) -> Result<(), SourceAdapterError> {
+    let candidate = CoverageRegistry::parse(raw)?;
+    if candidate != *registry() {
+        return Err(invalid_registry(
+            "coverage manifest differs from the runtime registry",
+        ));
+    }
+    validate_coverage_registry()
 }
 
 pub(crate) fn metadata_class_profiles() -> &'static [MetadataClassProfile] { &registry().objects }
@@ -689,8 +851,18 @@ pub(crate) fn reference_kind(native_class: &str) -> Option<NodeKind> {
     })
 }
 
-pub(crate) fn enum_value(native: &str) -> Option<SemanticEnumValue> {
-    registry().enum_aliases.iter().find(|entry| entry.native_aliases.iter().any(|alias| alias == native)).map(|entry| entry.semantic)
+pub(crate) fn enum_value(
+    property_id: SemanticPropertyId,
+    native: &str,
+) -> Option<SemanticEnumValue> {
+    registry()
+        .enum_aliases
+        .iter()
+        .find(|entry| {
+            entry.property_ids.contains(&property_id)
+                && entry.native_aliases.iter().any(|alias| alias == native)
+        })
+        .map(|entry| entry.semantic)
 }
 
 pub(crate) fn type_alias(namespace: NativeTypeNamespace, alias: &str) -> Option<&'static TypeAliasMapping> {
@@ -701,8 +873,14 @@ pub(crate) fn backing_mapping(kind: NodeKind) -> Option<&'static BackingMapping>
     registry().backing_artifacts.iter().find(|entry| entry.object_kinds.contains(&kind))
 }
 
-pub(crate) fn is_intentionally_partial(kind: NodeKind, reason: &str) -> bool {
-    registry().intentional_partial_cases.iter().any(|entry| entry.object_kinds.contains(&kind) && entry.reason == reason)
+pub(crate) fn intentional_partial_reasons(
+    kind: NodeKind,
+) -> impl Iterator<Item = IntentionalPartialReason> {
+    registry()
+        .intentional_partial_cases
+        .iter()
+        .filter(move |entry| entry.object_kinds.contains(&kind))
+        .map(|entry| entry.reason)
 }
 
 pub(crate) fn is_field_kind(kind: NodeKind) -> bool {
