@@ -226,3 +226,192 @@ Only the Task 5 scoped validation prescribed by the plan was run. No workspace-w
 - Future official aliases/classes/properties retain readable neutral values and partial diagnostics, but their private native labels are intentionally not exposed through core output.
 - The checked-in BSP corpus has full real descriptors for seven top-level kinds. The remaining supported top-level kinds are exercised by a tracked structurally valid 2.20 registration corpus and the registry bijection audit, not by full BSP descriptors. This is a corpus-availability limitation, not a known loss of a legacy baseline fact.
 - No known fact exercised by the approved legacy useful-information baseline remains silently omitted.
+
+## Fix Round 2
+
+Base: `d7fb6a785f872972a550243b71890d7a14e7d305`.
+
+Implementation commit:
+
+- `bb3c34e337dd350a8605f2c5d7ccc11d2e54ae5e` (`fix: complete platform xml task 5 parity`)
+
+The report and completion ledger are committed separately so this report can
+record the implementation SHA without amending an existing commit.
+
+### Reviewer findings resolved
+
+1. **Registry authority is complete.** `relationProperties` is a mandatory
+   nonempty registry section. Property, relation, enum, backing, and
+   intentional-partial applicability and alias arrays are validated. A
+   candidate manifest is parsed into the typed registry and compared exactly
+   with the immutable runtime registry. Mutation tests reject removed and extra
+   properties, relation properties, aliases, owner roles, backing kinds,
+   intentional-partial rules, empty applicability/alias arrays, and every
+   empty mandatory section. Decoder and projector property/relation/type/enum
+   dispatch use registry entries. Both inline and registered backing dispatch
+   use the typed `BackingKind`. Intentional-partial reasons are a closed enum
+   iterated from the registry through one exhaustive projector match.
+2. **Empty references are lossless.** Core now has the domain-neutral
+   `PropertyValue::EmptyReference` and `PropertyType::EmptyReference`.
+   Serialization is payload-free as `emptyReference`, strict deserialization
+   rejects a payload, and the value remains distinct from absent, unresolved,
+   and null. The private 2.20 decoder recognizes the tracked
+   `DesignTimeRef`/`EmptyRef` encoding in `Валюты.xml`. Unknown readable
+   design-time references retain target evidence in a neutral structure and
+   force partial coverage without exposing the native QName or class.
+3. **Enum coverage is exhaustive and applicable.** Every closed semantic enum
+   has nonempty native aliases and explicit semantic-property applicability.
+   The frozen inventory includes the prior 39 symbols plus the legacy
+   `WholeCatalog`, `ForFolder`, and `ForFolderAndItem` cases and the real-corpus
+   `AutoDeleteOnUnpost` and `WriteSelected` cases. Runtime lookup requires both
+   property ID and alias, preventing a valid alias for one property from being
+   accepted on another. Unknown aliases remain unresolved, diagnostic, and
+   partial.
+4. **Rights parsing fails closed.** The adapter now audits attributes and
+   direct children at the rights root, object, permission, restriction,
+   condition, template, and scalar levels. Only explicit known elements can
+   create restriction conditions. Unknown attributes, elements, malformed
+   known scalars, nested conditions, and future values remain readable through
+   neutral evidence and force partial coverage. Known targets, permission
+   names/values, conditions, templates, defaults, and backing availability
+   remain intact.
+5. **Unknown children are readable for every owner role.** Unknown child
+   classes route through the neutral unknown mapping even when the registered
+   owner has no child vocabulary. Registered children forbidden for such an
+   owner still fail as structural corruption. Unknown child occurrences carry
+   neutral positional evidence and use occurrence-qualified derived identity,
+   so duplicate native class/name occurrences do not collide or deduplicate.
+   Matrix tests cover attribute, form, and template owners.
+6. **Parity is exact and independent.** Real-fixture tests now compare exact
+   normalized `BTreeSet` equality rather than `contains` subsets. The frozen
+   inventories are external to the runtime registry and include every
+   non-infrastructure legacy-baseline node, mapped property value/state,
+   relation kind/role, envelope status, node coverage count, and diagnostic
+   code count. Exact inventories cover seven tracked BSP descriptors, every
+   supported top-level kind, rights, object-owned artifacts, common forms, and
+   common templates. Unknown type variants carry positive neutral ordinals in
+   the closed wire form; two distinct future aliases remain two distinct,
+   payload-bearing unknown variants without native alias leakage.
+
+### Files
+
+Adapter runtime:
+
+- `crates/unica-adapter-platform-xml/src/factory.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/coverage.json`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/decoder.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/mod.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/native_model.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/projector.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/schema.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/semantic_map.rs`
+
+Domain-neutral core:
+
+- `crates/unica-format-core/src/property.rs`
+- `crates/unica-format-core/src/semantic_ids.rs`
+- `crates/unica-format-core/src/value.rs`
+
+Task-scoped tests and frozen inventories:
+
+- `crates/unica-adapter-platform-xml/tests/legacy_parity.rs`
+- `crates/unica-adapter-platform-xml/tests/unmapped_fact.rs`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/expected-semantic-facts.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/unknowns/UnknownCases.xml`
+
+SDD artifacts:
+
+- `.superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/progress.md`
+- `.superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/task-5-report.md`
+
+### RED evidence
+
+All TDD runs used only the Task 5 command prescribed by the plan:
+
+```text
+cargo test -p unica-adapter-platform-xml --test legacy_parity --test unmapped_fact
+```
+
+Focused-contract RED: exit 101. Compilation failed on seven intentionally
+missing contracts: the coverage-candidate validator, `EmptyReference`, and the
+three new closed semantic enum IDs referenced by tests. No production behavior
+was added before this run.
+
+Implementation checkpoint: exit 101 on one local decoder resource-limit helper
+name. The call was changed to the existing typed adapter error constructor.
+
+Focused-contract GREEN: exit 0:
+
+```text
+legacy_parity: 10 passed; 0 failed
+unmapped_fact: 8 passed; 0 failed
+```
+
+Exact-parity RED: exit 101 with four intended failures. Rights, supported-kind,
+form/template, and real-fixture tests still had empty/subset frozen inventories.
+The failure output exposed the complete normalized information sets. The
+normalizer was then fixed independently to exclude only infrastructure support
+facts and non-baseline `unknown.facts` payloads while retaining partial status
+and diagnostic counts.
+
+### Final GREEN evidence
+
+Command:
+
+```text
+cargo test -p unica-adapter-platform-xml --test legacy_parity --test unmapped_fact
+```
+
+Result: exit 0, no warnings.
+
+```text
+legacy_parity: 10 passed; 0 failed; 0 ignored
+unmapped_fact: 8 passed; 0 failed; 0 ignored
+```
+
+Only this Task 5 scoped validation command was run. No workspace-wide tests,
+lint, format, or unrelated validation command was run.
+
+### Exact parity and coverage inventory
+
+- 66 typed object profiles and an exact 46-kind tracked corpus inventory
+  including the configuration root and all 45 supported top-level children.
+- 91 property mappings, two relation-property mappings, 19 child rules, 44
+  property-applicable enum symbols, 60 type aliases, three backing kinds, and
+  three typed intentional-partial reasons.
+- Seven real BSP descriptors: catalog, common module, document, enumeration,
+  information register, language, and report. Their complete normalized
+  baseline facts, statuses, coverage counts, and diagnostics are frozen.
+- Real `Валюты.xml`: hierarchy controls and conditional active limit,
+  specialized attributes/tabular sections/forms, qualifiers, fill flags, and
+  the exact empty-reference fill value.
+- Rights: three defaults, two targets, six permissions and values, one
+  permission condition, one restriction template condition, and backing
+  availability. Future attributes/elements/nested conditions are retained
+  separately and cannot become known restrictions.
+- Forms/templates: descriptor identity, form/template type, descriptor/content
+  availability, opaque state, owned and common ownership relations, and
+  partial coverage.
+- Types: all registered primitive/reference/object/record-set/manager/key/
+  enumeration/defined-type aliases, qualifier combinations, subscription
+  aliases, and distinct neutral ordinals for multiple unknown variants.
+- Unknowns: readable root, child, duplicate occurrence, property, reference
+  relation, design-time reference value, type variants, and backing file;
+  owner-role matrix coverage and format-neutral diagnostics.
+
+### Intentional gaps and concerns
+
+- Form and template content internals remain opaque. Descriptor/type/backing
+  facts are complete, and opaque content explicitly remains partial.
+- Real BSP descriptors contain many readable native facts outside the approved
+  legacy useful-information baseline. They are retained as neutral
+  `unknown.facts`, counted in exact partial/diagnostic contracts, and are not
+  silently omitted. Their native labels remain private to the adapter.
+- Future aliases/classes/rights syntax remain readable and partial until a
+  closed semantic mapping is added.
+- The exact parity normalizer intentionally excludes derived support properties
+  and raw `unknown.facts` payloads because neither belongs to the independent
+  legacy useful-information baseline; it still freezes their aggregate
+  coverage and diagnostic effects.
+- No fact in the tracked legacy useful-information baseline remains unable to
+  meet semantic parity.
