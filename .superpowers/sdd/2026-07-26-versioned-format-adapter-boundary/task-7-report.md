@@ -227,3 +227,158 @@ Coder composition and writer-boundary callers:
 - An exploratory full `legacy_parity` run still has three pre-existing projection/oracle failures; the runtime coverage mutation test relevant to this fix is green and projection implementation files are unchanged from the review base.
 - `cargo fmt --all -- --check` reports broad repository formatting drift, including already committed Task 4/5/6 and Task 7 files. It was not used as a Task 7 gate, and no unrelated formatting-only rewrite was introduced.
 - Safe source-set capture now rejects a symlink anywhere in the captured aggregate rather than silently classifying a reserved symlink as absent. This is an intentional fail-closed correction required by the authorization/evidence binding finding.
+
+## Fix Round 2
+
+Base: `b3c934a4137ceb1296c477abacf4d1f25403a3ae`
+
+Implementation commit: `3543a49451c41f969a53f904ffc2df5f1938cf13`
+
+The controller-owned `.superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/progress.md` remained unstaged and was not modified by this fix round.
+
+### RED
+
+- `cargo test -p unica-format-core --test task7_fix_round2_contracts`: failed because authorability still admitted optional/contradictory states and validation/publication lifecycle contracts were not closed.
+- `cargo test -p unica-adapter-platform-xml --test task7_fix_round2_architecture`: 4/4 failed against the whole-root provider, host metadata registry, public native registry helpers, and free-form operational DTOs.
+- `cargo test -p unica-coder validate_meta_ --lib`: 12 failed, 6 passed; standalone targets and language-context validation were still routed through host/project-map assumptions.
+- `cargo test -p unica-coder infrastructure::project_sources::tests --lib`: 14 failed, 3 passed during canonical-alias RED; requested and opened source identities were not normalized to the same authorized descriptor.
+- `cargo test -p unica-adapter-platform-xml publication::tests --lib`: 1 failed, 38 passed; an entity-obfuscated raw export version was accepted after XML entity expansion.
+
+### GREEN responsibility map
+
+| Responsibility | Fix Round 2 owner |
+| --- | --- |
+| Authorability and support refusal | Closed `Allowed(evidence) / Denied(reason)` core contract; adapter inspection errors necessarily produce `supportStateUnreadable`; application exhaustively matches. |
+| Source sessions | Adapter-owned authorized-root capability with descriptor-relative no-follow reads, exact opened-handle identity/digest evidence, lazy selected-artifact traversal, and typed per-artifact/page/operation limits. |
+| Navigation capture | `v2_20/provider.rs` no longer snapshots the whole root or owns 512-file/64 MiB aggregate limits; it captures descriptor/configuration/support evidence and lazily materializes only the selected companion scope. |
+| Validation and guards | Private `v2_20/validation.rs`, `operations.rs`, and adapter guard ports parse native XML/support evidence; host policy receives closed neutral findings only. |
+| Metadata mapping | Private checked `v2_20/coverage.json` plus `semantic_map.rs` is the sole native class/directory mapping used by decoding, coverage, discovery, guards, validation, and semantic artifact location. |
+| Writer preimages | Core semantic artifact leases and adapter artifact access replace host guard/preimage layout discovery; native serialization itself remains for Task 8. |
+| Publication | Closed lifecycle enum preserves cancellation phase, rollback, cleanup, and recovery states; staged XML is validated from snapshot-bound bytes and exact raw version tokens; no message parsing. |
+| Public privacy | Closed codes/details and opaque semantic/session IDs replace path-bearing DTOs; public command, batch, navigation, tool-context, and publication mappings are denylist-tested recursively. |
+| Host cleanup | Deleted `metadata_kinds.rs`, `meta_validation_context.rs`, hidden native registry/query exports, and stale format/support parser call paths. |
+
+### GREEN validation
+
+```text
+cargo test -q -p unica-format-core --test task7_operational_ports --test task7_fix_round2_contracts
+  7 passed; 7 passed
+
+cargo test -q -p unica-application --test task7_operational_policy --test task7_fix_round2_policy
+  2 passed; 5 passed
+
+cargo test -q -p unica-adapter-platform-xml   --test task7_operational_ports   --test task7_fix_round1_architecture   --test task7_fix_round2_architecture   --test task7_fix_round2_lazy_source
+  9 passed; 5 passed; 4 passed; 3 passed
+
+cargo test -q -p unica-adapter-platform-xml provider::tests --lib
+  5 passed
+
+cargo test -q -p unica-adapter-platform-xml safe_root::tests --lib
+  2 passed
+
+cargo test -q -p unica-adapter-platform-xml authorization_order_tests --lib
+  2 passed
+
+cargo test -q -p unica-adapter-platform-xml publication::tests --lib
+  39 passed
+
+cargo test -q -p unica-adapter-platform-xml registry_authority_tests --lib
+  1 passed
+
+cargo test -q -p unica-adapter-platform-xml --test legacy_parity --   --skip fix_round6_rights_target_crosswalk_equals_runtime_supported_top_level_registry   --skip rights_mixed_content_remains_typed_where_known_and_opaque_where_unknown   --skip fix_round5_static_new_only_contract_is_exact_and_mutation_sensitive
+  23 passed; 3 base-confirmed failures skipped
+
+cargo test -q -p unica-coder validate_meta_ --lib
+  20 passed
+cargo test -q -p unica-coder meta_validation_batch_json_is_recursively_path_and_native_vocabulary_free --lib
+  1 passed
+cargo test -q -p unica-coder infrastructure::support_guard::tests --lib
+  4 passed
+cargo test -q -p unica-coder infrastructure::format_guard::tests --lib
+  1 passed
+cargo test -q -p unica-coder infrastructure::tool_context::tests --lib
+  6 passed
+cargo test -q -p unica-coder task7_fix_round1_publication_tests --lib
+  2 passed
+cargo test -q -p unica-coder semantic_guard_is_rechecked_before_any_publication --lib
+  1 passed
+cargo test -q -p unica-coder exact_family_guard --lib
+  3 passed
+cargo test -q -p unica-coder infrastructure::project_sources::tests --lib
+  17 passed
+
+git diff --check
+  clean
+```
+
+The large-source fixtures include more than 512 unrelated files and a 96 MiB sparse unrelated artifact; discovery, guard, validation, and selected navigation continue without whole-root loading. Deterministic no-follow tests cover authorization ordering, alias/canonical identity, symlink/reparse rejection, and swap-open-swap-back behavior.
+
+The three skipped `legacy_parity` tests fail identically at the requested base commit and current implementation. They are pre-existing rights-oracle expectation defects, not Round 2 regressions.
+
+### Files in implementation commit
+
+- `crates/unica-adapter-platform-xml/src/artifact_access.rs`
+- `crates/unica-adapter-platform-xml/src/factory.rs`
+- `crates/unica-adapter-platform-xml/src/guards.rs`
+- `crates/unica-adapter-platform-xml/src/lib.rs`
+- `crates/unica-adapter-platform-xml/src/publication.rs`
+- `crates/unica-adapter-platform-xml/src/safe_root.rs`
+- `crates/unica-adapter-platform-xml/src/validation.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/coverage.json`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/decoder.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/inspection.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/mod.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/operations.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/projector.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/provider.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/semantic_map.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/source_sets.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/validation.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/xml.rs`
+- `crates/unica-adapter-platform-xml/tests/legacy_parity.rs`
+- `crates/unica-adapter-platform-xml/tests/task7_fix_round1_architecture.rs`
+- `crates/unica-adapter-platform-xml/tests/task7_fix_round2_architecture.rs`
+- `crates/unica-adapter-platform-xml/tests/task7_fix_round2_lazy_source.rs`
+- `crates/unica-adapter-platform-xml/tests/task7_operational_ports.rs`
+- `crates/unica-application/src/commands.rs`
+- `crates/unica-application/tests/task7_fix_round2_policy.rs`
+- `crates/unica-application/tests/task7_operational_policy.rs`
+- `crates/unica-coder/src/application/ports.rs`
+- `crates/unica-coder/src/infrastructure/application_ports.rs`
+- `crates/unica-coder/src/infrastructure/format_guard.rs`
+- `crates/unica-coder/src/infrastructure/internal_adapters.rs`
+- `crates/unica-coder/src/infrastructure/metadata_kinds.rs`
+- `crates/unica-coder/src/infrastructure/mod.rs`
+- `crates/unica-coder/src/infrastructure/native_operations.rs`
+- `crates/unica-coder/src/infrastructure/native_operations/cf.rs`
+- `crates/unica-coder/src/infrastructure/native_operations/code.rs`
+- `crates/unica-coder/src/infrastructure/native_operations/common.rs`
+- `crates/unica-coder/src/infrastructure/native_operations/compile_transaction.rs`
+- `crates/unica-coder/src/infrastructure/native_operations/external.rs`
+- `crates/unica-coder/src/infrastructure/native_operations/form.rs`
+- `crates/unica-coder/src/infrastructure/native_operations/help.rs`
+- `crates/unica-coder/src/infrastructure/native_operations/interface.rs`
+- `crates/unica-coder/src/infrastructure/native_operations/meta.rs`
+- `crates/unica-coder/src/infrastructure/native_operations/meta_validation_context.rs`
+- `crates/unica-coder/src/infrastructure/native_operations/template.rs`
+- `crates/unica-coder/src/infrastructure/platform_xml_owner.rs`
+- `crates/unica-coder/src/infrastructure/project_sources.rs`
+- `crates/unica-coder/src/infrastructure/support_guard.rs`
+- `crates/unica-coder/src/infrastructure/tool_context.rs`
+- `crates/unica-format-core/src/navigation.rs`
+- `crates/unica-format-core/src/ports.rs`
+- `crates/unica-format-core/tests/task7_fix_round2_contracts.rs`
+- `crates/unica-format-core/tests/task7_operational_ports.rs`
+
+### Remaining host-native code and Task 8 boundary
+
+- `native_operations/meta.rs`, `form.rs`, `template.rs`, `help.rs`, `role.rs`, `subsystem.rs`, and `interface.rs` retain native XML generation/mutation and destination topology needed by existing writer implementations. Moving those serializers is Task 8.
+- `native_operations/cf.rs`, `cfe.rs`, `mxl.rs`, `dcs.rs`, and `support.rs` retain legacy command-specific native parsers/writers outside the Task 7 authorability, guard, validation-context, and publication policy call paths. They are not claimed as neutral or writer-only; completing a universal native-command boundary remains a later migration risk.
+- `native_operations/common.rs::resolve_cf_edit_config_path`, `resolve_cf_read_config_path`, `resolve_cfe_validate_config_path`, and `resolve_existing_path` remain command/composition path setup for legacy handlers. Task 7 policy ports do not call them, but they should move when those handlers are adapterized.
+- Test fixtures continue to construct native filenames and XML intentionally; production Task 7 policy modules do not.
+
+### Residual risks
+
+- Windows reparse-point behavior is implemented with handle-relative no-follow semantics but was not runtime-executed on this macOS validation host.
+- Full workspace validation was intentionally not run; validation was limited to Task 7 scope as requested.
+- The three base-confirmed rights-oracle failures listed above remain outside this fix round.
