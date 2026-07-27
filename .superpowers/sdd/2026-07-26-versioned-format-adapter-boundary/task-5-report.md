@@ -834,3 +834,152 @@ verification and do not import or invoke the new adapter crates.
   mappings are added.
 - No known fact emitted by the tracked legacy useful-information outputs remains
   missing from the legacy-comparable structured projection.
+
+## Fix Round 5
+
+### Scope and base
+
+- Base: `6140c3704111430973b62968542baad503d86970`.
+- Implementation commit: `f144b9a4eea591f2091f30a23091520102488c30`.
+- The controller's pre-existing Fix Round 4 failure and Fix Round 5 start entries in `progress.md` were preserved verbatim and included in the implementation commit.
+- Scope remained limited to Task 5 parity/oracle evidence. Previously approved adapter runtime behavior and Task 4 contracts were not broadened or changed.
+
+### Root-cause fixes
+
+#### Fail-closed legacy-output parsers
+
+`generate_oracle.py` now routes every physical line through a `LineLedger`. Each line has a line number and one explicit classification. Generation aborts on an unclassified line, duplicate consumption, malformed indentation or parser state, unknown heading, count mismatch, duplicate singleton field, unknown field flag, unknown support value, or value that cannot be represented. Blank lines and structural delimiters are classified explicitly; there is no broad ignored-line regular expression.
+
+The metadata parser validates section state and declared counts before semantic extraction. The role parser validates local group state, target counts, totals, properties, rights, and restriction/template records before emitting facts. The focused self-test injects a new metadata property, a new section, malformed indentation, an unknown support value, a count mismatch, duplicate singleton/property lines, an unknown field flag, a new role property, an extra right target, an unknown heading, a target outside a group, an unknown target prefix, and duplicate line consumption. Every injection must fail generation.
+
+#### Enum context comes from legacy source
+
+`extract_enum_contexts.py` independently analyzes the tracked legacy implementation and fixtures. It uses Python AST/source structure to connect `get_enum_prop` calls in `meta-compile.py` to the exact emitted native property and owner-specific emitter, extracts the supporting legacy maps and field modes, and derives descriptor-only Form/Template contexts from frozen native fixtures and legacy scripts. `meta-info.py`, `meta-compile.py`, `meta-validate.py`, form/template scripts, and descriptor fixtures are provenance inputs.
+
+`crosswalk.json` now supplies only semantic domains and semantic IDs. It may select a source-derived fact by stable source locator, but it cannot provide or override `nativeProperty`, `objectKinds`, extraction rules, or source keys. Ambiguous/missing source contexts, crosswalk context overrides, duplicate source tuples, and registry aliases absent/extra/wrong in source context fail generation or the Rust bijection test.
+
+The coordinated-drift negative test mutates both crosswalk and runtime coverage to the same wrong native property context. It still fails because the immutable source-derived tuple and its provenance hash disagree. This corrects the earlier report claim: property/object context authority is the tracked legacy source structure, not the crosswalk.
+
+#### Rights targets are local and exhaustive
+
+The role oracle parser no longer carries target kind across groups. Every target is parsed from its own line inside its own explicitly counted group. Prefixes are mapped through the independent `rights-target-crosswalk.json`; an unseen prefix is a hard oracle-generation failure rather than omission or inheritance.
+
+The frozen `MultiTargetReader` input/output covers Catalog, Document, InformationRegister, CommonModule, and Report targets. Exact tests assert each independent target identity, right/value, RLS restriction marker, condition expression, and template. Local group counts and overall totals are checked, so a target cannot silently move to the previous group.
+
+#### Exhaustive adapter-only contract
+
+`new-only-contract.json` is a hand-reviewed static expected contract. It is not written by `generate_oracle.py`, imported from the adapter, or captured from a `NavigationEnvelope`. It covers the selected corpus for:
+
+- owned report form and template descriptors/backings;
+- common form and common template descriptors/backings;
+- role descriptor, rights backing, permissions, conditions, and templates;
+- hierarchy controls and typed EmptyReference;
+- unknown property, relation, value variant, child, and backing artifact cases;
+- every semantic node identity, node coverage/resolution, property value/type/state, relation coverage/resolution, facet membership, backing presence/kind/descriptor UUID/content/opaque state, status, and complete diagnostic code/message/details multiset.
+
+Identity normalization retains persistent UUID identity and collision-safe derived identity with occurrence ordinals, so duplicate nodes cannot collapse. The same production multiset comparator is used by real parity and mutation tests. For each adapter-only fact category (`status`, `node`, `nodeCoverage`, `property`, `relation`, `facetMember`, `backing`, and `diagnostic`), omission, addition, and value mutation must all fail with a structured diff.
+
+#### Reproducible provenance
+
+`oracle-manifest.json` records SHA-256 for every declared legacy reference script, legacy input fixture, raw output, independent crosswalk, rights target crosswalk, oracle generator, enum source extractor, extracted source-context artifact, hand-reviewed new-only contract, contract fixture/backing input, generated legacy oracle, and manifest inputs. `--check` reruns only the frozen legacy scripts and independent extraction, compares generated bytes, and verifies every hash.
+
+Rust tests enforce all required provenance roles and verify both Python tools contain no dependency, import, or call into `unica_adapter_platform_xml`, `unica-adapter-platform-xml`, `unica_core`, `unica-core`, `NavigationEnvelope`, or adapter normalization helpers. They also assert the generator has no write path for `new-only-contract.json`.
+
+Regeneration remains adapter-independent:
+
+```bash
+python3.12 crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/generate_oracle.py --repo-root . --write
+```
+
+Verification is byte/hash exact:
+
+```bash
+python3.12 crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/generate_oracle.py --repo-root . --check
+```
+
+### Independent parity inventory
+
+The legacy-comparable oracle contains 16 frozen legacy runs. It preserves stable source/object identity and exact multisets for names, typed values, state, attributes, children/relations, enum aliases in source-derived contexts, type aliases, hierarchy facts exposed by legacy output, EmptyRef, forms/templates, role targets, rights, restrictions, conditions, and templates. The adapter projection is normalized and compared to this independent oracle; expected facts are never produced from the adapter.
+
+Adapter-only facts that legacy output cannot express are checked separately and exactly by `new-only-contract.json`: statuses, all node/property/relation coverage, complete diagnostics, facet membership, descriptor UUIDs, backing kind/presence/content/opaque state, unknown neutral evidence, and unique semantic identities.
+
+The selected contract corpus includes owned/common forms and templates, the backed SalesReader role, multi-target legacy rights, hierarchy and EmptyReference, and all Task 5 unknown/unmapped categories. Runtime coverage remains separately checked bijectively against the typed 2.20 registry and serialized coverage manifest.
+
+### Files
+
+- `.superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/progress.md`
+- `crates/unica-adapter-platform-xml/tests/legacy_parity.rs`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/contract/ContractCatalog.xml`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights/MultiTargetReader.xml`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights/MultiTargetReader/Ext/Rights.xml`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights/SalesReader/Ext/Rights.xml`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/README.md`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/crosswalk.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/inputs.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-source-contexts.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/rights-target-crosswalk.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/new-only-contract.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/role-info/multi-target-reader.all.txt`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/legacy-semantic-oracle.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/oracle-manifest.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/extract_enum_contexts.py`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/generate_oracle.py`
+- `.superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/task-5-report.md` (this append, committed separately after the implementation SHA existed).
+
+### RED evidence
+
+Command:
+
+```bash
+cargo test -p unica-adapter-platform-xml --test legacy_parity fix_round5_ -- --nocapture
+```
+
+Initial result: `FAILED`, 0 passed and 2 failed. The fail-closed test failed because the legacy-only generator had no `--self-test` path, and the exhaustive adapter-only test failed because `new-only-contract.json` did not exist. This established both missing proof mechanisms before implementation.
+
+The independently authored contract then exposed missing expected identity, relation, facet, backing, rights, and diagnostic categories until the full static multiset was supplied. Focused mutations remained RED whenever any required category was removed, added, or changed.
+
+### GREEN evidence and Task 5 scoped validation
+
+Fail-closed/source-context negative suite:
+
+```text
+python3.12 .../generate_oracle.py --repo-root . --self-test
+verified fail-closed parser and source-context negative suite
+```
+
+Independent regeneration:
+
+```text
+python3.12 .../generate_oracle.py --repo-root . --write
+wrote 16 raw outputs, 16 oracle cases, and provenance
+```
+
+Legacy parity and all Fix Round 5 proof tests:
+
+```text
+cargo test -p unica-adapter-platform-xml --test legacy_parity
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+Reproducibility/provenance check:
+
+```text
+python3.12 .../generate_oracle.py --repo-root . --check
+verified 16 raw outputs, oracle facts, and SHA-256 provenance
+```
+
+Unmapped-fact boundary:
+
+```text
+cargo test -p unica-adapter-platform-xml --test unmapped_fact
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+Only the Task 5 scoped commands were run.
+
+### Known intentional gaps and concerns
+
+- Legacy `meta-info`/`role-info` text does not expose adapter-only status, coverage, diagnostics, facets, descriptor UUIDs, or complete backing-state semantics. Those facts are not fabricated in the legacy oracle; they are enforced by the independent static adapter-only contract.
+- Form/template content internals remain opaque when the adapter cannot semantically decompose them. The exact contract requires explicit opaque backing facts and truthful `partial` coverage rather than claiming decomposition.
+- Unknown native vocabulary remains private to the 2.20 adapter. Closed neutral evidence, ordinals, status, and diagnostics are preserved; native XML terms are not introduced into core/application/coder contracts.
+- No known legacy-comparable parity gap remains in the selected 16-case corpus. No approved runtime behavior was changed in this round.
