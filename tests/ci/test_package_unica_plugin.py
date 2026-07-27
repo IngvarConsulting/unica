@@ -486,7 +486,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
         # The catalog on the marketplace default branch must keep naming a tag,
         # so staged plugin bytes are not served before a promotion moves it.
         self.assertEqual(source["ref"], "v1.2.3")
-        self.assertEqual(source["path"], "./plugins/unica")
+        self.assertEqual(source["path"], "plugins/unica")
         self.assertEqual(source["source"], "git-subdir")
 
     def test_claude_manifest_leaves_skill_discovery_to_the_default_scan(self) -> None:
@@ -1041,7 +1041,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
             source = catalog["plugins"][0]["source"]
             self.assertEqual(source["source"], "git-subdir")
             self.assertEqual(source["ref"], release_tag)
-            self.assertEqual(source["path"], "./plugins/unica")
+            self.assertEqual(source["path"], "plugins/unica")
             self.assertNotIn("source\": \"local", json.dumps(catalog))
             self.assertEqual(list(out_dir.glob("*.tar.gz")), [])
             self.assertEqual(list(out_dir.glob("*.zip")), [])
