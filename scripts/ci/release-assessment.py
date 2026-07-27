@@ -34,7 +34,6 @@ EXPECTED_PUBLIC_TOOLS = {
     "unica.cf.validate",
     "unica.code.diagnostics",
     "unica.code.search",
-    "unica.code.grep",
     "unica.code.outline",
     "unica.meta.profile",
     "unica.standards.explain",
@@ -652,22 +651,14 @@ def base_tool_scenarios(bsp_root: Path) -> list[tuple[str, str, str, dict[str, A
     bsl_search = sample_bsl_search(bsp_root)
     code_search_args = {"sourceDir": SOURCE_DIR, "query": "Процедура", "limit": 20}
     if bsl_search:
-        bsl_path, query = bsl_search
-        code_search_args = {"sourceDir": SOURCE_DIR, "path": bsl_path, "query": query, "limit": 20}
+        _, query = bsl_search
+        code_search_args = {"sourceDir": SOURCE_DIR, "query": query, "limit": 20}
 
     scenarios: list[tuple[str, str, str, dict[str, Any], bool, bool]] = [
         ("project-status", "Workspace status", "unica.project.status", {}, True, True),
         ("project-map", "Workspace source-set map", "unica.project.map", {}, True, True),
         ("cf-info", "BSP Configuration.xml overview", "unica.cf.info", {"ConfigPath": SOURCE_DIR, "Mode": "brief", "Limit": 80}, True, True),
         ("cf-validate", "BSP Configuration.xml validation", "unica.cf.validate", {"ConfigPath": SOURCE_DIR, "MaxErrors": 50}, False, False),
-        (
-            "code-grep",
-            "BSL git grep smoke",
-            "unica.code.grep",
-            code_search_args,
-            True,
-            True,
-        ),
         (
             "code-diagnostics-workspace",
             "BSL diagnostics workspace read",

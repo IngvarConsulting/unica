@@ -57,7 +57,7 @@ LGPL-3.0-or-later проекта Unica не заменяет эти услови
 - Репозиторий: [Dach-Coin/rlm-tools-bsl](https://github.com/Dach-Coin/rlm-tools-bsl)
 - Автор: [Roman Starchenko](https://github.com/Dach-Coin); исходный проект
   `rlm-tools` — [Stefan O'Shea](https://github.com/stefanoshea)
-- Закреплённая версия: `1.26.0`, commit `dcfff95ce678f49971b14d8acd82b042a6855470`
+- Закреплённая версия: `1.29.1`, commit `8bc6e9fc83b522f9a79eab3193eb13fc2cecb8ed`
 - Лицензия: [MIT](third-party/licenses/rlm-tools-bsl/LICENSE)
 
 Оба бинарника собираются из одного репозитория. MIT notice сохраняет

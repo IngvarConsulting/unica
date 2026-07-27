@@ -7,7 +7,6 @@ import argparse
 import json
 import os
 import shutil
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -40,39 +39,6 @@ TOOL_HELP_CHECKS = [
     ("v8-runner version", "v8-runner", ["--version"], ["v8-runner"]),
     ("v8-runner build", "v8-runner", ["build", "--help"], ["build"]),
 ]
-
-RLM_SCHEMA_COLUMNS = {
-    "index_meta": {"key", "value"},
-    "modules": {"id", "rel_path", "object_name", "category", "module_type"},
-    "methods": {"id", "module_id", "name", "type", "is_export", "line", "end_line", "params", "loc"},
-    "methods_fts": {"name", "object_name"},
-    "regions": {"id", "module_id", "name", "line", "end_line"},
-    "module_headers": {"module_id", "header_comment"},
-    "object_attributes": {
-        "id",
-        "object_name",
-        "category",
-        "attr_name",
-        "attr_type",
-        "attr_kind",
-        "ts_name",
-    },
-    "role_rights": {"id", "role_name", "object_name", "right_name", "file"},
-    "event_subscriptions": {
-        "id",
-        "name",
-        "event",
-        "handler_module",
-        "handler_procedure",
-        "source_types",
-    },
-    "functional_options": {"id", "name", "location", "content", "file"},
-    "predefined_items": {"id", "object_name", "category", "item_name", "item_code"},
-}
-
-RLM_REQUIRED_META = {
-    "builder_version": "14",
-}
 
 V8_RUNNER_BOUNDED_OUTPUT_MARKER = "bounded-platform-out"
 V8_RUNNER_BOUNDED_STDERR_MARKER = "bounded-client-stderr"
@@ -558,39 +524,6 @@ def check_tool_contracts(tools_dir: Path, target: str | None = None) -> list[str
     return errors
 
 
-def sqlite_columns(conn: sqlite3.Connection, table: str) -> set[str]:
-    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-    return {row[1] for row in rows}
-
-
-def check_rlm_schema(db_path: Path) -> list[str]:
-    errors: list[str] = []
-    if not db_path.exists():
-        return [f"RLM index DB not found: {db_path}"]
-    conn = sqlite3.connect(db_path)
-    try:
-        existing_tables = {
-            row[0]
-            for row in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'virtual table')")
-        }
-        for table, required_columns in RLM_SCHEMA_COLUMNS.items():
-            if table not in existing_tables:
-                errors.append(f"missing RLM table: {table}")
-                continue
-            columns = sqlite_columns(conn, table)
-            for column in sorted(required_columns - columns):
-                errors.append(f"missing RLM column: {table}.{column}")
-        if "index_meta" in existing_tables:
-            for key, expected in RLM_REQUIRED_META.items():
-                row = conn.execute("SELECT value FROM index_meta WHERE key = ?", (key,)).fetchone()
-                actual = row[0] if row else None
-                if actual != expected:
-                    errors.append(f"RLM index_meta {key} must be {expected}, got {actual or '<missing>'}")
-    finally:
-        conn.close()
-    return errors
-
-
 def run_rlm_command(
     command: list[str],
     cwd: Path,
@@ -623,6 +556,32 @@ def check_rlm_mtime_recovery_contract(
                 "КонецПроцедуры\n",
                 encoding="utf-8",
             )
+        workspace.joinpath("Configuration.xml").write_text(
+            """<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <Configuration uuid="00000000-0000-0000-0000-000000000001">
+    <Properties><Name>ContractMain</Name><NamePrefix/></Properties>
+  </Configuration>
+</MetaDataObject>
+""",
+            encoding="utf-8",
+        )
+        sibling = root / "sibling-extension"
+        sibling.mkdir()
+        sibling.joinpath("Configuration.xml").write_text(
+            """<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <Configuration uuid="00000000-0000-0000-0000-000000000002">
+    <Properties>
+      <Name>ContractExtension</Name>
+      <ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose>
+      <NamePrefix>ct_</NamePrefix>
+    </Properties>
+  </Configuration>
+</MetaDataObject>
+""",
+            encoding="utf-8",
+        )
 
         git_without_signing = [
             "git",
@@ -763,7 +722,6 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", default=None)
     parser.add_argument("--tools-dir", type=Path)
-    parser.add_argument("--rlm-db", type=Path)
     args = parser.parse_args()
 
     target = args.target or detect_target()
@@ -772,8 +730,6 @@ def main() -> None:
     rlm_index = tool_executable(tools_dir.resolve(), "rlm-bsl-index", target)
     if rlm_index.exists():
         errors.extend(check_rlm_mtime_recovery_contract(rlm_index))
-    if args.rlm_db:
-        errors.extend(check_rlm_schema(args.rlm_db))
 
     if errors:
         print("Tool contract check failed:")

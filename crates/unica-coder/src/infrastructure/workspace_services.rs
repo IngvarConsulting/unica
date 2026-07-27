@@ -357,6 +357,60 @@ impl<'a> WorkspaceServiceManager<'a> {
         }
     }
 
+    pub fn call_rlm_cancellable(
+        &self,
+        context: &WorkspaceContext,
+        source_root: &Path,
+        operation: WorkspaceRlmOperation,
+        timeout: Duration,
+        cancellation: &CancellationToken,
+    ) -> Result<WorkspaceServiceRlmOutput, String> {
+        let deadline = WorkspaceServiceCallDeadline::new(SERVICE_REQUEST_TIMEOUT.min(timeout));
+        let mut retried_transport = false;
+        loop {
+            let record = self.ensure_service_cancellable_with_deadline(
+                context,
+                source_root,
+                cancellation,
+                &deadline,
+            )?;
+            let send_budget = deadline.remaining(cancellation)?;
+            let response = match self.connector.send(
+                &record,
+                ServiceRequest {
+                    token: record.token.clone(),
+                    kind: ServiceRequestKind::RlmMcp {
+                        operation_id: Uuid::new_v4().to_string(),
+                        operation: operation.clone(),
+                        timeout_secs: duration_timeout_secs(timeout.min(send_budget)),
+                    },
+                },
+                cancellation,
+                send_budget,
+            ) {
+                Ok(response) => response,
+                Err(error)
+                    if !retried_transport
+                        && is_retryable_workspace_service_transport_error(&error) =>
+                {
+                    retried_transport = true;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            deadline.remaining(cancellation)?;
+            if !response.ok {
+                return Err(response
+                    .error
+                    .unwrap_or_else(|| "workspace service RLM request failed".to_string()));
+            }
+            return Ok(WorkspaceServiceRlmOutput {
+                result_text: response.result_text.unwrap_or_default(),
+                stderr: response.stderr.unwrap_or_default(),
+            });
+        }
+    }
+
     #[allow(dead_code)]
     pub fn rlm_readiness(
         &self,
@@ -374,7 +428,24 @@ impl<'a> WorkspaceServiceManager<'a> {
         args: &Map<String, Value>,
         cancellation: &CancellationToken,
     ) -> Result<IndexReadiness, String> {
-        let deadline = WorkspaceServiceCallDeadline::new(SERVICE_REQUEST_TIMEOUT);
+        self.rlm_readiness_cancellable_with_timeout(
+            context,
+            source_root,
+            args,
+            SERVICE_REQUEST_TIMEOUT,
+            cancellation,
+        )
+    }
+
+    pub fn rlm_readiness_cancellable_with_timeout(
+        &self,
+        context: &WorkspaceContext,
+        source_root: &Path,
+        args: &Map<String, Value>,
+        timeout: Duration,
+        cancellation: &CancellationToken,
+    ) -> Result<IndexReadiness, String> {
+        let deadline = WorkspaceServiceCallDeadline::new(SERVICE_REQUEST_TIMEOUT.min(timeout));
         let record = self.ensure_service_cancellable_with_deadline(
             context,
             source_root,
@@ -1209,10 +1280,15 @@ struct WorkspaceServiceRuntime {
     record_owner: WorkspaceServiceRecord,
     context: WorkspaceContext,
     analyzer_lane: AnalyzerLane,
-    analyzer: Mutex<Option<BslMcpSession>>,
+    analyzer: Mutex<Option<PersistentMcpSession>>,
     analyzer_starter: Arc<BslSessionStarter>,
-    source_generation: Mutex<u64>,
+    rlm_lane: AnalyzerLane,
+    rlm: Mutex<Option<RlmMcpSession>>,
+    rlm_starter: Arc<RlmSessionStarter>,
+    analyzer_source_generation: Mutex<u64>,
+    rlm_source_generation: Mutex<u64>,
     analyzer_invalidated: AtomicBool,
+    rlm_invalidated: AtomicBool,
     operations: Mutex<HashMap<String, CancellationToken>>,
     shutting_down: AtomicBool,
     work_admission: Arc<AdmissionGate>,
@@ -1222,7 +1298,10 @@ struct WorkspaceServiceRuntime {
     handler_started_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
-type BslSessionStarter = dyn Fn(&WorkspaceContext, &Path, &CancellationToken) -> Result<BslMcpSession, String>
+type BslSessionStarter = dyn Fn(&WorkspaceContext, &Path, &CancellationToken) -> Result<PersistentMcpSession, String>
+    + Send
+    + Sync;
+type RlmSessionStarter = dyn Fn(&WorkspaceContext, &Path, &CancellationToken) -> Result<RlmMcpSession, String>
     + Send
     + Sync;
 
@@ -1242,9 +1321,14 @@ impl WorkspaceServiceRuntime {
             context,
             analyzer_lane: AnalyzerLane::default(),
             analyzer: Mutex::new(None),
-            analyzer_starter: Arc::new(BslMcpSession::start),
-            source_generation: Mutex::new(source_generation),
+            analyzer_starter: Arc::new(PersistentMcpSession::start),
+            rlm_lane: AnalyzerLane::default(),
+            rlm: Mutex::new(None),
+            rlm_starter: Arc::new(RlmMcpSession::start),
+            analyzer_source_generation: Mutex::new(source_generation),
+            rlm_source_generation: Mutex::new(source_generation),
             analyzer_invalidated: AtomicBool::new(false),
+            rlm_invalidated: AtomicBool::new(false),
             operations: Mutex::new(HashMap::new()),
             shutting_down: AtomicBool::new(false),
             work_admission: AdmissionGate::new(SERVICE_MAX_WORKERS),
@@ -1362,6 +1446,7 @@ impl WorkspaceServiceRuntime {
     fn invalidate(&self, events: &[String]) -> ServiceResponse {
         if events.iter().any(|event| invalidates_analyzer(event)) {
             self.analyzer_invalidated.store(true, Ordering::Release);
+            self.rlm_invalidated.store(true, Ordering::Release);
         }
         ServiceResponse {
             ok: true,
@@ -1375,6 +1460,13 @@ impl WorkspaceServiceRuntime {
         cancellation: &CancellationToken,
     ) -> Result<AnalyzerLanePermit<'_>, String> {
         self.analyzer_lane.acquire(cancellation)
+    }
+
+    fn acquire_rlm_lane(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> Result<AnalyzerLanePermit<'_>, String> {
+        self.rlm_lane.acquire(cancellation)
     }
 
     fn handle_bsl_mcp(
@@ -1399,7 +1491,7 @@ impl WorkspaceServiceRuntime {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let current_generation = source_generation(Path::new(&self.identity.source_root));
-        if let Ok(mut generation) = self.source_generation.lock() {
+        if let Ok(mut generation) = self.analyzer_source_generation.lock() {
             if self.analyzer_invalidated.swap(false, Ordering::AcqRel)
                 || current_generation != *generation
             {
@@ -1456,6 +1548,63 @@ impl WorkspaceServiceRuntime {
             service.start_for_workspace_cancellable(&self.context, &args, false, cancellation);
         let readiness = service.ready_index_cancellable(&self.context, &args, cancellation);
         ServiceResponse::from_readiness(readiness, start_report.warnings)
+    }
+
+    fn handle_rlm_mcp(
+        &self,
+        operation: WorkspaceRlmOperation,
+        timeout_secs: u64,
+        cancellation: &CancellationToken,
+    ) -> ServiceResponse {
+        if cancellation.is_cancelled() {
+            return ServiceResponse::error(cancelled_error("workspace RLM operation stopped"));
+        }
+        let _lane = match self.acquire_rlm_lane(cancellation) {
+            Ok(lane) => lane,
+            Err(error) => return ServiceResponse::error(error),
+        };
+        let mut rlm = self.rlm.lock().unwrap_or_else(|error| error.into_inner());
+        let current_generation = source_generation(Path::new(&self.identity.source_root));
+        if let Ok(mut generation) = self.rlm_source_generation.lock() {
+            if self.rlm_invalidated.swap(false, Ordering::AcqRel)
+                || current_generation != *generation
+            {
+                *rlm = None;
+                *generation = current_generation;
+            }
+        }
+        let timeout = Duration::from_secs(timeout_secs.max(1));
+        let result = (|| {
+            if rlm.as_mut().is_some_and(|session| !session.is_reusable()) {
+                *rlm = None;
+            }
+            if rlm.is_none() {
+                *rlm = Some((self.rlm_starter)(
+                    &self.context,
+                    Path::new(&self.identity.source_root),
+                    cancellation,
+                )?);
+            }
+            rlm.as_mut()
+                .expect("RLM session must exist after start")
+                .execute(&operation, timeout, cancellation)
+        })();
+        match result {
+            Ok(output) => ServiceResponse {
+                ok: true,
+                result_text: Some(output.result_text),
+                stderr: Some(output.stderr),
+                ..ServiceResponse::default()
+            },
+            Err(error) => {
+                let stale_session = rlm.take();
+                drop(rlm);
+                if let Some(stale_session) = stale_session {
+                    thread::spawn(move || drop(stale_session));
+                }
+                ServiceResponse::error(error)
+            }
+        }
     }
 }
 
@@ -1565,6 +1714,11 @@ impl WorkspaceServiceOperationExecutor for SystemWorkspaceServiceOperationExecut
             ServiceRequestKind::RlmReady { args, .. } => {
                 runtime.handle_rlm_ready(args, cancellation)
             }
+            ServiceRequestKind::RlmMcp {
+                operation,
+                timeout_secs,
+                ..
+            } => runtime.handle_rlm_mcp(operation, timeout_secs, cancellation),
             _ => ServiceResponse::error("workspace service received non-work operation"),
         }
     }
@@ -1590,6 +1744,11 @@ enum ServiceRequestKind {
         operation_id: String,
         args: Value,
     },
+    RlmMcp {
+        operation_id: String,
+        operation: WorkspaceRlmOperation,
+        timeout_secs: u64,
+    },
     Cancel {
         operation_id: String,
     },
@@ -1602,9 +1761,9 @@ enum ServiceRequestKind {
 impl ServiceRequestKind {
     fn operation_id(&self) -> Option<&str> {
         match self {
-            Self::BslMcp { operation_id, .. } | Self::RlmReady { operation_id, .. } => {
-                Some(operation_id)
-            }
+            Self::BslMcp { operation_id, .. }
+            | Self::RlmReady { operation_id, .. }
+            | Self::RlmMcp { operation_id, .. } => Some(operation_id),
             _ => None,
         }
     }
@@ -1728,7 +1887,48 @@ pub struct WorkspaceServiceBslOutput {
     pub stderr: String,
 }
 
-struct BslMcpSession {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "operation")]
+pub enum WorkspaceRlmOperation {
+    Search {
+        query: String,
+        limit: usize,
+    },
+    Definition {
+        name: String,
+        module_hint: String,
+        limit: usize,
+    },
+    Outline {
+        path: String,
+        include_methods: bool,
+    },
+    ObjectProfile {
+        name: String,
+        sections: Option<Vec<String>>,
+        include_flow: bool,
+        include_code_usages: bool,
+        limit: usize,
+    },
+}
+
+impl WorkspaceRlmOperation {
+    fn query_hint(&self) -> &str {
+        match self {
+            Self::Search { query, .. } => query,
+            Self::Definition { name, .. } | Self::ObjectProfile { name, .. } => name,
+            Self::Outline { path, .. } => path,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkspaceServiceRlmOutput {
+    pub result_text: String,
+    pub stderr: String,
+}
+
+struct PersistentMcpSession {
     child: ManagedChild,
     writer: mpsc::SyncSender<BslWriteRequest>,
     rx: mpsc::Receiver<BslReaderEvent>,
@@ -1791,14 +1991,14 @@ enum BslReaderEvent {
     Closed,
 }
 
-impl BslMcpSession {
+impl PersistentMcpSession {
     fn start(
         context: &WorkspaceContext,
         source_root: &Path,
         cancellation: &CancellationToken,
     ) -> Result<Self, String> {
         if cancellation.is_cancelled() {
-            return Err(cancelled_error("persistent bsl-analyzer start stopped"));
+            return Err(cancelled_error("persistent MCP start stopped"));
         }
         let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
             "could not locate Unica plugin root for workspace bsl-analyzer service".to_string()
@@ -1821,24 +2021,42 @@ impl BslMcpSession {
         Self::start_with_command(command, cancellation)
     }
 
+    fn start_rlm_transport(
+        context: &WorkspaceContext,
+        cancellation: &CancellationToken,
+    ) -> Result<Self, String> {
+        if cancellation.is_cancelled() {
+            return Err(cancelled_error("persistent RLM MCP start stopped"));
+        }
+        let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
+            "could not locate Unica plugin root for workspace RLM service".to_string()
+        })?;
+        let program = resolve_bundled_tool(&plugin_root, "rlm-tools-bsl", true)?.program;
+        let mut command = Command::new(program);
+        command
+            .current_dir(&context.cwd)
+            .env("RLM_INDEX_DIR", context.cache_root.join("rlm-tools-bsl"));
+        Self::start_with_command(command, cancellation)
+    }
+
     fn start_with_command(
         command: Command,
         cancellation: &CancellationToken,
     ) -> Result<Self, String> {
         if cancellation.is_cancelled() {
-            return Err(cancelled_error("persistent bsl-analyzer start stopped"));
+            return Err(cancelled_error("persistent MCP start stopped"));
         }
         let mut child = ManagedChild::spawn_process(command, None, cancellation.clone())
-            .map_err(|err| format!("failed to start persistent bsl-analyzer MCP: {err}"))?;
+            .map_err(|err| format!("failed to start persistent MCP MCP: {err}"))?;
         let stdin = child
             .take_stdin()
-            .ok_or_else(|| "failed to open persistent bsl-analyzer stdin".to_string())?;
+            .ok_or_else(|| "failed to open persistent MCP stdin".to_string())?;
         let stdout = child
             .take_stdout()
-            .ok_or_else(|| "failed to open persistent bsl-analyzer stdout".to_string())?;
+            .ok_or_else(|| "failed to open persistent MCP stdout".to_string())?;
         let stderr = child
             .take_stderr()
-            .ok_or_else(|| "failed to open persistent bsl-analyzer stderr".to_string())?;
+            .ok_or_else(|| "failed to open persistent MCP stderr".to_string())?;
 
         let (writer, writer_rx) = mpsc::sync_channel::<BslWriteRequest>(1);
         thread::spawn(move || bsl_writer(stdin, writer_rx));
@@ -1865,9 +2083,7 @@ impl BslMcpSession {
 
     fn initialize(&mut self, cancellation: &CancellationToken) -> Result<(), String> {
         if cancellation.is_cancelled() {
-            return Err(cancelled_error(
-                "persistent bsl-analyzer initialize stopped",
-            ));
+            return Err(cancelled_error("persistent MCP initialize stopped"));
         }
         let deadline = Instant::now() + SERVICE_REQUEST_TIMEOUT;
         self.send_json_cancellable(
@@ -1889,9 +2105,7 @@ impl BslMcpSession {
         )?;
         let _ = self.read_response(1, deadline, cancellation)?;
         if cancellation.is_cancelled() {
-            return Err(cancelled_error(
-                "persistent bsl-analyzer initialize stopped",
-            ));
+            return Err(cancelled_error("persistent MCP initialize stopped"));
         }
         self.send_json_cancellable(
             json!({
@@ -1902,9 +2116,7 @@ impl BslMcpSession {
             cancellation,
         )?;
         if cancellation.is_cancelled() {
-            return Err(cancelled_error(
-                "persistent bsl-analyzer initialize stopped",
-            ));
+            return Err(cancelled_error("persistent MCP initialize stopped"));
         }
         Ok(())
     }
@@ -1917,7 +2129,7 @@ impl BslMcpSession {
         cancellation: &CancellationToken,
     ) -> Result<WorkspaceServiceBslOutput, String> {
         if cancellation.is_cancelled() {
-            return Err(cancelled_error("persistent bsl-analyzer request stopped"));
+            return Err(cancelled_error("persistent MCP request stopped"));
         }
         let id = self.next_id;
         self.next_id += 1;
@@ -1942,19 +2154,19 @@ impl BslMcpSession {
             }
         };
         if cancellation.is_cancelled() {
-            return self.fail(cancelled_error("persistent bsl-analyzer request stopped"));
+            return self.fail(cancelled_error("persistent MCP request stopped"));
         }
         let result_text = match mcp_tool_text(&response) {
             Ok(text) => text,
             Err(error) => {
                 if cancellation.is_cancelled() {
-                    return self.fail(cancelled_error("persistent bsl-analyzer request stopped"));
+                    return self.fail(cancelled_error("persistent MCP request stopped"));
                 }
                 return self.fail(error);
             }
         };
         if cancellation.is_cancelled() {
-            return self.fail(cancelled_error("persistent bsl-analyzer request stopped"));
+            return self.fail(cancelled_error("persistent MCP request stopped"));
         }
         let stderr = self
             .stderr_tail
@@ -1983,34 +2195,34 @@ impl BslMcpSession {
         let mut request = BslWriteRequest { payload, result };
         loop {
             if cancellation.is_cancelled() {
-                return self.fail(cancelled_error("persistent bsl-analyzer write stopped"));
+                return self.fail(cancelled_error("persistent MCP write stopped"));
             }
             if Instant::now() >= deadline {
-                return self.fail("timeout: persistent bsl-analyzer write timed out".to_string());
+                return self.fail("timeout: persistent MCP write timed out".to_string());
             }
             match self.writer.try_send(request) {
                 Ok(()) => break,
                 Err(mpsc::TrySendError::Full(returned)) => request = returned,
                 Err(mpsc::TrySendError::Disconnected(_)) => {
-                    return self.fail("persistent bsl-analyzer stdin writer stopped".to_string());
+                    return self.fail("persistent MCP stdin writer stopped".to_string());
                 }
             }
             thread::sleep(Duration::from_millis(10));
         }
         loop {
             if cancellation.is_cancelled() {
-                return self.fail(cancelled_error("persistent bsl-analyzer write stopped"));
+                return self.fail(cancelled_error("persistent MCP write stopped"));
             }
             if Instant::now() >= deadline {
-                return self.fail("timeout: persistent bsl-analyzer write timed out".to_string());
+                return self.fail("timeout: persistent MCP write timed out".to_string());
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             let received = result_rx.recv_timeout(remaining.min(Duration::from_millis(25)));
             if cancellation.is_cancelled() {
-                return self.fail(cancelled_error("persistent bsl-analyzer write stopped"));
+                return self.fail(cancelled_error("persistent MCP write stopped"));
             }
             if Instant::now() >= deadline {
-                return self.fail("timeout: persistent bsl-analyzer write timed out".to_string());
+                return self.fail("timeout: persistent MCP write timed out".to_string());
             }
             match received {
                 Ok(Ok(())) => {
@@ -2021,7 +2233,7 @@ impl BslMcpSession {
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    return self.fail("persistent bsl-analyzer stdin writer stopped".to_string());
+                    return self.fail("persistent MCP stdin writer stopped".to_string());
                 }
             }
         }
@@ -2061,10 +2273,220 @@ impl BslMcpSession {
     }
 }
 
-impl Drop for BslMcpSession {
+impl Drop for PersistentMcpSession {
     fn drop(&mut self) {
         self.invalidate();
     }
+}
+
+struct RlmMcpSession {
+    transport: PersistentMcpSession,
+    source_root: PathBuf,
+    session_id: Option<String>,
+}
+
+impl RlmMcpSession {
+    fn start(
+        context: &WorkspaceContext,
+        source_root: &Path,
+        cancellation: &CancellationToken,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            transport: PersistentMcpSession::start_rlm_transport(context, cancellation)?,
+            source_root: source_root.to_path_buf(),
+            session_id: None,
+        })
+    }
+
+    fn is_reusable(&mut self) -> bool {
+        self.transport.is_reusable()
+    }
+
+    fn execute(
+        &mut self,
+        operation: &WorkspaceRlmOperation,
+        timeout: Duration,
+        cancellation: &CancellationToken,
+    ) -> Result<WorkspaceServiceRlmOutput, String> {
+        let deadline = Instant::now() + timeout;
+        for attempt in 0..=1 {
+            self.ensure_logical_session(operation.query_hint(), deadline, cancellation)?;
+            match self.execute_once(operation, deadline, cancellation) {
+                Ok(output) => return Ok(output),
+                Err(error) if attempt == 0 && is_retryable_rlm_session_error(&error) => {
+                    self.close_logical_session(deadline, cancellation);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err("persistent RLM session retry exhausted".to_string())
+    }
+
+    fn ensure_logical_session(
+        &mut self,
+        query_hint: &str,
+        deadline: Instant,
+        cancellation: &CancellationToken,
+    ) -> Result<(), String> {
+        if self.session_id.is_some() {
+            return Ok(());
+        }
+        let timeout = remaining_rlm_time(deadline, cancellation)?;
+        let output = self.transport.call(
+            "rlm_start",
+            json!({
+                "path": self.source_root.display().to_string(),
+                "query": query_hint,
+                "effort": "low",
+                "max_output_chars": 100_000,
+                "max_execute_calls": 10_000,
+                "execution_timeout_seconds": 45,
+                "include_metadata": false
+            }),
+            timeout,
+            cancellation,
+        )?;
+        let envelope: Value = serde_json::from_str(output.result_text.trim())
+            .map_err(|error| format!("invalid rlm_start JSON response: {error}"))?;
+        if let Some(error) = envelope.get("error").and_then(Value::as_str) {
+            return Err(format!("rlm_start failed: {error}"));
+        }
+        let session_id = envelope
+            .get("session_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "rlm_start response is missing session_id".to_string())?
+            .to_string();
+        self.session_id = Some(session_id);
+        let index_status = envelope
+            .pointer("/index/index_status")
+            .and_then(Value::as_str);
+        if matches!(index_status, Some("missing" | "incomplete")) {
+            let error = format!(
+                "rlm_start reported unavailable index status {}",
+                index_status.unwrap_or("unknown")
+            );
+            self.close_logical_session(deadline, cancellation);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn execute_once(
+        &mut self,
+        operation: &WorkspaceRlmOperation,
+        deadline: Instant,
+        cancellation: &CancellationToken,
+    ) -> Result<WorkspaceServiceRlmOutput, String> {
+        let session_id = self
+            .session_id
+            .as_deref()
+            .ok_or_else(|| "persistent RLM logical session is missing".to_string())?;
+        let code = fixed_rlm_helper_code(operation)?;
+        let timeout = remaining_rlm_time(deadline, cancellation)?;
+        let output = self.transport.call(
+            "rlm_execute",
+            json!({
+                "session_id": session_id,
+                "code": code,
+                "detail_level": "compact"
+            }),
+            timeout,
+            cancellation,
+        )?;
+        let envelope: Value = serde_json::from_str(output.result_text.trim())
+            .map_err(|error| format!("invalid rlm_execute JSON response: {error}"))?;
+        if let Some(error) = envelope
+            .get("error")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            return Err(format!("rlm_execute failed: {error}"));
+        }
+        let stdout = envelope
+            .get("stdout")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "rlm_execute response is missing stdout".to_string())?
+            .trim();
+        serde_json::from_str::<Value>(stdout)
+            .map_err(|error| format!("rlm_execute stdout is not helper JSON: {error}"))?;
+        Ok(WorkspaceServiceRlmOutput {
+            result_text: stdout.to_string(),
+            stderr: output.stderr,
+        })
+    }
+
+    fn close_logical_session(&mut self, deadline: Instant, cancellation: &CancellationToken) {
+        let Some(session_id) = self.session_id.take() else {
+            return;
+        };
+        let Ok(timeout) = remaining_rlm_time(deadline, cancellation) else {
+            return;
+        };
+        let _ = self.transport.call(
+            "rlm_end",
+            json!({"session_id": session_id}),
+            timeout.min(Duration::from_secs(2)),
+            cancellation,
+        );
+    }
+}
+
+impl Drop for RlmMcpSession {
+    fn drop(&mut self) {
+        self.close_logical_session(
+            Instant::now() + Duration::from_secs(2),
+            &CancellationToken::new(),
+        );
+    }
+}
+
+fn fixed_rlm_helper_code(operation: &WorkspaceRlmOperation) -> Result<String, String> {
+    let serialized = serde_json::to_string(operation)
+        .map_err(|error| format!("failed to encode RLM operation: {error}"))?;
+    let data_literal = serde_json::to_string(&serialized)
+        .map_err(|error| format!("failed to encode RLM operation literal: {error}"))?;
+    let body = match operation {
+        WorkspaceRlmOperation::Search { .. } => {
+            "_result = search(_args[\"query\"], scope=\"all\", limit=_args[\"limit\"])\nprint(json.dumps(_result, ensure_ascii=False))"
+        }
+        WorkspaceRlmOperation::Definition { .. } => {
+            "_result = find_definition(_args[\"name\"], module_hint=_args[\"module_hint\"], limit=_args[\"limit\"])\nprint(json.dumps(_result, ensure_ascii=False))"
+        }
+        WorkspaceRlmOperation::Outline { .. } => {
+            "_result = get_module_outline(_args[\"path\"], include_methods=_args[\"include_methods\"])\nprint(json.dumps(_result, ensure_ascii=False))"
+        }
+        WorkspaceRlmOperation::ObjectProfile { .. } => {
+            "_raw_sections = _args[\"sections\"]\n_section_aliases = {\"functionalOptions\": \"functional_options\"}\n_profile_sections = None if _raw_sections is None else [_section_aliases.get(_section, _section) for _section in _raw_sections if _section != \"predefinedItems\"]\n_result = get_object_profile(_args[\"name\"], sections=_profile_sections, include_flow=_args[\"include_flow\"], include_code_usages=_args[\"include_code_usages\"], limit=_args[\"limit\"])\nif _raw_sections is not None and \"predefinedItems\" in _raw_sections and \"error\" not in _result:\n    _category = _result.get(\"category\")\n    _items = find_predefined(object_name=_result.get(\"object_name\") or _args[\"name\"], limit=_args[\"limit\"] + 1)\n    if _category:\n        _items = [_item for _item in _items if not _item.get(\"category\") or _item.get(\"category\") == _category]\n    _has_more = len(_items) > _args[\"limit\"]\n    _items = _items[:_args[\"limit\"]]\n    _result.setdefault(\"sections\", {})[\"predefined_items\"] = {\"status\": \"ok\" if _items else \"empty\", \"summary\": {}, \"items\": _items, \"total\": len(_items) + (1 if _has_more else 0), \"returned\": len(_items), \"has_more\": _has_more, \"_meta\": {\"source\": \"index\", \"truncated\": _has_more}}\nprint(json.dumps(_result, ensure_ascii=False))"
+        }
+    };
+    Ok(format!(
+        "import json\n_args = json.loads({data_literal})\n{body}"
+    ))
+}
+
+fn remaining_rlm_time(
+    deadline: Instant,
+    cancellation: &CancellationToken,
+) -> Result<Duration, String> {
+    if cancellation.is_cancelled() {
+        return Err(cancelled_error("persistent RLM request stopped"));
+    }
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| "timeout: persistent RLM request timed out".to_string())
+}
+
+fn is_retryable_rlm_session_error(error: &str) -> bool {
+    [
+        "not found or expired",
+        "Sandbox not found",
+        "was closed",
+        "Execution call limit exceeded",
+    ]
+    .iter()
+    .any(|marker| error.contains(marker))
 }
 
 fn env_u64(name: &str, default: u64) -> u64 {
@@ -2690,7 +3112,9 @@ fn handle_workspace_service_request(
         ServiceRequestKind::Shutdown => {
             write_service_response(stream, &runtime.begin_shutdown(), false)?;
         }
-        kind @ (ServiceRequestKind::BslMcp { .. } | ServiceRequestKind::RlmReady { .. }) => {
+        kind @ (ServiceRequestKind::BslMcp { .. }
+        | ServiceRequestKind::RlmReady { .. }
+        | ServiceRequestKind::RlmMcp { .. }) => {
             let Some(worker_permit) = runtime.work_admission.try_acquire() else {
                 write_service_response(stream, &ServiceResponse::error(format!("workspace service overloaded: at most {SERVICE_MAX_WORKERS} concurrent work requests are allowed")), false)?;
                 return Ok(());
@@ -2950,17 +3374,17 @@ fn optional_u64_arg(args: &[String], name: &str, default: u64) -> u64 {
 fn bsl_writer(mut stdin: ChildStdin, requests: mpsc::Receiver<BslWriteRequest>) {
     while let Ok(request) = requests.recv() {
         let result = serde_json::to_vec(&request.payload)
-            .map_err(|error| format!("failed to encode persistent bsl-analyzer request: {error}"))
+            .map_err(|error| format!("failed to encode persistent MCP request: {error}"))
             .and_then(|mut bytes| {
                 bytes.push(b'\n');
-                stdin.write_all(&bytes).map_err(|error| {
-                    format!("failed to write persistent bsl-analyzer request: {error}")
-                })
+                stdin
+                    .write_all(&bytes)
+                    .map_err(|error| format!("failed to write persistent MCP request: {error}"))
             })
             .and_then(|_| {
-                stdin.flush().map_err(|error| {
-                    format!("failed to flush persistent bsl-analyzer request: {error}")
-                })
+                stdin
+                    .flush()
+                    .map_err(|error| format!("failed to flush persistent MCP request: {error}"))
             });
         let failed = result.is_err();
         let _ = request.result.send(result);
@@ -3006,8 +3430,7 @@ fn bsl_reader_with_state(
                     BslReaderEvent::Closed
                 } else {
                     BslReaderEvent::ProtocolError(
-                        "persistent bsl-analyzer stdout closed with an incomplete JSON line"
-                            .to_string(),
+                        "persistent MCP stdout closed with an incomplete JSON line".to_string(),
                     )
                 };
                 let _ = events.send(event);
@@ -3022,7 +3445,7 @@ fn bsl_reader_with_state(
                         let event = match serde_json::from_slice::<Value>(&pending) {
                             Ok(value) => BslReaderEvent::Message(value),
                             Err(error) => BslReaderEvent::ProtocolError(format!(
-                                "persistent bsl-analyzer emitted malformed JSON: {error}"
+                                "persistent MCP emitted malformed JSON: {error}"
                             )),
                         };
                         let malformed = matches!(event, BslReaderEvent::ProtocolError(_));
@@ -3034,7 +3457,7 @@ fn bsl_reader_with_state(
                         pending.push(byte);
                         if pending.len() > SERVICE_RESPONSE_LINE_LIMIT {
                             let _ = events.send(BslReaderEvent::ProtocolError(format!(
-                                "persistent bsl-analyzer response exceeds {SERVICE_RESPONSE_LINE_LIMIT} bytes"
+                                "persistent MCP response exceeds {SERVICE_RESPONSE_LINE_LIMIT} bytes"
                             )));
                             return;
                         }
@@ -3043,7 +3466,7 @@ fn bsl_reader_with_state(
             }
             Err(error) => {
                 let _ = events.send(BslReaderEvent::ProtocolError(format!(
-                    "failed to read persistent bsl-analyzer stdout: {error}"
+                    "failed to read persistent MCP stdout: {error}"
                 )));
                 return;
             }
@@ -3068,20 +3491,18 @@ fn read_json_response_cancellable(
     while Instant::now() < deadline {
         if cancellation.is_cancelled() {
             return Err(cancelled_error(format!(
-                "persistent bsl-analyzer request {id} stopped"
+                "persistent MCP request {id} stopped"
             )));
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
         let received = rx.recv_timeout(remaining.min(Duration::from_millis(50)));
         if cancellation.is_cancelled() {
             return Err(cancelled_error(format!(
-                "persistent bsl-analyzer request {id} stopped"
+                "persistent MCP request {id} stopped"
             )));
         }
         if Instant::now() >= deadline {
-            return Err(format!(
-                "timeout: persistent bsl-analyzer request {id} timed out"
-            ));
+            return Err(format!("timeout: persistent MCP request {id} timed out"));
         }
         match received {
             Ok(BslReaderEvent::Message(value)) => {
@@ -3093,22 +3514,20 @@ fn read_json_response_cancellable(
                 return Err(error);
             }
             Ok(BslReaderEvent::Closed) => {
-                return Err("persistent bsl-analyzer stdout closed before response".to_string());
+                return Err("persistent MCP stdout closed before response".to_string());
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Err("persistent bsl-analyzer stdout closed before response".to_string());
+                return Err("persistent MCP stdout closed before response".to_string());
             }
         }
     }
     if cancellation.is_cancelled() {
         return Err(cancelled_error(format!(
-            "persistent bsl-analyzer request {id} stopped"
+            "persistent MCP request {id} stopped"
         )));
     }
-    Err(format!(
-        "timeout: persistent bsl-analyzer request {id} timed out"
-    ))
+    Err(format!("timeout: persistent MCP request {id} timed out"))
 }
 
 fn mcp_tool_text(response: &Value) -> Result<String, String> {
@@ -3166,6 +3585,52 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn fixed_rlm_helper_keeps_untrusted_values_inside_json_data() {
+        let query = "x'); __import__('os').system('boom')\n#";
+        let code = fixed_rlm_helper_code(&WorkspaceRlmOperation::Search {
+            query: query.to_string(),
+            limit: 7,
+        })
+        .unwrap();
+
+        assert!(!code.contains("_result = search(\"x');"));
+        let literal = code
+            .lines()
+            .find_map(|line| line.strip_prefix("_args = json.loads("))
+            .and_then(|line| line.strip_suffix(')'))
+            .expect("serialized argument literal");
+        let serialized: String = serde_json::from_str(literal).unwrap();
+        let decoded: WorkspaceRlmOperation = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(
+            decoded,
+            WorkspaceRlmOperation::Search {
+                query: query.to_string(),
+                limit: 7
+            }
+        );
+    }
+
+    #[test]
+    fn object_profile_helper_maps_public_sections_and_composes_predefined_items() {
+        let code = fixed_rlm_helper_code(&WorkspaceRlmOperation::ObjectProfile {
+            name: "Document.Заказ".to_string(),
+            sections: Some(vec![
+                "functionalOptions".to_string(),
+                "predefinedItems".to_string(),
+            ]),
+            include_flow: false,
+            include_code_usages: false,
+            limit: 20,
+        })
+        .unwrap();
+
+        assert!(code.contains("\"functionalOptions\": \"functional_options\""));
+        assert!(code.contains("find_predefined("));
+        assert!(code.contains("[\"predefined_items\"]"));
+        assert_eq!(code.matches("print(json.dumps(").count(), 1);
+    }
 
     #[test]
     fn service_response_preserves_exact_stale_status() {
@@ -4253,7 +4718,7 @@ mod tests {
                 cancel.cancel();
             });
             let started = Instant::now();
-            let error = match BslMcpSession::start_with_command(command, &cancellation) {
+            let error = match PersistentMcpSession::start_with_command(command, &cancellation) {
                 Ok(_) => panic!("initialize unexpectedly completed"),
                 Err(error) => error,
             };
@@ -4272,7 +4737,7 @@ mod tests {
             read_marker.to_str().unwrap(),
         ]);
         let started = Instant::now();
-        let error = BslMcpSession::start_with_command(command, &CancellationToken::new())
+        let error = PersistentMcpSession::start_with_command(command, &CancellationToken::new())
             .err()
             .expect("incomplete initialize response must fail");
         let process_pid = wait_for_recorded_pid(&pid_file);
@@ -4291,7 +4756,7 @@ mod tests {
         let mut command = Command::new(&fixture);
         command.arg(&pid_file);
         let cancellation = CancellationToken::new();
-        let mut session = BslMcpSession::start_with_command(command, &cancellation).unwrap();
+        let mut session = PersistentMcpSession::start_with_command(command, &cancellation).unwrap();
         let parent_pid = session.child.id();
         let child_pid = wait_for_recorded_pid(&pid_file);
         let cancel = cancellation.clone();
@@ -4441,7 +4906,7 @@ mod tests {
         runtime.analyzer_starter = Arc::new(move |_context, _source_root, cancellation| {
             let mut command = Command::new(&fixture_for_start);
             command.args([&pid_file_for_start, &completion_file_for_start]);
-            BslMcpSession::start_with_command(command, cancellation)
+            PersistentMcpSession::start_with_command(command, cancellation)
         });
         let first =
             runtime.handle_bsl_mcp("unica.code.search", json!({}), 2, &CancellationToken::new());
@@ -4479,7 +4944,7 @@ mod tests {
             move |_context, _source_root, cancellation| {
                 let mut command = Command::new(&fixture);
                 command.args([&pid_file, &terminal_marker]);
-                BslMcpSession::start_with_command(command, cancellation)
+                PersistentMcpSession::start_with_command(command, cancellation)
             }
         });
 

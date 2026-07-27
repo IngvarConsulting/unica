@@ -1,11 +1,18 @@
-use crate::domain::{cancellation::CancellationToken, workspace::WorkspaceContext};
+use crate::domain::{
+    cancellation::CancellationToken, source_roots::ResolvedSourceRoot, workspace::WorkspaceContext,
+};
+use serde::Serialize;
 use serde_json::{Map, Value};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum ProviderId {
+    #[serde(rename = "rlm")]
     Rlm,
+    #[serde(rename = "bsl-analyzer")]
     BslAnalyzer,
+    #[serde(rename = "git-grep")]
     GitGrep,
 }
 
@@ -22,6 +29,9 @@ impl ProviderId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProviderCapability {
     Search,
+    Definition,
+    Outline,
+    ObjectProfile,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,7 +40,82 @@ pub struct SearchRequest {
     pub limit: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CodeIntelligenceReadRequest {
+    Definition {
+        name: String,
+        module_hint: String,
+        limit: usize,
+    },
+    Outline {
+        path: String,
+        include_methods: bool,
+    },
+    ObjectProfile {
+        name: String,
+        sections: Option<Vec<String>>,
+        include_flow: bool,
+        include_code_usages: bool,
+        limit: usize,
+    },
+}
+
+impl CodeIntelligenceReadRequest {
+    pub const fn capability(&self) -> ProviderCapability {
+        match self {
+            Self::Definition { .. } => ProviderCapability::Definition,
+            Self::Outline { .. } => ProviderCapability::Outline,
+            Self::ObjectProfile { .. } => ProviderCapability::ObjectProfile,
+        }
+    }
+
+    pub const fn tool_name(&self) -> &'static str {
+        match self {
+            Self::Definition { .. } => "unica.code.definition",
+            Self::Outline { .. } => "unica.code.outline",
+            Self::ObjectProfile { .. } => "unica.meta.profile",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CodeIntelligenceContext {
+    pub workspace: WorkspaceContext,
+    pub source_root: ResolvedSourceRoot,
+}
+
+impl CodeIntelligenceContext {
+    pub fn new(workspace: WorkspaceContext, source_root: ResolvedSourceRoot) -> Self {
+        Self {
+            workspace,
+            source_root,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderDeadline(Instant);
+
+impl ProviderDeadline {
+    pub fn new(deadline: Instant) -> Self {
+        Self(deadline)
+    }
+
+    pub fn instant(self) -> Instant {
+        self.0
+    }
+
+    pub fn remaining(self) -> Duration {
+        self.0.saturating_duration_since(Instant::now())
+    }
+
+    pub fn is_expired(self) -> bool {
+        Instant::now() >= self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ProviderSectionStatus {
     Ok,
     Empty,
@@ -49,7 +134,8 @@ impl ProviderSectionStatus {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProviderSearchHit {
     pub rank: usize,
     pub provider_score: Option<f64>,
@@ -62,7 +148,8 @@ pub struct ProviderSearchHit {
     pub attributes: Map<String, Value>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProviderSearchSection {
     pub provider: ProviderId,
     pub status: ProviderSectionStatus,
@@ -71,15 +158,48 @@ pub struct ProviderSearchSection {
     pub artifacts: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeSearchResult {
+    pub sections: Vec<ProviderSearchSection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderReadOutcome {
+    pub provider: ProviderId,
+    pub ok: bool,
+    pub summary: String,
+    pub warnings: Vec<String>,
+    pub errors: Vec<String>,
+    pub artifacts: Vec<String>,
+    pub stdout: Option<String>,
+    pub stderr: Option<String>,
+}
+
 pub trait CodeIntelligenceProvider: Send + Sync {
     fn id(&self) -> ProviderId;
     fn capabilities(&self) -> &[ProviderCapability];
     fn search(
         &self,
         request: &SearchRequest,
-        context: &WorkspaceContext,
+        context: &CodeIntelligenceContext,
+        deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> ProviderSearchSection;
+
+    fn read(
+        &self,
+        request: &CodeIntelligenceReadRequest,
+        _context: &CodeIntelligenceContext,
+        _deadline: ProviderDeadline,
+        _cancellation: &CancellationToken,
+    ) -> Result<ProviderReadOutcome, String> {
+        Err(format!(
+            "provider {} does not implement {:?}",
+            self.id().as_str(),
+            request.capability()
+        ))
+    }
 }
 
 pub struct CodeIntelligenceRegistry {
@@ -107,15 +227,49 @@ impl CodeIntelligenceRegistry {
                 .contains(&ProviderCapability::Search)
         })
     }
+
+    pub fn search_provider_arcs(&self) -> Vec<Arc<dyn CodeIntelligenceProvider>> {
+        self.search_providers().cloned().collect()
+    }
+
+    pub fn provider_for(
+        &self,
+        capability: ProviderCapability,
+    ) -> Option<Arc<dyn CodeIntelligenceProvider>> {
+        self.providers
+            .iter()
+            .find(|provider| provider.capabilities().contains(&capability))
+            .cloned()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::source_roots::ResolvedSourceRoot;
+    use crate::domain::workspace::WorkspaceContext;
+    use serde_json::json;
+    use std::path::PathBuf;
+    use std::time::{Duration, Instant};
 
     struct FakeProvider {
         id: ProviderId,
         capabilities: Vec<ProviderCapability>,
+    }
+
+    fn context() -> CodeIntelligenceContext {
+        CodeIntelligenceContext::new(
+            WorkspaceContext {
+                cwd: PathBuf::from("/workspace"),
+                workspace_root: PathBuf::from("/workspace"),
+                cache_root: PathBuf::from("/cache"),
+                workspace_epoch: 7,
+            },
+            ResolvedSourceRoot {
+                source_set: Some("main".to_string()),
+                path: PathBuf::from("/workspace/src"),
+            },
+        )
     }
 
     impl CodeIntelligenceProvider for FakeProvider {
@@ -130,7 +284,8 @@ mod tests {
         fn search(
             &self,
             _request: &SearchRequest,
-            _context: &WorkspaceContext,
+            _context: &CodeIntelligenceContext,
+            _deadline: ProviderDeadline,
             _cancellation: &CancellationToken,
         ) -> ProviderSearchSection {
             ProviderSearchSection {
@@ -141,17 +296,46 @@ mod tests {
                 artifacts: Vec::new(),
             }
         }
+
+        fn read(
+            &self,
+            request: &CodeIntelligenceReadRequest,
+            _context: &CodeIntelligenceContext,
+            _deadline: ProviderDeadline,
+            _cancellation: &CancellationToken,
+        ) -> Result<ProviderReadOutcome, String> {
+            Ok(ProviderReadOutcome {
+                provider: self.id,
+                ok: true,
+                summary: format!("{} handled", request.tool_name()),
+                warnings: Vec::new(),
+                errors: Vec::new(),
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: None,
+            })
+        }
     }
 
     #[test]
     fn capabilities_match_the_executable_provider_operations() {
-        let capability = ProviderCapability::Search;
-
-        let operation = match capability {
+        let operations = [
+            ProviderCapability::Search,
+            ProviderCapability::Definition,
+            ProviderCapability::Outline,
+            ProviderCapability::ObjectProfile,
+        ]
+        .map(|capability| match capability {
             ProviderCapability::Search => "search",
-        };
+            ProviderCapability::Definition => "definition",
+            ProviderCapability::Outline => "outline",
+            ProviderCapability::ObjectProfile => "object-profile",
+        });
 
-        assert_eq!(operation, "search");
+        assert_eq!(
+            operations,
+            ["search", "definition", "outline", "object-profile"]
+        );
     }
 
     #[test]
@@ -199,5 +383,113 @@ mod tests {
         };
 
         assert_eq!(error, "duplicate code intelligence provider: rlm");
+    }
+
+    #[test]
+    fn registry_resolves_an_executable_provider_for_read_capabilities() {
+        let registry = CodeIntelligenceRegistry::new(vec![
+            Arc::new(FakeProvider {
+                id: ProviderId::Rlm,
+                capabilities: vec![
+                    ProviderCapability::Search,
+                    ProviderCapability::Definition,
+                    ProviderCapability::Outline,
+                    ProviderCapability::ObjectProfile,
+                ],
+            }),
+            Arc::new(FakeProvider {
+                id: ProviderId::GitGrep,
+                capabilities: vec![ProviderCapability::Search],
+            }),
+        ])
+        .unwrap();
+        let request = CodeIntelligenceReadRequest::Definition {
+            name: "Найти".to_string(),
+            module_hint: String::new(),
+            limit: 50,
+        };
+        let provider = registry
+            .provider_for(request.capability())
+            .expect("definition capability must resolve to a provider");
+
+        let outcome = provider
+            .read(
+                &request,
+                &context(),
+                ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        assert_eq!(outcome.provider, ProviderId::Rlm);
+        assert_eq!(outcome.summary, "unica.code.definition handled");
+    }
+
+    #[test]
+    fn canonical_result_serializes_the_reader_facing_contract() {
+        let result = CodeSearchResult {
+            sections: vec![ProviderSearchSection {
+                provider: ProviderId::Rlm,
+                status: ProviderSectionStatus::Ok,
+                hits: vec![ProviderSearchHit {
+                    rank: 1,
+                    provider_score: Some(0.91),
+                    path: "CommonModules/Sales/Ext/Module.bsl".to_string(),
+                    line: 42,
+                    end_line: Some(58),
+                    symbol: Some("Post".to_string()),
+                    kind: Some("procedure".to_string()),
+                    snippet: "Procedure Post()".to_string(),
+                    attributes: Map::new(),
+                }],
+                diagnostics: Vec::new(),
+                artifacts: Vec::new(),
+            }],
+        };
+
+        assert_eq!(
+            serde_json::to_value(result).unwrap(),
+            json!({
+                "sections": [{
+                    "provider": "rlm",
+                    "status": "ok",
+                    "hits": [{
+                        "rank": 1,
+                        "providerScore": 0.91,
+                        "path": "CommonModules/Sales/Ext/Module.bsl",
+                        "line": 42,
+                        "endLine": 58,
+                        "symbol": "Post",
+                        "kind": "procedure",
+                        "snippet": "Procedure Post()",
+                        "attributes": {}
+                    }],
+                    "diagnostics": [],
+                    "artifacts": []
+                }]
+            })
+        );
+    }
+
+    #[test]
+    fn provider_context_carries_one_resolved_workspace_and_source_identity() {
+        let deadline = Instant::now() + Duration::from_secs(120);
+
+        let context = context();
+        let provider_deadline = ProviderDeadline::new(deadline);
+
+        assert_eq!(
+            context.workspace.workspace_root,
+            PathBuf::from("/workspace")
+        );
+        assert_eq!(context.workspace.workspace_epoch, 7);
+        assert_eq!(
+            context.source_root,
+            ResolvedSourceRoot {
+                source_set: Some("main".to_string()),
+                path: PathBuf::from("/workspace/src"),
+            }
+        );
+        assert_eq!(provider_deadline.instant(), deadline);
     }
 }

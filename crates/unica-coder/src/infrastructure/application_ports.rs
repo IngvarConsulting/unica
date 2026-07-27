@@ -4,12 +4,15 @@ use crate::application::ports::{
 use crate::application::{project_map, project_status, AdapterOutcome, ToolHandler, ToolSpec};
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
+use crate::domain::code_intelligence::{
+    CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceRegistry,
+};
 use crate::domain::events::DomainEvent;
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::code_intelligence::{BslAnalyzerProvider, GitGrepProvider, RlmProvider};
 use crate::infrastructure::internal_adapters::{
-    BslAnalyzerMcpAdapter, CliAdapter, CodeNavigationAdapter, CodeSearchAdapter,
-    ConfigDumpInfoGitCheck, GitTrackingAdapter, RuntimeAdapter, RuntimeJobAdapter,
-    StandardsAdapter,
+    BslAnalyzerMcpAdapter, CliAdapter, ConfigDumpInfoGitCheck, GitTrackingAdapter, RuntimeAdapter,
+    RuntimeJobAdapter, StandardsAdapter,
 };
 use crate::infrastructure::native_operations::NativeOperationAdapter;
 use crate::infrastructure::platform::full_dump_publication::{
@@ -19,6 +22,7 @@ use crate::infrastructure::workspace_services::WorkspaceServiceManager;
 use crate::infrastructure::workspace_state::WorkspaceStateRepository;
 use serde_json::{Map, Value};
 use std::path::PathBuf;
+use std::sync::Arc;
 pub(crate) struct InfrastructureApplicationPorts;
 
 impl ApplicationPorts for InfrastructureApplicationPorts {
@@ -37,6 +41,27 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         context: &WorkspaceContext,
     ) -> Result<(), String> {
         crate::infrastructure::tool_context::validate_tool_context(spec, args, dry_run, context)
+    }
+
+    fn resolve_code_intelligence_context(
+        &self,
+        context: &WorkspaceContext,
+        args: &Map<String, Value>,
+    ) -> Result<CodeIntelligenceContext, String> {
+        let source_root = crate::infrastructure::source_roots::resolve_source_root(
+            context,
+            args.get("sourceDir").and_then(Value::as_str),
+        )?;
+        Ok(CodeIntelligenceContext::new(context.clone(), source_root))
+    }
+
+    fn code_intelligence_registry(&self) -> Result<CodeIntelligenceRegistry, String> {
+        let providers: Vec<Arc<dyn CodeIntelligenceProvider>> = vec![
+            Arc::new(RlmProvider::new()),
+            Arc::new(BslAnalyzerProvider::new()),
+            Arc::new(GitGrepProvider::new()),
+        ];
+        CodeIntelligenceRegistry::new(providers)
     }
 
     fn evaluate_support_guard(
@@ -170,16 +195,12 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                 data: None,
                 job: outcome.job,
             }),
-            ToolHandler::CodeAdapter { command } if command == ["search"] => {
-                CodeSearchAdapter::new()
-                    .invoke_cancellable(spec.name, args, context, dry_run, cancellation)
-                    .map(HandlerOutcome::plain)
-            }
             ToolHandler::CodeAdapter {
-                command: ["definition"] | ["outline"] | ["grep"] | ["meta-profile"],
-            } => CodeNavigationAdapter::new()
-                .invoke_cancellable(spec.name, args, context, dry_run, cancellation)
-                .map(HandlerOutcome::plain),
+                command: ["definition"] | ["outline"] | ["meta-profile"],
+            } => Err(format!(
+                "{} must be dispatched through the provider-neutral code intelligence registry",
+                spec.name
+            )),
             ToolHandler::CodeAdapter {
                 command: ["graph"] | ["analyze"],
             } => BslAnalyzerMcpAdapter::new()

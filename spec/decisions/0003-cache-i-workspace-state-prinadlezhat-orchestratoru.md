@@ -2,6 +2,7 @@
 
 - Статус: `accepted`
 - Дата: `2026-05-03`
+- Обновлено: `2026-07-27`
 
 ## Контекст
 
@@ -27,6 +28,10 @@ The `unica` orchestrator owns workspace state and cache coordination.
    worktree's caches exactly like a checkout in a plain clone. Any code that
    reads git state must resolve `.git` as either a directory or a pointer file;
    assuming the directory layout is a defect, not a limitation.
+7. Orchestrator events own logical invalidation; provider infrastructure owns
+   its implementation-specific index/process/session lifecycle. Orchestrator
+   code does not read or merge a provider's private storage format
+   (ADR-0014).
 
 ## Неграницы
 
@@ -58,3 +63,5 @@ The `unica` orchestrator owns workspace state and cache coordination.
 - [x] ADR requires worktree-correct workspace identity and cache invalidation.
       Verify with `cargo test -p unica-coder workspace_epoch` and
       `cargo test -p unica-coder git_worktree_boundary`.
+- [x] ADR separates logical invalidation ownership from provider-private
+      lifecycle and storage.

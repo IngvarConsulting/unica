@@ -1,5 +1,8 @@
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
+use crate::domain::code_intelligence::{
+    CodeIntelligenceReadRequest, ProviderDeadline, SearchRequest,
+};
 use crate::domain::events::{runtime_event_kind, DomainEvent, DomainEventKind};
 use crate::domain::workspace::WorkspaceContext;
 pub(crate) use operation_descriptors::SupportGuardRequirement;
@@ -13,6 +16,7 @@ pub(crate) use tool_contracts::{
     DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS, DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
 };
 
+pub(crate) mod code_intelligence;
 pub(crate) mod operation_descriptors;
 mod outcome;
 pub(crate) mod ports;
@@ -270,7 +274,7 @@ pub fn tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "unica.code.search",
-            description: "Search BSL code through the internal RLM index.",
+            description: "Search code concurrently through provider-local RLM, bsl-analyzer, and literal git-grep sections.",
             mutating: false,
             cache_access: CacheAccess {
                 reads: &["bsl_index"],
@@ -303,13 +307,6 @@ pub fn tools() -> Vec<ToolSpec> {
             handler: ToolHandler::CodeAdapter {
                 command: &["outline"],
             },
-        },
-        ToolSpec {
-            name: "unica.code.grep",
-            description: "Run safe typed git-grep search inside the Unica workspace.",
-            mutating: false,
-            cache_access: CacheAccess::default(),
-            handler: ToolHandler::CodeAdapter { command: &["grep"] },
         },
         ToolSpec {
             name: "unica.code.patch",
@@ -467,7 +464,15 @@ fn call_tool(
         None
     };
 
-    let handler_outcome = ports.invoke_handler(spec, args, &context, dry_run, cancellation)?;
+    let handler_outcome = match spec.name {
+        "unica.code.search" => {
+            invoke_code_intelligence_search(ports, args, &context, dry_run, cancellation)?
+        }
+        "unica.code.definition" | "unica.code.outline" | "unica.meta.profile" => {
+            invoke_code_intelligence_read(ports, spec.name, args, &context, dry_run, cancellation)?
+        }
+        _ => ports.invoke_handler(spec, args, &context, dry_run, cancellation)?,
+    };
     let mut outcome = handler_outcome.adapter;
     if let Some(warning) = support_guard_warning {
         outcome.warnings.insert(0, warning);
@@ -510,6 +515,198 @@ fn call_tool(
         data: handler_outcome.data,
         job: handler_outcome.job,
     })
+}
+
+fn invoke_code_intelligence_search(
+    ports: &dyn ApplicationPorts,
+    args: &Map<String, Value>,
+    workspace: &WorkspaceContext,
+    dry_run: bool,
+    cancellation: &CancellationToken,
+) -> Result<ports::HandlerOutcome, String> {
+    let context = ports.resolve_code_intelligence_context(workspace, args)?;
+    if dry_run {
+        let mut outcome = AdapterOutcome::ok(
+            "dry run: unica.code.search would run the provider-neutral search coordinator",
+        );
+        outcome
+            .artifacts
+            .push(context.source_root.path.display().to_string());
+        return Ok(ports::HandlerOutcome::plain(outcome));
+    }
+    let request = SearchRequest {
+        query: args
+            .get("query")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        limit: args
+            .get("limit")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(20),
+    };
+    let execution = code_intelligence::CodeSearchCoordinator::new(
+        ports.code_intelligence_registry()?,
+    )
+    .search(&request, &context, cancellation)?;
+    let artifacts = execution
+        .result
+        .sections
+        .iter()
+        .flat_map(|section| section.artifacts.clone())
+        .collect();
+    let data = serde_json::to_value(&execution.result)
+        .map_err(|error| format!("failed to serialize code search result: {error}"))?;
+    Ok(ports::HandlerOutcome::with_data(
+        AdapterOutcome {
+            ok: execution.ok,
+            summary: if execution.ok {
+                "unica.code.search completed through provider-neutral code intelligence".to_string()
+            } else {
+                "unica.code.search failed because no provider served the request".to_string()
+            },
+            changes: Vec::new(),
+            warnings: execution.warnings,
+            errors: execution.errors,
+            artifacts,
+            stdout: Some(execution.text),
+            stderr: None,
+            command: None,
+        },
+        data,
+    ))
+}
+
+fn invoke_code_intelligence_read(
+    ports: &dyn ApplicationPorts,
+    tool_name: &str,
+    args: &Map<String, Value>,
+    workspace: &WorkspaceContext,
+    dry_run: bool,
+    cancellation: &CancellationToken,
+) -> Result<ports::HandlerOutcome, String> {
+    let context = ports.resolve_code_intelligence_context(workspace, args)?;
+    if dry_run {
+        let mut outcome = AdapterOutcome::ok(format!(
+            "dry run: {tool_name} would use the provider-neutral code intelligence registry"
+        ));
+        outcome
+            .artifacts
+            .push(context.source_root.path.display().to_string());
+        return Ok(ports::HandlerOutcome::plain(outcome));
+    }
+    let request = code_intelligence_read_request(tool_name, args)?;
+    let registry = ports.code_intelligence_registry()?;
+    let provider = registry.provider_for(request.capability()).ok_or_else(|| {
+        format!(
+            "no code intelligence provider implements {:?} for {tool_name}",
+            request.capability()
+        )
+    })?;
+    let provider_id = provider.id();
+    let mut outcome = provider.read(
+        &request,
+        &context,
+        ProviderDeadline::new(std::time::Instant::now() + std::time::Duration::from_secs(45)),
+        cancellation,
+    )?;
+    if outcome.provider != provider_id {
+        outcome.warnings.insert(
+            0,
+            format!(
+                "provider registry selected {}, but the response identified {}",
+                provider_id.as_str(),
+                outcome.provider.as_str()
+            ),
+        );
+    }
+    Ok(ports::HandlerOutcome::plain(AdapterOutcome {
+        ok: outcome.ok,
+        summary: outcome.summary,
+        changes: Vec::new(),
+        warnings: outcome.warnings,
+        errors: outcome.errors,
+        artifacts: outcome.artifacts,
+        stdout: outcome.stdout,
+        stderr: outcome.stderr,
+        command: None,
+    }))
+}
+
+fn code_intelligence_read_request(
+    tool_name: &str,
+    args: &Map<String, Value>,
+) -> Result<CodeIntelligenceReadRequest, String> {
+    match tool_name {
+        "unica.code.definition" => Ok(CodeIntelligenceReadRequest::Definition {
+            name: required_code_intelligence_string(args, "name")?.to_string(),
+            module_hint: args
+                .get("moduleHint")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            limit: code_intelligence_limit(args, 50),
+        }),
+        "unica.code.outline" => Ok(CodeIntelligenceReadRequest::Outline {
+            path: required_code_intelligence_string(args, "path")?.to_string(),
+            include_methods: args
+                .get("includeMethods")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
+        }),
+        "unica.meta.profile" => Ok(CodeIntelligenceReadRequest::ObjectProfile {
+            name: required_code_intelligence_string(args, "name")?.to_string(),
+            sections: Some(
+                args.get("sections")
+                    .and_then(Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_else(|| {
+                        [
+                            "structure",
+                            "modules",
+                            "roles",
+                            "subscriptions",
+                            "functionalOptions",
+                        ]
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect()
+                    }),
+            ),
+            include_flow: false,
+            include_code_usages: false,
+            limit: code_intelligence_limit(args, 20),
+        }),
+        _ => Err(format!(
+            "unsupported provider-neutral code intelligence read: {tool_name}"
+        )),
+    }
+}
+
+fn required_code_intelligence_string<'a>(
+    args: &'a Map<String, Value>,
+    name: &str,
+) -> Result<&'a str, String> {
+    args.get(name)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("missing required `{name}` argument"))
+}
+
+fn code_intelligence_limit(args: &Map<String, Value>, default: usize) -> usize {
+    args.get("limit")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(default)
 }
 
 fn runtime_xml_route_guard(
@@ -1517,7 +1714,7 @@ mod tests {
         }
         assert!(names.contains(&"unica.code.definition"));
         assert!(names.contains(&"unica.code.outline"));
-        assert!(names.contains(&"unica.code.grep"));
+        assert!(!names.contains(&"unica.code.grep"));
         assert!(names.contains(&"unica.code.graph"));
         assert!(names.contains(&"unica.meta.profile"));
         assert!(names.contains(&"unica.standards.explain"));
@@ -6579,7 +6776,7 @@ mod tests {
         token.cancel();
 
         let result = app
-            .call_tool_cancellable("unica.code.search", &Map::new(), token)
+            .call_tool_cancellable("unica.project.status", &Map::new(), token)
             .unwrap();
 
         assert_eq!(*ports.observed_cancelled.lock().unwrap(), Some(true));

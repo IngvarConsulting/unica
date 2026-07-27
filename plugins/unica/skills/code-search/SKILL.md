@@ -7,7 +7,7 @@ description: "Поиск и исследование BSL-кода и точек 
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.code.definition`, `unica.code.outline`, `unica.code.grep`, `unica.code.graph`, `unica.meta.profile`, and `unica.project.map`.
+- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.code.definition`, `unica.code.outline`, `unica.code.graph`, `unica.meta.profile`, and `unica.project.map`.
 - Use object-specific `unica.*.info` tools when code behavior depends on metadata, forms, DCS, roles, or HTTP service structure.
 - Do not call internal code-index, analyzer, or package adapters directly. They are hidden behind MCP `unica`.
 
@@ -19,7 +19,8 @@ description: "Поиск и исследование BSL-кода и точек 
   report what was tried when that fallback matters to the answer.
 - Use `unica.code.definition` for an exact procedure/function definition by name, especially exported methods.
 - Use `unica.code.outline` before reading a large module; it gives regions, header context, and method ranges.
-- Use `unica.code.grep` for arbitrary text, XML, query fragments, string literals, captions, and non-method tokens.
+- Use `unica.code.search` for arbitrary text, XML, query fragments, string literals, captions, and non-method tokens; its `git-grep` section is the literal fallback.
+- `unica.code.search.limit` is the per-provider result cap: `1..50`, default `20`.
 - Use `unica.code.graph` for callers, callees, neighbors, graph overview, and impact analysis when a method or metadata node id is known or can be resolved.
 - Use `unica.meta.profile` for a compact metadata object profile: structure, modules, roles, event subscriptions, functional options, and predefined items.
 - Use `unica.code.search` for broad BSL search and mixed analyzer/index results.
@@ -31,7 +32,7 @@ description: "Поиск и исследование BSL-кода и точек 
 3. Resolve exact method names with `unica.code.definition`; inspect large candidate modules with `unica.code.outline`.
 4. For flow questions, resolve the node and ask `unica.code.graph` for callers, callees, or neighbors before treating lexical hits as execution flow.
 5. Search exact identifiers next: object names, module names, event handlers, exported procedures, command names, URL templates.
-6. Use `unica.code.grep` for raw text fragments that are not BSL method names.
+6. Use `unica.code.search` for raw text fragments that are not BSL method names and inspect its provider-local sections independently.
 7. Broaden only after exact search fails: synonyms, business terms, common module prefixes, form command captions.
 8. Fall back to local `rg` only for repository files outside the public Unica index or after the MCP-first attempts above were insufficient.
 9. For every result, separate declaration, caller, handler, graph edge, and dead-looking match. Do not infer flow from one hit.
@@ -126,11 +127,10 @@ description: "Поиск и исследование BSL-кода и точек 
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.code.grep",
+    "name": "unica.code.search",
     "arguments": {
       "cwd": "<workspace>",
       "query": "ВЫБРАТЬ",
-      "fileTypes": "bsl",
       "limit": 20
     }
   }

@@ -155,7 +155,6 @@ TOOLS = [
     "unica.cf.validate",
     "unica.code.diagnostics",
     "unica.code.search",
-    "unica.code.grep",
     "unica.code.outline",
     "unica.meta.profile",
     "unica.standards.explain",

@@ -204,7 +204,10 @@ INV-SOURCE-SINGLE-RESOLVED-ROOT (source-root selection), INV-MCP-SDK-TRANSPORT a
 ownership and bounded admission), INV-CACHE-PERSISTED-STALENESS (live services are notified by
 applied mutations), and INV-PLATFORM-NO-ORPHAN-PROCESSES (process-tree ownership).
 
-- `unica.code.grep` must not create `.build/unica/services`.
+- `initialize`, `tools/list`, `project.status`, and `project.map` must not create
+  `.build/unica/services`.
+- `unica.code.search` returns fixed `rlm`, `bsl-analyzer`, and `git-grep`
+  sections and may start the workspace service.
 - Analyzer-backed tools may create `.build/unica/services/<service-key>`.
 - Two sessions using the same workspace/source root should reuse a matching live
   service record.

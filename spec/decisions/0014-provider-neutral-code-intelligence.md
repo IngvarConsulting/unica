@@ -19,8 +19,9 @@ mix public search semantics with replaceable infrastructure.
 ## Решение
 
 1. Application code uses provider-neutral `CodeIntelligenceProvider` contracts.
-   A provider declares its stable id and capabilities and produces
-   provider-local search data.
+   A provider declares its stable id and executable capabilities, produces
+   provider-local search data, and handles typed read requests for any
+   definition, outline, or object-profile capabilities it advertises.
 2. The bundled registry is built in the composition root and accepts constructor
    injection for tests. Its order is authoritative for public section order.
 3. `unica.code.search` runs the bundled providers `rlm`, `bsl-analyzer`, and
@@ -28,8 +29,9 @@ mix public search semantics with replaceable infrastructure.
    not fuse, rerank, or deduplicate hits across sections.
 4. Application code validates the public request, resolves the effective source
    root once, starts providers concurrently, applies the public and
-   provider-specific budgets, and gives cancellation priority. Every provider
-   receives the same typed workspace and source-root identity.
+   provider-specific budgets, bounds admitted workers per provider, and gives
+   cancellation priority through a token linked to the MCP request. Every
+   provider receives the same typed workspace and source-root identity.
 5. The provider contract is runtime-hosting-neutral. An infrastructure provider
    implementation owns provider-specific invocation, response parsing, and
    state transitions. Its runtime may live in the main MCP process or behind a
@@ -78,17 +80,55 @@ mix public search semantics with replaceable infrastructure.
 
 ## Верификация
 
-- [ ] The application request carries one resolved workspace and source-root
+- [x] The application request carries one resolved workspace and source-root
       identity, and every provider receives that same identity.
 - [x] The registry rejects duplicate ids and preserves injected search-provider
       order.
+- [x] Every advertised read capability resolves to an executable provider
+      through the same registry; application routing does not downcast or call
+      a concrete RLM provider.
 - [x] Provider and registry tests use fake providers without starting a process
       or workspace service.
 - [x] Linked worktrees receive independent workspace, cache, and service
       identities.
-- [ ] The composition root registers RLM, bsl-analyzer, and git-grep adapters.
-- [ ] The public coordinator runs all registered search providers in parallel.
-- [ ] Production provider code uses supported upstream interfaces and does not
+- [x] The composition root registers RLM, bsl-analyzer, and git-grep adapters.
+- [x] The public coordinator runs all registered search providers in parallel.
+- [x] Production provider code uses supported upstream interfaces and does not
       read, copy, or merge RLM SQLite files.
-- [ ] Package and acceptance tests prove the fixed three-section response and
+- [x] Package and acceptance tests prove the fixed three-section response and
       the single public MCP server.
+
+Implementation evidence:
+
+- `domain/code_intelligence.rs` owns the provider-neutral request, context,
+  registry, section, and result contracts.
+- `application/code_intelligence.rs` starts owned provider workers before
+  waiting, enforces the public and provider deadlines even for a
+  non-cooperative provider, bounds retained workers through per-provider
+  admission with RAII cleanup, registers every worker handle for the MCP EOF
+  shutdown grace shared with active tool calls under one aggregate deadline,
+  restores registry order, isolates failures, and applies the partial-success
+  and linked-cancellation rules.
+- `infrastructure/code_intelligence.rs` contains the three provider adapters;
+  its RLM adapter implements the typed read SPI, while
+  `infrastructure/rlm_navigation.rs` keeps definition, outline, and metadata
+  profile on the same supported persistent RLM MCP API.
+- `workspace_services.rs` owns the reusable RLM logical session
+  (`rlm_start`/`rlm_execute`/`rlm_end`) and the reusable analyzer transport.
+- `issue_89_workspace_service.rs` proves worktree/source-root selection,
+  cancellation recovery, persistent RLM reuse, and the ordered
+  `rlm`/`bsl-analyzer`/`git-grep` public response.
+- `plugins/unica/third-party/tools.lock.json` pins the verified unmodified RLM
+  v1.29.1 source at
+  `8bc6e9fc83b522f9a79eab3193eb13fc2cecb8ed` and the immutable
+  `rlm-tools-bsl-v1.29.1-build.2` platform assets.
+- `check-tool-contracts.py`, `test_product_contracts.py`, and the packaged MCP
+  smoke prove executable compatibility without importing the private RLM
+  SQLite schema.
+- The extracted `darwin-arm64` runtime was exercised against a real indexed
+  configuration: unified search returned ordered `rlm` (`ok`),
+  `bsl-analyzer` (`unavailable`), and `git-grep` (`ok`) sections, while
+  definition and outline completed through the persistent RLM MCP API.
+- `docs/superpowers/plans/2026-07-27-rlm-integration-api-issue-draft.md`
+  records the post-implementation upstream API audit; it is a review draft and
+  is not an accepted Unica architecture dependency.
