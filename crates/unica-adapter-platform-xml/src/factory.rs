@@ -7,17 +7,17 @@ use std::{
 use unica_format_core::{
     navigation::{NavigationSelection, NavigationTarget},
     ports::{
-        CapturePort, CaptureResult, CapturedSource, EffectiveSupportRule, FormatCompatibility,
-        FormatInspectionMode, FormatInspectionPort, FormatInspectionRequest, FormatInspectionResult,
+        CapturePort, CaptureResult, CapturedSource, FormatInspectionPort, FormatInspectionRequest,
+        FormatInspectionResult,
         FormatReadRequest, OperationalAdapterRegistration, OperationalSourceSession,
-        OwnerResolutionMode, OwnerResolutionRequest, OwnerResolutionResult, OwnershipPort, ProbePort,
-        ProbeResult, ReadPort, ReservedSourceArtifactKind, SourceAdapterRegistration,
-        SourceSetMatch, SupportEvidence, SupportInspectionRequest, SupportPort, SupportSourceState,
-        SupportVendorEvidence,
+        ObjectKindProjection, ObjectKindRegistryPort, ObjectKindSelector, OwnerResolutionMode,
+        OwnerResolutionRequest, OwnerResolutionResult, OwnershipPort, ProbePort, ProbeResult,
+        ReadPort, ReservedSourceArtifactKind, SemanticArtifactLease, SourceAdapterRegistration,
+        SourceSetMatch, SupportEvidence, SupportInspectionRequest, SupportPort,
     },
+    semantic_ids::SemanticObjectKind,
     source::{
         ConfiguredSourceSetKind, SourceAdapterError, SourceAdapterErrorKind, SourceContext,
-        SourceFamily,
     },
 };
 
@@ -25,6 +25,11 @@ use crate::versions::v2_20;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PlatformXmlAdapterFactory;
+
+#[derive(Debug)]
+struct WriterCollectionCapability {
+    kind: SemanticObjectKind,
+}
 
 impl PlatformXmlAdapterFactory {
     pub const fn new() -> Self {
@@ -46,11 +51,18 @@ impl PlatformXmlAdapterFactory {
 
     pub fn operational_registration(self) -> OperationalAdapterRegistration {
         let guards = Arc::new(crate::guards::PlatformXmlGuards);
+        let validation = Arc::new(crate::validation::PlatformXmlValidation);
+        let object_kinds = Arc::new(PlatformXmlObjectKinds);
+        let semantic_artifacts =
+            Arc::new(crate::artifact_access::PlatformXmlSemanticArtifacts);
         OperationalAdapterRegistration::new(
             guards.clone(),
             guards.clone(),
             guards,
-            Arc::new(crate::validation::PlatformXmlValidation),
+            object_kinds,
+            semantic_artifacts,
+            validation.clone(),
+            validation,
             Arc::new(crate::publication::PlatformXmlPublication::new()),
         )
     }
@@ -96,6 +108,57 @@ impl PlatformXmlAdapterFactory {
     ) -> OperationalSourceSession {
         OperationalSourceSession::new(
             v2_20::operations::PlatformOperationSession::capture_unscoped_validation(
+                target,
+                authorized_root,
+                mode,
+            ),
+        )
+    }
+
+    pub fn capture_object_source(
+        self,
+        source_root: &Path,
+        selector: &ObjectKindSelector,
+        object_name: &str,
+        authorized_root: &Path,
+        mode: OwnerResolutionMode,
+    ) -> OperationalSourceSession {
+        OperationalSourceSession::new(
+            v2_20::operations::PlatformOperationSession::capture_object(
+                source_root,
+                selector,
+                object_name,
+                authorized_root,
+                mode,
+            ),
+        )
+    }
+
+    pub fn capture_named_object_source(
+        self,
+        source_root: &Path,
+        object_name: &str,
+        authorized_root: &Path,
+        mode: OwnerResolutionMode,
+    ) -> OperationalSourceSession {
+        OperationalSourceSession::new(
+            v2_20::operations::PlatformOperationSession::capture_named_object(
+                source_root,
+                object_name,
+                authorized_root,
+                mode,
+            ),
+        )
+    }
+
+    pub fn capture_unscoped_tree_source(
+        self,
+        target: &Path,
+        authorized_root: &Path,
+        mode: OwnerResolutionMode,
+    ) -> OperationalSourceSession {
+        OperationalSourceSession::new(
+            v2_20::operations::PlatformOperationSession::capture_unscoped_tree(
                 target,
                 authorized_root,
                 mode,
@@ -184,9 +247,63 @@ impl PlatformXmlAdapterFactory {
         Arc::new(crate::validation::PlatformXmlValidation)
     }
 
-    pub fn validate_coverage_manifest(raw: &str) -> Result<(), SourceAdapterError> {
-        v2_20::validate_coverage_manifest(raw)
+}
+
+struct PlatformXmlObjectKinds;
+
+impl ObjectKindRegistryPort for PlatformXmlObjectKinds {
+    fn resolve(&self, selector: &ObjectKindSelector) -> Option<SemanticObjectKind> {
+        v2_20::semantic_map::writer_object_kind(selector.as_str())
     }
+
+    fn ordered_kinds(&self) -> Vec<SemanticObjectKind> {
+        v2_20::semantic_map::writer_object_kinds()
+    }
+
+    fn lease(&self, kind: SemanticObjectKind) -> Option<SemanticArtifactLease> {
+        v2_20::semantic_map::writer_native_class(kind)?;
+        Some(SemanticArtifactLease::new(WriterCollectionCapability {
+            kind,
+        }))
+    }
+
+    fn project(&self, lease: &SemanticArtifactLease) -> Option<&'static ObjectKindProjection> {
+        let capability = lease.adapter_state::<WriterCollectionCapability>()?;
+        object_kind_projections()
+            .iter()
+            .find(|projection| projection.kind() == capability.kind)
+    }
+}
+
+fn object_kind_projections() -> &'static [ObjectKindProjection] {
+    static PROJECTIONS: std::sync::OnceLock<Vec<ObjectKindProjection>> =
+        std::sync::OnceLock::new();
+    PROJECTIONS
+        .get_or_init(|| {
+            v2_20::semantic_map::writer_object_kinds()
+                .into_iter()
+                .map(|kind| {
+                    let canonical = v2_20::semantic_map::writer_native_class(kind)
+                        .expect("ordered writer kind has a canonical selector");
+                    let collection =
+                        v2_20::semantic_map::native_descriptor_directory(kind)
+                            .expect("ordered writer kind has a collection selector");
+                    let display = v2_20::semantic_map::metadata_class_profile(canonical)
+                        .and_then(|profile| profile.display_name_ru.as_deref())
+                        .expect("ordered writer kind has a display label");
+                    ObjectKindProjection::new(
+                        kind,
+                        ObjectKindSelector::new(canonical)
+                            .expect("registry canonical selector is valid"),
+                        ObjectKindSelector::new(collection)
+                            .expect("registry collection selector is valid"),
+                        display,
+                    )
+                    .expect("private object-kind registry projection is valid")
+                })
+                .collect()
+        })
+        .as_slice()
 }
 
 struct PlatformXmlAdapter;
@@ -227,70 +344,7 @@ impl FormatInspectionPort for PlatformXmlAdapter {
         &self,
         request: &FormatInspectionRequest,
     ) -> Result<FormatInspectionResult, SourceAdapterError> {
-        let path = authorized_target(&request.source)?;
-        let raw = std::fs::read(&path).map_err(|read_error| {
-            SourceAdapterError::new(
-                SourceAdapterErrorKind::SourceUnavailable,
-                format!("failed to read {}: {read_error}", path.display()),
-            )
-        })?;
-        let text = std::str::from_utf8(&raw).map_err(|utf8_error| {
-            SourceAdapterError::new(
-                SourceAdapterErrorKind::DecodeCorrupted,
-                format!("failed to read {} as UTF-8: {utf8_error}", path.display()),
-            )
-        })?;
-        let source = text.trim_start_matches('\u{feff}');
-        let document = roxmltree::Document::parse(source).map_err(|parse_error| {
-            SourceAdapterError::new(
-                SourceAdapterErrorKind::DecodeCorrupted,
-                format!("failed to parse {}: {parse_error}", path.display()),
-            )
-        })?;
-        let root = document.root_element();
-        let version = root
-            .attributes()
-            .find(|attribute| attribute.namespace().is_none() && attribute.name() == "version")
-            .and_then(|attribute| source.get(attribute.range_value()));
-        match request.mode {
-            FormatInspectionMode::Versionless if version.is_some() => Err(SourceAdapterError::new(
-                SourceAdapterErrorKind::DecodeCorrupted,
-                format!(
-                    "versionless platform XML root must not declare a version in {}",
-                    path.display()
-                ),
-            )),
-            FormatInspectionMode::Versionless => Ok(FormatInspectionResult {
-                compatibility: None,
-            }),
-            FormatInspectionMode::Versioned => {
-                let compatibility =
-                    v2_20::profile::classify_root_version(version).map_err(|format_error| {
-                        SourceAdapterError::new(
-                            SourceAdapterErrorKind::DecodeCorrupted,
-                            format!("{} in {}", format_error, path.display()),
-                        )
-                    })?;
-                let actual = unica_format_core::source::FormatVersion::parse(
-                    &compatibility.actual().to_string(),
-                )?;
-                let target = unica_format_core::source::FormatVersion::parse(v2_20::EXPORT_FORMAT)?;
-                let compatibility = match compatibility {
-                    v2_20::profile::FormatCompatibility::Older { .. } => {
-                        FormatCompatibility::Older { actual, target }
-                    }
-                    v2_20::profile::FormatCompatibility::Supported { .. } => {
-                        FormatCompatibility::Supported { actual, target }
-                    }
-                    v2_20::profile::FormatCompatibility::Newer { .. } => {
-                        FormatCompatibility::Newer { actual, target }
-                    }
-                };
-                Ok(FormatInspectionResult {
-                    compatibility: Some(compatibility),
-                })
-            }
-        }
+        v2_20::inspection::inspect_format(request)
     }
 }
 
@@ -299,92 +353,8 @@ impl SupportPort for PlatformXmlAdapter {
         &self,
         request: &SupportInspectionRequest,
     ) -> Result<SupportEvidence, SourceAdapterError> {
-        let path = authorized_target(&request.source)?;
-        let object = request
-            .object
-            .as_ref()
-            .map(|object| object.as_str())
-            .unwrap_or("");
-        Ok(support_evidence(
-            v2_20::support::read_support_facts(&path),
-            object,
-        ))
+        v2_20::inspection::inspect_support(request)
     }
-}
-
-pub(crate) fn authorized_target(source: &SourceContext) -> Result<PathBuf, SourceAdapterError> {
-    if source.declared_family() != &SourceFamily::PlatformXml {
-        return Err(SourceAdapterError::new(
-            SourceAdapterErrorKind::SourceUnavailable,
-            "Platform XML adapter received a source from another family",
-        ));
-    }
-    let location = source.location();
-    let workspace = canonical_directory(location.workspace_root())?;
-    let source_root = canonical_directory(location.source_root())?;
-    if !source_root.starts_with(&workspace) {
-        return Err(SourceAdapterError::new(
-            SourceAdapterErrorKind::SourceUnavailable,
-            "authorized source root is outside the workspace root",
-        ));
-    }
-    let target = canonical_target(location.target())?;
-    if !target.starts_with(&source_root) {
-        return Err(SourceAdapterError::new(
-            SourceAdapterErrorKind::SourceUnavailable,
-            "authorized target is outside the source root",
-        ));
-    }
-    Ok(target)
-}
-
-fn canonical_target(path: &std::path::Path) -> Result<PathBuf, SourceAdapterError> {
-    let mut existing = path;
-    let mut suffix = Vec::new();
-    while !existing.exists() {
-        suffix.push(
-            existing
-                .file_name()
-                .ok_or_else(|| {
-                    SourceAdapterError::new(
-                        SourceAdapterErrorKind::SourceUnavailable,
-                        "authorized target has no file name",
-                    )
-                })?
-                .to_os_string(),
-        );
-        existing = existing.parent().ok_or_else(|| {
-            SourceAdapterError::new(
-                SourceAdapterErrorKind::SourceUnavailable,
-                "authorized target has no existing ancestor",
-            )
-        })?;
-    }
-    let mut canonical = std::fs::canonicalize(existing).map_err(|error| {
-        SourceAdapterError::new(
-            SourceAdapterErrorKind::SourceUnavailable,
-            format!(
-                "failed to resolve authorized target ancestor {}: {error}",
-                existing.display()
-            ),
-        )
-    })?;
-    for component in suffix.into_iter().rev() {
-        canonical.push(component);
-    }
-    Ok(canonical)
-}
-
-fn canonical_directory(path: &std::path::Path) -> Result<PathBuf, SourceAdapterError> {
-    std::fs::canonicalize(path).map_err(|error| {
-        SourceAdapterError::new(
-            SourceAdapterErrorKind::SourceUnavailable,
-            format!(
-                "failed to resolve authorized directory {}: {error}",
-                path.display()
-            ),
-        )
-    })
 }
 
 fn validate_query(request: &FormatReadRequest) -> Result<(), SourceAdapterError> {
@@ -431,43 +401,4 @@ fn full_selection() -> NavigationSelection {
 
 fn capability_error(message: &'static str) -> SourceAdapterError {
     SourceAdapterError::new(SourceAdapterErrorKind::CapabilityBlocked, message)
-}
-
-fn support_evidence(facts: v2_20::support::SupportFacts, object_uuid: &str) -> SupportEvidence {
-    use v2_20::support::{EffectiveSupportRule as NativeRule, SupportSourceState as NativeState};
-    let effective = facts.effective_rule_for(object_uuid);
-    let source = match &facts.source {
-        NativeState::Absent => SupportSourceState::Absent,
-        NativeState::Removed => SupportSourceState::Removed,
-        NativeState::Parsed => SupportSourceState::Parsed,
-        NativeState::Unreadable { error } => SupportSourceState::Unreadable {
-            context: error.context.to_string(),
-            offset: error.offset,
-        },
-    };
-    let effective_rule = match effective {
-        NativeRule::Absent => EffectiveSupportRule::Absent,
-        NativeRule::Removed => EffectiveSupportRule::Removed,
-        NativeRule::Editable => EffectiveSupportRule::Editable,
-        NativeRule::Locked => EffectiveSupportRule::Locked,
-        NativeRule::ConfigurationReadOnly => EffectiveSupportRule::ConfigurationReadOnly,
-        NativeRule::UnknownReadOnly => EffectiveSupportRule::UnknownReadOnly,
-        NativeRule::Unreadable => EffectiveSupportRule::Unreadable,
-    };
-    SupportEvidence {
-        source,
-        effective_rule,
-        authorability: facts.authorability_for(object_uuid),
-        global_editing_enabled: facts.global_editing_enabled(),
-        rule_counts: facts.rule_counts(),
-        vendors: facts
-            .vendors()
-            .iter()
-            .map(|vendor| SupportVendorEvidence {
-                version: vendor.version.clone(),
-                vendor: vendor.vendor.clone(),
-                name: vendor.name.clone(),
-            })
-            .collect(),
-    }
 }

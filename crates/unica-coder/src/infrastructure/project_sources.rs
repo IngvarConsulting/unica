@@ -388,6 +388,8 @@ fn platform_source_set_matches(
     source_root: &Path,
     kind: SourceSetKind,
 ) -> Result<bool, String> {
+    let authorized_root = normalize_path_identity(workspace_root)?;
+    let source_root = normalize_path_identity(source_root)?;
     let kind = match kind {
         SourceSetKind::Configuration => ConfiguredSourceSetKind::Configuration,
         SourceSetKind::Extension => ConfiguredSourceSetKind::Extension,
@@ -395,7 +397,7 @@ fn platform_source_set_matches(
         SourceSetKind::ExternalReport => ConfiguredSourceSetKind::ExternalReport,
     };
     PlatformXmlAdapterFactory::new()
-        .inspect_source_set(source_root, workspace_root, kind)
+        .inspect_source_set(&source_root, &authorized_root, kind)
         .map(|result| result == SourceSetMatch::Match)
         .map_err(|error| {
             format!(

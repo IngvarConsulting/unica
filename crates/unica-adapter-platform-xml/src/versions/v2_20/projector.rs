@@ -2083,6 +2083,11 @@ mod tests {
             std::process::id(),
         ));
         std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("Configuration.xml"),
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><Configuration uuid=\"11111111-1111-1111-1111-111111111111\"/></MetaDataObject>",
+        )
+        .unwrap();
         let provider = PlatformXmlProvider::open(&root).unwrap();
         let captured =
             support::read_support_facts_bytes(provider.parent_configurations_bytes().as_deref());
@@ -2164,7 +2169,8 @@ mod tests {
         };
         std::fs::create_dir_all(root.join("Ext")).unwrap();
         std::fs::write(root.join("Ext/ParentConfigurations.bin"), support("0")).unwrap();
-        let provider = PlatformXmlProvider::open(&root).unwrap();
+        let provider =
+            PlatformXmlProvider::capture(root.join("Order.xml"), &root).unwrap();
         let descriptor = SourceDescriptor {
             source_id: SourceId::new("workspace:main").unwrap(),
             family: SourceFamily::PlatformXml,

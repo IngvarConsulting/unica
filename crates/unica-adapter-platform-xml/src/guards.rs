@@ -2,8 +2,8 @@ use unica_format_core::{
     ports::{
         AuthorabilityPort, AuthorabilityRequest, AuthorabilityResult, CompatibilityIssueKind,
         CompatibilityPort, CompatibilityRequest, CompatibilityResult, FormatDiagnostic,
-        FormatDiagnosticCode, SourceCompatibilityEvidence, SourceCompatibilityPort,
-        SourceCompatibilityRequest, SourceCompatibilityResult,
+        FormatDiagnosticCode, FormatDiagnosticDetail, SourceCompatibilityEvidence,
+        SourceCompatibilityPort, SourceCompatibilityRequest, SourceCompatibilityResult,
     },
     source::SourceAdapterError,
 };
@@ -52,20 +52,20 @@ impl SourceCompatibilityPort for PlatformXmlGuards {
             SourceCompatibilityEvidence::AlternateFamily => {
                 SourceCompatibilityResult::incompatible(FormatDiagnostic::new(
                     FormatDiagnosticCode::SourceFamilyIncompatible,
-                    "The selected source belongs to another source family.",
-                ))
+                    FormatDiagnosticDetail::Compatibility(CompatibilityIssueKind::Malformed),
+                ).expect("source-family diagnostic is closed"))
             }
             SourceCompatibilityEvidence::Ambiguous => {
                 SourceCompatibilityResult::incompatible(FormatDiagnostic::new(
                     FormatDiagnosticCode::SourceFamilyIncompatible,
-                    "The selected source family is ambiguous.",
-                ))
+                    FormatDiagnosticDetail::Compatibility(CompatibilityIssueKind::Malformed),
+                ).expect("source-family diagnostic is closed"))
             }
             SourceCompatibilityEvidence::UnsupportedDeclaration => {
                 SourceCompatibilityResult::incompatible(FormatDiagnostic::new(
                     FormatDiagnosticCode::SourceFamilyIncompatible,
-                    "The selected project declaration is unsupported by this adapter.",
-                ))
+                    FormatDiagnosticDetail::Compatibility(CompatibilityIssueKind::Malformed),
+                ).expect("source-family diagnostic is closed"))
             }
         })
     }

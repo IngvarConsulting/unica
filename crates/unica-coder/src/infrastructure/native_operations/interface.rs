@@ -147,7 +147,7 @@ pub(crate) fn edit_interface(
             &[ci_path.as_path(), metadata_owner_path.as_path()],
             context,
         )?;
-        validate_metadata_owner_shape_8_3_27(&metadata_owner_path, context, "interface.edit")?;
+        validate_semantic_metadata_artifact(&metadata_owner_path, context, "interface.edit")?;
 
         let show_validation = !bool_arg(args, &["noValidate", "NoValidate"]);
         let validate_args = Map::from_iter([(
@@ -156,7 +156,7 @@ pub(crate) fn edit_interface(
         )]);
         let mut validation_stdout = None;
         let report = transaction.commit_with_post_validation(|| {
-            validate_metadata_owner_shape_8_3_27(&metadata_owner_path, context, "interface.edit")?;
+            validate_semantic_metadata_artifact(&metadata_owner_path, context, "interface.edit")?;
             let outcome = validate_interface(&validate_args, context);
             validation_stdout = outcome.stdout.clone();
             if outcome.ok {

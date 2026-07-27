@@ -7,250 +7,335 @@
       "kind": "configuration",
       "role": "configuration",
       "childVocabulary": "configurationTopLevel",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": ""
     },
     {
       "nativeClass": "Language",
       "kind": "language",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "Languages",
+      "displayNameRu": "Языки"
     },
     {
       "nativeClass": "Subsystem",
       "kind": "subsystem",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "Subsystems",
+      "displayNameRu": "Подсистемы"
     },
     {
       "nativeClass": "StyleItem",
       "kind": "styleItem",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "StyleItems",
+      "displayNameRu": "Элементы стиля"
     },
     {
       "nativeClass": "Style",
       "kind": "style",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "Styles",
+      "displayNameRu": "Стили"
     },
     {
       "nativeClass": "CommonPicture",
       "kind": "commonPicture",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "CommonPictures",
+      "displayNameRu": "Общие картинки"
     },
     {
       "nativeClass": "SessionParameter",
       "kind": "sessionParameter",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "SessionParameters",
+      "displayNameRu": "Параметры сеанса"
     },
     {
       "nativeClass": "Role",
       "kind": "role",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "Roles",
+      "displayNameRu": "Роли"
     },
     {
       "nativeClass": "CommonTemplate",
       "kind": "commonTemplate",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "CommonTemplates",
+      "displayNameRu": "Общие макеты"
     },
     {
       "nativeClass": "FilterCriterion",
       "kind": "filterCriterion",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "FilterCriteria",
+      "displayNameRu": "Критерии отбора"
     },
     {
       "nativeClass": "CommonModule",
       "kind": "commonModule",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "CommonModules",
+      "displayNameRu": "Общие модули"
     },
     {
       "nativeClass": "Bot",
       "kind": "bot",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "Bots",
+      "displayNameRu": "Боты"
     },
     {
       "nativeClass": "CommonAttribute",
       "kind": "commonAttribute",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "CommonAttributes",
+      "displayNameRu": "Общие реквизиты"
     },
     {
       "nativeClass": "ExchangePlan",
       "kind": "exchangePlan",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "ExchangePlans",
+      "displayNameRu": "Планы обмена"
     },
     {
       "nativeClass": "XDTOPackage",
       "kind": "xdtoPackage",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "XDTOPackages",
+      "displayNameRu": "XDTO-пакеты"
     },
     {
       "nativeClass": "WebService",
       "kind": "webService",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "WebServices",
+      "displayNameRu": "Веб-сервисы"
     },
     {
       "nativeClass": "HTTPService",
       "kind": "httpService",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "HTTPServices",
+      "displayNameRu": "HTTP-сервисы"
     },
     {
       "nativeClass": "WSReference",
       "kind": "webServiceReference",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "WSReferences",
+      "displayNameRu": "WS-ссылки"
     },
     {
       "nativeClass": "EventSubscription",
       "kind": "eventSubscription",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "EventSubscriptions",
+      "displayNameRu": "Подписки на события"
     },
     {
       "nativeClass": "ScheduledJob",
       "kind": "scheduledJob",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "ScheduledJobs",
+      "displayNameRu": "Регламентные задания"
     },
     {
       "nativeClass": "SettingsStorage",
       "kind": "settingsStorage",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "SettingsStorages",
+      "displayNameRu": "Хранилища настроек"
     },
     {
       "nativeClass": "FunctionalOption",
       "kind": "functionalOption",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "FunctionalOptions",
+      "displayNameRu": "Функциональные опции"
     },
     {
       "nativeClass": "FunctionalOptionsParameter",
       "kind": "functionalOptionsParameter",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "FunctionalOptionsParameters",
+      "displayNameRu": "Параметры ФО"
     },
     {
       "nativeClass": "DefinedType",
       "kind": "definedType",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "DefinedTypes",
+      "displayNameRu": "Определяемые типы"
     },
     {
       "nativeClass": "CommonCommand",
       "kind": "commonCommand",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "CommonCommands",
+      "displayNameRu": "Общие команды"
     },
     {
       "nativeClass": "CommandGroup",
       "kind": "commandGroup",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "CommandGroups",
+      "displayNameRu": "Группы команд"
     },
     {
       "nativeClass": "Constant",
       "kind": "constant",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "Constants",
+      "displayNameRu": "Константы"
     },
     {
       "nativeClass": "CommonForm",
       "kind": "commonForm",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "CommonForms",
+      "displayNameRu": "Общие формы"
     },
     {
       "nativeClass": "Catalog",
       "kind": "catalog",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "Catalogs",
+      "displayNameRu": "Справочники"
     },
     {
       "nativeClass": "Document",
       "kind": "document",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "Documents",
+      "displayNameRu": "Документы"
     },
     {
       "nativeClass": "DocumentNumerator",
       "kind": "documentNumerator",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "DocumentNumerators",
+      "displayNameRu": "Нумераторы"
     },
     {
       "nativeClass": "Sequence",
       "kind": "sequence",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "Sequences",
+      "displayNameRu": "Последовательности"
     },
     {
       "nativeClass": "DocumentJournal",
       "kind": "documentJournal",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "DocumentJournals",
+      "displayNameRu": "Журналы документов"
     },
     {
       "nativeClass": "Enum",
       "kind": "enumeration",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "Enums",
+      "displayNameRu": "Перечисления"
     },
     {
       "nativeClass": "Report",
       "kind": "report",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "Reports",
+      "displayNameRu": "Отчёты"
     },
     {
       "nativeClass": "DataProcessor",
       "kind": "dataProcessor",
       "role": "topLevelObject",
+      "childVocabulary": "object",
+      "source": "native",
+      "nativeDirectory": "DataProcessors",
+      "displayNameRu": "Обработки"
+    },
+    {
+      "nativeClass": "ExternalReport",
+      "kind": "report",
+      "role": "standaloneObject",
+      "childVocabulary": "object",
+      "source": "native"
+    },
+    {
+      "nativeClass": "ExternalDataProcessor",
+      "kind": "dataProcessor",
+      "role": "standaloneObject",
       "childVocabulary": "object",
       "source": "native"
     },
@@ -259,70 +344,90 @@
       "kind": "informationRegister",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "InformationRegisters",
+      "displayNameRu": "Регистры сведений"
     },
     {
       "nativeClass": "AccumulationRegister",
       "kind": "accumulationRegister",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "AccumulationRegisters",
+      "displayNameRu": "Регистры накопления"
     },
     {
       "nativeClass": "ChartOfCharacteristicTypes",
       "kind": "chartOfCharacteristicTypes",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "ChartsOfCharacteristicTypes",
+      "displayNameRu": "ПВХ"
     },
     {
       "nativeClass": "ChartOfAccounts",
       "kind": "chartOfAccounts",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "ChartsOfAccounts",
+      "displayNameRu": "Планы счетов"
     },
     {
       "nativeClass": "AccountingRegister",
       "kind": "accountingRegister",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "AccountingRegisters",
+      "displayNameRu": "Регистры бухгалтерии"
     },
     {
       "nativeClass": "ChartOfCalculationTypes",
       "kind": "chartOfCalculationTypes",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "ChartsOfCalculationTypes",
+      "displayNameRu": "ПВР"
     },
     {
       "nativeClass": "CalculationRegister",
       "kind": "calculationRegister",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "CalculationRegisters",
+      "displayNameRu": "Регистры расчёта"
     },
     {
       "nativeClass": "BusinessProcess",
       "kind": "businessProcess",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "BusinessProcesses",
+      "displayNameRu": "Бизнес-процессы"
     },
     {
       "nativeClass": "Task",
       "kind": "task",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "Tasks",
+      "displayNameRu": "Задачи"
     },
     {
       "nativeClass": "IntegrationService",
       "kind": "integrationService",
       "role": "topLevelObject",
       "childVocabulary": "object",
-      "source": "native"
+      "source": "native",
+      "nativeDirectory": "IntegrationServices",
+      "displayNameRu": "Сервисы интеграции"
     },
     {
       "nativeClass": "Form",

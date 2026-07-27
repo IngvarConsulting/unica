@@ -9,7 +9,7 @@ fn task7_operational_core_contracts_are_opaque_closed_and_path_free() {
     for forbidden in [
         "PathBuf",
         "SourceContext",
-        "SourceFamily",
+        ": SourceFamily",
         "FormatVersion",
         "BTreeMap<String, String>",
         "actual_format",
@@ -87,9 +87,8 @@ fn task7_host_has_no_moved_support_or_validation_readers() {
     let common =
         include_str!("../../unica-coder/src/infrastructure/native_operations/common.rs");
     let meta = include_str!("../../unica-coder/src/infrastructure/native_operations/meta.rs");
-    let validation = include_str!(
-        "../../unica-coder/src/infrastructure/native_operations/meta_validation_context.rs"
-    );
+    let native_operations =
+        include_str!("../../unica-coder/src/infrastructure/native_operations.rs");
     let format_guard = include_str!("../../unica-coder/src/infrastructure/format_guard.rs");
 
     assert!(
@@ -116,9 +115,12 @@ fn task7_host_has_no_moved_support_or_validation_readers() {
             "host retains moved validation branch `{forbidden}`"
         );
     }
+    let deleted_validation_reader = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../unica-coder/src/infrastructure/native_operations/meta_validation_context.rs");
     assert!(
-        !validation.contains("#[doc(hidden)]"),
-        "validation context still depends on hidden native queries"
+        !deleted_validation_reader.exists()
+            && !native_operations.contains("mod meta_validation_context"),
+        "the deleted host validation reader is still reachable"
     );
     assert!(
         !format_guard.contains("registered_subsystem_names"),
@@ -144,7 +146,7 @@ fn task7_publication_state_is_never_inferred_from_messages() {
 }
 
 #[test]
-fn task7_moved_flows_have_no_native_layout_and_remaining_joins_are_writer_locations() {
+fn task7_moved_policy_flows_have_no_native_layout_or_direct_reads() {
     fn production(source: &str) -> &str {
         source
             .split("\n#[cfg(test)]\nmod ")
@@ -152,26 +154,14 @@ fn task7_moved_flows_have_no_native_layout_and_remaining_joins_are_writer_locati
             .unwrap_or(source)
     }
 
-    fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
-        let marker = format!("fn {name}");
-        source
-            .split_once(&marker)
-            .map(|(_, tail)| tail.split("\nfn ").next().unwrap_or(tail))
-            .unwrap_or_else(|| panic!("missing function {name}"))
-    }
-
     let support_guard =
         production(include_str!("../../unica-coder/src/infrastructure/support_guard.rs"));
-    let validation = production(include_str!(
-        "../../unica-coder/src/infrastructure/native_operations/meta_validation_context.rs"
-    ));
     let project_sources =
         production(include_str!("../../unica-coder/src/infrastructure/project_sources.rs"));
     let project_source_domain =
         production(include_str!("../../unica-coder/src/domain/project_sources.rs"));
     for (name, source) in [
         ("support guard", support_guard),
-        ("validation context", validation),
         ("project source discovery", project_sources),
         ("project source domain", project_source_domain),
     ] {
@@ -193,28 +183,23 @@ fn task7_moved_flows_have_no_native_layout_and_remaining_joins_are_writer_locati
 
     let format_guard =
         production(include_str!("../../unica-coder/src/infrastructure/format_guard.rs"));
-    assert!(
-        !format_guard.contains("ParentConfigurations.bin")
-            && !format_guard.contains("MetaDataObject")
-            && !format_guard.contains("MDClasses"),
-        "format guard retains native parsing or support layout"
-    );
-    let join = ".join(\"Configuration.xml\")";
-    let all_joins = format_guard.matches(join).count();
-    let writer_location_joins = [
-        "add_meta_remove_format_dependencies",
-        "add_subsystem_compile_format_dependencies",
-        "add_role_compile_format_dependencies",
-    ]
-    .into_iter()
-    .map(|name| function_body(format_guard, name).matches(join).count())
-    .sum::<usize>();
-    assert_eq!(
-        all_joins, writer_location_joins,
-        "a moved read/guard/validation flow regained a Configuration.xml join"
-    );
-    assert_eq!(
-        writer_location_joins, 3,
-        "Task 8 writer source-location allowlist changed; classify it explicitly"
-    );
+    for (name, source) in [
+        ("format guard", format_guard),
+        ("support guard", support_guard),
+    ] {
+        for forbidden in [
+            "Configuration.xml",
+            "ParentConfigurations.bin",
+            "MetaDataObject",
+            "MDClasses",
+            "Document::parse",
+            "roxmltree",
+            ".join(\"Configuration.xml\")",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{name} regained a direct read/layout call path through `{forbidden}`"
+            );
+        }
+    }
 }

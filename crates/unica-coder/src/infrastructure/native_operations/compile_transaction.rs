@@ -103,6 +103,16 @@ struct PlannedReadGuard {
     expected_preimage: Vec<u8>,
 }
 
+struct PlannedSemanticGuard {
+    verify: Box<dyn Fn() -> Result<(), String> + Send + Sync>,
+}
+
+impl std::fmt::Debug for PlannedSemanticGuard {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("PlannedSemanticGuard(<opaque>)")
+    }
+}
+
 #[derive(Debug)]
 struct PlannedRemoval {
     path: PathBuf,
@@ -184,6 +194,7 @@ pub(crate) struct CompileTransaction {
     read_guards: BTreeMap<PathBuf, PlannedReadGuard>,
     absence_guards: BTreeSet<PathBuf>,
     directory_membership_guards: BTreeMap<PathBuf, DirectoryMembershipGuard>,
+    semantic_guards: Vec<PlannedSemanticGuard>,
     removals: Vec<PlannedRemoval>,
     planned_path_identities: BTreeMap<PathBuf, PlannedPathKind>,
 }
@@ -191,6 +202,17 @@ pub(crate) struct CompileTransaction {
 impl CompileTransaction {
     pub(crate) fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn guard_semantic_check(
+        &mut self,
+        verify: impl Fn() -> Result<(), String> + Send + Sync + 'static,
+    ) -> Result<(), String> {
+        verify()?;
+        self.semantic_guards.push(PlannedSemanticGuard {
+            verify: Box::new(verify),
+        });
+        Ok(())
     }
 
     /// Whether an existing exact plan already protects this path with the
@@ -900,6 +922,7 @@ impl CompileTransaction {
             VecDeque::new();
 
         let operation = (|| -> Result<CommitReport, String> {
+            self.recheck_semantic_guards()?;
             self.recheck_exact_read_guards("before publication")?;
             self.recheck_absence_guards("before publication")?;
             self.recheck_directory_membership_guards(false, &[], "before publication")?;
@@ -1188,6 +1211,14 @@ impl CompileTransaction {
     fn recheck_exact_read_guards(&self, phase: &str) -> Result<(), String> {
         for guard in self.read_guards.values() {
             validate_exact_read_guard(&guard.path, &guard.expected_preimage, phase)?;
+        }
+        Ok(())
+    }
+
+    fn recheck_semantic_guards(&self) -> Result<(), String> {
+        for guard in &self.semantic_guards {
+            (guard.verify)()
+                .map_err(|_| "semantic source evidence changed before publication".to_string())?;
         }
         Ok(())
     }
@@ -4805,6 +4836,40 @@ mod tests {
 
         assert!(error.contains("create-only"), "{error}");
         assert_eq!(fs::read(&target).unwrap(), b"original");
+        fs::remove_dir_all(root).expect("temporary root must be removed");
+    }
+
+    #[test]
+    fn semantic_guard_is_rechecked_before_any_publication() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering as AtomicOrdering},
+            Arc,
+        };
+
+        let root = temp_root("semantic-guard");
+        let target = root.join("created.txt");
+        let valid = Arc::new(AtomicBool::new(true));
+        let checked = Arc::clone(&valid);
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .create_text(&target, "replacement")
+            .expect("create must plan");
+        transaction
+            .guard_semantic_check(move || {
+                checked
+                    .load(AtomicOrdering::SeqCst)
+                    .then_some(())
+                    .ok_or_else(|| "semantic evidence changed".to_string())
+            })
+            .expect("initial semantic evidence must pass");
+
+        valid.store(false, AtomicOrdering::SeqCst);
+        let error = transaction
+            .commit()
+            .expect_err("changed semantic evidence must deny publication");
+
+        assert!(error.contains("semantic source evidence changed"), "{error}");
+        assert!(!target.exists());
         fs::remove_dir_all(root).expect("temporary root must be removed");
     }
 

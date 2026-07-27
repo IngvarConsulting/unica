@@ -1,5 +1,8 @@
 use unica_format_core::{
-    ports::{ValidationContextPort, ValidationContextRequest, ValidationContextResult},
+    ports::{
+        OperationalValidationPort, OperationalValidationRequest, OperationalValidationResult,
+        ValidationContextPort, ValidationContextRequest, ValidationContextResult,
+    },
     source::SourceAdapterError,
 };
 
@@ -14,5 +17,14 @@ impl ValidationContextPort for PlatformXmlValidation {
     ) -> Result<ValidationContextResult, SourceAdapterError> {
         let session = v2_20::operations::session_from_handle(request.session())?;
         Ok(v2_20::operations::validation(session))
+    }
+}
+
+impl OperationalValidationPort for PlatformXmlValidation {
+    fn validate(
+        &self,
+        request: &OperationalValidationRequest,
+    ) -> Result<OperationalValidationResult, SourceAdapterError> {
+        v2_20::validation::validate(request.sessions(), request.options())
     }
 }

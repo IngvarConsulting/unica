@@ -2,7 +2,6 @@ pub(crate) mod application_ports;
 pub(crate) mod bundled_tools;
 pub(crate) mod format_guard;
 pub mod internal_adapters;
-pub(crate) mod metadata_kinds;
 pub mod native_operations;
 pub mod path_policy;
 pub(crate) mod platform;

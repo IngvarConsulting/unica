@@ -29,16 +29,15 @@ use std::sync::Arc;
 use std::time::Duration;
 use unica_format_core::{
     ports::{
-        FormatCompatibility, FormatInspectionMode, FormatInspectionRequest,
-        FormatDiagnostic, FormatDiagnosticCode, OperationCancellation as CancellationToken,
-        OperationalSourceSession, PublicationArtifact, PublicationCancellation, PublicationChange,
-        PublicationCleanup, PublicationPort, PublicationRecovery, PublicationRequest,
-        PublicationResult, PublicationRollback, PublicationStatus,
+        FormatDiagnostic, FormatDiagnosticCode, FormatDiagnosticDetail,
+        OperationCancellation as CancellationToken, OperationalSourceSession,
+        PublicationArtifact, PublicationCancellation, PublicationChange, PublicationCleanup,
+        PublicationFailureKind, PublicationIssueKind, PublicationLifecycle, PublicationPort,
+        PublicationRecovery, PublicationRequest, PublicationResult, PublicationRollback,
     },
     redaction::redactor,
     source::{
         ConfiguredSourceSetKind as SourceSetKind, SourceAdapterError, SourceAdapterErrorKind,
-        SourceContext, SourceFamily, SourceLocation,
     },
 };
 use uuid::Uuid;
@@ -92,12 +91,7 @@ enum SourceFormat {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AdapterOutcome {
-    ok: bool,
-    status: PublicationStatus,
-    cancellation: PublicationCancellation,
-    rollback: PublicationRollback,
-    cleanup: PublicationCleanup,
-    recovery: PublicationRecovery,
+    lifecycle: PublicationLifecycle,
     summary: String,
     changes: Vec<String>,
     warnings: Vec<String>,
@@ -111,12 +105,13 @@ struct AdapterOutcome {
 impl AdapterOutcome {
     fn cancelled(summary: impl Into<String>) -> Self {
         Self {
-            ok: false,
-            status: PublicationStatus::Cancelled,
-            cancellation: PublicationCancellation::BeforeExecution,
-            rollback: PublicationRollback::NotNeeded,
-            cleanup: PublicationCleanup::Completed,
-            recovery: PublicationRecovery::NotRequired,
+            lifecycle: PublicationLifecycle::cancelled(
+                PublicationCancellation::BeforeExecution,
+                PublicationRollback::NotNeeded,
+                PublicationCleanup::Completed,
+                PublicationRecovery::NotRequired,
+            )
+            .expect("pre-execution cancellation is valid"),
             summary: summary.into(),
             changes: Vec::new(),
             warnings: Vec::new(),
@@ -128,58 +123,84 @@ impl AdapterOutcome {
         }
     }
 
+    fn is_ok(&self) -> bool {
+        matches!(
+            self.lifecycle,
+            PublicationLifecycle::Published | PublicationLifecycle::DryRun
+        )
+    }
+
     fn into_publication_result(self) -> PublicationResult {
-        let (summary, diagnostics, changes, artifacts) = match self.status {
-            PublicationStatus::Published => (
-                "Full source publication completed.".to_string(),
+        let lifecycle = self.lifecycle;
+        let (diagnostics, changes, artifacts) = match lifecycle {
+            PublicationLifecycle::Published => (
                 Vec::new(),
                 vec![PublicationChange::FullSourceReplaced],
                 vec![PublicationArtifact::PublishedSource],
             ),
-            PublicationStatus::Cancelled => (
-                "Full source publication was cancelled.".to_string(),
+            PublicationLifecycle::DryRun => (
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ),
+            PublicationLifecycle::Cancelled(_) => (
                 vec![FormatDiagnostic::new(
                     FormatDiagnosticCode::PublicationCancelled,
-                    "Publication was cancelled before the source was replaced.",
-                )],
+                    FormatDiagnosticDetail::Publication(PublicationIssueKind::Cancelled),
+                )
+                .expect("publication cancellation diagnostic is closed")],
                 Vec::new(),
                 Vec::new(),
             ),
-            PublicationStatus::Failed if self.recovery == PublicationRecovery::Required => (
-                "Full source publication failed and requires recovery.".to_string(),
-                vec![FormatDiagnostic::new(
-                    FormatDiagnosticCode::PublicationRecoveryRequired,
-                    "Publication failed and retained recovery state.",
-                )],
-                Vec::new(),
-                vec![PublicationArtifact::RecoveryState],
-            ),
-            PublicationStatus::Failed if self.cleanup == PublicationCleanup::Failed => (
-                "Full source publication failed during private cleanup.".to_string(),
-                vec![FormatDiagnostic::new(
-                    FormatDiagnosticCode::PublicationCleanupFailed,
-                    "Publication could not complete private cleanup.",
-                )],
-                Vec::new(),
-                Vec::new(),
-            ),
-            PublicationStatus::Failed => (
-                "Full source publication failed.".to_string(),
-                vec![FormatDiagnostic::new(
+            PublicationLifecycle::Failed(_) => {
+                let mut diagnostics = vec![FormatDiagnostic::new(
                     FormatDiagnosticCode::PublicationFailed,
-                    "Publication failed before a verified source replacement completed.",
-                )],
-                Vec::new(),
-                Vec::new(),
-            ),
+                    FormatDiagnosticDetail::Publication(PublicationIssueKind::Failed),
+                )
+                .expect("publication failure diagnostic is closed")];
+                if lifecycle.cancellation() != PublicationCancellation::NotRequested {
+                    diagnostics.push(
+                        FormatDiagnostic::new(
+                            FormatDiagnosticCode::PublicationCancelled,
+                            FormatDiagnosticDetail::Publication(PublicationIssueKind::Cancelled),
+                        )
+                        .expect("publication cancellation diagnostic is closed"),
+                    );
+                }
+                if lifecycle.cleanup() == PublicationCleanup::Failed {
+                    diagnostics.push(
+                        FormatDiagnostic::new(
+                            FormatDiagnosticCode::PublicationCleanupFailed,
+                            FormatDiagnosticDetail::Publication(
+                                PublicationIssueKind::CleanupFailed,
+                            ),
+                        )
+                        .expect("publication cleanup diagnostic is closed"),
+                    );
+                }
+                if lifecycle.recovery() == PublicationRecovery::Required {
+                    diagnostics.push(
+                        FormatDiagnostic::new(
+                            FormatDiagnosticCode::PublicationRecoveryRequired,
+                            FormatDiagnosticDetail::Publication(
+                                PublicationIssueKind::RecoveryRequired,
+                            ),
+                        )
+                        .expect("publication recovery diagnostic is closed"),
+                    );
+                }
+                (
+                    diagnostics,
+                    Vec::new(),
+                    (lifecycle.recovery() == PublicationRecovery::Required)
+                        .then_some(PublicationArtifact::RecoveryState)
+                        .into_iter()
+                        .collect(),
+                )
+            }
         };
         PublicationResult::new(
-            self.status,
-            self.cancellation,
-            self.rollback,
-            self.cleanup,
-            self.recovery,
-            summary,
+            lifecycle,
             diagnostics,
             changes,
             artifacts,
@@ -402,16 +423,19 @@ impl PublicationPort for PlatformXmlPublication {
         ) {
             Ok(outcome) => Ok(outcome.into_publication_result()),
             Err(_) => Ok(PublicationResult::new(
-                PublicationStatus::Failed,
-                PublicationCancellation::NotRequested,
-                PublicationRollback::NotNeeded,
-                PublicationCleanup::Completed,
-                PublicationRecovery::NotRequired,
-                "Full source publication failed.",
+                PublicationLifecycle::failed(
+                    PublicationFailureKind::Preparation,
+                    PublicationCancellation::NotRequested,
+                    PublicationRollback::NotNeeded,
+                    PublicationCleanup::Completed,
+                    PublicationRecovery::NotRequired,
+                )
+                .expect("capture failure lifecycle is valid"),
                 vec![FormatDiagnostic::new(
                     FormatDiagnosticCode::PublicationFailed,
-                    "Publication failed before a verified source replacement completed.",
-                )],
+                    FormatDiagnosticDetail::Publication(PublicationIssueKind::Failed),
+                )
+                .expect("publication failure diagnostic is closed")],
                 Vec::new(),
                 Vec::new(),
             )
@@ -522,56 +546,6 @@ fn normalize_path_identity(path: &Path) -> Result<PathBuf, String> {
         }
     }
     Ok(normalized)
-}
-
-#[derive(Debug)]
-struct PlatformXmlOwnerError {
-    message: String,
-}
-
-fn inspect_platform_xml_compatibility(
-    target: &Path,
-) -> Result<FormatCompatibility, PlatformXmlOwnerError> {
-    let result = crate::factory::PlatformXmlAdapterFactory::new()
-        .registration()
-        .format_inspection
-        .inspect(&FormatInspectionRequest {
-            source: inspection_source(target),
-            mode: FormatInspectionMode::Versioned,
-        })
-        .map_err(|error| PlatformXmlOwnerError {
-            message: error.message,
-        })?;
-    result.compatibility.ok_or_else(|| PlatformXmlOwnerError {
-        message: "source has no format-owning root".to_string(),
-    })
-}
-
-fn inspect_platform_xml_versionless(target: &Path) -> Result<(), PlatformXmlOwnerError> {
-    crate::factory::PlatformXmlAdapterFactory::new()
-        .registration()
-        .format_inspection
-        .inspect(&FormatInspectionRequest {
-            source: inspection_source(target),
-            mode: FormatInspectionMode::Versionless,
-        })
-        .map(|_| ())
-        .map_err(|error| PlatformXmlOwnerError {
-            message: error.message,
-        })
-}
-
-fn inspection_source(target: &Path) -> SourceContext {
-    let source_root = target
-        .parent()
-        .unwrap_or_else(|| Path::new(""))
-        .to_path_buf();
-    SourceContext::new(
-        SourceLocation::new(source_root.clone(), source_root, target.to_path_buf()),
-        None,
-        SourceFamily::PlatformXml,
-        None,
-    )
 }
 
 fn classify_physical_source_inventory<'a>(
@@ -958,7 +932,7 @@ impl<'a> VerifiedFullDumpAdapter<'a> {
         let cleanup_warnings = match publication {
             Ok(Ok(warnings)) => warnings,
             Ok(Err(error)) => {
-                finish_private!(dump_failure(
+                finish_private!(publication_failure(
                     tool_name,
                     error,
                     Some(redactor(&output.stdout)),
@@ -967,7 +941,7 @@ impl<'a> VerifiedFullDumpAdapter<'a> {
                 ));
             }
             Err(error) => {
-                finish_private!(dump_failure(
+                finish_private!(publication_failure(
                     tool_name,
                     format!("failed to acquire verified dump publication locks: {error}"),
                     Some(redactor(&output.stdout)),
@@ -982,12 +956,7 @@ impl<'a> VerifiedFullDumpAdapter<'a> {
         Ok(finalize_private_outcome(
             &mut private,
             AdapterOutcome {
-            ok: true,
-            status: PublicationStatus::Published,
-            cancellation: PublicationCancellation::NotRequested,
-            rollback: PublicationRollback::NotNeeded,
-            cleanup: PublicationCleanup::Completed,
-            recovery: PublicationRecovery::NotRequired,
+            lifecycle: PublicationLifecycle::published(),
             summary: format!(
                 "{tool_name} published a validated platform {TARGET_PLATFORM_LINE} / export format {TARGET_EXPORT_FORMAT} full dump"
             ),
@@ -3497,11 +3466,10 @@ fn validate_required_owner_raw(path: &Path, kind: SourceSetKind, raw: &[u8]) -> 
             path.display()
         ));
     }
-    let compatibility = inspect_platform_xml_compatibility(path).map_err(|error| error.message)?;
-    if !matches!(compatibility, FormatCompatibility::Supported { .. }) {
+    if root.attribute("version") != Some(TARGET_EXPORT_FORMAT) {
         return Err(format!(
             "staged owner export format must be the exact raw literal {TARGET_EXPORT_FORMAT}; found {} in {}",
-            compatibility.actual(),
+            root.attribute("version").unwrap_or("missing"),
             path.display()
         ));
     }
@@ -3562,18 +3530,22 @@ fn validate_staged_xml(path: &Path, expected: &TreeEntryKind) -> Result<(), Stri
     let local_name = root.tag_name().name();
     match staged_root_version_policy(namespace, local_name) {
         Some(StagedRootVersionPolicy::ExactRootVersion) => {
-            let compatibility =
-                inspect_platform_xml_compatibility(path).map_err(|error| error.message)?;
-            if !matches!(compatibility, FormatCompatibility::Supported { .. }) {
+            let raw_version = raw_root_attribute(source, "version").unwrap_or("missing");
+            if raw_version != TARGET_EXPORT_FORMAT {
                 return Err(format!(
                     "staged XML root {{{namespace}}}{local_name} must use the exact raw version literal {TARGET_EXPORT_FORMAT}; found {} (missing means legacy format 1.0) in {}",
-                    compatibility.actual(),
+                    raw_version,
                     path.display()
                 ));
             }
         }
         Some(StagedRootVersionPolicy::Versionless) => {
-            inspect_platform_xml_versionless(path).map_err(|error| error.message)?;
+            if root.attribute("version").is_some() {
+                return Err(format!(
+                    "staged XML root {{{namespace}}}{local_name} must remain versionless: {}",
+                    path.display()
+                ));
+            }
         }
         None => {
             return Err(format!(
@@ -3583,6 +3555,70 @@ fn validate_staged_xml(path: &Path, expected: &TreeEntryKind) -> Result<(), Stri
         }
     }
     Ok(())
+}
+
+fn raw_root_attribute<'a>(source: &'a str, expected_name: &str) -> Option<&'a str> {
+    let mut root = source.trim_start();
+    loop {
+        if root.starts_with("<?") {
+            root = root.split_once("?>")?.1.trim_start();
+        } else if root.starts_with("<!--") {
+            root = root.split_once("-->")?.1.trim_start();
+        } else {
+            break;
+        }
+    }
+    let bytes = root.as_bytes();
+    if bytes.first() != Some(&b'<') {
+        return None;
+    }
+    let mut cursor = 1usize;
+    while cursor < bytes.len()
+        && !bytes[cursor].is_ascii_whitespace()
+        && !matches!(bytes[cursor], b'>' | b'/')
+    {
+        cursor += 1;
+    }
+    loop {
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        if cursor >= bytes.len() || matches!(bytes[cursor], b'>' | b'/') {
+            return None;
+        }
+        let name_start = cursor;
+        while cursor < bytes.len()
+            && !bytes[cursor].is_ascii_whitespace()
+            && !matches!(bytes[cursor], b'=' | b'>' | b'/')
+        {
+            cursor += 1;
+        }
+        let name = root.get(name_start..cursor)?;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        if bytes.get(cursor) != Some(&b'=') {
+            return None;
+        }
+        cursor += 1;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        let quote = *bytes.get(cursor)?;
+        if !matches!(quote, b'\'' | b'"') {
+            return None;
+        }
+        cursor += 1;
+        let value_start = cursor;
+        while cursor < bytes.len() && bytes[cursor] != quote {
+            cursor += 1;
+        }
+        let value = root.get(value_start..cursor)?;
+        cursor += 1;
+        if name == expected_name {
+            return Some(value);
+        }
+    }
 }
 
 fn read_tree_bound_file(
@@ -4805,18 +4841,30 @@ fn finalize_private_outcome(
     private: &mut PrivateDumpStage,
     mut outcome: AdapterOutcome,
 ) -> AdapterOutcome {
-    if private.cancellation != PublicationCancellation::NotRequested {
-        outcome.cancellation = private.cancellation;
-        if private.recovery_state == PublicationRecovery::NotRequired {
-            outcome.status = PublicationStatus::Cancelled;
-        }
-    }
-    outcome.rollback = private.rollback;
-    outcome.recovery = private.recovery_state;
+    let base = outcome.lifecycle;
+    let cancellation = if private.cancellation != PublicationCancellation::NotRequested {
+        private.cancellation
+    } else {
+        base.cancellation()
+    };
+    let rollback = private.rollback;
+    let mut cleanup = base.cleanup();
+    let mut recovery = if base.recovery() == PublicationRecovery::Required {
+        PublicationRecovery::Required
+    } else {
+        private.recovery_state
+    };
     if !private.cleanup_on_drop {
-        outcome.cleanup = PublicationCleanup::RetainedForRecovery;
-        outcome.recovery = PublicationRecovery::Required;
-        outcome.status = PublicationStatus::Failed;
+        cleanup = PublicationCleanup::RetainedForRecovery;
+        recovery = PublicationRecovery::Required;
+        outcome.lifecycle = PublicationLifecycle::failed(
+            PublicationFailureKind::Publication,
+            cancellation,
+            rollback,
+            cleanup,
+            recovery,
+        )
+        .expect("retained recovery lifecycle is valid");
         outcome.warnings.retain(|warning| {
             warning
                 != "Git-visible sources were not published; the private staged dump was discarded"
@@ -4831,11 +4879,9 @@ fn finalize_private_outcome(
         return outcome;
     }
     if let Err(error) = private.cleanup_now() {
-        outcome.cleanup = PublicationCleanup::Failed;
-        outcome.recovery = PublicationRecovery::Required;
-        outcome.status = PublicationStatus::Failed;
-        if outcome.ok {
-            outcome.ok = false;
+        cleanup = PublicationCleanup::Failed;
+        recovery = PublicationRecovery::Required;
+        if outcome.is_ok() {
             outcome.summary = format!(
                 "{}; validated publication completed but private cleanup failed",
                 outcome.summary
@@ -4860,6 +4906,46 @@ fn finalize_private_outcome(
             Some(stderr) if !stderr.is_empty() => format!("{stderr}\n{error}\n"),
             _ => format!("{error}\n"),
         });
+        outcome.lifecycle = PublicationLifecycle::failed(
+            PublicationFailureKind::Cleanup,
+            cancellation,
+            rollback,
+            cleanup,
+            recovery,
+        )
+        .expect("cleanup failure lifecycle is valid");
+        return outcome;
+    }
+    outcome.lifecycle = match base {
+        PublicationLifecycle::Published => PublicationLifecycle::published(),
+        PublicationLifecycle::DryRun => PublicationLifecycle::dry_run(),
+        PublicationLifecycle::Cancelled(_) => PublicationLifecycle::cancelled(
+            cancellation,
+            rollback,
+            cleanup,
+            recovery,
+        )
+        .expect("final cancellation lifecycle is valid"),
+        PublicationLifecycle::Failed(_) => PublicationLifecycle::failed(
+            base.failure_kind()
+                .expect("failed lifecycle carries a failure kind"),
+            cancellation,
+            rollback,
+            cleanup,
+            recovery,
+        )
+        .expect("final failure lifecycle is valid"),
+    };
+    if private.cancellation != PublicationCancellation::NotRequested
+        && recovery == PublicationRecovery::NotRequired
+    {
+        outcome.lifecycle = PublicationLifecycle::cancelled(
+            cancellation,
+            rollback,
+            cleanup,
+            recovery,
+        )
+        .expect("final cancellation lifecycle is valid");
     }
     outcome
 }
@@ -4872,12 +4958,14 @@ fn dump_failure(
     command: Option<Vec<String>>,
 ) -> AdapterOutcome {
     AdapterOutcome {
-        ok: false,
-        status: PublicationStatus::Failed,
-        cancellation: PublicationCancellation::NotRequested,
-        rollback: PublicationRollback::NotNeeded,
-        cleanup: PublicationCleanup::Completed,
-        recovery: PublicationRecovery::NotRequired,
+        lifecycle: PublicationLifecycle::failed(
+            PublicationFailureKind::Execution,
+            PublicationCancellation::NotRequested,
+            PublicationRollback::NotNeeded,
+            PublicationCleanup::Completed,
+            PublicationRecovery::NotRequired,
+        )
+        .expect("execution failure lifecycle is valid"),
         summary: format!("{tool_name} failed before verified dump publication"),
         changes: Vec::new(),
         warnings: vec![
@@ -4892,18 +4980,38 @@ fn dump_failure(
     }
 }
 
+fn publication_failure(
+    tool_name: &str,
+    error: String,
+    stdout: Option<String>,
+    stderr: Option<String>,
+    command: Option<Vec<String>>,
+) -> AdapterOutcome {
+    let mut outcome = dump_failure(tool_name, error, stdout, stderr, command);
+    outcome.lifecycle = PublicationLifecycle::failed(
+        PublicationFailureKind::Publication,
+        PublicationCancellation::NotRequested,
+        PublicationRollback::NotNeeded,
+        PublicationCleanup::Completed,
+        PublicationRecovery::NotRequired,
+    )
+    .expect("publication failure lifecycle is valid");
+    outcome
+}
+
 fn cancelled_dump_outcome(
     tool_name: &str,
     output: &ProcessOutput,
     command: Vec<String>,
 ) -> AdapterOutcome {
     AdapterOutcome {
-        ok: false,
-        status: PublicationStatus::Cancelled,
-        cancellation: PublicationCancellation::DuringExecution,
-        rollback: PublicationRollback::NotNeeded,
-        cleanup: PublicationCleanup::Completed,
-        recovery: PublicationRecovery::NotRequired,
+        lifecycle: PublicationLifecycle::cancelled(
+            PublicationCancellation::DuringExecution,
+            PublicationRollback::NotNeeded,
+            PublicationCleanup::Completed,
+            PublicationRecovery::NotRequired,
+        )
+        .expect("execution cancellation lifecycle is valid"),
         summary: format!("{tool_name} cancelled before verified dump publication"),
         changes: Vec::new(),
         warnings: vec![
@@ -5659,8 +5767,8 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use unica_format_core::ports::{
-        PublicationCancellation, PublicationCleanup, PublicationRecovery, PublicationRollback,
-        PublicationStatus,
+        PublicationCancellation, PublicationCleanup, PublicationFailureKind,
+        PublicationLifecycle, PublicationRecovery, PublicationRollback,
     };
 
     struct TestSystemProcessRunner;
@@ -5698,19 +5806,10 @@ mod tests {
     static TEST_SYSTEM_PROCESS_RUNNER: TestSystemProcessRunner = TestSystemProcessRunner;
 
     fn lifecycle_outcome(
-        status: PublicationStatus,
-        cancellation: PublicationCancellation,
-        rollback: PublicationRollback,
-        cleanup: PublicationCleanup,
-        recovery: PublicationRecovery,
+        lifecycle: PublicationLifecycle,
     ) -> AdapterOutcome {
         AdapterOutcome {
-            ok: status == PublicationStatus::Published,
-            status,
-            cancellation,
-            rollback,
-            cleanup,
-            recovery,
+            lifecycle,
             summary: "/private/source/Configuration.xml MetaDataObject 2.20".to_string(),
             changes: vec![r"C:\private\source".to_string()],
             warnings: vec!["platform 8.3.27".to_string()],
@@ -5725,11 +5824,13 @@ mod tests {
     #[test]
     fn publication_result_preserves_typed_cancellation_rollback_and_recovery_states() {
         let during_publication = lifecycle_outcome(
-            PublicationStatus::Cancelled,
-            PublicationCancellation::DuringPublication,
-            PublicationRollback::Performed,
-            PublicationCleanup::Completed,
-            PublicationRecovery::NotRequired,
+            PublicationLifecycle::cancelled(
+                PublicationCancellation::DuringPublication,
+                PublicationRollback::Performed,
+                PublicationCleanup::Completed,
+                PublicationRecovery::NotRequired,
+            )
+            .unwrap(),
         )
         .into_publication_result();
         assert_eq!(
@@ -5742,11 +5843,14 @@ mod tests {
         );
 
         let recovery_required = lifecycle_outcome(
-            PublicationStatus::Failed,
-            PublicationCancellation::NotRequested,
-            PublicationRollback::Failed,
-            PublicationCleanup::RetainedForRecovery,
-            PublicationRecovery::Required,
+            PublicationLifecycle::failed(
+                PublicationFailureKind::Publication,
+                PublicationCancellation::NotRequested,
+                PublicationRollback::Failed,
+                PublicationCleanup::RetainedForRecovery,
+                PublicationRecovery::Required,
+            )
+            .unwrap(),
         )
         .into_publication_result();
         assert_eq!(recovery_required.rollback(), PublicationRollback::Failed);
@@ -6146,7 +6250,7 @@ mod tests {
 
             let result = invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context);
 
-            assert!(!result.ok, "{case}: {result:?}");
+            assert!(!result.is_ok(), "{case}: {result:?}");
             assert_eq!(runner.calls.load(Ordering::SeqCst), 0, "{case}");
             assert!(
                 result.errors.join("\n").contains("workspace")
@@ -6190,7 +6294,7 @@ mod tests {
             || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
         );
 
-        assert!(!result.ok, "{result:?}");
+        assert!(!result.is_ok(), "{result:?}");
         assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
         assert!(!outside.join("src").exists(), "{result:?}");
         assert!(
@@ -6233,7 +6337,7 @@ mod tests {
 
             let result = invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context);
 
-            assert!(!result.ok, "{case}: {result:?}");
+            assert!(!result.is_ok(), "{case}: {result:?}");
             assert_eq!(runner.calls.load(Ordering::SeqCst), 0, "{case}");
             assert!(target.join(".project").is_file(), "{case}");
             assert!(
@@ -6261,7 +6365,7 @@ mod tests {
 
         let result = invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context);
 
-        assert!(!result.ok, "{result:?}");
+        assert!(!result.is_ok(), "{result:?}");
         assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
         assert!(
             result
@@ -6292,7 +6396,7 @@ mod tests {
 
             let result = invoke(&runner, &platform, invocation, &context);
 
-            assert!(result.ok, "{invocation:?}: {result:?}");
+            assert!(result.is_ok(), "{invocation:?}: {result:?}");
             assert!(context.cwd.join("src/Configuration.xml").is_file());
             assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
             assert!(
@@ -6326,7 +6430,7 @@ mod tests {
             || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
         );
 
-        assert!(!result.ok, "{result:?}");
+        assert!(!result.is_ok(), "{result:?}");
         assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
         for workspace in [&visible_workspace, &displaced_workspace] {
             assert!(
@@ -6363,7 +6467,7 @@ mod tests {
 
         let result = invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context);
 
-        assert!(result.ok, "{result:?}");
+        assert!(result.is_ok(), "{result:?}");
         assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -6393,7 +6497,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(!result.ok, "{result:?}");
+        assert!(!result.is_ok(), "{result:?}");
         assert!(result
             .errors
             .join("\n")
@@ -6433,7 +6537,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(!result.ok, "{result:?}");
+        assert!(!result.is_ok(), "{result:?}");
         assert!(result.errors.join("\n").contains("is external"));
         assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
         std::fs::remove_dir_all(root).unwrap();
@@ -6475,7 +6579,7 @@ mod tests {
 
             let result = invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context);
 
-            assert!(!result.ok, "{case}: {result:?}");
+            assert!(!result.is_ok(), "{case}: {result:?}");
             assert!(
                 result.errors.join("\n").contains(expected),
                 "{case}: {result:?}"
@@ -6501,7 +6605,7 @@ mod tests {
             &context,
         );
 
-        assert!(!result.ok, "{result:?}");
+        assert!(!result.is_ok(), "{result:?}");
         assert!(result.errors.join("\n").contains("8.3.26"));
         assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
         assert!(!context.cwd.join("src").exists());
@@ -6596,7 +6700,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(!result.ok, "{result:?}");
+        assert!(!result.is_ok(), "{result:?}");
         assert_eq!(
             runner.calls.load(Ordering::SeqCst),
             0,
@@ -6670,7 +6774,7 @@ mod tests {
 
             let result = invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context);
 
-            assert!(!result.ok, "{case}: {result:?}");
+            assert!(!result.is_ok(), "{case}: {result:?}");
             assert!(result.changes.is_empty(), "{case}: {result:?}");
             assert!(!target.join("Configuration.xml").exists(), "{case}");
             assert!(
@@ -6707,7 +6811,7 @@ mod tests {
                 &context,
             );
 
-            assert!(!result.ok, "{case}: {result:?}");
+            assert!(!result.is_ok(), "{case}: {result:?}");
             assert!(result.changes.is_empty(), "{case}: {result:?}");
             assert_eq!(std::fs::read(target.join("before.txt")).unwrap(), b"before");
             assert_eq!(
@@ -6736,10 +6840,13 @@ mod tests {
             invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context)
         });
 
-        assert!(!result.ok, "{result:?}");
+        assert!(!result.is_ok(), "{result:?}");
         assert!(result.errors.join("\n").contains("injected"));
-        assert_eq!(result.rollback, PublicationRollback::Performed);
-        assert_eq!(result.recovery, PublicationRecovery::NotRequired);
+        assert_eq!(result.lifecycle.rollback(), PublicationRollback::Performed);
+        assert_eq!(
+            result.lifecycle.recovery(),
+            PublicationRecovery::NotRequired
+        );
         assert_eq!(std::fs::read(target.join("before.txt")).unwrap(), b"before");
         assert_eq!(
             std::fs::read_to_string(target.join("Configuration.xml")).unwrap(),
@@ -6778,13 +6885,69 @@ mod tests {
             },
         );
 
-        assert_eq!(result.status, PublicationStatus::Cancelled);
         assert_eq!(
-            result.cancellation,
+            result.lifecycle.status(),
+            unica_format_core::ports::PublicationStatus::Cancelled
+        );
+        assert_eq!(
+            result.lifecycle.cancellation(),
             PublicationCancellation::DuringPublication
         );
-        assert_eq!(result.rollback, PublicationRollback::Performed);
-        assert_eq!(result.recovery, PublicationRecovery::NotRequired);
+        assert_eq!(result.lifecycle.rollback(), PublicationRollback::Performed);
+        assert_eq!(
+            result.lifecycle.recovery(),
+            PublicationRecovery::NotRequired
+        );
+        assert_eq!(std::fs::read(target.join("before.txt")).unwrap(), b"before");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancellation_before_stage_install_is_typed_before_publication_without_rollback() {
+        let (root, context, _) = workspace("cancel-before-publication");
+        let target = context.cwd.join("src");
+        seed_valid_target(&target);
+        let platform = fixed_platform(&root);
+        let runner = DumpRunner::valid();
+        let cancellation = CancellationToken::new();
+        let hook_cancellation = cancellation.clone();
+
+        let result = with_publication_hook(
+            PublicationCheckpoint::BeforeStageInstall,
+            move || hook_cancellation.cancel(),
+            || {
+                VerifiedFullDumpAdapter::with_dependencies(
+                    &runner,
+                    &platform,
+                    PathBuf::from("fake-v8-runner"),
+                )
+                .invoke(
+                    "unica.build.dump",
+                    FullDumpInvocation::BuildDump,
+                    &args(),
+                    &context,
+                    &cancellation,
+                )
+                .unwrap()
+            },
+        );
+
+        assert_eq!(
+            result.lifecycle.status(),
+            unica_format_core::ports::PublicationStatus::Cancelled
+        );
+        assert_eq!(
+            result.lifecycle.cancellation(),
+            PublicationCancellation::BeforePublication
+        );
+        assert_eq!(
+            result.lifecycle.rollback(),
+            PublicationRollback::NotNeeded
+        );
+        assert_eq!(
+            result.lifecycle.recovery(),
+            PublicationRecovery::NotRequired
+        );
         assert_eq!(std::fs::read(target.join("before.txt")).unwrap(), b"before");
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -6855,10 +7018,16 @@ mod tests {
                 },
             );
 
-            assert!(!result.ok, "{case}: {result:?}");
-            assert_eq!(result.rollback, PublicationRollback::Failed);
-            assert_eq!(result.recovery, PublicationRecovery::Required);
-            assert_eq!(result.cleanup, PublicationCleanup::RetainedForRecovery);
+            assert!(!result.is_ok(), "{case}: {result:?}");
+            assert_eq!(result.lifecycle.rollback(), PublicationRollback::Failed);
+            assert_eq!(
+                result.lifecycle.recovery(),
+                PublicationRecovery::Required
+            );
+            assert_eq!(
+                result.lifecycle.cleanup(),
+                PublicationCleanup::RetainedForRecovery
+            );
             assert!(
                 !target.join("unvalidated.txt").exists()
                     && std::fs::symlink_metadata(target.join("unvalidated-link.xml")).is_err(),
@@ -6897,7 +7066,7 @@ mod tests {
             },
         );
 
-        assert!(!result.ok, "{result:?}");
+        assert!(!result.is_ok(), "{result:?}");
         assert_eq!(
             std::fs::read(target.join("concurrent.txt")).unwrap(),
             b"concurrent",
@@ -6924,7 +7093,7 @@ mod tests {
             || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
         );
 
-        assert!(!result.ok, "{result:?}");
+        assert!(!result.is_ok(), "{result:?}");
         assert_eq!(
             std::fs::read(target.join("before.txt")).unwrap(),
             b"before",
@@ -6964,7 +7133,7 @@ mod tests {
             || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
         );
 
-        assert!(!result.ok, "{result:?}");
+        assert!(!result.is_ok(), "{result:?}");
         assert_eq!(
             std::fs::read(target.join("before.txt")).unwrap(),
             b"before",
@@ -7024,7 +7193,7 @@ mod tests {
             || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
         );
 
-        assert!(!result.ok, "{result:?}");
+        assert!(!result.is_ok(), "{result:?}");
         assert_eq!(
             std::fs::read(target.join("before.txt")).unwrap(),
             b"before",
@@ -7085,7 +7254,7 @@ mod tests {
             || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
         );
 
-        assert!(!result.ok, "{result:?}");
+        assert!(!result.is_ok(), "{result:?}");
         assert_eq!(
             std::fs::read(target.join("before.txt")).unwrap(),
             b"before",
@@ -7135,7 +7304,7 @@ mod tests {
             || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
         );
 
-        assert!(!result.ok, "{result:?}");
+        assert!(!result.is_ok(), "{result:?}");
         let recovery_roots = std::fs::read_dir(&context.cwd)
             .unwrap()
             .filter_map(Result::ok)
@@ -7190,7 +7359,7 @@ mod tests {
 
         let result = invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context);
 
-        assert!(!result.ok, "{result:?}");
+        assert!(!result.is_ok(), "{result:?}");
         assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
         assert!(!context.cwd.join("src").exists(), "{result:?}");
         let private_roots = std::fs::read_dir(&context.cwd)
@@ -7256,7 +7425,7 @@ mod tests {
 
         let result = invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context);
 
-        assert!(!result.ok, "{result:?}");
+        assert!(!result.is_ok(), "{result:?}");
         assert!(
             result.errors.join("\n").contains("cleanup failed")
                 || result.warnings.join("\n").contains("cleanup failed"),
@@ -7300,7 +7469,7 @@ mod tests {
             &context,
         );
 
-        assert!(!result.ok, "{result:?}");
+        assert!(!result.is_ok(), "{result:?}");
         assert!(result.errors.join("\n").contains("symbolic link"));
         assert_eq!(std::fs::read(target.join("before.txt")).unwrap(), b"before");
         std::fs::remove_dir_all(root).unwrap();

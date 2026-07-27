@@ -10,7 +10,7 @@ pub(crate) use unica_format_core::ports::{
 };
 use unica_format_core::{
     ports::{
-        FormatInspectionMode, FormatInspectionRequest, OperationalSourceSession,
+        FormatInspectionMode, FormatInspectionRequest, ObjectKindSelector,
         OwnerResolutionMode, OwnerResolutionRequest, SourceInputEvidence,
     },
     source::{ConfiguredSourceSetKind, SourceContext, SourceFamily, SourceLocation},
@@ -148,54 +148,6 @@ fn resolve(
     })
 }
 
-pub(crate) fn compatibility_target(
-    target: &Path,
-    context: &WorkspaceContext,
-    mode: OwnerResolutionMode,
-    validation_scope: bool,
-) -> Result<OperationalSourceSession, PlatformXmlOwnerError> {
-    operation_source_context(target, context).map(|(source, _)| {
-        let factory = PlatformXmlAdapterFactory::new();
-        if source.configured_source_set().is_some() {
-            if validation_scope {
-                factory.capture_validation_source(&source, mode)
-            } else {
-                factory.capture_operational_source(&source, mode)
-            }
-        } else if validation_scope {
-            factory.capture_unscoped_validation_source(
-                source.location().target(),
-                source.location().workspace_root(),
-                mode,
-            )
-        } else {
-            factory.capture_unscoped_source(
-                source.location().target(),
-                source.location().workspace_root(),
-                mode,
-            )
-        }
-    })
-}
-
-pub(crate) fn validation_source_session(
-    target: &Path,
-    context: &WorkspaceContext,
-) -> Result<OperationalSourceSession, PlatformXmlOwnerError> {
-    operation_source_context(target, context).map(|(source, _)| {
-        let factory = PlatformXmlAdapterFactory::new();
-        if source.configured_source_set().is_some() {
-            factory.capture_validation_source(&source, OwnerResolutionMode::Existing)
-        } else {
-            factory.capture_unscoped_validation_source(
-                source.location().target(),
-                source.location().workspace_root(),
-                OwnerResolutionMode::Existing,
-            )
-        }
-    })
-}
-
 fn operation_source_context(
     target: &Path,
     context: &WorkspaceContext,
@@ -270,6 +222,78 @@ fn configured_kind(kind: SourceSetKind) -> ConfiguredSourceSetKind {
         SourceSetKind::ExternalProcessor => ConfiguredSourceSetKind::ExternalProcessor,
         SourceSetKind::ExternalReport => ConfiguredSourceSetKind::ExternalReport,
     }
+}
+
+pub(crate) fn task8_metadata_kind(
+    value: &str,
+) -> Option<unica_format_core::semantic_ids::SemanticObjectKind> {
+    let registration = PlatformXmlAdapterFactory::new().operational_registration();
+    registration
+        .object_kinds()
+        .resolve(&ObjectKindSelector::new(value).ok()?)
+}
+
+pub(crate) fn task8_metadata_kind_by_directory(
+    value: &str,
+) -> Option<unica_format_core::semantic_ids::SemanticObjectKind> {
+    task8_metadata_kind(value)
+}
+
+pub(crate) fn task8_metadata_kind_tags() -> Vec<&'static str> {
+    let registration = PlatformXmlAdapterFactory::new().operational_registration();
+    registration
+        .object_kinds()
+        .ordered_kinds()
+        .into_iter()
+        .filter_map(|kind| registration.object_kinds().lease(kind))
+        .filter_map(|lease| registration.object_kinds().project(&lease))
+        .map(|projection| projection.canonical_selector().as_str())
+        .collect()
+}
+
+pub(crate) fn task8_metadata_kind_index(value: &str) -> Option<usize> {
+    let kind = task8_metadata_kind(value)?;
+    PlatformXmlAdapterFactory::new()
+        .operational_registration()
+        .object_kinds()
+        .ordered_kinds()
+        .iter()
+        .position(|candidate| *candidate == kind)
+}
+
+pub(crate) fn task8_metadata_kind_tag(
+    kind: unica_format_core::semantic_ids::SemanticObjectKind,
+) -> Option<&'static str> {
+    let registration = PlatformXmlAdapterFactory::new().operational_registration();
+    let lease = registration.object_kinds().lease(kind)?;
+    registration
+        .object_kinds()
+        .project(&lease)
+        .map(|projection| projection.canonical_selector().as_str())
+}
+
+pub(crate) fn task8_metadata_kind_directory(value: &str) -> Option<&'static str> {
+    let registration = PlatformXmlAdapterFactory::new().operational_registration();
+    let kind = registration
+        .object_kinds()
+        .resolve(&ObjectKindSelector::new(value).ok()?)?;
+    let lease = registration.object_kinds().lease(kind)?;
+    registration
+        .object_kinds()
+        .project(&lease)
+        .map(|projection| projection.collection_selector().as_str())
+}
+
+pub(crate) fn task8_metadata_kind_display_name_ru(value: &str) -> Option<&'static str> {
+    let registration = PlatformXmlAdapterFactory::new().operational_registration();
+    let kind = registration
+        .object_kinds()
+        .resolve(&ObjectKindSelector::new(value).ok()?)?;
+    let lease = registration.object_kinds().lease(kind)?;
+    registration
+        .object_kinds()
+        .project(&lease)
+        .map(|projection| projection.display_label())
 }
 
 #[cfg(test)]

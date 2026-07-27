@@ -11,8 +11,10 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use crate::infrastructure::metadata_kinds::{
-    metadata_kind, metadata_kind_by_directory, metadata_kind_index, metadata_kind_tags,
+use crate::infrastructure::platform_xml_owner::{
+    task8_metadata_kind, task8_metadata_kind_by_directory, task8_metadata_kind_directory,
+    task8_metadata_kind_display_name_ru, task8_metadata_kind_index, task8_metadata_kind_tag,
+    task8_metadata_kind_tags,
 };
 
 use super::common::*;
@@ -807,15 +809,15 @@ pub(crate) fn cf_validate_enum_allowed(property: &str) -> &'static [&'static str
 }
 
 pub(crate) fn cf_validate_child_object_type_index(type_name: &str) -> Option<usize> {
-    metadata_kind_index(type_name)
+    task8_metadata_kind_index(type_name)
 }
 
-pub(crate) fn cf_validate_child_object_types() -> &'static [&'static str] {
-    metadata_kind_tags()
+pub(crate) fn cf_validate_child_object_types() -> Vec<&'static str> {
+    task8_metadata_kind_tags()
 }
 
 pub(crate) fn cf_validate_child_type_dir(type_name: &str) -> Option<&'static str> {
-    metadata_kind(type_name).map(|kind| kind.directory)
+    task8_metadata_kind_directory(type_name)
 }
 
 pub(crate) fn cf_validate_form_properties() -> &'static [&'static str] {
@@ -1700,12 +1702,12 @@ pub(crate) fn cf_paginate(lines: Vec<String>, args: &Map<String, Value>) -> Stri
     }
 }
 
-pub(crate) fn cf_type_order() -> &'static [&'static str] {
-    metadata_kind_tags()
+pub(crate) fn cf_type_order() -> Vec<&'static str> {
+    task8_metadata_kind_tags()
 }
 
 pub(crate) fn cf_type_ru_name(type_name: &str) -> &'static str {
-    metadata_kind(type_name).map_or("Unknown", |kind| kind.display_name_ru)
+    task8_metadata_kind_display_name_ru(type_name).unwrap_or("Unknown")
 }
 
 #[cfg(test)]
@@ -1865,7 +1867,7 @@ mod metadata_kind_consumer_tests {
         assert_eq!(directories.len(), validate_kinds.len());
         for kind in validate_kinds {
             let directory = cf_validate_child_type_dir(kind).unwrap();
-            assert_eq!(cf_edit_dir_to_type(directory), Some(*kind));
+            assert_eq!(cf_edit_dir_to_type(directory), Some(kind));
         }
     }
 
@@ -3541,7 +3543,7 @@ pub(crate) fn cf_edit_remove_child_object_text(
     type_name: &str,
     object_name: &str,
 ) -> Result<bool, String> {
-    if metadata_kind(type_name).is_none() {
+    if task8_metadata_kind(type_name).is_none() {
         return Err(format!("Unknown type '{type_name}'"));
     }
     let entries = cf_edit_child_object_entries(text)?;
@@ -3561,7 +3563,8 @@ pub(crate) fn cf_edit_add_child_object_text(
     object_name: &str,
 ) -> Result<bool, String> {
     let new_type_index =
-        metadata_kind_index(type_name).ok_or_else(|| format!("Unknown type '{type_name}'"))?;
+        task8_metadata_kind_index(type_name)
+            .ok_or_else(|| format!("Unknown type '{type_name}'"))?;
     let ((child_start, child_end, body_range), entries) = cf_edit_root_child_objects(text)?;
     let line_ending = cf_edit_line_ending(text);
     if entries
@@ -4069,7 +4072,7 @@ pub(crate) fn cf_edit_ru_type(value: &str) -> Option<&'static str> {
 }
 
 pub(crate) fn cf_edit_dir_to_type(value: &str) -> Option<&'static str> {
-    metadata_kind_by_directory(value).map(|kind| kind.tag)
+    task8_metadata_kind_by_directory(value).and_then(task8_metadata_kind_tag)
 }
 
 pub(crate) fn cf_edit_json_object(

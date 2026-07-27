@@ -43,16 +43,15 @@ use std::fs;
 use std::io::{self, ErrorKind, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use crate::infrastructure::metadata_kinds::metadata_kind;
+use crate::infrastructure::platform_xml_owner::{
+    task8_metadata_kind, task8_metadata_kind_directory,
+};
 use unica_format_core::ports::ValidationMethodReferenceStatus;
 use unica_format_core::source::{ConfiguredSourceSetKind, FormatVersion};
 
 use super::common::*;
 use super::compile_transaction::{
     CompileTransaction, DirectoryTopologyEntry, DirectoryTopologyEntryKind, RegistrationStatus,
-};
-use super::meta_validation_context::{
-    inspect_meta_validation_reads, MetaValidationOwnerKind,
 };
 use super::{
     cf::*, cfe::*, dcs::*, form::*, interface::*, mxl::*, role::*, subsystem::*, template::*,
@@ -243,7 +242,7 @@ mod uuid_tests {
     fn fresh_meta_compile_uuid_generates_uuid_v4() {
         let value = fresh_meta_compile_uuid();
 
-        assert!(is_guid(&value), "{value}");
+        assert!(uuid::Uuid::parse_str(&value).is_ok(), "{value}");
         assert!(!value.starts_with("00000000-0000-0000-"), "{value}");
         assert_eq!(value.as_bytes()[14], b'4', "{value}");
         assert!(
@@ -575,7 +574,7 @@ mod registration_tests {
         for object_type in meta_remove_supported_types() {
             assert_eq!(
                 meta_remove_type_plural(object_type),
-                metadata_kind(object_type).map(|kind| kind.directory)
+                task8_metadata_kind_directory(object_type)
             );
         }
 
@@ -584,7 +583,7 @@ mod registration_tests {
         for object_type in META_COMPILE_SUPPORTED_TYPES {
             assert_eq!(
                 meta_compile_type_plural(object_type),
-                metadata_kind(object_type).map(|kind| kind.directory)
+                task8_metadata_kind_directory(object_type)
             );
         }
         assert_eq!(meta_compile_type_plural("Bot"), None);
@@ -4981,7 +4980,7 @@ mod edit_tests {
 
         assert!(!outcome.ok, "{outcome:?}");
         assert!(
-            outcome.errors.join("\n").contains("Configuration.xml"),
+            outcome.errors.join("\n").contains("validation:sourceUnreadable"),
             "{outcome:?}"
         );
         let _ = fs::remove_dir_all(&context.cwd);
@@ -4998,7 +4997,10 @@ mod edit_tests {
 
         assert!(!outcome.ok, "{outcome:?}");
         assert!(
-            outcome.errors.join("\n").contains("not registered"),
+            outcome
+                .errors
+                .join("\n")
+                .contains("validation:registrationMissing"),
             "{outcome:?}"
         );
         let _ = fs::remove_dir_all(&context.cwd);
@@ -5017,15 +5019,53 @@ mod edit_tests {
             &sample_meta_named("ExternalDataProcessor", "Standalone"),
         );
 
-        let inspection = inspect_meta_validation_reads(&object, &context);
-        let owner = inspection.context.expect("external descriptor owns itself");
+        let outcome = validate_meta(&meta_validate_args(&object), &context);
 
-        assert_eq!(owner.owner_kind, MetaValidationOwnerKind::External);
+        assert!(outcome.ok, "{outcome:?}");
+        let public = serde_json::to_string(&outcome).unwrap();
+        assert!(!public.contains("Configuration.xml"), "{public}");
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
     #[test]
-    fn meta_validation_context_classifies_registered_extension_owner() {
+    fn meta_validation_batch_json_is_recursively_path_and_native_vocabulary_free() {
+        let context = temp_context("public-batch-privacy");
+        let valid = context.cwd.join("tools/Standalone.xml");
+        let malformed = context.cwd.join("tools/Broken.xml");
+        write_file(
+            &valid,
+            &sample_meta_named("ExternalDataProcessor", "Standalone"),
+        );
+        write_file(&malformed, "<broken");
+        let mut args = Map::new();
+        args.insert(
+            "ObjectPath".to_string(),
+            json!(format!("{}|{}", valid.display(), malformed.display())),
+        );
+
+        let outcome = validate_meta(&args, &context);
+        let public = serde_json::to_string(&outcome).unwrap();
+
+        assert!(!outcome.ok, "{outcome:?}");
+        for forbidden in [
+            context.cwd.to_string_lossy().as_ref(),
+            "/private/source",
+            r"C:\private\source",
+            "Configuration.xml",
+            "MetaDataObject",
+            "MDClasses",
+            "ExternalDataProcessor",
+            "2.20",
+            "8.3.27",
+        ] {
+            assert!(!public.contains(forbidden), "leaked {forbidden}: {public}");
+        }
+        assert!(public.contains("sourceMalformed"), "{public}");
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn validate_meta_accepts_registered_extension_owner() {
         let context = temp_context("extension-owner");
         write_file(
             &context.cwd.join("v8project.yaml"),
@@ -5043,10 +5083,9 @@ mod edit_tests {
             &sample_meta_named("CommonModule", "ExtensionModule"),
         );
 
-        let inspection = inspect_meta_validation_reads(&object, &context);
-        let owner = inspection.context.expect("registered extension owner");
+        let outcome = validate_meta(&meta_validate_args(&object), &context);
 
-        assert_eq!(owner.owner_kind, MetaValidationOwnerKind::Extension);
+        assert!(outcome.ok, "{outcome:?}");
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
@@ -5064,25 +5103,29 @@ mod edit_tests {
             outcome
                 .errors
                 .join("\n")
-                .contains("has no registered language profile"),
+                .contains("validation:languageProfileMissing"),
             "{outcome:?}"
         );
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
     #[test]
-    fn meta_validation_reads_missing_registered_language_before_reporting_error() {
+    fn validate_meta_reports_missing_registered_language_semantically() {
         let context = temp_context("missing-language-file");
         let src = write_owner(&context.cwd.join("src"), "Enum", "Statuses", &["Russian"]);
         let object = src.join("Enums/Statuses.xml");
         write_file(&object, &sample_meta_named("Enum", "Statuses"));
 
-        let inspection = inspect_meta_validation_reads(&object, &context);
+        let outcome = validate_meta(&meta_validate_args(&object), &context);
 
-        let error = inspection
-            .context
-            .expect_err("missing registered language must fail");
-        assert!(!error.is_empty());
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .join("\n")
+                .contains("validation:languageProfileMissing"),
+            "{outcome:?}"
+        );
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
@@ -5099,11 +5142,8 @@ mod edit_tests {
         let errors = outcome.errors.join("\n");
 
         assert!(!outcome.ok, "{outcome:?}");
-        assert!(errors.contains("failed to parse"), "{outcome:?}");
-        assert!(
-            errors.contains(&canonical_path(&language).display().to_string()),
-            "{outcome:?}"
-        );
+        assert!(errors.contains("validation:languageProfileMissing"), "{outcome:?}");
+        assert!(!errors.contains(&canonical_path(&language).display().to_string()));
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
@@ -5120,11 +5160,8 @@ mod edit_tests {
         let errors = outcome.errors.join("\n");
 
         assert!(!outcome.ok, "{outcome:?}");
-        assert!(errors.contains("empty LanguageCode"), "{outcome:?}");
-        assert!(
-            errors.contains(&canonical_path(&language).display().to_string()),
-            "{outcome:?}"
-        );
+        assert!(errors.contains("validation:languageProfileMissing"), "{outcome:?}");
+        assert!(!errors.contains(&canonical_path(&language).display().to_string()));
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
@@ -5138,7 +5175,17 @@ mod edit_tests {
             &["RussianOne", "English", "RussianTwo"],
         );
         let object = src.join("Enums/Statuses.xml");
-        write_file(&object, &sample_meta_named("Enum", "Statuses"));
+        write_file(
+            &object,
+            &sample_enum_with_presentations(
+                "Statuses",
+                &[(
+                    "ru",
+                    "Очень длинное наименование статуса для командного интерфейса",
+                )],
+                &[],
+            ),
+        );
         for (name, code) in [
             ("RussianOne", "ru"),
             ("English", "en"),
@@ -5150,69 +5197,10 @@ mod edit_tests {
             );
         }
 
-        let inspection = inspect_meta_validation_reads(&object, &context);
-        let owner = inspection.context.expect("complete language profile");
+        let outcome = validate_meta(&meta_validate_args(&object), &context);
+        let stdout = outcome.stdout.unwrap_or_default();
 
-        assert_eq!(owner.language_codes, vec!["ru", "en"]);
-        let _ = fs::remove_dir_all(&context.cwd);
-    }
-
-    #[test]
-    fn meta_validate_batch_read_set_stably_deduplicates_shared_owner() {
-        let context = temp_context("batch-read-set");
-        let src = context.cwd.join("src");
-        let configuration = src.join("Configuration.xml");
-        let language = src.join("Languages/Russian.xml");
-        let first = src.join("Enums/First.xml");
-        let second = src.join("Enums/Second.xml");
-        write_file(
-            &configuration,
-            &format!(
-                r#"<MetaDataObject xmlns="{TEST_MD_NS}" version="2.20">
-<Configuration uuid="11111111-1111-4111-8111-111111111111">
-<Properties><Name>Owner</Name></Properties>
-<ChildObjects><Language>Russian</Language><Enum>First</Enum><Enum>Second</Enum></ChildObjects>
-</Configuration></MetaDataObject>"#
-            ),
-        );
-        write_file(&language, &sample_language_named("Russian", "ru"));
-        write_file(&first, &sample_meta_named("Enum", "First"));
-        write_file(&second, &sample_meta_named("Enum", "Second"));
-        let args = Map::from_iter([(
-            "ObjectPath".to_string(),
-            Value::String(format!("{}|{}", first.display(), second.display())),
-        )]);
-
-        let dependencies = meta_validate_format_dependency_paths(&args, &context).unwrap();
-
-        assert_eq!(
-            dependencies,
-            vec![
-                canonical_path(&first),
-                canonical_path(&configuration),
-                canonical_path(&language),
-                canonical_path(&second)
-            ]
-        );
-        let _ = fs::remove_dir_all(&context.cwd);
-    }
-
-    #[test]
-    fn post_write_metadata_owner_shape_does_not_require_workspace_owner() {
-        let context = temp_context("post-write-local");
-        let object = context.cwd.join("CommonModules/Local.xml");
-        write_file(
-            &object,
-            &sample_meta_object_xml("CommonModule", "Local", "", "\t\t<ChildObjects/>"),
-        );
-        write_file(
-            &context.cwd.join("Configuration.xml"),
-            "<malformed-neighbor",
-        );
-
-        validate_metadata_owner_shape_8_3_27(&object, &context, "test")
-            .expect("post-write validation must not read a neighboring owner");
-
+        assert_eq!(stdout.matches("commandPresentationTooLong").count(), 1);
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
@@ -5221,14 +5209,14 @@ mod edit_tests {
         let synonym = "<Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Отгрузка</v8:content></v8:item></Synonym>";
         let stdout = validate_stdout_with_synonym("validate-filled-synonym", synonym);
         assert!(!stdout.contains("Synonym is empty"), "{stdout}");
-        assert!(!stdout.contains("longer than 38 characters"), "{stdout}");
+        assert!(!stdout.contains("commandPresentationTooLong"), "{stdout}");
     }
 
     #[test]
     fn validate_meta_warns_on_long_synonym() {
         let synonym = "<Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Очень длинное наименование для командного интерфейса</v8:content></v8:item></Synonym>";
         let stdout = validate_stdout_with_synonym("validate-long-synonym", synonym);
-        assert!(stdout.contains("longer than 38 characters"), "{stdout}");
+        assert!(stdout.contains("commandPresentationTooLong"), "{stdout}");
     }
 
     #[test]
@@ -5257,7 +5245,7 @@ mod edit_tests {
         let stdout = outcome_text(&outcome);
 
         assert!(outcome.ok, "{outcome:?}");
-        assert!(!stdout.contains("longer than 38 characters"), "{stdout}");
+        assert!(!stdout.contains("commandPresentationTooLong"), "{stdout}");
     }
 
     #[test]
@@ -5302,8 +5290,7 @@ mod edit_tests {
         let stdout = outcome_text(&outcome);
 
         assert!(outcome.ok, "{outcome:?}");
-        assert!(stdout.contains("Synonym"), "{stdout}");
-        assert!(stdout.contains("language 'en'"), "{stdout}");
+        assert!(stdout.contains("commandPresentationTooLong"), "{stdout}");
     }
 
     #[test]
@@ -5321,7 +5308,7 @@ mod edit_tests {
         let stdout = outcome_text(&outcome);
 
         assert!(outcome.ok, "{outcome:?}");
-        assert!(!stdout.contains("language 'en'"), "{stdout}");
+        assert!(!stdout.contains("commandPresentationTooLong"), "{stdout}");
     }
 
     #[test]
@@ -5338,8 +5325,7 @@ mod edit_tests {
             &[],
             &[("Русский", "ru"), ("English", "en")],
         );
-        assert!(stdout.contains("language 'en'"), "{stdout}");
-        assert!(stdout.contains("longer than 38 characters"), "{stdout}");
+        assert!(stdout.contains("commandPresentationTooLong"), "{stdout}");
     }
 
     #[test]
@@ -5353,8 +5339,7 @@ mod edit_tests {
             &[("ru", "Отгрузки")],
             &[("Русский", "ru"), ("English", "en")],
         );
-        assert!(!stdout.contains("language 'ru'"), "{stdout}");
-        assert!(!stdout.contains("longer than 38 characters"), "{stdout}");
+        assert!(!stdout.contains("commandPresentationTooLong"), "{stdout}");
     }
 
     #[test]
@@ -5371,7 +5356,7 @@ mod edit_tests {
             &[],
             &[("Русский", "ru")],
         );
-        assert!(!stdout.contains("longer than 38 characters"), "{stdout}");
+        assert!(!stdout.contains("commandPresentationTooLong"), "{stdout}");
     }
 
     #[test]
@@ -5395,7 +5380,7 @@ mod edit_tests {
         let synonym = meta_info_child(properties, "Synonym");
 
         assert_eq!(
-            meta_validate_localized_values(synonym),
+            meta_info_localized_values(synonym),
             vec![(None, "Shipment".to_string())]
         );
     }
@@ -5531,22 +5516,10 @@ pub(crate) struct MetaInfoWsOperation {
     pub(crate) proc_name: String,
 }
 
-pub(crate) struct MetaValidationReporter {
-    pub(crate) errors: usize,
-    pub(crate) warnings: usize,
-    pub(crate) ok_count: usize,
-    pub(crate) stopped: bool,
-    pub(crate) max_errors: usize,
-    pub(crate) detailed: bool,
-    pub(crate) lines: Vec<String>,
-    pub(crate) md_type: String,
-    pub(crate) obj_name: String,
-}
-
 pub(crate) struct MetaValidationRun {
     pub(crate) ok: bool,
     pub(crate) stdout: String,
-    pub(crate) artifacts: Vec<PathBuf>,
+    pub(crate) artifacts: Vec<String>,
     pub(crate) errors: Vec<String>,
 }
 
@@ -5556,148 +5529,54 @@ pub(crate) struct MetaValidationOptions {
     pub(crate) max_errors: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MetaValidationScope {
-    PublicOwnerAware,
-    PostWriteLocal,
-}
-
-struct MetaValidationReferenceInputs {
-    language_codes: Vec<String>,
-    command_text_validation_required: bool,
-    references_present: Option<bool>,
-    registrar_present: Option<bool>,
-    method_reference_status: Option<ValidationMethodReferenceStatus>,
-}
-
-impl MetaValidationReporter {
-    pub(crate) fn new(max_errors: usize, detailed: bool) -> Self {
-        Self {
-            errors: 0,
-            warnings: 0,
-            ok_count: 0,
-            stopped: false,
-            max_errors,
-            detailed,
-            lines: vec![String::new()],
-            md_type: "(unknown)".to_string(),
-            obj_name: "(unknown)".to_string(),
-        }
-    }
-
-    pub(crate) fn ok(&mut self, message: impl Into<String>) {
-        self.ok_count += 1;
-        if self.detailed {
-            self.lines.push(format!("[OK]    {}", message.into()));
-        }
-    }
-
-    pub(crate) fn error(&mut self, message: impl Into<String>) {
-        self.errors += 1;
-        self.lines.push(format!("[ERROR] {}", message.into()));
-        if self.errors >= self.max_errors {
-            self.stopped = true;
-        }
-    }
-
-    pub(crate) fn warn(&mut self, message: impl Into<String>) {
-        self.warnings += 1;
-        self.lines.push(format!("[WARN]  {}", message.into()));
-    }
-
-    pub(crate) fn finalize(mut self) -> (bool, String, Vec<String>) {
-        let checks = self.ok_count + self.errors + self.warnings;
-        let ok = self.errors == 0;
-        if ok && self.warnings == 0 && !self.detailed {
-            return (
-                true,
-                format!(
-                    "=== Validation OK: {}.{} ({checks} checks) ===",
-                    self.md_type, self.obj_name
-                ),
-                Vec::new(),
-            );
-        }
-        self.lines.insert(
-            0,
-            format!("=== Validation: {}.{} ===", self.md_type, self.obj_name),
-        );
-        self.lines.push(String::new());
-        self.lines.push(format!(
-            "=== Result: {} errors, {} warnings ({checks} checks) ===",
-            self.errors, self.warnings
-        ));
-        let errors = self
-            .lines
-            .iter()
-            .filter(|line| line.starts_with("[ERROR]"))
-            .cloned()
-            .collect::<Vec<_>>();
-        (ok, self.lines.join("\n"), errors)
-    }
-}
-
 pub(crate) fn validate_meta(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    let result = (|| -> Result<MetaValidationRun, String> {
-        let raw_path = required_path(
+    let run = (|| -> Result<MetaValidationRun, String> {
+        let raw = required_path(
             args,
             &["objectPath", "ObjectPath", "path", "Path"],
             "ObjectPath",
         )?;
-        let raw_path_text = raw_path.to_string_lossy();
-        let paths = raw_path_text
+        let paths = raw
+            .to_string_lossy()
             .split('|')
             .map(str::trim)
-            .filter(|path| !path.is_empty())
+            .filter(|value| !value.is_empty())
             .map(PathBuf::from)
             .collect::<Vec<_>>();
         if paths.is_empty() {
-            return Err("[ERROR] No ObjectPath values were provided".to_string());
+            return Err("validation request contains no subjects".to_string());
         }
-
-        let options = meta_validation_options(args);
-        if paths.len() > 1 {
-            meta_validate_batch(paths, &options, context)
-        } else {
-            meta_validate_one(paths[0].clone(), &options, context)
-        }
+        run_meta_validation(paths, &meta_validation_options(args), context)
     })();
 
-    match result {
-        Ok(run) => {
-            let artifacts = run
-                .artifacts
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect::<Vec<_>>();
-            AdapterOutcome {
-                ok: run.ok,
-                summary: if run.ok {
-                    "unica.meta.validate completed with native metadata validator".to_string()
-                } else {
-                    "unica.meta.validate failed in native metadata validator".to_string()
-                },
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: run.errors,
-                artifacts,
-                stdout: Some(run.stdout),
-                stderr: Some(String::new()),
-                command: None,
-            }
-        }
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.meta.validate failed in native metadata validator".to_string(),
+    match run {
+        Ok(run) => AdapterOutcome {
+            ok: run.ok,
+            summary: if run.ok {
+                "unica.meta.validate completed".to_string()
+            } else {
+                "unica.meta.validate found semantic violations".to_string()
+            },
             changes: Vec::new(),
             warnings: Vec::new(),
-            errors: vec![error.clone()],
+            errors: run.errors,
+            artifacts: run.artifacts,
+            stdout: Some(run.stdout),
+            stderr: None,
+            command: None,
+        },
+        Err(_) => AdapterOutcome {
+            ok: false,
+            summary: "unica.meta.validate could not inspect the requested source".to_string(),
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: vec!["validation source is unavailable".to_string()],
             artifacts: Vec::new(),
-            stdout: Some(format!("{error}\n")),
-            stderr: Some(String::new()),
+            stdout: None,
+            stderr: None,
             command: None,
         },
     }
@@ -5709,84 +5588,9 @@ pub(crate) fn meta_validation_options(args: &Map<String, Value>) -> MetaValidati
         max_errors: int_arg(args, &["maxErrors", "MaxErrors"])
             .and_then(|value| usize::try_from(value).ok())
             .filter(|value| *value > 0)
-            .unwrap_or(30),
+            .unwrap_or(30)
+            .min(1_000),
     }
-}
-
-/// Return the platform XML documents whose contents `meta.validate` reads,
-/// including each member of a batch and the registrar documents inspected for
-/// register cross-reference diagnostics.
-pub(crate) fn meta_validate_format_dependency_paths(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> Result<Vec<PathBuf>, String> {
-    let raw_path = required_path(
-        args,
-        &["objectPath", "ObjectPath", "path", "Path"],
-        "ObjectPath",
-    )?;
-    let raw_path_text = raw_path.to_string_lossy();
-    let mut dependencies = Vec::new();
-    for raw in raw_path_text
-        .split('|')
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-    {
-        let candidate = absolutize(PathBuf::from(raw), &context.cwd);
-        let object_path = resolve_meta_info_path(candidate.clone()).unwrap_or(candidate);
-        if !dependencies.contains(&object_path) {
-            dependencies.push(object_path);
-        }
-    }
-    Ok(dependencies)
-}
-
-pub(crate) fn meta_validate_batch(
-    paths: Vec<PathBuf>,
-    options: &MetaValidationOptions,
-    context: &WorkspaceContext,
-) -> Result<MetaValidationRun, String> {
-    let total = paths.len();
-    let mut passed = 0usize;
-    let mut failed = 0usize;
-    let mut stdout_blocks = Vec::<String>::new();
-    let mut errors = Vec::<String>::new();
-    let mut artifacts = Vec::<PathBuf>::new();
-
-    for path in paths {
-        match meta_validate_one(path.clone(), options, context) {
-            Ok(run) => {
-                if run.ok {
-                    passed += 1;
-                } else {
-                    failed += 1;
-                }
-                errors.extend(run.errors);
-                artifacts.extend(run.artifacts);
-                stdout_blocks.push(format!("--- {} ---", path.display()));
-                stdout_blocks.push(run.stdout.trim_end().to_string());
-            }
-            Err(error) => {
-                failed += 1;
-                let message = format!("[ERROR] {}: {error}", path.display());
-                errors.push(message.clone());
-                stdout_blocks.push(message);
-            }
-        }
-    }
-
-    stdout_blocks.push(String::new());
-    stdout_blocks.push("=== meta-validate batch summary ===".to_string());
-    stdout_blocks.push(format!("Validated: {total}"));
-    stdout_blocks.push(format!("Passed:    {passed}"));
-    stdout_blocks.push(format!("Failed:    {failed}"));
-
-    Ok(MetaValidationRun {
-        ok: failed == 0,
-        stdout: format!("{}\n", stdout_blocks.join("\n")),
-        artifacts,
-        errors,
-    })
 }
 
 pub(crate) fn meta_validate_one(
@@ -5794,258 +5598,101 @@ pub(crate) fn meta_validate_one(
     options: &MetaValidationOptions,
     context: &WorkspaceContext,
 ) -> Result<MetaValidationRun, String> {
-    meta_validate_one_with_scope(
-        raw_path,
-        options,
-        context,
-        MetaValidationScope::PublicOwnerAware,
-    )
+    run_meta_validation(vec![raw_path], options, context)
 }
 
-fn meta_validate_one_with_scope(
-    raw_path: PathBuf,
+fn run_meta_validation(
+    paths: Vec<PathBuf>,
     options: &MetaValidationOptions,
     context: &WorkspaceContext,
-    scope: MetaValidationScope,
 ) -> Result<MetaValidationRun, String> {
-    const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
-
-    let object_path = resolve_meta_info_path(absolutize(raw_path, &context.cwd))?;
-    let resolved_path = object_path
-        .canonicalize()
-        .unwrap_or_else(|_| object_path.clone());
-    let owner_inspection = match scope {
-        MetaValidationScope::PublicOwnerAware => {
-            Some(inspect_meta_validation_reads(&resolved_path, context))
-        }
-        MetaValidationScope::PostWriteLocal => None,
-    };
-
-    let text = read_utf8_sig(&resolved_path)?;
-    let source = text.trim_start_matches('\u{feff}');
-    let doc = match Document::parse(source) {
-        Ok(doc) => doc,
-        Err(err) => {
-            let mut report = MetaValidationReporter::new(options.max_errors, options.detailed);
-            report.md_type = "(parse failed)".to_string();
-            report.obj_name.clear();
-            report.error(format!("1. XML parse failed: {err}"));
-            return meta_validate_finish(report, resolved_path);
-        }
-    };
-
-    let root = doc.root_element();
-    let mut report = MetaValidationReporter::new(options.max_errors, options.detailed);
-    let mut check1_ok = true;
-
-    if root.tag_name().name() != "MetaDataObject" {
-        report.error(format!(
-            "1. Root element is '{}', expected 'MetaDataObject'",
-            root.tag_name().name()
-        ));
-        return meta_validate_finish(report, resolved_path);
-    }
-
-    let root_ns = root.tag_name().namespace().unwrap_or("");
-    if root_ns != MD_NS {
-        report.error(format!(
-            "1. Root namespace is '{root_ns}', expected '{MD_NS}'"
-        ));
-        check1_ok = false;
-    }
-
-    let version = match inspect_platform_xml_compatibility(&resolved_path) {
-        Ok(compatibility @ FormatCompatibility::Supported { .. }) => {
-            report.ok("Export format: 2.20");
-            compatibility.actual().to_string()
-        }
-        Ok(compatibility) => {
-            report.warn(format_compatibility_warning(&compatibility));
-            compatibility.actual().to_string()
-        }
-        Err(error) => {
-            report.error(error.message);
-            String::new()
-        }
-    };
-
-    let child_elements = root
-        .children()
-        .filter(|child| child.is_element() && child.tag_name().namespace() == Some(MD_NS))
+    let sessions = paths
+        .into_iter()
+        .map(|path| {
+            let target = absolutize(path, &context.cwd);
+            unica_adapter_platform_xml::PlatformXmlAdapterFactory::new()
+                .capture_unscoped_validation_source(
+                    &target,
+                    &context.workspace_root,
+                    unica_format_core::ports::OwnerResolutionMode::Existing,
+                )
+        })
         .collect::<Vec<_>>();
-    if child_elements.is_empty() {
-        report.error("1. No metadata type element found inside MetaDataObject");
-        return meta_validate_finish(report, resolved_path);
-    }
-    if child_elements.len() > 1 {
-        let names = child_elements
-            .iter()
-            .map(|child| format!("'{}'", child.tag_name().name()))
-            .collect::<Vec<_>>();
-        report.error(format!(
-            "1. Multiple type elements found: [{}]",
-            names.join(", ")
-        ));
-        check1_ok = false;
-    }
+    let options = unica_format_core::ports::ValidationOptions::new(
+        options.detailed,
+        u16::try_from(options.max_errors).unwrap_or(1_000),
+    )
+    .map_err(|error| error.to_string())?;
+    let request = unica_format_core::ports::OperationalValidationRequest::new(sessions, options)
+        .map_err(|error| error.to_string())?;
+    let factory = unica_adapter_platform_xml::PlatformXmlAdapterFactory::new();
+    let registration = factory.operational_registration();
+    let result = unica_application::OperationalPolicyService::validate(
+        registration.validation(),
+        &request,
+    )
+    .map_err(|_| "validation adapter operation failed".to_string())?;
 
-    let type_node = child_elements[0];
-    let md_type = type_node.tag_name().name();
-    report.md_type = md_type.to_string();
-    if !meta_validate_valid_types().contains(&md_type) {
-        report.error(format!("1. Unrecognized metadata type: {md_type}"));
-        return meta_validate_finish(report, resolved_path);
-    }
-
-    let type_uuid = type_node.attribute("uuid").unwrap_or("");
-    if type_uuid.is_empty() {
-        report.error(format!("1. Missing uuid on <{md_type}> element"));
-        check1_ok = false;
-    } else if !is_guid(type_uuid) {
-        report.error(format!("1. Invalid uuid '{type_uuid}' on <{md_type}>"));
-        check1_ok = false;
-    }
-
-    let props_node = meta_info_child(type_node, "Properties");
-    let name_node = props_node.and_then(|props| meta_info_child(props, "Name"));
-    let obj_name = name_node
-        .map(meta_info_inner_text)
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "(unknown)".to_string());
-    report.obj_name = obj_name.clone();
-
-    let reference_inputs = match scope {
-        MetaValidationScope::PublicOwnerAware => {
-            let owner_context = match owner_inspection
-                .expect("public validation always creates owner inspection")
-                .context
-            {
-                Ok(owner_context) => owner_context,
-                Err(error) => {
-                    report.error(format!("1. Owner context: {error}"));
-                    return meta_validate_finish(report, resolved_path);
+    let mut stdout = Vec::new();
+    let mut artifacts = Vec::new();
+    let mut errors = Vec::new();
+    let mut ok = true;
+    for report in result.reports() {
+        let subject = report.subject().as_str().to_string();
+        artifacts.push(subject.clone());
+        stdout.push(format!("--- {subject} ---"));
+        stdout.push(format!("checks: {}", report.checks()));
+        for finding in report.findings() {
+            let code = validation_finding_code(finding.code());
+            let severity = match finding.severity() {
+                unica_format_core::ports::ValidationFindingSeverity::Warning => "WARN",
+                unica_format_core::ports::ValidationFindingSeverity::Error => {
+                    ok = false;
+                    errors.push(format!("validation:{code}"));
+                    "ERROR"
                 }
             };
-            MetaValidationReferenceInputs {
-                language_codes: owner_context.language_codes,
-                command_text_validation_required: owner_context
-                    .command_text_validation_required,
-                references_present: owner_context.references_present,
-                registrar_present: owner_context.registrar_present,
-                method_reference_status: owner_context.method_reference_status,
-            }
+            stdout.push(format!("[{severity}] {code}"));
         }
-        MetaValidationScope::PostWriteLocal => MetaValidationReferenceInputs {
-            language_codes: Vec::new(),
-            command_text_validation_required: false,
-            references_present: None,
-            registrar_present: None,
-            method_reference_status: None,
-        },
-    };
-
-    if check1_ok {
-        report.ok(format!(
-            "1. Root structure: MetaDataObject/{md_type}, version {version}"
-        ));
+        if report.status() == unica_format_core::ports::ValidationStatus::Invalid {
+            ok = false;
+        }
     }
-    if report.stopped {
-        return meta_validate_finish(report, resolved_path);
-    }
-
-    meta_validate_check_internal_info(&mut report, md_type, type_node, &obj_name);
-    if report.stopped {
-        return meta_validate_finish(report, resolved_path);
-    }
-    meta_validate_check_properties(
-        &mut report,
-        md_type,
-        props_node,
-        name_node,
-        &obj_name,
-        &reference_inputs.language_codes,
-        reference_inputs.command_text_validation_required,
-    );
-    if report.stopped {
-        return meta_validate_finish(report, resolved_path);
-    }
-    meta_validate_check_property_values(&mut report, props_node);
-    if report.stopped {
-        return meta_validate_finish(report, resolved_path);
-    }
-    meta_validate_check_standard_attributes(&mut report, md_type, props_node);
-    if report.stopped {
-        return meta_validate_finish(report, resolved_path);
-    }
-
-    let child_obj_node = meta_info_child(type_node, "ChildObjects");
-    meta_validate_check_child_objects(&mut report, md_type, child_obj_node);
-    if report.stopped {
-        return meta_validate_finish(report, resolved_path);
-    }
-    meta_validate_check_child_elements(&mut report, child_obj_node);
-    if report.stopped {
-        return meta_validate_finish(report, resolved_path);
-    }
-    meta_validate_check_reserved_attr_names(&mut report, child_obj_node);
-    if report.stopped {
-        return meta_validate_finish(report, resolved_path);
-    }
-    meta_validate_check_uniqueness(&mut report, child_obj_node);
-    if report.stopped {
-        return meta_validate_finish(report, resolved_path);
-    }
-    meta_validate_check_tabular_sections(&mut report, child_obj_node);
-    if report.stopped {
-        return meta_validate_finish(report, resolved_path);
-    }
-    meta_validate_check_cross_properties(
-        &mut report,
-        md_type,
-        props_node,
-        child_obj_node,
-        reference_inputs.references_present,
-        reference_inputs.registrar_present,
-    );
-    if report.stopped {
-        return meta_validate_finish(report, resolved_path);
-    }
-    meta_validate_check_services(&mut report, md_type, child_obj_node);
-    if report.stopped {
-        return meta_validate_finish(report, resolved_path);
-    }
-    meta_validate_check_forbidden_properties(&mut report, md_type, props_node);
-    if report.stopped {
-        return meta_validate_finish(report, resolved_path);
-    }
-    meta_validate_check_method_reference(
-        &mut report,
-        md_type,
-        props_node,
-        reference_inputs.method_reference_status,
-    );
-    if report.stopped {
-        return meta_validate_finish(report, resolved_path);
-    }
-    meta_validate_check_document_journal_columns(&mut report, md_type, child_obj_node);
-
-    meta_validate_finish(report, resolved_path)
-}
-
-pub(crate) fn meta_validate_finish(
-    report: MetaValidationReporter,
-    artifact: PathBuf,
-) -> Result<MetaValidationRun, String> {
-    let (ok, result_text, errors) = report.finalize();
+    stdout.push(format!("validated: {}", artifacts.len()));
+    stdout.push(format!("result: {}", if ok { "valid" } else { "invalid" }));
     Ok(MetaValidationRun {
         ok,
-        stdout: format!("{result_text}\n"),
-        artifacts: vec![artifact],
+        stdout: format!("{}\n", stdout.join("\n")),
+        artifacts,
         errors,
     })
 }
 
-pub(crate) fn meta_validate_localized_values(
+fn validation_finding_code(
+    code: unica_format_core::ports::ValidationFindingCode,
+) -> &'static str {
+    use unica_format_core::ports::ValidationFindingCode;
+    match code {
+        ValidationFindingCode::SourceUnreadable => "sourceUnreadable",
+        ValidationFindingCode::SourceMalformed => "sourceMalformed",
+        ValidationFindingCode::RevisionUnsupported => "revisionUnsupported",
+        ValidationFindingCode::SemanticStructureInvalid => "semanticStructureInvalid",
+        ValidationFindingCode::SemanticValueInvalid => "semanticValueInvalid",
+        ValidationFindingCode::IdentityMissing => "identityMissing",
+        ValidationFindingCode::IdentityInvalid => "identityInvalid",
+        ValidationFindingCode::NameMissing => "nameMissing",
+        ValidationFindingCode::RegistrationMissing => "registrationMissing",
+        ValidationFindingCode::LanguageProfileMissing => "languageProfileMissing",
+        ValidationFindingCode::ReferenceMissing => "referenceMissing",
+        ValidationFindingCode::RegistrarMissing => "registrarMissing",
+        ValidationFindingCode::MethodReferenceInvalid => "methodReferenceInvalid",
+        ValidationFindingCode::DuplicateSemanticItem => "duplicateSemanticItem",
+        ValidationFindingCode::CommandPresentationTooLong => "commandPresentationTooLong",
+        ValidationFindingCode::UnsupportedCombination => "unsupportedCombination",
+    }
+}
+
+pub(crate) fn meta_info_localized_values(
     node: Option<roxmltree::Node<'_, '_>>,
 ) -> Vec<(Option<String>, String)> {
     const V8_CORE_NS: &str = "http://v8.1c.ru/8.1/data/core";
@@ -6078,930 +5725,8 @@ pub(crate) fn meta_validate_localized_values(
         .collect()
 }
 
-pub(crate) fn meta_validate_check_internal_info(
-    report: &mut MetaValidationReporter,
-    md_type: &str,
-    type_node: roxmltree::Node<'_, '_>,
-    obj_name: &str,
-) {
-    let internal_info = meta_info_child(type_node, "InternalInfo");
-    if meta_validate_types_without_internal_info().contains(&md_type) {
-        if let Some(internal_info) = internal_info {
-            let gen_types = meta_info_children(internal_info, "GeneratedType");
-            if gen_types.is_empty() {
-                report.ok(format!(
-                    "2. InternalInfo: absent or empty (correct for {md_type})"
-                ));
-            } else {
-                report.warn(format!(
-                    "2. InternalInfo: {md_type} should not have GeneratedType entries, found {}",
-                    gen_types.len()
-                ));
-            }
-        } else {
-            report.ok(format!("2. InternalInfo: absent (correct for {md_type})"));
-        }
-        return;
-    }
 
-    let Some(expected_categories) = meta_validate_generated_categories(md_type) else {
-        return;
-    };
-    let Some(internal_info) = internal_info else {
-        report.error(format!(
-            "2. InternalInfo: missing (expected {} GeneratedType)",
-            expected_categories.len()
-        ));
-        return;
-    };
-    let gen_types = meta_info_children(internal_info, "GeneratedType");
-    let mut check_ok = true;
-    let mut found_categories = Vec::<String>::new();
-    for generated_type in &gen_types {
-        let name = generated_type.attribute("name").unwrap_or("");
-        let category = generated_type.attribute("category").unwrap_or("");
-        found_categories.push(category.to_string());
-        if !name.is_empty() && obj_name != "(unknown)" && !name.ends_with(&format!(".{obj_name}")) {
-            report.error(format!(
-                "2. GeneratedType name '{name}' does not end with '.{obj_name}'"
-            ));
-            check_ok = false;
-        }
-        if !expected_categories.contains(&category) {
-            report.warn(format!(
-                "2. Unexpected GeneratedType category '{category}' for {md_type}"
-            ));
-        }
-        if let Some(type_id) = meta_info_child(*generated_type, "TypeId") {
-            if !is_guid(&meta_info_inner_text(type_id)) {
-                report.error(format!(
-                    "2. Invalid TypeId UUID in GeneratedType '{category}'"
-                ));
-                check_ok = false;
-            }
-        }
-        if let Some(value_id) = meta_info_child(*generated_type, "ValueId") {
-            if !is_guid(&meta_info_inner_text(value_id)) {
-                report.error(format!(
-                    "2. Invalid ValueId UUID in GeneratedType '{category}'"
-                ));
-                check_ok = false;
-            }
-        }
-    }
-
-    if md_type == "ExchangePlan" {
-        if let Some(this_node) = meta_info_child(internal_info, "ThisNode") {
-            if !is_guid(&meta_info_inner_text(this_node)) {
-                report.error("2. ExchangePlan xr:ThisNode has invalid UUID");
-                check_ok = false;
-            }
-        } else {
-            report.warn("2. ExchangePlan missing xr:ThisNode in InternalInfo");
-        }
-    }
-
-    let missing_categories = expected_categories
-        .iter()
-        .filter(|category| !found_categories.iter().any(|found| found == **category))
-        .copied()
-        .collect::<Vec<_>>();
-    if !missing_categories.is_empty() {
-        report.warn(format!(
-            "2. Missing GeneratedType categories: {}",
-            missing_categories.join(", ")
-        ));
-    }
-    if check_ok {
-        found_categories.sort();
-        report.ok(format!(
-            "2. InternalInfo: {} GeneratedType ({})",
-            gen_types.len(),
-            found_categories.join(", ")
-        ));
-    }
-}
-
-pub(crate) fn meta_validate_check_properties(
-    report: &mut MetaValidationReporter,
-    _md_type: &str,
-    props_node: Option<roxmltree::Node<'_, '_>>,
-    name_node: Option<roxmltree::Node<'_, '_>>,
-    obj_name: &str,
-    configured_language_codes: &[String],
-    command_text_validation_required: bool,
-) {
-    let Some(props_node) = props_node else {
-        report.error("3. Properties block missing");
-        return;
-    };
-    let mut check_ok = true;
-    if name_node.is_none() || obj_name.is_empty() {
-        report.error("3. Properties: Name is missing or empty");
-        check_ok = false;
-    } else {
-        if !is_1c_identifier(obj_name) {
-            report.error(format!(
-                "3. Properties: Name '{obj_name}' is not a valid 1C identifier"
-            ));
-            check_ok = false;
-        }
-        if obj_name.chars().count() > 80 {
-            report.warn(format!(
-                "3. Properties: Name '{obj_name}' is longer than 80 characters ({})",
-                obj_name.chars().count()
-            ));
-        }
-    }
-    let synonym_values = meta_validate_localized_values(meta_info_child(props_node, "Synonym"));
-    let syn_present = !synonym_values.is_empty();
-
-    if command_text_validation_required {
-        meta_validate_check_command_texts(report, props_node, configured_language_codes);
-    }
-    if check_ok {
-        let syn_info = if syn_present {
-            "Synonym present"
-        } else {
-            "no Synonym"
-        };
-        report.ok(format!("3. Properties: Name=\"{obj_name}\", {syn_info}"));
-    }
-}
-
-fn meta_validate_check_command_texts(
-    report: &mut MetaValidationReporter,
-    props_node: roxmltree::Node<'_, '_>,
-    language_codes: &[String],
-) {
-    let synonyms = meta_validate_localized_values(meta_info_child(props_node, "Synonym"));
-    let lists = meta_validate_localized_values(meta_info_child(props_node, "ListPresentation"));
-
-    for language_code in language_codes {
-        let list_values = lists
-            .iter()
-            .filter(|(language, text)| {
-                language.as_deref() == Some(language_code.as_str()) && !text.trim().is_empty()
-            })
-            .collect::<Vec<_>>();
-        let selected = if list_values.is_empty() {
-            synonyms
-                .iter()
-                .filter(|(language, text)| {
-                    language.as_deref() == Some(language_code.as_str()) && !text.trim().is_empty()
-                })
-                .map(|(_, text)| ("Synonym", text))
-                .collect::<Vec<_>>()
-        } else {
-            list_values
-                .into_iter()
-                .map(|(_, text)| ("ListPresentation", text))
-                .collect::<Vec<_>>()
-        };
-        for (source, text) in selected {
-            meta_validate_warn_long_command_text(report, source, text, Some(language_code));
-        }
-    }
-}
-
-fn meta_validate_warn_long_command_text(
-    report: &mut MetaValidationReporter,
-    source: &str,
-    text: &str,
-    language: Option<&String>,
-) {
-    let length = text.chars().count();
-    if length <= 38 {
-        return;
-    }
-    let language_suffix = language
-        .map(|language| format!(", language '{language}'"))
-        .unwrap_or_default();
-    report.warn(format!(
-        "3. Properties: {source} '{text}' is longer than 38 characters ({length}) for the command interface{language_suffix}"
-    ));
-}
-
-pub(crate) fn meta_validate_check_property_values(
-    report: &mut MetaValidationReporter,
-    props_node: Option<roxmltree::Node<'_, '_>>,
-) {
-    let Some(props_node) = props_node else {
-        report.warn("4. No Properties block to check");
-        return;
-    };
-    let mut enum_checked = 0usize;
-    let mut check_ok = true;
-    for (prop_name, allowed) in meta_validate_property_values() {
-        if let Some(value) =
-            meta_info_child_text(props_node, prop_name).filter(|value| !value.is_empty())
-        {
-            if !allowed.contains(&value.as_str()) {
-                report.error(format!(
-                    "4. Property '{prop_name}' has invalid value '{value}' (allowed: {})",
-                    allowed.join(", ")
-                ));
-                check_ok = false;
-            }
-            enum_checked += 1;
-        }
-    }
-    if check_ok {
-        report.ok(format!(
-            "4. Property values: {enum_checked} enum properties checked"
-        ));
-    }
-}
-
-pub(crate) fn meta_validate_check_standard_attributes(
-    report: &mut MetaValidationReporter,
-    md_type: &str,
-    props_node: Option<roxmltree::Node<'_, '_>>,
-) {
-    if !meta_validate_types_with_std_attrs().contains(&md_type) {
-        return;
-    }
-    let Some(props_node) = props_node else {
-        return;
-    };
-    let Some(std_attr_node) = meta_info_child(props_node, "StandardAttributes") else {
-        report.ok(format!(
-            "5. StandardAttributes: absent (optional for {md_type})"
-        ));
-        return;
-    };
-    let std_attrs = meta_info_children(std_attr_node, "StandardAttribute");
-    let expected_std_attrs = meta_validate_standard_attributes(md_type).unwrap_or_default();
-    let mut check_ok = true;
-    let mut found_names = Vec::<String>::new();
-    for standard_attr in &std_attrs {
-        let name = standard_attr.attribute("name").unwrap_or("");
-        if name.is_empty() {
-            report.error("5. StandardAttribute without 'name' attribute");
-            check_ok = false;
-            continue;
-        }
-        found_names.push(name.to_string());
-        if !expected_std_attrs.contains(&name)
-            && !meta_validate_dynamic_standard_attr(md_type, name)
-        {
-            report.warn(format!(
-                "5. Unexpected StandardAttribute '{name}' for {md_type}"
-            ));
-        }
-    }
-    let missing_attrs = expected_std_attrs
-        .iter()
-        .filter(|attr| !found_names.iter().any(|found| found == **attr))
-        .copied()
-        .collect::<Vec<_>>();
-    if !missing_attrs.is_empty() {
-        report.warn(format!(
-            "5. Missing StandardAttributes: {}",
-            missing_attrs.join(", ")
-        ));
-    }
-    if check_ok {
-        report.ok(format!(
-            "5. StandardAttributes: {} entries",
-            std_attrs.len()
-        ));
-    }
-}
-
-pub(crate) fn meta_validate_check_child_objects(
-    report: &mut MetaValidationReporter,
-    md_type: &str,
-    child_obj_node: Option<roxmltree::Node<'_, '_>>,
-) {
-    let allowed_children = meta_validate_child_rules(md_type).unwrap_or_default();
-    if let Some(child_obj_node) = child_obj_node {
-        let mut check_ok = true;
-        let mut child_counts = BTreeMap::<String, usize>::new();
-        for child in child_obj_node.children().filter(|child| child.is_element()) {
-            let child_tag = child.tag_name().name();
-            if !allowed_children.contains(&child_tag) {
-                report.error(format!(
-                    "6. ChildObjects: disallowed element '{child_tag}' for {md_type}"
-                ));
-                check_ok = false;
-            }
-            *child_counts.entry(child_tag.to_string()).or_default() += 1;
-        }
-        if check_ok {
-            if child_counts.is_empty() {
-                report.ok(format!("6. ChildObjects: empty (valid for {md_type})"));
-            } else {
-                let summary = child_counts
-                    .iter()
-                    .map(|(name, count)| format!("{name}({count})"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                report.ok(format!("6. ChildObjects types: {summary}"));
-            }
-        }
-    } else if allowed_children.is_empty() {
-        report.ok(format!("6. ChildObjects: absent (correct for {md_type})"));
-    } else {
-        report.ok("6. ChildObjects: absent");
-    }
-}
-
-pub(crate) fn meta_validate_check_child_elements(
-    report: &mut MetaValidationReporter,
-    child_obj_node: Option<roxmltree::Node<'_, '_>>,
-) {
-    let Some(child_obj_node) = child_obj_node else {
-        return;
-    };
-    let mut check_ok = true;
-    let mut count = 0usize;
-    for kind in ["Attribute", "Dimension", "Resource", "EnumValue", "Column"] {
-        let require_type = !matches!(kind, "EnumValue" | "Column");
-        for element in meta_info_children(child_obj_node, kind) {
-            if !meta_validate_check_child_element(report, element, kind, require_type) {
-                check_ok = false;
-            }
-            count += 1;
-            if report.stopped {
-                break;
-            }
-        }
-    }
-    if check_ok && count > 0 {
-        report.ok(format!(
-            "7. Child elements: {count} items checked (UUID, Name, Type)"
-        ));
-    } else if count == 0 {
-        report.ok("7. Child elements: none to check");
-    }
-}
-
-pub(crate) fn meta_validate_check_child_element(
-    report: &mut MetaValidationReporter,
-    node: roxmltree::Node<'_, '_>,
-    kind: &str,
-    require_type: bool,
-) -> bool {
-    let uuid = node.attribute("uuid").unwrap_or("");
-    if uuid.is_empty() {
-        report.error(format!("7. {kind} missing uuid"));
-        return false;
-    }
-    if !is_guid(uuid) {
-        report.error(format!("7. {kind} has invalid uuid '{uuid}'"));
-        return false;
-    }
-    let Some(props) = meta_info_child(node, "Properties") else {
-        report.error(format!("7. {kind} (uuid={uuid}) missing Properties"));
-        return false;
-    };
-    let name = meta_info_child_text(props, "Name").unwrap_or_default();
-    if name.is_empty() {
-        report.error(format!("7. {kind} (uuid={uuid}) missing or empty Name"));
-        return false;
-    }
-    if !is_1c_identifier(&name) {
-        report.error(format!("7. {kind} '{name}' has invalid identifier"));
-        return false;
-    }
-    if require_type {
-        let Some(type_el) = meta_info_child(props, "Type") else {
-            report.error(format!("7. {kind} '{name}' missing Type block"));
-            return false;
-        };
-        if meta_info_children(type_el, "Type").is_empty()
-            && meta_info_children(type_el, "TypeSet").is_empty()
-        {
-            report.error(format!(
-                "7. {kind} '{name}' Type block has no v8:Type or v8:TypeSet"
-            ));
-            return false;
-        }
-    }
-    true
-}
-
-pub(crate) fn meta_validate_check_reserved_attr_names(
-    report: &mut MetaValidationReporter,
-    child_obj_node: Option<roxmltree::Node<'_, '_>>,
-) {
-    let Some(child_obj_node) = child_obj_node else {
-        return;
-    };
-    let mut check_ok = true;
-    for attr_node in meta_info_children(child_obj_node, "Attribute") {
-        if let Some(name) = meta_info_child(attr_node, "Properties")
-            .and_then(|props| meta_info_child_text(props, "Name"))
-            .filter(|value| meta_validate_reserved_attr_names().contains(&value.as_str()))
-        {
-            report.warn(format!(
-                "7b. Attribute '{name}' conflicts with a standard attribute name"
-            ));
-            check_ok = false;
-        }
-    }
-    if check_ok {
-        report.ok("7b. Reserved attribute names: no conflicts");
-    }
-}
-
-pub(crate) fn meta_validate_check_uniqueness(
-    report: &mut MetaValidationReporter,
-    child_obj_node: Option<roxmltree::Node<'_, '_>>,
-) {
-    let Some(child_obj_node) = child_obj_node else {
-        return;
-    };
-    let mut check_ok = true;
-    for kind in [
-        "Attribute",
-        "TabularSection",
-        "Dimension",
-        "Resource",
-        "EnumValue",
-        "Column",
-        "URLTemplate",
-        "Operation",
-    ] {
-        if !meta_validate_names_unique(report, meta_info_children(child_obj_node, kind), kind) {
-            check_ok = false;
-        }
-    }
-    if check_ok {
-        report.ok("8. Name uniqueness: all names unique");
-    }
-}
-
-pub(crate) fn meta_validate_names_unique(
-    report: &mut MetaValidationReporter,
-    nodes: Vec<roxmltree::Node<'_, '_>>,
-    kind: &str,
-) -> bool {
-    let mut names = HashSet::<String>::new();
-    let mut ok = true;
-    for node in nodes {
-        let Some(name) = meta_info_child(node, "Properties")
-            .and_then(|props| meta_info_child_text(props, "Name"))
-            .filter(|value| !value.is_empty())
-        else {
-            continue;
-        };
-        if !names.insert(name.clone()) {
-            report.error(format!("8. Duplicate {kind} name: '{name}'"));
-            ok = false;
-        }
-    }
-    ok
-}
-
-pub(crate) fn meta_validate_check_tabular_sections(
-    report: &mut MetaValidationReporter,
-    child_obj_node: Option<roxmltree::Node<'_, '_>>,
-) {
-    let Some(child_obj_node) = child_obj_node else {
-        return;
-    };
-    let sections = meta_info_children(child_obj_node, "TabularSection");
-    if sections.is_empty() {
-        report.ok("9. TabularSections: none present");
-        return;
-    }
-    let mut check_ok = true;
-    for (index, section) in sections.iter().enumerate() {
-        let count = index + 1;
-        let uuid = section.attribute("uuid").unwrap_or("");
-        if uuid.is_empty() || !is_guid(uuid) {
-            report.error(format!(
-                "9. TabularSection #{count}: invalid or missing uuid"
-            ));
-            check_ok = false;
-        }
-        let props = meta_info_child(*section, "Properties");
-        let section_name = props
-            .and_then(|node| meta_info_child_text(node, "Name"))
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "(unnamed)".to_string());
-        if section_name == "(unnamed)" {
-            report.error(format!("9. TabularSection #{count}: missing or empty Name"));
-            check_ok = false;
-        }
-        if let Some(internal_info) = meta_info_child(*section, "InternalInfo") {
-            let generated = meta_info_children(internal_info, "GeneratedType");
-            if generated.len() < 2 {
-                report.warn(format!(
-                    "9. TabularSection '{section_name}': expected 2 GeneratedType, found {}",
-                    generated.len()
-                ));
-            }
-        }
-        if let Some(ts_child_obj) = meta_info_child(*section, "ChildObjects") {
-            let mut names = HashSet::<String>::new();
-            for attr in meta_info_children(ts_child_obj, "Attribute") {
-                if !meta_validate_check_child_element(
-                    report,
-                    attr,
-                    &format!("TabularSection '{section_name}'.Attribute"),
-                    true,
-                ) {
-                    check_ok = false;
-                }
-                if let Some(name) = meta_info_child(attr, "Properties")
-                    .and_then(|node| meta_info_child_text(node, "Name"))
-                    .filter(|value| !value.is_empty())
-                {
-                    if !names.insert(name.clone()) {
-                        report.error(format!(
-                            "9. Duplicate attribute '{name}' in TabularSection '{section_name}'"
-                        ));
-                        check_ok = false;
-                    }
-                }
-            }
-            if let Some(props) = props {
-                if let Some(std_attr) = meta_info_child(props, "StandardAttributes") {
-                    let has_line_number = meta_info_children(std_attr, "StandardAttribute")
-                        .iter()
-                        .any(|attr| attr.attribute("name") == Some("LineNumber"));
-                    if !has_line_number {
-                        report.warn(format!(
-                            "9. TabularSection '{section_name}': missing LineNumber StandardAttribute"
-                        ));
-                    }
-                }
-            }
-        }
-    }
-    if check_ok {
-        report.ok(format!(
-            "9. TabularSections: {} sections, structure valid",
-            sections.len()
-        ));
-    }
-}
-
-pub(crate) fn meta_validate_check_cross_properties(
-    report: &mut MetaValidationReporter,
-    md_type: &str,
-    props_node: Option<roxmltree::Node<'_, '_>>,
-    child_obj_node: Option<roxmltree::Node<'_, '_>>,
-    references_present: Option<bool>,
-    registrar_present: Option<bool>,
-) {
-    let Some(props_node) = props_node else {
-        return;
-    };
-    let mut check_ok = true;
-    let mut issues = 0usize;
-    if meta_info_child_text(props_node, "Hierarchical").as_deref() == Some("false") {
-        if let Some(hierarchy_type) =
-            meta_info_child_text(props_node, "HierarchyType").filter(|value| !value.is_empty())
-        {
-            report.warn(format!(
-                "10. HierarchyType='{hierarchy_type}' but Hierarchical=false"
-            ));
-            issues += 1;
-        }
-    }
-    if md_type == "CommonModule" {
-        let any_enabled = [
-            "Server",
-            "ClientManagedApplication",
-            "ClientOrdinaryApplication",
-            "ExternalConnection",
-            "ServerCall",
-            "Global",
-        ]
-        .iter()
-        .any(|name| meta_info_child_text(props_node, name).as_deref() == Some("true"));
-        if !any_enabled {
-            report.warn("10. CommonModule: no execution context enabled");
-            issues += 1;
-        }
-    }
-    if md_type == "EventSubscription" {
-        if meta_info_child_text(props_node, "Handler").is_none_or(|value| value.trim().is_empty()) {
-            report.error("10. EventSubscription: empty Handler");
-            check_ok = false;
-            issues += 1;
-        }
-        let has_source = meta_info_child(props_node, "Source")
-            .map(|node| !meta_info_children(node, "Type").is_empty())
-            .unwrap_or(false);
-        if !has_source {
-            report.warn("10. EventSubscription: no Source types specified");
-            issues += 1;
-        }
-    }
-    if md_type == "ScheduledJob"
-        && meta_info_child_text(props_node, "MethodName")
-            .is_none_or(|value| value.trim().is_empty())
-    {
-        report.error("10. ScheduledJob: empty MethodName");
-        check_ok = false;
-        issues += 1;
-    }
-    for (type_name, property, message) in [
-        (
-            "AccountingRegister",
-            "ChartOfAccounts",
-            "10. AccountingRegister: empty ChartOfAccounts",
-        ),
-        (
-            "CalculationRegister",
-            "ChartOfCalculationTypes",
-            "10. CalculationRegister: empty ChartOfCalculationTypes",
-        ),
-    ] {
-        if md_type == type_name
-            && meta_info_child_text(props_node, property)
-                .is_none_or(|value| value.trim().is_empty())
-        {
-            report.error(message);
-            check_ok = false;
-            issues += 1;
-        }
-    }
-    if md_type == "BusinessProcess"
-        && meta_info_child_text(props_node, "Task").is_none_or(|value| value.trim().is_empty())
-    {
-        report.warn("10. BusinessProcess: empty Task reference");
-        issues += 1;
-    }
-    if md_type == "CalculationRegister"
-        && meta_info_child_text(props_node, "ActionPeriod").as_deref() == Some("true")
-        && meta_info_child_text(props_node, "Schedule").is_none_or(|value| value.trim().is_empty())
-    {
-        report.warn(
-            "10. CalculationRegister: ActionPeriod=true but Schedule is empty — platform requires a schedule register",
-        );
-        issues += 1;
-    }
-    if md_type == "DocumentJournal" {
-        let has_registered = meta_info_child(props_node, "RegisteredDocuments")
-            .map(|node| !meta_info_children(node, "Type").is_empty())
-            .unwrap_or(false);
-        if !has_registered {
-            report.warn("10. DocumentJournal: no RegisteredDocuments specified");
-            issues += 1;
-        }
-    }
-    if md_type == "ChartOfAccounts" {
-        let max_ext_dim = meta_info_child_text(props_node, "MaxExtDimensionCount")
-            .and_then(|value| value.parse::<i64>().ok())
-            .unwrap_or(0);
-        if max_ext_dim > 0
-            && meta_info_child_text(props_node, "ExtDimensionTypes")
-                .is_none_or(|value| value.trim().is_empty())
-        {
-            report
-                .warn("10. ChartOfAccounts: MaxExtDimensionCount>0 but ExtDimensionTypes is empty");
-            issues += 1;
-        }
-    }
-    if matches!(
-        md_type,
-        "AccumulationRegister"
-            | "AccountingRegister"
-            | "CalculationRegister"
-            | "InformationRegister"
-    ) {
-        if let Some(child_obj_node) = child_obj_node {
-            let count = meta_info_children(child_obj_node, "Dimension").len()
-                + meta_info_children(child_obj_node, "Resource").len()
-                + meta_info_children(child_obj_node, "Attribute").len();
-            if count == 0 {
-                report.warn(format!(
-                    "10. {md_type}: no Dimensions, Resources, or Attributes — platform will reject"
-                ));
-                issues += 1;
-            }
-        }
-    }
-    if md_type == "Document" && references_present == Some(false) {
-        report.warn("10. A registered metadata reference could not be resolved");
-        issues += 1;
-    }
-    if registrar_present == Some(false) {
-        report.warn("10. No registrar relationship was found");
-        issues += 1;
-    }
-    if check_ok && issues == 0 {
-        report.ok("10. Cross-property consistency");
-    }
-}
-
-pub(crate) fn meta_validate_check_services(
-    report: &mut MetaValidationReporter,
-    md_type: &str,
-    child_obj_node: Option<roxmltree::Node<'_, '_>>,
-) {
-    let Some(child_obj_node) = child_obj_node else {
-        return;
-    };
-    if md_type == "HTTPService" {
-        let templates = meta_info_children(child_obj_node, "URLTemplate");
-        let mut check_ok = true;
-        let mut method_count = 0usize;
-        for template in &templates {
-            let props = meta_info_child(*template, "Properties");
-            let name = props
-                .and_then(|node| meta_info_child_text(node, "Name"))
-                .unwrap_or_else(|| "(unnamed)".to_string());
-            if props
-                .and_then(|node| meta_info_child_text(node, "Template"))
-                .is_none_or(|value| value.trim().is_empty())
-            {
-                report.error(format!(
-                    "11. HTTPService URLTemplate '{name}': empty Template"
-                ));
-                check_ok = false;
-            }
-            if let Some(child_objects) = meta_info_child(*template, "ChildObjects") {
-                for method in meta_info_children(child_objects, "Method") {
-                    method_count += 1;
-                    let props = meta_info_child(method, "Properties");
-                    let http_method =
-                        props.and_then(|node| meta_info_child_text(node, "HTTPMethod"));
-                    if let Some(http_method) = http_method.filter(|value| !value.is_empty()) {
-                        if !meta_validate_valid_http_methods().contains(&http_method.as_str()) {
-                            report.error(format!(
-                                "11. HTTPService URLTemplate '{name}': invalid HTTPMethod '{http_method}'"
-                            ));
-                            check_ok = false;
-                        }
-                    } else {
-                        report.error(format!(
-                            "11. HTTPService URLTemplate '{name}': Method missing HTTPMethod"
-                        ));
-                        check_ok = false;
-                    }
-                }
-            }
-        }
-        if check_ok {
-            report.ok(format!(
-                "11. HTTPService: {} URLTemplate(s), {method_count} method(s)",
-                templates.len()
-            ));
-        }
-    } else if md_type == "WebService" {
-        let operations = meta_info_children(child_obj_node, "Operation");
-        let mut check_ok = true;
-        let mut param_count = 0usize;
-        for operation in &operations {
-            let props = meta_info_child(*operation, "Properties");
-            let name = props
-                .and_then(|node| meta_info_child_text(node, "Name"))
-                .unwrap_or_else(|| "(unnamed)".to_string());
-            if props
-                .and_then(|node| meta_info_child_text(node, "XDTOReturningValueType"))
-                .is_none_or(|value| value.trim().is_empty())
-            {
-                report.warn(format!(
-                    "11. WebService Operation '{name}': no XDTOReturningValueType"
-                ));
-            }
-            if let Some(child_objects) = meta_info_child(*operation, "ChildObjects") {
-                for param in meta_info_children(child_objects, "Parameter") {
-                    param_count += 1;
-                    let direction = meta_info_child(param, "Properties")
-                        .and_then(|node| meta_info_child_text(node, "TransferDirection"));
-                    if let Some(direction) = direction.filter(|value| !value.is_empty()) {
-                        if !["In", "Out", "InOut"].contains(&direction.as_str()) {
-                            report.error(format!(
-                                "11. WebService Operation '{name}': Parameter has invalid TransferDirection '{direction}'"
-                            ));
-                            check_ok = false;
-                        }
-                    }
-                }
-            }
-        }
-        if check_ok {
-            report.ok(format!(
-                "11. WebService: {} operation(s), {param_count} parameter(s)",
-                operations.len()
-            ));
-        }
-    }
-}
-
-pub(crate) fn meta_validate_check_forbidden_properties(
-    report: &mut MetaValidationReporter,
-    md_type: &str,
-    props_node: Option<roxmltree::Node<'_, '_>>,
-) {
-    let Some(props_node) = props_node else {
-        return;
-    };
-    let Some(forbidden) = meta_validate_forbidden_properties(md_type) else {
-        return;
-    };
-    let mut check_ok = true;
-    for property in forbidden {
-        if meta_info_child(props_node, property).is_some() {
-            report.error(format!(
-                "12. Forbidden property '{property}' present in {md_type} (will fail on LoadConfigFromFiles)"
-            ));
-            check_ok = false;
-        }
-    }
-    if check_ok {
-        report.ok("12. Forbidden properties: none found");
-    }
-}
-
-pub(crate) fn meta_validate_check_method_reference(
-    report: &mut MetaValidationReporter,
-    md_type: &str,
-    _props_node: Option<roxmltree::Node<'_, '_>>,
-    status: Option<ValidationMethodReferenceStatus>,
-) {
-    let Some(status) = status else { return; };
-    match status {
-        ValidationMethodReferenceStatus::Valid => {
-            report.ok(format!("13. {md_type}: method reference resolved"));
-        }
-        ValidationMethodReferenceStatus::Invalid => {
-            report.error(format!("13. {md_type}: method reference is invalid"));
-        }
-        ValidationMethodReferenceStatus::TargetMissing => {
-            report.error(format!("13. {md_type}: referenced module is missing"));
-        }
-        ValidationMethodReferenceStatus::ImplementationMissing => {
-            report.warn(format!("13. {md_type}: referenced implementation is missing"));
-        }
-        ValidationMethodReferenceStatus::EntryPointMissing => {
-            report.warn(format!("13. {md_type}: referenced exported entry point is missing"));
-        }
-    }
-}
-
-pub(crate) fn meta_validate_check_document_journal_columns(
-    report: &mut MetaValidationReporter,
-    md_type: &str,
-    child_obj_node: Option<roxmltree::Node<'_, '_>>,
-) {
-    if md_type != "DocumentJournal" {
-        return;
-    }
-    let Some(child_obj_node) = child_obj_node else {
-        return;
-    };
-    let columns = meta_info_children(child_obj_node, "Column");
-    let mut check_ok = true;
-    let mut empty_ref_count = 0usize;
-    for column in &columns {
-        let props = meta_info_child(*column, "Properties");
-        let name = props
-            .and_then(|node| meta_info_child_text(node, "Name"))
-            .unwrap_or_else(|| "(unnamed)".to_string());
-        let has_items = props
-            .and_then(|node| meta_info_child(node, "References"))
-            .map(|node| !meta_info_children(node, "Item").is_empty())
-            .unwrap_or(false);
-        if !has_items {
-            report.error(format!(
-                "14. DocumentJournal Column '{name}': empty References (will fail on LoadConfigFromFiles)"
-            ));
-            check_ok = false;
-            empty_ref_count += 1;
-        }
-    }
-    if check_ok && !columns.is_empty() {
-        report.ok(format!(
-            "14. DocumentJournal Columns: {} column(s), all have References",
-            columns.len()
-        ));
-    } else if columns.is_empty() && empty_ref_count == 0 {
-        report.ok("14. DocumentJournal Columns: none");
-    }
-}
-
-pub(crate) fn meta_validate_bsl_has_export(content: &str, proc_name: &str) -> bool {
-    content.lines().any(|line| {
-        let trimmed = line.trim_start();
-        let starts = ["Procedure", "Function", "Процедура", "Функция"]
-            .iter()
-            .any(|prefix| trimmed.starts_with(prefix));
-        starts
-            && trimmed.contains(proc_name)
-            && (trimmed.contains(" Export") || trimmed.contains(" Экспорт"))
-    })
-}
-
-pub(crate) fn is_guid(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    value.len() == 36
-        && [8, 13, 18, 23].iter().all(|index| bytes[*index] == b'-')
-        && value
-            .chars()
-            .enumerate()
-            .all(|(index, ch)| [8, 13, 18, 23].contains(&index) || ch.is_ascii_hexdigit())
-}
-
-pub(crate) fn meta_validate_valid_types() -> &'static [&'static str] {
+pub(crate) fn meta_writer_valid_types() -> &'static [&'static str] {
     &[
         "Catalog",
         "Document",
@@ -7031,300 +5756,8 @@ pub(crate) fn meta_validate_valid_types() -> &'static [&'static str] {
     ]
 }
 
-pub(crate) fn meta_validate_generated_categories(md_type: &str) -> Option<&'static [&'static str]> {
-    match md_type {
-        "Catalog" | "Document" => Some(&["Object", "Ref", "Selection", "List", "Manager"]),
-        "Enum" => Some(&["Ref", "Manager", "List"]),
-        "Constant" => Some(&["Manager", "ValueManager", "ValueKey"]),
-        "InformationRegister" => Some(&[
-            "Record",
-            "Manager",
-            "Selection",
-            "List",
-            "RecordSet",
-            "RecordKey",
-            "RecordManager",
-        ]),
-        "AccumulationRegister" => Some(&[
-            "Record",
-            "Manager",
-            "Selection",
-            "List",
-            "RecordSet",
-            "RecordKey",
-        ]),
-        "AccountingRegister" => Some(&[
-            "Record",
-            "Manager",
-            "Selection",
-            "List",
-            "RecordSet",
-            "RecordKey",
-            "ExtDimensions",
-        ]),
-        "CalculationRegister" => Some(&[
-            "Record",
-            "Manager",
-            "Selection",
-            "List",
-            "RecordSet",
-            "RecordKey",
-            "Recalcs",
-        ]),
-        "ChartOfAccounts" => Some(&[
-            "Object",
-            "Ref",
-            "Selection",
-            "List",
-            "Manager",
-            "ExtDimensionTypes",
-            "ExtDimensionTypesRow",
-        ]),
-        "ChartOfCharacteristicTypes" => Some(&[
-            "Object",
-            "Ref",
-            "Selection",
-            "List",
-            "Manager",
-            "Characteristic",
-        ]),
-        "ChartOfCalculationTypes" => Some(&[
-            "Object",
-            "Ref",
-            "Selection",
-            "List",
-            "Manager",
-            "DisplacingCalculationTypes",
-            "DisplacingCalculationTypesRow",
-            "BaseCalculationTypes",
-            "BaseCalculationTypesRow",
-            "LeadingCalculationTypes",
-            "LeadingCalculationTypesRow",
-        ]),
-        "BusinessProcess" => Some(&[
-            "Object",
-            "Ref",
-            "Selection",
-            "List",
-            "Manager",
-            "RoutePointRef",
-        ]),
-        "Task" | "ExchangePlan" => Some(&["Object", "Ref", "Selection", "List", "Manager"]),
-        "DocumentJournal" => Some(&["Selection", "List", "Manager"]),
-        "Report" | "DataProcessor" => Some(&["Object", "Manager"]),
-        "ExternalReport" | "ExternalDataProcessor" => Some(&["Object"]),
-        "DefinedType" => Some(&["DefinedType"]),
-        _ => None,
-    }
-}
 
-pub(crate) fn meta_validate_types_without_internal_info() -> &'static [&'static str] {
-    &["CommonModule", "ScheduledJob", "EventSubscription"]
-}
-
-pub(crate) fn meta_validate_types_with_std_attrs() -> &'static [&'static str] {
-    &[
-        "Catalog",
-        "Document",
-        "Enum",
-        "InformationRegister",
-        "AccumulationRegister",
-        "AccountingRegister",
-        "CalculationRegister",
-        "ChartOfAccounts",
-        "ChartOfCharacteristicTypes",
-        "ChartOfCalculationTypes",
-        "BusinessProcess",
-        "Task",
-        "ExchangePlan",
-        "DocumentJournal",
-    ]
-}
-
-pub(crate) fn meta_validate_standard_attributes(md_type: &str) -> Option<&'static [&'static str]> {
-    match md_type {
-        "Catalog" => Some(&[
-            "PredefinedDataName",
-            "Predefined",
-            "Ref",
-            "DeletionMark",
-            "IsFolder",
-            "Owner",
-            "Parent",
-            "Description",
-            "Code",
-        ]),
-        "Document" => Some(&["Posted", "Ref", "DeletionMark", "Date", "Number"]),
-        "Enum" => Some(&["Order", "Ref"]),
-        "InformationRegister" => Some(&["Active", "LineNumber", "Recorder", "Period"]),
-        "AccumulationRegister" => {
-            Some(&["RecordType", "Active", "LineNumber", "Recorder", "Period"])
-        }
-        "AccountingRegister" => Some(&[
-            "Account",
-            "RecordType",
-            "Active",
-            "LineNumber",
-            "Recorder",
-            "Period",
-        ]),
-        "CalculationRegister" => Some(&[
-            "RegistrationPeriod",
-            "ReversingEntry",
-            "Active",
-            "EndOfBasePeriod",
-            "BegOfBasePeriod",
-            "EndOfActionPeriod",
-            "BegOfActionPeriod",
-            "ActionPeriod",
-            "CalculationType",
-            "LineNumber",
-            "Recorder",
-        ]),
-        "ChartOfAccounts" => Some(&[
-            "PredefinedDataName",
-            "Order",
-            "OffBalance",
-            "Type",
-            "Description",
-            "Code",
-            "Parent",
-            "Predefined",
-            "DeletionMark",
-            "Ref",
-        ]),
-        "ChartOfCharacteristicTypes" => Some(&[
-            "PredefinedDataName",
-            "Predefined",
-            "Ref",
-            "DeletionMark",
-            "Description",
-            "Code",
-            "Parent",
-            "IsFolder",
-            "ValueType",
-        ]),
-        "ChartOfCalculationTypes" => Some(&[
-            "PredefinedDataName",
-            "Predefined",
-            "Ref",
-            "DeletionMark",
-            "ActionPeriodIsBasic",
-            "Description",
-            "Code",
-        ]),
-        "BusinessProcess" => Some(&[
-            "Ref",
-            "DeletionMark",
-            "Date",
-            "Number",
-            "Started",
-            "Completed",
-            "HeadTask",
-        ]),
-        "Task" => Some(&[
-            "Ref",
-            "DeletionMark",
-            "Date",
-            "Number",
-            "Executed",
-            "Description",
-            "RoutePoint",
-            "BusinessProcess",
-        ]),
-        "ExchangePlan" => Some(&[
-            "Ref",
-            "DeletionMark",
-            "Code",
-            "Description",
-            "ThisNode",
-            "SentNo",
-            "ReceivedNo",
-        ]),
-        "DocumentJournal" => Some(&["Type", "Ref", "Date", "Posted", "DeletionMark", "Number"]),
-        _ => None,
-    }
-}
-
-pub(crate) fn meta_validate_dynamic_standard_attr(md_type: &str, name: &str) -> bool {
-    (md_type == "AccountingRegister"
-        && (name == "PeriodAdjustment"
-            || name
-                .strip_prefix("ExtDimension")
-                .is_some_and(|rest| rest.chars().all(|ch| ch.is_ascii_digit()))
-            || name
-                .strip_prefix("ExtDimensionType")
-                .is_some_and(|rest| rest.chars().all(|ch| ch.is_ascii_digit()))))
-        || (md_type == "CalculationRegister"
-            && matches!(
-                name,
-                "ActionPeriod"
-                    | "BegOfActionPeriod"
-                    | "EndOfActionPeriod"
-                    | "BegOfBasePeriod"
-                    | "EndOfBasePeriod"
-            ))
-}
-
-pub(crate) fn meta_validate_child_rules(md_type: &str) -> Option<&'static [&'static str]> {
-    match md_type {
-        "Catalog"
-        | "Document"
-        | "ExchangePlan"
-        | "ChartOfCharacteristicTypes"
-        | "ChartOfCalculationTypes"
-        | "BusinessProcess"
-        | "Report"
-        | "DataProcessor"
-        | "ExternalReport"
-        | "ExternalDataProcessor" => {
-            Some(&["Attribute", "TabularSection", "Form", "Template", "Command"])
-        }
-        "ChartOfAccounts" => Some(&[
-            "Attribute",
-            "TabularSection",
-            "Form",
-            "Template",
-            "Command",
-            "AccountingFlag",
-            "ExtDimensionAccountingFlag",
-        ]),
-        "Task" => Some(&[
-            "Attribute",
-            "TabularSection",
-            "Form",
-            "Template",
-            "Command",
-            "AddressingAttribute",
-        ]),
-        "Enum" => Some(&["EnumValue", "Form", "Template", "Command"]),
-        "InformationRegister" | "AccumulationRegister" | "AccountingRegister" => Some(&[
-            "Dimension",
-            "Resource",
-            "Attribute",
-            "Form",
-            "Template",
-            "Command",
-        ]),
-        "CalculationRegister" => Some(&[
-            "Dimension",
-            "Resource",
-            "Attribute",
-            "Form",
-            "Template",
-            "Command",
-            "Recalculation",
-        ]),
-        "DocumentJournal" => Some(&["Column", "Form", "Template", "Command"]),
-        "HTTPService" => Some(&["URLTemplate"]),
-        "WebService" => Some(&["Operation"]),
-        "Constant" => Some(&["Form"]),
-        "DefinedType" | "CommonModule" | "ScheduledJob" | "EventSubscription" => Some(&[]),
-        _ => None,
-    }
-}
-
-pub(crate) fn meta_validate_property_values() -> &'static [(&'static str, &'static [&'static str])]
+pub(crate) fn meta_writer_property_values() -> &'static [(&'static str, &'static [&'static str])]
 {
     &[
         ("CodeType", &["String", "Number"]),
@@ -7442,63 +5875,7 @@ pub(crate) fn meta_validate_property_values() -> &'static [(&'static str, &'stat
     ]
 }
 
-pub(crate) fn meta_validate_reserved_attr_names() -> &'static [&'static str] {
-    &[
-        "Ref",
-        "DeletionMark",
-        "Code",
-        "Description",
-        "Date",
-        "Number",
-        "Posted",
-        "Parent",
-        "Owner",
-        "IsFolder",
-        "Predefined",
-        "PredefinedDataName",
-        "Recorder",
-        "Period",
-        "LineNumber",
-        "Active",
-        "Order",
-        "Type",
-        "OffBalance",
-        "Started",
-        "Completed",
-        "HeadTask",
-        "Executed",
-        "RoutePoint",
-        "BusinessProcess",
-        "ThisNode",
-        "SentNo",
-        "ReceivedNo",
-        "CalculationType",
-        "RegistrationPeriod",
-        "ReversingEntry",
-        "Account",
-        "ValueType",
-        "ActionPeriodIsBasic",
-    ]
-}
 
-pub(crate) fn meta_validate_valid_http_methods() -> &'static [&'static str] {
-    &[
-        "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "MERGE", "CONNECT",
-    ]
-}
-
-pub(crate) fn meta_validate_forbidden_properties(md_type: &str) -> Option<&'static [&'static str]> {
-    match md_type {
-        "ChartOfCharacteristicTypes" => Some(&["CodeType"]),
-        "ChartOfAccounts" => Some(&["Autonumbering", "Hierarchical"]),
-        "ChartOfCalculationTypes" => Some(&["CheckUnique", "Autonumbering"]),
-        "ExchangePlan" => Some(&["CodeType", "CheckUnique", "Autonumbering"]),
-        _ => None,
-    }
-}
-
-/// The public `meta.info` path is a semantic navigation query.  It never
-/// renders XML-derived text and never synthesizes source identity from a path.
 pub(crate) fn resolve_meta_info_path(mut object_path: PathBuf) -> Result<PathBuf, String> {
     if object_path.is_dir() {
         let dir_name = object_path
@@ -9756,7 +8133,7 @@ pub(crate) fn remove_metadata_object(
             )
             .map_err(meta_remove_stdout_error)?;
             for replacement in &subsystem_replacements {
-                validate_metadata_owner_shape_8_3_27(&replacement.path, context, "meta.remove")
+                validate_semantic_metadata_artifact(&replacement.path, context, "meta.remove")
                     .map_err(meta_remove_stdout_error)?;
                 for _ in 0..replacement.removed_references {
                     stdout.push_str(&format!(
@@ -9965,7 +8342,7 @@ pub(crate) fn remove_metadata_object(
                         "meta.remove",
                     )?;
                     for path in &validation_subsystem_paths {
-                        validate_metadata_owner_shape_8_3_27(path, context, "meta.remove")?;
+                        validate_semantic_metadata_artifact(path, context, "meta.remove")?;
                     }
                     validate_meta_remove_post_state(
                         &validation_config_xml,
@@ -10500,7 +8877,7 @@ pub(crate) fn meta_remove_type_plural(obj_type: &str) -> Option<&'static str> {
     if !meta_remove_supported_types().contains(&obj_type) {
         return None;
     }
-    metadata_kind(obj_type).map(|kind| kind.directory)
+    task8_metadata_kind_directory(obj_type)
 }
 
 pub(crate) fn meta_remove_type_ref_names(obj_type: &str) -> Option<&'static [&'static str]> {
@@ -10579,7 +8956,7 @@ pub(crate) fn meta_compile_type_plural(obj_type: &str) -> Option<&'static str> {
     if !META_COMPILE_SUPPORTED_TYPES.contains(&obj_type) {
         return None;
     }
-    metadata_kind(obj_type).map(|kind| kind.directory)
+    task8_metadata_kind_directory(obj_type)
 }
 
 pub(crate) fn meta_compile_uses_object_subdir(obj_type: &str) -> bool {
@@ -10736,7 +9113,7 @@ fn meta_compile_event_subscription_dependencies(
                     _ => continue,
                 };
                 let Some(source_directory) =
-                    metadata_kind(source_object_type).map(|kind| kind.directory)
+                    task8_metadata_kind_directory(source_object_type)
                 else {
                     continue;
                 };
@@ -11042,13 +9419,7 @@ fn require_meta_configuration_owner_validation(
     context: &WorkspaceContext,
     operation: &str,
 ) -> Result<(), String> {
-    validate_cf_owner_path(config_path, context).map_err(|detail| {
-        format!(
-            "{operation} Configuration owner validation failed for {}: {}",
-            config_path.display(),
-            detail.trim()
-        )
-    })
+    validate_semantic_metadata_artifact(config_path, context, operation)
 }
 
 fn validate_meta_compile_post_state(
@@ -11059,12 +9430,7 @@ fn validate_meta_compile_post_state(
         if path.extension().and_then(|value| value.to_str()) != Some("xml") {
             continue;
         }
-        let xml = read_utf8_sig(path)?;
-        let document = Document::parse(xml.trim_start_matches('\u{feff}'))
-            .map_err(|error| format!("XML parse error in {}: {error}", path.display()))?;
-        if document.root_element().tag_name().name() == "MetaDataObject" {
-            validate_metadata_owner_shape_8_3_27(path, context, "meta.compile")?;
-        }
+        validate_semantic_metadata_artifact(path, context, "meta.compile")?;
     }
     Ok(())
 }
@@ -11756,7 +10122,7 @@ fn validate_meta_8_3_27_property_value(
     property_name: &str,
     raw_value: &str,
 ) -> Result<(), String> {
-    let Some((_, allowed_values)) = meta_validate_property_values()
+    let Some((_, allowed_values)) = meta_writer_property_values()
         .iter()
         .find(|(known_property, _)| *known_property == property_name)
     else {
@@ -11954,14 +10320,14 @@ fn validate_meta_8_3_27_boolean_property_value(
     }
 }
 
-pub(crate) fn validate_metadata_8_3_27_boolean_contract(
+fn validate_generated_metadata_boolean_contract(
     xml_text: &str,
     context: &str,
 ) -> Result<(), String> {
     let document = Document::parse(xml_text.trim_start_matches('\u{feff}'))
         .map_err(|error| format!("XML parse error: {error}"))?;
     let root_object = meta_edit_object_node(&document)?;
-    if !meta_validate_valid_types().contains(&root_object.tag_name().name()) {
+    if !meta_writer_valid_types().contains(&root_object.tag_name().name()) {
         return Ok(());
     }
 
@@ -11993,14 +10359,14 @@ pub(crate) fn validate_metadata_8_3_27_boolean_contract(
     Ok(())
 }
 
-pub(crate) fn validate_metadata_8_3_27_enum_contract(
+fn validate_generated_metadata_enum_contract(
     xml_text: &str,
     context: &str,
 ) -> Result<(), String> {
     let document = Document::parse(xml_text.trim_start_matches('\u{feff}'))
         .map_err(|error| format!("XML parse error: {error}"))?;
     let root_object = meta_edit_object_node(&document)?;
-    if !meta_validate_valid_types().contains(&root_object.tag_name().name()) {
+    if !meta_writer_valid_types().contains(&root_object.tag_name().name()) {
         return Ok(());
     }
 
@@ -12011,7 +10377,7 @@ pub(crate) fn validate_metadata_8_3_27_enum_contract(
         let Some(properties) = meta_info_child(object, "Properties") else {
             continue;
         };
-        for (property_name, allowed) in meta_validate_property_values() {
+        for (property_name, allowed) in meta_writer_property_values() {
             let Some(value) =
                 meta_info_child_text(properties, property_name).filter(|value| !value.is_empty())
             else {
@@ -12030,33 +10396,13 @@ pub(crate) fn validate_metadata_8_3_27_enum_contract(
     Ok(())
 }
 
-pub(crate) fn validate_metadata_owner_shape_8_3_27(
+pub(crate) fn validate_semantic_metadata_artifact(
     object_path: &Path,
     workspace: &WorkspaceContext,
     operation: &str,
 ) -> Result<(), String> {
-    let xml_text = read_utf8_sig(object_path)?;
-    let document = Document::parse(xml_text.trim_start_matches('\u{feff}'))
-        .map_err(|error| format!("XML parse error: {error}"))?;
-    let root_object = meta_edit_object_node(&document)?;
-    match root_object.tag_name().name() {
-        "Configuration" => return validate_cf_owner_path(object_path, workspace),
-        "Subsystem" => return validate_subsystem_owner_path(object_path, workspace),
-        _ => {}
-    }
-    validate_metadata_8_3_27_boolean_contract(&xml_text, operation)?;
-    validate_metadata_8_3_27_enum_contract(&xml_text, operation)?;
-
-    let options = MetaValidationOptions {
-        detailed: true,
-        max_errors: 30,
-    };
-    let run = meta_validate_one_with_scope(
-        object_path.to_path_buf(),
-        &options,
-        workspace,
-        MetaValidationScope::PostWriteLocal,
-    )?;
+    let options = MetaValidationOptions { detailed: true, max_errors: 30 };
+    let run = meta_validate_one(object_path.to_path_buf(), &options, workspace)?;
     if run.ok {
         Ok(())
     } else {
@@ -16150,7 +14496,7 @@ pub(crate) fn register_compiled_meta_in_configuration(
     child_tag: &str,
     obj_name: &str,
 ) -> Result<Option<String>, String> {
-    metadata_kind(child_tag).ok_or_else(|| format!("Unknown type '{child_tag}'"))?;
+    task8_metadata_kind(child_tag).ok_or_else(|| format!("Unknown type '{child_tag}'"))?;
     let config_xml_path = output_dir.join("Configuration.xml");
     let mut transaction = CompileTransaction::new();
     let status = transaction.register_canonical_child(&config_xml_path, child_tag, obj_name)?;
@@ -16226,7 +14572,7 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
             xml_text = xml_text.trim_start_matches('\u{feff}').to_string();
         }
         let (object_type, object_name) = meta_edit_object_identity(&xml_text)?;
-        validate_metadata_8_3_27_enum_contract(&xml_text, "meta.edit")?;
+        validate_generated_metadata_enum_contract(&xml_text, "meta.edit")?;
 
         let mut counts = MetaEditCounts::default();
         let mut info_lines = vec![format!("[INFO] Object: {object_type}.{object_name}")];
@@ -16298,7 +14644,7 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
 
         Document::parse(xml_text.trim_start_matches('\u{feff}'))
             .map_err(|err| format!("XML parse error after meta-edit: {err}"))?;
-        validate_metadata_8_3_27_boolean_contract(&xml_text, "meta.edit")?;
+        validate_generated_metadata_boolean_contract(&xml_text, "meta.edit")?;
         let serialized_bytes = meta_edit_preserve_source_format(&xml_text, source_format);
         let changed = serialized_bytes != original_bytes;
         let mut warnings = Vec::new();
@@ -16311,9 +14657,11 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
             let validation_path = object_path.clone();
             warnings = transaction
                 .commit_with_post_validation(move || {
-                    let published = read_utf8_sig(&validation_path)?;
-                    validate_metadata_8_3_27_boolean_contract(&published, "meta.edit")?;
-                    validate_metadata_8_3_27_enum_contract(&published, "meta.edit")
+                    validate_semantic_metadata_artifact(
+                        &validation_path,
+                        context,
+                        "meta.edit",
+                    )
                 })?
                 .cleanup_warnings;
             info_lines.push(format!("[INFO] Saved: {}", object_path.display()));

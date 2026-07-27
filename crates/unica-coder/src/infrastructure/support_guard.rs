@@ -5,12 +5,13 @@ use crate::application::ports::SupportGuardCheck;
 use crate::application::{AdapterOutcome, ToolHandler, ToolSpec};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::common::{absolutize, path_arg, required_string};
-use crate::infrastructure::native_operations::{meta, template};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use unica_application::{GuardEnforcement, OperationalPolicyDecision, OperationalPolicyService};
 use unica_format_core::ports::{
-    AuthorabilityRequest, AuthorabilityRequirement, FormatDiagnostic, FormatDiagnosticCode,
+    AuthorabilityRequest, AuthorabilityRequirement, AuthorabilityResult, FormatDiagnostic,
+    FormatDiagnosticCode, FormatDiagnosticDetail, ObjectKindSelector, OperationalSourceSession,
+    OwnerResolutionMode, SupportState,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,36 +25,11 @@ enum SupportGuardMode {
 pub(crate) struct SupportGuardViolation {
     pub code: &'static str,
     pub reason: String,
-    pub target_path: PathBuf,
-    pub config_dir: PathBuf,
-    pub support_state_path: PathBuf,
-}
-
-fn support_guard_violation_with_context(
-    target_path: &Path,
-    requirement: SupportGuardRequirement,
-    context: &WorkspaceContext,
-) -> Option<SupportGuardViolation> {
-    let target_path = target_path.to_path_buf();
-    let session = unica_adapter_platform_xml::PlatformXmlAdapterFactory::new()
-        .capture_unscoped_source(
-            &target_path,
-            &context.workspace_root,
-            unica_format_core::ports::OwnerResolutionMode::Existing,
-        );
-    support_guard_violation_for_session(
-        session,
-        requirement,
-        target_path,
-        context.workspace_root.clone(),
-    )
 }
 
 fn support_guard_violation_for_session(
     session: unica_format_core::ports::OperationalSourceSession,
     requirement: SupportGuardRequirement,
-    target_path: PathBuf,
-    fallback_root: PathBuf,
 ) -> Option<SupportGuardViolation> {
     let port = unica_adapter_platform_xml::PlatformXmlAdapterFactory::new().authorability_port();
     let request = AuthorabilityRequest::new(
@@ -71,29 +47,26 @@ fn support_guard_violation_for_session(
                 reason:
                     "состояние поддержки не удалось прочитать — правки не подтверждены"
                         .to_string(),
-                target_path,
-                config_dir: fallback_root.clone(),
-                support_state_path: fallback_root,
             })
         }
     };
-    result.into_violation().map(|violation| {
-        let diagnostic = violation.into_diagnostic();
-        let code = match diagnostic.code() {
-            FormatDiagnosticCode::SupportCapabilityDisabled => "capability-off",
-            FormatDiagnosticCode::SupportRemovalRequired => "not-removed",
-            FormatDiagnosticCode::SupportLocked => "locked",
-            _ => "support-state-unreadable",
-        };
-        let reason = public_support_diagnostic_message(&diagnostic).to_string();
-        SupportGuardViolation {
-            code,
-            reason,
-            target_path,
-            config_dir: fallback_root.clone(),
-            support_state_path: fallback_root,
+    match result {
+        AuthorabilityResult::Allowed(_) => None,
+        AuthorabilityResult::Denied(denial) => {
+            let diagnostic = denial.diagnostic();
+            let code = match diagnostic.code() {
+                FormatDiagnosticCode::SupportCapabilityDisabled => "capability-off",
+                FormatDiagnosticCode::SupportRemovalRequired => "not-removed",
+                FormatDiagnosticCode::SupportLocked => "locked",
+                _ => "support-state-unreadable",
+            };
+            let reason = public_support_diagnostic_message(diagnostic).to_string();
+            Some(SupportGuardViolation {
+                code,
+                reason,
+            })
         }
-    })
+    }
 }
 
 fn public_support_diagnostic_message(diagnostic: &FormatDiagnostic) -> &'static str {
@@ -126,15 +99,7 @@ pub(crate) fn support_guard_violation(
             &authorized_root,
             unica_format_core::ports::OwnerResolutionMode::Existing,
         );
-    support_guard_violation_for_session(
-        session,
-        requirement,
-        target_path.clone(),
-        target_path
-            .parent()
-            .unwrap_or_else(|| Path::new(""))
-            .to_path_buf(),
-    )
+    support_guard_violation_for_session(session, requirement)
 }
 
 pub(crate) fn evaluate_support_guard(
@@ -142,14 +107,15 @@ pub(crate) fn evaluate_support_guard(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<SupportGuardCheck, String> {
-    let Some((target_path, requirement)) = support_guard_target(spec, args, context) else {
-        return Ok(SupportGuardCheck::Allow);
-    };
-    let Some(violation) = support_guard_violation_with_context(&target_path, requirement, context)
+    let Some((session, policy_root, requirement)) =
+        support_guard_session(spec, args, context)
     else {
         return Ok(SupportGuardCheck::Allow);
     };
-    let enforcement = match support_guard_mode(&violation.config_dir, context) {
+    let Some(violation) = support_guard_violation_for_session(session, requirement) else {
+        return Ok(SupportGuardCheck::Allow);
+    };
+    let enforcement = match support_guard_mode(&policy_root, context) {
         SupportGuardMode::Off => GuardEnforcement::Off,
         SupportGuardMode::Warn => GuardEnforcement::Warn,
         SupportGuardMode::Deny => GuardEnforcement::Deny,
@@ -161,10 +127,16 @@ pub(crate) fn evaluate_support_guard(
             "locked" => FormatDiagnosticCode::SupportLocked,
             _ => FormatDiagnosticCode::SupportStateUnreadable,
         },
-        violation.reason.clone(),
-    );
+        FormatDiagnosticDetail::Support(match violation.code {
+            "capability-off" => SupportState::ConfigurationReadOnly,
+            "not-removed" => SupportState::Absent,
+            "locked" => SupportState::Locked,
+            _ => SupportState::Unreadable,
+        }),
+    )
+    .map_err(|error| error.to_string())?;
     Ok(
-        match OperationalPolicyService::decide_authorability(Some(diagnostic), enforcement) {
+        match OperationalPolicyService::decide_authorability(diagnostic, enforcement) {
             OperationalPolicyDecision::Allow => SupportGuardCheck::Allow,
             OperationalPolicyDecision::Warn(_) => SupportGuardCheck::Warn(format!(
                 "[support guard] ПРЕДУПРЕЖДЕНИЕ: {}",
@@ -177,32 +149,68 @@ pub(crate) fn evaluate_support_guard(
     )
 }
 
-fn support_guard_target(
+fn support_guard_session(
     spec: ToolSpec,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Option<(PathBuf, SupportGuardRequirement)> {
+) -> Option<(OperationalSourceSession, PathBuf, SupportGuardRequirement)> {
     let ToolHandler::NativeOperation { operation, .. } = spec.handler else {
         return None;
     };
-    support_guard_target_for_operation(operation, args, context)
-}
-
-pub(crate) fn support_guard_target_for_operation(
-    operation: &str,
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> Option<(PathBuf, SupportGuardRequirement)> {
     let policy = native_operation_descriptor(operation)?.support_guard?;
     match policy {
         SupportGuardPolicy::PathArgs { names, requirement } => {
-            support_guard_path_arg(args, context, names, requirement)
+            let target = support_guard_path_arg(args, context, names)?;
+            let policy_root = target
+                .parent()
+                .unwrap_or_else(|| Path::new(""))
+                .to_path_buf();
+            let session = unica_adapter_platform_xml::PlatformXmlAdapterFactory::new()
+                .capture_unscoped_source(
+                    &target,
+                    &context.workspace_root,
+                    OwnerResolutionMode::Existing,
+                );
+            Some((session, policy_root, requirement))
         }
         SupportGuardPolicy::MetaRemove { requirement } => {
-            support_guard_meta_remove_target(args, context).map(|path| (path, requirement))
+            let config_dir = absolutize(
+                path_arg(args, &["configDir", "ConfigDir"])?,
+                &context.cwd,
+            );
+            let object = required_string(args, &["object", "Object"], "Object").ok()?;
+            let (selector, object_name) = object.split_once('.')?;
+            let selector = ObjectKindSelector::new(selector).ok()?;
+            let session = unica_adapter_platform_xml::PlatformXmlAdapterFactory::new()
+                .capture_object_source(
+                    &config_dir,
+                    &selector,
+                    object_name,
+                    &context.workspace_root,
+                    OwnerResolutionMode::Existing,
+                );
+            Some((session, config_dir, requirement))
         }
         SupportGuardPolicy::ObjectName { requirement } => {
-            support_guard_object_name_target(args, context).map(|path| (path, requirement))
+            let object_name = required_string(
+                args,
+                &["objectName", "ObjectName", "processorName", "ProcessorName"],
+                "ObjectName",
+            )
+            .ok()?;
+            let source_root = absolutize(
+                path_arg(args, &["srcDir", "SrcDir"])
+                    .unwrap_or_else(|| PathBuf::from("src")),
+                &context.cwd,
+            );
+            let session = unica_adapter_platform_xml::PlatformXmlAdapterFactory::new()
+                .capture_named_object_source(
+                    &source_root,
+                    object_name,
+                    &context.workspace_root,
+                    OwnerResolutionMode::Existing,
+                );
+            Some((session, source_root, requirement))
         }
     }
 }
@@ -211,49 +219,8 @@ fn support_guard_path_arg(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
     names: &[&str],
-    requirement: SupportGuardRequirement,
-) -> Option<(PathBuf, SupportGuardRequirement)> {
-    path_arg(args, names).map(|path| (absolutize(path, &context.cwd), requirement))
-}
-
-fn support_guard_meta_remove_target(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
 ) -> Option<PathBuf> {
-    let config_dir = path_arg(args, &["configDir", "ConfigDir"])?;
-    let object = required_string(args, &["object", "Object"], "Object").ok()?;
-    let (object_type, object_name) = object.split_once('.')?;
-    let type_dir = meta::meta_remove_type_plural(object_type)?;
-    Some(
-        absolutize(config_dir, &context.cwd)
-            .join(type_dir)
-            .join(format!("{object_name}.xml")),
-    )
-}
-
-fn support_guard_object_name_target(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> Option<PathBuf> {
-    let object_name = required_string(
-        args,
-        &["objectName", "ObjectName", "processorName", "ProcessorName"],
-        "ObjectName",
-    )
-    .ok()?;
-    let src_dir = path_arg(args, &["srcDir", "SrcDir"]).unwrap_or_else(|| PathBuf::from("src"));
-    let src_dir = absolutize(src_dir, &context.cwd);
-    let direct = src_dir.join(format!("{object_name}.xml"));
-    if direct.exists() {
-        return Some(direct);
-    }
-    for folder in template::template_add_object_type_folders() {
-        let candidate = src_dir.join(folder).join(format!("{object_name}.xml"));
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-    Some(direct)
+    path_arg(args, names).map(|path| absolutize(path, &context.cwd))
 }
 
 fn support_guard_mode(config_dir: &Path, context: &WorkspaceContext) -> SupportGuardMode {
@@ -406,7 +373,6 @@ mod tests {
     use crate::application::{SupportGuardRequirement, ToolHandler, ToolSpec};
     use crate::domain::cache::CacheAccess;
     use std::fs;
-    use std::path::PathBuf;
 
     #[test]
     fn unreadable_support_state_block_does_not_claim_vendor_lock() {
@@ -424,9 +390,6 @@ mod tests {
             &SupportGuardViolation {
                 code: "support-state-unreadable",
                 reason: "не удалось прочитать состояние поддержки".to_string(),
-                target_path: PathBuf::from("/workspace/src/Documents/Shipment.xml"),
-                config_dir: PathBuf::from("/workspace/src"),
-                support_state_path: PathBuf::from("/workspace/src/Ext/ParentConfigurations.bin"),
             },
             crate::application::SupportGuardRequirement::Editable,
         );
@@ -457,8 +420,11 @@ mod tests {
     fn public_support_message_ignores_adapter_free_form_text() {
         let diagnostic = unica_format_core::ports::FormatDiagnostic::new(
             unica_format_core::ports::FormatDiagnosticCode::SupportLocked,
-            r"/private/Configuration.xml C:\private MetaDataObject",
-        );
+            unica_format_core::ports::FormatDiagnosticDetail::Support(
+                unica_format_core::ports::SupportState::Locked,
+            ),
+        )
+        .unwrap();
 
         let public = public_support_diagnostic_message(&diagnostic);
 

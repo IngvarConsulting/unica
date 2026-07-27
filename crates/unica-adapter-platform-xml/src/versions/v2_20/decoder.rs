@@ -96,6 +96,7 @@ fn decode_with_context(
     descriptor: &SourceDescriptor,
     context: &mut DecodeContext,
 ) -> Result<PlatformXmlNativeSnapshot, SourceAdapterError> {
+    provider.prepare_navigation_snapshot()?;
     if descriptor.family != SourceFamily::PlatformXml
         || descriptor.format_version.to_string() != "2.20"
     {
@@ -3206,7 +3207,10 @@ mod tests {
             .unwrap();
         }
         let xml = metadata_document(&format!("<ChildObjects>{children}</ChildObjects>"));
-        assert!(xml.len() < super::super::provider::MAX_CAPTURED_FILE_BYTES);
+        assert!(
+            (xml.len() as u64)
+                < crate::safe_root::ArtifactReadLimit::Descriptor.bytes()
+        );
         let fixture = fixture("Shipment.xml", &[("Shipment.xml", xml)]);
         let navigation = crate::versions::v2_20::PlatformXmlReadAdapter::new()
             .inspect_provider(&fixture.provider, &fixture.descriptor)
@@ -3346,7 +3350,7 @@ mod tests {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, content).unwrap();
         }
-        let provider = PlatformXmlProvider::open(&root).unwrap();
+        let provider = PlatformXmlProvider::capture(root.join(root_key), &root).unwrap();
         let descriptor = SourceDescriptor {
             source_id: SourceId::new("workspace:main").unwrap(),
             family: SourceFamily::PlatformXml,

@@ -5,7 +5,9 @@ use crate::application::{
 use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
-use crate::infrastructure::metadata_kinds::{metadata_kind, metadata_kind_by_directory};
+use crate::infrastructure::platform_xml_owner::{
+    task8_metadata_kind, task8_metadata_kind_by_directory, task8_metadata_kind_tag,
+};
 use crate::infrastructure::platform::filesystem::path_lock_identity;
 use crate::infrastructure::platform::{
     ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedOutput,
@@ -2636,9 +2638,9 @@ fn split_profile_name(raw: &str) -> (Option<String>, String) {
     let Some((prefix, name)) = trimmed.split_once('.') else {
         return (None, trimmed.to_string());
     };
-    let category = metadata_kind(prefix)
-        .or_else(|| metadata_kind_by_directory(prefix))
-        .map(|kind| kind.tag)
+    let category = task8_metadata_kind(prefix)
+        .or_else(|| task8_metadata_kind_by_directory(prefix))
+        .and_then(task8_metadata_kind_tag)
         .unwrap_or_else(|| match prefix {
             "Документ" => "Document",
             "Справочник" => "Catalog",
@@ -4246,7 +4248,9 @@ mod tests {
     use super::*;
     use crate::application::UnicaApplication;
     use crate::infrastructure::platform::testing;
-    use crate::infrastructure::metadata_kinds::METADATA_KINDS;
+    use crate::infrastructure::platform_xml_owner::{
+        task8_metadata_kind_directory, task8_metadata_kind_tags,
+    };
     use crate::infrastructure::workspace_index::{IndexBackgroundJob, IndexCommand, IndexOutput};
     use rusqlite::Connection;
     use serde_json::json;
@@ -4707,18 +4711,19 @@ mod tests {
 
     #[test]
     fn metadata_profile_selector_normalizes_every_registry_tag_and_directory() {
-        for kind in METADATA_KINDS {
-            let tag_selector = format!("{}.ObjectName", kind.tag);
+        for tag in task8_metadata_kind_tags() {
+            let directory = task8_metadata_kind_directory(tag).unwrap();
+            let tag_selector = format!("{tag}.ObjectName");
             assert_eq!(
                 split_profile_name(&tag_selector),
-                (Some(kind.tag.to_string()), "ObjectName".to_string()),
+                (Some(tag.to_string()), "ObjectName".to_string()),
                 "canonical tag selector must use the registry: {tag_selector}"
             );
 
-            let directory_selector = format!("{}.ObjectName", kind.directory);
+            let directory_selector = format!("{directory}.ObjectName");
             assert_eq!(
                 split_profile_name(&directory_selector),
-                (Some(kind.tag.to_string()), "ObjectName".to_string()),
+                (Some(tag.to_string()), "ObjectName".to_string()),
                 "plural directory selector must use the registry: {directory_selector}"
             );
         }
@@ -4759,16 +4764,17 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        for kind in METADATA_KINDS {
+        for tag in task8_metadata_kind_tags() {
+            let directory = task8_metadata_kind_directory(tag).unwrap();
             assert!(
-                !local_match_patterns.contains(&format!("\"{}\"", kind.tag)),
+                !local_match_patterns.contains(&format!("\"{tag}\"")),
                 "{} must be resolved through the shared registry",
-                kind.tag
+                tag
             );
             assert!(
-                !local_match_patterns.contains(&format!("\"{}\"", kind.directory)),
+                !local_match_patterns.contains(&format!("\"{directory}\"")),
                 "{} must be resolved through the shared registry",
-                kind.directory
+                directory
             );
         }
     }

@@ -1,6 +1,5 @@
 use std::{
     collections::{BTreeSet, HashSet},
-    fs,
     path::{Path, PathBuf},
 };
 
@@ -8,9 +7,9 @@ use roxmltree::Node;
 use unica_format_core::{
     navigation::Authorability,
     ports::{
-        AuthorabilityRequirement, AuthorabilityResult, AuthorabilityViolation,
-        CompatibilityIssue, CompatibilityIssueKind, CompatibilityResult, FormatDiagnostic,
-        FormatDiagnosticCode, FormatDiagnosticDetail, OwnerResolutionMode,
+        AuthorabilityRequirement, AuthorabilityResult, CompatibilityIssue,
+        CompatibilityIssueKind, CompatibilityResult, FormatDiagnostic, FormatDiagnosticCode,
+        FormatDiagnosticDetail, ObjectKindSelector, OwnerResolutionMode, SemanticArtifactRole,
         SupportState, SupportSummary, ValidationContext, ValidationContextResult,
         ValidationIssueKind, ValidationMethodReferenceStatus, ValidationOwnerKind,
     },
@@ -20,7 +19,12 @@ use unica_format_core::{
     },
 };
 
-use super::{profile, provider::PlatformXmlProvider, schema, support, xml};
+use crate::safe_root::{
+    ArtifactReadLimit, BoundArtifact, DirectoryPageLimit, DirectoryVisit, SafeArtifactRead,
+    SafeRootError, SafeSourceRoot,
+};
+
+use super::{profile, schema, semantic_map, support, xml};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CaptureFailure {
@@ -32,11 +36,12 @@ enum CaptureFailure {
 enum EvidenceScope {
     Operation,
     Validation,
+    Tree,
 }
 
 #[derive(Debug)]
 pub(crate) struct PlatformOperationSession {
-    provider: Option<PlatformXmlProvider>,
+    provider: Option<LazyPlatformSource>,
     configured_kind: Option<ConfiguredSourceSetKind>,
     configured_source_set: bool,
     target_at_source_root: bool,
@@ -57,6 +62,84 @@ impl PlatformOperationSession {
         Self::capture_with_scope(source, mode, EvidenceScope::Validation)
     }
 
+    pub(crate) fn capture_object(
+        source_root: &Path,
+        selector: &ObjectKindSelector,
+        object_name: &str,
+        authorized_root: &Path,
+        mode: OwnerResolutionMode,
+    ) -> Self {
+        if !crate::domain::identifiers::is_1c_identifier(object_name) {
+            return Self::failed(CaptureFailure::UnauthorizedOrUnreadable);
+        }
+        let Some(kind) = semantic_map::writer_object_kind(selector.as_str()) else {
+            return Self::failed(CaptureFailure::UnauthorizedOrUnreadable);
+        };
+        let Some(directory) = semantic_map::native_descriptor_directory(kind) else {
+            return Self::failed(CaptureFailure::UnauthorizedOrUnreadable);
+        };
+        Self::capture_paths(
+            &source_root
+                .join(directory)
+                .join(format!("{object_name}.xml")),
+            source_root,
+            authorized_root,
+            None,
+            false,
+            matches!(mode, OwnerResolutionMode::ExistingForNewOutput),
+            EvidenceScope::Operation,
+        )
+    }
+
+    pub(crate) fn capture_named_object(
+        source_root: &Path,
+        object_name: &str,
+        authorized_root: &Path,
+        mode: OwnerResolutionMode,
+    ) -> Self {
+        if !crate::domain::identifiers::is_1c_identifier(object_name) {
+            return Self::failed(CaptureFailure::UnauthorizedOrUnreadable);
+        }
+        let root = match SafeSourceRoot::capture(authorized_root, source_root) {
+            Ok(root) => root,
+            Err(_) => return Self::failed(CaptureFailure::UnauthorizedOrUnreadable),
+        };
+        let direct = format!("{object_name}.xml");
+        let mut candidates = match root.exists_regular(&direct) {
+            Ok(true) => vec![source_root.join(&direct)],
+            Ok(false) => Vec::new(),
+            Err(_) => return Self::failed(CaptureFailure::UnauthorizedOrUnreadable),
+        };
+        let nested = semantic_map::top_level_descriptor_profiles()
+            .filter_map(|profile| {
+                let directory = profile.native_directory.as_deref()?;
+                let relative = format!("{directory}/{object_name}.xml");
+                match root.exists_regular(&relative) {
+                    Ok(true) => Some(Ok(source_root.join(relative))),
+                    Ok(false) => None,
+                    Err(error) => Some(Err(error)),
+                }
+            })
+            .collect::<Result<Vec<_>, _>>();
+        let Ok(nested) = nested else {
+            return Self::failed(CaptureFailure::UnauthorizedOrUnreadable);
+        };
+        candidates.extend(nested);
+        let target = match candidates.as_mut_slice() {
+            [target] => target.clone(),
+            _ => return Self::failed(CaptureFailure::UnauthorizedOrUnreadable),
+        };
+        Self::capture_paths(
+            &target,
+            source_root,
+            authorized_root,
+            None,
+            false,
+            matches!(mode, OwnerResolutionMode::ExistingForNewOutput),
+            EvidenceScope::Operation,
+        )
+    }
+
     fn capture_with_scope(
         source: &SourceContext,
         mode: OwnerResolutionMode,
@@ -68,6 +151,7 @@ impl PlatformOperationSession {
         Self::capture_paths(
             source.location().target(),
             source.location().source_root(),
+            source.location().workspace_root(),
             source.configured_source_set_kind(),
             source.configured_source_set().is_some(),
             matches!(mode, OwnerResolutionMode::ExistingForNewOutput),
@@ -101,48 +185,62 @@ impl PlatformOperationSession {
         )
     }
 
+    pub(crate) fn capture_unscoped_tree(
+        target: &Path,
+        authorized_root: &Path,
+        mode: OwnerResolutionMode,
+    ) -> Self {
+        Self::capture_unscoped_with_scope(
+            target,
+            authorized_root,
+            mode,
+            EvidenceScope::Tree,
+        )
+    }
+
     fn capture_unscoped_with_scope(
         target: &Path,
         authorized_root: &Path,
         mode: OwnerResolutionMode,
         evidence_scope: EvidenceScope,
     ) -> Self {
-        let location =
-            match PlatformXmlProvider::authorize_unscoped_target(target, authorized_root) {
-                Ok(location) => location,
-                Err(_) => return Self::failed(CaptureFailure::UnauthorizedOrUnreadable),
-            };
-        let source_root = location.configuration_root.unwrap_or_else(|| {
-            unscoped_source_root(
-                &location.target,
-                &location.boundary,
-                location.target_is_directory,
-                &location.nearest_existing_directory,
-            )
-        });
-        Self::capture_paths(
-            &location.target,
-            &source_root,
-            None,
-            false,
+        let provider = match LazyPlatformSource::capture_unscoped(
+            target,
+            authorized_root,
             matches!(mode, OwnerResolutionMode::ExistingForNewOutput),
+        ) {
+            Ok(provider) => provider,
+            Err(_) => return Self::failed(CaptureFailure::UnauthorizedOrUnreadable),
+        };
+        let target_at_source_root = provider.target.is_source_root();
+        Self {
+            provider: Some(provider),
+            configured_kind: None,
+            configured_source_set: false,
+            target_at_source_root,
+            allow_missing_target: matches!(mode, OwnerResolutionMode::ExistingForNewOutput),
             evidence_scope,
-        )
+            failure: None,
+        }
     }
 
     fn capture_paths(
         target: &Path,
         source_root: &Path,
+        authorized_root: &Path,
         configured_kind: Option<ConfiguredSourceSetKind>,
         configured_source_set: bool,
         allow_missing_target: bool,
         evidence_scope: EvidenceScope,
     ) -> Self {
-        match PlatformXmlProvider::capture_operational(target, source_root, true) {
+        match LazyPlatformSource::capture(
+            target,
+            source_root,
+            authorized_root,
+            allow_missing_target,
+        ) {
             Ok(provider) => {
-                let target_at_source_root = fs::canonicalize(target)
-                    .ok()
-                    .is_some_and(|target| target == provider.captured_source_root());
+                let target_at_source_root = provider.target.is_source_root();
                 Self {
                     provider: Some(provider),
                     configured_kind,
@@ -169,22 +267,401 @@ impl PlatformOperationSession {
         }
     }
 
-    fn provider(&self) -> Result<&PlatformXmlProvider, CaptureFailure> {
+    fn provider(&self) -> Result<&LazyPlatformSource, CaptureFailure> {
         self.provider.as_ref().ok_or_else(|| {
             self.failure
                 .unwrap_or(CaptureFailure::UnauthorizedOrUnreadable)
         })
     }
+
+    pub(crate) fn validation_subject(&self) -> Result<SafeArtifactRead, SafeRootError> {
+        let provider = self.provider().map_err(|_| SafeRootError::Unauthorized)?;
+        if !provider.target.is_directory() {
+            return provider
+                .root
+                .read_bound(&provider.target, ArtifactReadLimit::Descriptor);
+        }
+        for candidate in descriptor_candidates(provider.descriptor_key()) {
+            match provider
+                .root
+                .read_relative(&candidate, ArtifactReadLimit::Descriptor)
+            {
+                Ok(read) => return Ok(read),
+                Err(SafeRootError::Missing) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        provider
+            .root
+            .read_relative("Configuration.xml", ArtifactReadLimit::Descriptor)
+    }
+
+    pub(crate) fn semantic_artifact_bytes(
+        &self,
+        role: SemanticArtifactRole,
+    ) -> Result<Option<Vec<u8>>, SafeRootError> {
+        let provider = self.provider().map_err(|_| SafeRootError::Unauthorized)?;
+        if provider.target.is_missing() {
+            return Ok(None);
+        }
+        let bytes = provider.read_target()?;
+        let (_, document) =
+            xml::parse_bounded_xml_document(&bytes).map_err(|_| SafeRootError::Unreadable)?;
+        let root = document.root_element();
+        let expected = match role {
+            SemanticArtifactRole::FormDefinition => {
+                (Some(xml::FORM_DEFINITION_NS), "Form")
+            }
+            SemanticArtifactRole::DataCompositionSchema => {
+                (Some(xml::DATA_COMPOSITION_SCHEMA_NS), "DataCompositionSchema")
+            }
+            SemanticArtifactRole::SpreadsheetDocument => {
+                (Some(xml::SPREADSHEET_DOCUMENT_NS), "document")
+            }
+        };
+        if (root.tag_name().namespace(), root.tag_name().name()) != expected {
+            return Err(SafeRootError::Unreadable);
+        }
+        Ok(Some(bytes))
+    }
 }
 
-fn unscoped_source_root(
+#[derive(Debug)]
+struct LazyPlatformSource {
+    root: SafeSourceRoot,
+    target: BoundArtifact,
+    descriptor_key: String,
+}
+
+impl LazyPlatformSource {
+    fn capture(
+        target: &Path,
+        source_root: &Path,
+        authorized_root: &Path,
+        allow_missing_target: bool,
+    ) -> Result<Self, SafeRootError> {
+        let root = SafeSourceRoot::capture(authorized_root, source_root)?;
+        let target = root.bind_target(target, allow_missing_target)?;
+        let descriptor_key = target.relative_key().unwrap_or_default();
+        Ok(Self {
+            root,
+            target,
+            descriptor_key,
+        })
+    }
+
+    fn capture_unscoped(
+        target: &Path,
+        authorized_root: &Path,
+        allow_missing_target: bool,
+    ) -> Result<Self, SafeRootError> {
+        let boundary_root = SafeSourceRoot::capture(authorized_root, authorized_root)?;
+        let target = boundary_root.bind_target(target, allow_missing_target)?;
+        let target_is_directory = target.is_directory();
+        let nearest_existing_directory = if target_is_directory {
+            target.relative().to_path_buf()
+        } else {
+            target
+                .relative()
+                .parent()
+                .unwrap_or_else(|| Path::new(""))
+                .to_path_buf()
+        };
+        let mut candidate = nearest_existing_directory.as_path();
+        let mut source_prefix = standalone_source_prefix(&boundary_root, &target)?;
+        if source_prefix.is_none() {
+            loop {
+                let key = if candidate.as_os_str().is_empty() {
+                    "Configuration.xml".to_string()
+                } else {
+                    format!(
+                        "{}/Configuration.xml",
+                        candidate
+                            .to_str()
+                            .ok_or(SafeRootError::Unauthorized)?
+                            .replace('\\', "/")
+                    )
+                };
+                if boundary_root.exists_regular(&key)? {
+                    source_prefix = Some(candidate.to_path_buf());
+                    break;
+                }
+                if candidate.as_os_str().is_empty() {
+                    break;
+                }
+                candidate = candidate.parent().unwrap_or_else(|| Path::new(""));
+            }
+        }
+        let source_prefix = source_prefix.unwrap_or_else(|| {
+            unscoped_source_prefix(
+                target.relative(),
+                target_is_directory,
+                &nearest_existing_directory,
+            )
+        });
+        let root = boundary_root.subroot(&source_prefix)?;
+        let target = boundary_root.rebase_artifact(&target, &source_prefix)?;
+        let descriptor_key = target.relative_key().unwrap_or_default();
+        Ok(Self {
+            root,
+            target,
+            descriptor_key,
+        })
+    }
+
+    fn descriptor_key(&self) -> &str {
+        if self.descriptor_key.is_empty() {
+            "Configuration.xml"
+        } else {
+            &self.descriptor_key
+        }
+    }
+
+    fn read_relative(&self, relative: impl AsRef<Path>) -> Result<Vec<u8>, SafeRootError> {
+        let relative = relative.as_ref().to_str().ok_or(SafeRootError::Unreadable)?;
+        self.root
+            .read_relative(relative, ArtifactReadLimit::Descriptor)
+            .map(|read| read.into_bytes())
+    }
+
+    fn read_target(&self) -> Result<Vec<u8>, SafeRootError> {
+        self.root
+            .read_bound(&self.target, ArtifactReadLimit::Descriptor)
+            .map(|read| read.into_bytes())
+    }
+
+    fn tree_xml_keys(&self) -> Result<Vec<String>, SafeRootError> {
+        if !self.target.is_directory() {
+            return Ok(vec![self.descriptor_key().to_string()]);
+        }
+        let mut keys = Vec::new();
+        let mut selected = 0usize;
+        self.collect_tree_xml_keys(
+            self.target.relative(),
+            0,
+            &mut selected,
+            &mut keys,
+        )?;
+        Ok(keys)
+    }
+
+    fn collect_tree_xml_keys(
+        &self,
+        directory: &Path,
+        depth: usize,
+        selected: &mut usize,
+        keys: &mut Vec<String>,
+    ) -> Result<(), SafeRootError> {
+        if depth > 64 {
+            return Err(SafeRootError::LimitExceeded);
+        }
+        let directory_key = directory
+            .to_str()
+            .ok_or(SafeRootError::Unreadable)?
+            .replace('\\', "/");
+        let mut child_directories = Vec::new();
+        self.root.visit_directory(
+            &directory_key,
+            DirectoryPageLimit::MetadataRegistry,
+            |name| {
+                let Some(name) = name.to_str() else {
+                    return Ok(DirectoryVisit::Ignore);
+                };
+                let child = directory.join(name);
+                if Path::new(name)
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+                {
+                    keys.push(
+                        child
+                            .to_str()
+                            .ok_or(SafeRootError::Unreadable)?
+                            .replace('\\', "/"),
+                    );
+                    *selected = selected
+                        .checked_add(1)
+                        .ok_or(SafeRootError::LimitExceeded)?;
+                    if *selected > DirectoryPageLimit::MetadataRegistry.entries() {
+                        return Err(SafeRootError::LimitExceeded);
+                    }
+                    return Ok(DirectoryVisit::Selected);
+                }
+                match self.root.is_directory(&child) {
+                    Ok(true) => {
+                        child_directories.push(child);
+                        *selected = selected
+                            .checked_add(1)
+                            .ok_or(SafeRootError::LimitExceeded)?;
+                        if *selected > DirectoryPageLimit::MetadataRegistry.entries() {
+                            return Err(SafeRootError::LimitExceeded);
+                        }
+                        Ok(DirectoryVisit::Selected)
+                    }
+                    Ok(false)
+                    | Err(SafeRootError::LinkOrReparsePoint)
+                    | Err(SafeRootError::NotRegular) => Ok(DirectoryVisit::Ignore),
+                    Err(error) => Err(error),
+                }
+            },
+        )?;
+        for child in child_directories {
+            self.collect_tree_xml_keys(&child, depth + 1, selected, keys)?;
+        }
+        Ok(())
+    }
+
+    fn configuration_bytes(&self) -> Result<Option<Vec<u8>>, SafeRootError> {
+        optional_read(
+            &self.root,
+            "Configuration.xml",
+            ArtifactReadLimit::Descriptor,
+        )
+    }
+
+    fn parent_configurations_bytes(&self) -> Result<Option<Vec<u8>>, SafeRootError> {
+        optional_read(
+            &self.root,
+            "Ext/ParentConfigurations.bin",
+            ArtifactReadLimit::SupportEvidence,
+        )
+    }
+
+    fn root_xml_keys(&self) -> Result<Vec<String>, SafeRootError> {
+        let mut keys = Vec::new();
+        self.root
+            .visit_directory("", DirectoryPageLimit::RootDiscovery, |name| {
+            let Some(name) = name.to_str() else {
+                    return Ok(DirectoryVisit::Ignore);
+            };
+            if Path::new(name).extension().and_then(|value| value.to_str()) != Some("xml") {
+                    return Ok(DirectoryVisit::Ignore);
+            }
+            let bytes = self
+                .root
+                .read_relative(name, ArtifactReadLimit::Descriptor)?
+                .into_bytes();
+                if !is_config_dump_sidecar(&bytes) {
+                    keys.push(name.to_string());
+                }
+                Ok(DirectoryVisit::Selected)
+            })?;
+        Ok(keys)
+    }
+
+    fn for_each_descriptor(
+        &self,
+        mut visitor: impl FnMut(&str, &[u8]),
+    ) -> Result<(), SafeRootError> {
+        let mut total = 0usize;
+        self.root
+            .visit_directory("", DirectoryPageLimit::MetadataRegistry, |name| {
+                let Some(name) = name.to_str() else {
+                    return Ok(DirectoryVisit::Ignore);
+                };
+                if Path::new(name).extension().and_then(|value| value.to_str()) != Some("xml") {
+                    return Ok(DirectoryVisit::Ignore);
+                }
+                total = total
+                    .checked_add(1)
+                    .ok_or(SafeRootError::LimitExceeded)?;
+                if total > DirectoryPageLimit::MetadataRegistry.entries() {
+                    return Err(SafeRootError::LimitExceeded);
+                }
+                let bytes = self
+                    .root
+                    .read_relative(name, ArtifactReadLimit::Descriptor)?;
+                visitor(name, bytes.bytes());
+                Ok(DirectoryVisit::Selected)
+            })?;
+        for profile in semantic_map::top_level_descriptor_profiles() {
+            let Some(directory) = profile.native_directory.as_deref() else {
+                return Err(SafeRootError::Unreadable);
+            };
+            let visit = self.root.visit_directory(
+                directory,
+                DirectoryPageLimit::MetadataRegistry,
+                |name| {
+                    let Some(name) = name.to_str() else {
+                        return Ok(DirectoryVisit::Ignore);
+                    };
+                    if Path::new(name).extension().and_then(|value| value.to_str()) != Some("xml") {
+                        return Ok(DirectoryVisit::Ignore);
+                    }
+                    total = total
+                        .checked_add(1)
+                        .ok_or(SafeRootError::LimitExceeded)?;
+                    if total > DirectoryPageLimit::MetadataRegistry.entries() {
+                        return Err(SafeRootError::LimitExceeded);
+                    }
+                    let key = format!("{directory}/{name}");
+                    let bytes = self
+                        .root
+                        .read_relative(&key, ArtifactReadLimit::Descriptor)?;
+                    visitor(&key, bytes.bytes());
+                    Ok(DirectoryVisit::Selected)
+                },
+            );
+            match visit {
+                Ok(()) => {}
+                Err(SafeRootError::Missing) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+}
+
+fn standalone_source_prefix(
+    root: &SafeSourceRoot,
+    target: &BoundArtifact,
+) -> Result<Option<PathBuf>, SafeRootError> {
+    if target.is_directory() || target.is_missing() {
+        return Ok(None);
+    }
+    let bytes = root
+        .read_bound(target, ArtifactReadLimit::Descriptor)?
+        .into_bytes();
+    let (_, document) = match xml::parse_bounded_xml_document(&bytes) {
+        Ok(document) => document,
+        Err(_) => return Ok(None),
+    };
+    let root_element = document.root_element();
+    let Some(object) = root_element.children().find(|node| {
+        node.is_element() && node.tag_name().namespace() == Some(xml::MD_CLASSES_NS)
+    }) else {
+        return Ok(None);
+    };
+    let is_standalone = semantic_map::metadata_class_profile(object.tag_name().name())
+        .is_some_and(|profile| profile.role == schema::MetadataClassRole::StandaloneObject);
+    Ok(is_standalone.then(|| {
+        target
+            .relative()
+            .parent()
+            .unwrap_or_else(|| Path::new(""))
+            .to_path_buf()
+    }))
+}
+
+fn optional_read(
+    root: &SafeSourceRoot,
+    relative: &str,
+    limit: ArtifactReadLimit,
+) -> Result<Option<Vec<u8>>, SafeRootError> {
+    match root.read_relative(relative, limit) {
+        Ok(read) => Ok(Some(read.into_bytes())),
+        Err(SafeRootError::Missing) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn unscoped_source_prefix(
     target: &Path,
-    boundary: &Path,
     target_is_directory: bool,
     nearest_existing_directory: &Path,
 ) -> PathBuf {
     if let Some(root) = embedded_content_capture_root(target) {
-        if root.starts_with(boundary) && nearest_existing_directory.starts_with(&root) {
+        if nearest_existing_directory.starts_with(&root) {
             return root;
         }
     }
@@ -231,14 +708,32 @@ pub(crate) fn compatibility(session: &PlatformOperationSession) -> Compatibility
             )
         }
     };
-    let keys = compatibility_keys(session, provider);
+    let keys = match compatibility_keys(session, provider) {
+        Ok(keys) => keys,
+        Err(_) => {
+            return incompatible(
+                CompatibilityIssueKind::Malformed,
+                FormatDiagnosticCode::SourceMalformed,
+                "Compatibility evidence could not be read safely.",
+            )
+        }
+    };
     if keys.is_empty() {
+        let root_is_empty = match provider.root_xml_keys() {
+            Ok(keys) => keys.is_empty(),
+            Err(_) => {
+                return incompatible(
+                    CompatibilityIssueKind::Malformed,
+                    FormatDiagnosticCode::SourceMalformed,
+                    "Source-root evidence could not be read safely.",
+                )
+            }
+        };
         if session.allow_missing_target
             && (!session.configured_source_set
                 || session.target_at_source_root
-                || provider
-                    .snapshot_files()
-                    .all(|(key, _)| !key.ends_with(".xml")))
+                || root_is_empty
+                || provider.target.is_missing())
         {
             return CompatibilityResult::compatible();
         }
@@ -358,42 +853,44 @@ fn compatibility_bytes(
 
 fn compatibility_keys(
     session: &PlatformOperationSession,
-    provider: &PlatformXmlProvider,
-) -> Vec<String> {
-    let mut keys = Vec::new();
-    if session.target_at_source_root && provider.configuration_bytes().is_none() {
-        keys.extend(
-            provider
-                .snapshot_files()
-                .filter(|(key, _)| !key.contains('/') && key.ends_with(".xml"))
-                .filter(|(_, bytes)| !is_config_dump_sidecar(bytes))
-                .map(|(key, _)| key.to_string()),
-        );
-    } else {
-        keys.extend(
-            descriptor_candidates(provider.descriptor_key())
-                .into_iter()
-                .filter(|key| provider.read_relative(key).is_ok()),
-        );
+    provider: &LazyPlatformSource,
+) -> Result<Vec<String>, SafeRootError> {
+    if session.evidence_scope == EvidenceScope::Tree {
+        return provider.tree_xml_keys();
     }
-    if provider.configuration_bytes().is_some() {
+    let mut keys = Vec::new();
+    let configuration = provider.configuration_bytes()?;
+    if session.target_at_source_root && configuration.is_none() {
+        keys.extend(provider.root_xml_keys()?);
+    } else {
+        for key in descriptor_candidates(provider.descriptor_key()) {
+            match provider.read_relative(&key) {
+                Ok(_) => keys.push(key),
+                Err(SafeRootError::Missing) => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    if configuration.is_some() {
         keys.push("Configuration.xml".to_string());
     }
     if session.evidence_scope == EvidenceScope::Validation {
-        keys.extend(validation_compatibility_keys(provider));
+        keys.extend(validation_compatibility_keys(provider)?);
     }
     let mut seen = BTreeSet::new();
     keys.retain(|key| seen.insert(key.clone()));
-    keys
+    Ok(keys)
 }
 
-fn validation_compatibility_keys(provider: &PlatformXmlProvider) -> Vec<String> {
-    let descriptors = descriptor_index(provider);
+fn validation_compatibility_keys(
+    provider: &LazyPlatformSource,
+) -> Result<Vec<String>, SafeRootError> {
+    let descriptors = descriptor_index(provider)?;
     let Some(target) = target_descriptor(provider, &descriptors) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let mut keys = vec![target.key.clone()];
-    if let Some(configuration) = configuration_descriptor(provider) {
+    if let Some(configuration) = configuration_descriptor(provider)? {
         if command_text_validation_required(&target.native_type) {
             for language in configuration.languages {
                 if let Some(item) = descriptors
@@ -440,7 +937,7 @@ fn validation_compatibility_keys(provider: &PlatformXmlProvider) -> Vec<String> 
             keys.push(item.key.clone());
         }
     }
-    keys
+    Ok(keys)
 }
 
 fn is_config_dump_sidecar(bytes: &[u8]) -> bool {
@@ -452,12 +949,12 @@ fn is_config_dump_sidecar(bytes: &[u8]) -> bool {
 fn incompatible(
     kind: CompatibilityIssueKind,
     code: FormatDiagnosticCode,
-    message: &'static str,
+    _internal_message: &'static str,
 ) -> CompatibilityResult {
     CompatibilityResult::incompatible(CompatibilityIssue::new(
         kind,
-        FormatDiagnostic::new(code, message)
-            .with_detail(FormatDiagnosticDetail::Compatibility(kind)),
+        FormatDiagnostic::new(code, FormatDiagnosticDetail::Compatibility(kind))
+            .expect("compatibility diagnostic mapping is closed"),
     ))
 }
 
@@ -469,7 +966,10 @@ pub(crate) fn authorability(
         Ok(provider) => provider,
         Err(_) => return unreadable_authorability(),
     };
-    let support_bytes = provider.parent_configurations_bytes();
+    let support_bytes = match provider.parent_configurations_bytes() {
+        Ok(bytes) => bytes,
+        Err(_) => return unreadable_authorability(),
+    };
     let facts = support::read_support_facts_bytes(support_bytes.as_deref());
     if facts.parse_error().is_some() {
         return unreadable_authorability();
@@ -484,12 +984,15 @@ pub(crate) fn authorability(
     };
     let effective = facts.effective_rule_for(&object_uuid);
     let state = support_state(effective);
-    let summary = SupportSummary::new(
+    let summary = match SupportSummary::new(
         state,
         facts.global_editing_enabled(),
         facts.vendors().len(),
         facts.rule_counts(),
-    );
+    ) {
+        Ok(summary) => summary,
+        Err(_) => return unreadable_authorability(),
+    };
     let authorability = facts.authorability_for(&object_uuid);
     let violation = if requirement == AuthorabilityRequirement::Removed {
         match effective {
@@ -497,12 +1000,10 @@ pub(crate) fn authorability(
             support::EffectiveSupportRule::ConfigurationReadOnly => Some(support_violation(
                 FormatDiagnosticCode::SupportCapabilityDisabled,
                 state,
-                "Source editing is disabled by support policy.",
             )),
             _ => Some(support_violation(
                 FormatDiagnosticCode::SupportRemovalRequired,
                 state,
-                "The object must be removed from support before this operation.",
             )),
         }
     } else {
@@ -511,45 +1012,46 @@ pub(crate) fn authorability(
             Authorability::ConfigurationReadOnly => Some(support_violation(
                 FormatDiagnosticCode::SupportCapabilityDisabled,
                 state,
-                "Source editing is disabled by support policy.",
             )),
             Authorability::SupportLocked => Some(support_violation(
                 FormatDiagnosticCode::SupportLocked,
                 state,
-                "The object is locked by support policy.",
             )),
             Authorability::UnknownSupportState
             | Authorability::UnknownReadOnly
             | Authorability::DerivedReadOnly => Some(support_violation(
                 FormatDiagnosticCode::SupportStateUnreadable,
                 SupportState::Unreadable,
-                "Support state is ambiguous; edit safety is not established.",
             )),
         }
     };
-    AuthorabilityResult::new(authorability, summary, violation)
+    match violation {
+        None => AuthorabilityResult::allowed(summary)
+            .unwrap_or_else(|_| unreadable_authorability()),
+        Some(diagnostic) => AuthorabilityResult::denied(authorability, summary, diagnostic)
+            .unwrap_or_else(|_| unreadable_authorability()),
+    }
 }
 
 fn unreadable_authorability() -> AuthorabilityResult {
-    AuthorabilityResult::new(
+    AuthorabilityResult::denied(
         Authorability::UnknownSupportState,
-        SupportSummary::new(SupportState::Unreadable, None, 0, [0; 3]),
-        Some(support_violation(
+        SupportSummary::new(SupportState::Unreadable, None, 0, [0; 3])
+            .expect("unreadable support summary is valid"),
+        support_violation(
             FormatDiagnosticCode::SupportStateUnreadable,
             SupportState::Unreadable,
-            "The source could not be authorized and captured; edit safety is not established.",
-        )),
+        ),
     )
+    .expect("unreadable support denial is valid")
 }
 
 fn support_violation(
     code: FormatDiagnosticCode,
     state: SupportState,
-    message: &'static str,
-) -> AuthorabilityViolation {
-    AuthorabilityViolation::new(
-        FormatDiagnostic::new(code, message).with_detail(FormatDiagnosticDetail::Support(state)),
-    )
+) -> FormatDiagnostic {
+    FormatDiagnostic::new(code, FormatDiagnosticDetail::Support(state))
+        .expect("support diagnostic mapping is closed")
 }
 
 fn support_state(rule: support::EffectiveSupportRule) -> SupportState {
@@ -571,7 +1073,10 @@ pub(crate) fn validation(session: &PlatformOperationSession) -> ValidationContex
         Ok(provider) => provider,
         Err(_) => return invalid_validation(ValidationIssueKind::SourceUnreadable),
     };
-    let descriptors = descriptor_index(provider);
+    let descriptors = match descriptor_index(provider) {
+        Ok(descriptors) => descriptors,
+        Err(_) => return invalid_validation(ValidationIssueKind::SourceUnreadable),
+    };
     let Some(target) = target_descriptor(provider, &descriptors) else {
         return invalid_validation(ValidationIssueKind::SourceUnreadable);
     };
@@ -579,6 +1084,10 @@ pub(crate) fn validation(session: &PlatformOperationSession) -> ValidationContex
         target.native_type.as_str(),
         "ExternalReport" | "ExternalDataProcessor"
     ) {
+        let method_reference_status = match method_reference_status(provider, target, &descriptors) {
+            Ok(status) => status,
+            Err(_) => return invalid_validation(ValidationIssueKind::SourceUnreadable),
+        };
         return valid_validation(
             ValidationOwnerKind::Standalone,
             Vec::new(),
@@ -589,10 +1098,14 @@ pub(crate) fn validation(session: &PlatformOperationSession) -> ValidationContex
                     .all(|reference| descriptors.contains_identity(reference))
             }),
             None,
-            method_reference_status(provider, target, &descriptors),
+            method_reference_status,
         );
     }
-    let Some(configuration) = configuration_descriptor(provider) else {
+    let configuration = match configuration_descriptor(provider) {
+        Ok(configuration) => configuration,
+        Err(_) => return invalid_validation(ValidationIssueKind::SourceUnreadable),
+    };
+    let Some(configuration) = configuration else {
         return invalid_validation(ValidationIssueKind::OwnerUnavailable);
     };
     if !configuration
@@ -613,10 +1126,11 @@ pub(crate) fn validation(session: &PlatformOperationSession) -> ValidationContex
     if requires_languages {
         let mut seen = BTreeSet::new();
         for language_name in &configuration.languages {
-            if let Some(code) = descriptors.language_code(language_name) {
-                if seen.insert(code.clone()) {
-                    language_codes.push(code.clone());
-                }
+            let Some(code) = descriptors.language_code(language_name) else {
+                return invalid_validation(ValidationIssueKind::LanguageProfileMissing);
+            };
+            if seen.insert(code.clone()) {
+                language_codes.push(code.clone());
             }
         }
         if language_codes.is_empty() {
@@ -632,7 +1146,10 @@ pub(crate) fn validation(session: &PlatformOperationSession) -> ValidationContex
         .registrar_reference
         .as_ref()
         .map(|reference| descriptors.document_references(reference));
-    let method_reference_status = method_reference_status(provider, target, &descriptors);
+    let method_reference_status = match method_reference_status(provider, target, &descriptors) {
+        Ok(status) => status,
+        Err(_) => return invalid_validation(ValidationIssueKind::SourceUnreadable),
+    };
     valid_validation(
         owner_kind,
         language_codes,
@@ -665,7 +1182,7 @@ fn valid_validation(
 }
 
 fn invalid_validation(issue: ValidationIssueKind) -> ValidationContextResult {
-    let message = match issue {
+    let _internal_message = match issue {
         ValidationIssueKind::SourceUnreadable => {
             "Validation source could not be authorized and captured."
         }
@@ -682,10 +1199,18 @@ fn invalid_validation(issue: ValidationIssueKind) -> ValidationContextResult {
         ValidationIssueKind::RegistrarMissing => "A required registrar relationship is missing.",
     };
     ValidationContextResult::invalid(vec![FormatDiagnostic::new(
-        FormatDiagnosticCode::ValidationContextUnavailable,
-        message,
+        match issue {
+            ValidationIssueKind::ReferenceMissing => {
+                FormatDiagnosticCode::ValidationReferenceMissing
+            }
+            ValidationIssueKind::RegistrarMissing => {
+                FormatDiagnosticCode::ValidationRegistrarMissing
+            }
+            _ => FormatDiagnosticCode::ValidationContextUnavailable,
+        },
+        FormatDiagnosticDetail::Validation(issue),
     )
-    .with_detail(FormatDiagnosticDetail::Validation(issue))])
+    .expect("validation diagnostic mapping is closed")])
     .expect("validation diagnostics are non-empty")
 }
 
@@ -729,24 +1254,21 @@ impl DescriptorIndex {
     }
 }
 
-fn descriptor_index(provider: &PlatformXmlProvider) -> DescriptorIndex {
+fn descriptor_index(provider: &LazyPlatformSource) -> Result<DescriptorIndex, SafeRootError> {
     let mut index = DescriptorIndex::default();
-    for (key, bytes) in provider.snapshot_files() {
-        if !key.ends_with(".xml") {
-            continue;
-        }
-        if let Some(identity) = descriptor_identity(key, &bytes) {
+    provider.for_each_descriptor(|key, bytes| {
+        if let Some(identity) = descriptor_identity(key, bytes) {
             index
                 .identities
                 .insert((identity.native_type.clone(), identity.name.clone()));
             index.items.push(identity);
         }
-    }
-    index
+    })?;
+    Ok(index)
 }
 
 fn target_descriptor<'a>(
-    provider: &PlatformXmlProvider,
+    provider: &LazyPlatformSource,
     descriptors: &'a DescriptorIndex,
 ) -> Option<&'a DescriptorIdentity> {
     let candidates = descriptor_candidates(provider.descriptor_key());
@@ -866,15 +1388,20 @@ struct ConfigurationDescriptor {
     is_extension: bool,
 }
 
-fn configuration_descriptor(provider: &PlatformXmlProvider) -> Option<ConfigurationDescriptor> {
-    let bytes = provider.configuration_bytes()?;
-    let (_, document) = xml::parse_bounded_xml_document(&bytes).ok()?;
+fn configuration_descriptor(
+    provider: &LazyPlatformSource,
+) -> Result<Option<ConfigurationDescriptor>, SafeRootError> {
+    let Some(bytes) = provider.configuration_bytes()? else {
+        return Ok(None);
+    };
+    let (_, document) =
+        xml::parse_bounded_xml_document(&bytes).map_err(|_| SafeRootError::Unreadable)?;
     let root = document.root_element();
     let configuration = root.children().find(|node| {
         node.is_element()
             && node.tag_name().namespace() == Some(xml::MD_CLASSES_NS)
             && node.tag_name().name() == "Configuration"
-    })?;
+    }).ok_or(SafeRootError::Unreadable)?;
     let properties = child(configuration, "Properties");
     let is_extension =
         properties.is_some_and(|properties| child(properties, "ConfigurationExtensionPurpose").is_some());
@@ -898,11 +1425,11 @@ fn configuration_descriptor(provider: &PlatformXmlProvider) -> Option<Configurat
             }
         }
     }
-    Some(ConfigurationDescriptor {
+    Ok(Some(ConfigurationDescriptor {
         registrations,
         languages,
         is_extension,
-    })
+    }))
 }
 
 fn reference_values(node: Node<'_, '_>) -> Vec<(String, String)> {
@@ -977,25 +1504,27 @@ fn parse_method_reference(value: &str) -> Result<(String, String), ()> {
 }
 
 fn method_reference_status(
-    provider: &PlatformXmlProvider,
+    provider: &LazyPlatformSource,
     target: &DescriptorIdentity,
     descriptors: &DescriptorIndex,
-) -> Option<ValidationMethodReferenceStatus> {
-    let reference = target.method_reference.as_ref()?;
+) -> Result<Option<ValidationMethodReferenceStatus>, SafeRootError> {
+    let Some(reference) = target.method_reference.as_ref() else {
+        return Ok(None);
+    };
     let (module, procedure) = match reference {
         Ok(reference) => reference,
-        Err(()) => return Some(ValidationMethodReferenceStatus::Invalid),
+        Err(()) => return Ok(Some(ValidationMethodReferenceStatus::Invalid)),
     };
     let Some(module_descriptor) = descriptors
         .items
         .iter()
         .find(|item| item.native_type == "CommonModule" && item.name == *module)
     else {
-        return Some(ValidationMethodReferenceStatus::TargetMissing);
+        return Ok(Some(ValidationMethodReferenceStatus::TargetMissing));
     };
     let descriptor = Path::new(&module_descriptor.key);
     let Some(stem) = descriptor.file_stem().and_then(|value| value.to_str()) else {
-        return Some(ValidationMethodReferenceStatus::ImplementationMissing);
+        return Ok(Some(ValidationMethodReferenceStatus::ImplementationMissing));
     };
     let implementation = descriptor
         .parent()
@@ -1003,16 +1532,20 @@ fn method_reference_status(
         .join(stem)
         .join("Ext")
         .join("Module.bsl");
-    let Ok(bytes) = provider.read_relative(&implementation) else {
-        return Some(ValidationMethodReferenceStatus::ImplementationMissing);
+    let bytes = match provider.read_relative(&implementation) {
+        Ok(bytes) => bytes,
+        Err(SafeRootError::Missing) => {
+            return Ok(Some(ValidationMethodReferenceStatus::ImplementationMissing))
+        }
+        Err(error) => return Err(error),
     };
     let Ok(source) = std::str::from_utf8(&bytes) else {
-        return Some(ValidationMethodReferenceStatus::ImplementationMissing);
+        return Ok(Some(ValidationMethodReferenceStatus::Invalid));
     };
     if bsl_has_export(source, procedure) {
-        Some(ValidationMethodReferenceStatus::Valid)
+        Ok(Some(ValidationMethodReferenceStatus::Valid))
     } else {
-        Some(ValidationMethodReferenceStatus::EntryPointMissing)
+        Ok(Some(ValidationMethodReferenceStatus::EntryPointMissing))
     }
 }
 
@@ -1027,12 +1560,22 @@ fn bsl_has_export(source: &str, procedure: &str) -> bool {
     })
 }
 
-fn descriptor_uuid(provider: &PlatformXmlProvider) -> Result<String, ()> {
-    let bytes = descriptor_candidates(provider.descriptor_key())
-        .into_iter()
-        .find_map(|candidate| provider.read_relative(candidate).ok())
-        .or_else(|| provider.configuration_bytes())
-        .ok_or(())?;
+fn descriptor_uuid(provider: &LazyPlatformSource) -> Result<String, ()> {
+    let mut bytes = None;
+    for candidate in descriptor_candidates(provider.descriptor_key()) {
+        match provider.read_relative(candidate) {
+            Ok(read) => {
+                bytes = Some(read);
+                break;
+            }
+            Err(SafeRootError::Missing) => {}
+            Err(_) => return Err(()),
+        }
+    }
+    let bytes = match bytes {
+        Some(bytes) => bytes,
+        None => provider.configuration_bytes().map_err(|_| ())?.ok_or(())?,
+    };
     let (_, document) = xml::parse_bounded_xml_document(&bytes).map_err(|_| ())?;
     let root = document.root_element();
     let raw = root
@@ -1077,4 +1620,74 @@ pub(crate) fn session_from_handle(
                 "operational session belongs to another adapter",
             )
         })
+}
+
+#[cfg(test)]
+mod authorization_order_tests {
+    use super::*;
+    use crate::safe_root::with_before_artifact_open;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use unica_format_core::source::{SourceLocation, SourceContext};
+
+    fn temp_root(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "unica-task7-authorization-{label}-{}-{nonce}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn wrong_family_is_denied_before_any_artifact_open() {
+        let root = temp_root("wrong-family");
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("untrusted.xml");
+        std::fs::write(&target, b"must not be read").unwrap();
+        let source = SourceContext::new(
+            SourceLocation::new(root.clone(), root.clone(), target),
+            None,
+            SourceFamily::Edt,
+            None,
+        );
+
+        let result = with_before_artifact_open(
+            |_| panic!("artifact opened before family authorization"),
+            || {
+                let session =
+                    PlatformOperationSession::capture(&source, OwnerResolutionMode::Existing);
+                authorability(&session, AuthorabilityRequirement::Editable)
+            },
+        );
+        assert!(matches!(result, AuthorabilityResult::Denied(_)));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn out_of_root_target_is_denied_before_any_artifact_open() {
+        let root = temp_root("root");
+        let outside = temp_root("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&outside, b"must not be read").unwrap();
+        let source = SourceContext::new(
+            SourceLocation::new(root.clone(), root.clone(), outside.clone()),
+            None,
+            SourceFamily::PlatformXml,
+            None,
+        );
+
+        let result = with_before_artifact_open(
+            |_| panic!("outside artifact opened before containment authorization"),
+            || {
+                let session =
+                    PlatformOperationSession::capture(&source, OwnerResolutionMode::Existing);
+                authorability(&session, AuthorabilityRequirement::Editable)
+            },
+        );
+        assert!(matches!(result, AuthorabilityResult::Denied(_)));
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_file(outside).unwrap();
+    }
 }

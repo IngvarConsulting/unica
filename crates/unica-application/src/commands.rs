@@ -1,10 +1,12 @@
 use unica_format_core::{
     navigation::{NavigationSelection, ObjectKey, OpaqueNavigationCursor},
     ports::{
-        AuthorabilityPort, AuthorabilityRequest, CompatibilityPort, CompatibilityRequest,
-        FormatDiagnostic, PublicationPort, PublicationRequest, PublicationResult,
-        SourceCompatibilityPort, SourceCompatibilityRequest, ValidationContextPort,
-        ValidationContextRequest, ValidationContextResult,
+        AuthorabilityPort, AuthorabilityRequest, AuthorabilityResult, CompatibilityPort,
+        CompatibilityRequest, FormatDiagnostic, OperationalValidationPort,
+        OperationalValidationRequest, OperationalValidationResult, PublicationPort,
+        PublicationRequest, PublicationResult, SourceCompatibilityPort,
+        SourceCompatibilityRequest, ValidationContextPort, ValidationContextRequest,
+        ValidationContextResult,
     },
     source::SourceAdapterError,
     source::{SourceId, SourceRevision},
@@ -111,25 +113,22 @@ impl OperationalPolicyService {
         command: AuthorabilityPolicyCommand,
     ) -> Result<OperationalPolicyDecision, SourceAdapterError> {
         let result = port.inspect(&command.request)?;
-        Ok(Self::decide_authorability(
-            result
-                .into_violation()
-                .map(|violation| violation.into_diagnostic()),
-            command.enforcement,
-        ))
+        Ok(match result {
+            AuthorabilityResult::Allowed(_) => OperationalPolicyDecision::Allow,
+            AuthorabilityResult::Denied(denial) => {
+                Self::decide_authorability(denial.diagnostic().clone(), command.enforcement)
+            }
+        })
     }
 
     pub fn decide_authorability(
-        violation: Option<FormatDiagnostic>,
+        denial: FormatDiagnostic,
         enforcement: GuardEnforcement,
     ) -> OperationalPolicyDecision {
-        let Some(violation) = violation else {
-            return OperationalPolicyDecision::Allow;
-        };
         match enforcement {
             GuardEnforcement::Off => OperationalPolicyDecision::Allow,
-            GuardEnforcement::Warn => OperationalPolicyDecision::Warn(violation),
-            GuardEnforcement::Deny => OperationalPolicyDecision::Block(violation),
+            GuardEnforcement::Warn => OperationalPolicyDecision::Warn(denial),
+            GuardEnforcement::Deny => OperationalPolicyDecision::Block(denial),
         }
     }
 
@@ -145,6 +144,13 @@ impl OperationalPolicyService {
         request: &PublicationRequest,
     ) -> Result<PublicationResult, SourceAdapterError> {
         port.publish(request)
+    }
+
+    pub fn validate(
+        port: &dyn OperationalValidationPort,
+        request: &OperationalValidationRequest,
+    ) -> Result<OperationalValidationResult, SourceAdapterError> {
+        port.validate(request)
     }
 }
 

@@ -96,7 +96,7 @@ pub(crate) fn add_template(
                 template_meta_display.display()
             ));
         }
-        validate_metadata_owner_shape_8_3_27(&root_xml_path, context, "template.add")?;
+        validate_semantic_metadata_artifact(&root_xml_path, context, "template.add")?;
 
         let format_version = detect_format_version(&root_xml_path, context)?.to_string();
         let template_ext_dir = templates_dir_abs.join(template_name).join("Ext");
@@ -168,7 +168,7 @@ pub(crate) fn add_template(
         guard_active_format_owner(&mut transaction, &root_xml_path, context)?;
         let validation_path = root_xml_path.clone();
         let report = transaction.commit_with_post_validation(|| {
-            validate_metadata_owner_shape_8_3_27(&validation_path, context, "template.add")
+            validate_semantic_metadata_artifact(&validation_path, context, "template.add")
         })?;
 
         stdout.push_str(&format!(
@@ -280,7 +280,7 @@ pub(crate) fn remove_template(
                 template_meta_display.display()
             ));
         }
-        validate_metadata_owner_shape_8_3_27(&root_xml_path, context, "template.remove")?;
+        validate_semantic_metadata_artifact(&root_xml_path, context, "template.remove")?;
 
         let source_snapshot = read_utf8_sig_snapshot(&root_xml_path)?;
         let source_xml_text = source_snapshot.text;
@@ -354,7 +354,7 @@ pub(crate) fn remove_template(
         let validation_template_meta = template_meta_path.clone();
         let validation_template_dir = template_dir_path.clone();
         let report = transaction.commit_with_post_validation(move || {
-            validate_metadata_owner_shape_8_3_27(&validation_path, context, "template.remove")?;
+            validate_semantic_metadata_artifact(&validation_path, context, "template.remove")?;
             for path in [&validation_template_meta, &validation_template_dir] {
                 match fs::symlink_metadata(path) {
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}

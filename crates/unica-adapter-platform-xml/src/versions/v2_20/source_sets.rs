@@ -2,10 +2,14 @@ use std::path::Path;
 
 use unica_format_core::{
     ports::{ReservedSourceArtifactKind, SourceSetMatch},
-    source::{ConfiguredSourceSetKind, SourceAdapterError},
+    source::{ConfiguredSourceSetKind, SourceAdapterError, SourceAdapterErrorKind},
 };
 
-use super::{provider::PlatformXmlProvider, xml::parse_bounded_xml_document};
+use crate::safe_root::{
+    ArtifactReadLimit, DirectoryPageLimit, DirectoryVisit, SafeRootError, SafeSourceRoot,
+};
+
+use super::xml::parse_bounded_xml_document;
 
 const MAX_RESERVED_DESCRIPTOR_BYTES: usize = 8 * 1024 * 1024;
 
@@ -23,22 +27,22 @@ pub(crate) fn inspect(
     authorized_root: &Path,
     kind: ConfiguredSourceSetKind,
 ) -> Result<SourceSetMatch, SourceAdapterError> {
-    let Some(provider) =
-        PlatformXmlProvider::capture_authorized_root(source_root, authorized_root)?
-    else {
-        return Ok(SourceSetMatch::NoMatch);
+    let root = match SafeSourceRoot::capture(authorized_root, source_root) {
+        Ok(root) => root,
+        Err(SafeRootError::Missing) => return Ok(SourceSetMatch::NoMatch),
+        Err(error) => return Err(source_error(error)),
     };
-
-    let matched = provider.configuration_bytes().is_some()
-        || matches!(
-            kind,
-            ConfiguredSourceSetKind::ExternalProcessor
-                | ConfiguredSourceSetKind::ExternalReport
-        ) && provider
-            .snapshot_files()
-            .any(|(relative, bytes)| {
-                is_root_xml(relative) && !is_reserved_sidecar(relative, &bytes, kind)
-            });
+    let matched = match root.read_relative("Configuration.xml", ArtifactReadLimit::Descriptor) {
+        Ok(_) => true,
+        Err(SafeRootError::Missing) => {
+            matches!(
+                kind,
+                ConfiguredSourceSetKind::ExternalProcessor
+                    | ConfiguredSourceSetKind::ExternalReport
+            ) && inspect_external_root(&root, kind)?
+        }
+        Err(error) => return Err(source_error(error)),
+    };
 
     Ok(if matched {
         SourceSetMatch::Match
@@ -47,11 +51,35 @@ pub(crate) fn inspect(
     })
 }
 
-fn is_root_xml(relative: &str) -> bool {
-    let path = Path::new(relative);
-    path.parent()
-        .is_some_and(|parent| parent.as_os_str().is_empty())
-        && path.extension().and_then(|extension| extension.to_str()) == Some("xml")
+fn inspect_external_root(
+    root: &SafeSourceRoot,
+    kind: ConfiguredSourceSetKind,
+) -> Result<bool, SourceAdapterError> {
+    let mut matched = false;
+    root.visit_directory("", DirectoryPageLimit::RootDiscovery, |name| {
+        let Some(name) = name.to_str() else {
+            return Ok(DirectoryVisit::Ignore);
+        };
+        if Path::new(name).extension().and_then(|extension| extension.to_str()) != Some("xml") {
+            return Ok(DirectoryVisit::Ignore);
+        }
+        let bytes = root
+            .read_relative(name, ArtifactReadLimit::Descriptor)
+            ?;
+        if !is_reserved_sidecar(name, bytes.bytes(), kind) {
+            matched = true;
+        }
+        Ok(DirectoryVisit::Selected)
+    })
+    .map_err(source_error)?;
+    Ok(matched)
+}
+
+fn source_error(_error: SafeRootError) -> SourceAdapterError {
+    SourceAdapterError::new(
+        SourceAdapterErrorKind::SourceUnavailable,
+        "source-set evidence could not be authorized and inspected",
+    )
 }
 
 fn is_reserved_sidecar(

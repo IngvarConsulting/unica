@@ -12,7 +12,9 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
-use unica_format_core::ports::{EffectiveSupportRule, SupportSourceState};
+use unica_format_core::ports::{
+    EffectiveSupportRule, OwnerResolutionMode, SupportSourceState,
+};
 
 use super::compile_transaction::CompileTransaction;
 use super::single_file_publisher::{publish, PublishMode, PublishRequest};
@@ -2063,8 +2065,7 @@ pub(crate) fn stage_dcs_output(
         transaction,
         target,
         replacement,
-        "http://v8.1c.ru/8.1/data-composition-system/schema",
-        "DataCompositionSchema",
+        unica_format_core::ports::SemanticArtifactRole::DataCompositionSchema,
     )
 }
 
@@ -2077,8 +2078,7 @@ pub(crate) fn stage_mxl_output(
         transaction,
         target,
         replacement,
-        "http://v8.1c.ru/8.2/data/spreadsheet",
-        "document",
+        unica_format_core::ports::SemanticArtifactRole::SpreadsheetDocument,
     )
 }
 
@@ -2091,8 +2091,7 @@ pub(crate) fn stage_form_output(
         transaction,
         target,
         replacement,
-        "http://v8.1c.ru/8.3/xcf/logform",
-        "Form",
+        unica_format_core::ports::SemanticArtifactRole::FormDefinition,
     )
 }
 
@@ -2100,71 +2099,46 @@ fn stage_platform_xml_output(
     transaction: &mut CompileTransaction,
     target: &Path,
     replacement: Vec<u8>,
-    expected_namespace: &str,
-    expected_local_name: &str,
+    role: unica_format_core::ports::SemanticArtifactRole,
 ) -> Result<(), String> {
-    match exact_platform_xml_output_preimage(target, expected_namespace, expected_local_name)? {
+    match semantic_platform_xml_output_preimage(target, role)? {
         Some(original) => transaction.replace_bytes(target, &original, replacement),
         None => transaction.create_or_replace_bytes(target, replacement),
     }
 }
 
-fn exact_platform_xml_output_preimage(
+fn semantic_platform_xml_output_preimage(
     target: &Path,
-    expected_namespace: &str,
-    expected_local_name: &str,
+    role: unica_format_core::ports::SemanticArtifactRole,
 ) -> Result<Option<Vec<u8>>, String> {
-    let metadata = match fs::symlink_metadata(target) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(format!(
-                "failed to inspect existing platform XML output {}: {error}",
-                target.display()
-            ))
-        }
+    use unica_format_core::ports::{
+        SemanticArtifactReadRequest, SemanticArtifactReadResult,
     };
-    if crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point(&metadata) {
-        return Err(format!(
-            "existing platform XML output must not be a symbolic link or reparse point: {}",
-            target.display()
-        ));
+
+    let authorized_root = target
+        .ancestors()
+        .skip(1)
+        .find(|candidate| candidate.is_dir())
+        .ok_or_else(|| "semantic artifact root is unavailable".to_string())?;
+    let factory = PlatformXmlAdapterFactory::new();
+    let session = factory.capture_unscoped_source(
+        target,
+        authorized_root,
+        OwnerResolutionMode::ExistingForNewOutput,
+    );
+    let registration = factory.operational_registration();
+    match registration
+        .semantic_artifacts()
+        .read(&SemanticArtifactReadRequest::new(session, role))
+        .map_err(|_| "semantic artifact could not be read safely".to_string())?
+    {
+        SemanticArtifactReadResult::Absent => Ok(None),
+        SemanticArtifactReadResult::Present(lease) => registration
+            .semantic_artifacts()
+            .bytes(&lease)
+            .map(|bytes| Some(bytes.to_vec()))
+            .ok_or_else(|| "semantic artifact lease is invalid".to_string()),
     }
-    if !metadata.is_file() {
-        return Err(format!(
-            "existing platform XML output must be a regular file: {}",
-            target.display()
-        ));
-    }
-    let raw = fs::read(target).map_err(|error| {
-        format!(
-            "failed to read existing platform XML output {}: {error}",
-            target.display()
-        )
-    })?;
-    let text = std::str::from_utf8(&raw).map_err(|error| {
-        format!(
-            "existing platform XML output is not UTF-8 {}: {error}",
-            target.display()
-        )
-    })?;
-    let document = Document::parse(text.trim_start_matches('\u{feff}')).map_err(|error| {
-        format!(
-            "failed to parse existing platform XML output {}: {error}",
-            target.display()
-        )
-    })?;
-    let root = document.root_element();
-    let actual = (root.tag_name().namespace(), root.tag_name().name());
-    if actual != (Some(expected_namespace), expected_local_name) {
-        return Err(format!(
-            "declared platform XML target root is {{{}}}{}, expected {{{expected_namespace}}}{expected_local_name}: {}",
-            actual.0.unwrap_or(""),
-            actual.1,
-            target.display()
-        ));
-    }
-    Ok(Some(raw))
 }
 
 pub(crate) fn guard_active_format_dependencies(
@@ -2172,25 +2146,12 @@ pub(crate) fn guard_active_format_dependencies(
     targets: &[&Path],
     context: &WorkspaceContext,
 ) -> Result<(), String> {
-    let mut owners = BTreeMap::new();
-    let mut provenances = Vec::new();
-    for target in targets {
-        let resolution =
-            crate::infrastructure::platform_xml_owner::resolve_platform_xml_owners_with_provenance(
-                target, context,
-            )
-            .map_err(|error| error.message)?;
-        for owner in resolution.owners {
-            owners.entry(owner.path.clone()).or_insert(owner);
-        }
-        provenances.push(resolution.provenance);
-    }
-    let owners = owners.into_values().collect::<Vec<_>>();
-    require_supported_platform_xml_owners(&owners)?;
-    for provenance in provenances {
-        provenance.bind_to(transaction)?;
-    }
-    Ok(())
+    bind_operational_compatibility_guard(
+        transaction,
+        targets.iter().map(|target| (*target, false)),
+        context,
+        OwnerResolutionMode::Existing,
+    )
 }
 
 pub(crate) fn guard_active_format_containing_owner_for_new_output(
@@ -2198,13 +2159,12 @@ pub(crate) fn guard_active_format_containing_owner_for_new_output(
     target: &Path,
     context: &WorkspaceContext,
 ) -> Result<(), String> {
-    let resolution = crate::infrastructure::platform_xml_owner::
-        resolve_existing_platform_xml_owners_for_new_output_with_provenance(target, context)
-        .map_err(|error| error.message)?;
-    let owners = resolution.owners;
-    require_supported_platform_xml_owners(&owners)?;
-    resolution.provenance.bind_to(transaction)?;
-    Ok(())
+    bind_operational_compatibility_guard(
+        transaction,
+        std::iter::once((target, false)),
+        context,
+        OwnerResolutionMode::ExistingForNewOutput,
+    )
 }
 
 pub(crate) fn guard_active_format_xml_tree(
@@ -2221,56 +2181,60 @@ pub(crate) fn guard_active_format_dependencies_and_xml_trees(
     trees: &[&Path],
     context: &WorkspaceContext,
 ) -> Result<(), String> {
-    let mut paths = Vec::new();
-    paths.extend(dependencies.iter().map(|path| (*path).to_path_buf()));
-    for tree in trees {
-        collect_platform_xml_tree_paths(tree, &mut paths)?;
-    }
-    paths.sort();
-    paths.dedup();
-    let targets = paths.iter().map(PathBuf::as_path).collect::<Vec<_>>();
-    guard_active_format_dependencies(transaction, &targets, context)
+    bind_operational_compatibility_guard(
+        transaction,
+        dependencies
+            .iter()
+            .map(|path| (*path, false))
+            .chain(trees.iter().map(|path| (*path, true))),
+        context,
+        OwnerResolutionMode::Existing,
+    )
 }
 
-fn collect_platform_xml_tree_paths(target: &Path, paths: &mut Vec<PathBuf>) -> Result<(), String> {
-    let metadata = match fs::symlink_metadata(target) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(format!("failed to inspect {}: {error}", target.display()));
-        }
-    };
-    if crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point(&metadata) {
-        return Err(format!(
-            "platform XML dependency must not be a symbolic link or reparse point: {}",
-            target.display()
-        ));
-    }
-    if metadata.is_file() {
-        if target
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+fn bind_operational_compatibility_guard<'a>(
+    transaction: &mut CompileTransaction,
+    targets: impl IntoIterator<Item = (&'a Path, bool)>,
+    context: &WorkspaceContext,
+    mode: OwnerResolutionMode,
+) -> Result<(), String> {
+    let factory = PlatformXmlAdapterFactory::new();
+    let sessions = targets
+        .into_iter()
+        .map(|(target, tree)| {
+            if tree {
+                factory.capture_unscoped_tree_source(
+                    target,
+                    &context.workspace_root,
+                    mode,
+                )
+            } else {
+                factory.capture_unscoped_source(target, &context.workspace_root, mode)
+            }
+        })
+        .collect::<Vec<_>>();
+    transaction.guard_semantic_check(move || {
+        use unica_application::{
+            CompatibilityPolicyCommand, OperationalPolicyDecision,
+            OperationalPolicyService,
+        };
+        use unica_format_core::ports::CompatibilityRequest;
+
+        let request = CompatibilityRequest::new(sessions.clone())
+            .map_err(|_| "source compatibility request is invalid".to_string())?;
+        let registration = PlatformXmlAdapterFactory::new().operational_registration();
+        match OperationalPolicyService::check_compatibility(
+            registration.compatibility(),
+            CompatibilityPolicyCommand::new(request, true),
+        )
+        .map_err(|_| "source compatibility inspection failed".to_string())?
         {
-            paths.push(target.to_path_buf());
+            OperationalPolicyDecision::Allow => Ok(()),
+            OperationalPolicyDecision::Warn(_) | OperationalPolicyDecision::Block(_) => {
+                Err("source compatibility policy denied publication".to_string())
+            }
         }
-        return Ok(());
-    }
-    if !metadata.is_dir() {
-        return Err(format!(
-            "platform XML dependency is neither a regular file nor a directory: {}",
-            target.display()
-        ));
-    }
-    let mut entries = fs::read_dir(target)
-        .map_err(|error| format!("failed to inspect {}: {error}", target.display()))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("failed to inspect {}: {error}", target.display()))?;
-    entries.sort_by_key(|entry| entry.file_name());
-    for entry in entries {
-        collect_platform_xml_tree_paths(&entry.path(), paths)?;
-    }
-    Ok(())
+    })
 }
 
 fn require_supported_platform_xml_owners(
@@ -2563,8 +2527,7 @@ mod exact_artifact_family_guard_tests {
         let cases = [
             (
                 "Dcs.xml",
-                "http://v8.1c.ru/8.1/data-composition-system/schema",
-                "DataCompositionSchema",
+                unica_format_core::ports::SemanticArtifactRole::DataCompositionSchema,
                 br#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" version="2.20"/>"#
                     .as_slice(),
                 br#"<document xmlns="http://v8.1c.ru/8.2/data/spreadsheet" version="2.20"/>"#
@@ -2572,8 +2535,7 @@ mod exact_artifact_family_guard_tests {
             ),
             (
                 "Mxl.xml",
-                "http://v8.1c.ru/8.2/data/spreadsheet",
-                "document",
+                unica_format_core::ports::SemanticArtifactRole::SpreadsheetDocument,
                 br#"<document xmlns="http://v8.1c.ru/8.2/data/spreadsheet" version="2.20"/>"#
                     .as_slice(),
                 br#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"/>"#
@@ -2581,24 +2543,22 @@ mod exact_artifact_family_guard_tests {
             ),
             (
                 "Form.xml",
-                "http://v8.1c.ru/8.3/xcf/logform",
-                "Form",
+                unica_format_core::ports::SemanticArtifactRole::FormDefinition,
                 br#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"/>"#.as_slice(),
                 br#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" version="2.20"/>"#
                     .as_slice(),
             ),
         ];
-        for (name, namespace, local_name, accepted, rejected) in cases {
+        for (name, role, accepted, rejected) in cases {
             let target = root.join(name);
             fs::write(&target, accepted).unwrap();
-            exact_platform_xml_output_preimage(&target, namespace, local_name).unwrap();
+            semantic_platform_xml_output_preimage(&target, role).unwrap();
 
             fs::write(&target, rejected).unwrap();
             let before = fs::read(&target).unwrap();
-            let error =
-                exact_platform_xml_output_preimage(&target, namespace, local_name).unwrap_err();
+            let error = semantic_platform_xml_output_preimage(&target, role).unwrap_err();
             assert!(
-                error.contains("declared platform XML target root"),
+                error.contains("semantic artifact"),
                 "{error}"
             );
             assert_eq!(fs::read(&target).unwrap(), before);
@@ -2618,11 +2578,13 @@ mod exact_artifact_family_guard_tests {
         fs::write(&real, &original).unwrap();
         std::os::unix::fs::symlink(&real, &target).unwrap();
 
-        let error =
-            exact_platform_xml_output_preimage(&target, "http://v8.1c.ru/8.3/xcf/logform", "Form")
-                .unwrap_err();
+        let error = semantic_platform_xml_output_preimage(
+            &target,
+            unica_format_core::ports::SemanticArtifactRole::FormDefinition,
+        )
+        .unwrap_err();
 
-        assert!(error.contains("symbolic link"), "{error}");
+        assert!(error.contains("semantic artifact"), "{error}");
         assert_eq!(fs::read(real).unwrap(), original);
         fs::remove_dir_all(root).unwrap();
     }

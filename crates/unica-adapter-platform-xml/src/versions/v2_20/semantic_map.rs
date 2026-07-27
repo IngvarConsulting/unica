@@ -25,6 +25,7 @@ pub(crate) enum ChildObjectsVocabulary {
 pub(crate) enum MetadataClassRole {
     Configuration,
     TopLevelObject,
+    StandaloneObject,
     Attribute,
     Dimension,
     Resource,
@@ -54,6 +55,8 @@ pub(crate) enum MappingSource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MetadataClassProfile {
     pub(crate) class_name: String,
+    pub(crate) native_directory: Option<String>,
+    pub(crate) display_name_ru: Option<String>,
     pub(crate) role: MetadataClassRole,
     pub(crate) child_objects: ChildObjectsVocabulary,
     pub(crate) kind: NodeKind,
@@ -229,6 +232,10 @@ struct RawCoverageRegistry {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RawObjectMapping {
     native_class: String,
+    #[serde(default)]
+    native_directory: Option<String>,
+    #[serde(default)]
+    display_name_ru: Option<String>,
     kind: String,
     role: String,
     child_vocabulary: String,
@@ -349,6 +356,43 @@ impl CoverageRegistry {
     fn validate(&self) -> Result<(), SourceAdapterError> {
         ensure_unique(self.objects.iter().filter(|entry| entry.source == MappingSource::Native).map(|entry| entry.class_name.as_str()), "native object mapping")?;
         ensure_unique(self.objects.iter().filter(|entry| entry.source == MappingSource::Derived).map(|entry| entry.kind), "derived object mapping")?;
+        ensure_unique(
+            self.objects
+                .iter()
+                .filter_map(|entry| entry.native_directory.as_deref())
+                .filter(|directory| !directory.is_empty()),
+            "native top-level directory",
+        )?;
+        for object in &self.objects {
+            let owns_directory = object.source == MappingSource::Native
+                && matches!(
+                    object.role,
+                    MetadataClassRole::Configuration | MetadataClassRole::TopLevelObject
+                );
+            if owns_directory != object.native_directory.is_some()
+                || matches!(object.role, MetadataClassRole::Configuration)
+                    && object.native_directory.as_deref() != Some("")
+                || matches!(object.role, MetadataClassRole::TopLevelObject)
+                    && object
+                        .native_directory
+                        .as_deref()
+                        .is_none_or(str::is_empty)
+            {
+                return Err(invalid_registry(
+                    "native artifact directory ownership is inconsistent",
+                ));
+            }
+            if matches!(object.role, MetadataClassRole::TopLevelObject)
+                != object
+                    .display_name_ru
+                    .as_deref()
+                    .is_some_and(|label| !label.trim().is_empty())
+            {
+                return Err(invalid_registry(
+                    "top-level semantic display mapping is inconsistent",
+                ));
+            }
+        }
         if self.objects.iter().filter(|entry| entry.source == MappingSource::Unknown).count() != 1 {
             return Err(invalid_registry("coverage registry must have exactly one unknown object mapping"));
         }
@@ -543,6 +587,7 @@ fn parse_role(raw: &str) -> Result<MetadataClassRole, SourceAdapterError> {
     match raw {
         "configuration" => Ok(MetadataClassRole::Configuration),
         "topLevelObject" => Ok(MetadataClassRole::TopLevelObject),
+        "standaloneObject" => Ok(MetadataClassRole::StandaloneObject),
         "attribute" => Ok(MetadataClassRole::Attribute),
         "dimension" => Ok(MetadataClassRole::Dimension),
         "resource" => Ok(MetadataClassRole::Resource),
@@ -585,6 +630,8 @@ fn convert_object(raw: RawObjectMapping) -> Result<MetadataClassProfile, SourceA
     }
     Ok(MetadataClassProfile {
         class_name: raw.native_class,
+        native_directory: raw.native_directory,
+        display_name_ru: raw.display_name_ru,
         kind: parse_kind(&raw.kind)?,
         role: parse_role(&raw.role)?,
         child_objects: parse_child_vocabulary(&raw.child_vocabulary)?,
@@ -960,6 +1007,64 @@ pub(crate) fn validate_coverage_manifest(raw: &str) -> Result<(), SourceAdapterE
 
 pub(crate) fn metadata_class_profiles() -> &'static [MetadataClassProfile] { &registry().objects }
 
+pub(crate) fn top_level_descriptor_profiles(
+) -> impl Iterator<Item = &'static MetadataClassProfile> {
+    registry().objects.iter().filter(|entry| {
+        entry.source == MappingSource::Native
+            && entry.role == MetadataClassRole::TopLevelObject
+            && entry.native_directory.is_some()
+    })
+}
+
+pub(crate) fn native_descriptor_directory(kind: NodeKind) -> Option<&'static str> {
+    registry()
+        .objects
+        .iter()
+        .find(|entry| {
+            entry.source == MappingSource::Native
+                && entry.kind == kind
+                && entry.role == MetadataClassRole::TopLevelObject
+        })
+        .and_then(|entry| entry.native_directory.as_deref())
+}
+
+pub(crate) fn metadata_class_profile_by_directory(
+    directory: &str,
+) -> Option<&'static MetadataClassProfile> {
+    registry().objects.iter().find(|entry| {
+        entry.source == MappingSource::Native
+            && entry
+                .native_directory
+                .as_deref()
+                .is_some_and(|candidate| candidate.eq_ignore_ascii_case(directory))
+    })
+}
+
+pub(crate) fn writer_object_kind(value: &str) -> Option<NodeKind> {
+    metadata_class_profile(value)
+        .or_else(|| metadata_class_profile_by_directory(value))
+        .filter(|profile| profile.role == MetadataClassRole::TopLevelObject)
+        .map(|profile| profile.kind)
+}
+
+pub(crate) fn writer_object_kinds() -> Vec<NodeKind> {
+    top_level_descriptor_profiles()
+        .map(|profile| profile.kind)
+        .collect()
+}
+
+pub(crate) fn writer_native_class(kind: NodeKind) -> Option<&'static str> {
+    registry()
+        .objects
+        .iter()
+        .find(|entry| {
+            entry.source == MappingSource::Native
+                && entry.kind == kind
+                && entry.role == MetadataClassRole::TopLevelObject
+        })
+        .map(|entry| entry.class_name.as_str())
+}
+
 pub(crate) fn legacy_top_level_metadata_classes() -> &'static [&'static str] {
     static CLASSES: OnceLock<Vec<&'static str>> = OnceLock::new();
     CLASSES
@@ -1040,6 +1145,37 @@ pub(crate) fn reference_kind(native_class: &str) -> Option<NodeKind> {
             TypeAliasCategory::Primitive(_) => None,
         })
     })
+}
+
+#[cfg(test)]
+mod registry_authority_tests {
+    use super::*;
+    use serde_json::Value;
+
+    #[test]
+    fn checked_manifest_and_mutations_are_validated_only_inside_the_adapter() {
+        let raw = include_str!("coverage.json");
+        validate_coverage_manifest(raw).expect("checked-in registry must self-validate");
+
+        let mutations: [fn(&mut Value); 3] = [
+            |manifest: &mut Value| {
+                manifest["objects"].as_array_mut().unwrap().remove(0);
+            },
+            |manifest: &mut Value| {
+                manifest["properties"].as_array_mut().unwrap().remove(0);
+            },
+            |manifest: &mut Value| {
+                manifest["objects"][1]["nativeDirectory"] = Value::String(String::new());
+            },
+        ];
+        for mutate in mutations {
+            let mut manifest: Value = serde_json::from_str(raw).unwrap();
+            mutate(&mut manifest);
+            assert!(
+                validate_coverage_manifest(&serde_json::to_string(&manifest).unwrap()).is_err()
+            );
+        }
+    }
 }
 
 pub(crate) fn enum_value(

@@ -37,10 +37,12 @@
 //! use unica_adapter_platform_xml::owner::Owner;
 //! ```
 
+mod artifact_access;
 mod factory;
 mod guards;
 mod owner;
 mod publication;
+mod safe_root;
 mod validation;
 mod versions;
 
@@ -80,61 +82,6 @@ mod infrastructure {
     pub(crate) mod source_adapters {
         pub(crate) mod platform_xml {
             pub(crate) use crate::versions::v2_20::*;
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) mod platform {
-        pub(crate) mod filesystem {
-            use std::{io, path::Path};
-
-            #[cfg(unix)]
-            pub(crate) fn create_file_symlink_for_test(
-                target: impl AsRef<Path>,
-                link: impl AsRef<Path>,
-            ) -> Option<io::Result<()>> {
-                Some(std::os::unix::fs::symlink(target, link))
-            }
-
-            #[cfg(unix)]
-            pub(crate) fn create_dir_symlink_for_test(
-                target: impl AsRef<Path>,
-                link: impl AsRef<Path>,
-            ) -> Option<io::Result<()>> {
-                Some(std::os::unix::fs::symlink(target, link))
-            }
-
-            #[cfg(windows)]
-            pub(crate) fn create_file_symlink_for_test(
-                target: impl AsRef<Path>,
-                link: impl AsRef<Path>,
-            ) -> Option<io::Result<()>> {
-                Some(std::os::windows::fs::symlink_file(target, link))
-            }
-
-            #[cfg(windows)]
-            pub(crate) fn create_dir_symlink_for_test(
-                target: impl AsRef<Path>,
-                link: impl AsRef<Path>,
-            ) -> Option<io::Result<()>> {
-                Some(std::os::windows::fs::symlink_dir(target, link))
-            }
-
-            #[cfg(not(any(unix, windows)))]
-            pub(crate) fn create_file_symlink_for_test(
-                _target: impl AsRef<Path>,
-                _link: impl AsRef<Path>,
-            ) -> Option<io::Result<()>> {
-                None
-            }
-
-            #[cfg(not(any(unix, windows)))]
-            pub(crate) fn create_dir_symlink_for_test(
-                _target: impl AsRef<Path>,
-                _link: impl AsRef<Path>,
-            ) -> Option<io::Result<()>> {
-                None
-            }
         }
     }
 }

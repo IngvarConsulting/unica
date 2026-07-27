@@ -201,21 +201,6 @@ fn plan_scaffold(
     })
 }
 
-pub(crate) fn external_init_planned_xml_paths(
-    operation: &str,
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> Result<Vec<PathBuf>, String> {
-    let kind = ExternalArtifactKind::from_operation(operation)
-        .ok_or_else(|| format!("unsupported external init operation: {operation}"))?;
-    let plan = plan_scaffold(kind, args, context)?;
-    Ok(plan
-        .artifacts
-        .into_iter()
-        .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("xml"))
-        .collect())
-}
-
 fn validate_identifier(argument: &str, value: &str) -> Result<(), String> {
     if cf_validate_identifier(value) {
         Ok(())

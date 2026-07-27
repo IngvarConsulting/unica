@@ -167,7 +167,7 @@ impl PartialEq for ObjectRef {
 
 impl Eq for ObjectRef {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Representation {
     PlatformXml,
@@ -181,7 +181,7 @@ pub enum ResolutionState {
     Unresolved,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Authorability {
     Authorable,

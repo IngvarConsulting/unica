@@ -81,8 +81,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
             ))));
         }
         if let Some(invocation) = verified_full_dump_invocation(spec, args, dry_run) {
-            return invoke_verified_full_dump(spec.name, invocation, args, context, cancellation)
-                .map(HandlerOutcome::plain);
+            return invoke_verified_full_dump(spec.name, invocation, args, context, cancellation);
         }
         match spec.handler {
             ToolHandler::NativeOperation { operation, .. } => {
@@ -236,7 +235,7 @@ fn invoke_verified_full_dump(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
     cancellation: &CancellationToken,
-) -> Result<AdapterOutcome, String> {
+) -> Result<HandlerOutcome, String> {
     let factory = PlatformXmlAdapterFactory::new();
     let session = factory.capture_publication_session(
         operation_name,
@@ -282,13 +281,17 @@ fn invoke_verified_full_dump(
     );
     let request = PublicationRequest::new(session, invocation, cancellation.clone());
     let registration = factory.operational_registration();
-    OperationalPolicyService::publish(registration.publication(), &request)
-        .map(publication_outcome)
-        .map_err(|error| error.to_string())
+    let result = OperationalPolicyService::publish(registration.publication(), &request)
+        .map_err(|_| "publication adapter operation failed".to_string())?;
+    let data = serde_json::json!({ "publication": result.lifecycle() });
+    Ok(HandlerOutcome::with_data(
+        publication_outcome(&result),
+        data,
+    ))
 }
 
-fn publication_outcome(result: PublicationResult) -> AdapterOutcome {
-    let mut artifacts = result
+fn publication_outcome(result: &PublicationResult) -> AdapterOutcome {
+    let artifacts = result
         .artifacts()
         .iter()
         .map(|artifact| match artifact {
@@ -296,13 +299,6 @@ fn publication_outcome(result: PublicationResult) -> AdapterOutcome {
             PublicationArtifact::RecoveryState => "recoveryState".to_string(),
         })
         .collect::<Vec<_>>();
-    artifacts.extend([
-        format!("publication.status={:?}", result.status()),
-        format!("publication.cancellation={:?}", result.cancellation()),
-        format!("publication.rollback={:?}", result.rollback()),
-        format!("publication.cleanup={:?}", result.cleanup()),
-        format!("publication.recovery={:?}", result.recovery()),
-    ]);
     let errors = result
         .diagnostics()
         .iter()
@@ -310,6 +306,7 @@ fn publication_outcome(result: PublicationResult) -> AdapterOutcome {
         .collect::<Vec<_>>();
     let summary = match result.status() {
         PublicationStatus::Published => "Full source publication completed.",
+        PublicationStatus::DryRun => "Full source publication preview completed.",
         PublicationStatus::Cancelled => "Full source publication was cancelled.",
         PublicationStatus::Failed if result.recovery() == PublicationRecovery::Required => {
             "Full source publication failed and requires recovery."
@@ -320,7 +317,10 @@ fn publication_outcome(result: PublicationResult) -> AdapterOutcome {
         PublicationStatus::Failed => "Full source publication failed.",
     };
     AdapterOutcome {
-        ok: result.status() == PublicationStatus::Published,
+        ok: matches!(
+            result.status(),
+            PublicationStatus::Published | PublicationStatus::DryRun
+        ),
         summary: summary.to_string(),
         changes: result
             .changes()
@@ -385,9 +385,10 @@ mod task7_fix_round1_publication_tests {
         time::{SystemTime, UNIX_EPOCH},
     };
     use unica_format_core::ports::{
-        FormatDiagnostic, FormatDiagnosticCode, PublicationArtifact, PublicationCancellation,
-        PublicationChange, PublicationCleanup, PublicationInvocation, PublicationRecovery,
-        PublicationResult, PublicationRollback, PublicationStatus,
+        FormatDiagnostic, FormatDiagnosticCode, FormatDiagnosticDetail, PublicationArtifact,
+        PublicationCancellation, PublicationChange, PublicationCleanup, PublicationFailureKind,
+        PublicationInvocation, PublicationIssueKind, PublicationLifecycle, PublicationRecovery,
+        PublicationResult, PublicationRollback,
     };
 
     #[test]
@@ -438,11 +439,11 @@ mod task7_fix_round1_publication_tests {
             assert!(!public.contains(forbidden), "leaked {forbidden}: {public}");
         }
         for expected in [
-            "publication.status=Cancelled",
-            "publication.cancellation=BeforeExecution",
-            "publication.rollback=NotNeeded",
-            "publication.cleanup=Completed",
-            "publication.recovery=NotRequired",
+            r#""state":"cancelled""#,
+            r#""cancellation":"beforeExecution""#,
+            r#""rollback":"notNeeded""#,
+            r#""cleanup":"completed""#,
+            r#""recovery":"notRequired""#,
         ] {
             assert!(public.contains(expected), "missing {expected}: {public}");
         }
@@ -451,59 +452,87 @@ mod task7_fix_round1_publication_tests {
 
     #[test]
     fn every_publication_outcome_ignores_path_bearing_free_form_text() {
-        let diagnostic = |code| {
+        let diagnostic = |code, issue| {
             FormatDiagnostic::new(
                 code,
-                r"/private/source/Configuration.xml C:\private\source MetaDataObject 2.20 8.3.27",
+                FormatDiagnosticDetail::Publication(issue),
             )
+            .unwrap()
         };
         let cases = [
             PublicationResult::new(
-                PublicationStatus::Published,
-                PublicationCancellation::NotRequested,
-                PublicationRollback::NotNeeded,
-                PublicationCleanup::Completed,
-                PublicationRecovery::NotRequired,
-                "/private/source/Configuration.xml",
+                PublicationLifecycle::published(),
                 Vec::new(),
                 vec![PublicationChange::FullSourceReplaced],
                 vec![PublicationArtifact::PublishedSource],
             )
             .unwrap(),
             PublicationResult::new(
-                PublicationStatus::Cancelled,
-                PublicationCancellation::BeforePublication,
-                PublicationRollback::NotNeeded,
-                PublicationCleanup::Completed,
-                PublicationRecovery::NotRequired,
-                r"C:\private\source",
-                vec![diagnostic(FormatDiagnosticCode::PublicationCancelled)],
+                PublicationLifecycle::cancelled(
+                    PublicationCancellation::BeforePublication,
+                    PublicationRollback::NotNeeded,
+                    PublicationCleanup::Completed,
+                    PublicationRecovery::NotRequired,
+                )
+                .unwrap(),
+                vec![diagnostic(
+                    FormatDiagnosticCode::PublicationCancelled,
+                    PublicationIssueKind::Cancelled,
+                )],
                 Vec::new(),
                 Vec::new(),
             )
             .unwrap(),
             PublicationResult::new(
-                PublicationStatus::Failed,
-                PublicationCancellation::NotRequested,
-                PublicationRollback::NotNeeded,
-                PublicationCleanup::Failed,
-                PublicationRecovery::Required,
-                "MetaDataObject",
-                vec![diagnostic(FormatDiagnosticCode::PublicationCleanupFailed)],
+                PublicationLifecycle::failed(
+                    PublicationFailureKind::Cleanup,
+                    PublicationCancellation::NotRequested,
+                    PublicationRollback::NotNeeded,
+                    PublicationCleanup::Failed,
+                    PublicationRecovery::Required,
+                )
+                .unwrap(),
+                vec![
+                    diagnostic(
+                        FormatDiagnosticCode::PublicationFailed,
+                        PublicationIssueKind::Failed,
+                    ),
+                    diagnostic(
+                        FormatDiagnosticCode::PublicationCleanupFailed,
+                        PublicationIssueKind::CleanupFailed,
+                    ),
+                    diagnostic(
+                        FormatDiagnosticCode::PublicationRecoveryRequired,
+                        PublicationIssueKind::RecoveryRequired,
+                    ),
+                ],
                 Vec::new(),
                 vec![PublicationArtifact::RecoveryState],
             )
             .unwrap(),
             PublicationResult::new(
-                PublicationStatus::Failed,
-                PublicationCancellation::DuringPublication,
-                PublicationRollback::Failed,
-                PublicationCleanup::RetainedForRecovery,
-                PublicationRecovery::Required,
-                "Ext/ParentConfigurations.bin",
-                vec![diagnostic(
-                    FormatDiagnosticCode::PublicationRecoveryRequired,
-                )],
+                PublicationLifecycle::failed(
+                    PublicationFailureKind::Publication,
+                    PublicationCancellation::DuringPublication,
+                    PublicationRollback::Failed,
+                    PublicationCleanup::RetainedForRecovery,
+                    PublicationRecovery::Required,
+                )
+                .unwrap(),
+                vec![
+                    diagnostic(
+                        FormatDiagnosticCode::PublicationFailed,
+                        PublicationIssueKind::Failed,
+                    ),
+                    diagnostic(
+                        FormatDiagnosticCode::PublicationCancelled,
+                        PublicationIssueKind::Cancelled,
+                    ),
+                    diagnostic(
+                        FormatDiagnosticCode::PublicationRecoveryRequired,
+                        PublicationIssueKind::RecoveryRequired,
+                    ),
+                ],
                 Vec::new(),
                 vec![PublicationArtifact::RecoveryState],
             )
@@ -511,7 +540,7 @@ mod task7_fix_round1_publication_tests {
         ];
 
         for result in cases {
-            let public = serde_json::to_string(&publication_outcome(result)).unwrap();
+            let public = serde_json::to_string(&publication_outcome(&result)).unwrap();
             for forbidden in [
                 "/private/source",
                 r"C:\private\source",

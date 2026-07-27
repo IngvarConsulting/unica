@@ -10,6 +10,8 @@ use std::{
     },
 };
 
+use serde::{de::Error as _, Deserialize, Deserializer, Serialize, Serializer};
+
 use crate::{
     navigation::{
         Authorability, CapabilityVector, NavigationEnvelope, NavigationQuery, ObjectKey, ObjectRef,
@@ -425,7 +427,168 @@ impl OperationalSourceSession {
     }
 }
 
+#[derive(Clone)]
+pub struct SemanticArtifactLease {
+    state: Arc<dyn Any + Send + Sync>,
+}
+
+impl std::fmt::Debug for SemanticArtifactLease {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SemanticArtifactLease(<opaque>)")
+    }
+}
+
+impl SemanticArtifactLease {
+    pub fn new<T>(state: T) -> Self
+    where
+        T: Any + Send + Sync,
+    {
+        Self {
+            state: Arc::new(state),
+        }
+    }
+
+    pub fn adapter_state<T>(&self) -> Option<&T>
+    where
+        T: Any + Send + Sync,
+    {
+        self.state.downcast_ref::<T>()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectKindSelector(String);
+
+impl ObjectKindSelector {
+    pub fn new(value: impl Into<String>) -> Result<Self, OperationalContractError> {
+        let value = value.into();
+        if value.is_empty()
+            || value.len() > 128
+            || value.chars().any(|character| {
+                character.is_control()
+                    || matches!(character, '/' | '\\' | ':' | '<' | '>' | '"' | '\'')
+            })
+        {
+            return Err(OperationalContractError::InvalidSemanticValue);
+        }
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectKindProjection {
+    kind: crate::semantic_ids::SemanticObjectKind,
+    canonical_selector: ObjectKindSelector,
+    collection_selector: ObjectKindSelector,
+    display_label: String,
+}
+
+impl ObjectKindProjection {
+    pub fn new(
+        kind: crate::semantic_ids::SemanticObjectKind,
+        canonical_selector: ObjectKindSelector,
+        collection_selector: ObjectKindSelector,
+        display_label: impl Into<String>,
+    ) -> Result<Self, OperationalContractError> {
+        let display_label = display_label.into();
+        if matches!(
+            kind,
+            crate::semantic_ids::SemanticObjectKind::SourceRoot
+                | crate::semantic_ids::SemanticObjectKind::Unknown
+        ) || display_label.is_empty()
+            || display_label.len() > 256
+            || display_label.chars().any(char::is_control)
+        {
+            return Err(OperationalContractError::InvalidSemanticValue);
+        }
+        Ok(Self {
+            kind,
+            canonical_selector,
+            collection_selector,
+            display_label,
+        })
+    }
+
+    pub const fn kind(&self) -> crate::semantic_ids::SemanticObjectKind {
+        self.kind
+    }
+
+    pub fn canonical_selector(&self) -> &ObjectKindSelector {
+        &self.canonical_selector
+    }
+
+    pub fn collection_selector(&self) -> &ObjectKindSelector {
+        &self.collection_selector
+    }
+
+    pub fn display_label(&self) -> &str {
+        &self.display_label
+    }
+}
+
+pub trait ObjectKindRegistryPort: Send + Sync {
+    fn resolve(&self, selector: &ObjectKindSelector)
+        -> Option<crate::semantic_ids::SemanticObjectKind>;
+
+    fn ordered_kinds(&self) -> Vec<crate::semantic_ids::SemanticObjectKind>;
+
+    fn lease(&self, kind: crate::semantic_ids::SemanticObjectKind)
+        -> Option<SemanticArtifactLease>;
+
+    fn project(&self, lease: &SemanticArtifactLease) -> Option<&'static ObjectKindProjection>;
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SemanticArtifactRole {
+    FormDefinition,
+    DataCompositionSchema,
+    SpreadsheetDocument,
+}
+
+#[derive(Debug, Clone)]
+pub struct SemanticArtifactReadRequest {
+    session: OperationalSourceSession,
+    role: SemanticArtifactRole,
+}
+
+impl SemanticArtifactReadRequest {
+    pub const fn new(
+        session: OperationalSourceSession,
+        role: SemanticArtifactRole,
+    ) -> Self {
+        Self { session, role }
+    }
+
+    pub fn session(&self) -> &OperationalSourceSession {
+        &self.session
+    }
+
+    pub const fn role(&self) -> SemanticArtifactRole {
+        self.role
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum SemanticArtifactReadResult {
+    Absent,
+    Present(SemanticArtifactLease),
+}
+
+pub trait SemanticArtifactPort: Send + Sync {
+    fn read(
+        &self,
+        request: &SemanticArtifactReadRequest,
+    ) -> Result<SemanticArtifactReadResult, SourceAdapterError>;
+
+    fn bytes<'a>(&self, lease: &'a SemanticArtifactLease) -> Option<&'a [u8]>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum FormatDiagnosticCode {
     SourceRevisionOlder,
     SourceRevisionNewer,
@@ -466,14 +629,16 @@ impl FormatDiagnosticCode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum CompatibilityIssueKind {
     Older,
     Newer,
     Malformed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum SupportState {
     Absent,
     Removed,
@@ -484,7 +649,8 @@ pub enum SupportState {
     Unreadable,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum ValidationIssueKind {
     SourceUnreadable,
     OwnerUnavailable,
@@ -494,7 +660,8 @@ pub enum ValidationIssueKind {
     RegistrarMissing,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum ValidationMethodReferenceStatus {
     Valid,
     Invalid,
@@ -503,46 +670,142 @@ pub enum ValidationMethodReferenceStatus {
     EntryPointMissing,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PublicationIssueKind {
+    Failed,
+    Cancelled,
+    RecoveryRequired,
+    CleanupFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum FormatDiagnosticDetail {
     Compatibility(CompatibilityIssueKind),
     Support(SupportState),
     Validation(ValidationIssueKind),
+    Publication(PublicationIssueKind),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FormatDiagnostic {
     code: FormatDiagnosticCode,
-    message: String,
-    details: Vec<FormatDiagnosticDetail>,
+    detail: FormatDiagnosticDetail,
 }
 
 impl FormatDiagnostic {
-    pub fn new(code: FormatDiagnosticCode, message: impl Into<String>) -> Self {
-        Self {
-            code,
-            message: message.into(),
-            details: Vec::new(),
+    pub fn new(
+        code: FormatDiagnosticCode,
+        detail: FormatDiagnosticDetail,
+    ) -> Result<Self, OperationalContractError> {
+        if !diagnostic_detail_matches(code, detail) {
+            return Err(OperationalContractError::InvalidDiagnostic);
         }
-    }
-
-    pub fn with_detail(mut self, detail: FormatDiagnosticDetail) -> Self {
-        if !self.details.contains(&detail) {
-            self.details.push(detail);
-        }
-        self
+        Ok(Self { code, detail })
     }
 
     pub const fn code(&self) -> FormatDiagnosticCode {
         self.code
     }
 
-    pub fn message(&self) -> &str {
-        &self.message
+    pub const fn detail(&self) -> FormatDiagnosticDetail {
+        self.detail
     }
+}
 
-    pub fn details(&self) -> &[FormatDiagnosticDetail] {
-        &self.details
+impl<'de> Deserialize<'de> for FormatDiagnostic {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Wire {
+            code: FormatDiagnosticCode,
+            detail: FormatDiagnosticDetail,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        Self::new(wire.code, wire.detail).map_err(D::Error::custom)
+    }
+}
+
+const fn diagnostic_detail_matches(
+    code: FormatDiagnosticCode,
+    detail: FormatDiagnosticDetail,
+) -> bool {
+    match (code, detail) {
+        (
+            FormatDiagnosticCode::SourceRevisionOlder,
+            FormatDiagnosticDetail::Compatibility(CompatibilityIssueKind::Older),
+        )
+        | (
+            FormatDiagnosticCode::SourceRevisionNewer,
+            FormatDiagnosticDetail::Compatibility(CompatibilityIssueKind::Newer),
+        )
+        | (
+            FormatDiagnosticCode::SourceMalformed
+            | FormatDiagnosticCode::SourceFamilyIncompatible,
+            FormatDiagnosticDetail::Compatibility(CompatibilityIssueKind::Malformed),
+        )
+        | (
+            FormatDiagnosticCode::SupportStateUnreadable,
+            FormatDiagnosticDetail::Support(SupportState::Unreadable),
+        )
+        | (
+            FormatDiagnosticCode::SupportCapabilityDisabled,
+            FormatDiagnosticDetail::Support(SupportState::ConfigurationReadOnly),
+        )
+        | (
+            FormatDiagnosticCode::SupportLocked,
+            FormatDiagnosticDetail::Support(SupportState::Locked),
+        )
+        | (
+            FormatDiagnosticCode::SupportRemovalRequired,
+            FormatDiagnosticDetail::Support(
+                SupportState::Absent
+                | SupportState::Editable
+                | SupportState::Locked
+                | SupportState::UnknownReadOnly
+                | SupportState::Unreadable,
+            ),
+        )
+        | (
+            FormatDiagnosticCode::ValidationContextUnavailable,
+            FormatDiagnosticDetail::Validation(
+                ValidationIssueKind::SourceUnreadable
+                | ValidationIssueKind::OwnerUnavailable
+                | ValidationIssueKind::RegistrationMissing
+                | ValidationIssueKind::LanguageProfileMissing,
+            ),
+        )
+        | (
+            FormatDiagnosticCode::ValidationReferenceMissing,
+            FormatDiagnosticDetail::Validation(ValidationIssueKind::ReferenceMissing),
+        )
+        | (
+            FormatDiagnosticCode::ValidationRegistrarMissing,
+            FormatDiagnosticDetail::Validation(ValidationIssueKind::RegistrarMissing),
+        )
+        | (
+            FormatDiagnosticCode::PublicationFailed,
+            FormatDiagnosticDetail::Publication(PublicationIssueKind::Failed),
+        )
+        | (
+            FormatDiagnosticCode::PublicationCancelled,
+            FormatDiagnosticDetail::Publication(PublicationIssueKind::Cancelled),
+        )
+        | (
+            FormatDiagnosticCode::PublicationRecoveryRequired,
+            FormatDiagnosticDetail::Publication(PublicationIssueKind::RecoveryRequired),
+        )
+        | (
+            FormatDiagnosticCode::PublicationCleanupFailed,
+            FormatDiagnosticDetail::Publication(PublicationIssueKind::CleanupFailed),
+        ) => true,
+        _ => false,
     }
 }
 
@@ -701,26 +964,72 @@ impl AuthorabilityRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AuthorabilityViolation {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AuthorabilityDenial {
+    authorability: Authorability,
+    summary: SupportSummary,
     diagnostic: FormatDiagnostic,
 }
 
-impl AuthorabilityViolation {
-    pub const fn new(diagnostic: FormatDiagnostic) -> Self {
-        Self { diagnostic }
+impl AuthorabilityDenial {
+    fn new(
+        authorability: Authorability,
+        summary: SupportSummary,
+        diagnostic: FormatDiagnostic,
+    ) -> Result<Self, OperationalContractError> {
+        let requirement_specific_denial = authorability == Authorability::Authorable
+            && diagnostic.code() == FormatDiagnosticCode::SupportRemovalRequired;
+        if (authorability == Authorability::Authorable && !requirement_specific_denial)
+            || !matches!(
+                diagnostic.detail(),
+                FormatDiagnosticDetail::Support(state) if state == summary.state()
+            )
+            || (authorability == Authorability::UnknownSupportState
+                && summary.state() != SupportState::Unreadable)
+        {
+            return Err(OperationalContractError::InvalidStateCombination);
+        }
+        Ok(Self {
+            authorability,
+            summary,
+            diagnostic,
+        })
+    }
+
+    pub const fn authorability(&self) -> Authorability {
+        self.authorability
+    }
+
+    pub const fn summary(&self) -> &SupportSummary {
+        &self.summary
     }
 
     pub fn diagnostic(&self) -> &FormatDiagnostic {
         &self.diagnostic
     }
+}
 
-    pub fn into_diagnostic(self) -> FormatDiagnostic {
-        self.diagnostic
+impl<'de> Deserialize<'de> for AuthorabilityDenial {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Wire {
+            authorability: Authorability,
+            summary: SupportSummary,
+            diagnostic: FormatDiagnostic,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        Self::new(wire.authorability, wire.summary, wire.diagnostic).map_err(D::Error::custom)
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SupportSummary {
     state: SupportState,
     editing_enabled: Option<bool>,
@@ -729,18 +1038,24 @@ pub struct SupportSummary {
 }
 
 impl SupportSummary {
-    pub const fn new(
+    pub fn new(
         state: SupportState,
         editing_enabled: Option<bool>,
         vendor_count: usize,
         rule_counts: [usize; 3],
-    ) -> Self {
-        Self {
+    ) -> Result<Self, OperationalContractError> {
+        let empty = vendor_count == 0 && rule_counts == [0; 3];
+        if matches!(state, SupportState::Absent | SupportState::Unreadable)
+            && (editing_enabled.is_some() || !empty)
+        {
+            return Err(OperationalContractError::InvalidStateCombination);
+        }
+        Ok(Self {
             state,
             editing_enabled,
             vendor_count,
             rule_counts,
-        }
+        })
     }
 
     pub const fn state(&self) -> SupportState {
@@ -760,40 +1075,165 @@ impl SupportSummary {
     }
 }
 
+impl<'de> Deserialize<'de> for SupportSummary {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Wire {
+            state: SupportState,
+            editing_enabled: Option<bool>,
+            vendor_count: usize,
+            rule_counts: [usize; 3],
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        Self::new(
+            wire.state,
+            wire.editing_enabled,
+            wire.vendor_count,
+            wire.rule_counts,
+        )
+        .map_err(D::Error::custom)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AuthorabilityResult {
-    authorability: Authorability,
+pub struct AuthorabilityEvidence {
     summary: SupportSummary,
-    violation: Option<AuthorabilityViolation>,
+}
+
+impl AuthorabilityEvidence {
+    pub const fn summary(&self) -> &SupportSummary {
+        &self.summary
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthorabilityResult {
+    Allowed(AuthorabilityEvidence),
+    Denied(AuthorabilityDenial),
 }
 
 impl AuthorabilityResult {
-    pub const fn new(
+    pub fn allowed(summary: SupportSummary) -> Result<Self, OperationalContractError> {
+        if matches!(
+            summary.state(),
+            SupportState::Locked
+                | SupportState::ConfigurationReadOnly
+                | SupportState::UnknownReadOnly
+                | SupportState::Unreadable
+        ) {
+            return Err(OperationalContractError::InvalidStateCombination);
+        }
+        Ok(Self::Allowed(AuthorabilityEvidence { summary }))
+    }
+
+    pub fn denied(
         authorability: Authorability,
         summary: SupportSummary,
-        violation: Option<AuthorabilityViolation>,
-    ) -> Self {
-        Self {
-            authorability,
-            summary,
-            violation,
-        }
+        diagnostic: FormatDiagnostic,
+    ) -> Result<Self, OperationalContractError> {
+        AuthorabilityDenial::new(authorability, summary, diagnostic).map(Self::Denied)
+    }
+
+    pub const fn is_allowed(&self) -> bool {
+        matches!(self, Self::Allowed(_))
     }
 
     pub const fn authorability(&self) -> Authorability {
-        self.authorability
+        match self {
+            Self::Allowed(_) => Authorability::Authorable,
+            Self::Denied(denial) => denial.authorability(),
+        }
     }
 
     pub fn summary(&self) -> &SupportSummary {
-        &self.summary
+        match self {
+            Self::Allowed(evidence) => evidence.summary(),
+            Self::Denied(denial) => denial.summary(),
+        }
     }
 
-    pub fn violation(&self) -> Option<&AuthorabilityViolation> {
-        self.violation.as_ref()
+    pub const fn denial(&self) -> Option<&AuthorabilityDenial> {
+        match self {
+            Self::Allowed(_) => None,
+            Self::Denied(denial) => Some(denial),
+        }
     }
 
-    pub fn into_violation(self) -> Option<AuthorabilityViolation> {
-        self.violation
+    pub fn into_denial(self) -> Option<AuthorabilityDenial> {
+        match self {
+            Self::Allowed(_) => None,
+            Self::Denied(denial) => Some(denial),
+        }
+    }
+}
+
+impl Serialize for AuthorabilityResult {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeStruct;
+
+        match self {
+            Self::Allowed(evidence) => {
+                let mut state = serializer.serialize_struct("AuthorabilityResult", 3)?;
+                state.serialize_field("decision", "allowed")?;
+                state.serialize_field("authorability", &Authorability::Authorable)?;
+                state.serialize_field("summary", evidence.summary())?;
+                state.end()
+            }
+            Self::Denied(denial) => {
+                let mut state = serializer.serialize_struct("AuthorabilityResult", 4)?;
+                state.serialize_field("decision", "denied")?;
+                state.serialize_field("authorability", &denial.authorability())?;
+                state.serialize_field("summary", denial.summary())?;
+                state.serialize_field("diagnostic", denial.diagnostic())?;
+                state.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for AuthorabilityResult {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(tag = "decision", rename_all = "camelCase", deny_unknown_fields)]
+        enum Wire {
+            Allowed {
+                authorability: Authorability,
+                summary: SupportSummary,
+            },
+            Denied {
+                authorability: Authorability,
+                summary: SupportSummary,
+                diagnostic: FormatDiagnostic,
+            },
+        }
+
+        match Wire::deserialize(deserializer)? {
+            Wire::Allowed {
+                authorability,
+                summary,
+            } if authorability == Authorability::Authorable => {
+                Self::allowed(summary).map_err(D::Error::custom)
+            }
+            Wire::Allowed { .. } => Err(D::Error::custom(
+                OperationalContractError::InvalidStateCombination,
+            )),
+            Wire::Denied {
+                authorability,
+                summary,
+                diagnostic,
+            } => Self::denied(authorability, summary, diagnostic).map_err(D::Error::custom),
+        }
     }
 }
 
@@ -934,6 +1374,257 @@ pub trait ValidationContextPort: Send + Sync {
     ) -> Result<ValidationContextResult, SourceAdapterError>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ValidationFindingSeverity {
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ValidationFindingCode {
+    SourceUnreadable,
+    SourceMalformed,
+    RevisionUnsupported,
+    SemanticStructureInvalid,
+    SemanticValueInvalid,
+    IdentityMissing,
+    IdentityInvalid,
+    NameMissing,
+    RegistrationMissing,
+    LanguageProfileMissing,
+    ReferenceMissing,
+    RegistrarMissing,
+    MethodReferenceInvalid,
+    DuplicateSemanticItem,
+    CommandPresentationTooLong,
+    UnsupportedCombination,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ValidationFinding {
+    severity: ValidationFindingSeverity,
+    code: ValidationFindingCode,
+}
+
+impl ValidationFinding {
+    pub const fn new(
+        severity: ValidationFindingSeverity,
+        code: ValidationFindingCode,
+    ) -> Self {
+        Self { severity, code }
+    }
+
+    pub const fn severity(&self) -> ValidationFindingSeverity {
+        self.severity
+    }
+
+    pub const fn code(&self) -> ValidationFindingCode {
+        self.code
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
+pub struct SemanticArtifactId(String);
+
+impl SemanticArtifactId {
+    pub fn new(value: impl Into<String>) -> Result<Self, OperationalContractError> {
+        let value = value.into();
+        if value.is_empty()
+            || value.len() > 128
+            || !value.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, ':' | '-' | '_')
+            })
+        {
+            return Err(OperationalContractError::InvalidSemanticValue);
+        }
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for SemanticArtifactId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::new(String::deserialize(deserializer)?).map_err(D::Error::custom)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ValidationStatus {
+    Valid,
+    Invalid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ValidationReport {
+    subject: SemanticArtifactId,
+    status: ValidationStatus,
+    checks: u16,
+    findings: Vec<ValidationFinding>,
+}
+
+impl ValidationReport {
+    pub fn new(
+        subject: SemanticArtifactId,
+        checks: u16,
+        findings: Vec<ValidationFinding>,
+    ) -> Result<Self, OperationalContractError> {
+        if checks == 0
+            || findings.len() > usize::from(checks)
+            || findings.len() > usize::from(u16::MAX)
+        {
+            return Err(OperationalContractError::InvalidStateCombination);
+        }
+        let status = if findings
+            .iter()
+            .any(|finding| finding.severity == ValidationFindingSeverity::Error)
+        {
+            ValidationStatus::Invalid
+        } else {
+            ValidationStatus::Valid
+        };
+        Ok(Self {
+            subject,
+            status,
+            checks,
+            findings,
+        })
+    }
+
+    pub fn subject(&self) -> &SemanticArtifactId {
+        &self.subject
+    }
+
+    pub const fn status(&self) -> ValidationStatus {
+        self.status
+    }
+
+    pub const fn checks(&self) -> u16 {
+        self.checks
+    }
+
+    pub fn findings(&self) -> &[ValidationFinding] {
+        &self.findings
+    }
+}
+
+impl<'de> Deserialize<'de> for ValidationReport {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Wire {
+            subject: SemanticArtifactId,
+            status: ValidationStatus,
+            checks: u16,
+            findings: Vec<ValidationFinding>,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        let report = Self::new(wire.subject, wire.checks, wire.findings)
+            .map_err(D::Error::custom)?;
+        if report.status != wire.status {
+            return Err(D::Error::custom(
+                OperationalContractError::InvalidStateCombination,
+            ));
+        }
+        Ok(report)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ValidationOptions {
+    detailed: bool,
+    max_findings: u16,
+}
+
+impl ValidationOptions {
+    pub fn new(
+        detailed: bool,
+        max_findings: u16,
+    ) -> Result<Self, OperationalContractError> {
+        if max_findings == 0 || max_findings > 1_000 {
+            return Err(OperationalContractError::InvalidSemanticValue);
+        }
+        Ok(Self {
+            detailed,
+            max_findings,
+        })
+    }
+
+    pub const fn detailed(self) -> bool {
+        self.detailed
+    }
+
+    pub const fn max_findings(self) -> u16 {
+        self.max_findings
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct OperationalValidationRequest {
+    sessions: Vec<OperationalSourceSession>,
+    options: ValidationOptions,
+}
+
+impl OperationalValidationRequest {
+    pub fn new(
+        sessions: Vec<OperationalSourceSession>,
+        options: ValidationOptions,
+    ) -> Result<Self, OperationalContractError> {
+        if sessions.is_empty() {
+            return Err(OperationalContractError::EmptyRequest);
+        }
+        Ok(Self { sessions, options })
+    }
+
+    pub fn sessions(&self) -> &[OperationalSourceSession] {
+        &self.sessions
+    }
+
+    pub const fn options(&self) -> ValidationOptions {
+        self.options
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationalValidationResult {
+    reports: Vec<ValidationReport>,
+}
+
+impl OperationalValidationResult {
+    pub fn new(reports: Vec<ValidationReport>) -> Result<Self, OperationalContractError> {
+        if reports.is_empty() {
+            return Err(OperationalContractError::EmptyRequest);
+        }
+        Ok(Self { reports })
+    }
+
+    pub fn reports(&self) -> &[ValidationReport] {
+        &self.reports
+    }
+}
+
+pub trait OperationalValidationPort: Send + Sync {
+    fn validate(
+        &self,
+        request: &OperationalValidationRequest,
+    ) -> Result<OperationalValidationResult, SourceAdapterError>;
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct OperationCancellation(Arc<AtomicBool>);
 
@@ -951,20 +1642,24 @@ impl OperationCancellation {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum PublicationInvocation {
     BuildDump,
     RuntimeExecute,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum PublicationStatus {
     Published,
+    DryRun,
     Failed,
     Cancelled,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum PublicationCancellation {
     NotRequested,
     BeforeExecution,
@@ -973,32 +1668,37 @@ pub enum PublicationCancellation {
     DuringPublication,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum PublicationRollback {
     NotNeeded,
     Performed,
     Failed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum PublicationCleanup {
     Completed,
     Failed,
     RetainedForRecovery,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum PublicationRecovery {
     NotRequired,
     Required,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum PublicationChange {
     FullSourceReplaced,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum PublicationArtifact {
     PublishedSource,
     RecoveryState,
@@ -1037,87 +1737,426 @@ impl PublicationRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PublicationResult {
-    status: PublicationStatus,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PublicationFailureKind {
+    Preparation,
+    Execution,
+    Publication,
+    Cleanup,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PublicationInterruption {
     cancellation: PublicationCancellation,
     rollback: PublicationRollback,
     cleanup: PublicationCleanup,
     recovery: PublicationRecovery,
-    summary: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PublicationFailure {
+    kind: PublicationFailureKind,
+    cancellation: PublicationCancellation,
+    rollback: PublicationRollback,
+    cleanup: PublicationCleanup,
+    recovery: PublicationRecovery,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublicationLifecycle {
+    Published,
+    DryRun,
+    Cancelled(PublicationInterruption),
+    Failed(PublicationFailure),
+}
+
+impl PublicationLifecycle {
+    pub const fn published() -> Self {
+        Self::Published
+    }
+
+    pub const fn dry_run() -> Self {
+        Self::DryRun
+    }
+
+    pub fn cancelled(
+        cancellation: PublicationCancellation,
+        rollback: PublicationRollback,
+        cleanup: PublicationCleanup,
+        recovery: PublicationRecovery,
+    ) -> Result<Self, OperationalContractError> {
+        let phase_is_valid = match cancellation {
+            PublicationCancellation::NotRequested => false,
+            PublicationCancellation::BeforeExecution
+            | PublicationCancellation::DuringExecution
+            | PublicationCancellation::BeforePublication => {
+                rollback == PublicationRollback::NotNeeded
+            }
+            PublicationCancellation::DuringPublication => {
+                rollback == PublicationRollback::Performed
+            }
+        };
+        if !phase_is_valid
+            || cleanup != PublicationCleanup::Completed
+            || recovery != PublicationRecovery::NotRequired
+        {
+            return Err(OperationalContractError::InvalidStateCombination);
+        }
+        Ok(Self::Cancelled(PublicationInterruption {
+            cancellation,
+            rollback,
+            cleanup,
+            recovery,
+        }))
+    }
+
+    pub fn failed(
+        kind: PublicationFailureKind,
+        cancellation: PublicationCancellation,
+        rollback: PublicationRollback,
+        cleanup: PublicationCleanup,
+        recovery: PublicationRecovery,
+    ) -> Result<Self, OperationalContractError> {
+        if !publication_failure_is_consistent(
+            kind,
+            cancellation,
+            rollback,
+            cleanup,
+            recovery,
+        ) {
+            return Err(OperationalContractError::InvalidStateCombination);
+        }
+        Ok(Self::Failed(PublicationFailure {
+            kind,
+            cancellation,
+            rollback,
+            cleanup,
+            recovery,
+        }))
+    }
+
+    pub const fn status(self) -> PublicationStatus {
+        match self {
+            Self::Published => PublicationStatus::Published,
+            Self::DryRun => PublicationStatus::DryRun,
+            Self::Cancelled(_) => PublicationStatus::Cancelled,
+            Self::Failed(_) => PublicationStatus::Failed,
+        }
+    }
+
+    pub const fn is_published(self) -> bool {
+        matches!(self, Self::Published)
+    }
+
+    pub const fn is_failed(self) -> bool {
+        matches!(self, Self::Failed(_))
+    }
+
+    pub const fn failure_kind(self) -> Option<PublicationFailureKind> {
+        match self {
+            Self::Failed(state) => Some(state.kind),
+            _ => None,
+        }
+    }
+
+    pub const fn cancellation(self) -> PublicationCancellation {
+        match self {
+            Self::Published | Self::DryRun => PublicationCancellation::NotRequested,
+            Self::Cancelled(state) => state.cancellation,
+            Self::Failed(state) => state.cancellation,
+        }
+    }
+
+    pub const fn rollback(self) -> PublicationRollback {
+        match self {
+            Self::Published | Self::DryRun => PublicationRollback::NotNeeded,
+            Self::Cancelled(state) => state.rollback,
+            Self::Failed(state) => state.rollback,
+        }
+    }
+
+    pub const fn cleanup(self) -> PublicationCleanup {
+        match self {
+            Self::Published | Self::DryRun => PublicationCleanup::Completed,
+            Self::Cancelled(state) => state.cleanup,
+            Self::Failed(state) => state.cleanup,
+        }
+    }
+
+    pub const fn recovery(self) -> PublicationRecovery {
+        match self {
+            Self::Published | Self::DryRun => PublicationRecovery::NotRequired,
+            Self::Cancelled(state) => state.recovery,
+            Self::Failed(state) => state.recovery,
+        }
+    }
+}
+
+const fn publication_recovery_is_consistent(
+    rollback: PublicationRollback,
+    cleanup: PublicationCleanup,
+    recovery: PublicationRecovery,
+) -> bool {
+    let requires_recovery = matches!(rollback, PublicationRollback::Failed)
+        || matches!(
+            cleanup,
+            PublicationCleanup::Failed | PublicationCleanup::RetainedForRecovery
+        );
+    requires_recovery == matches!(recovery, PublicationRecovery::Required)
+}
+
+const fn publication_failure_is_consistent(
+    kind: PublicationFailureKind,
+    cancellation: PublicationCancellation,
+    rollback: PublicationRollback,
+    cleanup: PublicationCleanup,
+    recovery: PublicationRecovery,
+) -> bool {
+    if !publication_recovery_is_consistent(rollback, cleanup, recovery)
+        || matches!(cancellation, PublicationCancellation::BeforeExecution)
+    {
+        return false;
+    }
+    match kind {
+        PublicationFailureKind::Preparation | PublicationFailureKind::Execution => {
+            matches!(cancellation, PublicationCancellation::NotRequested)
+                && matches!(rollback, PublicationRollback::NotNeeded)
+                && matches!(cleanup, PublicationCleanup::Completed)
+                && matches!(recovery, PublicationRecovery::NotRequired)
+        }
+        PublicationFailureKind::Publication => {
+            !matches!(
+                cancellation,
+                PublicationCancellation::DuringExecution
+            ) && !matches!(cleanup, PublicationCleanup::Failed)
+                && match cancellation {
+                    PublicationCancellation::BeforePublication => {
+                        matches!(rollback, PublicationRollback::NotNeeded)
+                    }
+                    PublicationCancellation::DuringPublication => {
+                        !matches!(rollback, PublicationRollback::NotNeeded)
+                    }
+                    PublicationCancellation::NotRequested => true,
+                    PublicationCancellation::BeforeExecution
+                    | PublicationCancellation::DuringExecution => false,
+                }
+        }
+        PublicationFailureKind::Cleanup => {
+            matches!(cleanup, PublicationCleanup::Failed)
+                && matches!(recovery, PublicationRecovery::Required)
+                && match cancellation {
+                    PublicationCancellation::BeforePublication
+                    | PublicationCancellation::DuringExecution => {
+                        matches!(rollback, PublicationRollback::NotNeeded)
+                    }
+                    PublicationCancellation::DuringPublication => {
+                        !matches!(rollback, PublicationRollback::NotNeeded)
+                    }
+                    PublicationCancellation::NotRequested => true,
+                    PublicationCancellation::BeforeExecution => false,
+                }
+        }
+    }
+}
+
+impl Serialize for PublicationLifecycle {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeStruct;
+
+        match *self {
+            Self::Published | Self::DryRun => {
+                let mut state = serializer.serialize_struct("PublicationLifecycle", 1)?;
+                state.serialize_field(
+                    "state",
+                    if matches!(self, Self::Published) {
+                        "published"
+                    } else {
+                        "dryRun"
+                    },
+                )?;
+                state.end()
+            }
+            Self::Cancelled(interruption) => {
+                let mut state = serializer.serialize_struct("PublicationLifecycle", 5)?;
+                state.serialize_field("state", "cancelled")?;
+                state.serialize_field("cancellation", &interruption.cancellation)?;
+                state.serialize_field("rollback", &interruption.rollback)?;
+                state.serialize_field("cleanup", &interruption.cleanup)?;
+                state.serialize_field("recovery", &interruption.recovery)?;
+                state.end()
+            }
+            Self::Failed(failure) => {
+                let mut state = serializer.serialize_struct("PublicationLifecycle", 6)?;
+                state.serialize_field("state", "failed")?;
+                state.serialize_field("failure", &failure.kind)?;
+                state.serialize_field("cancellation", &failure.cancellation)?;
+                state.serialize_field("rollback", &failure.rollback)?;
+                state.serialize_field("cleanup", &failure.cleanup)?;
+                state.serialize_field("recovery", &failure.recovery)?;
+                state.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for PublicationLifecycle {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        enum State {
+            Published,
+            DryRun,
+            Cancelled,
+            Failed,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Wire {
+            state: State,
+            failure: Option<PublicationFailureKind>,
+            cancellation: Option<PublicationCancellation>,
+            rollback: Option<PublicationRollback>,
+            cleanup: Option<PublicationCleanup>,
+            recovery: Option<PublicationRecovery>,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        let no_detail = wire.failure.is_none()
+            && wire.cancellation.is_none()
+            && wire.rollback.is_none()
+            && wire.cleanup.is_none()
+            && wire.recovery.is_none();
+        match wire.state {
+            State::Published if no_detail => Ok(Self::published()),
+            State::DryRun if no_detail => Ok(Self::dry_run()),
+            State::Cancelled if wire.failure.is_none() => Self::cancelled(
+                wire.cancellation
+                    .ok_or_else(|| D::Error::custom("missing cancellation"))?,
+                wire.rollback
+                    .ok_or_else(|| D::Error::custom("missing rollback"))?,
+                wire.cleanup
+                    .ok_or_else(|| D::Error::custom("missing cleanup"))?,
+                wire.recovery
+                    .ok_or_else(|| D::Error::custom("missing recovery"))?,
+            )
+            .map_err(D::Error::custom),
+            State::Failed => Self::failed(
+                wire.failure
+                    .ok_or_else(|| D::Error::custom("missing failure"))?,
+                wire.cancellation
+                    .ok_or_else(|| D::Error::custom("missing cancellation"))?,
+                wire.rollback
+                    .ok_or_else(|| D::Error::custom("missing rollback"))?,
+                wire.cleanup
+                    .ok_or_else(|| D::Error::custom("missing cleanup"))?,
+                wire.recovery
+                    .ok_or_else(|| D::Error::custom("missing recovery"))?,
+            )
+            .map_err(D::Error::custom),
+            _ => Err(D::Error::custom(
+                OperationalContractError::InvalidStateCombination,
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PublicationResult {
+    lifecycle: PublicationLifecycle,
     diagnostics: Vec<FormatDiagnostic>,
     changes: Vec<PublicationChange>,
     artifacts: Vec<PublicationArtifact>,
 }
 
 impl PublicationResult {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        status: PublicationStatus,
-        cancellation: PublicationCancellation,
-        rollback: PublicationRollback,
-        cleanup: PublicationCleanup,
-        recovery: PublicationRecovery,
-        summary: impl Into<String>,
+        lifecycle: PublicationLifecycle,
         diagnostics: Vec<FormatDiagnostic>,
         changes: Vec<PublicationChange>,
         artifacts: Vec<PublicationArtifact>,
     ) -> Result<Self, OperationalContractError> {
-        let valid = match status {
-            PublicationStatus::Published => {
-                cancellation == PublicationCancellation::NotRequested
-                    && recovery == PublicationRecovery::NotRequired
-                    && rollback != PublicationRollback::Failed
-                    && cleanup == PublicationCleanup::Completed
-                    && diagnostics.is_empty()
+        let expected_diagnostics = publication_diagnostic_codes(lifecycle);
+        let diagnostics_are_exact = diagnostics.len() == expected_diagnostics.len()
+            && expected_diagnostics.iter().all(|expected| {
+                diagnostics
+                    .iter()
+                    .filter(|diagnostic| diagnostic.code() == *expected)
+                    .count()
+                    == 1
+            });
+        let valid = diagnostics_are_exact
+            && match lifecycle {
+            PublicationLifecycle::Published | PublicationLifecycle::DryRun => {
+                diagnostics.is_empty()
             }
-            PublicationStatus::Cancelled => {
-                cancellation != PublicationCancellation::NotRequested
-                    && rollback != PublicationRollback::Failed
-            }
-            PublicationStatus::Failed => !diagnostics.is_empty(),
-        } && (rollback != PublicationRollback::Failed
-            || recovery == PublicationRecovery::Required)
-            && (cleanup == PublicationCleanup::Completed
-                || recovery == PublicationRecovery::Required);
+            PublicationLifecycle::Cancelled(_) | PublicationLifecycle::Failed(_) => diagnostics
+                .iter()
+                .all(|diagnostic| {
+                    matches!(
+                        diagnostic.detail(),
+                        FormatDiagnosticDetail::Publication(_)
+                    )
+                }),
+        }
+            && match lifecycle {
+                PublicationLifecycle::Published => {
+                    changes == [PublicationChange::FullSourceReplaced]
+                        && artifacts == [PublicationArtifact::PublishedSource]
+                }
+                PublicationLifecycle::DryRun | PublicationLifecycle::Cancelled(_) => {
+                    changes.is_empty() && artifacts.is_empty()
+                }
+                PublicationLifecycle::Failed(_) => {
+                    changes.is_empty()
+                        && if lifecycle.recovery() == PublicationRecovery::Required {
+                            artifacts == [PublicationArtifact::RecoveryState]
+                        } else {
+                            artifacts.is_empty()
+                        }
+                }
+            };
         if !valid {
             return Err(OperationalContractError::InvalidStateCombination);
         }
         Ok(Self {
-            status,
-            cancellation,
-            rollback,
-            cleanup,
-            recovery,
-            summary: summary.into(),
+            lifecycle,
             diagnostics,
             changes,
             artifacts,
         })
     }
 
+    pub const fn lifecycle(&self) -> PublicationLifecycle {
+        self.lifecycle
+    }
+
     pub const fn status(&self) -> PublicationStatus {
-        self.status
+        self.lifecycle.status()
     }
 
     pub const fn cancellation(&self) -> PublicationCancellation {
-        self.cancellation
+        self.lifecycle.cancellation()
     }
 
     pub const fn rollback(&self) -> PublicationRollback {
-        self.rollback
+        self.lifecycle.rollback()
     }
 
     pub const fn cleanup(&self) -> PublicationCleanup {
-        self.cleanup
+        self.lifecycle.cleanup()
     }
 
     pub const fn recovery(&self) -> PublicationRecovery {
-        self.recovery
-    }
-
-    pub fn summary(&self) -> &str {
-        &self.summary
+        self.lifecycle.recovery()
     }
 
     pub fn diagnostics(&self) -> &[FormatDiagnostic] {
@@ -1130,6 +2169,55 @@ impl PublicationResult {
 
     pub fn artifacts(&self) -> &[PublicationArtifact] {
         &self.artifacts
+    }
+}
+
+fn publication_diagnostic_codes(
+    lifecycle: PublicationLifecycle,
+) -> Vec<FormatDiagnosticCode> {
+    match lifecycle {
+        PublicationLifecycle::Published | PublicationLifecycle::DryRun => Vec::new(),
+        PublicationLifecycle::Cancelled(_) => {
+            vec![FormatDiagnosticCode::PublicationCancelled]
+        }
+        PublicationLifecycle::Failed(_) => {
+            let mut codes = vec![FormatDiagnosticCode::PublicationFailed];
+            if lifecycle.cancellation() != PublicationCancellation::NotRequested {
+                codes.push(FormatDiagnosticCode::PublicationCancelled);
+            }
+            if lifecycle.cleanup() == PublicationCleanup::Failed {
+                codes.push(FormatDiagnosticCode::PublicationCleanupFailed);
+            }
+            if lifecycle.recovery() == PublicationRecovery::Required {
+                codes.push(FormatDiagnosticCode::PublicationRecoveryRequired);
+            }
+            codes
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for PublicationResult {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Wire {
+            lifecycle: PublicationLifecycle,
+            diagnostics: Vec<FormatDiagnostic>,
+            changes: Vec<PublicationChange>,
+            artifacts: Vec<PublicationArtifact>,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        Self::new(
+            wire.lifecycle,
+            wire.diagnostics,
+            wire.changes,
+            wire.artifacts,
+        )
+        .map_err(D::Error::custom)
     }
 }
 
@@ -1146,6 +2234,7 @@ pub enum OperationalContractError {
     EmptyDiagnostics,
     InvalidSemanticValue,
     InvalidStateCombination,
+    InvalidDiagnostic,
 }
 
 impl std::fmt::Display for OperationalContractError {
@@ -1155,6 +2244,7 @@ impl std::fmt::Display for OperationalContractError {
             Self::EmptyDiagnostics => "invalid operational result requires a diagnostic",
             Self::InvalidSemanticValue => "operational semantic value is invalid",
             Self::InvalidStateCombination => "operational result state combination is invalid",
+            Self::InvalidDiagnostic => "diagnostic code and semantic detail do not match",
         })
     }
 }
@@ -1166,7 +2256,10 @@ pub struct OperationalAdapterRegistration {
     compatibility: Arc<dyn CompatibilityPort>,
     source_compatibility: Arc<dyn SourceCompatibilityPort>,
     authorability: Arc<dyn AuthorabilityPort>,
+    object_kinds: Arc<dyn ObjectKindRegistryPort>,
+    semantic_artifacts: Arc<dyn SemanticArtifactPort>,
     validation_context: Arc<dyn ValidationContextPort>,
+    validation: Arc<dyn OperationalValidationPort>,
     publication: Arc<dyn PublicationPort>,
 }
 
@@ -1175,14 +2268,20 @@ impl OperationalAdapterRegistration {
         compatibility: Arc<dyn CompatibilityPort>,
         source_compatibility: Arc<dyn SourceCompatibilityPort>,
         authorability: Arc<dyn AuthorabilityPort>,
+        object_kinds: Arc<dyn ObjectKindRegistryPort>,
+        semantic_artifacts: Arc<dyn SemanticArtifactPort>,
         validation_context: Arc<dyn ValidationContextPort>,
+        validation: Arc<dyn OperationalValidationPort>,
         publication: Arc<dyn PublicationPort>,
     ) -> Self {
         Self {
             compatibility,
             source_compatibility,
             authorability,
+            object_kinds,
+            semantic_artifacts,
             validation_context,
+            validation,
             publication,
         }
     }
@@ -1199,8 +2298,20 @@ impl OperationalAdapterRegistration {
         self.authorability.as_ref()
     }
 
+    pub fn object_kinds(&self) -> &dyn ObjectKindRegistryPort {
+        self.object_kinds.as_ref()
+    }
+
+    pub fn semantic_artifacts(&self) -> &dyn SemanticArtifactPort {
+        self.semantic_artifacts.as_ref()
+    }
+
     pub fn validation_context(&self) -> &dyn ValidationContextPort {
         self.validation_context.as_ref()
+    }
+
+    pub fn validation(&self) -> &dyn OperationalValidationPort {
+        self.validation.as_ref()
     }
 
     pub fn publication(&self) -> &dyn PublicationPort {

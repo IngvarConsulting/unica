@@ -4,7 +4,8 @@ use unica_format_core::{
         AuthorabilityPort, CompatibilityIssueKind, CompatibilityPort, FormatDiagnostic,
         FormatDiagnosticCode, FormatDiagnosticDetail, OperationCancellation,
         OperationalSourceSession, PublicationCancellation, PublicationCleanup, PublicationPort,
-        PublicationRecovery, PublicationResult, PublicationRollback, PublicationStatus,
+        PublicationFailureKind, PublicationLifecycle, PublicationRecovery,
+        PublicationResult, PublicationRollback,
         SupportState, ValidationContext, ValidationContextPort, ValidationOwnerKind,
     },
 };
@@ -52,18 +53,14 @@ fn task7_operational_source_session_is_opaque_and_format_agnostic() {
 fn task7_diagnostics_have_closed_codes_and_allowlisted_details() {
     let diagnostic = FormatDiagnostic::new(
         FormatDiagnosticCode::SourceRevisionOlder,
-        "alternate source revision needs migration",
+        FormatDiagnosticDetail::Compatibility(CompatibilityIssueKind::Older),
     )
-    .with_detail(FormatDiagnosticDetail::Compatibility(
-        CompatibilityIssueKind::Older,
-    ));
+    .unwrap();
 
     assert_eq!(diagnostic.code().as_str(), "sourceRevisionOlder");
     assert_eq!(
-        diagnostic.details(),
-        &[FormatDiagnosticDetail::Compatibility(
-            CompatibilityIssueKind::Older
-        )]
+        diagnostic.detail(),
+        FormatDiagnosticDetail::Compatibility(CompatibilityIssueKind::Older)
     );
 }
 
@@ -92,28 +89,28 @@ fn task7_validation_context_rejects_non_semantic_language_values() {
 #[test]
 fn task7_publication_lifecycle_rejects_impossible_combinations() {
     assert!(PublicationResult::new(
-        PublicationStatus::Published,
-        PublicationCancellation::DuringExecution,
-        PublicationRollback::NotNeeded,
-        PublicationCleanup::Completed,
-        PublicationRecovery::NotRequired,
-        "published",
+        PublicationLifecycle::cancelled(
+            PublicationCancellation::DuringExecution,
+            PublicationRollback::NotNeeded,
+            PublicationCleanup::Completed,
+            PublicationRecovery::NotRequired,
+        )
+        .unwrap(),
         Vec::new(),
         Vec::new(),
         Vec::new(),
     )
     .is_err());
     assert!(PublicationResult::new(
-        PublicationStatus::Failed,
-        PublicationCancellation::NotRequested,
-        PublicationRollback::Failed,
-        PublicationCleanup::Completed,
-        PublicationRecovery::NotRequired,
-        "failed",
-        vec![FormatDiagnostic::new(
-            FormatDiagnosticCode::PublicationFailed,
-            "failed",
-        )],
+        PublicationLifecycle::failed(
+            PublicationFailureKind::Publication,
+            PublicationCancellation::NotRequested,
+            PublicationRollback::Failed,
+            PublicationCleanup::RetainedForRecovery,
+            PublicationRecovery::Required,
+        )
+        .unwrap(),
+        Vec::new(),
         Vec::new(),
         Vec::new(),
     )
@@ -127,11 +124,20 @@ fn task7_support_state_is_closed_semantic_evidence() {
         None,
         0,
         [0; 3],
-    );
-    let result = unica_format_core::ports::AuthorabilityResult::new(
+    )
+    .unwrap();
+    let result = unica_format_core::ports::AuthorabilityResult::denied(
         Authorability::UnknownSupportState,
         summary,
-        None,
+        FormatDiagnostic::new(
+            FormatDiagnosticCode::SupportStateUnreadable,
+            FormatDiagnosticDetail::Support(SupportState::Unreadable),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        result.denial().unwrap().summary().state(),
+        SupportState::Unreadable
     );
-    assert_eq!(result.summary().state(), SupportState::Unreadable);
 }

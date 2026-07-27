@@ -12,7 +12,9 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use crate::infrastructure::metadata_kinds::metadata_kind_by_directory;
+use crate::infrastructure::platform_xml_owner::{
+    task8_metadata_kind_by_directory, task8_metadata_kind_tag,
+};
 
 use super::common::guard_active_format_owner;
 use super::compile_transaction::CompileTransaction;
@@ -532,12 +534,13 @@ fn module_identity(relative: &Path) -> Result<ModuleIdentity, String> {
         [directory, name, "Ext", file] => {
             let role = direct_module_role(file).ok_or_else(unsupported_module_layout)?;
             let kind =
-                metadata_kind_by_directory(directory).ok_or_else(unsupported_module_layout)?;
-            if !direct_role_is_supported(kind.tag, role) {
+                task8_metadata_kind_by_directory(directory).ok_or_else(unsupported_module_layout)?;
+            let tag = task8_metadata_kind_tag(kind).ok_or_else(unsupported_module_layout)?;
+            if !direct_role_is_supported(tag, role) {
                 return Err(unsupported_module_layout());
             }
             Ok(ModuleIdentity {
-                owner: format!("{}.{name}", kind.tag),
+                owner: format!("{tag}.{name}"),
                 role,
                 descriptors: vec![metadata_descriptor(directory, name)],
             })
@@ -578,9 +581,11 @@ fn metadata_module_identity(
     name: &str,
     role: ModuleRole,
 ) -> Result<ModuleIdentity, String> {
-    let kind = metadata_kind_by_directory(directory).ok_or_else(unsupported_module_layout)?;
+    let kind =
+        task8_metadata_kind_by_directory(directory).ok_or_else(unsupported_module_layout)?;
+    let tag = task8_metadata_kind_tag(kind).ok_or_else(unsupported_module_layout)?;
     Ok(ModuleIdentity {
-        owner: format!("{}.{name}", kind.tag),
+        owner: format!("{tag}.{name}"),
         role,
         descriptors: vec![metadata_descriptor(directory, name)],
     })
@@ -593,8 +598,10 @@ fn nested_module_identity(
     nested_name: &str,
     role: ModuleRole,
 ) -> Result<ModuleIdentity, String> {
-    let kind = metadata_kind_by_directory(directory).ok_or_else(unsupported_module_layout)?;
-    if !nested_modules_are_supported(kind.tag) {
+    let kind =
+        task8_metadata_kind_by_directory(directory).ok_or_else(unsupported_module_layout)?;
+    let tag = task8_metadata_kind_tag(kind).ok_or_else(unsupported_module_layout)?;
+    if !nested_modules_are_supported(tag) {
         return Err(unsupported_module_layout());
     }
     let child_directory = match nested_kind {
@@ -603,7 +610,7 @@ fn nested_module_identity(
         _ => return Err(unsupported_module_layout()),
     };
     Ok(ModuleIdentity {
-        owner: format!("{}.{name}", kind.tag),
+        owner: format!("{tag}.{name}"),
         role,
         descriptors: vec![
             metadata_descriptor(directory, name),

@@ -52,7 +52,9 @@ fn validate_workspace_paths(
     let policy = WorkspacePathPolicy::new(context);
     for key in write_args {
         if let Some(Value::String(path)) = args.get(*key) {
-            policy.resolve_write(path.as_str())?;
+            policy
+                .resolve_write(path.as_str())
+                .map_err(|_| "requested output path is not authorized".to_string())?;
         }
     }
     Ok(())
@@ -70,7 +72,8 @@ fn validate_native_source_set_format(
         return Ok(());
     }
 
-    let source_map = discover_project_source_map(&context.workspace_root)?;
+    let source_map = discover_project_source_map(&context.workspace_root)
+        .map_err(|_| "project source declaration could not be inspected".to_string())?;
     if source_map.source_sets.is_empty() && !is_external_init_tool(tool) {
         return Ok(());
     }
@@ -165,10 +168,8 @@ fn validate_initializer_destination(
         let targets_source_root = target == source_root || aliases_source_root;
         if is_external_init_tool(tool) && aliases_source_root && target != source_root {
             return Err(format!(
-                "{} must target the exact source-set root {} so v8-runner can discover top-level external descriptors; got {}",
-                tool.name,
-                source_root.display(),
-                target.display()
+                "{} must target the exact configured source-set root",
+                tool.name
             ));
         }
         let nested_in_external_artifact_set = !targets_source_root
@@ -187,10 +188,8 @@ fn validate_initializer_destination(
         if source_set.kind == expected_kind && is_external_init_tool(tool) && target != source_root
         {
             return Err(format!(
-                "{} must target the exact source-set root {} so v8-runner can discover top-level external descriptors; got {}",
-                tool.name,
-                source_root.display(),
-                target.display()
+                "{} must target the exact configured source-set root",
+                tool.name
             ));
         }
     }
@@ -218,36 +217,49 @@ fn enforce_source_compatibility(request: SourceCompatibilityRequest) -> Result<(
         registration.source_compatibility(),
         &request,
     )
-        .map_err(|error| error.message)?
+        .map_err(|_| "source compatibility inspection failed".to_string())?
     {
         OperationalPolicyDecision::Allow => Ok(()),
         OperationalPolicyDecision::Warn(diagnostic)
-        | OperationalPolicyDecision::Block(diagnostic) => Err(diagnostic.message().to_string()),
+        | OperationalPolicyDecision::Block(diagnostic) => {
+            Err(source_compatibility_message(diagnostic.code()).to_string())
+        }
+    }
+}
+
+fn source_compatibility_message(
+    code: unica_format_core::ports::FormatDiagnosticCode,
+) -> &'static str {
+    match code {
+        unica_format_core::ports::FormatDiagnosticCode::SourceFamilyIncompatible => {
+            "the selected source family is incompatible with this operation"
+        }
+        unica_format_core::ports::FormatDiagnosticCode::SourceMalformed => {
+            "the selected source declaration is ambiguous"
+        }
+        _ => "the selected source is not compatible with this operation",
     }
 }
 
 fn reject_symlink_components(target: &Path, workspace_root: &Path) -> Result<(), String> {
     let workspace_root = normalize_lexical(workspace_root);
-    let relative = target.strip_prefix(&workspace_root).map_err(|_| {
-        format!(
-            "external scaffold target is outside workspace root: {}",
-            target.display()
-        )
-    })?;
+    let relative = target
+        .strip_prefix(&workspace_root)
+        .map_err(|_| "external scaffold target is outside workspace root".to_string())?;
     let mut current = workspace_root;
     for component in relative.components() {
         current.push(component.as_os_str());
         match std::fs::symlink_metadata(&current) {
             Ok(metadata) if metadata_is_link_or_reparse_point(&metadata) => {
-                return Err(format!(
-                    "external scaffold OutputDir must not traverse symlink: {}",
-                    current.display()
-                ));
+                return Err(
+                    "external scaffold output must not traverse a link or reparse point"
+                        .to_string(),
+                );
             }
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
-            Err(error) => {
-                return Err(format!("failed to inspect {}: {error}", current.display()));
+            Err(_) => {
+                return Err("failed to inspect external scaffold output path".to_string());
             }
         }
     }
@@ -415,7 +427,8 @@ mod tests {
         for tool in runtime_write_tools() {
             let error = validate_tool_context(tool, &args, false, &context)
                 .expect_err("stderrOutput must be protected by workspace write policy");
-            assert!(error.contains("outside workspace root"), "{error}");
+            assert_eq!(error, "requested output path is not authorized");
+            assert!(!error.contains("../outside"), "{error}");
         }
 
         let _ = std::fs::remove_dir_all(root);
@@ -443,10 +456,8 @@ mod tests {
         for tool in runtime_write_tools() {
             let error = validate_tool_context(tool, &args, false, &context)
                 .expect_err("stderrOutput must not traverse a symlink outside the workspace");
-            assert!(
-                error.contains("through symlink outside workspace root"),
-                "{error}"
-            );
+            assert_eq!(error, "requested output path is not authorized");
+            assert!(!error.contains(&outside.display().to_string()), "{error}");
         }
 
         let _ = std::fs::remove_dir_all(root);
@@ -542,7 +553,8 @@ mod tests {
         .expect_err("ownership deferral must not bypass EDT/invalid source-format guards");
 
         assert!(
-            error.contains("sourceFormat=edt") || error.contains("invalid/ambiguous format"),
+            error.contains("source family is incompatible")
+                || error.contains("source declaration is ambiguous"),
             "{error}"
         );
         let _ = fs::remove_dir_all(&context.cwd);
@@ -573,5 +585,33 @@ mod tests {
         .expect("unique deepest platform XML source-set must remain valid");
 
         let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn public_tool_context_errors_never_echo_posix_or_windows_paths_or_native_names() {
+        let (root, context) = fixture("public-path-redaction");
+        for raw in [
+            "/private/source/Configuration.xml",
+            r"../C:\private\source\MetaDataObject.xml",
+        ] {
+            let args = json!({"stderrOutput": raw})
+                .as_object()
+                .unwrap()
+                .clone();
+            for tool in runtime_write_tools() {
+                let error = validate_tool_context(tool, &args, false, &context)
+                    .expect_err("outside output must be rejected");
+                for forbidden in [
+                    raw,
+                    "/private/",
+                    r"C:\private",
+                    "Configuration.xml",
+                    "MetaDataObject",
+                ] {
+                    assert!(!error.contains(forbidden), "leaked {forbidden}: {error}");
+                }
+            }
+        }
+        let _ = fs::remove_dir_all(root);
     }
 }

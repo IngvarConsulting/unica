@@ -13,6 +13,7 @@ use unica_format_core::{
 };
 
 pub(crate) mod decoder;
+pub(crate) mod inspection;
 pub(crate) mod native_model;
 pub(crate) mod operations;
 pub(crate) mod probe;
@@ -23,6 +24,7 @@ pub(crate) mod schema;
 pub(crate) mod semantic_map;
 pub(crate) mod source_sets;
 pub(crate) mod support;
+pub(crate) mod validation;
 pub(crate) mod xml;
 
 pub(crate) type ProbeOutcome = ProbeResult;
@@ -102,10 +104,6 @@ pub(crate) fn manifest() -> AdapterManifest {
         source_access: SourceAccess::ReadOnly,
         maturity: AdapterMaturity::ReadCompatible,
     }
-}
-
-pub(crate) fn validate_coverage_manifest(raw: &str) -> Result<(), SourceAdapterError> {
-    semantic_map::validate_coverage_manifest(raw)
 }
 
 fn capture_provider(

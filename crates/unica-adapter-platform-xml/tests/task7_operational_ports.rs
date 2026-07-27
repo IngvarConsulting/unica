@@ -15,8 +15,9 @@ use unica_format_core::{
     ports::{
         AuthorabilityRequest, AuthorabilityRequirement, CompatibilityIssueKind,
         CompatibilityRequest, FormatDiagnosticCode, OperationCancellation, OwnerResolutionMode,
-        PublicationCancellation, PublicationInvocation, PublicationRequest, PublicationStatus,
-        SupportState, ValidationContextRequest, ValidationIssueKind,
+        OperationalValidationRequest, PublicationCancellation, PublicationInvocation,
+        PublicationRequest, PublicationStatus, SupportState, ValidationContextRequest,
+        ValidationFindingCode, ValidationIssueKind, ValidationOptions,
     },
     source::{SourceContext, SourceFamily, SourceLocation},
 };
@@ -100,7 +101,7 @@ fn task7_authorability_distinguishes_absent_support_from_unreadable_support() {
         .unwrap();
     assert_eq!(absent.summary().state(), SupportState::Absent);
     assert_eq!(absent.authorability(), Authorability::Authorable);
-    assert!(absent.violation().is_none());
+    assert!(absent.is_allowed());
 
     fs::create_dir_all(root.join("Ext")).unwrap();
     fs::write(root.join("Ext/ParentConfigurations.bin"), "<broken-support").unwrap();
@@ -113,7 +114,54 @@ fn task7_authorability_distinguishes_absent_support_from_unreadable_support() {
         .unwrap();
     assert_eq!(unreadable.summary().state(), SupportState::Unreadable);
     assert_eq!(
-        unreadable.violation().unwrap().diagnostic().code(),
+        unreadable.denial().unwrap().diagnostic().code(),
+        FormatDiagnosticCode::SupportStateUnreadable
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn task7_authorability_binds_absent_and_present_support_evidence_across_races() {
+    let root = temp_root("support-races");
+    let owner = write_owner(&root, "2.20");
+    let factory = PlatformXmlAdapterFactory::new();
+    let operations = factory.operational_registration();
+    let session = capture(&root, &owner);
+    let inspect = |session| {
+        operations
+            .authorability()
+            .inspect(&AuthorabilityRequest::new(
+                session,
+                AuthorabilityRequirement::Editable,
+            ))
+            .unwrap()
+    };
+
+    assert_eq!(inspect(session.clone()).summary().state(), SupportState::Absent);
+    fs::create_dir_all(root.join("Ext")).unwrap();
+    let support = "{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"VendorConf\",1,1,0,00000000-0000-0000-0000-000000000001}";
+    fs::write(root.join("Ext/ParentConfigurations.bin"), support).unwrap();
+    let appeared = inspect(session);
+    assert_eq!(appeared.summary().state(), SupportState::Unreadable);
+    assert_eq!(
+        appeared.denial().unwrap().diagnostic().code(),
+        FormatDiagnosticCode::SupportStateUnreadable
+    );
+
+    let present_session = capture(&root, &owner);
+    assert_ne!(
+        inspect(present_session.clone()).summary().state(),
+        SupportState::Unreadable
+    );
+    fs::write(
+        root.join("Ext/ParentConfigurations.bin"),
+        support.replace("VendorConf", "ChangedConf"),
+    )
+    .unwrap();
+    let changed = inspect(present_session);
+    assert_eq!(changed.summary().state(), SupportState::Unreadable);
+    assert_eq!(
+        changed.denial().unwrap().diagnostic().code(),
         FormatDiagnosticCode::SupportStateUnreadable
     );
     fs::remove_dir_all(root).unwrap();
@@ -151,7 +199,7 @@ fn task7_authorability_fails_closed_for_capture_containment_family_and_read_erro
             .unwrap();
         assert_eq!(result.summary().state(), SupportState::Unreadable);
         assert_eq!(
-            result.violation().unwrap().diagnostic().code(),
+            result.denial().unwrap().diagnostic().code(),
             FormatDiagnosticCode::SupportStateUnreadable
         );
     }
@@ -187,7 +235,7 @@ fn task7_authorability_fails_closed_when_present_support_cannot_bind_to_target()
 
     assert_eq!(result.summary().state(), SupportState::Unreadable);
     assert_eq!(
-        result.violation().unwrap().diagnostic().code(),
+        result.denial().unwrap().diagnostic().code(),
         FormatDiagnosticCode::SupportStateUnreadable
     );
     fs::remove_dir_all(root).unwrap();
@@ -234,12 +282,46 @@ fn task7_validation_context_returns_closed_diagnostic_for_malformed_metadata() {
 
     assert!(result.context().is_none());
     assert_eq!(result.diagnostics().len(), 1);
-    assert!(matches!(
-        result.diagnostics()[0].details(),
-        [unica_format_core::ports::FormatDiagnosticDetail::Validation(
+    assert_eq!(
+        result.diagnostics()[0].detail(),
+        unica_format_core::ports::FormatDiagnosticDetail::Validation(
             ValidationIssueKind::SourceUnreadable
-        )]
-    ));
+        )
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn task7_operational_validation_uses_private_registry_value_constraints() {
+    let root = temp_root("validation-values");
+    fs::create_dir_all(&root).unwrap();
+    let object = root.join("Items.xml");
+    fs::write(
+        &object,
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="00000000-0000-0000-0000-000000000002"><Properties><Name>Items</Name><Hierarchical>not-a-boolean</Hierarchical><CodeType>not-an-enum-value</CodeType></Properties><ChildObjects/></Catalog></MetaDataObject>"#,
+    )
+    .unwrap();
+    let factory = PlatformXmlAdapterFactory::new();
+    let session = factory.capture_validation_source(
+        &source(&root, &object, SourceFamily::PlatformXml),
+        OwnerResolutionMode::Existing,
+    );
+    let result = factory
+        .operational_registration()
+        .validation()
+        .validate(
+            &OperationalValidationRequest::new(
+                vec![session],
+                ValidationOptions::new(true, 30).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+    assert!(result.reports()[0]
+        .findings()
+        .iter()
+        .any(|finding| finding.code() == ValidationFindingCode::SemanticValueInvalid));
     fs::remove_dir_all(root).unwrap();
 }
 

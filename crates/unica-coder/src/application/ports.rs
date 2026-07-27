@@ -6,6 +6,7 @@ use crate::domain::workspace::WorkspaceContext;
 use serde_json::{Map, Value};
 use std::path::PathBuf;
 
+#[derive(serde::Serialize)]
 pub(crate) struct HandlerOutcome {
     pub(crate) adapter: AdapterOutcome,
     pub(crate) data: Option<Value>,

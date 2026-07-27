@@ -7,12 +7,13 @@ use unica_application::{
 use unica_format_core::{
     navigation::Authorability,
     ports::{
-        AuthorabilityPort, AuthorabilityRequest, AuthorabilityResult, AuthorabilityViolation,
+        AuthorabilityPort, AuthorabilityRequest, AuthorabilityResult,
         CompatibilityIssue, CompatibilityIssueKind, CompatibilityPort, CompatibilityRequest,
-        CompatibilityResult, FormatDiagnostic, FormatDiagnosticCode, OperationalSourceSession,
-        OperationCancellation, PublicationCancellation, PublicationCleanup, PublicationPort,
-        PublicationRecovery, PublicationRequest, PublicationResult, PublicationRollback,
-        PublicationStatus, SupportState, SupportSummary,
+        CompatibilityResult, FormatDiagnostic, FormatDiagnosticCode, FormatDiagnosticDetail,
+        OperationalSourceSession, OperationCancellation, PublicationArtifact,
+        PublicationCancellation, PublicationCleanup, PublicationFailureKind, PublicationIssueKind,
+        PublicationLifecycle, PublicationPort, PublicationRecovery, PublicationRequest,
+        PublicationResult, PublicationRollback, SupportState, SupportSummary,
     },
     source::{SourceAdapterError, SourceAdapterErrorKind},
 };
@@ -67,8 +68,9 @@ fn compatibility_issue(kind: CompatibilityIssueKind) -> CompatibilityIssue {
                 CompatibilityIssueKind::Newer => FormatDiagnosticCode::SourceRevisionNewer,
                 CompatibilityIssueKind::Malformed => FormatDiagnosticCode::SourceMalformed,
             },
-            "alternate adapter rejected its source revision",
-        ),
+            FormatDiagnosticDetail::Compatibility(kind),
+        )
+        .unwrap(),
     )
 }
 
@@ -122,14 +124,16 @@ fn task7_application_policy_treats_newer_and_malformed_without_version_concepts(
 #[test]
 fn task7_authorability_enforcement_is_application_policy_not_adapter_policy() {
     let port = FakeAuthorability {
-        result: AuthorabilityResult::new(
+        result: AuthorabilityResult::denied(
             Authorability::SupportLocked,
-            SupportSummary::new(SupportState::Locked, Some(true), 1, [1, 0, 0]),
-            Some(AuthorabilityViolation::new(FormatDiagnostic::new(
+            SupportSummary::new(SupportState::Locked, Some(true), 1, [1, 0, 0]).unwrap(),
+            FormatDiagnostic::new(
                 FormatDiagnosticCode::SupportLocked,
-                "alternate adapter says this source is read-only",
-            ))),
-        ),
+                FormatDiagnosticDetail::Support(SupportState::Locked),
+            )
+            .unwrap(),
+        )
+        .unwrap(),
     };
     let request = AuthorabilityRequest::new(
         alternate_session(),
@@ -195,18 +199,33 @@ fn task7_alternate_publication_port_preserves_typed_lifecycle_without_format_con
     }
 
     let expected = PublicationResult::new(
-        PublicationStatus::Failed,
-        PublicationCancellation::DuringPublication,
-        PublicationRollback::Failed,
-        PublicationCleanup::RetainedForRecovery,
-        PublicationRecovery::Required,
-        "alternate source publication requires recovery",
-        vec![FormatDiagnostic::new(
-            FormatDiagnosticCode::PublicationRecoveryRequired,
-            "alternate adapter retained recovery state",
-        )],
+        PublicationLifecycle::failed(
+            PublicationFailureKind::Publication,
+            PublicationCancellation::DuringPublication,
+            PublicationRollback::Failed,
+            PublicationCleanup::RetainedForRecovery,
+            PublicationRecovery::Required,
+        )
+        .unwrap(),
+        vec![
+            FormatDiagnostic::new(
+                FormatDiagnosticCode::PublicationFailed,
+                FormatDiagnosticDetail::Publication(PublicationIssueKind::Failed),
+            )
+            .unwrap(),
+            FormatDiagnostic::new(
+                FormatDiagnosticCode::PublicationCancelled,
+                FormatDiagnosticDetail::Publication(PublicationIssueKind::Cancelled),
+            )
+            .unwrap(),
+            FormatDiagnostic::new(
+                FormatDiagnosticCode::PublicationRecoveryRequired,
+                FormatDiagnosticDetail::Publication(PublicationIssueKind::RecoveryRequired),
+            )
+            .unwrap(),
+        ],
         Vec::new(),
-        Vec::new(),
+        vec![PublicationArtifact::RecoveryState],
     )
     .unwrap();
     let actual = OperationalPolicyService::publish(
