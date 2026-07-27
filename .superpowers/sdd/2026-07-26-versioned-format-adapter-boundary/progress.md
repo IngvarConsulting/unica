@@ -54,3 +54,6 @@ Task 5: fix round 1 implemented.
 Task 5: fix round 1 review failed — registry still omits relation-property/backing authority; DesignTimeRef EmptyRef is lost; legacy enum vocabulary incomplete; Rights extensions can yield false ready; unknown children under no-vocabulary roles still corrupt; parity checks subsets instead of exact information sets.
 Task 5: fix round 2 started (base d7fb6a78).
 Task 5: fix round 2 implementation complete at bb3c34e3; scoped validation green (legacy_parity 10/10, unmapped_fact 8/8); ready for review.
+Task 5: fix round 2 review failed — WholeCatalog mapped to wrong property/context; Rights mixed-content text is lost; parity still derives baseline from new envelope, excludes unknown facts, and collapses duplicate node identities.
+Task 5: fix round 3 started (base 9f872bf5).
+Task 5: fix round 3 implementation complete at 3fb22fc7; scoped validation green (legacy_parity 14/14, unmapped_fact 8/8); exact frozen legacy-output oracle and full report recorded.

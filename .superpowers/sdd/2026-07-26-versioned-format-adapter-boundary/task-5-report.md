@@ -415,3 +415,158 @@ lint, format, or unrelated validation command was run.
   coverage and diagnostic effects.
 - No fact in the tracked legacy useful-information baseline remains unable to
   meet semantic parity.
+
+## Fix Round 3 (2026-07-27)
+
+### Scope and commits
+
+- Base: `9f872bf5d623de7040b60aec5b8f3b9b69e9a2d1`.
+- Implementation commit: `3fb22fc7308df89f97bd64377cc6c005a563c242`.
+- Scope remained limited to Task 5 adapter coverage/parity behavior, closed
+  domain-neutral core semantics, Task 5 tests/fixtures, and SDD artifacts.
+- The controller's pre-existing `progress.md` fix-round entry was preserved.
+
+### Files
+
+Runtime and closed core:
+
+- `crates/unica-format-core/src/semantic_ids.rs`
+- `crates/unica-format-core/src/property.rs`
+- `crates/unica-format-core/src/facets.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/coverage.json`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/semantic_map.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/decoder.rs`
+
+Tests and independent frozen oracle:
+
+- `crates/unica-adapter-platform-xml/tests/legacy_parity.rs`
+- `crates/unica-adapter-platform-xml/tests/unmapped_fact.rs`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/expected-semantic-facts.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/exact-semantic-facts.json`
+- Seven frozen `legacy-oracle/meta-info/*.full.txt` outputs.
+- `legacy-oracle/role-info/sales-reader.all.txt`.
+
+SDD artifacts:
+
+- `.superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/progress.md`
+- `.superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/task-5-report.md`
+
+### Decisions and root-cause fixes
+
+1. Enum meaning is property-scoped. Added the closed enum property
+   `catalog.code.series` and the neutral values `wholeCollection`,
+   `withinOwnerScope`, and `withinParentScope`. `WholeCatalog` is accepted only
+   for catalog code series and is no longer accepted for document number
+   periodicity. The fabricated document fixture was removed.
+2. Re-audited every mapped enum against tracked validator/reference-model
+   tables and real fixtures. Added document `Nonperiodical`, all three document
+   deletion modes, all three record-writing modes, and corrected session reuse
+   from the invalid native `Use` alias to `AutoUse`. Negative tests reject
+   catalog/document and module/service cross-context aliases.
+3. The typed registry remains the only runtime enum dispatcher. Its runtime
+   bijection now also proves that each native alias is rejected by every enum
+   property outside its declared applicability.
+4. Rights unknown evidence now walks XML text nodes, not leaf elements. It
+   retains non-whitespace direct and nested text in deterministic document
+   order. Mixed `nested-condition` text, nested text, attributes, sibling
+   extensions, and duplicate scalar candidates are distinct neutral evidence
+   occurrences and force `partial`; ambiguous duplicates are not typed.
+5. Replaced `legacy_baseline_fact_set` with an actual-output normalizer and a
+   static expected oracle. The expected data is checked in, carries script,
+   fixture, and output SHA-256 provenance, and is not constructed from the
+   runtime registry/projector during tests.
+6. Exact parity uses a sorted multiset rather than a set. Node identity is UUID
+   when present and a stable kind/name/ordinal identity otherwise, so duplicate
+   nodes cannot collapse. Every node capability and facet membership, every
+   full serialized property (type, state, value, provenance, capability), every
+   relation, diagnostic, status, root, schema, backing fact, and
+   `unknown.facts` payload participates in equality.
+7. A deliberate mutation test proves that a wrong-property enum, one omitted
+   unknown fact, or one duplicate node fails exact parity.
+8. Expanded unknown-owner coverage from three samples to the independent list
+   of all 13 concrete native profiles whose registry child vocabulary is
+   `none`: AccountingFlag, AddressingAttribute, Attribute, Column, Command,
+   Dimension, EnumValue, ExtDimensionAccountingFlag, Form, Method, Parameter,
+   Resource, and Template. Every profile remains readable `partial`, preserves
+   duplicate occurrence/position evidence, and never becomes `Corrupted`.
+9. Added `catalog.code.series` to the closed numbering facet. No XML/native
+   vocabulary was introduced outside the v2_20 adapter family; core additions
+   are closed semantic IDs/types only.
+
+### RED evidence
+
+All TDD validation runs used the Task 5 command prescribed by the plan:
+
+```text
+cargo test -p unica-adapter-platform-xml --test legacy_parity --test unmapped_fact
+```
+
+Initial focused RED: exit 101. Compilation failed on nine intentionally missing
+closed contracts: `CATALOG_CODE_SERIES`, the two scoped catalog-series enum
+values, two missing deletion values, and two missing writing values at their
+nine test references. Runtime/core behavior had not been changed.
+
+Parity RED after the runtime fix: exit 101. Seven of fourteen `legacy_parity`
+tests passed; seven failed on intentionally empty frozen exact-oracle arrays or
+a test fixture filename invariant. The output also exposed the required neutral
+`unknown.facts` wrapper, which was retained in exact assertions rather than
+flattened.
+
+The reviewed oracle pass exercised 14/14 `legacy_parity` and 8/8
+`unmapped_fact` cases. The temporary review-only capture path was removed before
+the final validation; no generator or environment bypass remains in the test.
+
+### Final GREEN evidence
+
+Command:
+
+```text
+cargo test -p unica-adapter-platform-xml --test legacy_parity --test unmapped_fact
+```
+
+Result: exit 0, no warnings.
+
+```text
+legacy_parity: 14 passed; 0 failed; 0 ignored
+unmapped_fact: 8 passed; 0 failed; 0 ignored
+```
+
+Only this Task 5 scoped Cargo validation command was run. No workspace-wide
+suite, lint, format, or unrelated validation was run. The legacy `meta-info.py`
+and `role-info.py` scripts were invoked only to produce the frozen oracle source
+outputs.
+
+### Exact parity and coverage inventory
+
+- 15 frozen exact cases, 2,072 normalized facts total.
+- 138 uniquely identified nodes, 968 complete property records, 130 relation
+  occurrences, 791 diagnostics, and 45 schema/status/root facts.
+- All 46 supported top-level kinds in the tracked all-kinds corpus.
+- Seven real BSP descriptors and their frozen legacy `Mode=full` outputs:
+  catalog, common module, document, enumeration, information register,
+  language, and report.
+- Rights: all six allow/deny permissions, targets, conditions, template,
+  defaults, backing availability, node identities, relations, status, facets,
+  and exact property states.
+- Forms/templates: owned form/template, common form/template, descriptor UUID,
+  type, descriptor/content availability, opaque state, relations, and partial
+  diagnostics.
+- Types: complete tracked primitive/reference/object/record-set/manager/key/
+  enumeration/defined-type and subscription alias variants with qualifiers.
+- Unknowns: exact neutral root/child/property/relation/value/type/backing facts,
+  duplicate occurrence identity, payloads, coverage, and diagnostics.
+- Registry inventory is now 92 property mappings and 50 property-scoped enum
+  symbols; existing object, relation-property, child, type, backing, and
+  intentional-partial registry authority remains intact.
+
+### Known intentional gaps and concerns
+
+- Form/template content internals remain intentionally opaque. Availability,
+  descriptor identity, type, and opaque-content truth are explicit and remain
+  `partial`; no legacy useful fact is omitted.
+- Native facts outside the closed vocabulary remain neutral `unknown.facts`
+  with exact occurrence/payload parity and format-neutral diagnostics.
+- Future enum aliases and rights syntax remain readable `partial` until a
+  reviewed closed semantic mapping is added.
+- No known fact from the tracked legacy useful-information baseline remains
+  unable to meet semantic parity.
