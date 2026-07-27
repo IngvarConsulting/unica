@@ -119,3 +119,123 @@ All six commands exited 0. The coder runs emitted 21 existing dead-code warnings
 - References with no already-projected target use deterministic derived identity from semantic kind and name because the source relation carries no persistent target UUID. The identity is truthful as `Derived`, not fabricated as persistent.
 - Architecture dependency/textual guards are intentionally not added here; they remain Task 10 after Tasks 7-9.
 - The ignored controller brief remains present and unchanged but is not committed, consistent with prior task briefs.
+
+## Fix Round 1
+
+### Commit and scope
+
+- Base: `7777ad47350d3983c2da800c2a83261927aadcba`
+- Implementation commit: `3875a1fc` (`fix(adapter): harden specialized relation identities`)
+- Scope remained Task 6. No Task 10 architecture guard was added, and no adapter boundary was rolled back.
+- The controller-owned `progress.md` and ignored task brief/review artifacts were preserved and excluded from the implementation commit.
+
+### Guarded invariants
+
+1. A derived owned-child key includes the closed semantic owning relation role and a private native identity discriminator. UUID is preferred, canonical backing path is next, and a deterministic same-role/class/name occurrence is used only when stronger evidence is absent.
+2. Child projection preserves native semantic order. Same-name children across roles and duplicate same-name children within one role receive distinct stable object references.
+3. Reference resolution never compares public display name or semantic kind. The private v2_20 decoder hashes the complete available native target identity, and the projector resolves only through the exact discriminator or UUID index.
+4. Private native class/qualified-target/path evidence is never serialized. Public object keys contain only authenticated semantic key material or its digest.
+5. A target absent from the captured graph is a non-owned unresolved reference stub: partial coverage, `UnknownReadOnly`, no containment relation, no modeled action, partial envelope, and the format-neutral `referenceTargetUnresolved` diagnostic.
+6. A forward reference resolves to the actual loaded node after the complete owned graph has populated the exact identity index. Ambiguous duplicate native target identities do not resolve by guess.
+7. Materialized relation pages cover every new closed role, preserve relation and object references across pages, expose consistent facets, and use selection-bound authenticated opaque cursors.
+8. The skill assigns `registerRecords` and `basedOn` to document owners, traverses operations and parameters through returned semantic references, validates every JSON example against the live MCP schema, and explains `ready`, `partial`, and `unavailable` handling through neutral diagnostics and coverage.
+
+### RED evidence
+
+Command:
+
+```text
+cargo test -p unica-adapter-platform-xml --test specialized_relations task6_fix1_ -- --nocapture
+```
+
+Initial result: exit 101; 1 passed and 3 failed.
+
+- Duplicate no-UUID same-name children failed decode with `IdentityCollision`: `Platform XML owner has duplicate child identities of the same class`.
+- Unknown native classes with the same public name collided at projection with `duplicate generated semantic relation key`.
+- An external known reference incorrectly produced an `Available` envelope instead of `Partial` and inherited resolved owner semantics.
+- The forward-reference case passed only because the old projector guessed by kind/display name; the new assertions made that accidental behavior insufficient once collision and external-target cases were considered together.
+
+Command:
+
+```text
+cargo test -p unica-coder application::tool_contracts::tests::task6_meta_info_skill_teaches_specialized_semantic_navigation -- --exact --nocapture
+```
+
+Initial test-harness compile exposed an `E0308` wrapper omission in the new schema assertion. After the minimal harness correction, the semantic RED remained: the documented cursor `"<returned opaque cursor>"` violated the live MCP cursor pattern, and the document-only relation/status semantics were absent.
+
+The new application materialization fixture passed before production changes. That was expected: it is a focused coverage regression for the existing application materializer, while the adapter RED cases above exercise the broken production behavior.
+
+### GREEN evidence
+
+```text
+cargo test -p unica-adapter-platform-xml --test specialized_relations task6_fix1_ -- --nocapture
+```
+
+Result: 4 passed, 0 failed.
+
+```text
+cargo test -p unica-application navigation::tests::task6_fix1_materializes_every_specialized_role_with_stable_opaque_pages -- --exact --nocapture
+```
+
+Result: 1 passed, 0 failed.
+
+```text
+cargo test -p unica-coder application::tool_contracts::tests::task6_meta_info_skill_teaches_specialized_semantic_navigation -- --exact --nocapture
+```
+
+Result: 1 passed, 0 failed. Existing `unica-coder` dead-code warnings were unchanged.
+
+```text
+cargo test -p unica-adapter-platform-xml task6 -- --nocapture
+```
+
+Result: 7 Task 6 integration tests passed, 0 failed; 145 adapter unit tests and unrelated integration tests were filtered out.
+
+```text
+cargo test -p unica-adapter-platform-xml profile_contract_tests -- --nocapture
+```
+
+Result: 2 passed, 0 failed. The version identity accessors remain const-usable, and metadata classes come from `PlatformXmlAdapterFactory::profile().legacy_metadata_classes`, which delegates to the authoritative runtime registry.
+
+```text
+cargo test -p unica-application snapshot_cache::tests::task6_cache_preserves_empty_reference_as_a_distinct_scalar_value -- --exact --nocapture
+```
+
+Result: 1 passed, 0 failed.
+
+### Task 5 prerequisite repairs retained
+
+#### EmptyReference match repair
+
+The minimal two-arm application repair from the initial Task 6 commit remains intact in `snapshot_cache.rs`. `PropertyValue::EmptyReference` and `PropertyType::EmptyReference` pass the same cache validation and recursive budgeting paths as other core scalar variants while remaining distinct from absent, null, and unresolved values. The focused cache regression above proves round-trip preservation. No unrelated cache refactoring was added in this round.
+
+#### Stale const/runtime-profile caller repair
+
+The authoritative runtime profile remains the only metadata-class registry. This round removed the last stale unit-test import of the deleted `METADATA_CLASS_PROFILES` constant and changed that caller to `PlatformXmlAdapterFactory::profile().legacy_metadata_classes`; it did not restore a duplicated const class list. The existing two-field compile-time identity and narrow const `platform_line`/`export_format` accessors were retained. Focused factory regressions prove both const usability and runtime-registry delegation.
+
+The first scoped adapter unit-target compile documented the stale caller precisely:
+
+```text
+error[E0432] at crates/unica-adapter-platform-xml/src/versions/v2_20/probe.rs:273
+unresolved import crate::versions::v2_20::schema::METADATA_CLASS_PROFILES
+```
+
+The same compile also identified private fixture constructor updates required by the Task 6 discriminator and the Task 5 runtime `NativeMetadataClass` shape at `projector.rs:2011`, `projector.rs:2270`, `projector.rs:2271`, and `projector.rs:2281`. Those callers now construct current private evidence; production architecture was not reverted.
+
+### Files changed in implementation commit
+
+- `crates/unica-adapter-platform-xml/src/factory.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/decoder.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/native_model.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/probe.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/projector.rs`
+- `crates/unica-adapter-platform-xml/tests/specialized_relations.rs`
+- `crates/unica-application/src/navigation.rs`
+- `crates/unica-coder/src/application/tool_contracts.rs`
+- `plugins/unica/skills/meta-info/SKILL.md`
+
+### Concerns and bounded gaps
+
+- Platform XML readable reference values in the covered v2_20 evidence expose native class plus qualified target name but no UUID. The private model supports UUID evidence when available; current exact matching therefore uses the full available class/qualified-target discriminator.
+- For duplicate children without UUID or canonical backing path, occurrence identity is necessarily order-derived. It is deterministic for an unchanged captured source and preserves pagination continuity, but inserting an indistinguishable earlier sibling can change later fallback identities. This is the explicitly allowed last-resort case.
+- No architecture-vocabulary guard was added because that remains approved Plan Task 10.
