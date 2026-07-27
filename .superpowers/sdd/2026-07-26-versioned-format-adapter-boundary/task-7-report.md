@@ -1091,6 +1091,203 @@ git diff --check
 - No scoped Task 7 test, affected Task 5/6 parity test, host compile check,
   Windows cross-target check, formatting check, or diff check remains failing.
 
+## Fix Round 8
+
+Base: `923ff5956283cb76bc54fbd356d155edf5f856db`
+
+Implementation commit:
+`222c0748891cc8f8ff3f5108cd330f70d2864a2d`
+(`fix(task7): centralize validation finalization`)
+
+Tree hashes:
+
+- base: `d3f1a75aaeb7a726fcdb660d1891d4c000b53b8f`
+- implementation: `c10456582d167a842eebfa7bf0b3f1a3d373923c`
+
+The controller-owned `progress.md` remained modified, unstaged, and untouched.
+The implementation commit was not amended.
+
+### RED
+
+- The new core contract test failed with `E0599`: the old unit
+  `ValidationErrorTruncation::Truncated` had no validated constructor,
+  `is_truncated`, or structured omitted-error count.
+- Adapter finalizer tests failed with `E0433`/`E0425` because
+  `ValidationDraft` and `finalize_validation_report` did not exist. Malformed
+  XML and unavailable-subject branches returned reports before the old limiter.
+- The grouped external import fixture reached the hidden native method:
+  `use unica_format_core::{self as contract}` was incorrectly recorded as
+  `unica_format_core::self`.
+- The pattern inventory fixture failed specifically for `while let`: its
+  pattern name resolved to the outer approved neutral-port parameter because
+  the loop condition had no lexical binding scope.
+- The first grouped-import implementation exposed `E0505` by borrowing the
+  final prefix segment and then consuming the prefix. Capturing the alias value
+  before resolving the target fixed ownership without weakening provenance.
+
+### Responsibility closure map
+
+| Concern | Final owner and invariant |
+| --- | --- |
+| Validation report production | Private v2.20 `finalize_validation_report` is the only adapter call site constructing `ValidationReport`. Normal validation, malformed XML, and unreadable selected artifacts all submit a `ValidationDraft` to it. |
+| Error limiting | The finalizer sorts and deduplicates closed findings before limiting only non-mandatory errors. It retains `SourceUnreadable` and exactly required registrar coverage evidence at every `maxErrors` value. |
+| Omitted-error evidence | Core `ValidationErrorTruncation` is a tagged closed value. `Truncated` requires `NonZeroU16`; its wire form carries `state` plus `omitted`. Zero and contradictory Serde states are unconstructible. |
+| Status preservation | Any retained error or nonzero omitted count necessarily produces `Invalid`. `maxErrors=0` can remove all truncatable findings without converting invalid, partial, or unavailable outcomes into valid or an operational error. |
+| Finding normalization | The adapter finalizer and defensive core constructor canonicalize ordering and deduplicate identical closed findings. Batch normalization continues to preserve semantic subject identity. |
+| Conditional binding scope | `if let` and `while let` create a fresh receiver-binding scope before condition traversal. `ExprLet` installs a new unapproved binding only after its scrutinee, making it visible to the remainder/body and removing it before `else` or post-loop code. |
+| Pattern inventory | Locals including let-else, if/while let, for patterns, match arms and guards, closure parameters, async/move blocks, tuples, arrays, slices, structs, references, typed/parenthesized/or-patterns, and nested destructuring all create scope-aware binding IDs. |
+| Grouped imports | Under a group prefix, `Name(self)` denotes the prefix and `Rename(self as X)` maps `X` to that prefix. Redundant self aliases are omitted instead of forming cycles; nested groups and globs retain exact targets. |
+| External provenance | Grouped aliases/globs terminate only when the resolved root is an actual host Cargo dependency. Local modules, including a local `unica_format_core`, retain local provenance and cannot spoof neutral-port approval. |
+
+### Validation limiter coverage
+
+- Actual malformed source validation was exercised with `maxErrors=0`, `1`,
+  and `30`. At zero the `SourceMalformed` finding is omitted, status remains
+  invalid, and `errorTruncation` reports one omitted error.
+- Actual semantic invalid validation was exercised with the same limits. The
+  closed semantic finding is retained only when the limit permits it; invalid
+  status and the omitted count remain exact.
+- A source removed after authorized session capture was exercised at all three
+  limits. `SourceUnreadable` remains present exactly once and is never counted
+  as truncatable.
+- Partial coverage plus two errors was exercised at limits `0`, `1`, and `8`.
+  The coverage finding remains exactly once, coverage remains partial, status
+  remains invalid, and omitted counts are `2`, `1`, and `0`.
+- Duplicate findings are removed before omitted errors are counted, so
+  permutations cannot alter status, ordering, or the reported count.
+
+### Architecture adversarial coverage
+
+- The architecture suite now covers shadowing through direct/destructured
+  locals, let-else, if let, while let, for loops, match arms and guards, move
+  closures, async move blocks, arrays, tuples, and nested blocks.
+- The dedicated `while let` fixture proves its binding cannot inherit the
+  approved outer parameter's identity.
+- Positive fixtures prove actual external grouped-self aliases, grouped globs,
+  and nested `ports::{self as ..., *}` imports retain neutral trait provenance.
+- Negative fixtures prove the same grouped forms over local namespaces and a
+  local module named `unica_format_core` remain reachable and expose hidden
+  native logic.
+- Existing alias-cycle, local re-export, same-name trait, unknown receiver,
+  `Self::helper`, trait default, arbitrary impl-self-type, nested module, and
+  unresolved-local-call fixtures remain GREEN.
+
+### GREEN validation
+
+```text
+cargo test -p unica-format-core \
+  --test public_json_contract \
+  --test task7_fix_round2_contracts \
+  --test task7_fix_round3_evidence \
+  --test task7_operational_ports \
+  --test task7_fix_round6_validation \
+  --test task7_fix_round7_validation \
+  --test task7_fix_round8_validation
+  35 passed; 0 failed; 0 ignored
+
+cargo test -p unica-application \
+  --test task7_fix_round2_policy \
+  --test task7_operational_policy
+  7 passed; 0 failed; 0 ignored
+
+cargo test -p unica-adapter-platform-xml \
+  versions::v2_20::operations::fix_round3_tests:: --lib
+  5 passed; 0 failed; 0 ignored
+cargo test -p unica-adapter-platform-xml fix_round8_tests --lib
+  3 passed; 0 failed; 0 ignored
+
+cargo test -p unica-adapter-platform-xml \
+  --test legacy_parity \
+  --test specialized_relations \
+  --test task7_fix_round1_architecture \
+  --test task7_fix_round2_architecture \
+  --test task7_fix_round2_lazy_source \
+  --test task7_fix_round3_architecture \
+  --test task7_fix_round3_lazy_revision \
+  --test task7_operational_ports \
+  --test unmapped_fact
+  91 passed; 0 failed; 0 ignored
+  legacy_parity: all 26 passed
+  task7_fix_round3_architecture: 25 passed
+  task7_operational_ports: 11 passed
+
+cargo test -p unica-coder meta_validation_ --lib
+  3 passed; 0 failed; 0 ignored
+cargo test -p unica-coder validate_meta_ --lib
+  20 passed; 0 failed; 0 ignored
+cargo test -p unica-coder \
+  max_errors_limits_only_errors_and_preserves_partial_coverage --lib
+  1 passed; 0 failed; 0 ignored
+cargo test -p unica-coder \
+  validation_batch_lattice_is_commutative_associative_and_permutation_stable \
+  --lib
+  1 passed; 0 failed; 0 ignored
+cargo test -p unica-coder \
+  normalized_batch_is_order_stable_and_dedupes_diagnostics_by_subject --lib
+  1 passed; 0 failed; 0 ignored
+cargo test -p unica-coder \
+  meta_validate_typed_gateway_exposes_closed_validation_json --lib
+  1 passed; 0 failed; 0 ignored
+
+Scoped total: 168 passed; 0 failed; 0 ignored
+
+cargo check -p unica-format-core -p unica-application -p unica-coder \
+  -p unica-adapter-platform-xml --tests
+  passed; unica-coder emitted the same 21 existing dead-code warnings
+
+cargo check -p unica-adapter-platform-xml \
+  --target x86_64-pc-windows-msvc --lib --tests
+  passed
+
+cargo fmt --all -- --check
+  passed
+git diff --check
+  passed
+```
+
+### Files
+
+- `crates/unica-format-core/src/ports.rs`
+- `crates/unica-format-core/tests/task7_fix_round7_validation.rs`
+- `crates/unica-format-core/tests/task7_fix_round8_validation.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/validation.rs`
+- `crates/unica-adapter-platform-xml/tests/task7_fix_round3_architecture.rs`
+- `crates/unica-adapter-platform-xml/tests/task7_operational_ports.rs`
+- `crates/unica-coder/src/infrastructure/native_operations/meta.rs`
+- `.superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/task-7-report.md`
+
+### Remaining host-native paths and Task 8 justification
+
+- Task 7 policy roots remain mechanically GREEN: `evaluate_format_guard`,
+  `evaluate_support_guard`, and `validate_meta` cannot reach host XML parsing,
+  native layout joins, or native wire matching.
+- `native_operations/common.rs` retains command/composition source-location
+  setup and writer helpers only. No moved guard or validation read traverses
+  those helpers.
+- `native_operations/meta.rs`, `form.rs`, `template.rs`, `help.rs`, `role.rs`,
+  `subsystem.rs`, `interface.rs`, `cf.rs`, `cfe.rs`, `mxl.rs`, `dcs.rs`, and
+  `support.rs` retain native serialization, mutation topology, destination
+  paths, and command-specific writer behavior. These remain Task 8 writer
+  responsibilities; moving them now would move serialization early.
+- Remaining `Configuration.xml` joins are writer source/destination-location
+  paths outside all moved read/guard/validation call paths.
+- Native strings in tests are fixtures and recursive leakage probes, not
+  application policy or public output.
+
+### Residual risks and non-gates
+
+- `errorTruncation` intentionally changes from a string discriminant to a
+  tagged object with a nonzero omitted count. No compatibility shim preserves
+  the insufficient old shape.
+- The architecture test remains a conservative AST/module graph rather than
+  rustc type inference. It fails closed on unresolved local/unknown calls and
+  approves only Cargo-dependency-backed neutral trait provenance.
+- Windows code cross-compiles, but Windows filesystem behavior was not
+  runtime-executed on this macOS host.
+- Full workspace validation was intentionally not run.
+- No scoped Task 7 test, affected Task 5/6 parity test, host compile check,
+  Windows cross-target check, formatting check, or diff check remains failing.
+
 ## Fix Round 7
 
 Base: `b6c7aaa1606303ac33e83b30237f2369a6bf5a88`
