@@ -983,3 +983,141 @@ Only the Task 5 scoped commands were run.
 - Form/template content internals remain opaque when the adapter cannot semantically decompose them. The exact contract requires explicit opaque backing facts and truthful `partial` coverage rather than claiming decomposition.
 - Unknown native vocabulary remains private to the 2.20 adapter. Closed neutral evidence, ordinals, status, and diagnostics are preserved; native XML terms are not introduced into core/application/coder contracts.
 - No known legacy-comparable parity gap remains in the selected 16-case corpus. No approved runtime behavior was changed in this round.
+
+## Fix Round 6
+
+Implementation commit: `7eb81229eedcd59ad36c4f8c6470eb1b71c14aee`
+
+Base: `1a2071d39591210039aa8d4a56ccc36091f2655e`
+
+The controller-authored `progress.md` review-failure/fix-round ledger entry was preserved and committed with the implementation.
+
+This section supersedes the earlier Round 5 counts and selected-field contract description. The current oracle has 21 legacy-comparable cases, 37 frozen raw outputs, and a separate 12-case schema-complete public-envelope contract.
+
+### Root-cause fixes and decisions
+
+1. Enum authority now starts with the tracked legacy sources. `extract_enum_contexts.py` derives the compile-owner dispatch from the legacy AST, field applicability from the actual legacy function call structure, and nested owner context from independently generated descriptor structure and raw output. It contains no hard-coded field-owner table and does not infer owners from enum aliases. The WebService parameter context is proven by the AST `Parameter` parser plus a real nested WebService fixture. The spreadsheet-document-template context is proven by a real `Template` descriptor whose source property is `SpreadsheetDocument`.
+2. All 62 source-extracted enum contexts are referenced exactly once by the independent semantic crosswalk and represented exactly by the typed 2.20 coverage registry. Missing, extra, duplicate, and wrong-context tuples fail generation/tests. The coordinated-drift mutation removes the same domain from crosswalk and coverage and still fails against the source-derived context set.
+3. Rights target authority is exact against the 45 supported top-level native object profiles in the typed registry. The independent target crosswalk includes every profile, including `CalculationRegister`. The frozen MultiTarget role contains Catalog, Document, InformationRegister, CommonModule, Report, and CalculationRegister targets; each target is parsed independently and carries its own permission, condition, and restriction-template evidence.
+4. The adapter-only comparator canonicalizes the complete serialized `NavigationEnvelope` and complete serialized `SemanticRelation` values. It retains every capability-vector field, capability state, action, property type/state/value/provenance/capability, object reference and identity, relation evidence/capability/group reference, facet/member, snapshot, status, coverage, diagnostic, and backing fact. Only volatile source/revision/key tokens are deterministically normalized.
+5. `build_new_only_contract.py` builds expected complete envelopes independently from the accepted hand-reviewed source inventory, legacy XML fixtures, rights XML, and closed public-schema rules. It neither imports nor calls the adapter/core crates. Static recursive schema guards reject added or removed public fields. The production comparator rejects mutations for every previously omitted capability/provenance field and for envelope, node, property, relation, facet, diagnostic, status, backing, and identity categories.
+6. Support is lossless. The closed `support.state` enum distinguishes `notSupported`, `removedFromSupport`, `configurationReadOnly`, `supportedLocked`, and `supportedEditable`; the derived active fact is false for both inactive legacy states. Missing support metadata is absent/not-supported rather than fabricated as removed. The legacy parser maps `снято с поддержки` to removed/inactive, and unknown phrases fail closed.
+7. The Rights decoder accepts the real 2.20 Rights root version. This prevents valid 2.20 rights from being downgraded to partial by two spurious unmapped-version diagnostics.
+8. The exact contract exposed two expected-oracle omissions after full-shape normalization: computed field defaults and the permission node semantic name. Both are now independently constructed from closed contract rules and rights input rather than filtered out of comparison.
+
+### Files
+
+Production semantics and 2.20 runtime:
+
+- `crates/unica-format-core/src/semantic_ids.rs`
+- `crates/unica-format-core/src/property.rs`
+- `crates/unica-format-core/src/facets.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/coverage.json`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/decoder.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/projector.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/semantic_map.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/support.rs`
+
+Tests and independent oracle machinery:
+
+- `crates/unica-adapter-platform-xml/tests/legacy_parity.rs`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/extract_enum_contexts.py`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/generate_oracle.py`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/build_new_only_contract.py`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/README.md`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/crosswalk.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/rights-target-crosswalk.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/inputs.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-source-contexts.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/legacy-semantic-oracle.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/new-only-contract-source.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/new-only-contract.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/oracle-manifest.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/` (16 source-context fixtures)
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/` (16 frozen legacy outputs)
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/*.support.txt` (5 frozen support outputs)
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/role-info/multi-target-reader.all.txt`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights/MultiTargetReader/Ext/Rights.xml`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/` (5 state fixtures and backing artifacts)
+- `.superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/progress.md`
+- `.superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/task-5-report.md` (this append)
+
+### RED evidence
+
+Initial focused command:
+
+```bash
+cargo test -p unica-adapter-platform-xml --test legacy_parity fix_round6_ -- --nocapture
+```
+
+Initial result: `FAILED`, 0 passed and 4 failed.
+
+- Source enum authority exposed 21 referenced contexts versus 62 source-extracted contexts.
+- Rights target authority exposed 22 crosswalk prefixes versus 45 supported registry profiles.
+- The adapter-only contract schema exposed only 1 normalized top-level field versus the required complete schema.
+- No lossless support-state fixture/oracle cases existed.
+
+After whole-envelope normalization, the exact production comparator also went RED on omitted computed `field.fillChecking`/related field defaults and the rights permission semantic name. Those failures drove independent expected-contract additions; no runtime fact was filtered out to obtain GREEN.
+
+The first complete scoped run additionally caught a stale fixed 16-case assertion and the native `Parameter` owner lacking its fixture-proven `WebService` context. The fixes use exact declared-case set equality and AST-plus-structural fixture evidence respectively.
+
+### GREEN evidence and Task 5 scoped validation
+
+Focused Round 6 proof:
+
+```text
+cargo test -p unica-adapter-platform-xml --test legacy_parity fix_round6_ -- --nocapture
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out
+```
+
+Oracle fail-closed/source-authority self-test:
+
+```text
+python3.12 .../generate_oracle.py --repo-root . --self-test
+verified fail-closed parser and source-context negative suite
+```
+
+Immutable oracle/provenance check:
+
+```text
+python3.12 .../generate_oracle.py --repo-root . --check
+verified 37 raw outputs, oracle facts, and SHA-256 provenance
+```
+
+Exact legacy parity, authority, complete-public-schema, and mutation suite:
+
+```text
+cargo test -p unica-adapter-platform-xml --test legacy_parity
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+Unknown/unmapped boundary:
+
+```text
+cargo test -p unica-adapter-platform-xml --test unmapped_fact
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+Only Task 5 scoped validation was run.
+
+### Provenance and regeneration
+
+`oracle-manifest.json` pins SHA-256 for every legacy reference script, regular/context input, backing input, raw legacy output, source-context extractor and artifact, independent crosswalk, rights-target crosswalk, new-only source inventory, independent contract builder, generated complete contract, and resulting semantic oracle.
+
+Regeneration remains adapter-independent:
+
+```bash
+python3.12 crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/generate_oracle.py --repo-root . --write
+```
+
+The generator invokes only frozen legacy scripts plus independent extraction/building code. Rust tests reject imports/calls into adapter crates, core normalization helpers, Cargo execution, or adapter-produced expected data.
+
+### Parity inventory and remaining gaps
+
+- Legacy-comparable inventory: 21 exact cases and 37 frozen outputs, including every supported real-object fixture in the selected corpus, drill-down, type aliases, hierarchy, EmptyReference, owned/common forms and templates, rights targets/conditions/templates, all five support states, and neutral unknown evidence.
+- Enum authority: 62 AST/source-derived contexts, each consumed exactly once; every alias/property/object-context tuple is bijective with runtime coverage.
+- Rights authority: all 45 supported target prefixes covered exactly; the MultiTarget case proves six distinct targets including CalculationRegister and preserves target-specific conditions/templates.
+- Adapter-only inventory: 12 exact complete-public-schema cases covering all selected new-only facts and every serialized contract field.
+- Form/template internals remain intentionally opaque where no closed semantic decomposition exists; explicit backing availability/opaque state and truthful partial coverage are required.
+- Unknown native phrases/aliases remain readable partial where the adapter can preserve neutral evidence. Unknown legacy support phrases fail the independent oracle parser closed rather than being assigned a fabricated state.
+- No known legacy-comparable parity gap remains in the selected corpus. No Task 4 invariant, opaque cursor behavior, or non-Task-5 surface was changed.
