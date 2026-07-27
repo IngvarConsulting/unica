@@ -511,7 +511,11 @@ fn validate_navigation_cursor(
     validate_relation_kind(cursor.relation_kind)?;
     validate_navigation_selection(&cursor.selection, limit)?;
     validate_semantic_string(&cursor.selection_hash, limit)?;
-    validate_semantic_string(&cursor.auth_tag, limit)?;
+    if cursor.encoded_len() > unica_format_core::limits::MAX_NAVIGATION_CURSOR_TOKEN_BYTES {
+        return Err(resource_limit(
+            "navigation cursor token exceeds its encoded byte limit",
+        ));
+    }
     let _ = cursor.schema_version;
     let _ = cursor.next_position;
     Ok(())

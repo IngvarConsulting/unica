@@ -1743,6 +1743,7 @@ dependencies = [
 name = "unica-format-core"
 version = "0.10.0"
 dependencies = [
+ "base64",
  "hmac",
  "serde",
  "serde_json",

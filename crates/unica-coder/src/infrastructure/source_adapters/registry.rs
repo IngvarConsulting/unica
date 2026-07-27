@@ -849,20 +849,17 @@ mod registry_tests {
             facets: FacetSelection::Full,
             relations: Vec::new(),
         };
-        let cursor = NavigationCursor {
-            schema_version: NavigationCursor::SCHEMA_VERSION,
-            source_id: snapshot.source_id.clone(),
-            snapshot_revision: SourceRevision::new("sha256:foreign").unwrap(),
-            target_identity: binding.target_identity.clone(),
-            target: owner.object_key.clone(),
-            relation: relation.group_key.clone(),
-            relation_role: relation.role,
-            relation_kind: relation.kind,
+        let cursor = NavigationCursor::issue_bound(
+            b"registry-validation-test-secret",
+            snapshot.source_id.clone(),
+            SourceRevision::new("sha256:foreign").unwrap(),
+            binding.target_identity.clone(),
+            owner.object_key.clone(),
+            relation.clone(),
             selection,
-            selection_hash: "sha256:selection".to_string(),
-            auth_tag: "tag".to_string(),
-            next_position: 1,
-        };
+            1,
+        )
+        .unwrap();
         let envelope = NavigationEnvelope {
             schema_version: "1".to_string(),
             status: NavigationStatus::Available,

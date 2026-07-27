@@ -1,11 +1,11 @@
 //! JSON navigation contracts for semantic 1C metadata projections.
 
 use std::{
-    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     fmt,
 };
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use hmac::{Hmac, Mac};
 use serde::{
     de::{MapAccess, SeqAccess, Visitor},
@@ -17,8 +17,9 @@ use uuid::Uuid;
 
 use crate::limits::{
     MAX_NAVIGATION_CURSOR_JSON_BYTES, MAX_NAVIGATION_CURSOR_STRING_BYTES,
-    MAX_NAVIGATION_NESTING_DEPTH, MAX_NAVIGATION_PROPERTY_SELECTORS,
-    MAX_NAVIGATION_RELATION_SELECTORS, MAX_NAVIGATION_SELECTOR_STRING_BYTES,
+    MAX_NAVIGATION_CURSOR_TOKEN_BYTES, MAX_NAVIGATION_NESTING_DEPTH,
+    MAX_NAVIGATION_PROPERTY_SELECTORS, MAX_NAVIGATION_RELATION_SELECTORS,
+    MAX_NAVIGATION_SELECTOR_STRING_BYTES,
 };
 use crate::source::{
     SnapshotConsistency, SourceAccess, SourceAdapterError, SourceAdapterErrorKind, SourceId,
@@ -1435,8 +1436,7 @@ pub fn normalize_navigation_selection(
     Ok(selection)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NavigationCursor {
     pub schema_version: u16,
     pub source_id: SourceId,
@@ -1448,49 +1448,46 @@ pub struct NavigationCursor {
     pub relation_kind: RelationKind,
     pub selection: NavigationSelection,
     pub selection_hash: String,
-    pub auth_tag: String,
     pub next_position: u64,
+    opaque_token: String,
+}
+
+impl Serialize for NavigationCursor {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.opaque_token)
+    }
 }
 
 #[derive(Debug, Clone)]
-pub struct OpaqueNavigationCursor(OpaqueCursorTransport);
-
-#[derive(Debug, Clone)]
-enum OpaqueCursorTransport {
-    Parsed(serde_json::Value),
-    Serialized(Vec<u8>),
-}
+pub struct OpaqueNavigationCursor(String);
 
 impl OpaqueNavigationCursor {
-    pub fn from_transport(value: serde_json::Value) -> Self {
-        Self(OpaqueCursorTransport::Parsed(value))
-    }
-
-    pub fn from_transport_json(value: impl Into<Vec<u8>>) -> Self {
-        Self(OpaqueCursorTransport::Serialized(value.into()))
+    pub fn from_token(value: impl Into<String>) -> Self {
+        Self(value.into())
     }
 
     pub fn authenticate(&self, secret: &[u8]) -> Result<NavigationCursor, SourceAdapterError> {
-        let value = match &self.0 {
-            OpaqueCursorTransport::Parsed(value) => {
-                preflight_cursor_transport(value)?;
-                Cow::Borrowed(value)
-            }
-            OpaqueCursorTransport::Serialized(value) => {
-                if value.len() > MAX_NAVIGATION_CURSOR_JSON_BYTES {
-                    return Err(resource_limit(
-                        "navigation cursor exceeds its JSON byte limit",
-                    ));
-                }
-                let value = serde_json::from_slice::<StrictJsonValue>(value)
-                    .map_err(|_| decode_cursor_error("navigation cursor JSON is invalid"))?
-                    .0;
-                preflight_cursor_transport(&value)?;
-                Cow::Owned(value)
-            }
-        };
-        let selection = NavigationCursor::authenticate(value.as_ref(), secret)?;
-        NavigationCursor::decode_claims(value.as_ref(), &selection)
+        let decoded = decode_cursor_frame(&self.0)?;
+        authenticate_cursor_payload(secret, decoded.payload(), decoded.tag())?;
+        preflight_cursor_payload_json(decoded.payload())?;
+        let value = serde_json::from_slice::<StrictJsonValue>(decoded.payload())
+            .map_err(|_| decode_cursor_error("navigation cursor payload JSON is invalid"))?
+            .0;
+        let parts = cursor_wire_parts(&value)?;
+        let selection = decode_cursor_selection(
+            value
+                .get("selection")
+                .ok_or_else(|| decode_cursor_error("navigation cursor has no selection"))?,
+        )?;
+        if parts.selection_hash != normalized_selection_hash(&selection)? {
+            return Err(decode_cursor_error(
+                "navigation cursor selectionHash is not normalized",
+            ));
+        }
+        NavigationCursor::decode_claims(&value, &selection, self.0.clone())
     }
 }
 
@@ -1551,11 +1548,19 @@ impl NavigationCursor {
             relation_kind: relation.kind,
             selection,
             selection_hash,
-            auth_tag: String::new(),
             next_position,
+            opaque_token: String::new(),
         };
-        cursor.auth_tag = cursor_auth_tag(secret, &cursor)?;
+        cursor.opaque_token = encode_cursor_token(secret, &cursor)?;
         Ok(cursor)
+    }
+
+    pub fn opaque(&self) -> OpaqueNavigationCursor {
+        OpaqueNavigationCursor::from_token(self.opaque_token.clone())
+    }
+
+    pub fn encoded_len(&self) -> usize {
+        self.opaque_token.len()
     }
 
     pub fn resume(&self, current_revision: &SourceRevision) -> Result<(), SourceAdapterError> {
@@ -1568,77 +1573,10 @@ impl NavigationCursor {
         Ok(())
     }
 
-    pub fn decode<F>(
-        value: serde_json::Value,
-        secret: &[u8],
-        current_revision: &SourceRevision,
-        expected_selection: &NavigationSelection,
-        re_resolve: F,
-    ) -> Result<Self, SourceAdapterError>
-    where
-        F: FnOnce(&SourceId, &ObjectKey, &RelationKey, &RelationRole, &RelationKind) -> bool,
-    {
-        preflight_cursor_transport(&value)?;
-        Self::authenticate(&value, secret)?;
-        Self::decode_authenticated(&value, current_revision, expected_selection, re_resolve)
-    }
-
-    fn authenticate(
-        value: &serde_json::Value,
-        secret: &[u8],
-    ) -> Result<NavigationSelection, SourceAdapterError> {
-        let parts = cursor_wire_parts(value)?;
-        let selection = decode_cursor_selection(
-            value
-                .get("selection")
-                .ok_or_else(|| decode_cursor_error("navigation cursor has no selection"))?,
-        )?;
-        if parts.selection_hash != normalized_selection_hash(&selection)? {
-            return Err(decode_cursor_error(
-                "navigation cursor selectionHash is not normalized",
-            ));
-        }
-        let tag = hex_decode(parts.auth_tag)?;
-        let mac = cursor_mac_parts(
-            secret,
-            parts.schema_version,
-            parts.source_id,
-            parts.snapshot_revision,
-            parts.target_identity,
-            parts.target,
-            parts.relation,
-            parts.relation_role,
-            parts.relation_kind,
-            &selection,
-            parts.selection_hash,
-            parts.next_position,
-        )?;
-        mac.verify_slice(&tag)
-            .map_err(|_| {
-                SourceAdapterError::new(
-                    SourceAdapterErrorKind::DecodeCorrupted,
-                    "navigation cursor authentication failed",
-                )
-            })
-            .map(|()| selection)
-    }
-
-    pub fn decode_authenticated<F>(
-        value: &serde_json::Value,
-        current_revision: &SourceRevision,
-        expected_selection: &NavigationSelection,
-        re_resolve: F,
-    ) -> Result<Self, SourceAdapterError>
-    where
-        F: FnOnce(&SourceId, &ObjectKey, &RelationKey, &RelationRole, &RelationKind) -> bool,
-    {
-        let cursor = Self::decode_claims(value, expected_selection)?;
-        cursor.validate_resume(current_revision, re_resolve)
-    }
-
     fn decode_claims(
         value: &serde_json::Value,
         expected_selection: &NavigationSelection,
+        opaque_token: String,
     ) -> Result<Self, SourceAdapterError> {
         let parts = cursor_wire_parts(value)?;
         let relation_kind = match parts.relation_kind {
@@ -1675,8 +1613,8 @@ impl NavigationCursor {
             relation_kind,
             selection: expected_selection.clone(),
             selection_hash,
-            auth_tag: parts.auth_tag.to_string(),
             next_position: parts.next_position,
+            opaque_token,
         };
         Ok(cursor)
     }
@@ -1707,27 +1645,8 @@ impl NavigationCursor {
     }
 }
 
-fn cursor_mac(
-    secret: &[u8],
-    cursor: &NavigationCursor,
-) -> Result<Hmac<Sha256>, SourceAdapterError> {
-    cursor_mac_parts(
-        secret,
-        cursor.schema_version,
-        cursor.source_id.as_str(),
-        cursor.snapshot_revision.as_str(),
-        cursor.target_identity.as_str(),
-        cursor.target.as_str(),
-        cursor.relation.as_str(),
-        relation_role_token(cursor.relation_role),
-        relation_kind_token(cursor.relation_kind),
-        &cursor.selection,
-        &cursor.selection_hash,
-        cursor.next_position,
-    )
-}
-
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct CursorAuthClaims<'a> {
     schema_version: u16,
     source_id: &'a str,
@@ -1742,38 +1661,19 @@ struct CursorAuthClaims<'a> {
     next_position: u64,
 }
 
-fn cursor_mac_parts(
-    secret: &[u8],
-    schema_version: u16,
-    source_id: &str,
-    snapshot_revision: &str,
-    target_identity: &str,
-    target: &str,
-    relation: &str,
-    relation_role: &str,
-    relation_kind: &str,
-    selection: &NavigationSelection,
-    selection_hash: &str,
-    next_position: u64,
-) -> Result<Hmac<Sha256>, SourceAdapterError> {
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret).map_err(|_| {
-        SourceAdapterError::new(
-            SourceAdapterErrorKind::DecodeCorrupted,
-            "navigation cursor key is invalid",
-        )
-    })?;
-    let canonical = serde_json::to_vec(&CursorAuthClaims {
-        schema_version,
-        source_id,
-        snapshot_revision,
-        target_identity,
-        target,
-        relation,
-        relation_role,
-        relation_kind,
-        selection,
-        selection_hash,
-        next_position,
+fn cursor_payload(cursor: &NavigationCursor) -> Result<Vec<u8>, SourceAdapterError> {
+    let payload = serde_json::to_vec(&CursorAuthClaims {
+        schema_version: cursor.schema_version,
+        source_id: cursor.source_id.as_str(),
+        snapshot_revision: cursor.snapshot_revision.as_str(),
+        target_identity: cursor.target_identity.as_str(),
+        target: cursor.target.as_str(),
+        relation: cursor.relation.as_str(),
+        relation_role: relation_role_token(cursor.relation_role),
+        relation_kind: relation_kind_token(cursor.relation_kind),
+        selection: &cursor.selection,
+        selection_hash: &cursor.selection_hash,
+        next_position: cursor.next_position,
     })
     .map_err(|error| {
         SourceAdapterError::new(
@@ -1781,9 +1681,197 @@ fn cursor_mac_parts(
             format!("cannot serialize navigation cursor: {error}"),
         )
     })?;
-    mac.update(b"unica.navigation.cursor.auth.v3\0");
-    mac.update(&canonical);
+    if payload.len() > MAX_NAVIGATION_CURSOR_JSON_BYTES {
+        return Err(resource_limit(
+            "navigation cursor payload exceeds its JSON byte limit",
+        ));
+    }
+    Ok(payload)
+}
+
+fn cursor_payload_mac(secret: &[u8], payload: &[u8]) -> Result<Hmac<Sha256>, SourceAdapterError> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).map_err(|_| {
+        SourceAdapterError::new(
+            SourceAdapterErrorKind::DecodeCorrupted,
+            "navigation cursor key is invalid",
+        )
+    })?;
+    mac.update(b"unica.navigation.cursor.payload.v1\0");
+    mac.update(payload);
     Ok(mac)
+}
+
+const CURSOR_FRAME_MAGIC: &[u8; 4] = b"UNC1";
+const CURSOR_TAG_BYTES: usize = 32;
+const CURSOR_FRAME_OVERHEAD: usize = CURSOR_FRAME_MAGIC.len() + 4 + CURSOR_TAG_BYTES;
+
+fn encode_cursor_token(
+    secret: &[u8],
+    cursor: &NavigationCursor,
+) -> Result<String, SourceAdapterError> {
+    encode_cursor_payload(secret, &cursor_payload(cursor)?)
+}
+
+fn encode_cursor_payload(secret: &[u8], payload: &[u8]) -> Result<String, SourceAdapterError> {
+    if payload.len() > MAX_NAVIGATION_CURSOR_JSON_BYTES {
+        return Err(resource_limit(
+            "navigation cursor payload exceeds its JSON byte limit",
+        ));
+    }
+    let payload_len = u32::try_from(payload.len())
+        .map_err(|_| resource_limit("navigation cursor payload length overflows its frame"))?;
+    let tag = cursor_payload_mac(secret, payload)?.finalize().into_bytes();
+    let mut frame = Vec::with_capacity(payload.len() + CURSOR_FRAME_OVERHEAD);
+    frame.extend_from_slice(CURSOR_FRAME_MAGIC);
+    frame.extend_from_slice(&payload_len.to_be_bytes());
+    frame.extend_from_slice(payload);
+    frame.extend_from_slice(&tag);
+    Ok(URL_SAFE_NO_PAD.encode(frame))
+}
+
+struct DecodedCursorFrame {
+    bytes: Vec<u8>,
+    payload_start: usize,
+    payload_end: usize,
+}
+
+impl DecodedCursorFrame {
+    fn payload(&self) -> &[u8] {
+        &self.bytes[self.payload_start..self.payload_end]
+    }
+
+    fn tag(&self) -> &[u8] {
+        &self.bytes[self.payload_end..]
+    }
+}
+
+fn decode_cursor_frame(token: &str) -> Result<DecodedCursorFrame, SourceAdapterError> {
+    preflight_cursor_token(token)?;
+    let decoded = URL_SAFE_NO_PAD
+        .decode(token)
+        .map_err(|_| decode_cursor_error("navigation cursor is not valid base64url"))?;
+    if decoded.len() > MAX_NAVIGATION_CURSOR_JSON_BYTES + CURSOR_FRAME_OVERHEAD {
+        return Err(resource_limit(
+            "decoded navigation cursor exceeds its byte limit",
+        ));
+    }
+    if decoded.len() < CURSOR_FRAME_OVERHEAD
+        || decoded.get(..CURSOR_FRAME_MAGIC.len()) != Some(CURSOR_FRAME_MAGIC)
+    {
+        return Err(decode_cursor_error(
+            "navigation cursor has invalid payload framing",
+        ));
+    }
+    let payload_len = u32::from_be_bytes(
+        decoded[CURSOR_FRAME_MAGIC.len()..CURSOR_FRAME_MAGIC.len() + 4]
+            .try_into()
+            .expect("cursor frame length is four bytes"),
+    ) as usize;
+    if payload_len > MAX_NAVIGATION_CURSOR_JSON_BYTES {
+        return Err(resource_limit(
+            "navigation cursor payload exceeds its JSON byte limit",
+        ));
+    }
+    let payload_start = CURSOR_FRAME_MAGIC.len() + 4;
+    let payload_end = payload_start
+        .checked_add(payload_len)
+        .ok_or_else(|| resource_limit("navigation cursor payload length overflows its frame"))?;
+    if payload_end
+        .checked_add(CURSOR_TAG_BYTES)
+        .filter(|expected| *expected == decoded.len())
+        .is_none()
+    {
+        return Err(decode_cursor_error(
+            "navigation cursor has invalid payload framing",
+        ));
+    }
+    Ok(DecodedCursorFrame {
+        bytes: decoded,
+        payload_start,
+        payload_end,
+    })
+}
+
+fn preflight_cursor_token(token: &str) -> Result<(), SourceAdapterError> {
+    if token.is_empty() {
+        return Err(decode_cursor_error("navigation cursor token is empty"));
+    }
+    if token.len() > MAX_NAVIGATION_CURSOR_TOKEN_BYTES {
+        return Err(resource_limit(
+            "navigation cursor token exceeds its encoded byte limit",
+        ));
+    }
+    if !token
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(decode_cursor_error(
+            "navigation cursor contains invalid base64url characters",
+        ));
+    }
+    Ok(())
+}
+
+fn authenticate_cursor_payload(
+    secret: &[u8],
+    payload: &[u8],
+    tag: &[u8],
+) -> Result<(), SourceAdapterError> {
+    cursor_payload_mac(secret, payload)?
+        .verify_slice(tag)
+        .map_err(|_| decode_cursor_error("navigation cursor authentication failed"))
+}
+
+fn preflight_cursor_payload_json(payload: &[u8]) -> Result<(), SourceAdapterError> {
+    if payload.len() > MAX_NAVIGATION_CURSOR_JSON_BYTES {
+        return Err(resource_limit(
+            "navigation cursor payload exceeds its JSON byte limit",
+        ));
+    }
+    std::str::from_utf8(payload)
+        .map_err(|_| decode_cursor_error("navigation cursor payload is not UTF-8"))?;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut string_bytes = 0usize;
+    for byte in payload {
+        if in_string {
+            if escaped {
+                escaped = false;
+                string_bytes += 1;
+            } else {
+                match byte {
+                    b'\\' => {
+                        escaped = true;
+                        string_bytes += 1;
+                    }
+                    b'"' => in_string = false,
+                    _ => string_bytes += 1,
+                }
+            }
+            if string_bytes > MAX_NAVIGATION_CURSOR_STRING_BYTES {
+                return Err(resource_limit(
+                    "navigation cursor string exceeds its byte limit",
+                ));
+            }
+            continue;
+        }
+        match byte {
+            b'"' => {
+                in_string = true;
+                string_bytes = 0;
+            }
+            b'{' | b'[' => {
+                depth += 1;
+                if depth > MAX_NAVIGATION_NESTING_DEPTH {
+                    return Err(resource_limit("navigation cursor exceeds nesting limit"));
+                }
+            }
+            b'}' | b']' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 struct StrictJsonValue(serde_json::Value);
@@ -1993,7 +2081,6 @@ fn exact_cursor_object<'a>(
 }
 
 struct CursorWireParts<'a> {
-    schema_version: u16,
     source_id: &'a str,
     snapshot_revision: &'a str,
     target_identity: &'a str,
@@ -2002,7 +2089,6 @@ struct CursorWireParts<'a> {
     relation_role: &'a str,
     relation_kind: &'a str,
     selection_hash: &'a str,
-    auth_tag: &'a str,
     next_position: u64,
 }
 
@@ -2024,7 +2110,6 @@ fn cursor_wire_parts(value: &serde_json::Value) -> Result<CursorWireParts<'_>, S
         "relationKind",
         "selection",
         "selectionHash",
-        "authTag",
         "nextPosition",
     ];
     if object.len() != allowed.len() || object.keys().any(|key| !allowed.contains(&key.as_str())) {
@@ -2054,7 +2139,6 @@ fn cursor_wire_parts(value: &serde_json::Value) -> Result<CursorWireParts<'_>, S
         ));
     }
     Ok(CursorWireParts {
-        schema_version: NavigationCursor::SCHEMA_VERSION,
         source_id: string("sourceId")?,
         snapshot_revision: string("snapshotRevision")?,
         target_identity: string("targetIdentity")?,
@@ -2063,7 +2147,6 @@ fn cursor_wire_parts(value: &serde_json::Value) -> Result<CursorWireParts<'_>, S
         relation_role: string("relationRole")?,
         relation_kind: string("relationKind")?,
         selection_hash: string("selectionHash")?,
-        auth_tag: string("authTag")?,
         next_position: object
             .get("nextPosition")
             .and_then(serde_json::Value::as_u64)
@@ -2094,83 +2177,13 @@ fn relation_kind_token(kind: RelationKind) -> &'static str {
     }
 }
 
-fn cursor_auth_tag(secret: &[u8], cursor: &NavigationCursor) -> Result<String, SourceAdapterError> {
-    Ok(hex_encode(
-        &cursor_mac(secret, cursor)?.finalize().into_bytes(),
-    ))
-}
-
-fn preflight_cursor_transport(value: &serde_json::Value) -> Result<(), SourceAdapterError> {
-    fn visit(value: &serde_json::Value, depth: usize) -> Result<(), SourceAdapterError> {
-        if depth > MAX_NAVIGATION_NESTING_DEPTH {
-            return Err(resource_limit("navigation cursor exceeds nesting limit"));
-        }
-        match value {
-            serde_json::Value::String(value)
-                if value.len() > MAX_NAVIGATION_CURSOR_STRING_BYTES =>
-            {
-                Err(resource_limit(
-                    "navigation cursor string exceeds its byte limit",
-                ))
-            }
-            serde_json::Value::Array(values) => {
-                for value in values {
-                    visit(value, depth + 1)?;
-                }
-                Ok(())
-            }
-            serde_json::Value::Object(values) => {
-                for (key, value) in values {
-                    if key.len() > MAX_NAVIGATION_CURSOR_STRING_BYTES {
-                        return Err(resource_limit(
-                            "navigation cursor field exceeds its byte limit",
-                        ));
-                    }
-                    visit(value, depth + 1)?;
-                }
-                Ok(())
-            }
-            _ => Ok(()),
-        }
-    }
-
-    visit(value, 1)?;
-    let bytes = serde_json::to_vec(value)
-        .map_err(|_| decode_cursor_error("navigation cursor cannot be serialized"))?;
-    if bytes.len() > MAX_NAVIGATION_CURSOR_JSON_BYTES {
-        return Err(resource_limit(
-            "navigation cursor exceeds its JSON byte limit",
-        ));
-    }
-    Ok(())
-}
-
 fn decode_cursor_error(message: &str) -> SourceAdapterError {
     SourceAdapterError::new(SourceAdapterErrorKind::DecodeCorrupted, message)
 }
 
+#[cfg(test)]
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-fn hex_decode(value: &str) -> Result<Vec<u8>, SourceAdapterError> {
-    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(SourceAdapterError::new(
-            SourceAdapterErrorKind::DecodeCorrupted,
-            "navigation cursor has invalid authTag",
-        ));
-    }
-    (0..value.len())
-        .step_by(2)
-        .map(|index| {
-            u8::from_str_radix(&value[index..index + 2], 16).map_err(|_| {
-                SourceAdapterError::new(
-                    SourceAdapterErrorKind::DecodeCorrupted,
-                    "navigation cursor has invalid authTag",
-                )
-            })
-        })
-        .collect()
 }
 
 pub fn normalized_selection_hash(
@@ -2420,6 +2433,22 @@ mod tests {
     }
 
     #[test]
+    fn cursor_serializes_as_a_non_empty_opaque_string() {
+        let cursor = NavigationCursor::issue(
+            cursor_test_secret(),
+            source_id("workspace:main"),
+            SourceRevision::new("sha256:one").unwrap(),
+            object_key("uuid:11111111-1111-1111-1111-111111111111"),
+            relation_group_ref(),
+            selection(),
+            0,
+        )
+        .unwrap();
+        let value = serde_json::to_value(cursor).unwrap();
+        assert!(value.as_str().is_some_and(|token| !token.is_empty()));
+    }
+
+    #[test]
     fn cursor_decode_validates_schema_hash_and_semantic_resolution() {
         let cursor = NavigationCursor::issue(
             cursor_test_secret(),
@@ -2431,19 +2460,42 @@ mod tests {
             0,
         )
         .unwrap();
-        let decoded = NavigationCursor::decode(
-            serde_json::to_value(cursor).unwrap(),
-            cursor_test_secret(),
-            &SourceRevision::new("sha256:one").unwrap(),
-            &selection(),
-            |_source, _target, _relation, _role, _kind| true,
-        )
-        .unwrap();
+        let decoded = cursor
+            .opaque()
+            .authenticate(cursor_test_secret())
+            .unwrap()
+            .validate_resume(
+                &SourceRevision::new("sha256:one").unwrap(),
+                |_source, _target, _relation, _role, _kind| true,
+            )
+            .unwrap();
         assert_eq!(decoded.schema_version, NavigationCursor::SCHEMA_VERSION);
     }
 
+    fn cursor_token(cursor: &NavigationCursor) -> String {
+        serde_json::to_value(cursor)
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    fn framed_test_token(payload: &[u8], tag: &[u8]) -> String {
+        let mut frame = Vec::new();
+        frame.extend_from_slice(CURSOR_FRAME_MAGIC);
+        frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        frame.extend_from_slice(payload);
+        frame.extend_from_slice(tag);
+        URL_SAFE_NO_PAD.encode(frame)
+    }
+
+    fn token_with_original_tag(cursor: &NavigationCursor, payload: &[u8]) -> String {
+        let original = decode_cursor_frame(&cursor_token(cursor)).unwrap();
+        framed_test_token(payload, original.tag())
+    }
+
     #[test]
-    fn cursor_accepts_semantically_identical_selection_with_reordered_keys() {
+    fn cursor_accepts_authenticated_selection_with_reordered_object_keys() {
         let cursor = NavigationCursor::issue(
             cursor_test_secret(),
             source_id("workspace:main"),
@@ -2454,22 +2506,20 @@ mod tests {
             0,
         )
         .unwrap();
-        let mut value = serde_json::to_value(cursor).unwrap();
+        let mut value =
+            serde_json::from_slice::<serde_json::Value>(&cursor_payload(&cursor).unwrap()).unwrap();
         let selection_fields = value["selection"].as_object_mut().unwrap();
         let mut fields = std::mem::take(selection_fields)
             .into_iter()
             .collect::<Vec<_>>();
         fields.reverse();
         selection_fields.extend(fields);
+        let payload = serde_json::to_vec(&value).unwrap();
+        let token = encode_cursor_payload(cursor_test_secret(), &payload).unwrap();
 
-        let decoded = NavigationCursor::decode(
-            value,
-            cursor_test_secret(),
-            &SourceRevision::new("sha256:one").unwrap(),
-            &selection(),
-            |_source, _target, _relation, _role, _kind| true,
-        )
-        .unwrap();
+        let decoded = OpaqueNavigationCursor::from_token(token)
+            .authenticate(cursor_test_secret())
+            .unwrap();
 
         assert_eq!(decoded.selection, selection());
     }
@@ -2488,33 +2538,37 @@ mod tests {
         .unwrap();
 
         for path in ["selection", "properties", "relation"] {
-            let mut value = serde_json::to_value(&cursor).unwrap();
+            let mut value =
+                serde_json::from_slice::<serde_json::Value>(&cursor_payload(&cursor).unwrap())
+                    .unwrap();
             match path {
-                "selection" => {
-                    value["selection"]["unknown"] = serde_json::json!(true);
-                }
-                "properties" => {
-                    value["selection"]["properties"]["unknown"] = serde_json::json!([]);
-                }
+                "selection" => value["selection"]["unknown"] = serde_json::json!(true),
+                "properties" => value["selection"]["properties"]["unknown"] = serde_json::json!([]),
                 "relation" => {
-                    value["selection"]["relations"][0]["unknown"] = serde_json::json!(true);
+                    value["selection"]["relations"][0]["unknown"] = serde_json::json!(true)
                 }
                 _ => unreachable!(),
             }
+            let payload = serde_json::to_vec(&value).unwrap();
 
-            let error = OpaqueNavigationCursor::from_transport(value)
-                .authenticate(cursor_test_secret())
-                .unwrap_err();
-            assert_eq!(
-                error.kind,
-                SourceAdapterErrorKind::DecodeCorrupted,
-                "{path} unknown field must fail closed"
-            );
+            for token in [
+                token_with_original_tag(&cursor, &payload),
+                encode_cursor_payload(cursor_test_secret(), &payload).unwrap(),
+            ] {
+                let error = OpaqueNavigationCursor::from_token(token)
+                    .authenticate(cursor_test_secret())
+                    .unwrap_err();
+                assert_eq!(
+                    error.kind,
+                    SourceAdapterErrorKind::DecodeCorrupted,
+                    "{path} unknown field must fail closed"
+                );
+            }
         }
     }
 
     #[test]
-    fn cursor_rejects_duplicate_named_object_fields_with_original_tag() {
+    fn cursor_rejects_duplicate_named_object_fields_with_original_or_valid_tag() {
         let cursor = NavigationCursor::issue(
             cursor_test_secret(),
             source_id("workspace:main"),
@@ -2525,7 +2579,7 @@ mod tests {
             0,
         )
         .unwrap();
-        let raw = serde_json::to_string(&cursor).unwrap();
+        let raw = String::from_utf8(cursor_payload(&cursor).unwrap()).unwrap();
         let tampered = raw.replacen(
             "\"named\":[\"name\"]",
             "\"named\":[\"name\"],\"named\":[\"name\"]",
@@ -2533,14 +2587,19 @@ mod tests {
         );
         assert_ne!(tampered, raw);
 
-        let error = OpaqueNavigationCursor::from_transport_json(tampered.into_bytes())
-            .authenticate(cursor_test_secret())
-            .unwrap_err();
-        assert_eq!(error.kind, SourceAdapterErrorKind::DecodeCorrupted);
+        for token in [
+            token_with_original_tag(&cursor, tampered.as_bytes()),
+            encode_cursor_payload(cursor_test_secret(), tampered.as_bytes()).unwrap(),
+        ] {
+            let error = OpaqueNavigationCursor::from_token(token)
+                .authenticate(cursor_test_secret())
+                .unwrap_err();
+            assert_eq!(error.kind, SourceAdapterErrorKind::DecodeCorrupted);
+        }
     }
 
     #[test]
-    fn cursor_preserves_relation_array_repetition_normalization() {
+    fn cursor_preserves_authenticated_relation_array_repetition_normalization() {
         let cursor = NavigationCursor::issue(
             cursor_test_secret(),
             source_id("workspace:main"),
@@ -2551,17 +2610,124 @@ mod tests {
             0,
         )
         .unwrap();
-        let mut value = serde_json::to_value(&cursor).unwrap();
+        let mut value =
+            serde_json::from_slice::<serde_json::Value>(&cursor_payload(&cursor).unwrap()).unwrap();
         let repeated = value["selection"]["relations"][0].clone();
         value["selection"]["relations"]
             .as_array_mut()
             .unwrap()
             .push(repeated);
+        let payload = serde_json::to_vec(&value).unwrap();
+        let token = encode_cursor_payload(cursor_test_secret(), &payload).unwrap();
 
-        let decoded = OpaqueNavigationCursor::from_transport(value)
+        let decoded = OpaqueNavigationCursor::from_token(token)
             .authenticate(cursor_test_secret())
             .unwrap();
         assert_eq!(decoded.selection, cursor.selection);
+    }
+
+    #[test]
+    fn cursor_token_preflight_and_payload_resource_order_fail_closed() {
+        for token in ["", "not+base64url", "A"] {
+            let error = OpaqueNavigationCursor::from_token(token)
+                .authenticate(cursor_test_secret())
+                .unwrap_err();
+            assert_eq!(error.kind, SourceAdapterErrorKind::DecodeCorrupted);
+        }
+        let error =
+            OpaqueNavigationCursor::from_token("A".repeat(MAX_NAVIGATION_CURSOR_TOKEN_BYTES + 1))
+                .authenticate(cursor_test_secret())
+                .unwrap_err();
+        assert_eq!(error.kind, SourceAdapterErrorKind::ResourceLimit);
+
+        let mut oversized_frame = Vec::new();
+        oversized_frame.extend_from_slice(CURSOR_FRAME_MAGIC);
+        oversized_frame
+            .extend_from_slice(&((MAX_NAVIGATION_CURSOR_JSON_BYTES + 1) as u32).to_be_bytes());
+        oversized_frame.extend_from_slice(&[0; CURSOR_TAG_BYTES]);
+        let error = OpaqueNavigationCursor::from_token(URL_SAFE_NO_PAD.encode(oversized_frame))
+            .authenticate(cursor_test_secret())
+            .unwrap_err();
+        assert_eq!(error.kind, SourceAdapterErrorKind::ResourceLimit);
+
+        let nested = format!(
+            "{}0{}",
+            "[".repeat(MAX_NAVIGATION_NESTING_DEPTH + 1),
+            "]".repeat(MAX_NAVIGATION_NESTING_DEPTH + 1)
+        );
+        let token = encode_cursor_payload(cursor_test_secret(), nested.as_bytes()).unwrap();
+        let error = OpaqueNavigationCursor::from_token(token)
+            .authenticate(cursor_test_secret())
+            .unwrap_err();
+        assert_eq!(error.kind, SourceAdapterErrorKind::ResourceLimit);
+    }
+
+    #[test]
+    fn cursor_authenticates_exact_payload_bytes_before_private_json_parsing() {
+        let cursor = NavigationCursor::issue(
+            cursor_test_secret(),
+            source_id("workspace:main"),
+            SourceRevision::new("sha256:one").unwrap(),
+            object_key("uuid:11111111-1111-1111-1111-111111111111"),
+            relation_group_ref(),
+            selection(),
+            0,
+        )
+        .unwrap();
+        let deeply_nested = format!(
+            "{}0{}",
+            "[".repeat(MAX_NAVIGATION_NESTING_DEPTH + 1),
+            "]".repeat(MAX_NAVIGATION_NESTING_DEPTH + 1)
+        );
+        let token = token_with_original_tag(&cursor, deeply_nested.as_bytes());
+        let error = OpaqueNavigationCursor::from_token(token)
+            .authenticate(cursor_test_secret())
+            .unwrap_err();
+        assert_eq!(error.kind, SourceAdapterErrorKind::DecodeCorrupted);
+    }
+
+    #[test]
+    fn cursor_rejects_well_formed_hash_for_a_different_selection() {
+        let cursor = NavigationCursor::issue(
+            cursor_test_secret(),
+            source_id("workspace:main"),
+            SourceRevision::new("sha256:one").unwrap(),
+            object_key("uuid:11111111-1111-1111-1111-111111111111"),
+            relation_group_ref(),
+            selection(),
+            0,
+        )
+        .unwrap();
+        let mut value =
+            serde_json::from_slice::<serde_json::Value>(&cursor_payload(&cursor).unwrap()).unwrap();
+        value["selectionHash"] = serde_json::Value::String(format!("sha256:{}", "0".repeat(64)));
+        let payload = serde_json::to_vec(&value).unwrap();
+        let token = encode_cursor_payload(cursor_test_secret(), &payload).unwrap();
+        let error = OpaqueNavigationCursor::from_token(token)
+            .authenticate(cursor_test_secret())
+            .unwrap_err();
+        assert_eq!(error.kind, SourceAdapterErrorKind::DecodeCorrupted);
+    }
+
+    #[test]
+    fn cursor_hash_is_injective_for_separator_containing_selection_values() {
+        let first = NavigationSelection {
+            properties: PropertySelection::Named(BTreeSet::from(["alpha,beta".to_string()])),
+            facets: FacetSelection::Summary,
+            relations: vec![RelationSelection::new("attributes", Some(25)).unwrap()],
+        };
+        let second = NavigationSelection {
+            properties: PropertySelection::Named(BTreeSet::from([
+                "alpha".to_string(),
+                "beta".to_string(),
+            ])),
+            facets: FacetSelection::Summary,
+            relations: vec![RelationSelection::new("attributes", Some(25)).unwrap()],
+        };
+        assert_ne!(
+            normalized_selection_hash(&first).unwrap(),
+            normalized_selection_hash(&second).unwrap()
+        );
     }
 
     #[test]
@@ -2604,72 +2770,6 @@ mod tests {
         .unwrap();
         assert_eq!(cursor.target, target);
         assert_eq!(cursor.next_position, 44);
-    }
-
-    #[test]
-    fn cursor_rejects_well_formed_hash_for_a_different_selection() {
-        let cursor = NavigationCursor::issue(
-            cursor_test_secret(),
-            source_id("workspace:main"),
-            SourceRevision::new("sha256:one").unwrap(),
-            object_key("uuid:11111111-1111-1111-1111-111111111111"),
-            relation_group_ref(),
-            selection(),
-            0,
-        )
-        .unwrap();
-        let mut value = serde_json::to_value(cursor).unwrap();
-        value["selectionHash"] = serde_json::Value::String(format!("sha256:{}", "0".repeat(64)));
-        let error = NavigationCursor::decode(
-            value,
-            cursor_test_secret(),
-            &SourceRevision::new("sha256:one").unwrap(),
-            &selection(),
-            |_source, _target, _relation, _role, _kind| true,
-        )
-        .unwrap_err();
-        assert_eq!(error.kind, SourceAdapterErrorKind::DecodeCorrupted);
-    }
-
-    #[test]
-    fn cursor_hash_is_injective_for_separator_containing_selection_values() {
-        let first = NavigationSelection {
-            properties: PropertySelection::Named(BTreeSet::from(["alpha,beta".to_string()])),
-            facets: FacetSelection::Summary,
-            relations: vec![RelationSelection::new("attributes", Some(25)).unwrap()],
-        };
-        let second = NavigationSelection {
-            properties: PropertySelection::Named(BTreeSet::from([
-                "alpha".to_string(),
-                "beta".to_string(),
-            ])),
-            facets: FacetSelection::Summary,
-            relations: vec![RelationSelection::new("attributes", Some(25)).unwrap()],
-        };
-        assert_ne!(
-            normalized_selection_hash(&first).unwrap(),
-            normalized_selection_hash(&second).unwrap()
-        );
-
-        let cursor = NavigationCursor::issue(
-            cursor_test_secret(),
-            source_id("workspace:main"),
-            SourceRevision::new("sha256:one").unwrap(),
-            object_key("uuid:11111111-1111-1111-1111-111111111111"),
-            relation_group_ref(),
-            first,
-            0,
-        )
-        .unwrap();
-        let error = NavigationCursor::decode(
-            serde_json::to_value(cursor).unwrap(),
-            cursor_test_secret(),
-            &SourceRevision::new("sha256:one").unwrap(),
-            &second,
-            |_source, _target, _relation, _role, _kind| true,
-        )
-        .unwrap_err();
-        assert_eq!(error.kind, SourceAdapterErrorKind::DecodeCorrupted);
     }
 
     #[test]

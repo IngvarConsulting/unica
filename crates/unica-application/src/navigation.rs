@@ -639,7 +639,6 @@ fn decode_error(message: &str) -> SourceAdapterError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     use std::{any::Any, collections::BTreeSet, path::PathBuf, sync::Mutex};
     use unica_format_core::{
         navigation::{
@@ -1027,19 +1026,30 @@ mod tests {
 
     fn cursor_command(cursor: NavigationCursor) -> MetadataNavigationCommand {
         MetadataNavigationCommand {
-            target: MetadataNavigationTarget::Cursor(
-                unica_format_core::navigation::OpaqueNavigationCursor::from_transport(
-                    serde_json::to_value(cursor).unwrap(),
-                ),
-            ),
+            target: MetadataNavigationTarget::Cursor(cursor.opaque()),
             selection: None,
         }
     }
 
     fn opaque_cursor(
-        value: serde_json::Value,
+        value: impl Into<String>,
     ) -> unica_format_core::navigation::OpaqueNavigationCursor {
-        unica_format_core::navigation::OpaqueNavigationCursor::from_transport(value)
+        unica_format_core::navigation::OpaqueNavigationCursor::from_token(value)
+    }
+
+    fn cursor_token(cursor: &NavigationCursor) -> String {
+        serde_json::to_value(cursor)
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    fn tamper_cursor_token(cursor: &NavigationCursor) -> String {
+        let mut token = cursor_token(cursor).into_bytes();
+        let last = token.last_mut().unwrap();
+        *last = if *last == b'A' { b'B' } else { b'A' };
+        String::from_utf8(token).unwrap()
     }
 
     fn selection(
@@ -1111,6 +1121,7 @@ mod tests {
         let harness = Harness::new(2, "2.20");
         let first = harness.first_page(1);
         assert_eq!(first.relations[0].items[0].object_ref.display_name, "Code");
+        assert!(serde_json::to_value(&first).unwrap()["relations"][0]["nextCursor"].is_string());
         let second = harness.inspect(cursor_command(
             first.relations[0].next_cursor.clone().unwrap(),
         ));
@@ -1142,9 +1153,7 @@ mod tests {
     fn tampered_cursor_is_structured_unavailable() {
         let harness = Harness::new(2, "2.20");
         let first = harness.first_page(1);
-        let mut cursor =
-            serde_json::to_value(first.relations[0].next_cursor.clone().unwrap()).unwrap();
-        cursor["nextPosition"] = json!(99);
+        let cursor = tamper_cursor_token(first.relations[0].next_cursor.as_ref().unwrap());
         assert_unavailable(
             &harness.inspect(MetadataNavigationCommand {
                 target: MetadataNavigationTarget::Cursor(opaque_cursor(cursor)),
@@ -1155,16 +1164,11 @@ mod tests {
     }
 
     #[test]
-    fn cursor_unknown_selection_field_is_structured_unavailable() {
+    fn malformed_base64_cursor_is_structured_unavailable() {
         let harness = Harness::new(2, "2.20");
-        let first = harness.first_page(1);
-        let mut cursor =
-            serde_json::to_value(first.relations[0].next_cursor.clone().unwrap()).unwrap();
-        cursor["selection"]["relations"][0]["unknown"] = json!(true);
-
         assert_unavailable(
             &harness.inspect(MetadataNavigationCommand {
-                target: MetadataNavigationTarget::Cursor(opaque_cursor(cursor)),
+                target: MetadataNavigationTarget::Cursor(opaque_cursor("not+base64url")),
                 selection: None,
             }),
             "decode_corrupted",
@@ -1172,27 +1176,13 @@ mod tests {
     }
 
     #[test]
-    fn cursor_duplicate_selection_field_is_structured_unavailable() {
+    fn cursor_payload_tampering_is_structured_unavailable() {
         let harness = Harness::new(2, "2.20");
         let first = harness.first_page(1);
-        let cursor = first.relations[0].next_cursor.clone().unwrap();
-        let raw = serde_json::to_string(&cursor).unwrap();
-        let selection = serde_json::to_string(&cursor.selection).unwrap();
-        let duplicated = selection.replacen(
-            "\"properties\":",
-            "\"properties\":\"all\",\"properties\":",
-            1,
-        );
-        let tampered = raw.replacen(&selection, &duplicated, 1);
-        assert_ne!(tampered, raw);
-
+        let tampered = tamper_cursor_token(first.relations[0].next_cursor.as_ref().unwrap());
         assert_unavailable(
             &harness.inspect(MetadataNavigationCommand {
-                target: MetadataNavigationTarget::Cursor(
-                    unica_format_core::navigation::OpaqueNavigationCursor::from_transport_json(
-                        tampered.into_bytes(),
-                    ),
-                ),
+                target: MetadataNavigationTarget::Cursor(opaque_cursor(tampered)),
                 selection: None,
             }),
             "decode_corrupted",
@@ -1200,12 +1190,11 @@ mod tests {
     }
 
     #[test]
-    fn authenticated_cursor_rejects_recomputed_public_selection_hash_and_u64_max_position() {
+    fn opaque_cursor_tampering_fails_before_continuation_lookup() {
         let harness = Harness::new(2, "2.20");
         let first = harness.first_page(1);
         let continuation = first.relations[0].next_cursor.clone().unwrap();
-        let mut forged = serde_json::to_value(continuation).unwrap();
-        forged["nextPosition"] = json!(u64::MAX);
+        let forged = tamper_cursor_token(&continuation);
         assert_unavailable(
             &harness.inspect(MetadataNavigationCommand {
                 target: MetadataNavigationTarget::Cursor(opaque_cursor(forged)),
@@ -1384,16 +1373,14 @@ mod tests {
     #[test]
     fn cursor_is_bounded_before_strict_selection_decoding() {
         let harness = Harness::new(2, "2.20");
-        let first = harness.first_page(1);
-        let mut cursor =
-            serde_json::to_value(first.relations[0].next_cursor.clone().unwrap()).unwrap();
-        cursor["selection"] = json!({"properties": ["duplicate", "duplicate"]});
         assert_unavailable(
             &harness.inspect(MetadataNavigationCommand {
-                target: MetadataNavigationTarget::Cursor(opaque_cursor(cursor)),
+                target: MetadataNavigationTarget::Cursor(opaque_cursor(
+                    "A".repeat(unica_format_core::limits::MAX_NAVIGATION_CURSOR_TOKEN_BYTES + 1),
+                )),
                 selection: None,
             }),
-            "decode_corrupted",
+            "resource_limit",
         );
     }
 

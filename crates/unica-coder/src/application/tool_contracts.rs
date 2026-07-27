@@ -9,6 +9,7 @@ use crate::domain::navigation_limits::{
     MAX_NAVIGATION_CURSOR_STRING_BYTES, MAX_NAVIGATION_PROPERTY_SELECTORS,
     MAX_NAVIGATION_RELATION_SELECTORS, MAX_NAVIGATION_SELECTOR_STRING_BYTES,
 };
+use unica_format_core::limits::MAX_NAVIGATION_CURSOR_TOKEN_BYTES;
 
 const COMMON_ARGS: &[&str] = &["cwd", "dryRun", "confirm"];
 const CODE_PATCH_ARGS: &[&str] = &[
@@ -668,22 +669,10 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
         });
         schema["properties"]["select"] = selection.clone();
         schema["properties"]["cursor"] = json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "schemaVersion": {"type": "integer", "const": 1},
-                "sourceId": {"type": "string", "minLength": 1, "maxLength": MAX_NAVIGATION_CURSOR_STRING_BYTES},
-                "snapshotRevision": {"type": "string", "minLength": 1, "maxLength": MAX_NAVIGATION_CURSOR_STRING_BYTES},
-                "target": {"type": "string", "minLength": 1, "maxLength": MAX_NAVIGATION_CURSOR_STRING_BYTES},
-                "relation": {"type": "string", "minLength": 1, "maxLength": MAX_NAVIGATION_CURSOR_STRING_BYTES},
-                "relationRole": {"type": "string", "enum": ["children", "attributes", "tabularSections", "forms", "commands", "templates"]},
-                "relationKind": {"type": "string", "enum": ["contains", "references"]},
-                "selection": selection,
-                "selectionHash": {"type": "string", "minLength": 1, "maxLength": MAX_NAVIGATION_CURSOR_STRING_BYTES},
-                "authTag": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-                "nextPosition": {"type": "integer", "minimum": 0}
-            },
-            "required": ["schemaVersion", "sourceId", "snapshotRevision", "target", "relation", "relationRole", "relationKind", "selection", "selectionHash", "authTag", "nextPosition"]
+            "type": "string",
+            "minLength": 1,
+            "maxLength": MAX_NAVIGATION_CURSOR_TOKEN_BYTES,
+            "pattern": "^[A-Za-z0-9_-]+$"
         });
         schema["oneOf"] = json!([
             {"required": ["ObjectPath"], "not": {"anyOf": [
@@ -2528,7 +2517,8 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
             "ObjectPath" | "snapshotRevision" => {
                 json!({ "type": "string", "minLength": 1, "maxLength": MAX_NAVIGATION_CURSOR_STRING_BYTES })
             }
-            "objectRef" | "select" | "cursor" => json!({ "type": "object" }),
+            "objectRef" | "select" => json!({ "type": "object" }),
+            "cursor" => json!({ "type": "string" }),
             _ => property_schema(name),
         };
     }

@@ -350,7 +350,12 @@ pub(crate) fn metadata_navigation_command(
             }
         }
         (None, None, None, Some(cursor)) => {
-            MetadataNavigationTarget::Cursor(OpaqueNavigationCursor::from_transport(cursor.clone()))
+            MetadataNavigationTarget::Cursor(OpaqueNavigationCursor::from_token(
+                cursor
+                    .as_str()
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| decode_error("cursor must be a non-empty opaque string"))?,
+            ))
         }
         _ => return Err(decode_error("meta.info requires exactly one target mode")),
     };
@@ -402,6 +407,21 @@ mod tests {
         ] {
             let error = parse_navigation_selection(Some(&value)).unwrap_err();
             assert_eq!(error.code(), "decode_corrupted", "{value}");
+        }
+    }
+
+    #[test]
+    fn runtime_cursor_conversion_accepts_only_a_non_empty_string() {
+        let command =
+            metadata_navigation_command(json!({"cursor": "AQID"}).as_object().unwrap()).unwrap();
+        assert!(matches!(
+            command.target,
+            unica_application::MetadataNavigationTarget::Cursor(_)
+        ));
+
+        for invalid in [json!({"cursor": {}}), json!({"cursor": ""})] {
+            let error = metadata_navigation_command(invalid.as_object().unwrap()).unwrap_err();
+            assert_eq!(error.kind, SourceAdapterErrorKind::DecodeCorrupted);
         }
     }
 

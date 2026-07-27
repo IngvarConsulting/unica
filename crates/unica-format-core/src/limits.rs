@@ -23,6 +23,8 @@ pub const MAX_NAVIGATION_PROPERTY_SELECTORS: usize = 256;
 pub const MAX_NAVIGATION_RELATION_SELECTORS: usize = 64;
 pub const MAX_NAVIGATION_SELECT_JSON_BYTES: usize = 128 * 1024;
 pub const MAX_NAVIGATION_CURSOR_JSON_BYTES: usize = 128 * 1024;
+pub const MAX_NAVIGATION_CURSOR_TOKEN_BYTES: usize =
+    ((MAX_NAVIGATION_CURSOR_JSON_BYTES + 40) * 4 + 2) / 3;
 
 /// Complete resource budget used by a navigation implementation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

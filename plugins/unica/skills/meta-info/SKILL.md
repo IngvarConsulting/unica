@@ -83,7 +83,7 @@ Resource bounds are part of this public contract: `select` accepts at most 256 p
 Continue a returned page only with its cursor:
 
 ```json
-{"method": "tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","cursor":{"schemaVersion":1,"...":"returned cursor"}}}}
+{"method": "tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","cursor":"<returned opaque cursor>"}}}
 ```
 
 ```json

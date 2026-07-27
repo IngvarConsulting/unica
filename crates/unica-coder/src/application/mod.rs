@@ -103,18 +103,20 @@ mod meta_info_contract_tests {
                 ["kind"]["default"],
             "contains"
         );
-        assert_eq!(
-            schema["properties"]["cursor"]["additionalProperties"],
-            false
-        );
-        assert!(schema["properties"]["cursor"]["required"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("relationRole")));
+        assert_eq!(schema["properties"]["cursor"]["type"], "string");
+        assert_eq!(schema["properties"]["cursor"]["minLength"], 1);
+        assert!(schema["properties"]["cursor"]["maxLength"]
+            .as_u64()
+            .is_some_and(|value| value > 1));
+        assert!(schema["properties"]["cursor"]
+            .get("additionalProperties")
+            .is_none());
 
         let validator = jsonschema::validator_for(&schema).unwrap();
         for invalid in [
             json!({"ObjectPath": "src/Catalogs/Items.xml", "cursor": {}}),
+            json!({"cursor": {}}),
+            json!({"cursor": ""}),
             json!({"objectRef": {"sourceId": "workspace:main"}, "snapshotRevision": "sha256:one"}),
             json!({"objectRef": {"sourceId": "workspace:main", "objectKey": "uuid:one", "extra": true}, "snapshotRevision": "sha256:one"}),
             json!({"ObjectPath": "src/Catalogs/Items.xml", "select": {"relations": [{"role": "attributes", "offset": 0}]}}),
@@ -126,6 +128,7 @@ mod meta_info_contract_tests {
             "ObjectPath": "src/Catalogs/Items.xml",
             "select": {"relations": [{"role": "attributes"}, {"role": "attributes"}]}
         })));
+        assert!(validator.is_valid(&json!({"cursor": "AQID"})));
     }
 
     #[test]
