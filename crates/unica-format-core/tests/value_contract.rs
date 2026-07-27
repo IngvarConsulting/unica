@@ -200,3 +200,39 @@ fn recursive_property_value_deserialization_rejects_ambiguous_or_invalid_json() 
         );
     }
 }
+
+#[test]
+fn recursive_property_value_deserialization_rejects_duplicate_keys_at_every_level() {
+    for malformed in [
+        r#"{"type":"string","type":"string","value":"text"}"#,
+        r#"{"type":"string","value":"first","value":"second"}"#,
+        r#"{"type":"structure","value":{"name":{"type":"string","value":"first"},"name":{"type":"string","value":"second"}}}"#,
+        r#"{"type":"localizedString","value":{"en":"First","en":"Second"}}"#,
+        r#"{"type":"list","value":[{"type":"structure","value":{"nested":{"type":"string","type":"string","value":"text"}}}]}"#,
+        r#"{"type":"typeSet","value":{"variants":[{"kind":"reference","target":{"kind":"catalog","name":"Products"}}],"variants":[{"kind":"reference","target":{"kind":"catalog","name":"Products"}}]}}"#,
+        r#"{"type":"typeSet","value":{"variants":[{"kind":"reference","kind":"reference","target":{"kind":"catalog","name":"Products"}}]}}"#,
+        r#"{"type":"typeSet","value":{"variants":[{"kind":"reference","target":{"kind":"catalog","kind":"catalog","name":"Products"}}]}}"#,
+        r#"{"type":"typeSet","value":{"variants":[{"kind":"reference","target":{"kind":"catalog","name":"Products","name":"Products"}}]}}"#,
+        r#"{"type":"typeSet","value":{"variants":[{"kind":"primitive","primitive":"string","qualifiers":{"string":{"length":10,"length":20,"allowedLength":"variable"}}}]}}"#,
+        r#"{"type":"objectRef","value":{"sourceId":"workspace:main","sourceId":"workspace:main","objectKey":"uuid:11111111-1111-1111-1111-111111111111","identityStrength":"persistent","kind":"catalog","displayName":"Products"}}"#,
+        r#"{"type":"unknown","value":{"summary":"first","summary":"second"}}"#,
+    ] {
+        assert!(
+            serde_json::from_str::<PropertyValue>(malformed).is_err(),
+            "duplicate semantic key was accepted: {malformed}"
+        );
+    }
+
+    assert!(serde_json::from_str::<TypeSetValue>(
+        r#"{"variants":[{"kind":"primitive","primitive":"boolean"}],"variants":[{"kind":"primitive","primitive":"boolean"}]}"#,
+    )
+    .is_err());
+    assert!(serde_json::from_str::<TypeVariant>(
+        r#"{"kind":"reference","target":{"kind":"catalog","name":"Products","name":"Products"}}"#,
+    )
+    .is_err());
+    assert!(serde_json::from_str::<StringQualifiers>(
+        r#"{"length":10,"length":20,"allowedLength":"variable"}"#,
+    )
+    .is_err());
+}

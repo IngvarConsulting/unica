@@ -5,7 +5,11 @@ use std::{
     fmt::{Display, Formatter},
 };
 
-use serde::{de::Error as _, ser::Error as _, Deserialize, Deserializer, Serialize, Serializer};
+use serde::{
+    de::{DeserializeOwned, Error as _, MapAccess, SeqAccess, Visitor},
+    ser::Error as _,
+    Deserialize, Deserializer, Serialize, Serializer,
+};
 use uuid::Uuid;
 
 use crate::{
@@ -36,6 +40,137 @@ impl Display for SemanticValueError {
 }
 
 impl std::error::Error for SemanticValueError {}
+
+/// A JSON value decoded through `MapAccess` before semantic dispatch. Unlike
+/// `serde_json::Value`, it rejects repeated object keys instead of retaining
+/// the last value.
+enum StrictJsonValue {
+    Null,
+    Boolean(bool),
+    Number(serde_json::Number),
+    String(String),
+    Array(Vec<Self>),
+    Object(BTreeMap<String, Self>),
+}
+
+impl StrictJsonValue {
+    fn into_json(self) -> serde_json::Value {
+        match self {
+            Self::Null => serde_json::Value::Null,
+            Self::Boolean(value) => serde_json::Value::Bool(value),
+            Self::Number(value) => serde_json::Value::Number(value),
+            Self::String(value) => serde_json::Value::String(value),
+            Self::Array(values) => {
+                serde_json::Value::Array(values.into_iter().map(Self::into_json).collect())
+            }
+            Self::Object(values) => serde_json::Value::Object(
+                values
+                    .into_iter()
+                    .map(|(key, value)| (key, value.into_json()))
+                    .collect(),
+            ),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for StrictJsonValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct StrictJsonVisitor;
+
+        impl<'de> Visitor<'de> for StrictJsonVisitor {
+            type Value = StrictJsonValue;
+
+            fn expecting(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a JSON value without duplicate object keys")
+            }
+
+            fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                Ok(StrictJsonValue::Null)
+            }
+
+            fn visit_none<E>(self) -> Result<Self::Value, E> {
+                Ok(StrictJsonValue::Null)
+            }
+
+            fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                StrictJsonValue::deserialize(deserializer)
+            }
+
+            fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+                Ok(StrictJsonValue::Boolean(value))
+            }
+
+            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+                Ok(StrictJsonValue::Number(value.into()))
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+                Ok(StrictJsonValue::Number(value.into()))
+            }
+
+            fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                serde_json::Number::from_f64(value)
+                    .map(StrictJsonValue::Number)
+                    .ok_or_else(|| E::custom("non-finite JSON number is invalid"))
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(StrictJsonValue::String(value.to_string()))
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+                Ok(StrictJsonValue::String(value))
+            }
+
+            fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut values = Vec::with_capacity(sequence.size_hint().unwrap_or(0));
+                while let Some(value) = sequence.next_element::<StrictJsonValue>()? {
+                    values.push(value);
+                }
+                Ok(StrictJsonValue::Array(values))
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut values = BTreeMap::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    if values.contains_key(&key) {
+                        return Err(A::Error::custom(format!(
+                            "duplicate JSON object key `{key}`"
+                        )));
+                    }
+                    values.insert(key, map.next_value::<StrictJsonValue>()?);
+                }
+                Ok(StrictJsonValue::Object(values))
+            }
+        }
+
+        deserializer.deserialize_any(StrictJsonVisitor)
+    }
+}
+
+fn deserialize_strict<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: DeserializeOwned,
+{
+    let value = StrictJsonValue::deserialize(deserializer)?;
+    serde_json::from_value(value.into_json()).map_err(D::Error::custom)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -100,7 +235,7 @@ impl<'de> Deserialize<'de> for TypeSetValue {
             variants: Vec<TypeVariant>,
         }
 
-        let wire = Wire::deserialize(deserializer)?;
+        let wire: Wire = deserialize_strict(deserializer)?;
         Self::new(wire.variants).map_err(D::Error::custom)
     }
 }
@@ -203,7 +338,7 @@ impl<'de> Deserialize<'de> for StringQualifiers {
             allowed_length: Option<StringLength>,
         }
 
-        let wire = Wire::deserialize(deserializer)?;
+        let wire: Wire = deserialize_strict(deserializer)?;
         Self::new(wire.length, wire.allowed_length).map_err(D::Error::custom)
     }
 }
@@ -279,7 +414,7 @@ impl<'de> Deserialize<'de> for NumberQualifiers {
             allowed_sign: Option<NumberSign>,
         }
 
-        let wire = Wire::deserialize(deserializer)?;
+        let wire: Wire = deserialize_strict(deserializer)?;
         Self::new(wire.digits, wire.fraction_digits, wire.allowed_sign).map_err(D::Error::custom)
     }
 }
@@ -317,17 +452,39 @@ impl<'de> Deserialize<'de> for DateQualifiers {
             date_fractions: Option<DateFractions>,
         }
 
-        let wire = Wire::deserialize(deserializer)?;
+        let wire: Wire = deserialize_strict(deserializer)?;
         Self::new(wire.date_fractions).map_err(D::Error::custom)
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TypeQualifiers {
     String(StringQualifiers),
     Number(NumberQualifiers),
     Date(DateQualifiers),
+}
+
+impl<'de> Deserialize<'de> for TypeQualifiers {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        enum Wire {
+            String(StringQualifiers),
+            Number(NumberQualifiers),
+            Date(DateQualifiers),
+        }
+
+        let wire: Wire = deserialize_strict(deserializer)?;
+        Ok(match wire {
+            Wire::String(value) => Self::String(value),
+            Wire::Number(value) => Self::Number(value),
+            Wire::Date(value) => Self::Date(value),
+        })
+    }
 }
 
 /// A validated semantic metadata target. The kind is compiler-owned and the
@@ -591,7 +748,8 @@ impl<'de> Deserialize<'de> for TypeVariant {
                 .ok_or_else(|| E::custom("semantic type target kind is unregistered"))
         }
 
-        match Wire::deserialize(deserializer)? {
+        let wire: Wire = deserialize_strict(deserializer)?;
+        match wire {
             Wire::Primitive {
                 primitive,
                 qualifiers,
@@ -820,7 +978,7 @@ impl<'de> Deserialize<'de> for PropertyValue {
             Unknown(UnknownWire),
         }
 
-        let raw = serde_json::Value::deserialize(deserializer)?;
+        let raw = StrictJsonValue::deserialize(deserializer)?.into_json();
         if raw.get("type").and_then(serde_json::Value::as_str) == Some("null")
             && raw
                 .as_object()

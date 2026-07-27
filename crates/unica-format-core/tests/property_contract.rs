@@ -233,3 +233,17 @@ fn property_map_round_trips_tagged_recursive_values_without_variant_loss() {
         Some(&value)
     );
 }
+
+#[test]
+fn property_map_rejects_duplicate_keys_inside_tagged_recursive_values() {
+    for malformed in [
+        r#"{"properties":{"field.fillValue":{"type":"structure","valueState":"explicit","value":{"type":"structure","type":"structure","value":{"name":{"type":"string","value":"text"}}},"provenance":"declared","capability":"readOnly"}}}"#,
+        r#"{"properties":{"field.fillValue":{"type":"structure","valueState":"explicit","value":{"type":"structure","value":{"name":{"type":"string","value":"first"},"name":{"type":"string","value":"second"}}},"provenance":"declared","capability":"readOnly"}}}"#,
+        r#"{"properties":{"metadata.synonym":{"type":"localizedString","valueState":"explicit","value":{"type":"localizedString","value":{"en":"First","en":"Second"}},"provenance":"declared","capability":"readOnly"}}}"#,
+    ] {
+        assert!(
+            serde_json::from_str::<PropertyMapWire>(malformed).is_err(),
+            "property map accepted a duplicate recursive key: {malformed}"
+        );
+    }
+}

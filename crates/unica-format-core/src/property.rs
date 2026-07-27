@@ -488,16 +488,12 @@ struct SemanticPropertyWire {
 }
 
 struct WireValue {
-    present: bool,
-    value: serde_json::Value,
+    value: Option<PropertyValue>,
 }
 
 impl Default for WireValue {
     fn default() -> Self {
-        Self {
-            present: false,
-            value: serde_json::Value::Null,
-        }
+        Self { value: None }
     }
 }
 
@@ -506,18 +502,21 @@ where
     D: Deserializer<'de>,
 {
     Ok(WireValue {
-        present: true,
-        value: serde_json::Value::deserialize(deserializer)?,
+        value: Some(PropertyValue::deserialize(deserializer)?),
     })
 }
 
 impl SemanticPropertyWire {
     fn into_property(self, id: SemanticPropertyId) -> Result<SemanticProperty, SourceAdapterError> {
-        let value = self
-            .value
-            .present
-            .then(|| property_value_from_json(self.value_type, self.value.value))
-            .transpose()?;
+        let value = self.value.value;
+        if value
+            .as_ref()
+            .is_some_and(|value| value.value_type() != self.value_type)
+        {
+            return Err(invalid_property(
+                "semantic property value tag is inconsistent with its registered type",
+            ));
+        }
         SemanticProperty::from_parts(
             id,
             self.value_type,
@@ -567,18 +566,4 @@ where
     }
 
     deserializer.deserialize_map(PropertyMapVisitor)
-}
-
-fn property_value_from_json(
-    value_type: PropertyType,
-    value: serde_json::Value,
-) -> Result<PropertyValue, SourceAdapterError> {
-    let value = serde_json::from_value::<PropertyValue>(value)
-        .map_err(|_| invalid_property("semantic property value is invalid"))?;
-    if value.value_type() != value_type {
-        return Err(invalid_property(
-            "semantic property value tag is inconsistent with its registered type",
-        ));
-    }
-    Ok(value)
 }
