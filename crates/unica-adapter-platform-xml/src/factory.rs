@@ -7,13 +7,13 @@ use std::{
 use unica_format_core::{
     navigation::{NavigationSelection, NavigationTarget},
     ports::{
-        AdapterFormatProfile, CapturePort, CaptureResult, CapturedSource, EffectiveSupportRule,
-        FormatCompatibility, FormatInspectionMode, FormatInspectionPort, FormatInspectionRequest,
-        FormatInspectionResult, FormatReadRequest, OperationalAdapterRegistration,
-        OperationalSourceSession, OwnerResolutionMode, OwnerResolutionRequest,
-        OwnerResolutionResult, OwnershipPort, ProbePort, ProbeResult, ReadPort,
-        ReservedSourceArtifactKind, SourceAdapterRegistration, SourceSetMatch, SupportEvidence,
-        SupportInspectionRequest, SupportPort, SupportSourceState, SupportVendorEvidence,
+        CapturePort, CaptureResult, CapturedSource, EffectiveSupportRule, FormatCompatibility,
+        FormatInspectionMode, FormatInspectionPort, FormatInspectionRequest, FormatInspectionResult,
+        FormatReadRequest, OperationalAdapterRegistration, OperationalSourceSession,
+        OwnerResolutionMode, OwnerResolutionRequest, OwnerResolutionResult, OwnershipPort, ProbePort,
+        ProbeResult, ReadPort, ReservedSourceArtifactKind, SourceAdapterRegistration,
+        SourceSetMatch, SupportEvidence, SupportInspectionRequest, SupportPort, SupportSourceState,
+        SupportVendorEvidence,
     },
     source::{
         ConfiguredSourceSetKind, SourceAdapterError, SourceAdapterErrorKind, SourceContext,
@@ -35,7 +35,6 @@ impl PlatformXmlAdapterFactory {
         let adapter = Arc::new(PlatformXmlAdapter);
         SourceAdapterRegistration {
             manifest: v2_20::manifest(),
-            profile: adapter_profile(),
             capture: adapter.clone(),
             probe: adapter.clone(),
             read: adapter.clone(),
@@ -191,14 +190,6 @@ impl PlatformXmlAdapterFactory {
 }
 
 struct PlatformXmlAdapter;
-
-fn adapter_profile() -> AdapterFormatProfile {
-    AdapterFormatProfile {
-        platform_line: v2_20::PLATFORM_LINE,
-        export_format: v2_20::EXPORT_FORMAT,
-        legacy_metadata_classes: v2_20::metadata_classes(),
-    }
-}
 
 impl CapturePort for PlatformXmlAdapter {
     fn capture(&self, source: &SourceContext) -> Result<CaptureResult, SourceAdapterError> {

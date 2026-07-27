@@ -45,6 +45,7 @@ fn task7_native_registry_and_queries_are_adapter_private() {
     let guards = include_str!("../src/guards.rs");
     let factory = include_str!("../src/factory.rs");
     let public_api = include_str!("../src/lib.rs");
+    let ports = include_str!("../../unica-format-core/src/ports.rs");
 
     for forbidden in [
         "LegacyMetadataKind",
@@ -64,6 +65,7 @@ fn task7_native_registry_and_queries_are_adapter_private() {
         "pub fn platform_line",
         "pub fn export_format",
         "pub fn profile",
+        "fn adapter_profile",
         "#[doc(hidden)]",
         "registered_subsystem_names",
         "normalize_metadata_category",
@@ -73,6 +75,10 @@ fn task7_native_registry_and_queries_are_adapter_private() {
             "factory leaks native/version query `{forbidden}`"
         );
     }
+    assert!(
+        !ports.contains("pub struct AdapterFormatProfile"),
+        "core publicly exposes raw platform/export profile strings"
+    );
 }
 
 #[test]

@@ -97,13 +97,6 @@ pub trait ReadPort: Send + Sync {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AdapterFormatProfile {
-    pub platform_line: &'static str,
-    pub export_format: &'static str,
-    pub legacy_metadata_classes: &'static [&'static str],
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormatCompatibilityKind {
     Older,
     Supported,
@@ -287,7 +280,6 @@ pub trait SupportPort: Send + Sync {
 #[derive(Clone)]
 pub struct SourceAdapterRegistration {
     pub manifest: AdapterManifest,
-    pub profile: AdapterFormatProfile,
     pub capture: Arc<dyn CapturePort>,
     pub probe: Arc<dyn ProbePort>,
     pub read: Arc<dyn ReadPort>,

@@ -673,10 +673,10 @@ mod tests {
             SourceAdapterDiagnostic,
         },
         ports::{
-            AdapterFormatProfile, CapturePort, CapturedSource, CapturedSourceSession,
-            FormatInspectionPort, FormatInspectionRequest, FormatInspectionResult,
-            OwnerResolutionRequest, OwnerResolutionResult, OwnershipPort, ProbePort, ReadPort,
-            SupportEvidence, SupportInspectionRequest, SupportPort,
+            CapturePort, CapturedSource, CapturedSourceSession, FormatInspectionPort,
+            FormatInspectionRequest, FormatInspectionResult, OwnerResolutionRequest,
+            OwnerResolutionResult, OwnershipPort, ProbePort, ReadPort, SupportEvidence,
+            SupportInspectionRequest, SupportPort,
         },
         source::{
             AdapterManifest, AdapterMaturity, FormatRange, FormatVersion, SnapshotConsistency,
@@ -903,11 +903,6 @@ mod tests {
                 excluded_features: BTreeSet::new(),
                 source_access: SourceAccess::ReadOnly,
                 maturity: AdapterMaturity::SemanticParity,
-            },
-            profile: AdapterFormatProfile {
-                platform_line: "8.3",
-                export_format: "2.20",
-                legacy_metadata_classes: &[],
             },
             capture: port.clone(),
             probe: port.clone(),
