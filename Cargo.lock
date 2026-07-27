@@ -1679,6 +1679,7 @@ name = "unica-adapter-platform-xml"
 version = "0.10.0"
 dependencies = [
  "base64",
+ "fs2",
  "libc",
  "quick-xml",
  "quote",

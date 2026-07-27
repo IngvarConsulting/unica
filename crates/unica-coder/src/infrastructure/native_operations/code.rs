@@ -3,9 +3,7 @@ use crate::domain::project_sources::{SourceFormat, SourceSetKind};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::path_policy::WorkspacePathPolicy;
 use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
-use crate::infrastructure::platform_xml_owner::{
-    task8_metadata_kind_by_directory, task8_metadata_kind_tag,
-};
+use crate::infrastructure::platform_xml_owner::task8_metadata_kind_tag;
 use crate::infrastructure::project_sources::discover_project_source_map;
 use crate::infrastructure::source_roots::{normalize_path_identity, resolve_source_root};
 use bsl_syntax::ast::{AstNode, FunctionDef, ProcedureDef};
@@ -15,6 +13,11 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
+use unica_format_core::{
+    commands::ModuleOwner,
+    ports::{ModuleArtifactLocatorRequest, OperationCancellation},
+};
 
 use super::common::guard_active_format_owner;
 use super::compile_transaction::CompileTransaction;
@@ -404,46 +407,6 @@ struct ResolvedTarget {
     module_role: String,
 }
 
-#[derive(Debug)]
-struct ModuleIdentity {
-    owner: String,
-    role: ModuleRole,
-    descriptors: Vec<PathBuf>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ModuleRole {
-    Module,
-    ObjectModule,
-    ManagerModule,
-    RecordSetModule,
-    ValueManagerModule,
-    FormModule,
-    CommandModule,
-    ManagedApplicationModule,
-    OrdinaryApplicationModule,
-    SessionModule,
-    ExternalConnectionModule,
-}
-
-impl ModuleRole {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Module => "Module",
-            Self::ObjectModule => "ObjectModule",
-            Self::ManagerModule => "ManagerModule",
-            Self::RecordSetModule => "RecordSetModule",
-            Self::ValueManagerModule => "ValueManagerModule",
-            Self::FormModule => "FormModule",
-            Self::CommandModule => "CommandModule",
-            Self::ManagedApplicationModule => "ManagedApplicationModule",
-            Self::OrdinaryApplicationModule => "OrdinaryApplicationModule",
-            Self::SessionModule => "SessionModule",
-            Self::ExternalConnectionModule => "ExternalConnectionModule",
-        }
-    }
-}
-
 fn resolve_target(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -480,11 +443,27 @@ fn resolve_target(
     if !target_identity.starts_with(&source_root.path) {
         return Err("BSL module is outside the selected Configuration source set".to_string());
     }
-    let source_relative = target_identity
-        .strip_prefix(&source_root.path)
-        .map_err(|_| "failed to derive BSL module identity".to_string())?;
-    let identity = module_identity(source_relative)?;
-    validate_identity_descriptors(&source_root.path, &identity.descriptors)?;
+    let factory = PlatformXmlAdapterFactory::new();
+    let locator_session = factory.capture_module_artifact_source(
+        &source_root.path,
+        &target_identity,
+        &context.workspace_root,
+    );
+    let locator_request =
+        ModuleArtifactLocatorRequest::new(locator_session, OperationCancellation::new());
+    let location = factory
+        .operational_registration()
+        .module_artifacts()
+        .locate(&locator_request)
+        .map_err(|error| error.message)?;
+    let owner = match location.owner() {
+        ModuleOwner::Configuration => "Configuration".to_string(),
+        ModuleOwner::Object { kind, name } => {
+            let category = task8_metadata_kind_tag(*kind)
+                .ok_or_else(|| "module owner kind has no public projection".to_string())?;
+            format!("{category}.{name}")
+        }
+    };
     let workspace_identity = normalize_path_identity(&context.workspace_root)?;
     let workspace_relative = target_identity
         .strip_prefix(&workspace_identity)
@@ -494,253 +473,9 @@ fn resolve_target(
         path: target,
         relative_path,
         source_set: source_name.to_string(),
-        owner: identity.owner,
-        module_role: identity.role.as_str().to_string(),
+        owner,
+        module_role: location.role().public_label().to_string(),
     })
-}
-
-fn module_identity(relative: &Path) -> Result<ModuleIdentity, String> {
-    let components = relative
-        .components()
-        .map(|component| match component {
-            Component::Normal(value) => value
-                .to_str()
-                .map(str::to_string)
-                .ok_or_else(|| "BSL module path is not valid UTF-8".to_string()),
-            _ => Err("BSL module path must be relative to its source set".to_string()),
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let parts = components.iter().map(String::as_str).collect::<Vec<_>>();
-    match parts.as_slice() {
-        ["Ext", file] => configuration_module_identity(file),
-        [directory, name, "Ext", "Module.bsl"]
-            if matches!(
-                *directory,
-                "CommonModules" | "HTTPServices" | "WebServices" | "IntegrationServices"
-            ) =>
-        {
-            metadata_module_identity(directory, name, ModuleRole::Module)
-        }
-        ["CommonForms", name, "Ext", "Form", "Module.bsl"] => Ok(ModuleIdentity {
-            owner: format!("CommonForm.{name}"),
-            role: ModuleRole::FormModule,
-            descriptors: vec![metadata_descriptor("CommonForms", name)],
-        }),
-        ["CommonCommands", name, "Ext", "CommandModule.bsl"] => Ok(ModuleIdentity {
-            owner: format!("CommonCommand.{name}"),
-            role: ModuleRole::CommandModule,
-            descriptors: vec![metadata_descriptor("CommonCommands", name)],
-        }),
-        [directory, name, "Ext", file] => {
-            let role = direct_module_role(file).ok_or_else(unsupported_module_layout)?;
-            let kind = task8_metadata_kind_by_directory(directory)
-                .ok_or_else(unsupported_module_layout)?;
-            let tag = task8_metadata_kind_tag(kind).ok_or_else(unsupported_module_layout)?;
-            if !direct_role_is_supported(tag, role) {
-                return Err(unsupported_module_layout());
-            }
-            Ok(ModuleIdentity {
-                owner: format!("{tag}.{name}"),
-                role,
-                descriptors: vec![metadata_descriptor(directory, name)],
-            })
-        }
-        [directory, name, "Forms", form, "Ext", "Form", "Module.bsl"] => {
-            nested_module_identity(directory, name, "Form", form, ModuleRole::FormModule)
-        }
-        [directory, name, "Commands", command, "Ext", "CommandModule.bsl"] => {
-            nested_module_identity(
-                directory,
-                name,
-                "Command",
-                command,
-                ModuleRole::CommandModule,
-            )
-        }
-        _ => Err(unsupported_module_layout()),
-    }
-}
-
-fn configuration_module_identity(file: &str) -> Result<ModuleIdentity, String> {
-    let role = match file {
-        "ManagedApplicationModule.bsl" => ModuleRole::ManagedApplicationModule,
-        "OrdinaryApplicationModule.bsl" => ModuleRole::OrdinaryApplicationModule,
-        "SessionModule.bsl" => ModuleRole::SessionModule,
-        "ExternalConnectionModule.bsl" => ModuleRole::ExternalConnectionModule,
-        _ => return Err(unsupported_module_layout()),
-    };
-    Ok(ModuleIdentity {
-        owner: "Configuration".to_string(),
-        role,
-        descriptors: vec![PathBuf::from("Configuration.xml")],
-    })
-}
-
-fn metadata_module_identity(
-    directory: &str,
-    name: &str,
-    role: ModuleRole,
-) -> Result<ModuleIdentity, String> {
-    let kind = task8_metadata_kind_by_directory(directory).ok_or_else(unsupported_module_layout)?;
-    let tag = task8_metadata_kind_tag(kind).ok_or_else(unsupported_module_layout)?;
-    Ok(ModuleIdentity {
-        owner: format!("{tag}.{name}"),
-        role,
-        descriptors: vec![metadata_descriptor(directory, name)],
-    })
-}
-
-fn nested_module_identity(
-    directory: &str,
-    name: &str,
-    nested_kind: &str,
-    nested_name: &str,
-    role: ModuleRole,
-) -> Result<ModuleIdentity, String> {
-    let kind = task8_metadata_kind_by_directory(directory).ok_or_else(unsupported_module_layout)?;
-    let tag = task8_metadata_kind_tag(kind).ok_or_else(unsupported_module_layout)?;
-    if !nested_modules_are_supported(tag) {
-        return Err(unsupported_module_layout());
-    }
-    let child_directory = match nested_kind {
-        "Form" => "Forms",
-        "Command" => "Commands",
-        _ => return Err(unsupported_module_layout()),
-    };
-    Ok(ModuleIdentity {
-        owner: format!("{tag}.{name}"),
-        role,
-        descriptors: vec![
-            metadata_descriptor(directory, name),
-            PathBuf::from(directory)
-                .join(name)
-                .join(child_directory)
-                .join(nested_name)
-                .join("Ext")
-                .join(format!("{nested_kind}.xml")),
-        ],
-    })
-}
-
-fn direct_module_role(file: &str) -> Option<ModuleRole> {
-    match file {
-        "ObjectModule.bsl" => Some(ModuleRole::ObjectModule),
-        "ManagerModule.bsl" => Some(ModuleRole::ManagerModule),
-        "RecordSetModule.bsl" => Some(ModuleRole::RecordSetModule),
-        "ValueManagerModule.bsl" => Some(ModuleRole::ValueManagerModule),
-        _ => None,
-    }
-}
-
-fn direct_role_is_supported(kind: &str, role: ModuleRole) -> bool {
-    match role {
-        ModuleRole::ObjectModule => matches!(
-            kind,
-            "Catalog"
-                | "Document"
-                | "ExchangePlan"
-                | "ChartOfAccounts"
-                | "ChartOfCharacteristicTypes"
-                | "ChartOfCalculationTypes"
-                | "BusinessProcess"
-                | "Task"
-                | "Report"
-                | "DataProcessor"
-        ),
-        ModuleRole::ManagerModule => matches!(
-            kind,
-            "Catalog"
-                | "Document"
-                | "InformationRegister"
-                | "AccumulationRegister"
-                | "AccountingRegister"
-                | "CalculationRegister"
-                | "ChartOfAccounts"
-                | "ChartOfCharacteristicTypes"
-                | "ChartOfCalculationTypes"
-                | "BusinessProcess"
-                | "Task"
-                | "ExchangePlan"
-                | "Enum"
-                | "Report"
-                | "DataProcessor"
-                | "Constant"
-                | "DocumentJournal"
-                | "FilterCriterion"
-                | "SettingsStorage"
-        ),
-        ModuleRole::RecordSetModule => matches!(
-            kind,
-            "InformationRegister"
-                | "AccumulationRegister"
-                | "AccountingRegister"
-                | "CalculationRegister"
-        ),
-        ModuleRole::ValueManagerModule => kind == "Constant",
-        ModuleRole::Module
-        | ModuleRole::FormModule
-        | ModuleRole::CommandModule
-        | ModuleRole::ManagedApplicationModule
-        | ModuleRole::OrdinaryApplicationModule
-        | ModuleRole::SessionModule
-        | ModuleRole::ExternalConnectionModule => false,
-    }
-}
-
-fn nested_modules_are_supported(kind: &str) -> bool {
-    matches!(
-        kind,
-        "Document"
-            | "Catalog"
-            | "DataProcessor"
-            | "Report"
-            | "InformationRegister"
-            | "AccumulationRegister"
-            | "AccountingRegister"
-            | "CalculationRegister"
-            | "ChartOfAccounts"
-            | "ChartOfCharacteristicTypes"
-            | "ChartOfCalculationTypes"
-            | "ExchangePlan"
-            | "BusinessProcess"
-            | "Task"
-            | "DocumentJournal"
-            | "Enum"
-            | "Constant"
-            | "Sequence"
-            | "DocumentNumerator"
-    )
-}
-
-fn metadata_descriptor(directory: &str, name: &str) -> PathBuf {
-    PathBuf::from(directory).join(format!("{name}.xml"))
-}
-
-fn validate_identity_descriptors(
-    source_root: &Path,
-    descriptors: &[PathBuf],
-) -> Result<(), String> {
-    for descriptor in descriptors {
-        let path = source_root.join(descriptor);
-        let metadata = fs::symlink_metadata(&path).map_err(|error| {
-            format!(
-                "BSL module metadata descriptor is unavailable {}: {error}",
-                path.display()
-            )
-        })?;
-        if metadata_is_link_or_reparse_point(&metadata) || !metadata.is_file() {
-            return Err(format!(
-                "BSL module metadata descriptor must be a regular file: {}",
-                path.display()
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn unsupported_module_layout() -> String {
-    "unica.code.patch v1 accepts only a supported canonical platform XML BSL module path"
-        .to_string()
 }
 
 fn portable_relative_path(path: &Path) -> Result<String, String> {
@@ -1141,7 +876,7 @@ fn unified_diff(path: &str, before: &str, after: &str) -> Result<String, String>
 #[cfg(test)]
 mod tests {
     use super::{
-        analyze_module, hash, insertion_is_present, line_column, locate_insertion, module_identity,
+        analyze_module, hash, insertion_is_present, line_column, locate_insertion,
         normalized_content, patch_inner, unified_diff, Eol, LeadingSeparator, PatchMode, Position,
         ValidationStatus,
     };
@@ -1153,7 +888,6 @@ mod tests {
     use diffy::{apply, Patch};
     use serde_json::{json, Map, Value};
     use std::fs;
-    use std::path::Path;
     use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1695,137 +1429,6 @@ mod tests {
     }
 
     #[test]
-    fn canonical_module_layouts_have_stable_owner_and_role() {
-        let direct_cases = [
-            (
-                "Ext/ManagedApplicationModule.bsl",
-                "Configuration",
-                "ManagedApplicationModule",
-            ),
-            (
-                "Ext/OrdinaryApplicationModule.bsl",
-                "Configuration",
-                "OrdinaryApplicationModule",
-            ),
-            ("Ext/SessionModule.bsl", "Configuration", "SessionModule"),
-            (
-                "Ext/ExternalConnectionModule.bsl",
-                "Configuration",
-                "ExternalConnectionModule",
-            ),
-            (
-                "CommonModules/Service/Ext/Module.bsl",
-                "CommonModule.Service",
-                "Module",
-            ),
-            (
-                "HTTPServices/Api/Ext/Module.bsl",
-                "HTTPService.Api",
-                "Module",
-            ),
-            ("WebServices/Api/Ext/Module.bsl", "WebService.Api", "Module"),
-            (
-                "IntegrationServices/Bus/Ext/Module.bsl",
-                "IntegrationService.Bus",
-                "Module",
-            ),
-            (
-                "CommonForms/Main/Ext/Form/Module.bsl",
-                "CommonForm.Main",
-                "FormModule",
-            ),
-            (
-                "CommonCommands/Print/Ext/CommandModule.bsl",
-                "CommonCommand.Print",
-                "CommandModule",
-            ),
-            (
-                "Catalogs/Items/Ext/ObjectModule.bsl",
-                "Catalog.Items",
-                "ObjectModule",
-            ),
-            (
-                "DocumentJournals/Sales/Ext/ManagerModule.bsl",
-                "DocumentJournal.Sales",
-                "ManagerModule",
-            ),
-            (
-                "FilterCriteria/ByPartner/Ext/ManagerModule.bsl",
-                "FilterCriterion.ByPartner",
-                "ManagerModule",
-            ),
-            (
-                "SettingsStorages/Ui/Ext/ManagerModule.bsl",
-                "SettingsStorage.Ui",
-                "ManagerModule",
-            ),
-            (
-                "InformationRegisters/Prices/Ext/RecordSetModule.bsl",
-                "InformationRegister.Prices",
-                "RecordSetModule",
-            ),
-            (
-                "Constants/Mode/Ext/ValueManagerModule.bsl",
-                "Constant.Mode",
-                "ValueManagerModule",
-            ),
-        ];
-        for (path, owner, role) in direct_cases {
-            assert_module_identity(path, owner, role);
-        }
-
-        let nested_kinds = [
-            ("Catalogs", "Catalog"),
-            ("Documents", "Document"),
-            ("ExchangePlans", "ExchangePlan"),
-            ("ChartsOfAccounts", "ChartOfAccounts"),
-            ("ChartsOfCharacteristicTypes", "ChartOfCharacteristicTypes"),
-            ("ChartsOfCalculationTypes", "ChartOfCalculationTypes"),
-            ("BusinessProcesses", "BusinessProcess"),
-            ("Tasks", "Task"),
-            ("Reports", "Report"),
-            ("DataProcessors", "DataProcessor"),
-            ("InformationRegisters", "InformationRegister"),
-            ("AccumulationRegisters", "AccumulationRegister"),
-            ("AccountingRegisters", "AccountingRegister"),
-            ("CalculationRegisters", "CalculationRegister"),
-            ("DocumentJournals", "DocumentJournal"),
-            ("Enums", "Enum"),
-            ("Constants", "Constant"),
-            ("Sequences", "Sequence"),
-            ("DocumentNumerators", "DocumentNumerator"),
-        ];
-        for (directory, tag) in nested_kinds {
-            assert_module_identity(
-                &format!("{directory}/Owner/Forms/Main/Ext/Form/Module.bsl"),
-                &format!("{tag}.Owner"),
-                "FormModule",
-            );
-            assert_module_identity(
-                &format!("{directory}/Owner/Commands/Print/Ext/CommandModule.bsl"),
-                &format!("{tag}.Owner"),
-                "CommandModule",
-            );
-        }
-    }
-
-    #[test]
-    fn noncanonical_or_unsupported_module_layouts_are_rejected() {
-        for path in [
-            "Catalogs/Items/Trash/Ext/FakeModule.bsl",
-            "Catalogs/Items/Ext/Module.bsl",
-            "CommonModules/X/Ext/ObjectModule.bsl",
-            "Languages/Ru/Ext/ManagerModule.bsl",
-            "Catalogs/Items/Forms/Main/Ext/Module.bsl",
-            "Catalogs/Items/Commands/Print/Ext/Module.bsl",
-            "Catalogs/Items/Ext/FakeModule.bsl",
-        ] {
-            let error = module_identity(Path::new(path)).unwrap_err();
-            assert!(error.contains("supported canonical"), "{path}: {error}");
-        }
-    }
-
-    #[test]
     fn nested_form_and_command_modules_report_the_metadata_owner_and_role() {
         let context = temp_context("nested-module-roles");
         let src = context.workspace_root.join("src");
@@ -2080,7 +1683,7 @@ mod tests {
 
         assert!(!result.outcome.ok);
         let error = result.outcome.errors.join("\n");
-        assert!(error.contains("read guard"), "{error}");
+        assert!(error.contains("guard changed before commit"), "{error}");
         assert!(error.contains("v8project.yaml"), "{error}");
         assert_eq!(fs::read(&module).unwrap(), before);
         assert_eq!(
@@ -2126,14 +1729,6 @@ mod tests {
         let rebuilt = apply(before, &Patch::from_str(&diff).unwrap()).unwrap();
 
         assert_eq!(hash(rebuilt.as_bytes()), hash(after.as_bytes()));
-    }
-
-    fn assert_module_identity(path: &str, owner: &str, role: &str) {
-        let identity = module_identity(Path::new(path)).unwrap_or_else(|error| {
-            panic!("expected canonical module identity for {path}: {error}")
-        });
-        assert_eq!(identity.owner, owner, "{path}");
-        assert_eq!(identity.role.as_str(), role, "{path}");
     }
 
     fn arguments(selector: Value, position: &str) -> Map<String, Value> {

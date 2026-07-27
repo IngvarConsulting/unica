@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+fs2.workspace = true
 quick-xml.workspace = true
 roxmltree.workspace = true
 serde.workspace = true

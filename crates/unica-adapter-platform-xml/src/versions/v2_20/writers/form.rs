@@ -2242,7 +2242,9 @@ pub(crate) fn add_form(args: &Map<String, Value>, context: &WorkspaceContext) ->
         let object_source_text = object_source.text;
         let mut object_text = object_source_text.clone();
         let (object_type, object_name) = detect_form_add_object(&object_text)?;
-        let format_version = detect_format_version(&object_xml_full, context)?.to_string();
+        let format_version = crate::domain::format_profile::ACTIVE_FORMAT_PROFILE
+            .export_format
+            .to_string();
 
         let purpose = normalize_form_purpose(purpose_raw);
         validate_form_purpose(&object_type, &purpose)?;
@@ -2305,12 +2307,21 @@ pub(crate) fn add_form(args: &Map<String, Value>, context: &WorkspaceContext) ->
             ),
         );
 
+        super::common::reject_existing_incompatible_format_targets(&[
+            &form_meta_path,
+            &form_xml_path,
+        ])?;
+        super::common::preflight_active_format_dependencies(&[&object_xml_full], context)?;
         let mut transaction = CompileTransaction::new();
         transaction.create_utf8_bom_text(&form_meta_path, &form_metadata)?;
         transaction.create_utf8_bom_text(&form_xml_path, &form_content)?;
         transaction.create_utf8_bom_text(&module_path, form_add_module_bsl())?;
         transaction.replace_bytes(&object_xml_full, &object_source.raw, object_replacement)?;
-        guard_active_format_owner(&mut transaction, &object_xml_full, context)?;
+        guard_active_format_dependencies(
+            &mut transaction,
+            &[&object_xml_full, &form_meta_path, &form_xml_path],
+            context,
+        )?;
         let validation_path = object_xml_full.clone();
         let report = transaction.commit_with_post_validation(|| {
             validate_semantic_metadata_artifact(&validation_path, context, "form.add")
@@ -3825,7 +3836,7 @@ pub(crate) fn compile_form(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    let write_result = plan_form_compile(args, context).and_then(|mut plan| {
+    let write_result = plan_form_compile(args, context, false).and_then(|mut plan| {
         let output_path = plan.output_path.clone();
         let owner_candidate = form_parent_metadata_owner_candidate(&output_path)?;
         let owner_validation_snapshot = match owner_candidate.as_deref() {
@@ -3973,7 +3984,22 @@ pub(crate) fn preview_form_compile(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<AdapterOutcome, String> {
-    let mut plan = plan_form_compile(args, context)?;
+    let mut plan = match plan_form_compile(args, context, false) {
+        Ok(plan) => plan,
+        Err(error) => {
+            return Ok(AdapterOutcome {
+                ok: false,
+                summary: "unica.form.compile failed in native managed form compiler".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
+            });
+        }
+    };
     plan.stdout
         .push_str(&format!("[DRY-RUN] Would compile: {}\n", plan.output_label));
     append_form_compile_stats(&mut plan.stdout, &plan.stats);
@@ -4007,6 +4033,7 @@ pub(crate) fn has_compile_payload(args: &Map<String, Value>) -> bool {
 fn plan_form_compile(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
+    inspect_existing_output_owner: bool,
 ) -> Result<FormCompilePlan, String> {
     let json_path_raw = path_arg(args, &["jsonPath", "JsonPath"]);
     let from_object = bool_arg(args, &["fromObject", "FromObject"]);
@@ -4060,8 +4087,13 @@ fn plan_form_compile(
         definition
     };
 
-    let format_version =
-        detect_format_version(output_path.parent().unwrap_or(&context.cwd), context)?.to_string();
+    let format_version = if inspect_existing_output_owner {
+        detect_format_version(output_path.parent().unwrap_or(&context.cwd), context)?.to_string()
+    } else {
+        crate::domain::format_profile::ACTIVE_FORMAT_PROFILE
+            .export_format
+            .to_string()
+    };
     let (xml, stats) = form_compile_xml(&defn, &format_version)?;
     Ok(FormCompilePlan {
         output_label,
@@ -4197,6 +4229,42 @@ pub(crate) fn edit_form_with_mode(
 pub(crate) struct FormEditExecution {
     pub(crate) outcome: AdapterOutcome,
     pub(crate) data: Option<FormEditData>,
+}
+
+impl FormEditExecution {
+    pub(crate) fn into_core_parts(
+        self,
+    ) -> (
+        AdapterOutcome,
+        Option<unica_format_core::commands::FormEditEvidence>,
+    ) {
+        let data = self.data.map(|data| {
+            let removed = data
+                .removed
+                .into_iter()
+                .map(|removed| {
+                    unica_format_core::commands::FormEditRemoval::new(
+                        removed.name,
+                        removed.kind,
+                        match removed.reason {
+                            FormEditRemovalReason::Requested => {
+                                unica_format_core::commands::FormEditRemovalReason::Requested
+                            }
+                            FormEditRemovalReason::Contained => {
+                                unica_format_core::commands::FormEditRemovalReason::Contained
+                            }
+                        },
+                    )
+                })
+                .collect();
+            unica_format_core::commands::FormEditEvidence::new(
+                data.changed,
+                removed,
+                unica_format_core::commands::FormEditValidation::Passed,
+            )
+        });
+        (self.outcome, data)
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -16998,7 +17066,7 @@ mod tests {
     #[test]
     fn form_compile_skill_tables_document_only_supported_dsl_keys() {
         const SKILL: &str =
-            include_str!("../../../../../plugins/unica/skills/form-compile/SKILL.md");
+            include_str!("../../../../../../plugins/unica/skills/form-compile/SKILL.md");
         const ELEMENTS_START: &str = "### Элементы (ключ определяет тип)\n\n";
         const START: &str = "<!-- form-event-registry:start -->";
         const END: &str = "<!-- form-event-registry:end -->";
@@ -17743,7 +17811,7 @@ mod tests {
             (
                 "definition".to_string(),
                 serde_json::from_str(include_str!(
-                    "../../../../../tests/fixtures/unica_mcp_script_parity/form-edit/invalid-events.json"
+                    "../../../../../../tests/fixtures/unica_mcp_script_parity/form-edit/invalid-events.json"
                 ))
                 .unwrap(),
             ),

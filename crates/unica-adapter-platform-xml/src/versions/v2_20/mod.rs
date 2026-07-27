@@ -25,6 +25,7 @@ pub(crate) mod semantic_map;
 pub(crate) mod source_sets;
 pub(crate) mod support;
 pub(crate) mod validation;
+pub(crate) mod writers;
 pub(crate) mod xml;
 
 pub(crate) type ProbeOutcome = ProbeResult;

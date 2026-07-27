@@ -6,8 +6,6 @@ use serde_json::{Map, Value};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
-use unica_format_core::ports::SupportSourceState;
 
 use super::common::{
     absolutize, guard_active_format_dependencies, guard_exact_preimage_if_unprotected,
@@ -100,41 +98,14 @@ fn support_root_uuid_from_bytes(raw: &[u8]) -> Option<String> {
 }
 
 fn parse_support_header(path: &Path) -> Option<(u8, usize)> {
-    let config_dir = path.parent()?.parent()?;
-    let evidence = inspect_support_state(config_dir).ok()?;
-    if !matches!(evidence.source, SupportSourceState::Parsed) {
-        return None;
-    }
-    Some((
-        if evidence.global_editing_enabled? {
-            0
-        } else {
-            1
-        },
-        evidence.vendors.len(),
-    ))
-}
-
-fn inspect_support_state(
-    config_dir: &Path,
-) -> Result<unica_format_core::ports::SupportEvidence, unica_format_core::source::SourceAdapterError>
-{
-    PlatformXmlAdapterFactory::new()
-        .registration()
-        .support
-        .inspect(&unica_format_core::ports::SupportInspectionRequest {
-            source: unica_format_core::source::SourceContext::new(
-                unica_format_core::source::SourceLocation::new(
-                    config_dir.to_path_buf(),
-                    config_dir.to_path_buf(),
-                    config_dir.join("Ext").join("ParentConfigurations.bin"),
-                ),
-                None,
-                unica_format_core::source::SourceFamily::PlatformXml,
-                None,
-            ),
-            object: None,
-        })
+    let raw = fs::read(path).ok()?;
+    let text = decode_parent_configurations(&raw).ok()?;
+    let rest = text.strip_prefix("{6,")?;
+    let (global, rest) = rest.split_once(',')?;
+    let global = global.parse::<u8>().ok().filter(|value| *value <= 1)?;
+    let (vendors, _) = rest.split_once(',')?;
+    let vendors = vendors.parse::<usize>().ok()?;
+    Some((global, vendors))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

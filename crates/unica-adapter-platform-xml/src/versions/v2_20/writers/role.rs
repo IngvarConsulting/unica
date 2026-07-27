@@ -1433,7 +1433,9 @@ fn compile_role_internal(
 
         let output_dir_raw = required_path(args, &["outputDir", "OutputDir"], "OutputDir")?;
         let output_dir = absolutize(output_dir_raw.clone(), &context.cwd);
-        let format_version = detect_format_version(&output_dir, context)?.to_string();
+        let format_version = crate::domain::format_profile::ACTIVE_FORMAT_PROFILE
+            .export_format
+            .to_string();
         let mut stderr = String::new();
         let mut parsed_objects = Vec::<RoleObject>::new();
         if let Some(objects) = defn.get("objects").and_then(Value::as_array) {
@@ -1523,6 +1525,11 @@ fn compile_role_internal(
 
         let metadata_path = roles_dir.join(format!("{role_name}.xml"));
         let rights_path = roles_dir.join(&role_name).join("Ext").join("Rights.xml");
+        let config_xml_path = config_dir.join("Configuration.xml");
+        super::common::preflight_active_format_dependencies(
+            &[&metadata_path, &rights_path, &config_xml_path],
+            context,
+        )?;
         match fs::symlink_metadata(&metadata_path) {
             Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
                 let message = format!(
@@ -1551,7 +1558,6 @@ fn compile_role_internal(
                 ));
             }
         }
-        let config_xml_path = config_dir.join("Configuration.xml");
         let config_owner_exists = config_xml_path.is_file();
         #[cfg(test)]
         run_role_compile_after_configuration_probe_hook(&config_xml_path);
@@ -1567,10 +1573,12 @@ fn compile_role_internal(
 
         let reg_result =
             transaction.register_canonical_child(&config_xml_path, "Role", &role_name)?;
+        super::common::guard_active_format_dependencies(
+            &mut transaction,
+            &[&metadata_path, &rights_path, &config_xml_path],
+            context,
+        )?;
         let config_owner_registered = !matches!(reg_result, RegistrationStatus::MissingTarget);
-        guard_active_format_owner(&mut transaction, &metadata_path, context)?;
-        guard_active_format_owner(&mut transaction, &config_xml_path, context)?;
-
         let mut stdout = format!(
             "[OK] Role '{role_name}' compiled\n     UUID: {uid}\n     Metadata: {}\n     Rights:   {}\n     Objects: {}, Rights: {total_rights}, Templates: {template_count}\n",
             metadata_path.display(),

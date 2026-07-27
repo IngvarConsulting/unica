@@ -1,5 +1,6 @@
 //! Format-neutral compiler contracts shared by source adapters.
 
+pub mod commands;
 pub mod facets;
 pub mod limits;
 pub mod navigation;

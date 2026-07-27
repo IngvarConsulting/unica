@@ -1776,7 +1776,7 @@ fn task7_host_entrypoints_cannot_reach_native_read_or_layout_logic() {
     let violations = graph.violations_from(&[
         "crate::infrastructure::format_guard::evaluate_format_guard",
         "crate::infrastructure::support_guard::evaluate_support_guard",
-        "crate::infrastructure::native_operations::meta::validate_meta",
+        "crate::infrastructure::native_operations::meta::validate_meta_with_data",
     ]);
     assert!(
         violations.is_empty(),

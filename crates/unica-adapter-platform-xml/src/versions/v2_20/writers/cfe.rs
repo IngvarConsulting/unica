@@ -4568,7 +4568,15 @@ fn guard_cfe_active_format_snapshot_set(
     }
     let mut compatibilities = snapshots
         .keys()
-        .map(|path| inspect_platform_xml_compatibility(path).map_err(|error| error.message))
+        .map(|path| {
+            inspect_platform_xml_compatibility(path).map_err(|error| {
+                if error.message.contains("revision evidence is malformed") {
+                    "invalid export format version".to_string()
+                } else {
+                    error.message
+                }
+            })
+        })
         .collect::<Result<Vec<_>, _>>()?;
     for target in owner_targets {
         let resolution =
@@ -4914,7 +4922,13 @@ fn cfe_patch_supported_document<'a>(path: &Path, raw: &'a [u8]) -> Result<Docume
     let source = text.trim_start_matches('\u{feff}');
     let document = Document::parse(source)
         .map_err(|error| format!("failed to parse platform XML {}: {error}", path.display()))?;
-    match inspect_platform_xml_compatibility(path).map_err(|error| error.message)? {
+    match inspect_platform_xml_compatibility(path).map_err(|error| {
+        if error.message.contains("revision evidence is malformed") {
+            "invalid export format version".to_string()
+        } else {
+            error.message
+        }
+    })? {
         FormatCompatibility::Supported { .. } => Ok(document),
         compatibility => Err(format_compatibility_warning(&compatibility)),
     }

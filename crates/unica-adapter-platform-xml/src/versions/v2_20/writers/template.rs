@@ -90,15 +90,11 @@ pub(crate) fn add_template(
         let templates_dir_abs = processor_dir_abs.join("Templates");
         let template_meta_display = templates_dir_display.join(format!("{template_name}.xml"));
         let template_meta_path = templates_dir_abs.join(format!("{template_name}.xml"));
-        if template_meta_path.exists() {
-            return Err(format!(
-                "Макет уже существует: {}",
-                template_meta_display.display()
-            ));
-        }
         validate_semantic_metadata_artifact(&root_xml_path, context, "template.add")?;
 
-        let format_version = detect_format_version(&root_xml_path, context)?.to_string();
+        let format_version = crate::domain::format_profile::ACTIVE_FORMAT_PROFILE
+            .export_format
+            .to_string();
         let template_ext_dir = templates_dir_abs.join(template_name).join("Ext");
         let template_uuid = fresh_uuid();
         let template_meta_xml = template_metadata_xml(
@@ -154,6 +150,14 @@ pub(crate) fn add_template(
             &source_xml_text,
         ));
 
+        super::common::reject_existing_incompatible_format_targets(&[&template_meta_path])?;
+        super::common::preflight_active_format_dependencies(&[&root_xml_path], context)?;
+        if template_meta_path.exists() {
+            return Err(format!(
+                "Макет уже существует: {}",
+                template_meta_display.display()
+            ));
+        }
         let mut transaction = CompileTransaction::new();
         transaction.create_utf8_bom_text(&template_meta_path, &template_meta_xml)?;
         if template_type == "BinaryData" {
@@ -165,7 +169,11 @@ pub(crate) fn add_template(
             transaction.create_utf8_bom_text(path, html_template_page())?;
         }
         transaction.replace_bytes(&root_xml_path, &source_snapshot.raw, owner_replacement)?;
-        guard_active_format_owner(&mut transaction, &root_xml_path, context)?;
+        super::common::guard_active_format_dependencies(
+            &mut transaction,
+            &[&root_xml_path, &template_meta_path],
+            context,
+        )?;
         let validation_path = root_xml_path.clone();
         let report = transaction.commit_with_post_validation(|| {
             validate_semantic_metadata_artifact(&validation_path, context, "template.add")
@@ -1964,7 +1972,7 @@ mod tests {
     fn template_add_spreadsheet_matches_platform_8_3_27_fixture() {
         let xml = template_content_xml("SpreadsheetDocument", ".xml").unwrap();
         let expected =
-            include_str!("../../../../../tests/fixtures/platform_8_3_27/mxl/Template.xml");
+            include_str!("../../../../../../tests/fixtures/platform_8_3_27/mxl/Template.xml");
 
         assert_eq!(xml.replace("\r\n", "\n"), expected.replace("\r\n", "\n"));
     }

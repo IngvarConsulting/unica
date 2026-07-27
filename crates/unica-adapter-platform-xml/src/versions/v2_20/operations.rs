@@ -363,10 +363,18 @@ impl LazyPlatformSource {
         authorized_root: &Path,
         allow_missing_target: bool,
     ) -> Result<Self, SafeRootError> {
-        let boundary_root = SafeSourceRoot::capture(authorized_root, authorized_root)?;
+        let canonical_boundary;
+        let boundary_scope = if target.starts_with(authorized_root) {
+            authorized_root
+        } else {
+            canonical_boundary =
+                std::fs::canonicalize(authorized_root).map_err(|_| SafeRootError::Unauthorized)?;
+            canonical_boundary.as_path()
+        };
+        let boundary_root = SafeSourceRoot::capture(authorized_root, boundary_scope)?;
         let target = boundary_root.bind_target(target, allow_missing_target)?;
         let target_is_directory = target.is_directory();
-        let nearest_existing_directory = if target_is_directory {
+        let mut nearest_existing_directory = if target_is_directory {
             target.relative().to_path_buf()
         } else {
             target
@@ -375,6 +383,21 @@ impl LazyPlatformSource {
                 .unwrap_or_else(|| Path::new(""))
                 .to_path_buf()
         };
+        loop {
+            match boundary_root.bind_relative(&nearest_existing_directory, false) {
+                Ok(candidate) if candidate.is_directory() => break,
+                Ok(_) => return Err(SafeRootError::NotRegular),
+                Err(SafeRootError::Missing)
+                    if !nearest_existing_directory.as_os_str().is_empty() =>
+                {
+                    nearest_existing_directory = nearest_existing_directory
+                        .parent()
+                        .unwrap_or_else(|| Path::new(""))
+                        .to_path_buf();
+                }
+                Err(error) => return Err(error),
+            }
+        }
         let mut candidate = nearest_existing_directory.as_path();
         let mut source_prefix = standalone_source_prefix(&boundary_root, &target)?;
         if source_prefix.is_none() {
@@ -688,6 +711,9 @@ fn compatibility_with_provider(
         }
     };
     if keys.is_empty() {
+        if session.evidence_scope == EvidenceScope::Tree {
+            return CompatibilityDecision::Compatible;
+        }
         let root_is_empty = match provider.root_xml_keys() {
             Ok(keys) => keys.is_empty(),
             Err(_) => {

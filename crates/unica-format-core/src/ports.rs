@@ -13,6 +13,7 @@ use std::{
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
+    commands::{ModuleArtifactLocation, MutationMode, WriterCommand, WriterFamily, WriterResult},
     navigation::{
         Authorability, CapabilityVector, NavigationEnvelope, NavigationQuery, ObjectKey, ObjectRef,
         PropertyValue, SourceAdapterDiagnostic,
@@ -2506,6 +2507,85 @@ pub trait PublicationPort: Send + Sync {
     ) -> Result<PublicationResult, SourceAdapterError>;
 }
 
+#[derive(Debug, Clone)]
+pub struct WriterRequest {
+    session: OperationalSourceSession,
+    command: WriterCommand,
+    mode: MutationMode,
+    cancellation: OperationCancellation,
+}
+
+impl WriterRequest {
+    pub const fn new(
+        session: OperationalSourceSession,
+        command: WriterCommand,
+        mode: MutationMode,
+        cancellation: OperationCancellation,
+    ) -> Self {
+        Self {
+            session,
+            command,
+            mode,
+            cancellation,
+        }
+    }
+
+    pub fn session(&self) -> &OperationalSourceSession {
+        &self.session
+    }
+
+    pub const fn command(&self) -> WriterCommand {
+        self.command
+    }
+
+    pub const fn mode(&self) -> MutationMode {
+        self.mode
+    }
+
+    pub fn cancellation(&self) -> &OperationCancellation {
+        &self.cancellation
+    }
+}
+
+pub trait WriterPort: Send + Sync {
+    fn families(&self) -> &'static [WriterFamily];
+
+    fn execute(&self, request: &WriterRequest) -> Result<WriterResult, SourceAdapterError>;
+}
+
+#[derive(Debug, Clone)]
+pub struct ModuleArtifactLocatorRequest {
+    session: OperationalSourceSession,
+    cancellation: OperationCancellation,
+}
+
+impl ModuleArtifactLocatorRequest {
+    pub const fn new(
+        session: OperationalSourceSession,
+        cancellation: OperationCancellation,
+    ) -> Self {
+        Self {
+            session,
+            cancellation,
+        }
+    }
+
+    pub fn session(&self) -> &OperationalSourceSession {
+        &self.session
+    }
+
+    pub fn cancellation(&self) -> &OperationCancellation {
+        &self.cancellation
+    }
+}
+
+pub trait ModuleArtifactLocatorPort: Send + Sync {
+    fn locate(
+        &self,
+        request: &ModuleArtifactLocatorRequest,
+    ) -> Result<ModuleArtifactLocation, SourceAdapterError>;
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationalContractError {
     EmptyRequest,
@@ -2539,6 +2619,8 @@ pub struct OperationalAdapterRegistration {
     validation_context: Arc<dyn ValidationContextPort>,
     validation: Arc<dyn OperationalValidationPort>,
     publication: Arc<dyn PublicationPort>,
+    writer: Arc<dyn WriterPort>,
+    module_artifacts: Arc<dyn ModuleArtifactLocatorPort>,
 }
 
 impl OperationalAdapterRegistration {
@@ -2551,6 +2633,8 @@ impl OperationalAdapterRegistration {
         validation_context: Arc<dyn ValidationContextPort>,
         validation: Arc<dyn OperationalValidationPort>,
         publication: Arc<dyn PublicationPort>,
+        writer: Arc<dyn WriterPort>,
+        module_artifacts: Arc<dyn ModuleArtifactLocatorPort>,
     ) -> Self {
         Self {
             compatibility,
@@ -2561,6 +2645,8 @@ impl OperationalAdapterRegistration {
             validation_context,
             validation,
             publication,
+            writer,
+            module_artifacts,
         }
     }
 
@@ -2594,5 +2680,13 @@ impl OperationalAdapterRegistration {
 
     pub fn publication(&self) -> &dyn PublicationPort {
         self.publication.as_ref()
+    }
+
+    pub fn writer(&self) -> &dyn WriterPort {
+        self.writer.as_ref()
+    }
+
+    pub fn module_artifacts(&self) -> &dyn ModuleArtifactLocatorPort {
+        self.module_artifacts.as_ref()
     }
 }

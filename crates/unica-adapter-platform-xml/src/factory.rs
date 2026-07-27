@@ -61,6 +61,8 @@ impl PlatformXmlAdapterFactory {
             validation.clone(),
             validation,
             Arc::new(crate::publication::PlatformXmlPublication::new()),
+            Arc::new(crate::operations::PlatformXmlWriter),
+            Arc::new(v2_20::writers::module_locator::PlatformModuleArtifactLocator),
         )
     }
 
@@ -163,6 +165,21 @@ impl PlatformXmlAdapterFactory {
         )
     }
 
+    pub fn capture_module_artifact_source(
+        self,
+        source_root: &Path,
+        target: &Path,
+        authorized_root: &Path,
+    ) -> OperationalSourceSession {
+        OperationalSourceSession::new(
+            v2_20::writers::module_locator::PlatformModuleLocatorSession::new(
+                source_root,
+                target,
+                authorized_root,
+            ),
+        )
+    }
+
     pub fn inspect_source_set(
         self,
         source_root: &Path,
@@ -218,6 +235,30 @@ impl PlatformXmlAdapterFactory {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn capture_writer_session(
+        self,
+        operation: &str,
+        tool_name: &str,
+        args: &serde_json::Map<String, serde_json::Value>,
+        workspace_root: &Path,
+        cwd: &Path,
+        cache_root: &Path,
+        workspace_epoch: u64,
+    ) -> OperationalSourceSession {
+        OperationalSourceSession::new(crate::operations::PlatformWriterSession::new(
+            operation,
+            tool_name,
+            args.clone(),
+            crate::operations::WorkspaceContext {
+                cwd: cwd.to_path_buf(),
+                workspace_root: workspace_root.to_path_buf(),
+                cache_root: cache_root.to_path_buf(),
+                workspace_epoch,
+            },
+        ))
+    }
+
     pub fn compatibility_port(self) -> Arc<dyn unica_format_core::ports::CompatibilityPort> {
         Arc::new(crate::guards::PlatformXmlGuards)
     }
@@ -230,6 +271,10 @@ impl PlatformXmlAdapterFactory {
 
     pub fn authorability_port(self) -> Arc<dyn unica_format_core::ports::AuthorabilityPort> {
         Arc::new(crate::guards::PlatformXmlGuards)
+    }
+
+    pub fn inspection_port(self) -> Arc<dyn unica_format_core::commands::InspectionPort> {
+        Arc::new(crate::operations::PlatformXmlInspector)
     }
 
     pub fn validation_context_port(

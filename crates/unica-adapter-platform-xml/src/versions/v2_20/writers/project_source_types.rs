@@ -1,0 +1,45 @@
+use serde::Serialize;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSourceMap {
+    pub workspace_root: String,
+    pub config_path: Option<String>,
+    pub source_sets: Vec<ProjectSourceSet>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_source_set: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_source_root: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_selection_error: Option<String>,
+    #[serde(skip_serializing)]
+    pub(crate) configured_format_raw: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSourceSet {
+    pub name: String,
+    pub kind: SourceSetKind,
+    pub path: String,
+    pub source_format: SourceFormat,
+    pub format_evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceSetKind {
+    Configuration,
+    Extension,
+    ExternalProcessor,
+    ExternalReport,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceFormat {
+    PlatformXml,
+    Edt,
+    Unknown,
+    Invalid,
+}

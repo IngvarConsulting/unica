@@ -3810,9 +3810,13 @@ mod tests {
         let (root, workspace, config_path) =
             cf_edit_mutation_workspace("unica-compile-cf-edit-lock", &before);
         let mut transaction = CompileTransaction::new();
+        let replacement = String::from_utf8(before.clone())
+            .unwrap()
+            .replace("<Role/>", "<Role>Reader</Role>")
+            .into_bytes();
         transaction
-            .register_canonical_child(&config_path, "Role", "Reader")
-            .expect("compile transaction must plan a registration");
+            .replace_bytes(&config_path, &before, replacement)
+            .expect("host transaction must plan a byte replacement");
 
         let acquired = Arc::new(Barrier::new(2));
         let release = Arc::new(Barrier::new(2));

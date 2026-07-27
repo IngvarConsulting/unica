@@ -1,10 +1,17 @@
 use crate::application::AdapterOutcome;
 use crate::domain::workspace::WorkspaceContext;
 use serde_json::{Map, Value};
-use std::path::PathBuf;
-
-use super::{
-    cf, cfe, dcs, external, form, help, interface, meta, mxl, role, subsystem, support, template,
+use unica_format_core::{
+    commands::{
+        ConfigurationCommand, ConfigurationInspection, DataCompositionCommand,
+        DataCompositionInspection, ExtensionCommand, ExtensionInspection, ExternalArtifactCommand,
+        FormCommand, FormInspection, HelpCommand, InspectionCommand, InspectionRequest,
+        InterfaceCommand, InterfaceInspection, MetadataCommand, MetadataInspection, MutationMode,
+        RoleCommand, RoleInspection, SpreadsheetCommand, SpreadsheetInspection, SubsystemCommand,
+        SubsystemInspection, SupportCommand, TemplateCommand, TemplateInspection, WriterCommand,
+        WriterEvidence, WriterStatus,
+    },
+    ports::{OperationCancellation, WriterRequest},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,113 +113,9 @@ pub(crate) fn invoke_read(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Option<Result<AdapterOutcome, String>> {
-    cf::invoke_read(operation, tool_name, args, context)
-        .or_else(|| cfe::invoke_read(operation, tool_name, args, context))
-        .or_else(|| meta::invoke_read(operation, tool_name, args, context))
-        .or_else(|| form::invoke_read(operation, tool_name, args, context))
-        .or_else(|| interface::invoke_read(operation, tool_name, args, context))
-        .or_else(|| subsystem::invoke_read(operation, tool_name, args, context))
-        .or_else(|| template::invoke_read(operation, tool_name, args, context))
-        .or_else(|| dcs::invoke_read(operation, tool_name, args, context))
-        .or_else(|| mxl::invoke_read(operation, tool_name, args, context))
-        .or_else(|| role::invoke_read(operation, tool_name, args, context))
-}
-
-pub(crate) enum PreviewInvocation {
-    Unavailable(String),
-    Planned(Result<AdapterOutcome, String>),
-}
-
-pub(crate) fn invoke_preview(
-    operation: &str,
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> Option<PreviewInvocation> {
-    if operation == "form-compile" && !form::has_compile_payload(args) {
-        return None;
-    }
-    if !matches!(
-        operation,
-        "form-compile" | "meta-compile" | "role-compile" | "subsystem-compile"
-    ) {
-        return None;
-    }
-    if let Some(reason) = compile_preview_unavailable(operation, args, context) {
-        return Some(PreviewInvocation::Unavailable(reason));
-    }
-    let planned = match operation {
-        "form-compile" => form::preview_form_compile(args, context),
-        "meta-compile" => meta::preview_meta_compile(args, context),
-        "role-compile" => role::preview_role_compile(args, context),
-        "subsystem-compile" => subsystem::preview_subsystem_compile(args, context),
-        _ => unreachable!("compile preview operations were checked above"),
-    };
-    Some(PreviewInvocation::Planned(planned))
-}
-
-fn compile_preview_unavailable(
-    operation: &str,
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> Option<String> {
-    if operation == "form-compile" {
-        return None;
-    }
-    if string_arg(args, &["OutputDir", "outputDir"]).is_none() {
-        return Some("missing required OutputDir argument".to_string());
-    }
-
-    match operation {
-        "meta-compile" | "role-compile" => {
-            let Some(json_path) = string_arg(args, &["JsonPath", "jsonPath"]) else {
-                return Some("missing required JsonPath argument".to_string());
-            };
-            let json_path = PathBuf::from(json_path);
-            let json_path = if json_path.is_absolute() {
-                json_path
-            } else {
-                context.cwd.join(json_path)
-            };
-            (!json_path.is_file())
-                .then(|| format!("definition file is unavailable: {}", json_path.display()))
-        }
-        "subsystem-compile" => {
-            if let Some(parent) = string_arg(args, &["Parent", "parent"]) {
-                let parent = PathBuf::from(parent);
-                let parent = if parent.is_absolute() {
-                    parent
-                } else {
-                    context.cwd.join(parent)
-                };
-                if !parent.exists() {
-                    return Some(format!(
-                        "parent subsystem is unavailable: {}",
-                        parent.display()
-                    ));
-                }
-            }
-            if string_arg(args, &["Value", "value"]).is_some() {
-                return None;
-            }
-            let Some(definition) = string_arg(args, &["DefinitionFile", "definitionFile"]) else {
-                return Some("missing Value or DefinitionFile argument".to_string());
-            };
-            let definition = PathBuf::from(definition);
-            let definition = if definition.is_absolute() {
-                definition
-            } else {
-                context.cwd.join(definition)
-            };
-            (!definition.is_file())
-                .then(|| format!("definition file is unavailable: {}", definition.display()))
-        }
-        _ => None,
-    }
-}
-
-fn string_arg<'a>(args: &'a Map<String, Value>, keys: &[&str]) -> Option<&'a str> {
-    keys.iter()
-        .find_map(|key| args.get(*key).and_then(Value::as_str))
+    Some(Ok(invoke_adapter_inspection(
+        operation, tool_name, args, context,
+    )?))
 }
 
 pub(crate) fn invoke_mutation(
@@ -221,22 +124,198 @@ pub(crate) fn invoke_mutation(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Option<AdapterOutcome> {
-    cf::invoke_mutation(operation, tool_name, args, context)
-        .or_else(|| cfe::invoke_mutation(operation, tool_name, args, context))
-        .or_else(|| external::apply(operation, tool_name, args, context))
-        .or_else(|| meta::invoke_mutation(operation, tool_name, args, context))
-        .or_else(|| match operation {
-            "help-add" => Some(help::add_help(args, context)),
-            _ => None,
-        })
-        .or_else(|| form::invoke_mutation(operation, tool_name, args, context))
-        .or_else(|| interface::invoke_mutation(operation, tool_name, args, context))
-        .or_else(|| subsystem::invoke_mutation(operation, tool_name, args, context))
-        .or_else(|| template::invoke_mutation(operation, tool_name, args, context))
-        .or_else(|| dcs::invoke_mutation(operation, tool_name, args, context))
-        .or_else(|| mxl::invoke_mutation(operation, tool_name, args, context))
-        .or_else(|| role::invoke_mutation(operation, tool_name, args, context))
-        .or_else(|| support::invoke_mutation(operation, tool_name, args, context))
+    invoke_adapter_writer(operation, tool_name, args, context, MutationMode::Apply)
+}
+
+pub(crate) fn invoke_adapter_writer(
+    operation: &str,
+    tool_name: &str,
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+    mode: MutationMode,
+) -> Option<AdapterOutcome> {
+    invoke_adapter_writer_with_evidence(operation, tool_name, args, context, mode)
+        .map(|(outcome, _)| outcome)
+}
+
+pub(crate) fn invoke_adapter_writer_with_evidence(
+    operation: &str,
+    tool_name: &str,
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+    mode: MutationMode,
+) -> Option<(AdapterOutcome, Option<WriterEvidence>)> {
+    let command = writer_command(operation)?;
+    let factory = unica_adapter_platform_xml::PlatformXmlAdapterFactory::new();
+    let session = factory.capture_writer_session(
+        operation,
+        tool_name,
+        args,
+        &context.workspace_root,
+        &context.cwd,
+        &context.cache_root,
+        context.workspace_epoch,
+    );
+    let request = WriterRequest::new(session, command, mode, OperationCancellation::new());
+    let result = factory
+        .operational_registration()
+        .writer()
+        .execute(&request);
+    Some(match result {
+        Ok(result) => {
+            let evidence = result.evidence().cloned();
+            (
+                AdapterOutcome {
+                    ok: matches!(
+                        result.status(),
+                        WriterStatus::Applied | WriterStatus::Previewed
+                    ),
+                    summary: result.summary().to_string(),
+                    changes: result.changes().to_vec(),
+                    warnings: result.warnings().to_vec(),
+                    errors: result.errors().to_vec(),
+                    artifacts: result.artifacts().to_vec(),
+                    stdout: result.stdout().map(str::to_string),
+                    stderr: result.stderr().map(str::to_string),
+                    command: None,
+                },
+                evidence,
+            )
+        }
+        Err(error) => (
+            AdapterOutcome {
+                ok: false,
+                summary: format!("{tool_name} failed"),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.message.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{}\n", error.message)),
+                command: None,
+            },
+            None,
+        ),
+    })
+}
+
+pub(crate) fn has_form_edit_payload(args: &Map<String, Value>) -> bool {
+    const KEYS: &[&str] = &[
+        "FormPath",
+        "formPath",
+        "Path",
+        "path",
+        "JsonPath",
+        "jsonPath",
+        "definition",
+    ];
+    args.keys().any(|key| KEYS.contains(&key.as_str()))
+}
+
+fn invoke_adapter_inspection(
+    operation: &str,
+    tool_name: &str,
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Option<AdapterOutcome> {
+    let command = inspection_command(operation)?;
+    let factory = unica_adapter_platform_xml::PlatformXmlAdapterFactory::new();
+    let session = factory.capture_writer_session(
+        operation,
+        tool_name,
+        args,
+        &context.workspace_root,
+        &context.cwd,
+        &context.cache_root,
+        context.workspace_epoch,
+    );
+    let request = InspectionRequest::new(session, command, OperationCancellation::new());
+    Some(match factory.inspection_port().inspect(&request) {
+        Ok(result) => AdapterOutcome {
+            ok: !matches!(
+                result.status(),
+                WriterStatus::Rejected | WriterStatus::Cancelled | WriterStatus::RecoveryRequired
+            ),
+            summary: result.summary().to_string(),
+            changes: result.changes().to_vec(),
+            warnings: result.warnings().to_vec(),
+            errors: result.errors().to_vec(),
+            artifacts: result.artifacts().to_vec(),
+            stdout: result.stdout().map(str::to_string),
+            stderr: result.stderr().map(str::to_string),
+            command: None,
+        },
+        Err(error) => AdapterOutcome {
+            ok: false,
+            summary: format!("{tool_name} failed"),
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: vec![error.message.clone()],
+            artifacts: Vec::new(),
+            stdout: None,
+            stderr: Some(format!("{}\n", error.message)),
+            command: None,
+        },
+    })
+}
+
+fn inspection_command(operation: &str) -> Option<InspectionCommand> {
+    Some(match operation {
+        "cf-info" => InspectionCommand::Configuration(ConfigurationInspection::Describe),
+        "cf-validate" => InspectionCommand::Configuration(ConfigurationInspection::Validate),
+        "cfe-diff" => InspectionCommand::Extension(ExtensionInspection::Compare),
+        "cfe-validate" => InspectionCommand::Extension(ExtensionInspection::Validate),
+        "meta-info" => InspectionCommand::Metadata(MetadataInspection::Describe),
+        "meta-validate" => InspectionCommand::Metadata(MetadataInspection::Validate),
+        "form-info" => InspectionCommand::Form(FormInspection::Describe),
+        "form-validate" => InspectionCommand::Form(FormInspection::Validate),
+        "interface-validate" => InspectionCommand::Interface(InterfaceInspection::Validate),
+        "subsystem-info" => InspectionCommand::Subsystem(SubsystemInspection::Describe),
+        "subsystem-validate" => InspectionCommand::Subsystem(SubsystemInspection::Validate),
+        "template-info" => InspectionCommand::Template(TemplateInspection::Describe),
+        "template-validate" => InspectionCommand::Template(TemplateInspection::Validate),
+        "dcs-info" => InspectionCommand::DataComposition(DataCompositionInspection::Describe),
+        "dcs-validate" => InspectionCommand::DataComposition(DataCompositionInspection::Validate),
+        "mxl-decompile" => InspectionCommand::Spreadsheet(SpreadsheetInspection::Decompile),
+        "mxl-info" => InspectionCommand::Spreadsheet(SpreadsheetInspection::Describe),
+        "mxl-validate" => InspectionCommand::Spreadsheet(SpreadsheetInspection::Validate),
+        "role-info" => InspectionCommand::Role(RoleInspection::Describe),
+        "role-validate" => InspectionCommand::Role(RoleInspection::Validate),
+        _ => return None,
+    })
+}
+
+fn writer_command(operation: &str) -> Option<WriterCommand> {
+    Some(match operation {
+        "cf-init" => WriterCommand::configuration(ConfigurationCommand::Initialize),
+        "cf-edit" => WriterCommand::configuration(ConfigurationCommand::Edit),
+        "cfe-init" => WriterCommand::extension(ExtensionCommand::Initialize),
+        "cfe-borrow" => WriterCommand::extension(ExtensionCommand::Borrow),
+        "cfe-patch-method" => WriterCommand::extension(ExtensionCommand::PatchMethod),
+        "epf-init" => {
+            WriterCommand::external_artifact(ExternalArtifactCommand::InitializeProcessor)
+        }
+        "erf-init" => WriterCommand::external_artifact(ExternalArtifactCommand::InitializeReport),
+        "meta-compile" => WriterCommand::metadata(MetadataCommand::Create),
+        "meta-edit" => WriterCommand::metadata(MetadataCommand::Edit),
+        "meta-remove" => WriterCommand::metadata(MetadataCommand::Remove),
+        "form-add" => WriterCommand::form(FormCommand::Create),
+        "form-compile" => WriterCommand::form(FormCommand::Compile),
+        "form-edit" => WriterCommand::form(FormCommand::Edit),
+        "form-remove" => WriterCommand::form(FormCommand::Remove),
+        "template-add" => WriterCommand::template(TemplateCommand::Create),
+        "template-remove" => WriterCommand::template(TemplateCommand::Remove),
+        "help-add" => WriterCommand::help(HelpCommand::Create),
+        "interface-edit" => WriterCommand::interface(InterfaceCommand::Edit),
+        "role-compile" => WriterCommand::role(RoleCommand::Create),
+        "subsystem-compile" => WriterCommand::subsystem(SubsystemCommand::Create),
+        "subsystem-edit" => WriterCommand::subsystem(SubsystemCommand::Edit),
+        "support-edit" => WriterCommand::support(SupportCommand::Edit),
+        "dcs-compile" => WriterCommand::data_composition(DataCompositionCommand::Create),
+        "dcs-edit" => WriterCommand::data_composition(DataCompositionCommand::Edit),
+        "mxl-compile" => WriterCommand::spreadsheet(SpreadsheetCommand::Create),
+        _ => return None,
+    })
 }
 
 #[cfg(test)]

@@ -1322,7 +1322,7 @@ mod tests {
     #[test]
     fn form_compile_skill_documents_registered_events_for_each_documented_element() {
         const SKILL: &str =
-            include_str!("../../../../../plugins/unica/skills/form-compile/SKILL.md");
+            include_str!("../../../../../../plugins/unica/skills/form-compile/SKILL.md");
         const START: &str = "<!-- form-event-registry:start -->";
         const END: &str = "<!-- form-event-registry:end -->";
 

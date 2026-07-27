@@ -1,4 +1,4 @@
-use super::{code, form, meta, registry, NativeOperationAdapter};
+use super::{code, meta, registry, NativeOperationAdapter};
 use crate::{
     application::{metadata_navigation_command, AdapterOutcome},
     domain::{
@@ -72,13 +72,27 @@ impl NativeOperationAdapter {
                     };
                     return typed_mutation_result(execution.outcome, execution.data, "code patch");
                 }
-                Some(registry::TypedMutationHandler::FormEdit) if form::has_edit_payload(args) => {
-                    let execution = if dry_run {
-                        form::preview_with_data(args, context)
+                Some(registry::TypedMutationHandler::FormEdit)
+                    if registry::has_form_edit_payload(args) =>
+                {
+                    let mode = if dry_run {
+                        unica_format_core::commands::MutationMode::Preview
                     } else {
-                        form::apply_with_data(args, context)
+                        unica_format_core::commands::MutationMode::Apply
                     };
-                    return typed_mutation_result(execution.outcome, execution.data, "form edit");
+                    let (adapter, evidence) = registry::invoke_adapter_writer_with_evidence(
+                        operation, tool_name, args, context, mode,
+                    )
+                    .ok_or_else(|| "form edit writer is not registered".to_string())?;
+                    let data = match evidence {
+                        Some(unica_format_core::commands::WriterEvidence::FormEdit(data)) => {
+                            Some(serde_json::to_value(data).map_err(|error| {
+                                format!("serialize typed form edit result: {error}")
+                            })?)
+                        }
+                        None => None,
+                    };
+                    return Ok(NativeOperationResult { adapter, data });
                 }
                 Some(registry::TypedMutationHandler::FormEdit) => {}
                 None => {}

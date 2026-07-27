@@ -532,6 +532,10 @@ pub(crate) struct PreparedCreate<'request, 'lock, 'scope> {
 }
 
 impl PreparedCreate<'_, '_, '_> {
+    pub(crate) fn staged_path(&self) -> &Path {
+        &self.stage.path
+    }
+
     pub(crate) fn staged_file_identity(&self) -> Result<FileIdentity, PublishError> {
         staged_file_identity(&self.stage.path)
     }
@@ -540,7 +544,7 @@ impl PreparedCreate<'_, '_, '_> {
         self.commit_with_guard(|| Ok(()))
     }
 
-    fn commit_with_guard(
+    pub(crate) fn commit_with_guard(
         mut self,
         guard: impl FnOnce() -> Result<(), String>,
     ) -> Result<PublishReport, PublishError> {
@@ -594,6 +598,10 @@ pub(crate) struct PreparedReplace<'request, 'lock, 'scope> {
 }
 
 impl PreparedReplace<'_, '_, '_> {
+    pub(crate) fn staged_path(&self) -> &Path {
+        &self.stage.path
+    }
+
     pub(crate) fn staged_file_identity(&self) -> Result<FileIdentity, PublishError> {
         staged_file_identity(&self.stage.path)
     }
@@ -606,7 +614,7 @@ impl PreparedReplace<'_, '_, '_> {
         self.commit_with_guard(|| Ok(()))
     }
 
-    fn commit_with_guard(
+    pub(crate) fn commit_with_guard(
         mut self,
         guard: impl FnOnce() -> Result<(), String>,
     ) -> Result<PublishReport, PublishError> {

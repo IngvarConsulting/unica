@@ -151,41 +151,10 @@ fn validate_one_with_provider(
             }
         }
 
-        for native_object in object.descendants().filter(roxmltree::Node::is_element) {
-            let Some(profile) =
-                semantic_map::metadata_class_profile(native_object.tag_name().name())
-            else {
-                continue;
-            };
-            let Some(properties) = child(native_object, "Properties") else {
-                continue;
-            };
-            for property in properties.children().filter(roxmltree::Node::is_element) {
-                checks = checks.saturating_add(1);
-                let Some(mapping) = semantic_map::property_mapping(
-                    semantic_map::object_kind(profile),
-                    property.tag_name().name(),
-                ) else {
-                    continue;
-                };
-                let value = inner_text(property);
-                let valid = match mapping.value_kind {
-                    semantic_map::NativeValueKind::Boolean => {
-                        matches!(value.as_str(), "true" | "false")
-                    }
-                    semantic_map::NativeValueKind::Enum if value.is_empty() => true,
-                    semantic_map::NativeValueKind::Enum => semantic_map::enum_value(
-                        semantic_map::object_kind(profile),
-                        mapping.semantic_id,
-                        &value,
-                    )
-                    .is_some(),
-                    _ => true,
-                };
-                if !valid {
-                    findings.push(error(ValidationFindingCode::SemanticValueInvalid));
-                }
-            }
+        let value_scan = scan_metadata_value_contract(object);
+        checks = checks.saturating_add(value_scan.checks);
+        for _ in value_scan.violations {
+            findings.push(error(ValidationFindingCode::SemanticValueInvalid));
         }
     }
 
@@ -253,6 +222,94 @@ fn validate_one_with_provider(
         ValidationDraft::new(subject_id, checks.max(1), findings, coverage),
         options.max_errors(),
     )
+}
+
+#[derive(Debug)]
+struct MetadataValueViolation {
+    object_type: String,
+    property_name: String,
+    value: String,
+    boolean: bool,
+}
+
+#[derive(Debug, Default)]
+struct MetadataValueScan {
+    checks: u16,
+    violations: Vec<MetadataValueViolation>,
+}
+
+fn scan_metadata_value_contract(object: roxmltree::Node<'_, '_>) -> MetadataValueScan {
+    let mut scan = MetadataValueScan::default();
+    for native_object in object.descendants().filter(roxmltree::Node::is_element) {
+        let Some(profile) = semantic_map::metadata_class_profile(native_object.tag_name().name())
+        else {
+            continue;
+        };
+        let Some(properties) = child(native_object, "Properties") else {
+            continue;
+        };
+        for property in properties.children().filter(roxmltree::Node::is_element) {
+            scan.checks = scan.checks.saturating_add(1);
+            let Some(mapping) = semantic_map::property_mapping(
+                semantic_map::object_kind(profile),
+                property.tag_name().name(),
+            ) else {
+                continue;
+            };
+            let value = inner_text(property);
+            let valid = match mapping.value_kind {
+                semantic_map::NativeValueKind::Boolean => {
+                    matches!(value.as_str(), "true" | "false")
+                }
+                semantic_map::NativeValueKind::Enum if value.is_empty() => true,
+                semantic_map::NativeValueKind::Enum => semantic_map::enum_value(
+                    semantic_map::object_kind(profile),
+                    mapping.semantic_id,
+                    &value,
+                )
+                .is_some(),
+                _ => true,
+            };
+            if !valid {
+                scan.violations.push(MetadataValueViolation {
+                    object_type: native_object.tag_name().name().to_string(),
+                    property_name: property.tag_name().name().to_string(),
+                    value,
+                    boolean: matches!(mapping.value_kind, semantic_map::NativeValueKind::Boolean),
+                });
+            }
+        }
+    }
+    scan
+}
+
+pub(crate) fn validate_metadata_value_contract(bytes: &[u8], context: &str) -> Result<(), String> {
+    let (_, document) = xml::parse_bounded_xml_document(bytes)
+        .map_err(|_| format!("{context} metadata artifact is not valid XML"))?;
+    let root = document.root_element();
+    let Some(object) = root
+        .children()
+        .find(|node| node.is_element() && node.tag_name().namespace() == Some(xml::MD_CLASSES_NS))
+    else {
+        return Ok(());
+    };
+    if let Some(violation) = scan_metadata_value_contract(object)
+        .violations
+        .into_iter()
+        .next()
+    {
+        if violation.boolean {
+            return Err(format!(
+                "{context} property {}.{} value '{}' is not a canonical xs:boolean for the fixed 8.3.27 contract; expected true or false",
+                violation.object_type, violation.property_name, violation.value
+            ));
+        }
+        return Err(format!(
+            "{context} property {}.{} value '{}' is not valid for the fixed platform contract",
+            violation.object_type, violation.property_name, violation.value
+        ));
+    }
+    Ok(())
 }
 
 struct ValidationDraft {
