@@ -3227,13 +3227,18 @@ fn diagnostics_analyze_outcome(
 
 fn diagnostics_analyze_reply_is_pending(format: Option<&str>, stdout: &str) -> bool {
     match format {
-        // `diagnostics_analyze_args` normalizes `json` to `jsonl`; every other
-        // value the analyzer accepts prints the console report.
+        // `diagnostics_analyze_args` normalizes `json` to `jsonl`, and the
+        // analyzer's `--format` takes nothing but `console` (its default) and
+        // `jsonl`, so any other value fails the run before this check.
         Some("jsonl") => !stdout
             .lines()
             .rev()
             .any(diagnostics_analyze_jsonl_line_reports_files),
-        _ => !stdout.contains(DIAGNOSTICS_ANALYZE_CONSOLE_MARKER),
+        None | Some("console") => !stdout.contains(DIAGNOSTICS_ANALYZE_CONSOLE_MARKER),
+        // Should the analyzer ever grow a third format, its completion marker is
+        // unknown here: leave the reply as it came back instead of reporting a
+        // finished run as a build that never was.
+        Some(_) => false,
     }
 }
 
@@ -7209,6 +7214,22 @@ source-set:
             .errors
             .iter()
             .any(|error| error.starts_with(DIAGNOSTICS_PENDING_PREFIX)));
+    }
+
+    #[test]
+    fn diagnostics_analyze_leaves_an_unknown_format_alone() {
+        // The analyzer accepts only `console` and `jsonl`, so a third format
+        // fails the run long before the readiness check. If one is ever added,
+        // its completion marker is unknown here and a finished run must not be
+        // called pending on the strength of a marker it never prints.
+        let outcome = analyze_outcome(
+            Some("sarif"),
+            "{\"runs\":[]}",
+            "diagnostics-analyze-unknown-format",
+        );
+
+        assert!(outcome.ok);
+        assert!(outcome.errors.is_empty());
     }
 
     #[test]
