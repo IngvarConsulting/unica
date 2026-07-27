@@ -13,3 +13,6 @@ serde_json.workspace = true
 sha2.workspace = true
 unica-format-core.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+base64.workspace = true
