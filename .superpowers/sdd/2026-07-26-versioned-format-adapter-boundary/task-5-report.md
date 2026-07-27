@@ -570,3 +570,267 @@ outputs.
   reviewed closed semantic mapping is added.
 - No known fact from the tracked legacy useful-information baseline remains
   unable to meet semantic parity.
+
+## Fix Round 4
+
+### Correction to the Fix Round 3 report
+
+The Fix Round 3 statements that `legacy-oracle/exact-semantic-facts.json` was an
+independent oracle and that its 2,072 facts proved legacy parity were incorrect.
+That artifact had been populated by observing and normalizing the new
+`NavigationEnvelope`; it therefore proved only consistency with itself. The
+associated `expected-semantic-facts.json` inventories also duplicated runtime
+registry claims. Both files are deleted in Fix Round 4 and none of their
+semantic arrays is used or retained.
+
+The replacement oracle is generated only from tracked legacy scripts, their
+input fixtures, raw legacy output, and a separately reviewed crosswalk. No
+adapter output is accepted by the generator, and adapter-only facts are no
+longer represented as legacy expectations.
+
+### Implementation commit
+
+Runtime, tests, legacy evidence, generated oracle artifacts, deleted tainted
+artifacts, and the controller's Fix Round 4 progress ledger entry:
+
+```text
+298cfd0958775b95042adcdbdd6a1c0ac71942e7
+```
+
+The report itself is committed separately after this SHA was known. No commit
+was amended.
+
+### Changed files in the implementation commit
+
+- `.superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/progress.md`
+- `crates/unica-format-core/src/semantic_ids.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/coverage.json`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/projector.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/semantic_map.rs`
+- `crates/unica-adapter-platform-xml/tests/legacy_parity.rs`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights/SalesReader.xml`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/expected-semantic-facts.json` (deleted)
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/exact-semantic-facts.json` (deleted)
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/README.md`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/inputs.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/crosswalk.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/generate_oracle.py`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/legacy-semantic-oracle.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/oracle-manifest.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/all-types.full.txt`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/common-form.full.txt`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/common-template.full.txt`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/event-sources.full.txt`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/owned-artifacts.full.txt`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/unknown-cases.full.txt`
+
+The seven previously frozen real-fixture `meta-info` outputs and the existing
+`role-info` output remain tracked and are now hash-enforced by the same
+provenance manifest.
+
+### Independent oracle and provenance mechanism
+
+`inputs.json` is the complete invocation inventory. It declares six tracked
+legacy reference sources, 15 legacy runs, every primary input, every distinct
+adapter descriptor used for equivalent 2.20 projection, relevant backing input
+artifacts, raw output paths, and comparison profiles.
+
+`generate_oracle.py` imports only Python standard-library modules. It performs
+these steps:
+
+1. Runs only tracked `meta-info.py` and `role-info.py` commands into temporary
+   output files.
+2. Parses those raw text outputs into a legacy-comparable semantic fact
+   multiset using `crosswalk.json`.
+3. Extracts enum aliases directly from the AST literal tables and comparisons
+   in tracked legacy sources rather than from adapter data.
+4. Writes `legacy-semantic-oracle.json` deterministically.
+5. Writes `oracle-manifest.json` with SHA-256 for the generator, invocation
+   inventory, independent crosswalk, every reference script, every input
+   fixture/artifact, every raw output, and the resulting semantic oracle.
+
+Regeneration command:
+
+```text
+python3.12 crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/generate_oracle.py --repo-root . --write
+```
+
+Verification command used by the Rust test:
+
+```text
+python3.12 crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/generate_oracle.py --repo-root . --check
+```
+
+`--check` reruns all 15 legacy commands in temporary storage, re-extracts the
+oracle, compares every checked-in byte, and recomputes every SHA-256. The Rust
+provenance test independently recomputes the manifest hashes and rejects any
+generator source reference to `unica_adapter_platform_xml`,
+`unica_format_core`, `NavigationEnvelope`, adapter normalizers, Cargo runtime
+artifacts, or `cargo run`.
+
+### Exact comparison boundary
+
+The legacy oracle contains only facts actually exposed by frozen legacy output:
+unique object/child identities, property types and values, presence state,
+field/type variants and qualifiers, child and reference relations, form and
+template membership, role defaults and permissions, RLS presence/count,
+restriction-template identity, EmptyRef drill-down, and readable unknown type
+occurrences.
+
+The new envelope is projected to the same legacy-comparable vocabulary. One
+`compare_fact_multisets` function computes a structured `FactDiff` with missing
+and unexpected occurrence counts. It is used by every real parity case and by
+all mutation tests. Identity is occurrence-preserving; an extra node receives
+an extra identity/fact and cannot collapse into a kind/name map.
+
+Adapter-only status, coverage, facets, diagnostics, detailed rights conditions,
+form/template descriptor/backing availability, and opaque-content truth are not
+fabricated into the legacy oracle. They are checked under separate closed-core
+contract assertions. The same multiset comparator is used for adapter-only
+facet/backing mutation checks, but those expected facts are explicitly marked
+as adapter contracts rather than legacy observations.
+
+Mutation coverage through the production comparator:
+
+- wrong-property and wrong-owner enum context
+- one removed neutral unknown type fact
+- one duplicated node identity
+- changed property value
+- changed property type
+- changed property state
+- one missing child relation
+- one missing backing fact
+- one missing facet fact
+
+### Enum source authority
+
+Enum extraction reads the tracked `valid_property_values` table from
+`meta-validate.py` by AST. It additionally extracts field-use comparisons and
+register display aliases from `meta-info.py`, template types from the tracked
+`template-add.py` `TYPE_MAP`, and managed/ordinary form evidence from tracked
+form creation/editing sources. The crosswalk maps each extracted legacy source
+domain to a closed semantic property and exact object-kind applicability.
+
+Generation fails when a legacy source adds an alias that lacks a reviewed
+crosswalk mapping or when the crosswalk claims an alias absent from the source.
+Rust expands `coverage.json` through its property registry and compares exact
+`nativeAlias + nativeProperty + objectKind + semanticProperty + semantic`
+records bijectively to the extracted set. Therefore an alias omitted from both
+a hand inventory and the runtime registry still fails when the source table
+contains it, and a jointly wrong property context still fails against the
+source-domain crosswalk.
+
+This extraction exposed and fixed these runtime claims:
+
+- Added the real legacy `ShowWarning` fill-checking value as closed
+  `showWarning` semantics.
+- Removed unsupported lowercase aliases not present in the case-sensitive
+  legacy source tables.
+- Removed unproven `GeographicalSchema` and `GraphicalSchema` template enum
+  claims; neither is a template type in the tracked legacy template source.
+- Kept both source-evidenced accumulation-register spellings `Balance` and
+  `Balances`.
+- Restricted information-register periodicity/write mode and
+  calculation-register periodicity to their exact native properties and owner
+  kinds.
+- Restricted register type to accumulation registers.
+- Added object-kind applicability to the typed runtime enum registry and enum
+  dispatcher, so property-only cross-context acceptance is impossible.
+
+### Runtime parity fixes exposed by the independent oracle
+
+The independent comparison identified four omissions/transforms that the
+adapter-captured Round 3 artifact could not reveal:
+
+- Metadata nodes without persistent UUIDs now receive structured support facts;
+  legacy `not on support` is compared as neutral `support.active=false` while
+  the adapter retains its more precise closed support state.
+- Report main data-composition-schema references are normalized inside v2_20 to
+  the semantic template name. Unknown future qualified encodings become
+  unresolved/partial instead of leaking a native qualified string.
+- Fields with omitted native default properties now project closed
+  `fillChecking=dontCheck`, `indexing=dontIndex`, and derived `required=false`;
+  readable unknown types retain those useful defaults while remaining partial.
+- Type-set variants are compared as an ordered serialization of an unordered
+  semantic set, avoiding false parity dependence on legacy display order.
+
+The legacy event display translation and common-module handler-prefix reduction
+remain solely in the hashed test crosswalk. Production core/application/coder
+learn no native or legacy display vocabulary.
+
+### RED evidence
+
+Focused RED command:
+
+```text
+cargo test -p unica-adapter-platform-xml --test legacy_parity legacy_oracle_regenerates_without_adapter_or_core_dependencies -- --exact
+```
+
+Result: exit 101. The test failed because
+`legacy-oracle/tools/generate_oracle.py` did not exist. No generator or oracle
+implementation existed at that point.
+
+Subsequent full `legacy_parity` RED runs failed on independently observed facts,
+not placeholder expectations. They exposed unordered type variants, missing
+support facts on identity-light metadata, specialized tabular-section column
+relations, suppressed name-equal synonyms, legacy event/handler display
+normalization, qualified report-template leakage, rights parser section
+boundaries, mismatched role descriptors, and missing unknown-field defaults.
+Each failure was resolved in the independent extractor/crosswalk or production
+adapter according to ownership; expected facts were never captured from the
+new envelope.
+
+### Final GREEN evidence
+
+Only the Task 5 scoped validation command prescribed by the plan was run:
+
+```text
+cargo test -p unica-adapter-platform-xml --test legacy_parity --test unmapped_fact
+```
+
+Result: exit 0, no warnings.
+
+```text
+legacy_parity: 10 passed; 0 failed; 0 ignored
+unmapped_fact: 8 passed; 0 failed; 0 ignored
+```
+
+No workspace-wide test suite, lint, format, or unrelated validation was run.
+The generator's legacy commands are part of `legacy_parity` provenance
+verification and do not import or invoke the new adapter crates.
+
+### Parity inventory
+
+- 15 independently generated legacy cases and 15 raw legacy outputs.
+- Seven real BSP `Mode=full` descriptors: catalog, common module, document,
+  enumeration, information register, language, and report.
+- Real `Валюты.xml` drill-down with typed EmptyRef distinct from absent,
+  unresolved, and null.
+- Owned form/template, common form, and common template membership from legacy
+  output; descriptor type/backing/opaque truth checked separately.
+- Complete tracked defined-type and subscription variants, qualifier content,
+  reference/object/record-set/manager/key aliases, and two distinct unknown
+  type ordinals.
+- Rights defaults, six allow/deny permissions, object targets, RLS presence and
+  count, restriction-template identity, totals, and role synonym from frozen
+  `role-info` output; exact known condition values and mixed-content unknown
+  occurrences checked separately.
+- Unknown child/property/relation/value/type/backing behavior remains covered by
+  the eight `unmapped_fact` cases, including every no-vocabulary owner profile.
+- Exact source-derived enum aliases include native property and object-kind
+  context and are machine-checked against runtime dispatch.
+
+### Known intentional gaps and concerns
+
+- Legacy raw output does not expose adapter status/coverage/facet/diagnostic
+  records, detailed rights condition text, form/template type, descriptor UUID,
+  backing availability, or opaque-content state. Those facts are deliberately
+  absent from the legacy oracle and validated as separate adapter contracts.
+- Form/template content internals remain intentionally opaque and partial when
+  only backing availability can be represented semantically.
+- Future enum aliases, qualified report-template encodings, rights extensions,
+  and unknown native facts remain readable partial until reviewed closed
+  mappings are added.
+- No known fact emitted by the tracked legacy useful-information outputs remains
+  missing from the legacy-comparable structured projection.
