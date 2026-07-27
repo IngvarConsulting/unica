@@ -472,12 +472,23 @@ class ProductContractTests(unittest.TestCase):
             "claude plugin uninstall unica@unica",
             "claude plugin marketplace remove unica",
             "claude --plugin-dir ./plugins/unica",
-            # The floor is load-bearing: older clients cannot parse git-subdir.
-            "2.1.69",
         )
         for value in required:
             with self.subTest(value=value):
                 self.assertIn(value, readme)
+
+    def test_claude_version_floor_stays_recorded_outside_the_root_readme(self) -> None:
+        # The floor is load-bearing: clients before 2.1.69 cannot parse the
+        # catalog's git-subdir source. The root README deliberately omits it,
+        # so the plugin README and the decision record must keep it.
+        repo_root = Path(__file__).resolve().parents[2]
+        plugin_readme = (repo_root / "plugins/unica/README.md").read_text(encoding="utf-8")
+        decision = (
+            repo_root / "spec/decisions/0012-one-plugin-directory-for-two-hosts.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("2.1.69", plugin_readme)
+        self.assertIn("2.1.69", decision)
 
     def test_claude_host_contract_is_recorded_for_agents(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
