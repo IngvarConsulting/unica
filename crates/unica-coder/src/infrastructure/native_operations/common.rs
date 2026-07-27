@@ -2121,7 +2121,7 @@ fn exact_platform_xml_output_preimage(
             ))
         }
     };
-    if metadata.file_type().is_symlink() {
+    if crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point(&metadata) {
         return Err(format!(
             "existing platform XML output must not be a symbolic link or reparse point: {}",
             target.display()

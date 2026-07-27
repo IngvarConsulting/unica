@@ -381,12 +381,23 @@ pub(crate) fn metadata_is_link_or_reparse_point(metadata: &fs::Metadata) -> bool
     metadata_is_reparse_point(metadata)
 }
 
+#[cfg(any(test, windows))]
+fn windows_file_attributes_indicate_reparse_point(
+    attributes: u32,
+    reparse_point_attribute: u32,
+) -> bool {
+    attributes & reparse_point_attribute != 0
+}
+
 #[cfg(windows)]
 fn metadata_is_reparse_point(metadata: &fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
 
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    windows_file_attributes_indicate_reparse_point(
+        metadata.file_attributes(),
+        FILE_ATTRIBUTE_REPARSE_POINT,
+    )
 }
 
 #[cfg(not(windows))]
@@ -475,7 +486,10 @@ fn path_lock_identity_text(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{path_lock_identity_text, windows_api_path_from_utf16};
+    use super::{
+        path_lock_identity_text, windows_api_path_from_utf16,
+        windows_file_attributes_indicate_reparse_point,
+    };
     use std::fs;
     use std::io;
     use std::path::PathBuf;
@@ -519,6 +533,29 @@ mod tests {
             windows_api_path_text(r"relative/source.xml", false),
             r"relative/source.xml"
         );
+    }
+
+    #[test]
+    fn windows_reparse_attribute_classification_is_independent_of_other_attributes() {
+        const FILE_ATTRIBUTE_ARCHIVE: u32 = 0x20;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+
+        assert!(!windows_file_attributes_indicate_reparse_point(
+            0,
+            FILE_ATTRIBUTE_REPARSE_POINT
+        ));
+        assert!(!windows_file_attributes_indicate_reparse_point(
+            FILE_ATTRIBUTE_ARCHIVE,
+            FILE_ATTRIBUTE_REPARSE_POINT
+        ));
+        assert!(windows_file_attributes_indicate_reparse_point(
+            FILE_ATTRIBUTE_REPARSE_POINT,
+            FILE_ATTRIBUTE_REPARSE_POINT
+        ));
+        assert!(windows_file_attributes_indicate_reparse_point(
+            FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_REPARSE_POINT,
+            FILE_ATTRIBUTE_REPARSE_POINT
+        ));
     }
 
     #[test]
