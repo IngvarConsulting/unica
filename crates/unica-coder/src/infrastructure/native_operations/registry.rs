@@ -1,6 +1,7 @@
 use crate::application::AdapterOutcome;
 use crate::domain::workspace::WorkspaceContext;
 use serde_json::{Map, Value};
+use std::path::PathBuf;
 use unica_format_core::{
     commands::{
         ConfigurationCommand, ConfigurationInspection, DataCompositionCommand,
@@ -8,8 +9,9 @@ use unica_format_core::{
         FormCommand, FormInspection, HelpCommand, InspectionCommand, InspectionRequest,
         InterfaceCommand, InterfaceInspection, MetadataCommand, MetadataInspection, MutationMode,
         RoleCommand, RoleInspection, SpreadsheetCommand, SpreadsheetInspection, SubsystemCommand,
-        SubsystemInspection, SupportCommand, TemplateCommand, TemplateInspection, WriterCommand,
-        WriterEvidence, WriterStatus,
+        SubsystemInspection, SupportCommand, TemplateCommand, TemplateInspection, WriterArgument,
+        WriterArguments, WriterBorrowScope, WriterCommand, WriterEvidence, WriterSourceRole,
+        WriterStatus,
     },
     ports::{OperationCancellation, WriterRequest},
 };
@@ -145,17 +147,31 @@ pub(crate) fn invoke_adapter_writer_with_evidence(
     context: &WorkspaceContext,
     mode: MutationMode,
 ) -> Option<(AdapterOutcome, Option<WriterEvidence>)> {
-    let command = writer_command(operation)?;
+    let command = match writer_command(operation, args) {
+        Ok(Some(command)) => command,
+        Ok(None) => return None,
+        Err(error) => return Some((writer_failure(tool_name, error), None)),
+    };
+    let sources = writer_sources(operation, args);
+    let inline_definition = match writer_inline_definition(operation, args) {
+        Ok(definition) => definition,
+        Err(error) => return Some((writer_failure(tool_name, error), None)),
+    };
+    let adapter_hint =
+        first_string(args, &["compatibilityMode", "CompatibilityMode"]).map(ToOwned::to_owned);
     let factory = unica_adapter_platform_xml::PlatformXmlAdapterFactory::new();
-    let session = factory.capture_writer_session(
-        operation,
-        tool_name,
-        args,
+    let session = match factory.capture_writer_session(
+        sources,
+        inline_definition,
+        adapter_hint,
         &context.workspace_root,
         &context.cwd,
         &context.cache_root,
         context.workspace_epoch,
-    );
+    ) {
+        Ok(session) => session,
+        Err(error) => return Some((writer_failure(tool_name, error.message), None)),
+    };
     let request = WriterRequest::new(session, command, mode, OperationCancellation::new());
     let result = factory
         .operational_registration()
@@ -182,21 +198,22 @@ pub(crate) fn invoke_adapter_writer_with_evidence(
                 evidence,
             )
         }
-        Err(error) => (
-            AdapterOutcome {
-                ok: false,
-                summary: format!("{tool_name} failed"),
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: vec![error.message.clone()],
-                artifacts: Vec::new(),
-                stdout: None,
-                stderr: Some(format!("{}\n", error.message)),
-                command: None,
-            },
-            None,
-        ),
+        Err(error) => (writer_failure(tool_name, error.message), None),
     })
+}
+
+fn writer_failure(tool_name: &str, message: String) -> AdapterOutcome {
+    AdapterOutcome {
+        ok: false,
+        summary: format!("{tool_name} failed"),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec![message.clone()],
+        artifacts: Vec::new(),
+        stdout: None,
+        stderr: Some(format!("{message}\n")),
+        command: None,
+    }
 }
 
 pub(crate) fn has_form_edit_payload(args: &Map<String, Value>) -> bool {
@@ -220,7 +237,7 @@ fn invoke_adapter_inspection(
 ) -> Option<AdapterOutcome> {
     let command = inspection_command(operation)?;
     let factory = unica_adapter_platform_xml::PlatformXmlAdapterFactory::new();
-    let session = factory.capture_writer_session(
+    let session = factory.capture_inspection_session(
         operation,
         tool_name,
         args,
@@ -285,8 +302,11 @@ fn inspection_command(operation: &str) -> Option<InspectionCommand> {
     })
 }
 
-fn writer_command(operation: &str) -> Option<WriterCommand> {
-    Some(match operation {
+fn writer_command(
+    operation: &str,
+    args: &Map<String, Value>,
+) -> Result<Option<WriterCommand>, String> {
+    let command = match operation {
         "cf-init" => WriterCommand::configuration(ConfigurationCommand::Initialize),
         "cf-edit" => WriterCommand::configuration(ConfigurationCommand::Edit),
         "cfe-init" => WriterCommand::extension(ExtensionCommand::Initialize),
@@ -314,8 +334,371 @@ fn writer_command(operation: &str) -> Option<WriterCommand> {
         "dcs-compile" => WriterCommand::data_composition(DataCompositionCommand::Create),
         "dcs-edit" => WriterCommand::data_composition(DataCompositionCommand::Edit),
         "mxl-compile" => WriterCommand::spreadsheet(SpreadsheetCommand::Create),
-        _ => return None,
-    })
+        _ => return Ok(None),
+    };
+    Ok(Some(
+        command.with_arguments(writer_arguments(operation, args)?),
+    ))
+}
+
+fn writer_arguments(operation: &str, args: &Map<String, Value>) -> Result<WriterArguments, String> {
+    let mut output = Vec::new();
+    push_text(args, &["name", "Name"], WriterArgument::Name, &mut output);
+    push_text(
+        args,
+        &["synonym", "Synonym"],
+        WriterArgument::Synonym,
+        &mut output,
+    );
+    push_text(
+        args,
+        &["vendor", "Vendor"],
+        WriterArgument::Vendor,
+        &mut output,
+    );
+    push_text(
+        args,
+        &["version", "Version"],
+        WriterArgument::ArtifactVersion,
+        &mut output,
+    );
+    push_text(
+        args,
+        &["purpose", "Purpose"],
+        WriterArgument::Purpose,
+        &mut output,
+    );
+    push_text(args, &["mode", "Mode"], WriterArgument::Mode, &mut output);
+    push_text(
+        args,
+        &["object", "Object"],
+        WriterArgument::ObjectReference,
+        &mut output,
+    );
+    push_text(
+        args,
+        &["namePrefix", "NamePrefix"],
+        WriterArgument::NamePrefix,
+        &mut output,
+    );
+    push_text(
+        args,
+        &["modulePath", "ModulePath"],
+        WriterArgument::ModuleReference,
+        &mut output,
+    );
+    push_text(
+        args,
+        &["methodName", "MethodName"],
+        WriterArgument::MethodName,
+        &mut output,
+    );
+    push_text(
+        args,
+        &["interceptorType", "InterceptorType"],
+        WriterArgument::InterceptorType,
+        &mut output,
+    );
+    push_text(
+        args,
+        &["context", "Context"],
+        WriterArgument::ExecutionContext,
+        &mut output,
+    );
+    if operation != "help-add" {
+        push_text(
+            args,
+            &["objectName", "ObjectName"],
+            WriterArgument::ObjectName,
+            &mut output,
+        );
+    }
+    push_text(
+        args,
+        &["formName", "FormName"],
+        WriterArgument::FormName,
+        &mut output,
+    );
+    push_text(
+        args,
+        &["templateName", "TemplateName"],
+        WriterArgument::TemplateName,
+        &mut output,
+    );
+    push_text(
+        args,
+        &["templateType", "TemplateType"],
+        WriterArgument::TemplateType,
+        &mut output,
+    );
+    push_text(
+        args,
+        &["lang", "Lang", "language", "Language"],
+        WriterArgument::Language,
+        &mut output,
+    );
+    push_text(
+        args,
+        &["operation", "Operation"],
+        WriterArgument::MutationVerb,
+        &mut output,
+    );
+    if !matches!(operation, "subsystem-compile" | "dcs-compile") {
+        push_text(
+            args,
+            &["value", "Value"],
+            WriterArgument::MutationValue,
+            &mut output,
+        );
+    }
+    push_text(
+        args,
+        &["dataSet", "DataSet"],
+        WriterArgument::DataSet,
+        &mut output,
+    );
+    push_text(
+        args,
+        &["variant", "Variant"],
+        WriterArgument::Variant,
+        &mut output,
+    );
+    if operation != "help-add" {
+        push_text(
+            args,
+            &["processorName", "ProcessorName"],
+            WriterArgument::ProcessorName,
+            &mut output,
+        );
+    }
+    push_text(
+        args,
+        &["capability", "Capability"],
+        WriterArgument::SupportCapability,
+        &mut output,
+    );
+    push_text(
+        args,
+        &["set", "Set"],
+        WriterArgument::SupportRule,
+        &mut output,
+    );
+
+    push_bool(
+        args,
+        &["noRole", "NoRole"],
+        WriterArgument::OmitRole,
+        &mut output,
+    );
+    push_bool(
+        args,
+        &["isFunction", "IsFunction"],
+        WriterArgument::Function,
+        &mut output,
+    );
+    push_bool(
+        args,
+        &["setDefault", "SetDefault"],
+        WriterArgument::AssignDefaultForm,
+        &mut output,
+    );
+    push_bool(
+        args,
+        &["setMainSKD", "SetMainSKD"],
+        WriterArgument::AssignMainDataComposition,
+        &mut output,
+    );
+    push_bool(
+        args,
+        &["noValidate", "NoValidate"],
+        WriterArgument::SkipValidation,
+        &mut output,
+    );
+    push_bool(
+        args,
+        &["noSelection", "NoSelection"],
+        WriterArgument::ExcludeSelection,
+        &mut output,
+    );
+    push_bool(
+        args,
+        &["createIfMissing", "CreateIfMissing"],
+        WriterArgument::CreateIfMissing,
+        &mut output,
+    );
+    push_bool(
+        args,
+        &["force", "Force"],
+        WriterArgument::Force,
+        &mut output,
+    );
+    push_bool(
+        args,
+        &["keepFiles", "KeepFiles"],
+        WriterArgument::KeepFiles,
+        &mut output,
+    );
+    push_bool(
+        args,
+        &["fromObject", "FromObject"],
+        WriterArgument::DeriveFromObject,
+        &mut output,
+    );
+
+    if let Some(value) = first_value(args, &["borrowMainAttribute", "BorrowMainAttribute"]) {
+        let scope = match value {
+            Value::Null | Value::Bool(false) => None,
+            Value::Bool(true) => Some(WriterBorrowScope::Form),
+            Value::String(value) if value.trim().is_empty() || value == "Form" => {
+                Some(WriterBorrowScope::Form)
+            }
+            Value::String(value) if value == "All" => Some(WriterBorrowScope::All),
+            _ => {
+                return Err(
+                    "-BorrowMainAttribute accepts 'Form' or 'All' (default: Form)".to_string(),
+                )
+            }
+        };
+        if let Some(scope) = scope {
+            output.push(WriterArgument::BorrowMainAttribute(scope));
+        }
+    }
+
+    WriterArguments::new(output).map_err(|error| error.to_string())
+}
+
+fn writer_sources(operation: &str, args: &Map<String, Value>) -> Vec<(WriterSourceRole, PathBuf)> {
+    let mut sources = Vec::new();
+    let mut push = |role, names: &[&str]| {
+        if let Some(value) = first_string(args, names) {
+            sources.push((role, PathBuf::from(value)));
+        }
+    };
+    match operation {
+        "cf-init" | "epf-init" | "erf-init" => {
+            push(WriterSourceRole::DestinationDirectory, &["OutputDir"])
+        }
+        "cf-edit" => {
+            push(WriterSourceRole::Configuration, &["ConfigPath"]);
+            push(WriterSourceRole::Definition, &["DefinitionFile"]);
+        }
+        "support-edit" => push(WriterSourceRole::SupportTarget, &["Path"]),
+        "cfe-borrow" => {
+            push(WriterSourceRole::Extension, &["ExtensionPath"]);
+            push(WriterSourceRole::Configuration, &["ConfigPath"]);
+        }
+        "cfe-init" => {
+            push(WriterSourceRole::Configuration, &["ConfigPath"]);
+            push(WriterSourceRole::DestinationDirectory, &["OutputDir"]);
+        }
+        "cfe-patch-method" => push(WriterSourceRole::Extension, &["ExtensionPath"]),
+        "meta-compile" | "role-compile" => {
+            push(WriterSourceRole::Definition, &["JsonPath"]);
+            push(WriterSourceRole::DestinationDirectory, &["OutputDir"]);
+        }
+        "meta-edit" => {
+            push(WriterSourceRole::Object, &["ObjectPath"]);
+            push(WriterSourceRole::Definition, &["DefinitionFile"]);
+        }
+        "meta-remove" => push(WriterSourceRole::ConfigurationDirectory, &["ConfigDir"]),
+        "form-add" => push(WriterSourceRole::Object, &["ObjectPath"]),
+        "form-compile" => {
+            push(WriterSourceRole::Definition, &["JsonPath"]);
+            push(WriterSourceRole::Object, &["ObjectPath"]);
+            push(WriterSourceRole::DestinationArtifact, &["OutputPath"]);
+        }
+        "form-edit" => {
+            push(WriterSourceRole::Form, &["FormPath"]);
+            push(WriterSourceRole::Definition, &["JsonPath"]);
+        }
+        "form-remove" | "template-add" | "template-remove" => {
+            push(WriterSourceRole::SourceCollection, &["SrcDir"])
+        }
+        "help-add" => {
+            push(WriterSourceRole::SourceCollection, &["SrcDir"]);
+            push(
+                WriterSourceRole::Object,
+                &["objectName", "ObjectName", "processorName", "ProcessorName"],
+            );
+        }
+        "interface-edit" => {
+            push(WriterSourceRole::Interface, &["CIPath"]);
+            push(WriterSourceRole::Definition, &["DefinitionFile"]);
+        }
+        "subsystem-compile" => {
+            push(WriterSourceRole::DestinationDirectory, &["OutputDir"]);
+            push(WriterSourceRole::ParentSubsystem, &["Parent"]);
+            push(WriterSourceRole::Definition, &["DefinitionFile"]);
+        }
+        "subsystem-edit" => {
+            push(WriterSourceRole::Subsystem, &["SubsystemPath"]);
+            push(WriterSourceRole::Definition, &["DefinitionFile"]);
+        }
+        "dcs-compile" => {
+            push(WriterSourceRole::DestinationArtifact, &["OutputPath"]);
+            push(WriterSourceRole::Definition, &["DefinitionFile"]);
+        }
+        "dcs-edit" => {
+            push(WriterSourceRole::Template, &["TemplatePath"]);
+            push(WriterSourceRole::Definition, &["DefinitionFile"]);
+        }
+        "mxl-compile" => {
+            push(WriterSourceRole::Definition, &["JsonPath"]);
+            push(WriterSourceRole::DestinationArtifact, &["OutputPath"]);
+        }
+        _ => {}
+    }
+    sources
+}
+
+fn writer_inline_definition(
+    operation: &str,
+    args: &Map<String, Value>,
+) -> Result<Option<Vec<u8>>, String> {
+    if operation == "form-edit" {
+        return args
+            .get("definition")
+            .map(serde_json::to_vec)
+            .transpose()
+            .map_err(|error| format!("failed to capture inline form definition: {error}"));
+    }
+    if matches!(operation, "subsystem-compile" | "dcs-compile") {
+        return Ok(first_string(args, &["value", "Value"]).map(|value| value.as_bytes().to_vec()));
+    }
+    Ok(None)
+}
+
+fn push_text(
+    args: &Map<String, Value>,
+    names: &[&str],
+    constructor: fn(String) -> WriterArgument,
+    output: &mut Vec<WriterArgument>,
+) {
+    if let Some(value) = first_string(args, names) {
+        output.push(constructor(value.to_string()));
+    }
+}
+
+fn push_bool(
+    args: &Map<String, Value>,
+    names: &[&str],
+    constructor: fn(bool) -> WriterArgument,
+    output: &mut Vec<WriterArgument>,
+) {
+    if let Some(value) = names
+        .iter()
+        .find_map(|name| args.get(*name).and_then(Value::as_bool))
+    {
+        output.push(constructor(value));
+    }
+}
+
+fn first_string<'a>(args: &'a Map<String, Value>, names: &[&str]) -> Option<&'a str> {
+    first_value(args, names).and_then(Value::as_str)
+}
+
+fn first_value<'a>(args: &'a Map<String, Value>, names: &[&str]) -> Option<&'a Value> {
+    names.iter().find_map(|name| args.get(*name))
 }
 
 #[cfg(test)]

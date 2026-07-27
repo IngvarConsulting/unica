@@ -90,7 +90,7 @@ enum SourceFormat {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct AdapterOutcome {
+struct NativeWriterResult {
     lifecycle: PublicationLifecycle,
     summary: String,
     changes: Vec<String>,
@@ -102,7 +102,7 @@ struct AdapterOutcome {
     command: Option<Vec<String>>,
 }
 
-impl AdapterOutcome {
+impl NativeWriterResult {
     fn cancelled(summary: impl Into<String>) -> Self {
         Self {
             lifecycle: PublicationLifecycle::cancelled(
@@ -695,9 +695,9 @@ impl<'a> VerifiedFullDumpAdapter<'a> {
         args: &Map<String, Value>,
         context: &WorkspaceContext,
         cancellation: &CancellationToken,
-    ) -> Result<AdapterOutcome, String> {
+    ) -> Result<NativeWriterResult, String> {
         if cancellation.is_cancelled() {
-            return Ok(AdapterOutcome::cancelled(format!(
+            return Ok(NativeWriterResult::cancelled(format!(
                 "{tool_name} cancelled before verified dump preparation"
             )));
         }
@@ -952,7 +952,7 @@ impl<'a> VerifiedFullDumpAdapter<'a> {
         warnings.extend(cleanup_warnings);
         Ok(finalize_private_outcome(
             &mut private,
-            AdapterOutcome {
+            NativeWriterResult {
             lifecycle: PublicationLifecycle::published(),
             summary: format!(
                 "{tool_name} published a validated platform {TARGET_PLATFORM_LINE} / export format {TARGET_EXPORT_FORMAT} full dump"
@@ -4883,8 +4883,8 @@ fn reported_dump_process_args(
 
 fn finalize_private_outcome(
     private: &mut PrivateDumpStage,
-    mut outcome: AdapterOutcome,
-) -> AdapterOutcome {
+    mut outcome: NativeWriterResult,
+) -> NativeWriterResult {
     let base = outcome.lifecycle;
     let cancellation = if private.cancellation != PublicationCancellation::NotRequested {
         private.cancellation
@@ -4993,8 +4993,8 @@ fn dump_failure(
     stdout: Option<String>,
     stderr: Option<String>,
     command: Option<Vec<String>>,
-) -> AdapterOutcome {
-    AdapterOutcome {
+) -> NativeWriterResult {
+    NativeWriterResult {
         lifecycle: PublicationLifecycle::failed(
             PublicationFailureKind::Execution,
             PublicationCancellation::NotRequested,
@@ -5023,7 +5023,7 @@ fn publication_failure(
     stdout: Option<String>,
     stderr: Option<String>,
     command: Option<Vec<String>>,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     let mut outcome = dump_failure(tool_name, error, stdout, stderr, command);
     outcome.lifecycle = PublicationLifecycle::failed(
         PublicationFailureKind::Publication,
@@ -5040,8 +5040,8 @@ fn cancelled_dump_outcome(
     tool_name: &str,
     output: &ProcessOutput,
     command: Vec<String>,
-) -> AdapterOutcome {
-    AdapterOutcome {
+) -> NativeWriterResult {
+    NativeWriterResult {
         lifecycle: PublicationLifecycle::cancelled(
             PublicationCancellation::DuringExecution,
             PublicationRollback::NotNeeded,
@@ -5793,7 +5793,7 @@ mod tests {
         normalize_key_value_connection, staged_root_version_policy, validate_staged_dump,
         with_private_create_hook, with_publication_failpoint, with_publication_hook,
         with_secure_read_hook, with_target_parent_capture_hook, with_targeted_read_hooks,
-        with_tree_open_hook, AdapterOutcome, CancellationToken, Document, FullDumpInvocation,
+        with_tree_open_hook, CancellationToken, Document, FullDumpInvocation, NativeWriterResult,
         PlatformResolver, PlatformUtility, ProcessCommand, ProcessOutput, ProcessRunner,
         PublicationCheckpoint, SourceSetKind, StagedRootVersionPolicy, SystemPlatformResolver,
         TreeSnapshot, VerifiedFullDumpAdapter, VerifiedPlatform, WorkspaceContext,
@@ -5842,8 +5842,8 @@ mod tests {
 
     static TEST_SYSTEM_PROCESS_RUNNER: TestSystemProcessRunner = TestSystemProcessRunner;
 
-    fn lifecycle_outcome(lifecycle: PublicationLifecycle) -> AdapterOutcome {
-        AdapterOutcome {
+    fn lifecycle_outcome(lifecycle: PublicationLifecycle) -> NativeWriterResult {
+        NativeWriterResult {
             lifecycle,
             summary: "/private/source/Configuration.xml MetaDataObject 2.20".to_string(),
             changes: vec![r"C:\private\source".to_string()],
@@ -6203,7 +6203,7 @@ mod tests {
         invocation: FullDumpInvocation,
         context: &WorkspaceContext,
         args: &Map<String, Value>,
-    ) -> AdapterOutcome {
+    ) -> NativeWriterResult {
         VerifiedFullDumpAdapter::with_dependencies(
             runner,
             platform,
@@ -6234,7 +6234,7 @@ mod tests {
         platform: &dyn PlatformResolver,
         invocation: FullDumpInvocation,
         context: &WorkspaceContext,
-    ) -> AdapterOutcome {
+    ) -> NativeWriterResult {
         invoke_with_args(runner, platform, invocation, context, &args())
     }
 

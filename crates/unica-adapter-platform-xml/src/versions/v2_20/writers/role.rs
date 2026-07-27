@@ -1,6 +1,6 @@
 #![allow(dead_code, unused_imports)]
 
-use crate::application::AdapterOutcome;
+use crate::application::NativeWriterResult;
 use crate::domain::workspace::WorkspaceContext;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
@@ -137,7 +137,7 @@ pub(crate) fn role_read_format_dependency_paths(
 pub(crate) fn analyze_role_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     let result = (|| -> Result<(String, PathBuf), String> {
         let rights_path = resolve_role_read_rights_path(args, context)?;
         if !rights_path.is_file() {
@@ -354,7 +354,7 @@ pub(crate) fn analyze_role_info(
     })();
 
     match result {
-        Ok((stdout, rights_path)) => AdapterOutcome {
+        Ok((stdout, rights_path)) => NativeWriterResult {
             ok: true,
             summary: "unica.role.info completed with native role analyzer".to_string(),
             changes: Vec::new(),
@@ -363,9 +363,8 @@ pub(crate) fn analyze_role_info(
             artifacts: vec![rights_path.display().to_string()],
             stdout: Some(stdout),
             stderr: Some(String::new()),
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.role.info failed in native role analyzer".to_string(),
             changes: Vec::new(),
@@ -374,7 +373,6 @@ pub(crate) fn analyze_role_info(
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -512,7 +510,7 @@ impl RoleValidationReport {
 pub(crate) fn validate_role(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     let result = (|| -> Result<(bool, String, PathBuf), String> {
         let rights_path = resolve_role_read_rights_path(args, context)?;
         let detailed = bool_arg(args, &["detailed", "Detailed"]);
@@ -841,7 +839,7 @@ pub(crate) fn validate_role(
     })();
 
     match result {
-        Ok((ok, text, rights_path)) => AdapterOutcome {
+        Ok((ok, text, rights_path)) => NativeWriterResult {
             ok,
             summary: if ok {
                 "unica.role.validate completed with native role validator".to_string()
@@ -858,9 +856,8 @@ pub(crate) fn validate_role(
             artifacts: vec![rights_path.display().to_string()],
             stdout: Some(format!("{text}\n")),
             stderr: Some(String::new()),
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.role.validate failed in native role validator".to_string(),
             changes: Vec::new(),
@@ -869,7 +866,6 @@ pub(crate) fn validate_role(
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -1377,14 +1373,14 @@ fn require_role_configuration_owner_validation(
 pub(crate) fn compile_role(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     compile_role_internal(args, context, false)
 }
 
 pub(crate) fn preview_role_compile(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Result<AdapterOutcome, String> {
+) -> Result<NativeWriterResult, String> {
     let outcome = compile_role_internal(args, context, true);
     if outcome.ok {
         Ok(outcome)
@@ -1397,7 +1393,7 @@ fn compile_role_internal(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
     dry_run: bool,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     let write_result = (|| -> Result<RoleCompileResult, String> {
         let json_path_raw = required_path(args, &["jsonPath", "JsonPath"], "JsonPath")?;
         let json_path = absolutize(json_path_raw, &context.cwd);
@@ -1644,7 +1640,7 @@ fn compile_role_internal(
     })();
 
     match write_result {
-        Ok(result) => AdapterOutcome {
+        Ok(result) => NativeWriterResult {
             ok: true,
             summary: if dry_run {
                 "dry run: unica.role.compile planned native role compilation".to_string()
@@ -1661,9 +1657,8 @@ fn compile_role_internal(
                 .collect(),
             stdout: Some(result.stdout),
             stderr: (!result.stderr.is_empty()).then_some(result.stderr),
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.role.compile failed in native role writer".to_string(),
             changes: Vec::new(),
@@ -1672,7 +1667,6 @@ fn compile_role_internal(
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -2017,7 +2011,7 @@ pub(crate) fn invoke_read(
     _tool_name: &str,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Option<Result<AdapterOutcome, String>> {
+) -> Option<Result<NativeWriterResult, String>> {
     match operation {
         "role-info" => Some(Ok(analyze_role_info(args, context))),
         "role-validate" => Some(Ok(validate_role(args, context))),
@@ -2030,7 +2024,7 @@ pub(crate) fn invoke_mutation(
     _tool_name: &str,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Option<AdapterOutcome> {
+) -> Option<NativeWriterResult> {
     match operation {
         "role-compile" => Some(compile_role(args, context)),
         _ => None,

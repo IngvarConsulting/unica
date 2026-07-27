@@ -1,6 +1,6 @@
 #![allow(dead_code, unused_imports)]
 
-use crate::application::AdapterOutcome;
+use crate::application::NativeWriterResult;
 use crate::domain::format_profile::{FormatCompatibility, ACTIVE_FORMAT_PROFILE};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform_xml_owner::inspect_platform_xml_compatibility;
@@ -533,7 +533,10 @@ pub(crate) fn cfe_borrow_format_dependency_inspection(
     }
 }
 
-pub(crate) fn borrow_cfe(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
+pub(crate) fn borrow_cfe(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
     let result = (|| -> Result<(String, Vec<PathBuf>, Vec<String>), String> {
         let PreparedCfeBorrow {
             cfg_path,
@@ -567,7 +570,7 @@ pub(crate) fn borrow_cfe(args: &Map<String, Value>, context: &WorkspaceContext) 
     })();
 
     match result {
-        Ok((stdout, artifacts, warnings)) => AdapterOutcome {
+        Ok((stdout, artifacts, warnings)) => NativeWriterResult {
             ok: true,
             summary: "unica.cfe.borrow completed with native extension borrower".to_string(),
             changes: artifacts
@@ -582,9 +585,8 @@ pub(crate) fn borrow_cfe(args: &Map<String, Value>, context: &WorkspaceContext) 
                 .collect(),
             stdout: Some(stdout),
             stderr: None,
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.cfe.borrow failed in native extension borrower".to_string(),
             changes: Vec::new(),
@@ -593,7 +595,6 @@ pub(crate) fn borrow_cfe(args: &Map<String, Value>, context: &WorkspaceContext) 
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -3104,7 +3105,10 @@ pub(crate) fn cfe_borrow_prefixed_name(namespace: Option<&str>, local_name: &str
     }
 }
 
-pub(crate) fn diff_cfe(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
+pub(crate) fn diff_cfe(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
     let result = (|| -> Result<(String, PathBuf), String> {
@@ -3206,7 +3210,7 @@ pub(crate) fn diff_cfe(args: &Map<String, Value>, context: &WorkspaceContext) ->
     })();
 
     match result {
-        Ok((stdout, artifact)) => AdapterOutcome {
+        Ok((stdout, artifact)) => NativeWriterResult {
             ok: true,
             summary: "unica.cfe.diff completed with native extension diff analyzer".to_string(),
             changes: Vec::new(),
@@ -3215,9 +3219,8 @@ pub(crate) fn diff_cfe(args: &Map<String, Value>, context: &WorkspaceContext) ->
             artifacts: vec![artifact.display().to_string()],
             stdout: Some(stdout),
             stderr: Some(String::new()),
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.cfe.diff failed in native extension diff analyzer".to_string(),
             changes: Vec::new(),
@@ -3226,7 +3229,6 @@ pub(crate) fn diff_cfe(args: &Map<String, Value>, context: &WorkspaceContext) ->
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -3664,7 +3666,7 @@ pub(crate) fn cfe_diff_normalized_ws(text: &str) -> String {
 pub(crate) fn validate_cfe(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
     let result = (|| -> Result<CfeValidationRun, String> {
@@ -3829,7 +3831,7 @@ pub(crate) fn validate_cfe(
     })();
 
     match result {
-        Ok(run) => AdapterOutcome {
+        Ok(run) => NativeWriterResult {
             ok: run.ok,
             summary: if run.ok {
                 "unica.cfe.validate completed with native extension validator".to_string()
@@ -3842,9 +3844,8 @@ pub(crate) fn validate_cfe(
             artifacts: vec![run.artifact.display().to_string()],
             stdout: Some(run.stdout),
             stderr: Some(String::new()),
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.cfe.validate failed in native extension validator".to_string(),
             changes: Vec::new(),
@@ -3853,7 +3854,6 @@ pub(crate) fn validate_cfe(
             artifacts: Vec::new(),
             stdout: Some(format!("{error}\n")),
             stderr: Some(String::new()),
-            command: None,
         },
     }
 }
@@ -5568,7 +5568,7 @@ fn cfe_patch_borrowed_snapshots(
 pub(crate) fn patch_extension_method(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     let write_result = (|| -> Result<(String, CommitReport), String> {
         let mut extension_path =
             required_path(args, &["extensionPath", "ExtensionPath"], "ExtensionPath")
@@ -5817,7 +5817,7 @@ pub(crate) fn patch_extension_method(
                 .chain(&report.updated)
                 .map(|path| path.display().to_string())
                 .collect();
-            AdapterOutcome {
+            NativeWriterResult {
                 ok: true,
                 summary: "unica.cfe.patch_method completed with native BSL/XML interceptor writer"
                     .to_string(),
@@ -5827,10 +5827,9 @@ pub(crate) fn patch_extension_method(
                 artifacts,
                 stdout: Some(stdout),
                 stderr: None,
-                command: None,
             }
         }
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.cfe.patch_method failed in native BSL interceptor writer".to_string(),
             changes: Vec::new(),
@@ -5839,7 +5838,6 @@ pub(crate) fn patch_extension_method(
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -5847,10 +5845,10 @@ pub(crate) fn patch_extension_method(
 pub(crate) fn create_extension_scaffold(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     let name = string_arg(args, &["name", "Name"]).unwrap_or("");
     if name.is_empty() {
-        return AdapterOutcome {
+        return NativeWriterResult {
             ok: false,
             summary: "unica.cfe.init failed in native XML scaffold writer".to_string(),
             changes: Vec::new(),
@@ -5859,7 +5857,6 @@ pub(crate) fn create_extension_scaffold(
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some("missing required Name argument\n".to_string()),
-            command: None,
         };
     }
     let synonym = string_arg(args, &["synonym", "Synonym"]).unwrap_or(name);
@@ -6211,7 +6208,7 @@ pub(crate) fn create_extension_scaffold(
                 changes.push(format!("created {}", role.display()));
                 artifacts.push(role.display().to_string());
             }
-            AdapterOutcome {
+            NativeWriterResult {
                 ok: true,
                 summary: "unica.cfe.init completed with native XML scaffold writer".to_string(),
                 changes,
@@ -6220,10 +6217,9 @@ pub(crate) fn create_extension_scaffold(
                 artifacts,
                 stdout: Some(stdout),
                 stderr: None,
-                command: None,
             }
         }
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.cfe.init failed in native XML scaffold writer".to_string(),
             changes: Vec::new(),
@@ -6232,7 +6228,6 @@ pub(crate) fn create_extension_scaffold(
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -6249,7 +6244,7 @@ pub(crate) fn invoke_read(
     _tool_name: &str,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Option<Result<AdapterOutcome, String>> {
+) -> Option<Result<NativeWriterResult, String>> {
     match operation {
         "cfe-validate" => Some(Ok(validate_cfe(args, context))),
         "cfe-diff" => Some(Ok(diff_cfe(args, context))),
@@ -6262,7 +6257,7 @@ pub(crate) fn invoke_mutation(
     _tool_name: &str,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Option<AdapterOutcome> {
+) -> Option<NativeWriterResult> {
     match operation {
         "cfe-borrow" => Some(borrow_cfe(args, context)),
         "cfe-init" => Some(create_extension_scaffold(args, context)),

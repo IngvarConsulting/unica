@@ -1,4 +1,4 @@
-use crate::application::AdapterOutcome;
+use crate::application::NativeWriterResult;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
 use roxmltree::Document;
@@ -181,17 +181,17 @@ pub(crate) fn invoke_mutation(
     _tool_name: &str,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Option<AdapterOutcome> {
+) -> Option<NativeWriterResult> {
     match operation {
         "support-edit" => Some(edit_support(args, context)),
         _ => None,
     }
 }
 
-fn edit_support(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
+fn edit_support(args: &Map<String, Value>, context: &WorkspaceContext) -> NativeWriterResult {
     match edit_support_result(args, context) {
         Ok(outcome) => outcome,
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "support-edit failed".to_string(),
             changes: Vec::new(),
@@ -200,7 +200,6 @@ fn edit_support(args: &Map<String, Value>, context: &WorkspaceContext) -> Adapte
             artifacts: Vec::new(),
             stdout: None,
             stderr: None,
-            command: None,
         },
     }
 }
@@ -208,7 +207,7 @@ fn edit_support(args: &Map<String, Value>, context: &WorkspaceContext) -> Adapte
 fn edit_support_result(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Result<AdapterOutcome, String> {
+) -> Result<NativeWriterResult, String> {
     let action = support_edit_action(args)?;
     let target_path = support_target_path(args, context)?;
     if !target_path.exists() {
@@ -419,7 +418,7 @@ fn plan_capability(
     text: &str,
     capability: SupportCapability,
     target_path: &Path,
-) -> Result<(AdapterOutcome, String), String> {
+) -> Result<(NativeWriterResult, String), String> {
     let global_target = capability.target_flag();
     // Only the header slot is the global capability. The later vendor/object slots use
     // support-rule semantics: writing the global `off` value (`1`) into the vendor slot makes
@@ -442,7 +441,7 @@ fn plan_capability(
     };
 
     Ok((
-        AdapterOutcome {
+        NativeWriterResult {
             ok: true,
             summary: summary.to_string(),
             changes: vec![
@@ -465,7 +464,6 @@ fn plan_capability(
             ],
             stdout: Some(stdout),
             stderr: None,
-            command: None,
         },
         updated,
     ))
@@ -477,7 +475,7 @@ fn plan_object_rule(
     object_uuid: &str,
     rule: SupportObjectRule,
     target_path: &Path,
-) -> Result<(AdapterOutcome, String), String> {
+) -> Result<(NativeWriterResult, String), String> {
     let mut updated = text.to_string();
     let changed = replace_object_rule_flags(&mut updated, object_uuid, rule.flag());
     if changed == 0 {
@@ -488,7 +486,7 @@ fn plan_object_rule(
     }
     let summary = format!("Объект uuid {object_uuid} → {}.", rule.state_text());
     Ok((
-        AdapterOutcome {
+        NativeWriterResult {
             ok: true,
             summary: summary.clone(),
             changes: vec![
@@ -514,15 +512,14 @@ fn plan_object_rule(
                 target_path.display()
             )),
             stderr: None,
-            command: None,
         },
         updated,
     ))
 }
 
-fn noop_outcome(message: impl Into<String>) -> AdapterOutcome {
+fn noop_outcome(message: impl Into<String>) -> NativeWriterResult {
     let message = message.into();
-    AdapterOutcome {
+    NativeWriterResult {
         ok: true,
         summary: message.clone(),
         changes: Vec::new(),
@@ -531,7 +528,6 @@ fn noop_outcome(message: impl Into<String>) -> AdapterOutcome {
         artifacts: Vec::new(),
         stdout: Some(format!("{message}\n")),
         stderr: None,
-        command: None,
     }
 }
 

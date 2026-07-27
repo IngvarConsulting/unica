@@ -4,7 +4,8 @@ use unica_format_core::commands::{
     ConfigurationCommand, DataCompositionCommand, ExtensionCommand, ExternalArtifactCommand,
     FormCommand, HelpCommand, InterfaceCommand, MetadataCommand, ModuleArtifactLocation,
     ModuleOwner, ModuleRole, MutationMode, RoleCommand, SpreadsheetCommand, SubsystemCommand,
-    SupportCommand, TemplateCommand, WriterCommand, WriterFamily,
+    SupportCommand, TemplateCommand, WriterArgument, WriterArguments, WriterCommand,
+    WriterCommandError, WriterFamily, WriterSourceRole,
 };
 use unica_format_core::semantic_ids::SemanticObjectKind;
 
@@ -71,6 +72,36 @@ fn task8_writer_variants_cover_each_existing_mutation_intent() {
 }
 
 #[test]
+fn task8_writer_command_owns_closed_immutable_semantic_arguments() {
+    let arguments = WriterArguments::new(vec![
+        WriterArgument::Name("Sales".to_string()),
+        WriterArgument::Synonym("Sales".to_string()),
+        WriterArgument::AssignDefaultForm(false),
+    ])
+    .unwrap();
+    let command = WriterCommand::configuration(ConfigurationCommand::Initialize)
+        .with_arguments(arguments.clone());
+
+    assert_eq!(command.arguments(), &arguments);
+    assert_eq!(command.arguments().items().len(), 3);
+    assert_eq!(
+        WriterArguments::new(vec![
+            WriterArgument::Name("First".to_string()),
+            WriterArgument::Name("Second".to_string()),
+        ]),
+        Err(WriterCommandError::DuplicateArgument)
+    );
+
+    let roles = [
+        WriterSourceRole::Configuration,
+        WriterSourceRole::Extension,
+        WriterSourceRole::Definition,
+        WriterSourceRole::DestinationArtifact,
+    ];
+    assert_eq!(roles.len(), 4);
+}
+
+#[test]
 fn task8_module_locator_result_is_closed_and_semantic() {
     let location = ModuleArtifactLocation::new(
         ModuleOwner::object(SemanticObjectKind::Catalog, "Items").unwrap(),
@@ -96,6 +127,7 @@ fn task8_command_sources_do_not_expose_native_or_transport_vocabulary() {
         "std::path",
         "serde_json",
         "AdapterOutcome",
+        "NativeOperationResult",
         "MetaDataObject",
         "Configuration.xml",
         "2.20",

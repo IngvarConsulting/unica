@@ -52,7 +52,7 @@ pub use factory::PlatformXmlAdapterFactory;
 
 mod application {
     pub(crate) use crate::operations::operation_descriptors::SupportGuardRequirement;
-    pub(crate) use crate::operations::AdapterOutcome;
+    pub(crate) use crate::operations::NativeWriterResult;
     #[cfg(test)]
     #[derive(Debug)]
     pub(crate) struct CacheReport {
@@ -168,7 +168,7 @@ mod application {
                 },
                 stdout: outcome.stdout,
                 stderr: outcome.stderr,
-                command: outcome.command,
+                command: None,
                 diagnostics,
             })
         }

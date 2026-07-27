@@ -1,7 +1,7 @@
 #![allow(dead_code, unused_imports)]
 
 use crate::application::operation_descriptors::{CFE_VALIDATE_PATH, CF_PATH, RIGHTS_PATH};
-use crate::application::{AdapterOutcome, SupportGuardRequirement};
+use crate::application::{NativeWriterResult, SupportGuardRequirement};
 use crate::domain::format_profile::{FormatCompatibility, ACTIVE_FORMAT_PROFILE};
 use crate::domain::source_adapters::FormatVersion;
 use crate::domain::workspace::WorkspaceContext;
@@ -1795,7 +1795,7 @@ pub(crate) fn analyze_xml(
     tool_name: &str,
     target: &Path,
     text: &str,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     match Document::parse(text) {
         Ok(doc) => {
             let root = doc.root_element();
@@ -1813,7 +1813,7 @@ pub(crate) fn analyze_xml(
                     .map(|node| node.tag_name().name().to_string())
                     .collect::<Vec<_>>(),
             });
-            AdapterOutcome {
+            NativeWriterResult {
                 ok: true,
                 summary: format!("{tool_name} completed with native XML parser"),
                 changes: Vec::new(),
@@ -1824,10 +1824,9 @@ pub(crate) fn analyze_xml(
                     serde_json::to_string_pretty(&summary).unwrap_or_else(|_| summary.to_string()),
                 ),
                 stderr: None,
-                command: None,
             }
         }
-        Err(err) => AdapterOutcome {
+        Err(err) => NativeWriterResult {
             ok: false,
             summary: format!("{tool_name} failed native XML validation"),
             changes: Vec::new(),
@@ -1836,7 +1835,6 @@ pub(crate) fn analyze_xml(
             artifacts: vec![target.display().to_string()],
             stdout: None,
             stderr: None,
-            command: None,
         },
     }
 }

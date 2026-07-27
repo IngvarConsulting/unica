@@ -1,7 +1,7 @@
 #![allow(dead_code, unused_imports)]
 
 use crate::application::operation_descriptors::SUBSYSTEM_PATH;
-use crate::application::AdapterOutcome;
+use crate::application::NativeWriterResult;
 use crate::domain::format_profile::FormatCompatibility;
 use crate::domain::identifiers::is_1c_identifier;
 use crate::domain::workspace::WorkspaceContext;
@@ -342,7 +342,7 @@ pub(crate) fn subsystem_read_format_dependency_paths(
     }
 }
 
-fn require_subsystem_validation(outcome: &AdapterOutcome) -> Result<(), String> {
+fn require_subsystem_validation(outcome: &NativeWriterResult) -> Result<(), String> {
     if outcome.ok {
         return Ok(());
     }
@@ -387,7 +387,7 @@ fn require_subsystem_registration_owner_validation(
 pub(crate) fn edit_subsystem(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     let edit_result = (|| -> Result<SubsystemEditResult, String> {
         let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
         let operation = string_arg(args, &["operation", "Operation"]);
@@ -555,7 +555,7 @@ pub(crate) fn edit_subsystem(
     })();
 
     match edit_result {
-        Ok(result) => AdapterOutcome {
+        Ok(result) => NativeWriterResult {
             ok: true,
             summary: "unica.subsystem.edit completed with native subsystem editor".to_string(),
             changes: result.changes,
@@ -568,9 +568,8 @@ pub(crate) fn edit_subsystem(
                 .collect(),
             stdout: Some(result.stdout),
             stderr: None,
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.subsystem.edit failed in native subsystem editor".to_string(),
             changes: Vec::new(),
@@ -579,7 +578,6 @@ pub(crate) fn edit_subsystem(
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -931,7 +929,7 @@ pub(crate) fn subsystem_edit_set_property(
 pub(crate) fn validate_subsystem(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     let result = (|| -> Result<(bool, String, PathBuf), String> {
         let raw_path = required_path(args, SUBSYSTEM_PATH, "SubsystemPath")?;
         let path = absolutize(raw_path, &context.cwd);
@@ -1300,7 +1298,7 @@ pub(crate) fn validate_subsystem(
             } else {
                 vec![artifact.display().to_string()]
             };
-            AdapterOutcome {
+            NativeWriterResult {
                 ok,
                 summary: if ok {
                     "unica.subsystem.validate completed with native subsystem validator".to_string()
@@ -1317,10 +1315,9 @@ pub(crate) fn validate_subsystem(
                 artifacts,
                 stdout: Some(text),
                 stderr: Some(String::new()),
-                command: None,
             }
         }
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.subsystem.validate failed in native subsystem validator".to_string(),
             changes: Vec::new(),
@@ -1329,7 +1326,6 @@ pub(crate) fn validate_subsystem(
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -1350,7 +1346,7 @@ pub(crate) fn validate_subsystem_owner_path(
 pub(crate) fn analyze_subsystem_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     let result = (|| -> Result<(String, PathBuf), String> {
         let raw_path = required_path(args, SUBSYSTEM_PATH, "SubsystemPath")?;
         let path = absolutize(raw_path, &context.cwd);
@@ -1423,7 +1419,7 @@ pub(crate) fn analyze_subsystem_info(
     })();
 
     match result {
-        Ok((stdout, artifact)) => AdapterOutcome {
+        Ok((stdout, artifact)) => NativeWriterResult {
             ok: true,
             summary: "unica.subsystem.info completed with native subsystem analyzer".to_string(),
             changes: Vec::new(),
@@ -1432,9 +1428,8 @@ pub(crate) fn analyze_subsystem_info(
             artifacts: vec![artifact.display().to_string()],
             stdout: Some(stdout),
             stderr: Some(String::new()),
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.subsystem.info failed in native subsystem analyzer".to_string(),
             changes: Vec::new(),
@@ -1443,7 +1438,6 @@ pub(crate) fn analyze_subsystem_info(
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -1732,14 +1726,14 @@ struct SubsystemCompileResult {
 pub(crate) fn compile_subsystem(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     compile_subsystem_internal(args, context, false)
 }
 
 pub(crate) fn preview_subsystem_compile(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Result<AdapterOutcome, String> {
+) -> Result<NativeWriterResult, String> {
     let outcome = compile_subsystem_internal(args, context, true);
     if outcome.ok {
         Ok(outcome)
@@ -1752,7 +1746,7 @@ fn compile_subsystem_internal(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
     dry_run: bool,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     let write_result = (|| -> Result<SubsystemCompileResult, String> {
         let mut transaction = CompileTransaction::new();
         let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
@@ -2152,7 +2146,7 @@ fn compile_subsystem_internal(
     })();
 
     match write_result {
-        Ok(result) => AdapterOutcome {
+        Ok(result) => NativeWriterResult {
             ok: true,
             summary: if dry_run {
                 "dry run: unica.subsystem.compile planned native subsystem compilation".to_string()
@@ -2169,9 +2163,8 @@ fn compile_subsystem_internal(
                 .collect(),
             stdout: Some(result.stdout),
             stderr: None,
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.subsystem.compile failed in native XML writer".to_string(),
             changes: Vec::new(),
@@ -2180,7 +2173,6 @@ fn compile_subsystem_internal(
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -2342,7 +2334,7 @@ pub(crate) fn invoke_read(
     _tool_name: &str,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Option<Result<AdapterOutcome, String>> {
+) -> Option<Result<NativeWriterResult, String>> {
     match operation {
         "subsystem-info" => Some(Ok(analyze_subsystem_info(args, context))),
         "subsystem-validate" => Some(Ok(validate_subsystem(args, context))),
@@ -2355,7 +2347,7 @@ pub(crate) fn invoke_mutation(
     _tool_name: &str,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Option<AdapterOutcome> {
+) -> Option<NativeWriterResult> {
     match operation {
         "subsystem-compile" => Some(compile_subsystem(args, context)),
         "subsystem-edit" => Some(edit_subsystem(args, context)),

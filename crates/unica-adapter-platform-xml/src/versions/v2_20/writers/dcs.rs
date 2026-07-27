@@ -1,7 +1,7 @@
 #![allow(dead_code, unused_imports)]
 
 use crate::application::operation_descriptors::TEMPLATE_PATH;
-use crate::application::AdapterOutcome;
+use crate::application::NativeWriterResult;
 use crate::domain::workspace::WorkspaceContext;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
@@ -118,7 +118,7 @@ impl DcsValidationReporter {
 pub(crate) fn analyze_dcs_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     const NS_SCHEMA: &str = DCS_SCHEMA_NS;
     const NS_SETTINGS: &str = "http://v8.1c.ru/8.1/data-composition-system/settings";
 
@@ -229,7 +229,7 @@ pub(crate) fn analyze_dcs_info(
     })();
 
     match result {
-        Ok((stdout, artifact)) => AdapterOutcome {
+        Ok((stdout, artifact)) => NativeWriterResult {
             ok: true,
             summary: "unica.dcs.info completed with native DCS inspector".to_string(),
             changes: Vec::new(),
@@ -238,9 +238,8 @@ pub(crate) fn analyze_dcs_info(
             artifacts: vec![artifact.display().to_string()],
             stdout: Some(stdout),
             stderr: None,
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.dcs.info failed in native DCS inspector".to_string(),
             changes: Vec::new(),
@@ -249,7 +248,6 @@ pub(crate) fn analyze_dcs_info(
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -1572,7 +1570,7 @@ pub(crate) fn dcs_info_format_dependency_paths(
 pub(crate) fn validate_dcs(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     const NS_SCHEMA: &str = DCS_SCHEMA_NS;
 
     let result = (|| -> Result<DcsValidationRun, String> {
@@ -1719,7 +1717,7 @@ pub(crate) fn validate_dcs(
     })();
 
     match result {
-        Ok(run) => AdapterOutcome {
+        Ok(run) => NativeWriterResult {
             ok: run.ok,
             summary: if run.ok {
                 "unica.dcs.validate completed with native DCS validator".to_string()
@@ -1732,9 +1730,8 @@ pub(crate) fn validate_dcs(
             artifacts: vec![run.artifact.display().to_string()],
             stdout: Some(run.stdout),
             stderr: Some(String::new()),
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.dcs.validate failed in native DCS validator".to_string(),
             changes: Vec::new(),
@@ -1743,7 +1740,6 @@ pub(crate) fn validate_dcs(
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -2762,7 +2758,10 @@ pub(crate) fn resolve_dcs_validate_path(
     Ok(template_path)
 }
 
-pub(crate) fn compile_dcs(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
+pub(crate) fn compile_dcs(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
     let write_result = (|| -> Result<(String, PathBuf, Vec<String>, Vec<String>), String> {
         let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
         let value = string_arg(args, &["value", "Value"]);
@@ -2908,7 +2907,7 @@ pub(crate) fn compile_dcs(args: &Map<String, Value>, context: &WorkspaceContext)
     })();
 
     match write_result {
-        Ok((stdout, output_path, changes, warnings)) => AdapterOutcome {
+        Ok((stdout, output_path, changes, warnings)) => NativeWriterResult {
             ok: true,
             summary: "unica.dcs.compile completed with native DCS compiler".to_string(),
             changes,
@@ -2917,9 +2916,8 @@ pub(crate) fn compile_dcs(args: &Map<String, Value>, context: &WorkspaceContext)
             artifacts: vec![output_path.display().to_string()],
             stdout: Some(stdout),
             stderr: None,
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.dcs.compile failed in native DCS compiler".to_string(),
             changes: Vec::new(),
@@ -2928,7 +2926,6 @@ pub(crate) fn compile_dcs(args: &Map<String, Value>, context: &WorkspaceContext)
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -4916,7 +4913,10 @@ fn run_dcs_edit_after_read_hook(path: &Path) {
     }
 }
 
-pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
+pub(crate) fn edit_dcs(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
     let edit_result = (|| -> Result<(String, PathBuf, bool, Vec<String>), String> {
         let template_path = resolve_dcs_validate_path(args, context)?;
         let operation = required_string(args, &["operation", "Operation"], "Operation")?;
@@ -5602,7 +5602,7 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
     })();
 
     match edit_result {
-        Ok((stdout, template_path, changed, warnings)) => AdapterOutcome {
+        Ok((stdout, template_path, changed, warnings)) => NativeWriterResult {
             ok: true,
             summary: "unica.dcs.edit completed with native DCS editor".to_string(),
             changes: if changed {
@@ -5615,9 +5615,8 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
             artifacts: vec![template_path.display().to_string()],
             stdout: Some(stdout),
             stderr: None,
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.dcs.edit failed in native DCS editor".to_string(),
             changes: Vec::new(),
@@ -5626,7 +5625,6 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -10142,7 +10140,7 @@ pub(crate) fn invoke_read(
     _tool_name: &str,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Option<Result<AdapterOutcome, String>> {
+) -> Option<Result<NativeWriterResult, String>> {
     match operation {
         "dcs-info" => Some(Ok(analyze_dcs_info(args, context))),
         "dcs-validate" => Some(Ok(validate_dcs(args, context))),
@@ -10155,7 +10153,7 @@ pub(crate) fn invoke_mutation(
     _tool_name: &str,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Option<AdapterOutcome> {
+) -> Option<NativeWriterResult> {
     match operation {
         "dcs-compile" => Some(compile_dcs(args, context)),
         "dcs-edit" => Some(edit_dcs(args, context)),
@@ -11711,7 +11709,6 @@ mod tests {
                 "{operation} failed: {:?}\nstderr={:?}",
                 outcome.errors, outcome.stderr
             );
-            assert_eq!(outcome.command, None);
             let updated = fs::read_to_string(&template_path).unwrap();
             roxmltree::Document::parse(updated.trim_start_matches('\u{feff}'))
                 .unwrap_or_else(|err| panic!("{operation} left invalid XML: {err}\n{updated}"));

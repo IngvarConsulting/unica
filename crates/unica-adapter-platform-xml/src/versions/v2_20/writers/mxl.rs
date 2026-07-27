@@ -1,6 +1,6 @@
 #![allow(dead_code, unused_imports)]
 
-use crate::application::AdapterOutcome;
+use crate::application::NativeWriterResult;
 use crate::domain::workspace::WorkspaceContext;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
@@ -168,7 +168,7 @@ impl MxlValidationReporter {
 pub(crate) fn analyze_mxl_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     let result = (|| -> Result<(String, PathBuf), String> {
         let template_path = resolve_mxl_info_path(args, context)?;
         if !template_path.is_file() {
@@ -551,7 +551,7 @@ pub(crate) fn analyze_mxl_info(
     })();
 
     match result {
-        Ok((stdout, artifact)) => AdapterOutcome {
+        Ok((stdout, artifact)) => NativeWriterResult {
             ok: true,
             summary: "unica.mxl.info completed with native spreadsheet analyzer".to_string(),
             changes: Vec::new(),
@@ -560,9 +560,8 @@ pub(crate) fn analyze_mxl_info(
             artifacts: vec![artifact.display().to_string()],
             stdout: Some(stdout),
             stderr: Some(String::new()),
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.mxl.info failed in native spreadsheet analyzer".to_string(),
             changes: Vec::new(),
@@ -571,7 +570,6 @@ pub(crate) fn analyze_mxl_info(
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -579,7 +577,7 @@ pub(crate) fn analyze_mxl_info(
 pub(crate) fn validate_mxl(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     const NS_D: &str = "http://v8.1c.ru/8.2/data/spreadsheet";
 
     let result = (|| -> Result<(bool, String, PathBuf, Vec<String>), String> {
@@ -911,7 +909,7 @@ pub(crate) fn validate_mxl(
     })();
 
     match result {
-        Ok((ok, stdout, artifact, validation_errors)) => AdapterOutcome {
+        Ok((ok, stdout, artifact, validation_errors)) => NativeWriterResult {
             ok,
             summary: if ok {
                 "unica.mxl.validate completed with native spreadsheet validator".to_string()
@@ -924,9 +922,8 @@ pub(crate) fn validate_mxl(
             artifacts: vec![artifact.display().to_string()],
             stdout: Some(stdout),
             stderr: Some(String::new()),
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.mxl.validate failed in native spreadsheet validator".to_string(),
             changes: Vec::new(),
@@ -935,7 +932,6 @@ pub(crate) fn validate_mxl(
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -943,7 +939,7 @@ pub(crate) fn validate_mxl(
 pub(crate) fn decompile_mxl(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     const NS_D: &str = "http://v8.1c.ru/8.2/data/spreadsheet";
     const NS_V8: &str = "http://v8.1c.ru/8.1/data/core";
 
@@ -1139,7 +1135,7 @@ pub(crate) fn decompile_mxl(
     match result {
         Ok((stdout, stderr, template_path)) => {
             let artifacts = vec![template_path.display().to_string()];
-            AdapterOutcome {
+            NativeWriterResult {
                 ok: true,
                 summary: "unica.mxl.decompile completed with native spreadsheet decompiler"
                     .to_string(),
@@ -1149,10 +1145,9 @@ pub(crate) fn decompile_mxl(
                 artifacts,
                 stdout: Some(stdout),
                 stderr: Some(stderr),
-                command: None,
             }
         }
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.mxl.decompile failed in native spreadsheet decompiler".to_string(),
             changes: Vec::new(),
@@ -1161,7 +1156,6 @@ pub(crate) fn decompile_mxl(
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -2341,7 +2335,10 @@ impl MxlFormatRegistry {
     }
 }
 
-pub(crate) fn compile_mxl(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
+pub(crate) fn compile_mxl(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
     let write_result = (|| -> Result<(String, PathBuf, Vec<String>), String> {
         let json_path_raw = required_path(args, &["jsonPath", "JsonPath"], "JsonPath")?;
         let output_path_raw = required_path(args, &["outputPath", "OutputPath"], "OutputPath")?;
@@ -2856,7 +2853,7 @@ pub(crate) fn compile_mxl(args: &Map<String, Value>, context: &WorkspaceContext)
     })();
 
     match write_result {
-        Ok((stdout, output_path, warnings)) => AdapterOutcome {
+        Ok((stdout, output_path, warnings)) => NativeWriterResult {
             ok: true,
             summary: "unica.mxl.compile completed with native spreadsheet writer".to_string(),
             changes: vec![format!("updated {}", output_path.display())],
@@ -2865,9 +2862,8 @@ pub(crate) fn compile_mxl(args: &Map<String, Value>, context: &WorkspaceContext)
             artifacts: vec![output_path.display().to_string()],
             stdout: Some(stdout),
             stderr: None,
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.mxl.compile failed in native spreadsheet writer".to_string(),
             changes: Vec::new(),
@@ -2876,7 +2872,6 @@ pub(crate) fn compile_mxl(args: &Map<String, Value>, context: &WorkspaceContext)
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -3225,7 +3220,7 @@ pub(crate) fn invoke_read(
     _tool_name: &str,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Option<Result<AdapterOutcome, String>> {
+) -> Option<Result<NativeWriterResult, String>> {
     match operation {
         "mxl-info" => Some(Ok(analyze_mxl_info(args, context))),
         "mxl-validate" => Some(Ok(validate_mxl(args, context))),
@@ -3239,7 +3234,7 @@ pub(crate) fn invoke_mutation(
     _tool_name: &str,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Option<AdapterOutcome> {
+) -> Option<NativeWriterResult> {
     match operation {
         "mxl-compile" => Some(compile_mxl(args, context)),
         _ => None,

@@ -1,6 +1,6 @@
 #![allow(dead_code, unused_imports)]
 
-use crate::application::AdapterOutcome;
+use crate::application::NativeWriterResult;
 use crate::domain::format_profile::{FormatCompatibility, ACTIVE_FORMAT_PROFILE};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform_xml_owner::inspect_platform_xml_compatibility;
@@ -119,7 +119,10 @@ enum CfValidationScope {
     OwnerShape,
 }
 
-pub(crate) fn validate_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
+pub(crate) fn validate_cf(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
     validate_cf_with_scope(args, context, CfValidationScope::Full)
 }
 
@@ -145,7 +148,7 @@ fn validate_cf_with_scope(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
     scope: CfValidationScope,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
     const XR_NS: &str = "http://v8.1c.ru/8.3/xcf/readable";
     const HP_NS: &str = "http://v8.1c.ru/8.3/xcf/extrnprops";
@@ -647,7 +650,7 @@ fn validate_cf_with_scope(
     })();
 
     match result {
-        Ok(run) => AdapterOutcome {
+        Ok(run) => NativeWriterResult {
             ok: run.ok,
             summary: if run.ok {
                 "unica.cf.validate completed with native configuration validator".to_string()
@@ -660,9 +663,8 @@ fn validate_cf_with_scope(
             artifacts: vec![run.artifact.display().to_string()],
             stdout: Some(run.stdout),
             stderr: Some(String::new()),
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.cf.validate failed in native configuration validator".to_string(),
             changes: Vec::new(),
@@ -671,7 +673,6 @@ fn validate_cf_with_scope(
             artifacts: Vec::new(),
             stdout: Some(format!("{error}\n")),
             stderr: Some(String::new()),
-            command: None,
         },
     }
 }
@@ -876,7 +877,7 @@ pub(crate) fn cf_validate_form_ref(config_dir: &Path, form_ref: &str) -> bool {
 pub(crate) fn analyze_cf_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
     let result = (|| -> Result<(String, PathBuf), String> {
@@ -1033,7 +1034,7 @@ pub(crate) fn analyze_cf_info(
     })();
 
     match result {
-        Ok((stdout, artifact)) => AdapterOutcome {
+        Ok((stdout, artifact)) => NativeWriterResult {
             ok: true,
             summary: "unica.cf.info completed with native configuration analyzer".to_string(),
             changes: Vec::new(),
@@ -1042,9 +1043,8 @@ pub(crate) fn analyze_cf_info(
             artifacts: vec![artifact.display().to_string()],
             stdout: Some(stdout),
             stderr: Some(String::new()),
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.cf.info failed in native configuration analyzer".to_string(),
             changes: Vec::new(),
@@ -1053,7 +1053,6 @@ pub(crate) fn analyze_cf_info(
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -2009,7 +2008,7 @@ struct CfEditRun {
     warnings: Vec<String>,
 }
 
-pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
+pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> NativeWriterResult {
     let edit_result = (|| -> Result<CfEditRun, String> {
         let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
         let operation = string_arg(args, &["operation", "Operation"]);
@@ -2306,7 +2305,7 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                     changes.push(format!("updated {}", artifact.display()));
                 }
             }
-            AdapterOutcome {
+            NativeWriterResult {
                 ok: true,
                 summary: "unica.cf.edit completed with native Configuration.xml editor".to_string(),
                 changes,
@@ -2318,10 +2317,9 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                     .collect(),
                 stdout: Some(stdout),
                 stderr: None,
-                command: None,
             }
         }
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.cf.edit failed in native Configuration.xml editor".to_string(),
             changes: Vec::new(),
@@ -2330,7 +2328,6 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -2396,7 +2393,7 @@ mod cf_edit_transaction_tests {
             }
         }
 
-        fn edit_boolean(&self, property: &str, value: &str) -> AdapterOutcome {
+        fn edit_boolean(&self, property: &str, value: &str) -> NativeWriterResult {
             edit_cf(
                 &Map::from_iter([
                     ("ConfigPath".to_string(), json!("src")),
@@ -4154,10 +4151,10 @@ pub(crate) fn cf_init_post_validation_dependency_paths(planned: &CfInitPlannedXm
 pub(crate) fn create_configuration_scaffold(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     let name = string_arg(args, &["name", "Name"]).unwrap_or("");
     if name.is_empty() {
-        return AdapterOutcome {
+        return NativeWriterResult {
             ok: false,
             summary: "unica.cf.init failed in native XML scaffold writer".to_string(),
             changes: Vec::new(),
@@ -4166,7 +4163,6 @@ pub(crate) fn create_configuration_scaffold(
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some("missing required Name argument\n".to_string()),
-            command: None,
         };
     }
     let synonym = string_arg(args, &["synonym", "Synonym"]).unwrap_or(name);
@@ -4384,7 +4380,7 @@ pub(crate) fn create_configuration_scaffold(
     })();
 
     match write_result {
-        Ok(warnings) => AdapterOutcome {
+        Ok(warnings) => NativeWriterResult {
             ok: true,
             summary: "unica.cf.init completed with native XML scaffold writer".to_string(),
             changes: vec![
@@ -4407,9 +4403,8 @@ pub(crate) fn create_configuration_scaffold(
                 cai.display()
             )),
             stderr: None,
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.cf.init failed in native XML scaffold writer".to_string(),
             changes: Vec::new(),
@@ -4418,7 +4413,6 @@ pub(crate) fn create_configuration_scaffold(
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -4742,7 +4736,7 @@ pub(crate) fn invoke_read(
     _tool_name: &str,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Option<Result<AdapterOutcome, String>> {
+) -> Option<Result<NativeWriterResult, String>> {
     match operation {
         "cf-info" => Some(Ok(analyze_cf_info(args, context))),
         "cf-validate" => Some(Ok(validate_cf(args, context))),
@@ -4755,7 +4749,7 @@ pub(crate) fn invoke_mutation(
     _tool_name: &str,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Option<AdapterOutcome> {
+) -> Option<NativeWriterResult> {
     match operation {
         "cf-init" => Some(create_configuration_scaffold(args, context)),
         "cf-edit" => Some(edit_cf(args, context)),

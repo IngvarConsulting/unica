@@ -1,4 +1,4 @@
-use crate::application::AdapterOutcome;
+use crate::application::NativeWriterResult;
 use crate::domain::workspace::WorkspaceContext;
 use serde_json::{Map, Value};
 use std::path::PathBuf;
@@ -105,7 +105,7 @@ pub(crate) fn invoke_read(
     tool_name: &str,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Option<Result<AdapterOutcome, String>> {
+) -> Option<Result<NativeWriterResult, String>> {
     cf::invoke_read(operation, tool_name, args, context)
         .or_else(|| cfe::invoke_read(operation, tool_name, args, context))
         .or_else(|| meta::invoke_read(operation, tool_name, args, context))
@@ -120,7 +120,7 @@ pub(crate) fn invoke_read(
 
 pub(crate) enum PreviewInvocation {
     Unavailable(String),
-    Planned(Result<AdapterOutcome, String>),
+    Planned(Result<NativeWriterResult, String>),
 }
 
 pub(crate) fn invoke_preview(
@@ -220,7 +220,7 @@ pub(crate) fn invoke_mutation(
     tool_name: &str,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Option<AdapterOutcome> {
+) -> Option<NativeWriterResult> {
     cf::invoke_mutation(operation, tool_name, args, context)
         .or_else(|| cfe::invoke_mutation(operation, tool_name, args, context))
         .or_else(|| external::apply(operation, tool_name, args, context))

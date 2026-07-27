@@ -1,7 +1,7 @@
 #![allow(dead_code, unused_imports)]
 
 use crate::application::operation_descriptors::OBJECT_PATH;
-use crate::application::{AdapterOutcome, SupportGuardRequirement};
+use crate::application::{NativeWriterResult, SupportGuardRequirement};
 use crate::domain::format_profile::{FormatCompatibility, ACTIVE_FORMAT_PROFILE};
 use crate::domain::identifiers::is_1c_identifier;
 use crate::domain::navigation::{
@@ -622,7 +622,7 @@ mod owner_contract_tests {
         context.cwd.join("src/Configuration.xml")
     }
 
-    fn compile_catalog(context: &WorkspaceContext, name: &str) -> AdapterOutcome {
+    fn compile_catalog(context: &WorkspaceContext, name: &str) -> NativeWriterResult {
         let definition_path = context.cwd.join(format!("{name}.json"));
         fs::write(
             &definition_path,
@@ -673,7 +673,7 @@ mod owner_contract_tests {
         context: &WorkspaceContext,
         subsystem_name: &str,
         catalog_name: &str,
-    ) -> AdapterOutcome {
+    ) -> NativeWriterResult {
         let definition = json!({
             "name": subsystem_name,
             "content": [format!("Catalog.{catalog_name}")]
@@ -4837,7 +4837,7 @@ mod edit_tests {
         object_name: &str,
         object_xml: &str,
         languages: &[(&str, &str)],
-    ) -> AdapterOutcome {
+    ) -> NativeWriterResult {
         let context = temp_context(&format!("registered-{object_type}-{object_name}"));
         let language_names = languages.iter().map(|(name, _)| *name).collect::<Vec<_>>();
         let src = write_owner(
@@ -4861,7 +4861,7 @@ mod edit_tests {
         outcome
     }
 
-    fn outcome_text(outcome: &AdapterOutcome) -> String {
+    fn outcome_text(outcome: &NativeWriterResult) -> String {
         format!(
             "{}\n{}\n{}",
             outcome.stdout.clone().unwrap_or_default(),
@@ -6043,7 +6043,7 @@ struct MetaValidationPublicResult {
 }
 
 pub(crate) struct MetaValidationInvocation {
-    pub(crate) adapter: AdapterOutcome,
+    pub(crate) adapter: NativeWriterResult,
     pub(crate) data: Value,
 }
 
@@ -6056,7 +6056,7 @@ pub(crate) struct MetaValidationOptions {
 pub(crate) fn validate_meta(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     validate_meta_with_data(args, context).adapter
 }
 
@@ -6103,7 +6103,7 @@ pub(crate) fn validate_meta_with_data(
                 }
             };
             MetaValidationInvocation {
-                adapter: AdapterOutcome {
+                adapter: NativeWriterResult {
                     ok: run.ok,
                     summary: summary.to_string(),
                     changes: Vec::new(),
@@ -6112,7 +6112,6 @@ pub(crate) fn validate_meta_with_data(
                     artifacts: run.artifacts,
                     stdout: Some(run.stdout),
                     stderr: None,
-                    command: None,
                 },
                 data,
             }
@@ -6123,7 +6122,7 @@ pub(crate) fn validate_meta_with_data(
                 unica_format_core::ports::ValidationFindingCode::SourceUnreadable,
             );
             MetaValidationInvocation {
-                adapter: AdapterOutcome {
+                adapter: NativeWriterResult {
                     ok: false,
                     summary: "unica.meta.validate could not inspect the requested source"
                         .to_string(),
@@ -6133,7 +6132,6 @@ pub(crate) fn validate_meta_with_data(
                     artifacts: Vec::new(),
                     stdout: None,
                     stderr: None,
-                    command: None,
                 },
                 data: meta_validation_public_data(
                     MetaValidationAggregate::Unavailable,
@@ -8528,7 +8526,7 @@ fn meta_remove_payload_file_count(path: &Path) -> Result<Option<usize>, String> 
 pub(crate) fn remove_metadata_object(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     let result = (|| -> Result<MetaRemoveSuccess, MetaRemoveError> {
         let config_dir_raw = required_string(args, &["configDir", "ConfigDir"], "ConfigDir")
             .map_err(|err| meta_remove_stdout_error(format!("[ERROR] {err}")))?;
@@ -8963,7 +8961,7 @@ pub(crate) fn remove_metadata_object(
     })();
 
     match result {
-        Ok(success) => AdapterOutcome {
+        Ok(success) => NativeWriterResult {
             ok: true,
             summary: "unica.meta.remove completed with native metadata remover".to_string(),
             changes: success.changes,
@@ -8972,9 +8970,8 @@ pub(crate) fn remove_metadata_object(
             artifacts: success.artifacts,
             stdout: Some(success.stdout),
             stderr: Some(String::new()),
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.meta.remove failed in native metadata remover".to_string(),
             changes: Vec::new(),
@@ -8987,7 +8984,6 @@ pub(crate) fn remove_metadata_object(
             artifacts: Vec::new(),
             stdout: Some(error.stdout),
             stderr: Some(error.stderr),
-            command: None,
         },
     }
 }
@@ -9815,7 +9811,7 @@ fn meta_compile_definition_format_dependency_paths(
 pub(crate) fn compile_meta(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     let write_result = plan_meta_compile(args, context).and_then(
         |(stdout, mut transaction, validation_paths, config_owner, format_dependencies)| {
             let format_dependencies = format_dependencies
@@ -9849,7 +9845,7 @@ pub(crate) fn compile_meta(
     );
 
     match write_result {
-        Ok((stdout, artifacts, changes, warnings)) => AdapterOutcome {
+        Ok((stdout, artifacts, changes, warnings)) => NativeWriterResult {
             ok: true,
             summary: "unica.meta.compile completed with native metadata compiler".to_string(),
             changes,
@@ -9861,9 +9857,8 @@ pub(crate) fn compile_meta(
                 .collect(),
             stdout: Some(stdout),
             stderr: None,
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.meta.compile failed in native metadata compiler".to_string(),
             changes: Vec::new(),
@@ -9872,7 +9867,6 @@ pub(crate) fn compile_meta(
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -9880,10 +9874,10 @@ pub(crate) fn compile_meta(
 pub(crate) fn preview_meta_compile(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Result<AdapterOutcome, String> {
+) -> Result<NativeWriterResult, String> {
     let (_stdout, transaction, _validation_paths, _config_owner, _format_dependencies) =
         plan_meta_compile(args, context)?;
-    Ok(AdapterOutcome {
+    Ok(NativeWriterResult {
         ok: true,
         summary: "dry run: unica.meta.compile planned native metadata compilation".to_string(),
         changes: transaction.dry_run_changes(),
@@ -9892,7 +9886,6 @@ pub(crate) fn preview_meta_compile(
         artifacts: Vec::new(),
         stdout: Some(transaction.dry_run_stdout()),
         stderr: None,
-        command: None,
     })
 }
 
@@ -15163,7 +15156,10 @@ struct MetaEditLineNumberLengthAuthorization {
     provenance: Option<PlatformXmlOwnerProvenance>,
 }
 
-pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
+pub(crate) fn edit_meta(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
     let edit_result = (|| -> Result<(String, PathBuf, bool, Vec<String>), String> {
         let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
         let operation = string_arg(args, &["operation", "Operation"]);
@@ -15291,7 +15287,7 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
     })();
 
     match edit_result {
-        Ok((stdout, object_path, changed, warnings)) => AdapterOutcome {
+        Ok((stdout, object_path, changed, warnings)) => NativeWriterResult {
             ok: true,
             summary: "unica.meta.edit completed with native metadata editor".to_string(),
             changes: if changed {
@@ -15304,9 +15300,8 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
             artifacts: vec![object_path.display().to_string()],
             stdout: Some(stdout),
             stderr: None,
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.meta.edit failed in native metadata editor".to_string(),
             changes: Vec::new(),
@@ -15315,7 +15310,6 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -18437,7 +18431,7 @@ pub(crate) fn invoke_read(
     _tool_name: &str,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Option<Result<AdapterOutcome, String>> {
+) -> Option<Result<NativeWriterResult, String>> {
     match operation {
         "meta-validate" => Some(Ok(validate_meta(args, context))),
         _ => None,
@@ -18449,7 +18443,7 @@ pub(crate) fn invoke_mutation(
     _tool_name: &str,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Option<AdapterOutcome> {
+) -> Option<NativeWriterResult> {
     match operation {
         "meta-compile" => Some(compile_meta(args, context)),
         "meta-edit" => Some(edit_meta(args, context)),

@@ -9,7 +9,7 @@ use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
 use unica_format_core::{
     commands::{
         ConfigurationCommand, ModuleOwner, ModuleRole, MutationMode, WriterCommand, WriterFamily,
-        WriterStatus,
+        WriterSourceRole, WriterStatus,
     },
     ports::{ModuleArtifactLocatorRequest, OperationCancellation, WriterRequest},
     semantic_ids::SemanticObjectKind,
@@ -34,22 +34,19 @@ fn task8_cancelled_writer_cannot_publish_or_validate_native_arguments() {
     let root = fixture_root("cancelled-writer");
     fs::create_dir_all(&root).unwrap();
     let output = root.join("output");
-    let mut args = serde_json::Map::new();
-    args.insert(
-        "outputDir".to_string(),
-        serde_json::Value::String(output.to_string_lossy().into_owned()),
-    );
 
     let factory = PlatformXmlAdapterFactory::new();
-    let session = factory.capture_writer_session(
-        "cf-init",
-        "unica.cf.init",
-        &args,
-        &root,
-        &root,
-        &root.join(".cache"),
-        0,
-    );
+    let session = factory
+        .capture_writer_session(
+            [(WriterSourceRole::DestinationDirectory, output.clone())],
+            None,
+            None,
+            &root,
+            &root,
+            &root.join(".cache"),
+            0,
+        )
+        .unwrap();
     let cancellation = OperationCancellation::new();
     cancellation.cancel();
     let request = WriterRequest::new(

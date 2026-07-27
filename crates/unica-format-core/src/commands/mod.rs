@@ -5,6 +5,7 @@
 //! reaches a writer port.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 mod inspection;
 pub use inspection::*;
@@ -136,7 +137,7 @@ pub enum SpreadsheetCommand {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WriterCommand {
+enum WriterCommandKind {
     Configuration(ConfigurationCommand),
     Extension(ExtensionCommand),
     ExternalArtifact(ExternalArtifactCommand),
@@ -152,108 +153,235 @@ pub enum WriterCommand {
     Spreadsheet(SpreadsheetCommand),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum WriterSourceRole {
+    Configuration,
+    ConfigurationDirectory,
+    Extension,
+    DestinationDirectory,
+    Definition,
+    Object,
+    SourceCollection,
+    Form,
+    Interface,
+    Subsystem,
+    DestinationArtifact,
+    ParentSubsystem,
+    Template,
+    Rights,
+    SupportTarget,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriterBorrowScope {
+    Form,
+    All,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriterArgument {
+    Name(String),
+    Synonym(String),
+    Vendor(String),
+    ArtifactVersion(String),
+    Purpose(String),
+    BorrowMainAttribute(WriterBorrowScope),
+    Mode(String),
+    ObjectReference(String),
+    NamePrefix(String),
+    ModuleReference(String),
+    MethodName(String),
+    InterceptorType(String),
+    ExecutionContext(String),
+    ObjectName(String),
+    FormName(String),
+    TemplateName(String),
+    TemplateType(String),
+    Language(String),
+    MutationVerb(String),
+    MutationValue(String),
+    DataSet(String),
+    Variant(String),
+    ProcessorName(String),
+    SupportCapability(String),
+    SupportRule(String),
+    OmitRole(bool),
+    Function(bool),
+    AssignDefaultForm(bool),
+    AssignMainDataComposition(bool),
+    SkipValidation(bool),
+    ExcludeSelection(bool),
+    CreateIfMissing(bool),
+    Force(bool),
+    KeepFiles(bool),
+    DeriveFromObject(bool),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WriterArguments {
+    items: Vec<WriterArgument>,
+}
+
+impl WriterArguments {
+    pub fn new(items: Vec<WriterArgument>) -> Result<Self, WriterCommandError> {
+        let mut seen = HashSet::with_capacity(items.len());
+        if items
+            .iter()
+            .any(|argument| !seen.insert(std::mem::discriminant(argument)))
+        {
+            return Err(WriterCommandError::DuplicateArgument);
+        }
+        Ok(Self { items })
+    }
+
+    pub fn items(&self) -> &[WriterArgument] {
+        &self.items
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriterCommandError {
+    DuplicateArgument,
+}
+
+impl std::fmt::Display for WriterCommandError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("writer command contains a duplicate semantic argument")
+    }
+}
+
+impl std::error::Error for WriterCommandError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriterCommand {
+    kind: WriterCommandKind,
+    arguments: WriterArguments,
+}
+
 impl WriterCommand {
-    pub const fn configuration(command: ConfigurationCommand) -> Self {
-        Self::Configuration(command)
+    pub fn configuration(command: ConfigurationCommand) -> Self {
+        Self::new(WriterCommandKind::Configuration(command))
     }
 
-    pub const fn extension(command: ExtensionCommand) -> Self {
-        Self::Extension(command)
+    pub fn extension(command: ExtensionCommand) -> Self {
+        Self::new(WriterCommandKind::Extension(command))
     }
 
-    pub const fn external_artifact(command: ExternalArtifactCommand) -> Self {
-        Self::ExternalArtifact(command)
+    pub fn external_artifact(command: ExternalArtifactCommand) -> Self {
+        Self::new(WriterCommandKind::ExternalArtifact(command))
     }
 
-    pub const fn metadata(command: MetadataCommand) -> Self {
-        Self::Metadata(command)
+    pub fn metadata(command: MetadataCommand) -> Self {
+        Self::new(WriterCommandKind::Metadata(command))
     }
 
-    pub const fn form(command: FormCommand) -> Self {
-        Self::Form(command)
+    pub fn form(command: FormCommand) -> Self {
+        Self::new(WriterCommandKind::Form(command))
     }
 
-    pub const fn template(command: TemplateCommand) -> Self {
-        Self::Template(command)
+    pub fn template(command: TemplateCommand) -> Self {
+        Self::new(WriterCommandKind::Template(command))
     }
 
-    pub const fn help(command: HelpCommand) -> Self {
-        Self::Help(command)
+    pub fn help(command: HelpCommand) -> Self {
+        Self::new(WriterCommandKind::Help(command))
     }
 
-    pub const fn interface(command: InterfaceCommand) -> Self {
-        Self::Interface(command)
+    pub fn interface(command: InterfaceCommand) -> Self {
+        Self::new(WriterCommandKind::Interface(command))
     }
 
-    pub const fn role(command: RoleCommand) -> Self {
-        Self::Role(command)
+    pub fn role(command: RoleCommand) -> Self {
+        Self::new(WriterCommandKind::Role(command))
     }
 
-    pub const fn subsystem(command: SubsystemCommand) -> Self {
-        Self::Subsystem(command)
+    pub fn subsystem(command: SubsystemCommand) -> Self {
+        Self::new(WriterCommandKind::Subsystem(command))
     }
 
-    pub const fn support(command: SupportCommand) -> Self {
-        Self::Support(command)
+    pub fn support(command: SupportCommand) -> Self {
+        Self::new(WriterCommandKind::Support(command))
     }
 
-    pub const fn data_composition(command: DataCompositionCommand) -> Self {
-        Self::DataComposition(command)
+    pub fn data_composition(command: DataCompositionCommand) -> Self {
+        Self::new(WriterCommandKind::DataComposition(command))
     }
 
-    pub const fn spreadsheet(command: SpreadsheetCommand) -> Self {
-        Self::Spreadsheet(command)
+    pub fn spreadsheet(command: SpreadsheetCommand) -> Self {
+        Self::new(WriterCommandKind::Spreadsheet(command))
     }
 
-    pub const fn family(self) -> WriterFamily {
-        match self {
-            Self::Configuration(_) => WriterFamily::Configuration,
-            Self::Extension(_) => WriterFamily::Extension,
-            Self::ExternalArtifact(_) => WriterFamily::ExternalArtifact,
-            Self::Metadata(_) => WriterFamily::Metadata,
-            Self::Form(_) => WriterFamily::Form,
-            Self::Template(_) => WriterFamily::Template,
-            Self::Help(_) => WriterFamily::Help,
-            Self::Interface(_) => WriterFamily::Interface,
-            Self::Role(_) => WriterFamily::Role,
-            Self::Subsystem(_) => WriterFamily::Subsystem,
-            Self::Support(_) => WriterFamily::Support,
-            Self::DataComposition(_) => WriterFamily::DataComposition,
-            Self::Spreadsheet(_) => WriterFamily::Spreadsheet,
+    fn new(kind: WriterCommandKind) -> Self {
+        Self {
+            kind,
+            arguments: WriterArguments::default(),
         }
     }
 
-    pub const fn intent(self) -> &'static str {
-        match self {
-            Self::Configuration(ConfigurationCommand::Initialize) => "configuration.initialize",
-            Self::Configuration(ConfigurationCommand::Edit) => "configuration.edit",
-            Self::Extension(ExtensionCommand::Initialize) => "extension.initialize",
-            Self::Extension(ExtensionCommand::Borrow) => "extension.borrow",
-            Self::Extension(ExtensionCommand::PatchMethod) => "extension.patchMethod",
-            Self::ExternalArtifact(ExternalArtifactCommand::InitializeProcessor) => {
+    pub fn with_arguments(mut self, arguments: WriterArguments) -> Self {
+        self.arguments = arguments;
+        self
+    }
+
+    pub fn arguments(&self) -> &WriterArguments {
+        &self.arguments
+    }
+
+    pub const fn family(&self) -> WriterFamily {
+        match self.kind {
+            WriterCommandKind::Configuration(_) => WriterFamily::Configuration,
+            WriterCommandKind::Extension(_) => WriterFamily::Extension,
+            WriterCommandKind::ExternalArtifact(_) => WriterFamily::ExternalArtifact,
+            WriterCommandKind::Metadata(_) => WriterFamily::Metadata,
+            WriterCommandKind::Form(_) => WriterFamily::Form,
+            WriterCommandKind::Template(_) => WriterFamily::Template,
+            WriterCommandKind::Help(_) => WriterFamily::Help,
+            WriterCommandKind::Interface(_) => WriterFamily::Interface,
+            WriterCommandKind::Role(_) => WriterFamily::Role,
+            WriterCommandKind::Subsystem(_) => WriterFamily::Subsystem,
+            WriterCommandKind::Support(_) => WriterFamily::Support,
+            WriterCommandKind::DataComposition(_) => WriterFamily::DataComposition,
+            WriterCommandKind::Spreadsheet(_) => WriterFamily::Spreadsheet,
+        }
+    }
+
+    pub const fn intent(&self) -> &'static str {
+        match self.kind {
+            WriterCommandKind::Configuration(ConfigurationCommand::Initialize) => {
+                "configuration.initialize"
+            }
+            WriterCommandKind::Configuration(ConfigurationCommand::Edit) => "configuration.edit",
+            WriterCommandKind::Extension(ExtensionCommand::Initialize) => "extension.initialize",
+            WriterCommandKind::Extension(ExtensionCommand::Borrow) => "extension.borrow",
+            WriterCommandKind::Extension(ExtensionCommand::PatchMethod) => "extension.patchMethod",
+            WriterCommandKind::ExternalArtifact(ExternalArtifactCommand::InitializeProcessor) => {
                 "externalArtifact.initializeProcessor"
             }
-            Self::ExternalArtifact(ExternalArtifactCommand::InitializeReport) => {
+            WriterCommandKind::ExternalArtifact(ExternalArtifactCommand::InitializeReport) => {
                 "externalArtifact.initializeReport"
             }
-            Self::Metadata(MetadataCommand::Create) => "metadata.create",
-            Self::Metadata(MetadataCommand::Edit) => "metadata.edit",
-            Self::Metadata(MetadataCommand::Remove) => "metadata.remove",
-            Self::Form(FormCommand::Create) => "form.create",
-            Self::Form(FormCommand::Compile) => "form.compile",
-            Self::Form(FormCommand::Edit) => "form.edit",
-            Self::Form(FormCommand::Remove) => "form.remove",
-            Self::Template(TemplateCommand::Create) => "template.create",
-            Self::Template(TemplateCommand::Remove) => "template.remove",
-            Self::Help(HelpCommand::Create) => "help.create",
-            Self::Interface(InterfaceCommand::Edit) => "interface.edit",
-            Self::Role(RoleCommand::Create) => "role.create",
-            Self::Subsystem(SubsystemCommand::Create) => "subsystem.create",
-            Self::Subsystem(SubsystemCommand::Edit) => "subsystem.edit",
-            Self::Support(SupportCommand::Edit) => "support.edit",
-            Self::DataComposition(DataCompositionCommand::Create) => "dataComposition.create",
-            Self::DataComposition(DataCompositionCommand::Edit) => "dataComposition.edit",
-            Self::Spreadsheet(SpreadsheetCommand::Create) => "spreadsheet.create",
+            WriterCommandKind::Metadata(MetadataCommand::Create) => "metadata.create",
+            WriterCommandKind::Metadata(MetadataCommand::Edit) => "metadata.edit",
+            WriterCommandKind::Metadata(MetadataCommand::Remove) => "metadata.remove",
+            WriterCommandKind::Form(FormCommand::Create) => "form.create",
+            WriterCommandKind::Form(FormCommand::Compile) => "form.compile",
+            WriterCommandKind::Form(FormCommand::Edit) => "form.edit",
+            WriterCommandKind::Form(FormCommand::Remove) => "form.remove",
+            WriterCommandKind::Template(TemplateCommand::Create) => "template.create",
+            WriterCommandKind::Template(TemplateCommand::Remove) => "template.remove",
+            WriterCommandKind::Help(HelpCommand::Create) => "help.create",
+            WriterCommandKind::Interface(InterfaceCommand::Edit) => "interface.edit",
+            WriterCommandKind::Role(RoleCommand::Create) => "role.create",
+            WriterCommandKind::Subsystem(SubsystemCommand::Create) => "subsystem.create",
+            WriterCommandKind::Subsystem(SubsystemCommand::Edit) => "subsystem.edit",
+            WriterCommandKind::Support(SupportCommand::Edit) => "support.edit",
+            WriterCommandKind::DataComposition(DataCompositionCommand::Create) => {
+                "dataComposition.create"
+            }
+            WriterCommandKind::DataComposition(DataCompositionCommand::Edit) => {
+                "dataComposition.edit"
+            }
+            WriterCommandKind::Spreadsheet(SpreadsheetCommand::Create) => "spreadsheet.create",
         }
     }
 }

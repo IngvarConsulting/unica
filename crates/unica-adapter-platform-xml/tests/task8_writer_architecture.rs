@@ -88,4 +88,44 @@ fn task8_platform_xml_writer_implementation_is_adapter_owned() {
         locator.is_file(),
         "versioned BSL artifact locator is missing"
     );
+
+    let factory = fs::read_to_string(root.join("crates/unica-adapter-platform-xml/src/factory.rs"))
+        .expect("adapter factory source");
+    let writer_capture = factory
+        .split("pub fn capture_writer_session")
+        .nth(1)
+        .and_then(|tail| tail.split("pub fn capture_inspection_session").next())
+        .expect("writer session capture API");
+    for forbidden in ["serde_json::Map", "operation: &str", "tool_name"] {
+        assert!(
+            !writer_capture.contains(forbidden),
+            "writer factory boundary exposes transport vocabulary `{forbidden}`"
+        );
+    }
+
+    let operations =
+        fs::read_to_string(root.join("crates/unica-adapter-platform-xml/src/operations/mod.rs"))
+            .expect("adapter operation source");
+    assert!(
+        !operations.contains("struct AdapterOutcome"),
+        "MCP AdapterOutcome must remain host-owned"
+    );
+    let writer_session = operations
+        .split("struct PlatformWriterSession")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("pub(crate) struct PlatformInspectionSession")
+                .next()
+        })
+        .expect("private writer session");
+    for forbidden in [
+        "Map<String, Value>",
+        "operation: String",
+        "tool_name: String",
+    ] {
+        assert!(
+            !writer_session.contains(forbidden),
+            "writer session retains transport escape hatch `{forbidden}`"
+        );
+    }
 }

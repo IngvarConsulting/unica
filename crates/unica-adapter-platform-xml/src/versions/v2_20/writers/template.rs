@@ -1,6 +1,6 @@
 #![allow(dead_code, unused_imports)]
 
-use crate::application::AdapterOutcome;
+use crate::application::NativeWriterResult;
 use crate::domain::workspace::WorkspaceContext;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
@@ -24,7 +24,7 @@ struct TemplateAddResult {
 pub(crate) fn add_template(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     let result = (|| -> Result<TemplateAddResult, String> {
         let object_name = required_string(
             args,
@@ -221,7 +221,7 @@ pub(crate) fn add_template(
     })();
 
     match result {
-        Ok(result) => AdapterOutcome {
+        Ok(result) => NativeWriterResult {
             ok: true,
             summary: "unica.template.add completed with native template writer".to_string(),
             changes: result.changes,
@@ -230,9 +230,8 @@ pub(crate) fn add_template(
             artifacts: result.artifacts,
             stdout: Some(result.stdout),
             stderr: Some(String::new()),
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.template.add failed in native template writer".to_string(),
             changes: Vec::new(),
@@ -241,7 +240,6 @@ pub(crate) fn add_template(
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -249,7 +247,7 @@ pub(crate) fn add_template(
 pub(crate) fn remove_template(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     let result = (|| -> Result<(String, Vec<String>, Vec<String>), String> {
         let object_name = required_string(
             args,
@@ -418,7 +416,7 @@ pub(crate) fn remove_template(
     })();
 
     match result {
-        Ok((stdout, changes, warnings)) => AdapterOutcome {
+        Ok((stdout, changes, warnings)) => NativeWriterResult {
             ok: true,
             summary: "unica.template.remove completed with native template remover".to_string(),
             changes,
@@ -427,9 +425,8 @@ pub(crate) fn remove_template(
             artifacts: Vec::new(),
             stdout: Some(stdout),
             stderr: Some(String::new()),
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.template.remove failed in native template remover".to_string(),
             changes: Vec::new(),
@@ -438,7 +435,6 @@ pub(crate) fn remove_template(
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -879,7 +875,7 @@ pub(crate) fn invoke_read(
     _tool_name: &str,
     _args: &Map<String, Value>,
     _context: &WorkspaceContext,
-) -> Option<Result<AdapterOutcome, String>> {
+) -> Option<Result<NativeWriterResult, String>> {
     None
 }
 
@@ -888,7 +884,7 @@ pub(crate) fn invoke_mutation(
     _tool_name: &str,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Option<AdapterOutcome> {
+) -> Option<NativeWriterResult> {
     match operation {
         "template-add" => Some(add_template(args, context)),
         "template-remove" => Some(remove_template(args, context)),

@@ -5,6 +5,7 @@ use std::{
 };
 
 use unica_format_core::{
+    commands::WriterSourceRole,
     navigation::{NavigationSelection, NavigationTarget},
     ports::{
         CapturePort, CaptureResult, CapturedSource, FormatInspectionPort, FormatInspectionRequest,
@@ -236,7 +237,38 @@ impl PlatformXmlAdapterFactory {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn capture_writer_session(
+    pub fn capture_writer_session<I>(
+        self,
+        sources: I,
+        inline_definition: Option<Vec<u8>>,
+        adapter_hint: Option<String>,
+        workspace_root: &Path,
+        cwd: &Path,
+        cache_root: &Path,
+        workspace_epoch: u64,
+    ) -> Result<OperationalSourceSession, SourceAdapterError>
+    where
+        I: IntoIterator<Item = (WriterSourceRole, PathBuf)>,
+    {
+        let session = crate::operations::PlatformWriterSession::new(
+            sources,
+            inline_definition,
+            adapter_hint,
+            crate::operations::WorkspaceContext {
+                cwd: cwd.to_path_buf(),
+                workspace_root: workspace_root.to_path_buf(),
+                cache_root: cache_root.to_path_buf(),
+                workspace_epoch,
+            },
+        )
+        .map_err(|message| {
+            SourceAdapterError::new(SourceAdapterErrorKind::CapabilityBlocked, message)
+        })?;
+        Ok(OperationalSourceSession::new(session))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn capture_inspection_session(
         self,
         operation: &str,
         tool_name: &str,
@@ -246,7 +278,7 @@ impl PlatformXmlAdapterFactory {
         cache_root: &Path,
         workspace_epoch: u64,
     ) -> OperationalSourceSession {
-        OperationalSourceSession::new(crate::operations::PlatformWriterSession::new(
+        OperationalSourceSession::new(crate::operations::PlatformInspectionSession::new(
             operation,
             tool_name,
             args.clone(),

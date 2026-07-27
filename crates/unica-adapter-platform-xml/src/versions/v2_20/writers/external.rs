@@ -7,7 +7,7 @@ use super::form::{
     form_add_content_xml, form_add_metadata_xml, form_add_module_bsl, validate_form,
 };
 use super::meta::validate_meta;
-use crate::application::AdapterOutcome;
+use crate::application::NativeWriterResult;
 use crate::domain::format_profile::ACTIVE_FORMAT_PROFILE;
 use crate::domain::workspace::WorkspaceContext;
 use serde_json::{Map, Value};
@@ -90,7 +90,7 @@ pub(crate) fn preview(
     tool_name: &str,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Option<AdapterOutcome> {
+) -> Option<NativeWriterResult> {
     invoke(operation, tool_name, args, context, ScaffoldMode::Preview)
 }
 
@@ -99,7 +99,7 @@ pub(crate) fn apply(
     tool_name: &str,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Option<AdapterOutcome> {
+) -> Option<NativeWriterResult> {
     invoke(operation, tool_name, args, context, ScaffoldMode::Apply)
 }
 
@@ -109,7 +109,7 @@ fn invoke(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
     mode: ScaffoldMode,
-) -> Option<AdapterOutcome> {
+) -> Option<NativeWriterResult> {
     let kind = ExternalArtifactKind::from_operation(operation)?;
     Some(match (prepare_plan(kind, args, context), mode) {
         (Ok(plan), ScaffoldMode::Preview) => {
@@ -330,7 +330,7 @@ fn validate_published_scaffold(
     Ok(())
 }
 
-fn require_validation(label: &str, outcome: AdapterOutcome) -> Result<(), String> {
+fn require_validation(label: &str, outcome: NativeWriterResult) -> Result<(), String> {
     if outcome.ok {
         return Ok(());
     }
@@ -430,7 +430,7 @@ fn success_outcome(
     plan: &ScaffoldPlan,
     mode: ScaffoldMode,
     warnings: Vec<String>,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     let (verb, summary) = match mode {
         ScaffoldMode::Preview => (
             "would create",
@@ -449,7 +449,7 @@ fn success_outcome(
         .iter()
         .map(|path| path.display().to_string())
         .collect::<Vec<_>>();
-    AdapterOutcome {
+    NativeWriterResult {
         ok: true,
         summary,
         changes: artifacts
@@ -466,12 +466,11 @@ fn success_outcome(
             plan.output_dir.display()
         )),
         stderr: None,
-        command: None,
     }
 }
 
-fn failure_outcome(tool_name: &str, error: String) -> AdapterOutcome {
-    AdapterOutcome {
+fn failure_outcome(tool_name: &str, error: String) -> NativeWriterResult {
+    NativeWriterResult {
         ok: false,
         summary: format!("{tool_name} failed to create external artifact scaffold"),
         changes: Vec::new(),
@@ -480,7 +479,6 @@ fn failure_outcome(tool_name: &str, error: String) -> AdapterOutcome {
         artifacts: Vec::new(),
         stdout: None,
         stderr: Some(format!("{error}\n")),
-        command: None,
     }
 }
 

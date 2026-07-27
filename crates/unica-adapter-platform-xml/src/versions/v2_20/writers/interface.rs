@@ -1,6 +1,6 @@
 #![allow(dead_code, unused_imports)]
 
-use crate::application::AdapterOutcome;
+use crate::application::NativeWriterResult;
 use crate::domain::workspace::WorkspaceContext;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
@@ -39,7 +39,7 @@ pub(crate) struct InterfaceEditCounters {
 pub(crate) fn edit_interface(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     let edit_result = (|| -> Result<(String, PathBuf, Vec<String>), String> {
         let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
         let operation = string_arg(args, &["operation", "Operation"]);
@@ -194,7 +194,7 @@ pub(crate) fn edit_interface(
     })();
 
     match edit_result {
-        Ok((stdout, ci_path, warnings)) => AdapterOutcome {
+        Ok((stdout, ci_path, warnings)) => NativeWriterResult {
             ok: true,
             summary: "unica.interface.edit completed with native command interface editor"
                 .to_string(),
@@ -204,9 +204,8 @@ pub(crate) fn edit_interface(
             artifacts: vec![ci_path.display().to_string()],
             stdout: Some(stdout),
             stderr: None,
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.interface.edit failed in native command interface editor".to_string(),
             changes: Vec::new(),
@@ -215,7 +214,6 @@ pub(crate) fn edit_interface(
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -990,7 +988,7 @@ pub(crate) fn interface_type_norm(value: &str) -> Option<&'static str> {
 pub(crate) fn validate_interface(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     const NS_CI: &str = "http://v8.1c.ru/8.3/xcf/extrnprops";
     const NS_XR: &str = "http://v8.1c.ru/8.3/xcf/readable";
 
@@ -1332,7 +1330,7 @@ pub(crate) fn validate_interface(
     })();
 
     match result {
-        Ok((ok, stdout, stderr, artifact)) => AdapterOutcome {
+        Ok((ok, stdout, stderr, artifact)) => NativeWriterResult {
             ok,
             summary: if ok {
                 "unica.interface.validate completed with native command interface validator"
@@ -1350,9 +1348,8 @@ pub(crate) fn validate_interface(
             artifacts: vec![artifact.display().to_string()],
             stdout: Some(stdout),
             stderr: Some(stderr),
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.interface.validate failed in native command interface validator"
                 .to_string(),
@@ -1362,7 +1359,6 @@ pub(crate) fn validate_interface(
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -1476,7 +1472,7 @@ pub(crate) fn invoke_read(
     _tool_name: &str,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Option<Result<AdapterOutcome, String>> {
+) -> Option<Result<NativeWriterResult, String>> {
     match operation {
         "interface-validate" => Some(Ok(validate_interface(args, context))),
         _ => None,
@@ -1488,7 +1484,7 @@ pub(crate) fn invoke_mutation(
     _tool_name: &str,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Option<AdapterOutcome> {
+) -> Option<NativeWriterResult> {
     match operation {
         "interface-edit" => Some(edit_interface(args, context)),
         _ => None,

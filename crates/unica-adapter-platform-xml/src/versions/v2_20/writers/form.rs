@@ -1,7 +1,7 @@
 #![allow(dead_code, unused_imports)]
 
 use crate::application::operation_descriptors::{FORM_PATH, OBJECT_PATH};
-use crate::application::AdapterOutcome;
+use crate::application::NativeWriterResult;
 use crate::domain::form_edit::validate_form_edit_definition;
 use crate::domain::format_profile::FormatCompatibility;
 use crate::domain::workspace::WorkspaceContext;
@@ -166,7 +166,7 @@ pub(crate) struct FormElementInfo<'a> {
 pub(crate) fn validate_form(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     validate_form_with_source(args, context, None)
 }
 
@@ -174,7 +174,7 @@ fn validate_form_with_source(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
     source_override: Option<(&Path, &str)>,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     let result = (|| -> Result<(bool, String, PathBuf, Vec<String>), String> {
         let form_path = match source_override {
             Some((path, _)) => path.to_path_buf(),
@@ -447,7 +447,7 @@ fn validate_form_with_source(
     })();
 
     match result {
-        Ok((ok, stdout, artifact, validation_errors)) => AdapterOutcome {
+        Ok((ok, stdout, artifact, validation_errors)) => NativeWriterResult {
             ok,
             summary: if ok {
                 "unica.form.validate completed with native form validator".to_string()
@@ -460,9 +460,8 @@ fn validate_form_with_source(
             artifacts: vec![artifact.display().to_string()],
             stdout: Some(stdout),
             stderr: Some(String::new()),
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.form.validate failed in native form validator".to_string(),
             changes: Vec::new(),
@@ -471,7 +470,6 @@ fn validate_form_with_source(
             artifacts: Vec::new(),
             stdout: Some(String::new()),
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -1414,7 +1412,7 @@ pub(crate) fn form_valid_cfg_prefixes() -> &'static [&'static str] {
 pub(crate) fn analyze_form_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     let result = (|| -> Result<(String, PathBuf), String> {
         let raw_path = required_path(args, FORM_PATH, "FormPath")?;
         let form_path = resolve_form_info_path(absolutize(raw_path, &context.cwd));
@@ -1613,7 +1611,7 @@ pub(crate) fn analyze_form_info(
     })();
 
     match result {
-        Ok((stdout, artifact)) => AdapterOutcome {
+        Ok((stdout, artifact)) => NativeWriterResult {
             ok: true,
             summary: "unica.form.info completed with native form analyzer".to_string(),
             changes: Vec::new(),
@@ -1622,9 +1620,8 @@ pub(crate) fn analyze_form_info(
             artifacts: vec![artifact.display().to_string()],
             stdout: Some(stdout),
             stderr: Some(String::new()),
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.form.info failed in native form analyzer".to_string(),
             changes: Vec::new(),
@@ -1633,7 +1630,6 @@ pub(crate) fn analyze_form_info(
             artifacts: Vec::new(),
             stdout: Some(String::new()),
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -2226,7 +2222,10 @@ fn validate_form_metadata_path_name(argument: &str, value: &str) -> Result<(), S
     }
 }
 
-pub(crate) fn add_form(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
+pub(crate) fn add_form(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
     let result = (|| -> Result<(String, Vec<PathBuf>, Vec<String>), String> {
         let object_path_raw = required_path(args, OBJECT_PATH, "ObjectPath")?;
         let form_name = required_string(args, &["formName", "FormName"], "FormName")?;
@@ -2363,7 +2362,7 @@ pub(crate) fn add_form(args: &Map<String, Value>, context: &WorkspaceContext) ->
     })();
 
     match result {
-        Ok((stdout, artifacts, warnings)) => AdapterOutcome {
+        Ok((stdout, artifacts, warnings)) => NativeWriterResult {
             ok: true,
             summary: "unica.form.add completed with native form scaffold writer".to_string(),
             changes: artifacts
@@ -2378,9 +2377,8 @@ pub(crate) fn add_form(args: &Map<String, Value>, context: &WorkspaceContext) ->
                 .collect(),
             stdout: Some(stdout),
             stderr: None,
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.form.add failed in native form scaffold writer".to_string(),
             changes: Vec::new(),
@@ -2389,12 +2387,14 @@ pub(crate) fn add_form(args: &Map<String, Value>, context: &WorkspaceContext) ->
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
 
-pub(crate) fn remove_form(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
+pub(crate) fn remove_form(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
     let result = (|| -> Result<(String, Vec<String>, Vec<String>), String> {
         let object_name = required_string(
             args,
@@ -2566,7 +2566,7 @@ pub(crate) fn remove_form(args: &Map<String, Value>, context: &WorkspaceContext)
     })();
 
     match result {
-        Ok((stdout, changes, warnings)) => AdapterOutcome {
+        Ok((stdout, changes, warnings)) => NativeWriterResult {
             ok: true,
             summary: "unica.form.remove completed with native form remover".to_string(),
             changes,
@@ -2575,9 +2575,8 @@ pub(crate) fn remove_form(args: &Map<String, Value>, context: &WorkspaceContext)
             artifacts: Vec::new(),
             stdout: Some(stdout),
             stderr: Some(String::new()),
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.form.remove failed in native form remover".to_string(),
             changes: Vec::new(),
@@ -2586,7 +2585,6 @@ pub(crate) fn remove_form(args: &Map<String, Value>, context: &WorkspaceContext)
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -3835,7 +3833,7 @@ struct FormParentRegistrationPlan {
 pub(crate) fn compile_form(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     let write_result = plan_form_compile(args, context, false).and_then(|mut plan| {
         let output_path = plan.output_path.clone();
         let owner_candidate = form_parent_metadata_owner_candidate(&output_path)?;
@@ -3955,7 +3953,7 @@ pub(crate) fn compile_form(
     });
 
     match write_result {
-        Ok((stdout, output_path, warnings)) => AdapterOutcome {
+        Ok((stdout, output_path, warnings)) => NativeWriterResult {
             ok: true,
             summary: "unica.form.compile completed with native managed form compiler".to_string(),
             changes: vec![format!("updated {}", output_path.display())],
@@ -3964,9 +3962,8 @@ pub(crate) fn compile_form(
             artifacts: vec![output_path.display().to_string()],
             stdout: Some(stdout),
             stderr: None,
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.form.compile failed in native managed form compiler".to_string(),
             changes: Vec::new(),
@@ -3975,7 +3972,6 @@ pub(crate) fn compile_form(
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
@@ -3983,11 +3979,11 @@ pub(crate) fn compile_form(
 pub(crate) fn preview_form_compile(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Result<AdapterOutcome, String> {
+) -> Result<NativeWriterResult, String> {
     let mut plan = match plan_form_compile(args, context, false) {
         Ok(plan) => plan,
         Err(error) => {
-            return Ok(AdapterOutcome {
+            return Ok(NativeWriterResult {
                 ok: false,
                 summary: "unica.form.compile failed in native managed form compiler".to_string(),
                 changes: Vec::new(),
@@ -3996,14 +3992,13 @@ pub(crate) fn preview_form_compile(
                 artifacts: Vec::new(),
                 stdout: None,
                 stderr: Some(format!("{error}\n")),
-                command: None,
             });
         }
     };
     plan.stdout
         .push_str(&format!("[DRY-RUN] Would compile: {}\n", plan.output_label));
     append_form_compile_stats(&mut plan.stdout, &plan.stats);
-    Ok(AdapterOutcome {
+    Ok(NativeWriterResult {
         ok: true,
         summary: "dry run: unica.form.compile planned native managed form compilation".to_string(),
         changes: vec![format!("would update {}", plan.output_path.display())],
@@ -4012,7 +4007,6 @@ pub(crate) fn preview_form_compile(
         artifacts: Vec::new(),
         stdout: Some(plan.stdout),
         stderr: None,
-        command: None,
     })
 }
 
@@ -4168,14 +4162,17 @@ fn append_form_compile_stats(stdout: &mut String, stats: &FormCompileStats) {
     }
 }
 
-pub(crate) fn edit_form(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
+pub(crate) fn edit_form(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
     apply_with_data(args, context).outcome
 }
 
 pub(crate) fn preview_form_edit(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     preview_with_data(args, context).outcome
 }
 
@@ -4222,12 +4219,12 @@ pub(crate) fn edit_form_with_mode(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
     mode: FormEditMode,
-) -> AdapterOutcome {
+) -> NativeWriterResult {
     form_edit_with_mode_data(args, context, mode).outcome
 }
 
 pub(crate) struct FormEditExecution {
-    pub(crate) outcome: AdapterOutcome,
+    pub(crate) outcome: NativeWriterResult,
     pub(crate) data: Option<FormEditData>,
 }
 
@@ -4235,7 +4232,7 @@ impl FormEditExecution {
     pub(crate) fn into_core_parts(
         self,
     ) -> (
-        AdapterOutcome,
+        NativeWriterResult,
         Option<unica_format_core::commands::FormEditEvidence>,
     ) {
         let data = self.data.map(|data| {
@@ -4623,7 +4620,7 @@ fn form_edit_with_mode_data(
             warnings,
             removals,
         }) => FormEditExecution {
-            outcome: AdapterOutcome {
+            outcome: NativeWriterResult {
                 ok: true,
                 summary: if mode.is_preview() && !changed {
                     "dry run: unica.form.edit found an idempotent no-op".to_string()
@@ -4652,7 +4649,6 @@ fn form_edit_with_mode_data(
                 artifacts: vec![form_path.display().to_string()],
                 stdout: Some(stdout),
                 stderr: None,
-                command: None,
             },
             data: Some(FormEditData {
                 changed,
@@ -4661,7 +4657,7 @@ fn form_edit_with_mode_data(
             }),
         },
         Err(error) => FormEditExecution {
-            outcome: AdapterOutcome {
+            outcome: NativeWriterResult {
                 ok: false,
                 summary: "unica.form.edit failed in native managed form editor".to_string(),
                 changes: Vec::new(),
@@ -4670,7 +4666,6 @@ fn form_edit_with_mode_data(
                 artifacts: Vec::new(),
                 stdout: None,
                 stderr: Some(format!("{error}\n")),
-                command: None,
             },
             data: None,
         },
@@ -5977,7 +5972,7 @@ pub(crate) fn form_edit_publish_preserving_bom(
     Ok(report.cleanup_warnings)
 }
 
-fn form_edit_require_valid(outcome: AdapterOutcome) -> Result<(), String> {
+fn form_edit_require_valid(outcome: NativeWriterResult) -> Result<(), String> {
     if outcome.ok {
         return Ok(());
     }
@@ -10110,7 +10105,7 @@ pub(crate) fn invoke_read(
     _tool_name: &str,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Option<Result<AdapterOutcome, String>> {
+) -> Option<Result<NativeWriterResult, String>> {
     match operation {
         "form-info" => Some(Ok(analyze_form_info(args, context))),
         "form-validate" => Some(Ok(validate_form(args, context))),
@@ -10123,7 +10118,7 @@ pub(crate) fn invoke_mutation(
     _tool_name: &str,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Option<AdapterOutcome> {
+) -> Option<NativeWriterResult> {
     match operation {
         "form-add" => Some(add_form(args, context)),
         "form-remove" => Some(remove_form(args, context)),

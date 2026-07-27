@@ -2534,8 +2534,8 @@ impl WriterRequest {
         &self.session
     }
 
-    pub const fn command(&self) -> WriterCommand {
-        self.command
+    pub const fn command(&self) -> &WriterCommand {
+        &self.command
     }
 
     pub const fn mode(&self) -> MutationMode {

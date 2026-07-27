@@ -1,9 +1,10 @@
 use serde::Serialize;
 use serde_json::{Map, Value};
-use std::{fs, path::PathBuf};
+use std::{collections::BTreeMap, fs, path::PathBuf};
 use unica_format_core::{
     commands::{
-        InspectionPort, InspectionRequest, MutationMode, WriterEvidence, WriterFamily, WriterResult,
+        InspectionPort, InspectionRequest, MutationMode, WriterArgument, WriterBorrowScope,
+        WriterCommand, WriterEvidence, WriterFamily, WriterResult, WriterSourceRole,
     },
     ports::{WriterPort, WriterRequest},
     source::{SourceAdapterError, SourceAdapterErrorKind},
@@ -23,7 +24,7 @@ pub(crate) use crate::versions::v2_20::writers::{
 };
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct AdapterOutcome {
+pub(crate) struct NativeWriterResult {
     pub(crate) ok: bool,
     pub(crate) summary: String,
     pub(crate) changes: Vec<String>,
@@ -34,11 +35,9 @@ pub(crate) struct AdapterOutcome {
     pub(crate) stdout: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) stderr: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) command: Option<Vec<String>>,
 }
 
-impl AdapterOutcome {
+impl NativeWriterResult {
     pub(crate) fn ok(summary: impl Into<String>) -> Self {
         Self {
             ok: true,
@@ -49,7 +48,6 @@ impl AdapterOutcome {
             artifacts: Vec::new(),
             stdout: None,
             stderr: None,
-            command: None,
         }
     }
 }
@@ -64,13 +62,46 @@ pub(crate) struct WorkspaceContext {
 
 #[derive(Debug, Clone)]
 pub(crate) struct PlatformWriterSession {
+    sources: BTreeMap<WriterSourceRole, PathBuf>,
+    inline_definition: Option<Vec<u8>>,
+    adapter_hint: Option<String>,
+    context: WorkspaceContext,
+}
+
+impl PlatformWriterSession {
+    pub(crate) fn new<I>(
+        sources: I,
+        inline_definition: Option<Vec<u8>>,
+        adapter_hint: Option<String>,
+        context: WorkspaceContext,
+    ) -> Result<Self, String>
+    where
+        I: IntoIterator<Item = (WriterSourceRole, PathBuf)>,
+    {
+        let mut captured = BTreeMap::new();
+        for (role, source) in sources {
+            if captured.insert(role, source).is_some() {
+                return Err("writer source role was bound more than once".to_string());
+            }
+        }
+        Ok(Self {
+            sources: captured,
+            inline_definition,
+            adapter_hint,
+            context,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PlatformInspectionSession {
     operation: String,
     tool_name: String,
     args: Map<String, Value>,
     context: WorkspaceContext,
 }
 
-impl PlatformWriterSession {
+impl PlatformInspectionSession {
     pub(crate) fn new(
         operation: impl Into<String>,
         tool_name: impl Into<String>,
@@ -105,39 +136,30 @@ impl WriterPort for PlatformXmlWriter {
                     "writer command has no bound Platform XML execution session",
                 )
             })?;
-        if request.command().intent() != operation_intent(&session.operation) {
-            return Err(SourceAdapterError::new(
-                SourceAdapterErrorKind::CapabilityBlocked,
-                "writer command does not match the bound operation",
-            ));
-        }
         if request.cancellation().is_cancelled() {
             return Ok(WriterResult::cancelled());
         }
-        let (outcome, evidence) = if session.operation == "form-edit"
-            && form::has_edit_payload(&session.args)
-        {
+        let operation = writer_operation(request.command());
+        let tool_name = writer_tool_name(operation);
+        let args = writer_native_arguments(request.command(), session, request.mode())?;
+        let (outcome, evidence) = if operation == "form-edit" && form::has_edit_payload(&args) {
             let execution = match request.mode() {
-                MutationMode::Preview => form::preview_with_data(&session.args, &session.context),
-                MutationMode::Apply => form::apply_with_data(&session.args, &session.context),
+                MutationMode::Preview => form::preview_with_data(&args, &session.context),
+                MutationMode::Apply => form::apply_with_data(&args, &session.context),
             };
             let (outcome, data) = execution.into_core_parts();
             (outcome, data.map(WriterEvidence::FormEdit))
         } else {
             let outcome = match request.mode() {
-                MutationMode::Preview => NativeOperationAdapter::preview(
-                    &session.operation,
-                    &session.tool_name,
-                    &session.args,
-                    &session.context,
-                ),
-                MutationMode::Apply => registry::invoke_mutation(
-                    &session.operation,
-                    &session.tool_name,
-                    &session.args,
-                    &session.context,
-                )
-                .ok_or_else(|| "Platform XML writer operation is not registered".to_string()),
+                MutationMode::Preview => {
+                    NativeOperationAdapter::preview(operation, tool_name, &args, &session.context)
+                }
+                MutationMode::Apply => {
+                    registry::invoke_mutation(operation, tool_name, &args, &session.context)
+                        .ok_or_else(|| {
+                            "Platform XML writer operation is not registered".to_string()
+                        })
+                }
             }
             .map_err(|message| {
                 SourceAdapterError::new(SourceAdapterErrorKind::ValidationFailed, message)
@@ -163,7 +185,7 @@ impl InspectionPort for PlatformXmlInspector {
     fn inspect(&self, request: &InspectionRequest) -> Result<WriterResult, SourceAdapterError> {
         let session = request
             .session()
-            .adapter_state::<PlatformWriterSession>()
+            .adapter_state::<PlatformInspectionSession>()
             .ok_or_else(|| {
                 SourceAdapterError::new(
                     SourceAdapterErrorKind::CapabilityBlocked,
@@ -208,7 +230,7 @@ impl NativeOperationAdapter {
         tool_name: &str,
         args: &Map<String, Value>,
         context: &WorkspaceContext,
-    ) -> Result<AdapterOutcome, String> {
+    ) -> Result<NativeWriterResult, String> {
         if let Some(outcome) = external::preview(operation, tool_name, args, context) {
             return Ok(outcome);
         }
@@ -217,7 +239,7 @@ impl NativeOperationAdapter {
         }
         if operation == "meta-edit" {
             meta::validate_meta_edit_preview(args, context)?;
-            return Ok(AdapterOutcome {
+            return Ok(NativeWriterResult {
                 ok: true,
                 summary: format!("dry run: {tool_name} planned native metadata edit"),
                 changes: vec!["no files changed because dryRun is true".to_string()],
@@ -226,12 +248,11 @@ impl NativeOperationAdapter {
                 artifacts: Vec::new(),
                 stdout: None,
                 stderr: None,
-                command: None,
             });
         }
         if let Some(preview) = registry::invoke_preview(operation, args, context) {
             return match preview {
-                registry::PreviewInvocation::Unavailable(error) => Ok(AdapterOutcome {
+                registry::PreviewInvocation::Unavailable(error) => Ok(NativeWriterResult {
                     ok: true,
                     summary: format!("dry run: {tool_name} would execute native XML/DSL operation"),
                     changes: vec!["no files changed because dryRun is true".to_string()],
@@ -242,12 +263,11 @@ impl NativeOperationAdapter {
                     artifacts: Vec::new(),
                     stdout: None,
                     stderr: None,
-                    command: None,
                 }),
                 registry::PreviewInvocation::Planned(result) => result,
             };
         }
-        Ok(AdapterOutcome {
+        Ok(NativeWriterResult {
             ok: true,
             summary: format!("dry run: {tool_name} would execute native XML/DSL operation"),
             changes: vec!["no files changed because dryRun is true".to_string()],
@@ -256,7 +276,6 @@ impl NativeOperationAdapter {
             artifacts: Vec::new(),
             stdout: None,
             stderr: None,
-            command: None,
         })
     }
 
@@ -265,7 +284,7 @@ impl NativeOperationAdapter {
         tool_name: &str,
         args: &Map<String, Value>,
         context: &WorkspaceContext,
-    ) -> Result<AdapterOutcome, String> {
+    ) -> Result<NativeWriterResult, String> {
         if let Some(outcome) = registry::invoke_read(operation, tool_name, args, context) {
             return outcome;
         }
@@ -283,7 +302,7 @@ impl NativeOperationAdapter {
         context: &WorkspaceContext,
         dry_run: bool,
         mutating: bool,
-    ) -> Result<AdapterOutcome, String> {
+    ) -> Result<NativeWriterResult, String> {
         if dry_run && mutating {
             return Self::preview(operation, tool_name, args, context);
         }
@@ -330,38 +349,244 @@ impl NativeOperationAdapter {
 
 #[cfg(test)]
 pub(crate) struct TestNativeOperationResult {
-    pub(crate) adapter: AdapterOutcome,
+    pub(crate) adapter: NativeWriterResult,
     pub(crate) data: Option<Value>,
 }
 
-fn operation_intent(operation: &str) -> &'static str {
+fn writer_native_arguments(
+    command: &WriterCommand,
+    session: &PlatformWriterSession,
+    mode: MutationMode,
+) -> Result<Map<String, Value>, SourceAdapterError> {
+    let operation = writer_operation(command);
+    let mut args = Map::new();
+    for argument in command.arguments().items() {
+        match argument {
+            WriterArgument::Name(value) => insert_writer_text(&mut args, operation, "name", value),
+            WriterArgument::Synonym(value) => {
+                insert_writer_text(&mut args, operation, "synonym", value)
+            }
+            WriterArgument::Vendor(value) => insert_text(&mut args, "vendor", value),
+            WriterArgument::ArtifactVersion(value) => insert_text(&mut args, "version", value),
+            WriterArgument::Purpose(value) => insert_text(&mut args, "purpose", value),
+            WriterArgument::BorrowMainAttribute(scope) => insert_text(
+                &mut args,
+                "borrowMainAttribute",
+                match scope {
+                    WriterBorrowScope::Form => "Form",
+                    WriterBorrowScope::All => "All",
+                },
+            ),
+            WriterArgument::Mode(value) => insert_text(&mut args, "mode", value),
+            WriterArgument::ObjectReference(value) => insert_text(&mut args, "object", value),
+            WriterArgument::NamePrefix(value) => insert_text(&mut args, "namePrefix", value),
+            WriterArgument::ModuleReference(value) => insert_text(&mut args, "modulePath", value),
+            WriterArgument::MethodName(value) => insert_text(&mut args, "methodName", value),
+            WriterArgument::InterceptorType(value) => {
+                insert_text(&mut args, "interceptorType", value)
+            }
+            WriterArgument::ExecutionContext(value) => insert_text(&mut args, "context", value),
+            WriterArgument::ObjectName(value) => insert_text(&mut args, "objectName", value),
+            WriterArgument::FormName(value) => {
+                insert_writer_text(&mut args, operation, "formName", value)
+            }
+            WriterArgument::TemplateName(value) => insert_text(&mut args, "templateName", value),
+            WriterArgument::TemplateType(value) => insert_text(&mut args, "templateType", value),
+            WriterArgument::Language(value) => insert_text(&mut args, "lang", value),
+            WriterArgument::MutationVerb(value) => insert_text(&mut args, "operation", value),
+            WriterArgument::MutationValue(value) => insert_text(&mut args, "value", value),
+            WriterArgument::DataSet(value) => insert_text(&mut args, "dataSet", value),
+            WriterArgument::Variant(value) => insert_text(&mut args, "variant", value),
+            WriterArgument::ProcessorName(value) => insert_text(&mut args, "processorName", value),
+            WriterArgument::SupportCapability(value) => insert_text(&mut args, "capability", value),
+            WriterArgument::SupportRule(value) => insert_text(&mut args, "set", value),
+            WriterArgument::OmitRole(value) => insert_bool(&mut args, "noRole", *value),
+            WriterArgument::Function(value) => insert_bool(&mut args, "isFunction", *value),
+            WriterArgument::AssignDefaultForm(value) => {
+                insert_bool(&mut args, "setDefault", *value)
+            }
+            WriterArgument::AssignMainDataComposition(value) => {
+                insert_bool(&mut args, "setMainSKD", *value)
+            }
+            WriterArgument::SkipValidation(value) => insert_bool(&mut args, "noValidate", *value),
+            WriterArgument::ExcludeSelection(value) => {
+                insert_bool(&mut args, "noSelection", *value)
+            }
+            WriterArgument::CreateIfMissing(value) => {
+                insert_bool(&mut args, "createIfMissing", *value)
+            }
+            WriterArgument::Force(value) => insert_bool(&mut args, "force", *value),
+            WriterArgument::KeepFiles(value) => insert_bool(&mut args, "keepFiles", *value),
+            WriterArgument::DeriveFromObject(value) => insert_bool(&mut args, "fromObject", *value),
+        }
+    }
+
+    for (role, path) in &session.sources {
+        let key = writer_source_key(command.intent(), *role).ok_or_else(|| {
+            SourceAdapterError::new(
+                SourceAdapterErrorKind::CapabilityBlocked,
+                "writer source role does not belong to the semantic command",
+            )
+        })?;
+        let key = if matches!(operation, "epf-init" | "erf-init") && key == "outputDir" {
+            "OutputDir"
+        } else {
+            key
+        };
+        args.insert(
+            key.to_string(),
+            Value::String(path.to_string_lossy().into_owned()),
+        );
+    }
+
+    if let Some(hint) = &session.adapter_hint {
+        insert_text(&mut args, "compatibilityMode", hint);
+    }
+    if let Some(definition) = &session.inline_definition {
+        match command.intent() {
+            "form.edit" => {
+                let value = serde_json::from_slice(definition).map_err(|error| {
+                    SourceAdapterError::new(
+                        SourceAdapterErrorKind::ValidationFailed,
+                        format!("inline form definition is not valid JSON: {error}"),
+                    )
+                })?;
+                args.insert("definition".to_string(), value);
+            }
+            "subsystem.create" | "dataComposition.create" => {
+                let value = String::from_utf8(definition.clone()).map_err(|error| {
+                    SourceAdapterError::new(
+                        SourceAdapterErrorKind::ValidationFailed,
+                        format!("inline semantic definition is not UTF-8: {error}"),
+                    )
+                })?;
+                insert_text(&mut args, "value", &value);
+            }
+            _ => {
+                return Err(SourceAdapterError::new(
+                    SourceAdapterErrorKind::CapabilityBlocked,
+                    "inline definition does not belong to the semantic command",
+                ));
+            }
+        }
+    }
+    insert_bool(&mut args, "DryRun", mode.is_preview());
+    Ok(args)
+}
+
+fn insert_writer_text(args: &mut Map<String, Value>, operation: &str, key: &str, value: &str) {
+    let key = if matches!(operation, "epf-init" | "erf-init") {
+        match key {
+            "name" => "Name",
+            "synonym" => "Synonym",
+            "formName" => "FormName",
+            _ => key,
+        }
+    } else {
+        key
+    };
+    insert_text(args, key, value);
+}
+
+fn insert_text(args: &mut Map<String, Value>, key: &str, value: &str) {
+    args.insert(key.to_string(), Value::String(value.to_string()));
+}
+
+fn insert_bool(args: &mut Map<String, Value>, key: &str, value: bool) {
+    args.insert(key.to_string(), Value::Bool(value));
+}
+
+fn writer_source_key(intent: &str, role: WriterSourceRole) -> Option<&'static str> {
+    Some(match role {
+        WriterSourceRole::Configuration => "configPath",
+        WriterSourceRole::ConfigurationDirectory => "configDir",
+        WriterSourceRole::Extension => "extensionPath",
+        WriterSourceRole::DestinationDirectory => "outputDir",
+        WriterSourceRole::Definition => match intent {
+            "metadata.create" | "form.compile" | "form.edit" | "role.create"
+            | "spreadsheet.create" => "jsonPath",
+            "configuration.edit"
+            | "metadata.edit"
+            | "interface.edit"
+            | "subsystem.create"
+            | "subsystem.edit"
+            | "dataComposition.create"
+            | "dataComposition.edit" => "definitionFile",
+            _ => return None,
+        },
+        WriterSourceRole::Object if intent == "help.create" => "objectName",
+        WriterSourceRole::Object => "objectPath",
+        WriterSourceRole::SourceCollection => "srcDir",
+        WriterSourceRole::Form => "formPath",
+        WriterSourceRole::Interface => "ciPath",
+        WriterSourceRole::Subsystem => "subsystemPath",
+        WriterSourceRole::DestinationArtifact => "outputPath",
+        WriterSourceRole::ParentSubsystem => "parent",
+        WriterSourceRole::Template => "templatePath",
+        WriterSourceRole::Rights => "rightsPath",
+        WriterSourceRole::SupportTarget => "path",
+    })
+}
+
+fn writer_operation(command: &WriterCommand) -> &'static str {
+    match command.intent() {
+        "configuration.initialize" => "cf-init",
+        "configuration.edit" => "cf-edit",
+        "extension.initialize" => "cfe-init",
+        "extension.borrow" => "cfe-borrow",
+        "extension.patchMethod" => "cfe-patch-method",
+        "externalArtifact.initializeProcessor" => "epf-init",
+        "externalArtifact.initializeReport" => "erf-init",
+        "metadata.create" => "meta-compile",
+        "metadata.edit" => "meta-edit",
+        "metadata.remove" => "meta-remove",
+        "form.create" => "form-add",
+        "form.compile" => "form-compile",
+        "form.edit" => "form-edit",
+        "form.remove" => "form-remove",
+        "template.create" => "template-add",
+        "template.remove" => "template-remove",
+        "help.create" => "help-add",
+        "interface.edit" => "interface-edit",
+        "role.create" => "role-compile",
+        "subsystem.create" => "subsystem-compile",
+        "subsystem.edit" => "subsystem-edit",
+        "support.edit" => "support-edit",
+        "dataComposition.create" => "dcs-compile",
+        "dataComposition.edit" => "dcs-edit",
+        "spreadsheet.create" => "mxl-compile",
+        _ => unreachable!("WriterCommand intent is closed"),
+    }
+}
+
+fn writer_tool_name(operation: &str) -> &'static str {
     match operation {
-        "cf-init" => "configuration.initialize",
-        "cf-edit" => "configuration.edit",
-        "cfe-init" => "extension.initialize",
-        "cfe-borrow" => "extension.borrow",
-        "cfe-patch-method" => "extension.patchMethod",
-        "epf-init" => "externalArtifact.initializeProcessor",
-        "erf-init" => "externalArtifact.initializeReport",
-        "meta-compile" => "metadata.create",
-        "meta-edit" => "metadata.edit",
-        "meta-remove" => "metadata.remove",
-        "form-add" => "form.create",
-        "form-compile" => "form.compile",
-        "form-edit" => "form.edit",
-        "form-remove" => "form.remove",
-        "template-add" => "template.create",
-        "template-remove" => "template.remove",
-        "help-add" => "help.create",
-        "interface-edit" => "interface.edit",
-        "role-compile" => "role.create",
-        "subsystem-compile" => "subsystem.create",
-        "subsystem-edit" => "subsystem.edit",
-        "support-edit" => "support.edit",
-        "dcs-compile" => "dataComposition.create",
-        "dcs-edit" => "dataComposition.edit",
-        "mxl-compile" => "spreadsheet.create",
-        _ => "",
+        "cf-init" => "unica.cf.init",
+        "cf-edit" => "unica.cf.edit",
+        "cfe-init" => "unica.cfe.init",
+        "cfe-borrow" => "unica.cfe.borrow",
+        "cfe-patch-method" => "unica.cfe.patch_method",
+        "epf-init" => "unica.epf.init",
+        "erf-init" => "unica.erf.init",
+        "meta-compile" => "unica.meta.compile",
+        "meta-edit" => "unica.meta.edit",
+        "meta-remove" => "unica.meta.remove",
+        "form-add" => "unica.form.add",
+        "form-compile" => "unica.form.compile",
+        "form-edit" => "unica.form.edit",
+        "form-remove" => "unica.form.remove",
+        "template-add" => "unica.template.add",
+        "template-remove" => "unica.template.remove",
+        "help-add" => "unica.help.add",
+        "interface-edit" => "unica.interface.edit",
+        "role-compile" => "unica.role.compile",
+        "subsystem-compile" => "unica.subsystem.compile",
+        "subsystem-edit" => "unica.subsystem.edit",
+        "support-edit" => "unica.support.edit",
+        "dcs-compile" => "unica.dcs.compile",
+        "dcs-edit" => "unica.dcs.edit",
+        "mxl-compile" => "unica.mxl.compile",
+        _ => unreachable!("writer operation is closed"),
     }
 }
 
@@ -388,5 +613,19 @@ fn inspection_intent(operation: &str) -> &'static str {
         "role-info" => "role.describe",
         "role-validate" => "role.validate",
         _ => "",
+    }
+}
+
+#[cfg(test)]
+mod semantic_role_tests {
+    use super::writer_source_key;
+    use unica_format_core::commands::WriterSourceRole;
+
+    #[test]
+    fn data_composition_edit_binds_definition_without_exposing_its_path_to_core() {
+        assert_eq!(
+            writer_source_key("dataComposition.edit", WriterSourceRole::Definition),
+            Some("definitionFile")
+        );
     }
 }

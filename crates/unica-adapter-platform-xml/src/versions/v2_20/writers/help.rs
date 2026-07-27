@@ -1,4 +1,4 @@
-use crate::application::AdapterOutcome;
+use crate::application::NativeWriterResult;
 use crate::domain::format_profile::ACTIVE_FORMAT_PROFILE;
 use crate::domain::workspace::WorkspaceContext;
 use roxmltree::Document;
@@ -18,7 +18,10 @@ struct HelpAddRun {
     warnings: Vec<String>,
 }
 
-pub(crate) fn add_help(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
+pub(crate) fn add_help(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
     let result = (|| -> Result<HelpAddRun, String> {
         let object_name = required_string(
             args,
@@ -149,7 +152,7 @@ pub(crate) fn add_help(args: &Map<String, Value>, context: &WorkspaceContext) ->
             changes,
             artifacts,
             warnings,
-        }) => AdapterOutcome {
+        }) => NativeWriterResult {
             ok: true,
             summary: "unica.help.add completed with native help writer".to_string(),
             changes,
@@ -158,9 +161,8 @@ pub(crate) fn add_help(args: &Map<String, Value>, context: &WorkspaceContext) ->
             artifacts,
             stdout: Some(stdout),
             stderr: None,
-            command: None,
         },
-        Err(error) => AdapterOutcome {
+        Err(error) => NativeWriterResult {
             ok: false,
             summary: "unica.help.add failed".to_string(),
             changes: Vec::new(),
@@ -169,7 +171,6 @@ pub(crate) fn add_help(args: &Map<String, Value>, context: &WorkspaceContext) ->
             artifacts: Vec::new(),
             stdout: None,
             stderr: Some(format!("{error}\n")),
-            command: None,
         },
     }
 }
