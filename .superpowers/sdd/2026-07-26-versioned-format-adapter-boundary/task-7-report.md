@@ -734,3 +734,155 @@ Exact-target follow-up commit:
   crate-wide adapter-unit GREEN claim is therefore not made.
 - No scoped Task 7 test, affected Task 5/6 parity test, native compile check,
   Windows cross-target check, formatting check, or diff check remains failing.
+
+## Fix Round 5
+
+Base: `56b2fbdd51bf5a23933a5bc9abb8d8af68c245d8`
+
+Implementation commit:
+`ad411cf4902bcfe80269ccd6f3823e9eb84ffb2c`
+(`fix(task7): correct registrar coverage and reachability`)
+
+Tree hashes:
+
+- base: `6b072e7b04584669b248e3a052036d9a5a7e0411`
+- implementation: `d43c8fe6706d721943b7fe3e09a32d80fcf76dc5`
+
+The controller-owned `progress.md` remained modified, unstaged, and untouched.
+
+### RED
+
+- Real Platform XML evidence in `meta.rs` and fixtures showed that
+  `Document.Properties.RegisterRecords` is the forward relation. No genuine
+  register-side `Recorders` or `Registrars` vocabulary was found.
+- The old resolver parsed those invented reverse fields and converted their
+  absence on a register descriptor into `Some(false)`, which allowed
+  target-local validation to emit a false `RegistrarMissing`.
+- The new neutral contract test failed to compile with `E0432`/`E0599` because
+  `ValidationCoverage`, `ValidationRelationCoverage`,
+  `registrar_coverage`, and `ValidationReport::new_with_coverage` did not exist.
+- The first architecture RED run had six expected failures:
+  `Self::helper`, block-local alias, block-local glob, trait-default dispatch,
+  nested async/alias traversal, and the same-name neutral-port false positive.
+- Conservative receiver expansion then exposed unresolved external constructor
+  calls. The cause was mechanical: grouped `use ...::{self, ...}` was recorded
+  under the alias `self`, local re-exports were treated as owned local types,
+  and test-only modules entered the production graph.
+
+### Responsibility closure map
+
+| Concern | Final owner and invariant |
+| --- | --- |
+| Forward registrar relation | Private 2.20 adapter parsing reads only `Document.Properties.RegisterRecords` and resolves each explicitly named register descriptor. |
+| Register-target reverse coverage | Target-local validation does not scan documents and returns `ValidationRelationCoverage::NotEvaluated`; unrelated documents cannot create either success or failure. |
+| Complete reverse proof | Only the closed `CompleteMissing` state can produce `RegistrarMissing`. The current target-local adapter never constructs it because it has no complete authorized reverse-reference index. |
+| Public validation completeness | `ValidationReport` carries closed `Complete` or `Partial` coverage. A report with partial coverage cannot contain `RegistrarMissing`; constructors and Serde preserve the invariant. |
+| Local validation facts | Register descriptor structure, values, ownership, registration, languages, methods, and other local checks still execute. Only the unobserved reverse-relation check is omitted from the check count. |
+| Lexical call resolution | The architecture graph snapshots module/block imports, aliases, and globs by lexical scope; nested blocks, closures, and async blocks retain the correct scope. |
+| Method reachability | `Self` resolves through the enclosing impl/trait owner; inherent methods, trait impls, default methods, UFCS, receiver methods, nested modules, and helper chains are traversed. |
+| Fail-closed graph behavior | Unresolved local calls are violations. Unknown receiver calls connect to every production method with the same name unless the receiver has explicit `dyn *Port` static type evidence. |
+
+### Real-shape registrar tests
+
+- A valid document with two `RegisterRecords` opens both explicitly referenced
+  register descriptors.
+- A recorder-subordinate register with no invented local recorder fields is
+  valid with `NotEvaluated` relation coverage and a `Partial` report.
+- A document naming a missing register produces `ReferenceMissing`, not
+  `RegistrarMissing`.
+- A register referenced by multiple documents does not require opening either
+  document during target-local register validation.
+- Malformed, oversized, and symlinked/unreadable unrelated documents record
+  zero opens and cannot cause a false registrar error.
+
+### GREEN validation
+
+```text
+cargo test -p unica-format-core \
+  --test public_json_contract \
+  --test task7_fix_round2_contracts \
+  --test task7_fix_round3_evidence \
+  --test task7_operational_ports
+  23 passed; 0 failed; 0 ignored
+
+cargo test -p unica-application \
+  --test task7_fix_round2_policy \
+  --test task7_operational_policy
+  7 passed; 0 failed; 0 ignored
+
+cargo test -p unica-adapter-platform-xml \
+  versions::v2_20::operations::fix_round3_tests:: --lib
+  5 passed; 0 failed; 0 ignored
+
+cargo test -p unica-adapter-platform-xml \
+  --test legacy_parity \
+  --test specialized_relations \
+  --test task7_fix_round1_architecture \
+  --test task7_fix_round2_architecture \
+  --test task7_fix_round2_lazy_source \
+  --test task7_fix_round3_architecture \
+  --test task7_fix_round3_lazy_revision \
+  --test task7_operational_ports \
+  --test unmapped_fact
+  79 passed; 0 failed; 0 ignored
+  legacy_parity: all 26 passed with source/oracle hash checks enabled
+  task7_fix_round3_architecture: 15 passed
+  task7_fix_round3_lazy_revision: 4 passed
+
+Scoped total: 114 passed; 0 failed; 0 ignored
+
+cargo check -p unica-format-core -p unica-application -p unica-coder \
+  -p unica-adapter-platform-xml --tests
+  passed; unica-coder emitted 21 dead-code warnings
+
+cargo check -p unica-adapter-platform-xml \
+  --target x86_64-pc-windows-msvc --lib --tests
+  passed
+
+cargo fmt --all -- --check
+  passed
+git diff --check
+  passed
+
+rg 'registrar_references|registrar_present|<Recorders>|<Registrars>|\
+child\(properties, "Recorders"\)|child\(properties, "Registrars"\)' \
+  crates/unica-adapter-platform-xml/src/versions/v2_20 \
+  crates/unica-format-core/src
+  no matches
+```
+
+### Files
+
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/operations.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/validation.rs`
+- `crates/unica-adapter-platform-xml/tests/task7_fix_round3_architecture.rs`
+- `crates/unica-adapter-platform-xml/tests/task7_fix_round3_lazy_revision.rs`
+- `crates/unica-format-core/src/ports.rs`
+- `crates/unica-format-core/tests/task7_fix_round3_evidence.rs`
+- `crates/unica-format-core/tests/task7_operational_ports.rs`
+
+### Remaining host-native paths and Task 8 justification
+
+- No host source changed in this round. The strengthened production-only call
+  graph remains GREEN from `evaluate_format_guard`, `evaluate_support_guard`,
+  and `validate_meta`.
+- `native_operations/common.rs` still owns command/composition source-location
+  setup and writer helpers.
+- `native_operations/meta.rs`, `form.rs`, `template.rs`, `help.rs`, `role.rs`,
+  `subsystem.rs`, `interface.rs`, `cf.rs`, `cfe.rs`, `mxl.rs`, `dcs.rs`, and
+  `support.rs` retain native serialization, mutation topology, destination
+  paths, and command-specific writer behavior. These are Task 8 writer
+  responsibilities, not Task 7 reads or policy.
+
+### Residual risks and non-gates
+
+- A complete reverse-reference index is intentionally not built by
+  target-local validation. Register reports are explicitly partial until a
+  separately authorized complete index is introduced.
+- The architecture test is a conservative Rust AST graph, not rustc type
+  inference. It fails closed for unresolved local calls and exempts only
+  explicit neutral trait-object port receivers.
+- Windows code was cross-compiled but not runtime-executed on this macOS host.
+- Full workspace validation was intentionally not run.
+- No scoped Task 7 test, affected Task 5/6 parity test, native compile check,
+  Windows cross-target check, formatting check, or diff check remains failing.
