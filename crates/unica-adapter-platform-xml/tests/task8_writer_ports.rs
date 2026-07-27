@@ -7,8 +7,11 @@ use std::{
 
 use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
 use unica_format_core::{
-    commands::{ModuleOwner, ModuleRole, WriterFamily},
-    ports::{ModuleArtifactLocatorRequest, OperationCancellation},
+    commands::{
+        ConfigurationCommand, ModuleOwner, ModuleRole, MutationMode, WriterCommand, WriterFamily,
+        WriterStatus,
+    },
+    ports::{ModuleArtifactLocatorRequest, OperationCancellation, WriterRequest},
     semantic_ids::SemanticObjectKind,
 };
 
@@ -24,6 +27,47 @@ fn task8_factory_registers_every_existing_writer_family() {
     let expected = WriterFamily::ALL.into_iter().collect::<BTreeSet<_>>();
 
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn task8_cancelled_writer_cannot_publish_or_validate_native_arguments() {
+    let root = fixture_root("cancelled-writer");
+    fs::create_dir_all(&root).unwrap();
+    let output = root.join("output");
+    let mut args = serde_json::Map::new();
+    args.insert(
+        "outputDir".to_string(),
+        serde_json::Value::String(output.to_string_lossy().into_owned()),
+    );
+
+    let factory = PlatformXmlAdapterFactory::new();
+    let session = factory.capture_writer_session(
+        "cf-init",
+        "unica.cf.init",
+        &args,
+        &root,
+        &root,
+        &root.join(".cache"),
+        0,
+    );
+    let cancellation = OperationCancellation::new();
+    cancellation.cancel();
+    let request = WriterRequest::new(
+        session,
+        WriterCommand::configuration(ConfigurationCommand::Initialize),
+        MutationMode::Apply,
+        cancellation,
+    );
+
+    let result = factory
+        .operational_registration()
+        .writer()
+        .execute(&request)
+        .unwrap();
+
+    assert_eq!(result.status(), WriterStatus::Cancelled);
+    assert!(!output.exists());
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
