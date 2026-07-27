@@ -1355,18 +1355,21 @@ oracle with 35 exact variant families and 265 literal wire cases:
   semantic-action option shapes, and relation pages with and without opaque
   cursors.
 
-Every public Rust enum in this reachable graph is listed through a
-wildcard-free `match`. Adding a new variant therefore makes the test fail to
-compile until both the typed inventory and static specimen are updated.
+Every response-side public Rust enum inventoried in Round 8 is listed through
+a wildcard-free `match`. Adding a new response variant therefore makes the
+test fail to compile until both the typed inventory and static specimen are
+updated. Request-side `NavigationQuery` unions were not part of that Round 8
+claim and are covered by Round 9 below.
 Data-bearing public unions (`PropertyValue`, `TypeVariant`, and
 `TypeQualifiers`) are deserialized strictly from the hand-authored JSON and
 serialized back to exact equality. The expected JSON is never produced by the
 serializer under test.
 
-The Round 7 full-envelope specimen remains the complete public-field/schema
-guard. Round 8 adds exact visibility-branch field sets and typed optional-shape
-cases, so every serializer branch is traversed without replacing the existing
-recursive field validation.
+The Round 7 full-envelope specimen remains the nonempty response
+public-field/schema guard. Round 8 adds exact response visibility-branch field
+sets and selected typed optional-shape cases without replacing the existing
+recursive field validation. Complete request and unavailable-envelope option
+coverage is supplied by Round 9 below.
 
 For each of the 35 families, mutation tests feed missing, extra, renamed, and
 payload-changed variants through the same `compare_fact_multisets` comparator
@@ -1474,3 +1477,189 @@ Only Task 5 scoped validation was run.
   status, and diagnostics remain preserved.
 - No XML/native/version vocabulary crossed the 2.20 adapter boundary, and no
   Task 4 closed contract or opaque cursor behavior changed.
+
+## Fix Round 9
+
+Base: `143eed58923303a2939aefd0e96d67b0d15a2a7a`
+
+Implementation commit:
+`614925bc1f7e5c179d94d6821ce780cf4defb3f1`
+
+The controller's Round 8 failure/Round 9 start entry in `progress.md` was
+preserved and committed with the implementation.
+
+### Root-cause fixes and decisions
+
+1. The public-contract boundary is now request plus response, not only
+   `NavigationEnvelope`. The independently hand-authored
+   `public-navigation-wire-specimen.json` contains 19 exact families and 47
+   literal branches spanning `NavigationQuery`, all targets/selections, cursor
+   and page behavior, and response option shapes.
+2. Request coverage includes every `NavigationTarget` variant
+   (`CapturedTarget`, `ObjectPath`, object reference plus snapshot revision,
+   and authenticated cursor), both `PropertySelection` variants with empty and
+   nonempty named payloads, all three `FacetSelection` variants, both
+   `RelationKind` values, default/minimum/maximum page-size paths, empty and
+   nonempty relation selections, and complete query wires for every target.
+3. Cursor security remains intact. A `NavigationTarget::Cursor` contains an
+   authenticated `NavigationCursor`; no unsafe raw `Deserialize` was added.
+   Strict deny-unknown test wires parse and validate static request JSON,
+   registered property/relation/object IDs, normalized object paths, revision
+   values, and opaque nonempty cursor tokens. Independently constructed,
+   authenticated public queries serialize to those exact literals.
+4. Response coverage now has complete exact envelope specimens for `ready`,
+   `partial`, and `unavailable`. The unavailable envelope proves valid
+   `snapshot: null` and `root: null`; ready/partial prove the corresponding
+   `Some` branches. Every other reachable response `Option` branch is covered:
+   diagnostic details, relation-page cursor, semantic-action target/owning
+   relation/operation binding, semantic-property value, primitive type
+   qualifiers, and every valid optional string/number qualifier combination.
+5. Strict response mirrors round-trip the three exact envelope shapes and all
+   response option families with unknown-field rejection. The existing Round 7
+   full specimen continues to validate nonempty nested node, relation, facet,
+   action, and binding fields.
+6. `TypeVariant` is now compiler-exhaustive at the actual private-union
+   boundary. The new domain-neutral `TypeVariantKind` exposes only nine closed
+   semantic discriminants; `TypeVariant::kind()` matches every private
+   `TypeVariantValue` arm without a wildcard and does not expose payloads or
+   native vocabulary.
+7. The response/value specimen now contains 37 exact families and 301 cases.
+   Its existing 23 type wires map one-for-one to an independently static
+   `typeVariantCaseKind` inventory and collectively cover all nine
+   `TypeVariantKind` values. Every type wire is individually removed and
+   payload-mutated through the production comparator.
+8. Every one of the 47 request/response branches is individually removed and
+   payload-mutated. Each of the 19 families also receives an extra future
+   branch. All failures use the same structured `compare_fact_multisets`
+   comparator as the real contract check.
+9. README and the prior Round 8 report wording now distinguish Round 8's
+   response-only variant proof from Round 9's complete request+response wire
+   proof. Static specimens remain hash-verified and are never regenerated.
+
+### Files
+
+- `.superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/progress.md`
+- `.superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/task-5-report.md`
+- `crates/unica-format-core/src/value.rs`
+- `crates/unica-format-core/tests/public_json_contract.rs`
+- `crates/unica-adapter-platform-xml/tests/legacy_parity.rs`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/public-navigation-wire-specimen.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/public-contract-variant-specimen.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/generate_oracle.py`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/oracle-manifest.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/README.md`
+
+No XML adapter runtime, application, or coder behavior changed. The only core
+production addition is the closed neutral `TypeVariantKind` discriminant and
+its compiler-exhaustive accessor.
+
+### RED evidence
+
+Focused core command:
+
+```bash
+cargo test -p unica-format-core --test public_json_contract type_variant_exposes_a_closed_compiler_exhaustive_discriminant -- --nocapture
+```
+
+Initial result: compile failure (`E0432`/`E0599`) because
+`TypeVariantKind` and `TypeVariant::kind()` did not exist.
+
+Focused adapter command:
+
+```bash
+cargo test -p unica-adapter-platform-xml --test legacy_parity fix_round9_ -- --nocapture
+```
+
+Initial result:
+
+```text
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 24 filtered out
+```
+
+It failed at the intended boundary because
+`public-navigation-wire-specimen.json` did not exist.
+
+The first populated static comparison also went RED on the two object-reference
+target wires. That exposed the declared Serde contract: the enum variant is
+camel-cased as `objectRef`, while fields inside its struct payload remain
+`object_ref` and `snapshot_revision`. The hand-authored literal was corrected;
+the runtime wire was not changed or normalized away.
+
+### GREEN evidence and Task 5 scoped validation
+
+Focused core discriminant:
+
+```text
+cargo test -p unica-format-core --test public_json_contract type_variant_exposes_a_closed_compiler_exhaustive_discriminant -- --exact --nocapture
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out
+```
+
+Focused Round 8 regression and Round 9 wire proof:
+
+```text
+cargo test -p unica-adapter-platform-xml --test legacy_parity fix_round8_public_contract_variant_oracle_is_exhaustive -- --exact --nocapture
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out
+
+cargo test -p unica-adapter-platform-xml --test legacy_parity fix_round9_public_navigation_request_and_response_wire_is_complete -- --exact --nocapture
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out
+```
+
+Oracle regeneration for generated artifacts and manifest:
+
+```text
+python3.12 .../generate_oracle.py --repo-root . --write
+wrote 37 raw outputs, 174 enum alias executions, 21 oracle cases, and provenance
+```
+
+Oracle fail-closed self-test:
+
+```text
+python3.12 .../generate_oracle.py --repo-root . --self-test
+verified fail-closed parser and source-context negative suite
+```
+
+Generated-artifact comparison and static hash verification:
+
+```text
+python3.12 .../generate_oracle.py --repo-root . --check
+verified 37 raw outputs, 174 enum alias executions, oracle facts, and SHA-256 provenance
+```
+
+Core public JSON contract:
+
+```text
+cargo test -p unica-format-core --test public_json_contract
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+Full exact parity/public-contract/coverage suite:
+
+```text
+cargo test -p unica-adapter-platform-xml --test legacy_parity
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+Unknown/unmapped boundary:
+
+```text
+cargo test -p unica-adapter-platform-xml --test unmapped_fact
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+Only the requested core contract and Task 5 scoped validation were run.
+
+### Remaining gaps and concerns
+
+- No known public request/response wire, closed-variant, or legacy-comparable
+  parity gap remains in the selected Task 5 corpus.
+- Raw cursor JSON is intentionally not deserialized directly into
+  `NavigationCursor`; callers must authenticate `OpaqueNavigationCursor`.
+  Static tests preserve this security boundary while checking its opaque wire.
+- Platform XML 2.20 still intentionally does not produce relation pages,
+  semantic actions, or operation bindings. Their complete response wires are
+  static-contract tested, and runtime absence remains explicit.
+- Form/template internals remain intentionally opaque where no closed semantic
+  decomposition exists; backing and truthful partial diagnostics remain
+  preserved.
+- `TypeVariantKind` is format-neutral and payload-free. It does not weaken
+  `TypeVariant` constructor validation or expose private/native details.
