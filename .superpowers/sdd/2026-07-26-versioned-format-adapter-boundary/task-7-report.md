@@ -547,3 +547,190 @@ The target-local validation fixture covers readable, malformed, oversized, and s
 - The repository-wide `scripts/ci/check-rust-platform-boundary.py` is not a scoped gate: it reports a broad existing set of OS-specific adapter, writer, and test modules outside its accepted facade list. The new CI cross-target command is the requested compiling invariant.
 - An exploratory stricter workspace clippy command reported existing non-Task-7 lints in `unica-format-core`; it was not used as a scoped gate. The native compile checks above are green.
 - No Task 7 scoped test, parity test, formatting check, native compile check, or Windows cross-target compile remains failing.
+
+## Fix Round 4
+
+Base: `b31ee77b6493f239d48e2ed66244c95af36a30a2`
+
+Implementation commits:
+
+- `9946925ad36b53c372d5bfaa33718069ffc5f782` (`fix(task7): close remaining adapter evidence gaps`)
+- `d6d09feea2599dc9b36a89ce5da7f3b4327cfb94` (`fix(task7): bind legacy support inspection target`)
+
+Tree hashes:
+
+- base: `94618acd11b280324c810a1bac0c89226b3a24fc`
+- primary implementation: `e41d4030675b06971938c11b6c9930aace99d8ae`
+- final implementation: `accef9007bf834e578f7354697725fd7b3ff071b`
+
+The controller-owned `progress.md` remained modified, unstaged, and untouched.
+
+### RED
+
+- Platform-neutral Windows identity tests did not compile because no complete
+  `FileIdInfo` constructor existed; the old implementation used the narrower
+  `BY_HANDLE_FILE_INFORMATION` identity and admitted zero values.
+- Injected evidence-finalization tests did not compile because there were no
+  operation/publication finalization hooks, and authorability had no closed
+  evidence-free unreadable denial.
+- The direct multi-register fixture returned `Some(false)` instead of
+  `Some(true)` and exposed the global registrar scan.
+- Three method-hidden architecture fixtures passed incorrectly: renamed
+  inherent method syntax, trait/UFCS dispatch, and nested multi-layer helper
+  dispatch were outside the function-only graph.
+- `task7_fix_round3_evidence` failed to compile with `E0277`/`E0599` because
+  authorability evidence was mandatory and `source_unreadable` did not exist.
+- The scoped certification probe failed with
+  `unwrap_err()` on `Ok(SupportEvidence { source: Absent, ... })` for an
+  out-of-root target. The legacy support port authorized only the root and then
+  substituted a fixed relative artifact. After binding the target, the first
+  GREEN attempt also showed that a legitimately missing bound artifact was
+  incorrectly mapped to unreadable. Both distinctions are now explicit.
+
+### Responsibility closure map
+
+| Concern | Final owner and invariant |
+| --- | --- |
+| Windows opened-file identity | `platform_handle.rs` uses stable `windows-sys` `GetFileInformationByHandleEx(FileIdInfo)` for volume serial plus the complete 128-bit file ID, and `FileStandardInfo` for link count. Missing, partial, all-zero, or query-failed identity is unavailable. |
+| Safe-root/publication identity | `SafeSourceRoot` and publication compare identities derived from opened handles. No zero identity, pathname fallback, or default identity can enter comparison. Unix remains descriptor-relative and no-follow. |
+| Operational evidence | Compatibility and validation return typed source-unavailable errors when finalization fails. Authorability can return evidence-free only through the closed unreadable denial; every allowed or ordinary denied result requires real finalized evidence. |
+| Publication evidence | Staged-tree evidence is finalized and rechecked atomically before visibility. A finalization failure leaves the prior target visible and creates no cacheable success. |
+| Registrar resolution | Compatibility and validation share target-local reference resolution from the selected descriptor and explicit reference graph. Unrelated registered `Document` descriptors are never indexed or opened. |
+| Architecture reachability | The Task 7 AST graph includes nested modules, inherent and trait impl methods, default trait methods, closures, associated/UFCS calls, and conservative receiver-method edges. Unknown neutral trait-object calls terminate at the port boundary. |
+| Legacy support inspection | The adapter binds and reads the exact requested support artifact under the authorized root. Proven missing-at-bind is `Absent`; containment, identity, race, and read failures remain fail closed. |
+
+### GREEN validation on the final implementation tree
+
+```text
+cargo test -p unica-format-core \
+  --test public_json_contract \
+  --test task7_fix_round2_contracts \
+  --test task7_fix_round3_evidence \
+  --test task7_operational_ports
+  22 passed; 0 failed; 0 ignored
+
+cargo test -p unica-application \
+  --test task7_fix_round2_policy \
+  --test task7_operational_policy
+  7 passed; 0 failed; 0 ignored
+
+cargo test -p unica-adapter-platform-xml \
+  --test legacy_parity \
+  --test specialized_relations \
+  --test task7_fix_round1_architecture \
+  --test task7_fix_round2_architecture \
+  --test task7_fix_round2_lazy_source \
+  --test task7_fix_round3_architecture \
+  --test task7_fix_round3_lazy_revision \
+  --test task7_operational_ports \
+  --test unmapped_fact
+  71 passed; 0 failed; 0 ignored
+  legacy_parity: 26 passed with source/oracle hash checks enabled
+  task7_fix_round3_architecture: 7 passed
+  task7_fix_round3_lazy_revision: 4 passed
+
+cargo test -p unica-adapter-platform-xml certification:: --lib
+  9 passed; 0 failed; 0 ignored
+cargo test -p unica-adapter-platform-xml platform_handle::tests:: --lib
+  4 passed; 0 failed; 0 ignored
+cargo test -p unica-adapter-platform-xml safe_root::tests:: --lib
+  2 passed; 0 failed; 0 ignored
+cargo test -p unica-adapter-platform-xml versions::v2_20::provider::tests:: --lib
+  6 passed; 0 failed; 0 ignored
+cargo test -p unica-adapter-platform-xml \
+  versions::v2_20::operations::fix_round3_tests:: --lib
+  3 passed; 0 failed; 0 ignored
+cargo test -p unica-adapter-platform-xml publication::tests:: --lib
+  40 passed; 0 failed; 0 ignored
+
+Scoped total: 164 passed; 0 failed; 0 ignored
+
+cargo check -p unica-format-core -p unica-application -p unica-coder \
+  -p unica-adapter-platform-xml --tests
+  passed; unica-coder emitted 21 existing dead-code warnings
+
+cargo check -p unica-adapter-platform-xml \
+  --target x86_64-pc-windows-msvc --lib --tests
+  passed
+
+cargo fmt --all -- --check
+  passed
+git diff --check
+  passed
+
+rg 'failure_evidence|GetFileInformationByHandle\(|identity.*unwrap_or_default'
+  platform_handle.rs publication.rs safe_root.rs operations.rs validation.rs
+  no matches
+```
+
+### Adversarial coverage added
+
+- Windows identity preserves differing high 64 bits and rejects missing volume,
+  missing file ID, all-zero file ID, zero volume, zero link count, and query
+  failure.
+- Authorability, compatibility, validation context, validation, and publication
+  inject evidence-finalization failure and cannot return a cacheable successful
+  result.
+- Malformed, unreadable/symlinked, and oversized unrelated registered
+  `Document` descriptors record zero opens; direct and multi-register references
+  resolve positively.
+- Publication finalization failure preserves the old visible tree and leaves no
+  stage, backup, or recovery artifact.
+- Architecture negative fixtures hide forbidden logic behind renamed inherent
+  methods, trait methods, UFCS, receiver syntax, nested modules, and multiple
+  helper layers; the neutral trait-object port fixture remains accepted.
+- Legacy support inspection rejects an out-of-root target and proves that an
+  unrelated fixed-layout support file cannot substitute for the requested
+  artifact.
+
+### Files
+
+Primary implementation commit:
+
+- `crates/unica-adapter-platform-xml/src/guards.rs`
+- `crates/unica-adapter-platform-xml/src/platform_handle.rs`
+- `crates/unica-adapter-platform-xml/src/publication.rs`
+- `crates/unica-adapter-platform-xml/src/safe_root.rs`
+- `crates/unica-adapter-platform-xml/src/validation.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/operations.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/validation.rs`
+- `crates/unica-adapter-platform-xml/tests/task7_fix_round3_architecture.rs`
+- `crates/unica-adapter-platform-xml/tests/task7_fix_round3_lazy_revision.rs`
+- `crates/unica-format-core/src/ports.rs`
+- `crates/unica-format-core/tests/task7_fix_round3_evidence.rs`
+
+Exact-target follow-up commit:
+
+- `crates/unica-adapter-platform-xml/src/certification.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/inspection.rs`
+
+### Remaining native host paths and Task 8 justification
+
+- The method-complete call graph proves that the Task 7 host entrypoints cannot
+  reach host XML readers, parser crates, native layout joins, or native wire
+  literals.
+- `native_operations/common.rs` retains command/composition source-location
+  setup and writer helpers outside the Task 7 policy roots.
+- `native_operations/meta.rs`, `form.rs`, `template.rs`, `help.rs`, `role.rs`,
+  `subsystem.rs`, `interface.rs`, `cf.rs`, `cfe.rs`, `mxl.rs`, `dcs.rs`, and
+  `support.rs` retain only native serialization, mutation topology, destination
+  paths, and command-specific writer behavior. Those paths are required by the
+  existing writers and move with Task 8; moving them here would move native
+  serialization early.
+- Native strings remaining in tests are fixtures and recursive leakage probes,
+  not application policy or public output.
+
+### Residual risks and non-gates
+
+- The Windows branch is cross-compiled and its identity normalization is tested
+  platform-neutrally, but Windows filesystem race behavior was not
+  runtime-executed on this macOS host.
+- Full workspace validation was intentionally not run.
+- An exploratory unfiltered adapter `--lib` run was stopped after it crossed
+  Task 7 scope and entered a long-running decoder boundary fixture. It exposed
+  unrelated decoder/projector/probe failures whose base provenance was not
+  established. Its one Task 7-adjacent certification failure was isolated,
+  fixed, and the complete nine-test certification module is GREEN. A
+  crate-wide adapter-unit GREEN claim is therefore not made.
+- No scoped Task 7 test, affected Task 5/6 parity test, native compile check,
+  Windows cross-target check, formatting check, or diff check remains failing.
