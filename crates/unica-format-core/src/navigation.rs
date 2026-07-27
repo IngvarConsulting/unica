@@ -1170,6 +1170,7 @@ impl RelationSelection {
         role: SemanticRelationId,
         page_size: Option<u16>,
     ) -> Result<Self, SourceAdapterError> {
+        let kind = relation_kind_for_role(role)?;
         let page_size = page_size.unwrap_or(25);
         if page_size == 0 || page_size > 100 {
             return Err(SourceAdapterError::new(
@@ -1178,7 +1179,7 @@ impl RelationSelection {
             ));
         }
         Ok(Self {
-            kind: RelationKind::Contains,
+            kind,
             role,
             page_size,
         })
@@ -1186,8 +1187,7 @@ impl RelationSelection {
 }
 
 /// Produces the sole canonical selection representation used for runtime
-/// paging, cursor payloads, and selection hashes. Raw omitted kinds are
-/// represented as `Contains` before this function is called.
+/// paging, cursor payloads, and selection hashes.
 pub fn normalize_navigation_selection(
     mut selection: NavigationSelection,
 ) -> Result<NavigationSelection, SourceAdapterError> {
@@ -1204,6 +1204,12 @@ pub fn normalize_navigation_selection(
         ));
     }
     for relation in &selection.relations {
+        if relation.kind != relation_kind_for_role(relation.role)? {
+            return Err(SourceAdapterError::new(
+                SourceAdapterErrorKind::ProjectionAmbiguous,
+                "relation kind is incompatible with its semantic role",
+            ));
+        }
         if relation.page_size == 0 || relation.page_size > 100 {
             return Err(SourceAdapterError::new(
                 SourceAdapterErrorKind::ProjectionAmbiguous,
@@ -1231,6 +1237,21 @@ pub fn normalize_navigation_selection(
     }
     selection.relations = relations;
     Ok(selection)
+}
+
+fn relation_kind_for_role(
+    role: SemanticRelationId,
+) -> Result<RelationKind, SourceAdapterError> {
+    if role.is_contains_role() {
+        Ok(RelationKind::Contains)
+    } else if role.is_reference_role() {
+        Ok(RelationKind::References)
+    } else {
+        Err(SourceAdapterError::new(
+            SourceAdapterErrorKind::ProjectionAmbiguous,
+            "semantic relation role has no registered relation kind",
+        ))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

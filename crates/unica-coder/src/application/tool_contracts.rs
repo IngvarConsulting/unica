@@ -647,15 +647,43 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
             .iter()
             .map(|id| id.as_str())
             .collect::<Vec<_>>();
+        let contains_relation_ids = SemanticRelationId::CONTAINS_ROLES
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>();
+        let reference_relation_ids = SemanticRelationId::REFERENCE_ROLES
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>();
         let relation_selection = json!({
             "type": "object",
             "additionalProperties": false,
             "properties": {
                 "role": {"type": "string", "enum": relation_ids},
-                "kind": {"type": "string", "enum": ["contains", "references"], "default": "contains"},
+                "kind": {"type": "string", "enum": ["contains", "references"]},
                 "pageSize": {"type": "integer", "minimum": 1, "maximum": 100}
             },
-            "required": ["role"]
+            "required": ["role"],
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {"role": {"enum": contains_relation_ids}},
+                        "required": ["role"]
+                    },
+                    "then": {
+                        "properties": {"kind": {"enum": ["contains"], "default": "contains"}}
+                    }
+                },
+                {
+                    "if": {
+                        "properties": {"role": {"enum": reference_relation_ids}},
+                        "required": ["role"]
+                    },
+                    "then": {
+                        "properties": {"kind": {"enum": ["references"], "default": "references"}}
+                    }
+                }
+            ]
         });
         let selection = json!({
             "type": "object",
@@ -2772,6 +2800,30 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
     use crate::application::tools;
+
+    #[test]
+    fn task6_meta_info_skill_teaches_specialized_semantic_navigation() {
+        let skill = include_str!("../../../../plugins/unica/skills/meta-info/SKILL.md");
+        for semantic in [
+            "dimensions",
+            "resources",
+            "enumValues",
+            "urlTemplates",
+            "methods",
+            "operations",
+            "parameters",
+            "basedOn",
+            "registerRecords",
+            "metadata.name",
+            "httpService.method.httpMethod",
+            "webService.parameter.direction",
+        ] {
+            assert!(skill.contains(semantic), "missing semantic example {semantic}");
+        }
+        for native in ["MetaDataObject", "Platform XML 2.19"] {
+            assert!(!skill.contains(native), "skill leaked native vocabulary {native}");
+        }
+    }
 
     #[test]
     fn every_published_argument_is_described() {

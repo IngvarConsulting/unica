@@ -248,6 +248,43 @@ impl SemanticRelationId {
     pub const Unknown: Self = Self::UNKNOWN;
 }
 
+impl SemanticRelationId {
+    pub const CONTAINS_ROLES: &'static [Self] = &[
+        Self::CHILDREN,
+        Self::ATTRIBUTES,
+        Self::DIMENSIONS,
+        Self::RESOURCES,
+        Self::TABULAR_SECTIONS,
+        Self::COLUMNS,
+        Self::FORMS,
+        Self::COMMANDS,
+        Self::TEMPLATES,
+        Self::ENUM_VALUES,
+        Self::URL_TEMPLATES,
+        Self::METHODS,
+        Self::OPERATIONS,
+        Self::PARAMETERS,
+        Self::ACCESS_PERMISSIONS,
+        Self::RESTRICTION_TEMPLATES,
+        Self::UNKNOWN,
+    ];
+
+    pub const REFERENCE_ROLES: &'static [Self] = &[
+        Self::BASED_ON,
+        Self::REGISTER_RECORDS,
+        Self::REFERENCES,
+        Self::ACCESS_TARGET,
+    ];
+
+    pub fn is_contains_role(self) -> bool {
+        Self::CONTAINS_ROLES.contains(&self)
+    }
+
+    pub fn is_reference_role(self) -> bool {
+        Self::REFERENCE_ROLES.contains(&self)
+    }
+}
+
 semantic_id_registry!(
     /// Compiler-owned semantic facet identifier.
     SemanticFacetId {

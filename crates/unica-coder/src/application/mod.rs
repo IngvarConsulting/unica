@@ -91,10 +91,16 @@ mod meta_info_contract_tests {
                 ["role"]["enum"],
             serde_json::to_value(unica_format_core::semantic_ids::SemanticRelationId::ALL).unwrap()
         );
+        assert!(schema["properties"]["select"]["properties"]["relations"]["items"]["properties"]
+            ["kind"]
+            .get("default")
+            .is_none());
         assert_eq!(
-            schema["properties"]["select"]["properties"]["relations"]["items"]["properties"]
-                ["kind"]["default"],
-            "contains"
+            schema["properties"]["select"]["properties"]["relations"]["items"]["allOf"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
         );
         assert_eq!(schema["properties"]["cursor"]["type"], "string");
         assert_eq!(schema["properties"]["cursor"]["minLength"], 1);
@@ -122,6 +128,43 @@ mod meta_info_contract_tests {
             "select": {"relations": [{"role": "attributes"}, {"role": "attributes"}]}
         })));
         assert!(validator.is_valid(&json!({"cursor": "AQID"})));
+    }
+
+    #[test]
+    fn task6_meta_info_schema_exposes_only_compatible_closed_relation_roles() {
+        let schema = input_schema_for_tool(&meta_info_tool());
+        let validator = jsonschema::validator_for(&schema).unwrap();
+
+        for (role, kind) in [
+            ("dimensions", "contains"),
+            ("resources", "contains"),
+            ("enumValues", "contains"),
+            ("urlTemplates", "contains"),
+            ("methods", "contains"),
+            ("operations", "contains"),
+            ("parameters", "contains"),
+            ("basedOn", "references"),
+            ("registerRecords", "references"),
+        ] {
+            let request = json!({
+                "ObjectPath": "semantic-source",
+                "select": {"relations": [{"role": role, "kind": kind}]}
+            });
+            assert!(validator.is_valid(&request), "schema rejected {request}");
+        }
+
+        for invalid in [
+            json!({"ObjectPath": "semantic-source", "select": {"relations": [{"role": "basedOn", "kind": "contains"}]}}),
+            json!({"ObjectPath": "semantic-source", "select": {"relations": [{"role": "dimensions", "kind": "references"}]}}),
+            json!({"ObjectPath": "semantic-source", "select": {"relations": [{"role": "native.children"}]}}),
+            json!({"ObjectPath": "semantic-source", "select": {"relations": [{"role": "dimensions", "offset": 0}]}}),
+        ] {
+            assert!(!validator.is_valid(&invalid), "schema accepted {invalid}");
+        }
+        assert!(validator.is_valid(&json!({
+            "ObjectPath": "semantic-source",
+            "select": {"relations": [{"role": "basedOn"}]}
+        })));
     }
 
     #[test]

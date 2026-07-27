@@ -1,16 +1,28 @@
 use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
-pub use unica_format_core::ports::AdapterFormatProfile as FormatProfile;
 pub use unica_format_core::ports::FormatCompatibility;
 
-pub const ACTIVE_FORMAT_PROFILE: FormatProfile = PlatformXmlAdapterFactory::profile();
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FormatProfile {
+    pub platform_line: &'static str,
+    pub export_format: &'static str,
+}
+
+pub const ACTIVE_FORMAT_PROFILE: FormatProfile = FormatProfile {
+    platform_line: PlatformXmlAdapterFactory::platform_line(),
+    export_format: PlatformXmlAdapterFactory::export_format(),
+};
 
 #[cfg(test)]
 mod tests {
     use super::ACTIVE_FORMAT_PROFILE;
 
     #[test]
-    fn active_profile_is_platform_8_3_27_format_2_20() {
-        assert_eq!(ACTIVE_FORMAT_PROFILE.platform_line, "8.3.27");
-        assert_eq!(ACTIVE_FORMAT_PROFILE.export_format.to_string(), "2.20");
+    fn active_profile_identity_remains_const_usable() {
+        const IDENTITY: (&str, &str) = (
+            ACTIVE_FORMAT_PROFILE.platform_line,
+            ACTIVE_FORMAT_PROFILE.export_format,
+        );
+
+        assert_eq!(IDENTITY, ("8.3.27", "2.20"));
     }
 }

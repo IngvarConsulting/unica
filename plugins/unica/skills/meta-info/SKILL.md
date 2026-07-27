@@ -1,6 +1,6 @@
 ---
 name: meta-info
-description: Typed semantic navigation of 1C metadata from a certified source adapter. Use it to inspect objects, typed properties, capabilities, and bounded relations without parsing XML directly.
+description: Typed semantic navigation of 1C metadata from a certified source adapter. Use it to inspect objects, typed properties, capabilities, and bounded relations without reading source-format internals directly.
 argument-hint: <ObjectPath> | <objectRef + snapshotRevision> | <cursor>
 allowed-tools:
   - Bash
@@ -28,7 +28,29 @@ Use exactly one target mode per request:
 
 ## Selection and relation pages
 
-`select` is optional for bootstrap and object-reference requests. It may select typed properties, facets, and relation roles. Each relation request has a `role`, an optional `kind`, and optional `pageSize`; omitted `kind` is exactly `contains` (it never selects reference edges), the default page size is 25 and the maximum is 100. Select `kind: "references"` explicitly for reference edges. Repeated relation selections are normalized by `(role, kind)` with the smaller page size. There is no offset pagination.
+`select` is optional for bootstrap and object-reference requests. It may select typed properties, facets, and relation roles. Each relation request has a closed semantic `role`, an optional `kind`, and optional `pageSize`. Omitted `kind` is derived from the role: containment roles select `contains`, while `basedOn`, `registerRecords`, `references`, and `accessTarget` select `references`. An explicit incompatible kind is rejected. The default page size is 25 and the maximum is 100. Repeated relation selections are normalized by `(role, kind)` with the smaller page size. There is no offset pagination.
+
+The closed containment roles are `children`, `attributes`, `dimensions`, `resources`, `tabularSections`, `columns`, `forms`, `commands`, `templates`, `enumValues`, `urlTemplates`, `methods`, `operations`, `parameters`, `accessPermissions`, `restrictionTemplates`, and `unknown`. Returned `items` preserve semantic source order and carry stable `objectRef` values. Traverse a child by passing its returned `objectRef` with the same `snapshotRevision`.
+
+Specialized navigation examples:
+
+```json
+{"method":"tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","ObjectPath":"<register object>","select":{"properties":["metadata.name"],"relations":[{"role":"dimensions"},{"role":"resources"},{"role":"registerRecords"}]}}}}
+```
+
+```json
+{"method":"tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","ObjectPath":"<enumeration object>","select":{"relations":[{"role":"enumValues"}]}}}}
+```
+
+```json
+{"method":"tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","ObjectPath":"<HTTP service object>","select":{"relations":[{"role":"urlTemplates"}]}}}}
+```
+
+```json
+{"method":"tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","objectRef":{"sourceId":"<returned>","objectKey":"<returned URL template>"},"snapshotRevision":"<returned>","select":{"properties":["metadata.name"],"relations":[{"role":"methods"}]}}}}
+```
+
+Inspect a returned method with typed properties such as `httpService.method.httpMethod`. For web services, select `operations`, expand a returned operation, then select `parameters`; parameter properties include `webService.parameter.direction`. Use `basedOn` for semantic base-object references and `registerRecords` for semantic register-record references. Unknown specialized children remain separate ordered `unknown` items with partial coverage and readable facts.
 
 Resource bounds are part of this public contract: `select` accepts at most 256 property selectors and 64 relation selectors; every selector is at most 256 UTF-8 bytes; both `select` and a cursor are at most 128 KiB of JSON and nesting is limited to 64. Cursor fields are capped at 1 KiB. Oversized input is returned as structured `resource_limit`; malformed or unauthenticated cursors are `decode_corrupted`. The cursor is structurally bounded and authenticated before its selection is normalized.
 
@@ -53,7 +75,7 @@ Resource bounds are part of this public contract: `select` accepts at most 256 p
 ```
 
 ```json
-{"method": "tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","ObjectPath": "HTTPServices/ExternalAPI/ExternalAPI.xml","select":{"relations":[{"role":"commands","pageSize":25}]}}}}
+{"method": "tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","ObjectPath": "HTTPServices/ExternalAPI/ExternalAPI.xml","select":{"relations":[{"role":"urlTemplates","pageSize":25}]}}}}
 ```
 
 ```json
@@ -100,10 +122,10 @@ schemaVersion, status, snapshot, root, nodes, relations, diagnostics
 
 `status` is `ready` or `unavailable`. A ready result has semantic `root` and `nodes`. A relation page has `relation`, typed child `items`, and optional `nextCursor`.
 
-Each node exposes its semantic object reference and typed properties. Facets control the remaining node fields: `none` omits all capability and action facets; `summary` exposes only `capabilityState` and `actionProfile`; `full` additionally exposes the detailed capability vector, actions, and semantic actions. Property values are typed values rather than rendered XML: inspect `type`, `valueState`, `value`, provenance, and capability. Type descriptions are structured type sets, not text expressions: preserve the upstream distinctions `Представление типа` and `Представление объекта` rather than flattening them into a rendered string. A returned property may present a value such as `"Name": "Товары"` or `"Name": "TestConnection"`; treat that as data, not as a target path. Capabilities state whether inspection or future mutation is modeled, blocked, or unavailable and include resolution, identity strength, snapshot consistency, coverage, format compatibility, source access, and support authorability.
+Each node exposes its semantic object reference and typed properties. Facets control the remaining node fields: `none` omits all capability and action facets; `summary` exposes only `capabilityState` and `actionProfile`; `full` additionally exposes the detailed capability vector, actions, and semantic actions. Property values are typed values rather than rendered source-format text: inspect `type`, `valueState`, `value`, provenance, and capability. Type descriptions are structured type sets, not text expressions: preserve the upstream distinctions `Представление типа` and `Представление объекта` rather than flattening them into a rendered string. A returned property may present a value such as `"Name": "Товары"` or `"Name": "TestConnection"`; treat that as data, not as a target path. Capabilities state whether inspection or future mutation is modeled, blocked, or unavailable and include resolution, identity strength, snapshot consistency, coverage, format compatibility, source access, and support authorability.
 
 `Поддержка` is reported from the captured `Ext/ParentConfigurations.bin` evidence when present. Use that state as a read-only guardrail before a mutating `unica.*` operation; never read the raw support file outside the captured adapter boundary.
 
 ## Unavailable navigation
 
-Do not retry through a text analyzer. `unavailable` is structured and preserves empty `nodes` and `relations`. Diagnostics distinguish unsupported format (`format_unsupported`), corrupted or ambiguous metadata, unavailable retained continuations (`snapshot_stale`), and bootstrap/current source-map or authorization failures (`source_unavailable`). Platform XML 2.19 is intentionally unavailable; only a certified adapter may produce ready navigation.
+Do not retry through a text analyzer. `unavailable` is structured and preserves empty `nodes` and `relations`. Diagnostics distinguish unsupported format (`format_unsupported`), corrupted or ambiguous metadata, unavailable retained continuations (`snapshot_stale`), and bootstrap/current source-map or authorization failures (`source_unavailable`). Unsupported source versions are intentionally unavailable; only a certified adapter may produce ready navigation.

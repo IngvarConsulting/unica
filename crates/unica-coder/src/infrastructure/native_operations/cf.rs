@@ -4,7 +4,7 @@ use crate::application::AdapterOutcome;
 use crate::domain::format_profile::{FormatCompatibility, ACTIVE_FORMAT_PROFILE};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::{
-    metadata_kind, metadata_kind_by_directory, metadata_kind_index, METADATA_KIND_TAGS,
+    metadata_kind, metadata_kind_by_directory, metadata_kind_index, metadata_kind_tags,
 };
 use crate::infrastructure::platform_xml_owner::inspect_platform_xml_compatibility;
 use roxmltree::Document;
@@ -811,7 +811,7 @@ pub(crate) fn cf_validate_child_object_type_index(type_name: &str) -> Option<usi
 }
 
 pub(crate) fn cf_validate_child_object_types() -> &'static [&'static str] {
-    METADATA_KIND_TAGS
+    metadata_kind_tags()
 }
 
 pub(crate) fn cf_validate_child_type_dir(type_name: &str) -> Option<&'static str> {
@@ -1701,7 +1701,7 @@ pub(crate) fn cf_paginate(lines: Vec<String>, args: &Map<String, Value>) -> Stri
 }
 
 pub(crate) fn cf_type_order() -> &'static [&'static str] {
-    METADATA_KIND_TAGS
+    metadata_kind_tags()
 }
 
 pub(crate) fn cf_type_ru_name(type_name: &str) -> &'static str {

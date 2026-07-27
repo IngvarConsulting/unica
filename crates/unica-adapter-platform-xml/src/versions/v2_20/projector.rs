@@ -50,7 +50,15 @@ pub(crate) fn project(
     let mut graph = GraphBuilder::new(native, support);
     let root = graph.source_root()?;
     graph.project_node(&native.root, Some(&root), RelationRole::Children)?;
+    graph.project_references()?;
     graph.finish(root)
+}
+
+struct PendingReference {
+    owner: ObjectRef,
+    target: NativeSemanticReference,
+    role: RelationRole,
+    coverage: CoverageState,
 }
 
 struct GraphBuilder<'a> {
@@ -64,6 +72,7 @@ struct GraphBuilder<'a> {
     output_relations: usize,
     output_properties: usize,
     output_identity_items: usize,
+    pending_references: Vec<PendingReference>,
     diagnostics: Vec<SourceAdapterDiagnostic>,
     partial: bool,
 }
@@ -81,6 +90,7 @@ impl<'a> GraphBuilder<'a> {
             output_relations: 0,
             output_properties: 0,
             output_identity_items: 0,
+            pending_references: Vec::new(),
             diagnostics: Vec::new(),
             partial: false,
         }
@@ -236,7 +246,12 @@ impl<'a> GraphBuilder<'a> {
 
         for relation in &native_node.references {
             for target in &relation.targets {
-                self.add_reference(&reference, target, relation.role, coverage)?;
+                self.pending_references.push(PendingReference {
+                    owner: reference.clone(),
+                    target: target.clone(),
+                    role: relation.role,
+                    coverage,
+                });
             }
         }
         for child in &native_node.children {
@@ -265,6 +280,7 @@ impl<'a> GraphBuilder<'a> {
             &self.native.source.source_id,
             &owner.object_key,
             RelationKind::Contains,
+            role,
             &target.object_key,
         )?;
         if !self.relation_keys.insert(relation_key.as_str().to_string()) {
@@ -314,25 +330,12 @@ impl<'a> GraphBuilder<'a> {
     ) -> Result<RelationRef, SourceAdapterError> {
         self.reserve_output_relation()?;
         self.reserve_identity_item()?;
-        self.reserve_identity_item()?;
-        let (target_key, target_identity) = object_key(
-            &self.native.source.source_id,
-            None,
-            native_target.kind,
-            None,
-            &native_target.name,
-        )?;
-        let target = ObjectRef::new(
-            self.native.source.source_id.clone(),
-            target_key,
-            target_identity,
-            native_target.kind,
-            native_target.name.clone(),
-        );
+        let target = self.ensure_reference_node(native_target, coverage)?;
         let relation_key = relation_key(
             &self.native.source.source_id,
             &owner.object_key,
             RelationKind::References,
+            role,
             &target.object_key,
         )?;
         if !self.relation_keys.insert(relation_key.as_str().to_string()) {
@@ -371,6 +374,91 @@ impl<'a> GraphBuilder<'a> {
             },
         });
         Ok(relation_ref)
+    }
+
+    fn project_references(&mut self) -> Result<(), SourceAdapterError> {
+        let pending = std::mem::take(&mut self.pending_references);
+        for reference in pending {
+            self.add_reference(
+                &reference.owner,
+                &reference.target,
+                reference.role,
+                reference.coverage,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn ensure_reference_node(
+        &mut self,
+        native_target: &NativeSemanticReference,
+        coverage: CoverageState,
+    ) -> Result<ObjectRef, SourceAdapterError> {
+        if let Some(existing) = self.nodes.iter().find(|node| {
+            node.object_ref.kind == native_target.kind
+                && node.object_ref.display_name == native_target.name
+        }) {
+            return Ok(existing.object_ref.clone());
+        }
+
+        self.reserve_output_node()?;
+        let (key, identity) = object_key(
+            &self.native.source.source_id,
+            None,
+            native_target.kind,
+            None,
+            &native_target.name,
+        )?;
+        self.register_object_key(&key)?;
+        reserve(
+            &mut self.output_properties,
+            MAX_NAVIGATION_IDENTITY_ITEMS,
+            "semantic properties",
+        )?;
+        let reference = ObjectRef::new(
+            self.native.source.source_id.clone(),
+            key,
+            identity,
+            native_target.kind,
+            native_target.name.clone(),
+        );
+        let capability_state = CapabilityState::new(
+            ResolutionState::Resolved,
+            Authorability::DerivedReadOnly,
+        );
+        let properties = BTreeMap::from([(
+            SemanticPropertyId::METADATA_NAME,
+            SemanticProperty::computed(
+                SemanticPropertyId::METADATA_NAME,
+                PropertyValue::String(native_target.name.clone()),
+            )?
+            .with_capability(PropertyCapability::ReadOnly)?,
+        )]);
+        self.nodes.push(NavigationNode {
+            object_ref: reference.clone(),
+            reference: reference.clone(),
+            capability_state,
+            capability: CapabilityVector {
+                resolution: ResolutionState::Resolved,
+                identity: reference.identity_strength.clone(),
+                consistency: self.native.source.consistency.clone(),
+                coverage,
+                format: FormatCompatibility::Compatible,
+                source_access: SourceAccess::ReadOnly,
+                authorability: Authorability::DerivedReadOnly,
+            },
+            properties,
+            facets: SemanticFacets::default(),
+            action_profile: action_profile_for(&native_target.kind),
+            semantic_actions: Vec::new(),
+            actions: vec![modeled_action(
+                SemanticActionKind::Inspect,
+                reference.clone(),
+                None,
+            )],
+            facet_visibility: NavigationFacetVisibility::Full,
+        });
+        Ok(reference)
     }
 
     fn register_object_key(&mut self, key: &ObjectKey) -> Result<(), SourceAdapterError> {
@@ -848,6 +936,7 @@ fn relation_key(
     source_id: &SourceId,
     owner: &ObjectKey,
     kind: RelationKind,
+    role: RelationRole,
     target: &ObjectKey,
 ) -> Result<RelationKey, SourceAdapterError> {
     let kind = match kind {
@@ -856,7 +945,13 @@ fn relation_key(
     };
     RelationKey::new(format!(
         "derived:sha256:{}",
-        digest_parts(&[source_id.as_str(), owner.as_str(), kind, target.as_str()])
+        digest_parts(&[
+            source_id.as_str(),
+            owner.as_str(),
+            kind,
+            role.as_str(),
+            target.as_str(),
+        ])
     ))
 }
 

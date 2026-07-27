@@ -5,9 +5,10 @@ use serde_json::json;
 use unica_format_core::{
     facets::SemanticFacets,
     navigation::{
-        Authorability, CapabilityState, FacetSelection, IdentityStrength, NavigationEnvelope,
-        NavigationNode, NavigationSelection, NavigationStatus, ObjectKey, ObjectRef,
-        PropertySelection, RelationSelection, ResolutionState,
+        normalize_navigation_selection, Authorability, CapabilityState, FacetSelection,
+        IdentityStrength, NavigationEnvelope, NavigationNode, NavigationSelection,
+        NavigationStatus, ObjectKey, ObjectRef, PropertySelection, RelationKind,
+        RelationSelection, ResolutionState,
     },
     property::{PropertyCapability, SemanticProperty},
     semantic_ids::{SemanticObjectKind, SemanticPropertyId, SemanticRelationId},
@@ -182,6 +183,73 @@ fn selections_serialize_registered_ids_and_cannot_hold_arbitrary_strings() {
     );
     assert!(SemanticPropertyId::parse("native.xmlTag").is_none());
     assert!(SemanticRelationId::parse("adapter.children").is_none());
+}
+
+#[test]
+fn task6_relation_selection_derives_and_enforces_the_closed_role_kind() {
+    let contains = [
+        SemanticRelationId::CHILDREN,
+        SemanticRelationId::ATTRIBUTES,
+        SemanticRelationId::DIMENSIONS,
+        SemanticRelationId::RESOURCES,
+        SemanticRelationId::TABULAR_SECTIONS,
+        SemanticRelationId::COLUMNS,
+        SemanticRelationId::FORMS,
+        SemanticRelationId::COMMANDS,
+        SemanticRelationId::TEMPLATES,
+        SemanticRelationId::ENUM_VALUES,
+        SemanticRelationId::URL_TEMPLATES,
+        SemanticRelationId::METHODS,
+        SemanticRelationId::OPERATIONS,
+        SemanticRelationId::PARAMETERS,
+        SemanticRelationId::ACCESS_PERMISSIONS,
+        SemanticRelationId::RESTRICTION_TEMPLATES,
+        SemanticRelationId::UNKNOWN,
+    ];
+    let references = [
+        SemanticRelationId::BASED_ON,
+        SemanticRelationId::REGISTER_RECORDS,
+        SemanticRelationId::REFERENCES,
+        SemanticRelationId::ACCESS_TARGET,
+    ];
+    let classified = contains
+        .iter()
+        .chain(references.iter())
+        .copied()
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        classified,
+        SemanticRelationId::ALL.iter().copied().collect(),
+        "every closed relation role must have exactly one semantic kind"
+    );
+
+    for role in contains {
+        assert_eq!(
+            RelationSelection::new(role, None).unwrap().kind,
+            RelationKind::Contains,
+            "{} must be a containment role",
+            role.as_str()
+        );
+    }
+    for role in references {
+        assert_eq!(
+            RelationSelection::new(role, None).unwrap().kind,
+            RelationKind::References,
+            "{} must be a reference role",
+            role.as_str()
+        );
+    }
+
+    let invalid = NavigationSelection {
+        properties: PropertySelection::All,
+        facets: FacetSelection::Summary,
+        relations: vec![RelationSelection {
+            kind: RelationKind::Contains,
+            role: SemanticRelationId::BASED_ON,
+            page_size: 25,
+        }],
+    };
+    assert!(normalize_navigation_selection(invalid).is_err());
 }
 
 #[test]

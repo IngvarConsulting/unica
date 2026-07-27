@@ -415,7 +415,8 @@ fn observe_property_value_depth(
         | PropertyValue::Uuid(_)
         | PropertyValue::Date(_)
         | PropertyValue::Unknown { .. }
-        | PropertyValue::Null => {}
+        | PropertyValue::Null
+        | PropertyValue::EmptyReference => {}
     }
     Ok(())
 }
@@ -821,6 +822,7 @@ fn validate_property_type(
         | unica_format_core::navigation::PropertyType::List
         | unica_format_core::navigation::PropertyType::Structure
         | unica_format_core::navigation::PropertyType::Null
+        | unica_format_core::navigation::PropertyType::EmptyReference
         | unica_format_core::navigation::PropertyType::Unknown => {}
     }
     Ok(())
@@ -912,7 +914,8 @@ fn validate_property_value(
         | PropertyValue::Boolean(_)
         | PropertyValue::Integer(_)
         | PropertyValue::Uuid(_)
-        | PropertyValue::Null => {}
+        | PropertyValue::Null
+        | PropertyValue::EmptyReference => {}
     }
     Ok(())
 }
@@ -1325,9 +1328,9 @@ mod tests {
         navigation::{
             ActionAvailability, Atomicity, Authorability, CapabilityState, CoverageState,
             IdentityStrength, NavigationRelationPage, NavigationStatus, NodeKind, ObjectKey,
-            ObjectRef, OperationBinding, PropertyCapability, PropertyValue, RelationGroupRef,
-            RelationKind, RelationRole, ResolutionState, SemanticAction, SemanticProperty,
-            SemanticPropertyId, SourceAdapterDiagnostic,
+            ObjectRef, OperationBinding, PropertyCapability, PropertyType, PropertyValue,
+            RelationGroupRef, RelationKind, RelationRole, ResolutionState, SemanticAction,
+            SemanticProperty, SemanticPropertyId, SourceAdapterDiagnostic,
         },
         source::{SnapshotConsistency, SourceRevision, SourceSnapshot},
     };
@@ -1430,6 +1433,27 @@ mod tests {
                 .with_capability(PropertyCapability::ReadOnly)
                 .unwrap(),
         )]);
+    }
+
+    #[test]
+    fn task6_cache_preserves_empty_reference_as_a_distinct_scalar_value() {
+        let (binding, mut navigation) = fixture();
+        set_fill_value(&mut navigation, PropertyValue::EmptyReference);
+
+        let cached = CachedNavigation::new(
+            "task6-empty-reference".to_string(),
+            binding,
+            navigation,
+            DEFAULT_SNAPSHOT_CACHE_LIMITS,
+        )
+        .expect("empty references must satisfy the same cache invariants as core");
+        let fill_value = cached.navigation.nodes[0]
+            .properties
+            .get(&SemanticPropertyId::FIELD_FILL_VALUE)
+            .expect("fill value remains present");
+
+        assert_eq!(fill_value.value(), Some(&PropertyValue::EmptyReference));
+        assert_eq!(fill_value.value_type(), PropertyType::EmptyReference);
     }
 
     #[test]

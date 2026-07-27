@@ -108,20 +108,24 @@ pub(crate) fn parse_navigation_selection(
                             .map_err(|_| decode_error("select.relations pageSize is invalid"))?,
                         ),
                     };
-                let kind = match relation.get("kind") {
-                    None => RelationKind::Contains,
-                    Some(Value::String(value)) => match value.as_str() {
+                let role = SemanticRelationId::parse(role)
+                    .ok_or_else(|| decode_error("select.relations role is invalid"))?;
+                let selection = RelationSelection::new(role, page_size)
+                    .map_err(|_| decode_error("select.relations role is invalid"))?;
+                let explicit_kind = match relation.get("kind") {
+                    None => None,
+                    Some(Value::String(value)) => Some(match value.as_str() {
                         "contains" => RelationKind::Contains,
                         "references" => RelationKind::References,
                         _ => return Err(decode_error("select.relations kind is invalid")),
-                    },
+                    }),
                     Some(_) => return Err(decode_error("select.relations kind is invalid")),
                 };
-                let role = SemanticRelationId::parse(role)
-                    .ok_or_else(|| decode_error("select.relations role is invalid"))?;
-                let mut selection = RelationSelection::new(role, page_size)
-                    .map_err(|_| decode_error("select.relations role is invalid"))?;
-                selection.kind = kind;
+                if explicit_kind.is_some_and(|kind| kind != selection.kind) {
+                    return Err(decode_error(
+                        "select.relations kind is incompatible with its role",
+                    ));
+                }
                 parsed.push(selection);
             }
             parsed
@@ -406,13 +410,52 @@ mod tests {
             json!({"properties": ["metadata.name", "metadata.name"]}),
             json!({"properties": ["native.name"]}),
             json!({"facets": 1}),
-            json!({"relations": [{"role": "unknown"}]}),
             json!({"relations": [{"role": "native.references"}]}),
             json!({"relations": [{"role": "attributes", "pageSize": "1"}]}),
             json!({"relations": [{"role": "attributes", "offset": 0}]}),
         ] {
             let error = parse_navigation_selection(Some(&value)).unwrap_err();
             assert_eq!(error.code(), "decode_corrupted", "{value}");
+        }
+    }
+
+    #[test]
+    fn task6_runtime_relation_selection_derives_kind_and_rejects_mismatches() {
+        let selection = parse_navigation_selection(Some(&json!({"relations": [
+            {"role": "dimensions"},
+            {"role": "unknown"},
+            {"role": "basedOn"},
+            {"role": "registerRecords", "kind": "references"}
+        ]})))
+        .unwrap();
+        let relation_kinds = selection
+            .relations
+            .iter()
+            .map(|relation| (relation.role, relation.kind))
+            .collect::<Vec<_>>();
+        assert_eq!(relation_kinds.len(), 4);
+        for expected in [
+            (SemanticRelationId::DIMENSIONS, RelationKind::Contains),
+            (SemanticRelationId::UNKNOWN, RelationKind::Contains),
+            (SemanticRelationId::BASED_ON, RelationKind::References),
+            (
+                SemanticRelationId::REGISTER_RECORDS,
+                RelationKind::References,
+            ),
+        ] {
+            assert!(relation_kinds.contains(&expected), "missing {expected:?}");
+        }
+
+        for invalid in [
+            json!({"relations": [{"role": "basedOn", "kind": "contains"}]}),
+            json!({"relations": [{"role": "dimensions", "kind": "references"}]}),
+        ] {
+            assert_eq!(
+                parse_navigation_selection(Some(&invalid))
+                    .unwrap_err()
+                    .code(),
+                "decode_corrupted"
+            );
         }
     }
 

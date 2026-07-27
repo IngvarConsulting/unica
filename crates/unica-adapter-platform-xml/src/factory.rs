@@ -23,6 +23,14 @@ impl PlatformXmlAdapterFactory {
         Self
     }
 
+    pub const fn platform_line() -> &'static str {
+        v2_20::PLATFORM_LINE
+    }
+
+    pub const fn export_format() -> &'static str {
+        v2_20::EXPORT_FORMAT
+    }
+
     pub fn registration(self) -> SourceAdapterRegistration {
         let adapter = Arc::new(PlatformXmlAdapter);
         SourceAdapterRegistration {

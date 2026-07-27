@@ -80,8 +80,9 @@ metadata_kind_registry! {
     "IntegrationService" => { directory: "IntegrationServices", display_name_ru: "Сервисы интеграции", config_dump_prefix: None, config_dump_module_suffix: None },
 }
 
-pub(crate) const METADATA_KIND_TAGS: &[&str] =
-    unica_adapter_platform_xml::PlatformXmlAdapterFactory::profile().legacy_metadata_classes;
+pub(crate) fn metadata_kind_tags() -> &'static [&'static str] {
+    unica_adapter_platform_xml::PlatformXmlAdapterFactory::profile().legacy_metadata_classes
+}
 
 pub(crate) fn metadata_kind(tag: &str) -> Option<&'static MetadataKind> {
     METADATA_KINDS.iter().find(|kind| kind.tag == tag)
@@ -152,11 +153,15 @@ mod tests {
             "IntegrationService",
         ];
 
+        let authoritative =
+            unica_adapter_platform_xml::PlatformXmlAdapterFactory::profile()
+                .legacy_metadata_classes;
+        assert!(std::ptr::eq(metadata_kind_tags(), authoritative));
         assert_eq!(METADATA_KINDS.len(), 45);
-        assert_eq!(METADATA_KIND_TAGS, EXPECTED_TAGS);
-        assert_eq!(METADATA_KIND_TAGS.len(), METADATA_KINDS.len());
+        assert_eq!(metadata_kind_tags(), EXPECTED_TAGS);
+        assert_eq!(metadata_kind_tags().len(), METADATA_KINDS.len());
         assert_eq!(
-            METADATA_KIND_TAGS,
+            metadata_kind_tags(),
             METADATA_KINDS
                 .iter()
                 .map(|kind| kind.tag)
