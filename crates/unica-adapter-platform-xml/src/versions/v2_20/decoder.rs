@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::{
     domain::{
         identifiers::is_1c_identifier,
-        navigation::{CoverageState, RelationRole},
+        navigation::CoverageState,
         navigation_limits::{
             MAX_NAVIGATION_IDENTITY_ITEMS, MAX_NAVIGATION_NESTING_DEPTH, MAX_NAVIGATION_NODES,
             MAX_NAVIGATION_PROPERTIES_PER_NODE, MAX_NAVIGATION_RELATIONS,
@@ -25,22 +25,25 @@ use super::{
         NativeContentEvidence, NativeDescriptorEvidence, NativeEvidenceState, NativeForm,
         NativeMetadataChild, NativeMetadataClass, NativeMetadataNode, NativeMxlRootKind,
         NativeNodeBacking, NativeNodeState, NativeProperty, NativePropertyProvenance,
-        NativePropertyValue, NativeRegistrationEvidence, NativeScalarAnnotationIssue,
-        NativeScalarType, NativeTemplate, PlatformXmlNativeSnapshot,
+        NativePropertyValue, NativeReferenceRelation, NativeRegistrationEvidence,
+        NativeScalarAnnotationIssue, NativeScalarType, NativeSemanticReference, NativeTemplate,
+        PlatformXmlNativeSnapshot,
     },
     probe::PlatformXmlProbe,
     provider::PlatformXmlProvider,
     schema::{
         child_metadata_class_profile, metadata_class_profile, parse_type_description_2_20,
-        scalar_property_kind_2_20, ChildObjectsVocabulary, MetadataClassProfile, MetadataClassRole,
-        ScalarPropertyKind,
+        ChildObjectsVocabulary, MetadataClassProfile, MetadataClassRole,
     },
+    semantic_map::{self, NativeValueKind},
 };
 
 const METADATA_NAMESPACE: &str = "http://v8.1c.ru/8.3/MDClasses";
 const MANAGED_FORM_NAMESPACE: &str = "http://v8.1c.ru/8.3/xcf/logform";
 const SPREADSHEET_DOCUMENT_NAMESPACE: &str = "http://v8.1c.ru/spreadsheet/document";
 const LEGACY_SPREADSHEET_NAMESPACE: &str = "http://v8.1c.ru/8.2/data/spreadsheet";
+const DATA_CORE_NAMESPACE: &str = "http://v8.1c.ru/8.1/data/core";
+const READABLE_NAMESPACE: &str = "http://v8.1c.ru/8.3/xcf/readable";
 const XML_SCHEMA_INSTANCE_NAMESPACE: &str = "http://www.w3.org/2001/XMLSchema-instance";
 const XML_SCHEMA_NAMESPACE: &str = "http://www.w3.org/2001/XMLSchema";
 
@@ -193,21 +196,24 @@ fn decode_inline_node(
 ) -> Result<DecodedNode, SourceAdapterError> {
     let properties_node = required_properties(node)?;
     let name = required_name(properties_node)?;
-    let properties = decode_properties(properties_node, source_xml, context)?;
+    let properties = decode_properties_for_profile(properties_node, profile, context)?;
     let uuid = parse_optional_uuid(node)?;
     context.register_uuid(uuid)?;
     let children = decode_children(provider, node, profile, base_key, source_xml, context)?;
+    let complete = properties.complete && children.complete;
     Ok(DecodedNode {
         node: NativeMetadataNode {
             class: native_class(profile),
             uuid,
             name,
             state: NativeNodeState::ResolvedInline,
-            properties,
+            properties: properties.properties,
+            references: properties.references,
             children: children.nodes,
+            unmapped_facts: properties.unmapped_facts + children.unmapped_facts,
             backing: NativeNodeBacking::None,
         },
-        complete: children.complete,
+        complete,
     })
 }
 
@@ -223,6 +229,7 @@ fn decode_children(
         return Ok(DecodedChildren {
             nodes: Vec::new(),
             complete: true,
+            unmapped_facts: 0,
         });
     };
     if owner_profile.child_objects == ChildObjectsVocabulary::None {
@@ -234,6 +241,7 @@ fn decode_children(
     let mut identities = BTreeSet::new();
     let mut nodes = Vec::new();
     let mut complete = true;
+    let mut unmapped_facts = 0usize;
     for child in child_objects.children().filter(Node::is_element) {
         context.register_relation()?;
         context.register_identity_item()?;
@@ -244,6 +252,11 @@ fn decode_children(
             .ok_or_else(|| {
                 corrupted("Platform XML child class is not allowed by the schema registry")
             })?;
+        let Some(role) = semantic_map::child_relation_role(owner_profile, profile) else {
+            complete = false;
+            unmapped_facts += 1;
+            continue;
+        };
         let decoded = decode_scoped(context, |context| {
             if matches!(
                 profile.role,
@@ -272,11 +285,15 @@ fn decode_children(
         }
         complete &= decoded.complete;
         nodes.push(NativeMetadataChild {
-            role: relation_role_for_child_collection(owner_profile, profile),
+            role,
             node: decoded.node,
         });
     }
-    Ok(DecodedChildren { nodes, complete })
+    Ok(DecodedChildren {
+        nodes,
+        complete,
+        unmapped_facts,
+    })
 }
 
 fn decode_unresolved_registration(
@@ -295,7 +312,9 @@ fn decode_unresolved_registration(
                 registration: registration.clone(),
             },
             properties: synthetic_name_property(&registration.name),
+            references: Vec::new(),
             children: Vec::new(),
+            unmapped_facts: 0,
             backing: NativeNodeBacking::None,
         },
         complete: false,
@@ -307,13 +326,13 @@ fn decode_backed_registration(
     node: Node<'_, '_>,
     profile: &'static MetadataClassProfile,
     base_key: &str,
-    source_xml: &str,
+    _source_xml: &str,
     context: &mut DecodeContext,
 ) -> Result<DecodedNode, SourceAdapterError> {
     let registration = registration(node)?;
     let properties = match optional_unique_child(node, "Properties")? {
-        Some(properties) => decode_properties(properties, source_xml, context)?,
-        None => synthetic_name_property(&registration.name),
+        Some(properties) => decode_properties_for_profile(properties, profile, context)?,
+        None => DecodedProperties::synthetic_name(&registration.name),
     };
     match profile.role {
         MetadataClassRole::Form => {
@@ -337,7 +356,8 @@ fn decode_backed_registration(
                 }
                 None => content_evidence(NativeEvidenceState::Absent, content_key, None),
             };
-            let complete = descriptor.state == NativeEvidenceState::Validated
+            let complete = properties.complete
+                && descriptor.state == NativeEvidenceState::Validated
                 && managed_content.state == NativeEvidenceState::Validated;
             let effective_uuid = reconcile_registered_uuid(registration.uuid, descriptor.uuid)?;
             context.register_uuid(effective_uuid)?;
@@ -348,8 +368,10 @@ fn decode_backed_registration(
                     uuid: effective_uuid,
                     name: registration.name.clone(),
                     state,
-                    properties,
+                    properties: properties.properties,
+                    references: properties.references,
                     children: Vec::new(),
+                    unmapped_facts: properties.unmapped_facts,
                     backing: NativeNodeBacking::Form(NativeForm {
                         registration,
                         descriptor,
@@ -438,7 +460,8 @@ fn decode_backed_registration(
                     }
                 }
             };
-            let complete = descriptor.state == NativeEvidenceState::Validated
+            let complete = properties.complete
+                && descriptor.state == NativeEvidenceState::Validated
                 && !matches!(
                     descriptor_type,
                     NativePropertyValue::Absent | NativePropertyValue::Unresolved
@@ -453,8 +476,10 @@ fn decode_backed_registration(
                     uuid: effective_uuid,
                     name: registration.name.clone(),
                     state,
-                    properties,
+                    properties: properties.properties,
+                    references: properties.references,
                     children: Vec::new(),
+                    unmapped_facts: properties.unmapped_facts,
                     backing: NativeNodeBacking::Template(NativeTemplate {
                         registration,
                         descriptor,
@@ -579,12 +604,16 @@ fn profile_for_node(
         .ok_or_else(|| corrupted("Platform XML metadata class is absent from the schema registry"))
 }
 
-fn decode_properties(
+fn decode_properties_for_profile(
     properties: Node<'_, '_>,
-    _source_xml: &str,
+    profile: &'static MetadataClassProfile,
     context: &mut DecodeContext,
-) -> Result<BTreeMap<String, NativeProperty>, SourceAdapterError> {
+) -> Result<DecodedProperties, SourceAdapterError> {
+    let kind = semantic_map::object_kind(profile);
     let mut decoded = BTreeMap::new();
+    let mut references = Vec::new();
+    let mut complete = true;
+    let mut unmapped_facts = 0usize;
     for property in properties.children().filter(Node::is_element) {
         context.register_property(decoded.len())?;
         if property.tag_name().namespace() != Some(METADATA_NAMESPACE) {
@@ -597,29 +626,34 @@ fn decode_properties(
                 "Platform XML property occurs more than once",
             ));
         }
-        let (value, provenance) =
-            if crate::versions::v2_20::schema::is_type_property_2_20(&canonical_id) {
-                (
-                    NativePropertyValue::TypeSet(parse_type_description_2_20(property)?),
-                    NativePropertyProvenance::Explicit,
-                )
-            } else if property.children().any(|child| child.is_element()) {
-                (
-                    NativePropertyValue::Structured,
-                    NativePropertyProvenance::Explicit,
-                )
-            } else {
-                let value = property.text().unwrap_or_default().trim();
-                let scalar = scalar_property_value(&canonical_id, property, value);
-                let provenance = if matches!(scalar, NativePropertyValue::Absent) {
-                    NativePropertyProvenance::Absent
-                } else if matches!(scalar, NativePropertyValue::UnresolvedScalar { .. }) {
-                    NativePropertyProvenance::Unresolved
-                } else {
-                    NativePropertyProvenance::Explicit
-                };
-                (scalar, provenance)
-            };
+        if let Some(role) = kind.and_then(|kind| {
+            semantic_map::relation_property_role(kind, canonical_id.as_str())
+        }) {
+            let (targets, relation_unmapped) = decode_reference_targets(property);
+            complete &= relation_unmapped == 0;
+            unmapped_facts += relation_unmapped;
+            if !targets.is_empty() {
+                references.push(NativeReferenceRelation { role, targets });
+            }
+            continue;
+        }
+        let mapping =
+            kind.and_then(|kind| semantic_map::property_mapping(kind, canonical_id.as_str()));
+        if mapping.is_none() {
+            complete = false;
+        }
+        let (value, value_complete) = decode_property_value(property, mapping)?;
+        complete &= value_complete;
+        let provenance = if matches!(value, NativePropertyValue::Absent) {
+            NativePropertyProvenance::Absent
+        } else if matches!(
+            value,
+            NativePropertyValue::Unresolved | NativePropertyValue::UnresolvedScalar { .. }
+        ) {
+            NativePropertyProvenance::Unresolved
+        } else {
+            NativePropertyProvenance::Explicit
+        };
         decoded.insert(
             canonical_id.clone(),
             NativeProperty {
@@ -629,14 +663,183 @@ fn decode_properties(
             },
         );
     }
-    Ok(decoded)
+    Ok(DecodedProperties {
+        properties: decoded,
+        references,
+        complete,
+        unmapped_facts,
+    })
+}
+
+#[cfg(test)]
+fn decode_properties(
+    properties: Node<'_, '_>,
+    _source_xml: &str,
+    context: &mut DecodeContext,
+) -> Result<BTreeMap<String, NativeProperty>, SourceAdapterError> {
+    Ok(decode_properties_for_profile(
+        properties,
+        metadata_class_profile("Attribute").expect("registered test class"),
+        context,
+    )?
+    .properties)
+}
+
+fn decode_property_value(
+    property: Node<'_, '_>,
+    mapping: Option<semantic_map::PropertyMapping>,
+) -> Result<(NativePropertyValue, bool), SourceAdapterError> {
+    let Some(mapping) = mapping else {
+        if property.children().any(|child| child.is_element()) {
+            return Ok((NativePropertyValue::Structured, false));
+        }
+        let value = property.text().unwrap_or_default().trim();
+        return Ok((
+            scalar_property_value(None, property, value),
+            true,
+        ));
+    };
+    match mapping.value_kind {
+        NativeValueKind::LocalizedString => Ok(decode_localized_string(property)),
+        NativeValueKind::TypeSet => match parse_type_description_2_20(property) {
+            Ok(value) => Ok((NativePropertyValue::TypeSet(value), true)),
+            Err(error) if error.kind == SourceAdapterErrorKind::ResourceLimit => Err(error),
+            Err(_) => Ok((NativePropertyValue::Unresolved, false)),
+        },
+        NativeValueKind::StringList => Ok(decode_string_list(property)),
+        value_kind if property.children().any(|child| child.is_element()) => {
+            let _ = value_kind;
+            Ok((NativePropertyValue::Structured, false))
+        }
+        value_kind => {
+            let value = property.text().unwrap_or_default().trim();
+            Ok((
+                scalar_property_value(Some(value_kind), property, value),
+                true,
+            ))
+        }
+    }
+}
+
+fn decode_localized_string(property: Node<'_, '_>) -> (NativePropertyValue, bool) {
+    let elements = property
+        .children()
+        .filter(Node::is_element)
+        .collect::<Vec<_>>();
+    if elements.is_empty() {
+        let value = property.text().unwrap_or_default().trim();
+        return if value.is_empty() {
+            (NativePropertyValue::Absent, true)
+        } else {
+            (
+                NativePropertyValue::LocalizedString(BTreeMap::from([(
+                    "und".to_string(),
+                    value.to_string(),
+                )])),
+                true,
+            )
+        };
+    }
+    let mut values = BTreeMap::new();
+    for item in elements {
+        if item.tag_name().namespace() != Some(DATA_CORE_NAMESPACE)
+            || item.tag_name().name() != "item"
+        {
+            return (NativePropertyValue::Structured, false);
+        }
+        let Some(language) = unique_data_core_text(item, "lang") else {
+            return (NativePropertyValue::Structured, false);
+        };
+        let Some(content) = unique_data_core_text(item, "content") else {
+            return (NativePropertyValue::Structured, false);
+        };
+        if language.is_empty()
+            || language
+                .bytes()
+                .any(|byte| !byte.is_ascii_alphanumeric() && byte != b'-')
+            || values.insert(language, content).is_some()
+        {
+            return (NativePropertyValue::Structured, false);
+        }
+    }
+    (NativePropertyValue::LocalizedString(values), true)
+}
+
+fn unique_data_core_text(parent: Node<'_, '_>, name: &str) -> Option<String> {
+    let mut children = parent.children().filter(|child| {
+        child.is_element()
+            && child.tag_name().namespace() == Some(DATA_CORE_NAMESPACE)
+            && child.tag_name().name() == name
+    });
+    let child = children.next()?;
+    if children.next().is_some() || child.children().any(|nested| nested.is_element()) {
+        return None;
+    }
+    Some(child.text().unwrap_or_default().trim().to_string())
+}
+
+fn decode_string_list(property: Node<'_, '_>) -> (NativePropertyValue, bool) {
+    let mut values = Vec::new();
+    for item in property.children().filter(Node::is_element) {
+        if item.tag_name().namespace() != Some(READABLE_NAMESPACE)
+            || item.tag_name().name() != "Item"
+            || item.children().any(|child| child.is_element())
+        {
+            return (NativePropertyValue::Structured, false);
+        }
+        let value = item.text().unwrap_or_default().trim();
+        if value.is_empty() {
+            return (NativePropertyValue::Structured, false);
+        }
+        values.push(value.to_string());
+    }
+    (NativePropertyValue::StringList(values), true)
+}
+
+fn decode_reference_targets(property: Node<'_, '_>) -> (Vec<NativeSemanticReference>, usize) {
+    let mut targets = Vec::new();
+    let mut unmapped = 0usize;
+    for item in property.children().filter(Node::is_element) {
+        if item.tag_name().namespace() != Some(READABLE_NAMESPACE)
+            || item.tag_name().name() != "Item"
+            || item.children().any(|child| child.is_element())
+        {
+            unmapped += 1;
+            continue;
+        }
+        let raw = item.text().unwrap_or_default().trim();
+        let Some((native_class, name)) = raw.split_once('.') else {
+            unmapped += 1;
+            continue;
+        };
+        let Some(kind) = semantic_map::reference_kind(native_class) else {
+            unmapped += 1;
+            continue;
+        };
+        if raw.split('.').count() != 2 || !is_1c_identifier(name) {
+            unmapped += 1;
+            continue;
+        }
+        targets.push(NativeSemanticReference {
+            kind,
+            name: name.to_string(),
+        });
+    }
+    (targets, unmapped)
 }
 
 fn scalar_property_value(
-    canonical_id: &str,
+    value_kind: Option<NativeValueKind>,
     property: Node<'_, '_>,
     value: &str,
 ) -> NativePropertyValue {
+    if property.attribute((XML_SCHEMA_INSTANCE_NAMESPACE, "nil")) == Some("true") {
+        return if value.is_empty() {
+            NativePropertyValue::Null
+        } else {
+            unresolved_scalar(NativeScalarAnnotationIssue::Conflicting)
+        };
+    }
     let annotation = property.attribute((XML_SCHEMA_INSTANCE_NAMESPACE, "type"));
     if annotation.is_some() && property.attribute("type").is_some() {
         return unresolved_scalar(NativeScalarAnnotationIssue::Conflicting);
@@ -648,10 +851,7 @@ fn scalar_property_value(
         if value.is_empty() {
             return NativePropertyValue::Absent;
         }
-        if matches!(
-            scalar_property_kind_2_20(canonical_id),
-            Some(ScalarPropertyKind::PolymorphicFillValue)
-        ) {
+        if matches!(value_kind, Some(NativeValueKind::Polymorphic)) {
             return unresolved_scalar(NativeScalarAnnotationIssue::Missing);
         }
         return NativePropertyValue::Scalar(value.to_string());
@@ -672,6 +872,7 @@ fn scalar_property_value(
         "decimal" => NativeScalarType::Decimal,
         "integer" => NativeScalarType::Integer,
         "stringUuid" => NativeScalarType::Uuid,
+        "date" | "dateTime" => NativeScalarType::Date,
         _ => return unresolved_scalar(NativeScalarAnnotationIssue::Unknown),
     };
     if value.is_empty() && !matches!(type_annotation, NativeScalarType::String) {
@@ -926,6 +1127,24 @@ struct DecodedNode {
     complete: bool,
 }
 
+struct DecodedProperties {
+    properties: BTreeMap<String, NativeProperty>,
+    references: Vec<NativeReferenceRelation>,
+    complete: bool,
+    unmapped_facts: usize,
+}
+
+impl DecodedProperties {
+    fn synthetic_name(name: &str) -> Self {
+        Self {
+            properties: synthetic_name_property(name),
+            references: Vec::new(),
+            complete: true,
+            unmapped_facts: 0,
+        }
+    }
+}
+
 #[derive(Default)]
 struct DecodeContext {
     uuids: BTreeSet<Uuid>,
@@ -1035,20 +1254,7 @@ fn decode_scoped<T>(
 struct DecodedChildren {
     nodes: Vec<NativeMetadataChild>,
     complete: bool,
-}
-
-fn relation_role_for_child_collection(
-    _owner: &'static MetadataClassProfile,
-    child: &'static MetadataClassProfile,
-) -> RelationRole {
-    match child.role {
-        MetadataClassRole::Attribute => RelationRole::Attributes,
-        MetadataClassRole::TabularSection => RelationRole::TabularSections,
-        MetadataClassRole::Form => RelationRole::Forms,
-        MetadataClassRole::Template => RelationRole::Templates,
-        MetadataClassRole::Command => RelationRole::Commands,
-        _ => RelationRole::Children,
-    }
+    unmapped_facts: usize,
 }
 
 struct ParsedDescriptor {

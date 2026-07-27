@@ -4,6 +4,8 @@ pub(crate) enum ChildObjectsVocabulary {
     ConfigurationTopLevel,
     Object,
     TabularSection,
+    HttpServiceUrlTemplate,
+    WebServiceOperation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11,10 +13,19 @@ pub(crate) enum MetadataClassRole {
     Configuration,
     TopLevelObject,
     Attribute,
+    Dimension,
+    Resource,
+    EnumerationValue,
     TabularSection,
     Form,
     Template,
     Command,
+    Column,
+    HttpServiceUrlTemplate,
+    HttpServiceMethod,
+    WebServiceOperation,
+    WebServiceParameter,
+    Unsupported,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +77,61 @@ macro_rules! platform_xml_schema_registry {
                 role: MetadataClassRole::Command,
                 child_objects: ChildObjectsVocabulary::None,
             },
+            MetadataClassProfile {
+                class_name: "Dimension",
+                role: MetadataClassRole::Dimension,
+                child_objects: ChildObjectsVocabulary::None,
+            },
+            MetadataClassProfile {
+                class_name: "Resource",
+                role: MetadataClassRole::Resource,
+                child_objects: ChildObjectsVocabulary::None,
+            },
+            MetadataClassProfile {
+                class_name: "EnumValue",
+                role: MetadataClassRole::EnumerationValue,
+                child_objects: ChildObjectsVocabulary::None,
+            },
+            MetadataClassProfile {
+                class_name: "URLTemplate",
+                role: MetadataClassRole::HttpServiceUrlTemplate,
+                child_objects: ChildObjectsVocabulary::HttpServiceUrlTemplate,
+            },
+            MetadataClassProfile {
+                class_name: "Method",
+                role: MetadataClassRole::HttpServiceMethod,
+                child_objects: ChildObjectsVocabulary::None,
+            },
+            MetadataClassProfile {
+                class_name: "Operation",
+                role: MetadataClassRole::WebServiceOperation,
+                child_objects: ChildObjectsVocabulary::WebServiceOperation,
+            },
+            MetadataClassProfile {
+                class_name: "Parameter",
+                role: MetadataClassRole::WebServiceParameter,
+                child_objects: ChildObjectsVocabulary::None,
+            },
+            MetadataClassProfile {
+                class_name: "Column",
+                role: MetadataClassRole::Column,
+                child_objects: ChildObjectsVocabulary::None,
+            },
+            MetadataClassProfile {
+                class_name: "AccountingFlag",
+                role: MetadataClassRole::Unsupported,
+                child_objects: ChildObjectsVocabulary::None,
+            },
+            MetadataClassProfile {
+                class_name: "ExtDimensionAccountingFlag",
+                role: MetadataClassRole::Unsupported,
+                child_objects: ChildObjectsVocabulary::None,
+            },
+            MetadataClassProfile {
+                class_name: "AddressingAttribute",
+                role: MetadataClassRole::Unsupported,
+                child_objects: ChildObjectsVocabulary::None,
+            },
         ];
     };
 }
@@ -101,15 +167,29 @@ pub(crate) fn child_metadata_class_profile(
         ChildObjectsVocabulary::ConfigurationTopLevel => {
             child.role == MetadataClassRole::TopLevelObject
         }
-        ChildObjectsVocabulary::Object => matches!(
-            child.role,
+        ChildObjectsVocabulary::Object => match child.role {
+            MetadataClassRole::Dimension | MetadataClassRole::Resource => {
+                owner.class_name.ends_with("Register")
+            }
+            MetadataClassRole::EnumerationValue => owner.class_name == "Enum",
+            MetadataClassRole::HttpServiceUrlTemplate => owner.class_name == "HTTPService",
+            MetadataClassRole::WebServiceOperation => owner.class_name == "WebService",
+            MetadataClassRole::Column => owner.class_name == "DocumentJournal",
             MetadataClassRole::Attribute
-                | MetadataClassRole::TabularSection
-                | MetadataClassRole::Form
-                | MetadataClassRole::Template
-                | MetadataClassRole::Command
-        ),
+            | MetadataClassRole::TabularSection
+            | MetadataClassRole::Form
+            | MetadataClassRole::Template
+            | MetadataClassRole::Command
+            | MetadataClassRole::Unsupported => true,
+            _ => false,
+        },
         ChildObjectsVocabulary::TabularSection => child.role == MetadataClassRole::Attribute,
+        ChildObjectsVocabulary::HttpServiceUrlTemplate => {
+            child.role == MetadataClassRole::HttpServiceMethod
+        }
+        ChildObjectsVocabulary::WebServiceOperation => {
+            child.role == MetadataClassRole::WebServiceParameter
+        }
     };
     allowed.then_some(child)
 }
@@ -144,39 +224,6 @@ use crate::domain::{
 
 pub(crate) const METADATA_NAMESPACE_2_20: &str = "http://v8.1c.ru/8.3/MDClasses";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ScalarPropertyKind {
-    Boolean,
-    Integer,
-    Uuid,
-    String,
-    PolymorphicFillValue,
-}
-
-/// The scalar subset certified for the exact Platform XML 2.20 projector.
-/// Unknown scalar properties remain typed unknown rather than being inferred
-/// from their lexical representation.
-pub(crate) fn scalar_property_kind_2_20(id: &str) -> Option<ScalarPropertyKind> {
-    match id {
-        "UseStandardCommands" | "AutoNumbering" | "IncludeHelpInContents" => {
-            Some(ScalarPropertyKind::Boolean)
-        }
-        "NumberLength" | "Length" | "Digits" | "FractionDigits" => {
-            Some(ScalarPropertyKind::Integer)
-        }
-        "Uuid" | "UUID" => Some(ScalarPropertyKind::Uuid),
-        "Name" | "Code" | "Description" | "Comment" | "TemplateType" => {
-            Some(ScalarPropertyKind::String)
-        }
-        "FillValue" => Some(ScalarPropertyKind::PolymorphicFillValue),
-        _ => None,
-    }
-}
-
-pub(crate) fn is_type_property_2_20(id: &str) -> bool {
-    matches!(id, "Type" | "TypeDescription" | "DataType")
-}
-
 /// Parses the bounded 2.20 type-description grammar.  Only direct `Type`
 /// members and declared qualifier elements are accepted; arbitrary descendant
 /// text can never become a semantic type value.
@@ -188,11 +235,7 @@ const CURRENT_CONFIGURATION_NAMESPACE: &str = "http://v8.1c.ru/8.1/data/enterpri
 pub(crate) fn parse_type_description_2_20(
     root: Node<'_, '_>,
 ) -> Result<TypeSetValue, SourceAdapterError> {
-    if !matches!(
-        root.tag_name().name(),
-        "TypeDescription" | "DataType" | "Type"
-    ) || root.tag_name().namespace() != Some(METADATA_NAMESPACE)
-    {
+    if root.tag_name().namespace() != Some(METADATA_NAMESPACE) {
         return Err(projection_error(
             "unsupported Platform XML type description root",
         ));
@@ -211,7 +254,7 @@ pub(crate) fn parse_type_description_2_20(
                 ));
             }
             match child.tag_name().name() {
-                "Type" => {
+                "Type" | "TypeSet" => {
                     if variants.len() >= MAX_NAVIGATION_TYPE_VARIANTS {
                         return Err(resource_limit(
                             "Platform XML type description has too many variants",
@@ -465,8 +508,6 @@ fn parse_type_variant(value: &str, node: Node<'_, '_>) -> Result<TypeVariant, So
         ));
     }
     let target_kind = match class {
-        "CatalogRef" => SemanticObjectKind::Catalog,
-        "DocumentRef" => SemanticObjectKind::Document,
         "EnumRef" => {
             return TypeVariant::enumeration(name)
                 .map_err(|_| projection_error("invalid semantic enumeration target"))
@@ -475,13 +516,8 @@ fn parse_type_variant(value: &str, node: Node<'_, '_>) -> Result<TypeVariant, So
             return TypeVariant::defined_type(name)
                 .map_err(|_| projection_error("invalid semantic defined-type target"))
         }
-        "ChartOfAccountsRef" => SemanticObjectKind::ChartOfAccounts,
-        "ChartOfCharacteristicTypesRef" => SemanticObjectKind::ChartOfCharacteristicTypes,
-        _ => {
-            return Err(projection_error(
-                "unsupported Platform XML metadata type class",
-            ))
-        }
+        class => super::semantic_map::reference_kind(class)
+            .ok_or_else(|| projection_error("unsupported Platform XML metadata type class"))?,
     };
     TypeVariant::reference(target_kind, name)
         .map_err(|_| projection_error("invalid semantic reference target"))

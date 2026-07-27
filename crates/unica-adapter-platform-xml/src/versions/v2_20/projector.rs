@@ -24,10 +24,11 @@ use super::{
     native_model::{
         NativeEvidenceState, NativeMetadataChild, NativeMetadataNode, NativeNodeBacking,
         NativeNodeState, NativeProperty, NativePropertyValue, NativeScalarType,
-        PlatformXmlNativeSnapshot,
+        NativeSemanticReference, PlatformXmlNativeSnapshot,
     },
-    schema::{scalar_property_kind_2_20, MetadataClassRole, ScalarPropertyKind},
-    support::SupportFacts,
+    schema::{metadata_class_profile, MetadataClassRole},
+    semantic_map::{self, NativeValueKind, PropertyMapping},
+    support::{EffectiveSupportRule, SupportFacts},
 };
 
 const SCHEMA_VERSION: &str = "1";
@@ -37,6 +38,9 @@ pub(crate) fn project(
     native: &PlatformXmlNativeSnapshot,
     support: &SupportFacts,
 ) -> Result<NavigationEnvelope, SourceAdapterError> {
+    if super::provider::PlatformXmlProvider::coverage_manifest_json().is_empty() {
+        return Err(ambiguous("Platform XML coverage manifest is empty"));
+    }
     if native.source.adapter_id != PROJECTOR_ID {
         return Err(ambiguous(
             "Platform XML projection requires the exact 2.20 decoder",
@@ -154,31 +158,50 @@ impl<'a> GraphBuilder<'a> {
             kind.clone(),
             native_node.name.clone(),
         );
-        let property_projection = self.project_properties(&kind, &native_node.properties)?;
+        let resolution = node_resolution(native_node);
+        let authorability = native_node
+            .uuid
+            .map(|uuid| self.support.authorability_for(&uuid.to_string()))
+            .unwrap_or(Authorability::DerivedReadOnly);
+        let mut property_projection = self.project_properties(&kind, &native_node.properties)?;
+        self.add_synthetic_properties(
+            kind,
+            native_node,
+            authorability,
+            &mut property_projection,
+        )?;
         let mut coverage = node_coverage(native_node, self.native.coverage);
-        if property_projection.incomplete {
+        if property_projection.incomplete || native_node.unmapped_facts > 0 {
             coverage = CoverageState::Partial;
             self.partial = true;
         }
-        if property_projection.unmapped {
+        for _ in 0..property_projection.unmapped_count {
             self.diagnostics.push(SourceAdapterDiagnostic {
                 code: "unmappedSemanticFact".to_string(),
                 message: "source contains a property outside the registered semantic vocabulary"
                     .to_string(),
                 details: Some(serde_json::json!({"objectRef": reference.clone()})),
             });
-        } else if property_projection.incomplete {
+        }
+        for _ in 0..native_node.unmapped_facts {
+            self.diagnostics.push(SourceAdapterDiagnostic {
+                code: "unmappedSemanticFact".to_string(),
+                message:
+                    "source contains a relation fact outside the registered semantic vocabulary"
+                        .to_string(),
+                details: Some(serde_json::json!({"objectRef": reference.clone()})),
+            });
+        }
+        if property_projection.unmapped_count == 0
+            && native_node.unmapped_facts == 0
+            && property_projection.incomplete
+        {
             self.diagnostics.push(SourceAdapterDiagnostic {
                 code: "partialCoverage".to_string(),
                 message: "a registered semantic property could not be resolved".to_string(),
                 details: Some(serde_json::json!({"objectRef": reference.clone()})),
             });
         }
-        let resolution = node_resolution(native_node);
-        let authorability = native_node
-            .uuid
-            .map(|uuid| self.support.authorability_for(&uuid.to_string()))
-            .unwrap_or(Authorability::DerivedReadOnly);
         let capability = CapabilityVector {
             resolution,
             identity: reference.identity_strength.clone(),
@@ -211,6 +234,11 @@ impl<'a> GraphBuilder<'a> {
             facet_visibility: NavigationFacetVisibility::Full,
         });
 
+        for relation in &native_node.references {
+            for target in &relation.targets {
+                self.add_reference(&reference, target, relation.role, coverage)?;
+            }
+        }
         for child in &native_node.children {
             self.project_child(child, &reference)?;
         }
@@ -277,6 +305,74 @@ impl<'a> GraphBuilder<'a> {
         Ok(relation_ref)
     }
 
+    fn add_reference(
+        &mut self,
+        owner: &ObjectRef,
+        native_target: &NativeSemanticReference,
+        role: RelationRole,
+        coverage: CoverageState,
+    ) -> Result<RelationRef, SourceAdapterError> {
+        self.reserve_output_relation()?;
+        self.reserve_identity_item()?;
+        self.reserve_identity_item()?;
+        let (target_key, target_identity) = object_key(
+            &self.native.source.source_id,
+            None,
+            native_target.kind,
+            None,
+            &native_target.name,
+        )?;
+        let target = ObjectRef::new(
+            self.native.source.source_id.clone(),
+            target_key,
+            target_identity,
+            native_target.kind,
+            native_target.name.clone(),
+        );
+        let relation_key = relation_key(
+            &self.native.source.source_id,
+            &owner.object_key,
+            RelationKind::References,
+            &target.object_key,
+        )?;
+        if !self.relation_keys.insert(relation_key.as_str().to_string()) {
+            return Err(SourceAdapterError::new(
+                SourceAdapterErrorKind::IdentityCollision,
+                "duplicate generated semantic relation key",
+            ));
+        }
+        let relation_ref = RelationRef {
+            source_id: self.native.source.source_id.clone(),
+            relation_key,
+            kind: RelationKind::References,
+        };
+        let group_ref = RelationGroupRef::new(
+            self.native.source.source_id.clone(),
+            owner.clone(),
+            role,
+            RelationKind::References,
+        )?;
+        self.relations.push(SemanticRelation {
+            relation_ref: relation_ref.clone(),
+            group_ref,
+            identity_strength: IdentityStrength::Derived,
+            kind: RelationKind::References,
+            role,
+            source: owner.clone(),
+            target,
+            capability: CapabilityVector {
+                resolution: ResolutionState::Resolved,
+                identity: IdentityStrength::Derived,
+                consistency: self.native.source.consistency.clone(),
+                coverage,
+                format: FormatCompatibility::Compatible,
+                source_access: SourceAccess::ReadOnly,
+                authorability: Authorability::DerivedReadOnly,
+            },
+        });
+        Ok(relation_ref)
+    }
+
     fn register_object_key(&mut self, key: &ObjectKey) -> Result<(), SourceAdapterError> {
         self.reserve_identity_item()?;
         if self.object_keys.insert(key.as_str().to_string()) {
@@ -319,7 +415,7 @@ impl<'a> GraphBuilder<'a> {
         native: &BTreeMap<String, NativeProperty>,
     ) -> Result<PropertyProjection, SourceAdapterError> {
         let mut projected = BTreeMap::new();
-        let mut unmapped = false;
+        let mut unmapped_count = 0usize;
         let mut incomplete = false;
         for (id, native_property) in native {
             if projected.len() >= MAX_NAVIGATION_PROPERTIES_PER_NODE {
@@ -330,28 +426,143 @@ impl<'a> GraphBuilder<'a> {
                 MAX_NAVIGATION_IDENTITY_ITEMS,
                 "semantic properties",
             )?;
-            let Some(semantic_id) = semantic_property_id(*kind, id) else {
-                unmapped = true;
+            let Some(mapping) = semantic_map::property_mapping(*kind, id) else {
+                unmapped_count += 1;
                 incomplete = true;
                 continue;
             };
-            let property = project_property(semantic_id, native_property)?;
+            let property = project_property(mapping, native_property)?;
             incomplete |= matches!(property.value_type(), PropertyType::Unknown)
                 || matches!(
                     property.value_state(),
                     crate::domain::navigation::PropertyValueState::Unresolved
                 );
-            if projected.insert(semantic_id, property).is_some() {
+            if projected.insert(mapping.semantic_id, property).is_some() {
                 return Err(ambiguous(
                     "multiple Platform XML properties map to one semantic property",
                 ));
             }
         }
+        if semantic_map::is_field_kind(*kind) {
+            let required = projected
+                .get(&SemanticPropertyId::FIELD_FILL_CHECKING)
+                .map(|fill_checking| match fill_checking.value() {
+                    Some(PropertyValue::EnumSymbol(value))
+                        if *value
+                            == crate::domain::navigation::SemanticEnumValue::SHOW_ERROR =>
+                    {
+                        SemanticProperty::computed(
+                            SemanticPropertyId::FIELD_REQUIRED,
+                            PropertyValue::Boolean(true),
+                        )
+                    }
+                    Some(PropertyValue::EnumSymbol(_)) => SemanticProperty::computed(
+                        SemanticPropertyId::FIELD_REQUIRED,
+                        PropertyValue::Boolean(false),
+                    ),
+                    _ => Ok(SemanticProperty::unresolved(
+                        SemanticPropertyId::FIELD_REQUIRED,
+                    )),
+                })
+                .transpose()?;
+            if let Some(required) = required {
+                if projected.len() >= MAX_NAVIGATION_PROPERTIES_PER_NODE {
+                    return Err(resource_limit("semantic node has too many properties"));
+                }
+                reserve(
+                    &mut self.output_properties,
+                    MAX_NAVIGATION_IDENTITY_ITEMS,
+                    "semantic properties",
+                )?;
+                incomplete |= matches!(
+                    required.value_state(),
+                    crate::domain::navigation::PropertyValueState::Unresolved
+                );
+                let required = if required.value().is_some() {
+                    required.with_capability(PropertyCapability::ReadOnly)?
+                } else {
+                    required
+                };
+                projected.insert(
+                    SemanticPropertyId::FIELD_REQUIRED,
+                    required,
+                );
+            }
+        }
         Ok(PropertyProjection {
             properties: projected,
-            unmapped,
+            unmapped_count,
             incomplete,
         })
+    }
+
+    fn add_synthetic_properties(
+        &mut self,
+        kind: NodeKind,
+        native_node: &NativeMetadataNode,
+        authorability: Authorability,
+        projection: &mut PropertyProjection,
+    ) -> Result<(), SourceAdapterError> {
+        self.insert_synthetic(
+            projection,
+            SemanticProperty::computed(
+                SemanticPropertyId::METADATA_KIND,
+                PropertyValue::String(kind.as_str().to_string()),
+            )?,
+        )?;
+        if let Some(uuid) = native_node.uuid {
+            self.insert_synthetic(
+                projection,
+                SemanticProperty::explicit(
+                    SemanticPropertyId::METADATA_UUID,
+                    PropertyValue::Uuid(uuid),
+                )?,
+            )?;
+            let rule = self.support.effective_rule_for(&uuid.to_string());
+            for property in [
+                SemanticProperty::computed(
+                    SemanticPropertyId::SUPPORT_STATE,
+                    PropertyValue::String(support_rule_label(rule).to_string()),
+                )?,
+                SemanticProperty::computed(
+                    SemanticPropertyId::SUPPORT_AUTHORABILITY,
+                    PropertyValue::String(authorability_label(authorability).to_string()),
+                )?,
+                SemanticProperty::computed(
+                    SemanticPropertyId::SUPPORT_EDIT_CAPABILITY,
+                    PropertyValue::String(edit_capability_label(authorability).to_string()),
+                )?,
+            ] {
+                self.insert_synthetic(projection, property)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn insert_synthetic(
+        &mut self,
+        projection: &mut PropertyProjection,
+        property: SemanticProperty,
+    ) -> Result<(), SourceAdapterError> {
+        if projection.properties.len() >= MAX_NAVIGATION_PROPERTIES_PER_NODE {
+            return Err(resource_limit("semantic node has too many properties"));
+        }
+        reserve(
+            &mut self.output_properties,
+            MAX_NAVIGATION_IDENTITY_ITEMS,
+            "semantic properties",
+        )?;
+        let id = property.id();
+        if projection
+            .properties
+            .insert(id, property.with_capability(PropertyCapability::ReadOnly)?)
+            .is_some()
+        {
+            return Err(ambiguous(
+                "native and derived Platform XML facts map to one semantic property",
+            ));
+        }
+        Ok(())
     }
 
     fn finish(mut self, root: ObjectRef) -> Result<NavigationEnvelope, SourceAdapterError> {
@@ -447,77 +658,16 @@ fn validate_name(name: &str) -> Result<(), SourceAdapterError> {
 }
 
 fn node_kind(node: &NativeMetadataNode) -> Result<NodeKind, SourceAdapterError> {
-    let kind = match node.class.role {
-        MetadataClassRole::Configuration => NodeKind::Configuration,
-        MetadataClassRole::TopLevelObject => match node.class.canonical_name {
-            "Language" => NodeKind::Language,
-            "Subsystem" => NodeKind::Subsystem,
-            "StyleItem" => NodeKind::StyleItem,
-            "Style" => NodeKind::Style,
-            "CommonPicture" => NodeKind::CommonPicture,
-            "SessionParameter" => NodeKind::SessionParameter,
-            "Role" => NodeKind::Role,
-            "CommonTemplate" => NodeKind::CommonTemplate,
-            "FilterCriterion" => NodeKind::FilterCriterion,
-            "CommonModule" => NodeKind::CommonModule,
-            "Bot" => NodeKind::Bot,
-            "CommonAttribute" => NodeKind::CommonAttribute,
-            "ExchangePlan" => NodeKind::ExchangePlan,
-            "XDTOPackage" => NodeKind::XdtoPackage,
-            "WebService" => NodeKind::WebService,
-            "HTTPService" => NodeKind::HttpService,
-            "WSReference" => NodeKind::WebServiceReference,
-            "EventSubscription" => NodeKind::EventSubscription,
-            "ScheduledJob" => NodeKind::ScheduledJob,
-            "SettingsStorage" => NodeKind::SettingsStorage,
-            "FunctionalOption" => NodeKind::FunctionalOption,
-            "FunctionalOptionsParameter" => NodeKind::FunctionalOptionsParameter,
-            "DefinedType" => NodeKind::DefinedType,
-            "CommonCommand" => NodeKind::CommonCommand,
-            "CommandGroup" => NodeKind::CommandGroup,
-            "Constant" => NodeKind::Constant,
-            "CommonForm" => NodeKind::CommonForm,
-            "Catalog" => NodeKind::Catalog,
-            "Document" => NodeKind::Document,
-            "DocumentNumerator" => NodeKind::DocumentNumerator,
-            "Sequence" => NodeKind::Sequence,
-            "DocumentJournal" => NodeKind::DocumentJournal,
-            "Enum" | "Enumeration" => NodeKind::Enumeration,
-            "Report" => NodeKind::Report,
-            "DataProcessor" => NodeKind::DataProcessor,
-            "InformationRegister" => NodeKind::InformationRegister,
-            "AccumulationRegister" => NodeKind::AccumulationRegister,
-            "ChartOfCharacteristicTypes" => NodeKind::ChartOfCharacteristicTypes,
-            "ChartOfAccounts" => NodeKind::ChartOfAccounts,
-            "AccountingRegister" => NodeKind::AccountingRegister,
-            "ChartOfCalculationTypes" => NodeKind::ChartOfCalculationTypes,
-            "CalculationRegister" => NodeKind::CalculationRegister,
-            "BusinessProcess" => NodeKind::BusinessProcess,
-            "Task" => NodeKind::Task,
-            "IntegrationService" => NodeKind::IntegrationService,
-            _ => {
-                return Err(ambiguous(
-                    "Platform XML object kind has no registered semantic mapping",
-                ))
-            }
-        },
-        MetadataClassRole::Attribute => match node.class.canonical_name {
-            "Dimension" => NodeKind::Dimension,
-            "Resource" => NodeKind::Resource,
-            "EnumValue" => NodeKind::EnumerationValue,
-            "Parameter" => NodeKind::WebServiceParameter,
-            _ => NodeKind::Attribute,
-        },
-        MetadataClassRole::TabularSection => NodeKind::TabularSection,
-        MetadataClassRole::Command => NodeKind::Command,
-        MetadataClassRole::Form => NodeKind::Form,
-        MetadataClassRole::Template
-            if template_type(node).as_deref() == Some("SpreadsheetDocument") =>
-        {
-            NodeKind::SpreadsheetDocumentTemplate
-        }
-        MetadataClassRole::Template => NodeKind::Template,
-    };
+    let profile = metadata_class_profile(node.class.canonical_name)
+        .filter(|profile| profile.role == node.class.role)
+        .ok_or_else(|| ambiguous("Platform XML object kind has no registered semantic mapping"))?;
+    let mut kind = semantic_map::object_kind(profile)
+        .ok_or_else(|| ambiguous("Platform XML object kind has no registered semantic mapping"))?;
+    if kind == NodeKind::Template
+        && template_type(node).as_deref() == Some("SpreadsheetDocument")
+    {
+        kind = NodeKind::SpreadsheetDocumentTemplate;
+    }
     Ok(kind)
 }
 
@@ -674,6 +824,25 @@ fn preflight_native_node(
             }
         }
     }
+    for relation in &node.references {
+        for _ in &relation.targets {
+            reserve(
+                &mut budget.output_relations,
+                MAX_NAVIGATION_RELATIONS,
+                "semantic relations",
+            )?;
+            reserve(
+                &mut budget.identity_items,
+                MAX_NAVIGATION_IDENTITY_ITEMS,
+                "semantic identity items",
+            )?;
+            reserve(
+                &mut budget.identity_items,
+                MAX_NAVIGATION_IDENTITY_ITEMS,
+                "semantic identity items",
+            )?;
+        }
+    }
     let child_depth = depth
         .checked_add(1)
         .ok_or_else(|| resource_limit("native snapshot nesting depth cannot be represented"))?;
@@ -698,229 +867,45 @@ fn reserve(counter: &mut usize, limit: usize, label: &str) -> Result<(), SourceA
 
 struct PropertyProjection {
     properties: BTreeMap<SemanticPropertyId, SemanticProperty>,
-    unmapped: bool,
+    unmapped_count: usize,
     incomplete: bool,
 }
 
-fn semantic_property_id(kind: NodeKind, id: &str) -> Option<SemanticPropertyId> {
-    let contextual = match (kind, id) {
-        (NodeKind::Document, "NumberType") => Some(SemanticPropertyId::DOCUMENT_NUMBER_TYPE),
-        (NodeKind::Document, "NumberLength") => Some(SemanticPropertyId::DOCUMENT_NUMBER_LENGTH),
-        (NodeKind::Document, "NumberPeriodicity") => {
-            Some(SemanticPropertyId::DOCUMENT_NUMBER_PERIODICITY)
-        }
-        (NodeKind::Document, "AutoNumbering") => Some(SemanticPropertyId::DOCUMENT_NUMBER_AUTO),
-        (NodeKind::Document, "Posting") => Some(SemanticPropertyId::DOCUMENT_POSTING_MODE),
-        (NodeKind::Document, "RealTimePosting") => {
-            Some(SemanticPropertyId::DOCUMENT_REAL_TIME_POSTING_MODE)
-        }
-        (NodeKind::Document, "RegisterRecordsDeletion") => {
-            Some(SemanticPropertyId::DOCUMENT_REGISTER_RECORDS_DELETION_MODE)
-        }
-        (NodeKind::Document, "RegisterRecordsWritingOnPost") => {
-            Some(SemanticPropertyId::DOCUMENT_REGISTER_RECORDS_WRITING_ON_POST_MODE)
-        }
-        (NodeKind::Catalog, "HierarchyType") => Some(SemanticPropertyId::CATALOG_HIERARCHY_TYPE),
-        (NodeKind::Catalog, "HierarchyLevelCount" | "LevelCount") => {
-            Some(SemanticPropertyId::CATALOG_HIERARCHY_LEVEL_LIMIT)
-        }
-        (NodeKind::Catalog, "CodeLength") => Some(SemanticPropertyId::CATALOG_CODE_LENGTH),
-        (NodeKind::Catalog, "DescriptionLength") => {
-            Some(SemanticPropertyId::CATALOG_DESCRIPTION_LENGTH)
-        }
-        (
-            NodeKind::InformationRegister
-            | NodeKind::AccumulationRegister
-            | NodeKind::AccountingRegister
-            | NodeKind::CalculationRegister,
-            "Periodicity",
-        ) => Some(SemanticPropertyId::REGISTER_PERIODICITY),
-        (
-            NodeKind::InformationRegister
-            | NodeKind::AccumulationRegister
-            | NodeKind::AccountingRegister
-            | NodeKind::CalculationRegister,
-            "WriteMode",
-        ) => Some(SemanticPropertyId::REGISTER_WRITE_MODE),
-        (
-            NodeKind::InformationRegister
-            | NodeKind::AccumulationRegister
-            | NodeKind::AccountingRegister
-            | NodeKind::CalculationRegister,
-            "RegisterType",
-        ) => Some(SemanticPropertyId::REGISTER_TYPE),
-        (NodeKind::Constant, "Type" | "TypeDescription" | "DataType") => {
-            Some(SemanticPropertyId::CONSTANT_VALUE_TYPE)
-        }
-        (NodeKind::DefinedType, "Type" | "TypeDescription" | "DataType") => {
-            Some(SemanticPropertyId::DEFINED_TYPE)
-        }
-        (NodeKind::Report, "MainDataCompositionSchema") => {
-            Some(SemanticPropertyId::REPORT_MAIN_DATA_COMPOSITION_SCHEMA)
-        }
-        (NodeKind::CommonModule, "Global") => Some(SemanticPropertyId::MODULE_GLOBAL),
-        (NodeKind::CommonModule, "ClientManagedApplication") => {
-            Some(SemanticPropertyId::MODULE_CLIENT_MANAGED_APPLICATION)
-        }
-        (NodeKind::CommonModule, "Server") => Some(SemanticPropertyId::MODULE_SERVER),
-        (NodeKind::CommonModule, "ExternalConnection") => {
-            Some(SemanticPropertyId::MODULE_EXTERNAL_CONNECTION)
-        }
-        (NodeKind::CommonModule, "ClientOrdinaryApplication") => {
-            Some(SemanticPropertyId::MODULE_CLIENT_ORDINARY_APPLICATION)
-        }
-        (NodeKind::CommonModule, "ServerCall") => Some(SemanticPropertyId::MODULE_SERVER_CALL),
-        (NodeKind::CommonModule, "Privileged") => Some(SemanticPropertyId::MODULE_PRIVILEGED),
-        (NodeKind::CommonModule, "ReturnValuesReuse") => {
-            Some(SemanticPropertyId::MODULE_RETURN_VALUES_REUSE)
-        }
-        (NodeKind::ScheduledJob, "MethodName") => Some(SemanticPropertyId::JOB_METHOD),
-        (NodeKind::ScheduledJob, "Use") => Some(SemanticPropertyId::JOB_USE),
-        (NodeKind::ScheduledJob, "Predefined") => Some(SemanticPropertyId::JOB_PREDEFINED),
-        (NodeKind::ScheduledJob, "RestartCountOnFailure") => {
-            Some(SemanticPropertyId::JOB_RESTART_COUNT)
-        }
-        (NodeKind::ScheduledJob, "RestartIntervalOnFailure") => {
-            Some(SemanticPropertyId::JOB_RESTART_INTERVAL)
-        }
-        (NodeKind::ScheduledJob, "Key") => Some(SemanticPropertyId::JOB_KEY),
-        (NodeKind::EventSubscription, "Event") => Some(SemanticPropertyId::SUBSCRIPTION_EVENT),
-        (NodeKind::EventSubscription, "Handler") => Some(SemanticPropertyId::SUBSCRIPTION_HANDLER),
-        (NodeKind::EventSubscription, "Source") => {
-            Some(SemanticPropertyId::SUBSCRIPTION_SOURCE_TYPE)
-        }
-        (NodeKind::HttpService, "RootURL" | "RootUrl") => {
-            Some(SemanticPropertyId::HTTP_SERVICE_ROOT_URL)
-        }
-        (NodeKind::HttpService, "ReuseSessions") => {
-            Some(SemanticPropertyId::HTTP_SERVICE_REUSE_SESSIONS)
-        }
-        (NodeKind::HttpService, "SessionMaxAge") => {
-            Some(SemanticPropertyId::HTTP_SERVICE_SESSION_MAX_AGE)
-        }
-        (NodeKind::HttpServiceUrlTemplate, "Template") => {
-            Some(SemanticPropertyId::HTTP_SERVICE_URL_TEMPLATE)
-        }
-        (NodeKind::HttpServiceMethod, "HTTPMethod") => {
-            Some(SemanticPropertyId::HTTP_SERVICE_METHOD)
-        }
-        (NodeKind::HttpServiceMethod, "Handler") => Some(SemanticPropertyId::HTTP_SERVICE_HANDLER),
-        (NodeKind::WebService, "Namespace") => Some(SemanticPropertyId::WEB_SERVICE_NAMESPACE),
-        (NodeKind::WebService, "XDTOPackages") => {
-            Some(SemanticPropertyId::WEB_SERVICE_XDTO_PACKAGES)
-        }
-        (NodeKind::WebService, "DescriptorFileName") => {
-            Some(SemanticPropertyId::WEB_SERVICE_DESCRIPTOR_FILE_NAME)
-        }
-        (NodeKind::WebService, "ReuseSessions") => {
-            Some(SemanticPropertyId::WEB_SERVICE_REUSE_SESSIONS)
-        }
-        (NodeKind::WebService, "SessionMaxAge") => {
-            Some(SemanticPropertyId::WEB_SERVICE_SESSION_MAX_AGE)
-        }
-        (NodeKind::WebServiceOperation, "XDTOReturningValueType") => {
-            Some(SemanticPropertyId::WEB_SERVICE_OPERATION_RETURN_TYPE)
-        }
-        (NodeKind::WebServiceOperation, "Nillable") => {
-            Some(SemanticPropertyId::WEB_SERVICE_OPERATION_NILLABLE)
-        }
-        (NodeKind::WebServiceOperation, "Transactioned") => {
-            Some(SemanticPropertyId::WEB_SERVICE_OPERATION_TRANSACTIONED)
-        }
-        (NodeKind::WebServiceOperation, "ProcedureName") => {
-            Some(SemanticPropertyId::WEB_SERVICE_OPERATION_PROCEDURE_NAME)
-        }
-        (NodeKind::WebServiceParameter, "XDTOValueType") => {
-            Some(SemanticPropertyId::WEB_SERVICE_PARAMETER_TYPE)
-        }
-        (NodeKind::WebServiceParameter, "Nillable") => {
-            Some(SemanticPropertyId::WEB_SERVICE_PARAMETER_NILLABLE)
-        }
-        (NodeKind::WebServiceParameter, "TransferDirection") => {
-            Some(SemanticPropertyId::WEB_SERVICE_PARAMETER_DIRECTION)
-        }
-        (
-            NodeKind::Attribute
-            | NodeKind::Dimension
-            | NodeKind::Resource
-            | NodeKind::WebServiceParameter,
-            "Type" | "TypeDescription" | "DataType",
-        ) => Some(SemanticPropertyId::FIELD_TYPE),
-        (NodeKind::Attribute | NodeKind::Dimension | NodeKind::Resource, "FillChecking") => {
-            Some(SemanticPropertyId::FIELD_FILL_CHECKING)
-        }
-        (NodeKind::Attribute | NodeKind::Dimension | NodeKind::Resource, "Indexing") => {
-            Some(SemanticPropertyId::FIELD_INDEXING)
-        }
-        (NodeKind::Attribute | NodeKind::Dimension | NodeKind::Resource, "MultiLine") => {
-            Some(SemanticPropertyId::FIELD_MULTI_LINE)
-        }
-        (NodeKind::Attribute | NodeKind::Dimension | NodeKind::Resource, "Use") => {
-            Some(SemanticPropertyId::FIELD_USE)
-        }
-        (NodeKind::Attribute | NodeKind::Dimension | NodeKind::Resource, "FillValue") => {
-            Some(SemanticPropertyId::FIELD_FILL_VALUE)
-        }
-        (NodeKind::Dimension, "Master") => Some(SemanticPropertyId::FIELD_MASTER),
-        (NodeKind::Dimension, "MainFilter") => Some(SemanticPropertyId::FIELD_MAIN_FILTER),
-        (NodeKind::Dimension, "DenyIncompleteValues") => {
-            Some(SemanticPropertyId::FIELD_DENY_INCOMPLETE_VALUES)
-        }
-        (NodeKind::TabularSection, "Order") => Some(SemanticPropertyId::TABULAR_SECTION_ORDER),
-        (NodeKind::TabularSection, "LineNumberLength") => {
-            Some(SemanticPropertyId::TABULAR_SECTION_LINE_NUMBER_LENGTH)
-        }
-        (NodeKind::Form, "FormType") => Some(SemanticPropertyId::FORM_TYPE),
-        (NodeKind::Template | NodeKind::SpreadsheetDocumentTemplate, "TemplateType") => {
-            Some(SemanticPropertyId::TEMPLATE_TYPE)
-        }
-        (NodeKind::Command, "Group") => Some(SemanticPropertyId::COMMAND_GROUP),
-        (NodeKind::Command, "Representation") => Some(SemanticPropertyId::COMMAND_REPRESENTATION),
-        _ => None,
-    };
-    contextual.or_else(|| match id {
-        "Name" => Some(SemanticPropertyId::METADATA_NAME),
-        "Uuid" | "UUID" => Some(SemanticPropertyId::METADATA_UUID),
-        "Synonym" => Some(SemanticPropertyId::METADATA_SYNONYM),
-        "Comment" => Some(SemanticPropertyId::METADATA_COMMENT),
-        "Code" => Some(SemanticPropertyId::METADATA_CODE),
-        "Description" => Some(SemanticPropertyId::METADATA_DESCRIPTION),
-        "ObjectPresentation" => Some(SemanticPropertyId::PRESENTATION_OBJECT),
-        "ExtendedObjectPresentation" => Some(SemanticPropertyId::PRESENTATION_EXTENDED_OBJECT),
-        "ListPresentation" => Some(SemanticPropertyId::PRESENTATION_LIST),
-        "ExtendedListPresentation" => Some(SemanticPropertyId::PRESENTATION_EXTENDED_LIST),
-        "Length" => Some(SemanticPropertyId::FIELD_LENGTH),
-        "Digits" => Some(SemanticPropertyId::FIELD_DIGITS),
-        "FractionDigits" => Some(SemanticPropertyId::FIELD_FRACTION_DIGITS),
-        "FillValue" => Some(SemanticPropertyId::FIELD_FILL_VALUE),
-        "UseStandardCommands" => Some(SemanticPropertyId::COMMAND_USE_STANDARD),
-        "IncludeHelpInContents" => Some(SemanticPropertyId::HELP_INCLUDE_IN_CONTENTS),
-        _ => None,
-    })
-}
-
 fn project_property(
-    semantic_id: SemanticPropertyId,
+    mapping: PropertyMapping,
     property: &NativeProperty,
 ) -> Result<SemanticProperty, SourceAdapterError> {
+    let semantic_id = mapping.semantic_id;
     let mut projected = match &property.value {
         NativePropertyValue::Absent => SemanticProperty::absent(semantic_id),
         NativePropertyValue::Unresolved => SemanticProperty::unresolved(semantic_id),
         NativePropertyValue::UnresolvedScalar { .. } => SemanticProperty::unresolved(semantic_id),
         NativePropertyValue::Scalar(value) => {
-            scalar_property(semantic_id, &property.canonical_id, value, None)?
+            scalar_property(mapping, value, None)?
         }
         NativePropertyValue::AnnotatedScalar {
             value,
             type_annotation,
-        } => scalar_property(
-            semantic_id,
-            &property.canonical_id,
-            value,
-            Some(*type_annotation),
-        )?,
+        } => scalar_property(mapping, value, Some(*type_annotation))?,
         NativePropertyValue::TypeSet(type_set) => {
             SemanticProperty::explicit(semantic_id, PropertyValue::TypeSet(type_set.clone()))?
+        }
+        NativePropertyValue::LocalizedString(values) => SemanticProperty::explicit(
+            semantic_id,
+            PropertyValue::LocalizedString(values.clone()),
+        )?,
+        NativePropertyValue::StringList(values) => SemanticProperty::explicit(
+            semantic_id,
+            PropertyValue::List(
+                values
+                    .iter()
+                    .cloned()
+                    .map(PropertyValue::String)
+                    .collect(),
+            ),
+        )?,
+        NativePropertyValue::Null => {
+            SemanticProperty::explicit(semantic_id, PropertyValue::Null)?
         }
         NativePropertyValue::Structured => SemanticProperty::unresolved(semantic_id),
     };
@@ -931,11 +916,11 @@ fn project_property(
 }
 
 fn scalar_property(
-    semantic_id: SemanticPropertyId,
-    canonical_id: &str,
+    mapping: PropertyMapping,
     value: &str,
     type_annotation: Option<NativeScalarType>,
 ) -> Result<SemanticProperty, SourceAdapterError> {
+    let semantic_id = mapping.semantic_id;
     let definition = crate::domain::navigation::property_definition(semantic_id);
     if definition.allowed_types() == [PropertyType::Enum] {
         return Ok(semantic_enum_value(value)
@@ -944,39 +929,53 @@ fn scalar_property(
             .transpose()?
             .unwrap_or_else(|| SemanticProperty::unresolved(semantic_id)));
     }
-    let Some(kind) = scalar_property_kind_2_20(canonical_id) else {
-        return Ok(SemanticProperty::unresolved(semantic_id));
-    };
-    let value = match kind {
-        ScalarPropertyKind::Boolean => match value {
+    let value = match mapping.value_kind {
+        NativeValueKind::Boolean => match value {
             "true" => PropertyValue::Boolean(true),
             "false" => PropertyValue::Boolean(false),
-            _ => return Err(ambiguous("invalid boolean Platform XML scalar property")),
+            _ => return Ok(SemanticProperty::unresolved(semantic_id)),
         },
-        ScalarPropertyKind::Integer => PropertyValue::Integer(
-            value
-                .parse()
-                .map_err(|_| ambiguous("invalid integer Platform XML scalar property"))?,
-        ),
-        ScalarPropertyKind::Uuid => PropertyValue::Uuid(
-            value
-                .parse()
-                .map_err(|_| ambiguous("invalid UUID Platform XML scalar property"))?,
-        ),
-        ScalarPropertyKind::String => PropertyValue::String(value.to_string()),
-        ScalarPropertyKind::PolymorphicFillValue => match type_annotation {
+        NativeValueKind::Integer => match value.parse() {
+            Ok(value) => PropertyValue::Integer(value),
+            Err(_) => return Ok(SemanticProperty::unresolved(semantic_id)),
+        },
+        NativeValueKind::Uuid => match value.parse() {
+            Ok(value) => PropertyValue::Uuid(value),
+            Err(_) => return Ok(SemanticProperty::unresolved(semantic_id)),
+        },
+        NativeValueKind::String => PropertyValue::String(value.to_string()),
+        NativeValueKind::Polymorphic => match type_annotation {
             Some(NativeScalarType::Decimal) => match normalize_xml_schema_decimal(value) {
                 Some(value) => PropertyValue::Decimal(value),
                 None => return Ok(SemanticProperty::unresolved(semantic_id)),
             },
             Some(NativeScalarType::String) => PropertyValue::String(value.to_string()),
-            None | Some(_) => {
+            Some(NativeScalarType::Boolean) => match value {
+                "true" => PropertyValue::Boolean(true),
+                "false" => PropertyValue::Boolean(false),
+                _ => return Ok(SemanticProperty::unresolved(semantic_id)),
+            },
+            Some(NativeScalarType::Integer) => match value.parse() {
+                Ok(value) => PropertyValue::Integer(value),
+                Err(_) => return Ok(SemanticProperty::unresolved(semantic_id)),
+            },
+            Some(NativeScalarType::Uuid) => match value.parse() {
+                Ok(value) => PropertyValue::Uuid(value),
+                Err(_) => return Ok(SemanticProperty::unresolved(semantic_id)),
+            },
+            Some(NativeScalarType::Date) => PropertyValue::Date(value.to_string()),
+            None => {
                 return Ok(SemanticProperty::unresolved(semantic_id));
             }
         },
+        NativeValueKind::Enum
+        | NativeValueKind::LocalizedString
+        | NativeValueKind::TypeSet
+        | NativeValueKind::StringList => return Ok(SemanticProperty::unresolved(semantic_id)),
     };
     if definition.accepts(value.value_type()) {
-        SemanticProperty::explicit(semantic_id, value)
+        Ok(SemanticProperty::explicit(semantic_id, value)
+            .unwrap_or_else(|_| SemanticProperty::unresolved(semantic_id)))
     } else {
         Ok(SemanticProperty::unresolved(semantic_id))
     }
@@ -1001,7 +1000,12 @@ fn semantic_enum_value(value: &str) -> Option<crate::domain::navigation::Semanti
         "HierarchyOfGroupsAndItems" | "hierarchyOfGroupsAndItems" => {
             Some(SemanticEnumValue::HIERARCHY_OF_GROUPS_AND_ITEMS)
         }
+        "HierarchyItems" => Some(SemanticEnumValue::HIERARCHY_OF_ITEMS),
+        "HierarchyFoldersAndItems" => {
+            Some(SemanticEnumValue::HIERARCHY_OF_GROUPS_AND_ITEMS)
+        }
         "Balance" | "balance" => Some(SemanticEnumValue::BALANCE),
+        "Balances" => Some(SemanticEnumValue::BALANCE),
         "Turnovers" | "turnovers" => Some(SemanticEnumValue::TURNOVERS),
         "Independent" | "independent" => Some(SemanticEnumValue::INDEPENDENT),
         "RecorderSubordinate" | "recorderSubordinate" => {
@@ -1056,6 +1060,39 @@ fn normalize_xml_schema_decimal(value: &str) -> Option<String> {
         integer,
         fraction
     ))
+}
+
+fn support_rule_label(rule: EffectiveSupportRule) -> &'static str {
+    match rule {
+        EffectiveSupportRule::Absent => "absent",
+        EffectiveSupportRule::Removed => "removed",
+        EffectiveSupportRule::Editable => "editable",
+        EffectiveSupportRule::Locked => "locked",
+        EffectiveSupportRule::ConfigurationReadOnly => "configurationReadOnly",
+        EffectiveSupportRule::UnknownReadOnly => "unknownReadOnly",
+        EffectiveSupportRule::Unreadable => "unreadable",
+    }
+}
+
+fn authorability_label(authorability: Authorability) -> &'static str {
+    match authorability {
+        Authorability::Authorable => "authorable",
+        Authorability::SupportLocked => "supportLocked",
+        Authorability::ConfigurationReadOnly => "configurationReadOnly",
+        Authorability::UnknownSupportState => "unknownSupportState",
+        Authorability::UnknownReadOnly => "unknownReadOnly",
+        Authorability::DerivedReadOnly => "derivedReadOnly",
+    }
+}
+
+fn edit_capability_label(authorability: Authorability) -> &'static str {
+    match authorability {
+        Authorability::Authorable => "authorable",
+        Authorability::SupportLocked
+        | Authorability::ConfigurationReadOnly
+        | Authorability::DerivedReadOnly => "readOnly",
+        Authorability::UnknownSupportState | Authorability::UnknownReadOnly => "unknown",
+    }
 }
 
 fn ambiguous(message: impl Into<String>) -> SourceAdapterError {
@@ -1790,6 +1827,7 @@ mod tests {
             name: name.to_string(),
             state: NativeNodeState::ResolvedInline,
             properties,
+            references: Vec::new(),
             children: children
                 .into_iter()
                 .map(|node| NativeMetadataChild {
@@ -1797,6 +1835,7 @@ mod tests {
                     node,
                 })
                 .collect(),
+            unmapped_facts: 0,
             backing: NativeNodeBacking::None,
         }
     }

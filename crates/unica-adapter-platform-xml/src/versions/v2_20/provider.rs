@@ -37,6 +37,10 @@ pub(crate) struct PlatformXmlProvider {
 }
 
 impl PlatformXmlProvider {
+    pub(crate) const fn coverage_manifest_json() -> &'static str {
+        include_str!("coverage.json")
+    }
+
     pub(crate) fn open(root: impl AsRef<Path>) -> Result<Self, SourceAdapterError> {
         let root = root.as_ref();
         Self::capture_root_with_hook(root, || {})

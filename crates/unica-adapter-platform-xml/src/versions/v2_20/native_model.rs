@@ -4,7 +4,7 @@ use std::ops::Deref;
 use uuid::Uuid;
 
 use crate::domain::{
-    navigation::{CoverageState, RelationRole, TypeSetValue},
+    navigation::{CoverageState, RelationRole, SemanticObjectKind, TypeSetValue},
     source_adapters::SourceSnapshot,
 };
 
@@ -24,7 +24,9 @@ pub(crate) struct NativeMetadataNode {
     pub(crate) name: String,
     pub(crate) state: NativeNodeState,
     pub(crate) properties: BTreeMap<String, NativeProperty>,
+    pub(crate) references: Vec<NativeReferenceRelation>,
     pub(crate) children: Vec<NativeMetadataChild>,
+    pub(crate) unmapped_facts: usize,
     pub(crate) backing: NativeNodeBacking,
 }
 
@@ -125,6 +127,18 @@ pub(crate) struct NativeProperty {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeReferenceRelation {
+    pub(crate) role: RelationRole,
+    pub(crate) targets: Vec<NativeSemanticReference>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeSemanticReference {
+    pub(crate) kind: SemanticObjectKind,
+    pub(crate) name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NativePropertyValue {
     Scalar(String),
     AnnotatedScalar {
@@ -139,6 +153,9 @@ pub(crate) enum NativePropertyValue {
     /// A type description is normalized while its original XML node and
     /// namespace scope are alive.  No detached XML is retained.
     TypeSet(TypeSetValue),
+    LocalizedString(BTreeMap<String, String>),
+    StringList(Vec<String>),
+    Null,
     Structured,
     Absent,
     Unresolved,
@@ -153,6 +170,7 @@ pub(crate) enum NativeScalarType {
     Decimal,
     Integer,
     Uuid,
+    Date,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
