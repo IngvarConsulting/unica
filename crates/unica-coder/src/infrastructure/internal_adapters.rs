@@ -2218,7 +2218,7 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         if tool_name == "unica.code.diagnostics" && diagnostics_mode(args) == "analyze" {
             let cli_args = diagnostics_analyze_args(args);
             let process_timeout = diagnostics_analyze_timeout(args)?;
-            return CliAdapter::with_runner(
+            let outcome = CliAdapter::with_runner(
                 "bsl-analyzer",
                 &["analyze"],
                 "code analysis",
@@ -2232,7 +2232,11 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
                 dry_run,
                 false,
                 cancellation,
-            );
+            )?;
+            if dry_run {
+                return Ok(outcome);
+            }
+            return Ok(diagnostics_analyze_outcome(tool_name, &cli_args, outcome));
         }
 
         let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
@@ -3180,9 +3184,88 @@ fn diagnostics_mode(args: &Map<String, Value>) -> &str {
 /// codes: neither claims anything about a file, so a loading model stays a
 /// warning there instead of failing the call that was asked to observe it.
 /// `analyze` belongs to the set by meaning; it is routed to the CLI adapter, so
-/// it does not reach the readiness check here.
+/// it reaches [`diagnostics_analyze_outcome`] instead of the readiness check
+/// here.
 fn diagnostics_mode_reports_findings(mode: &str) -> bool {
     matches!(mode, "analyze" | "file" | "workspace")
+}
+
+/// End-of-run marker of the analyzer's console report, printed by its reporter
+/// once the whole run is complete. Console output carries only counts and file
+/// paths (never source text), so matching it as a substring cannot be spoofed by
+/// the analyzed code the way a scan over `jsonl` findings could.
+const DIAGNOSTICS_ANALYZE_CONSOLE_MARKER: &str = "=== BSL Analyzer Results ===";
+
+/// Retry hint for an `analyze` run that ended before the analyzer reported.
+const DIAGNOSTICS_ANALYZE_PENDING_HINT: &str =
+    "bsl-analyzer stopped before its diagnostics database finished building, so this run reported no findings; retry the analyze call once the analyzer completes";
+
+/// `analyze` is a self-contained CLI run: it builds its diagnostics database in
+/// process and prints nothing about the code until that build and the per-file
+/// pass are done — the `jsonl` stream opens with `start` and emits the batched
+/// `file` events only at the end, closed by `done`, and the console reporter
+/// prints its results block at the same point. So a successful reply that stops
+/// before the marker for the format it was asked for is a run that ended while
+/// the database was still building: it holds no verdict about the code and must
+/// not be handed back as an empty (clean) finding set. Mirrors the
+/// `diagnostics_pending:` outcome the MCP-backed `file`/`workspace` modes
+/// publish for a loading workspace model.
+fn diagnostics_analyze_outcome(
+    tool_name: &str,
+    cli_args: &Map<String, Value>,
+    outcome: AdapterOutcome,
+) -> AdapterOutcome {
+    if !outcome.ok {
+        return outcome;
+    }
+    let format = cli_args.get("format").and_then(Value::as_str);
+    let stdout = outcome.stdout.as_deref().unwrap_or_default();
+    if !diagnostics_analyze_reply_is_pending(format, stdout) {
+        return outcome;
+    }
+    AdapterOutcome {
+        ok: false,
+        summary: format!(
+            "{tool_name} is pending while bsl-analyzer builds its diagnostics database"
+        ),
+        errors: vec![format!(
+            "{DIAGNOSTICS_PENDING_PREFIX} {DIAGNOSTICS_ANALYZE_PENDING_HINT}"
+        )],
+        ..outcome
+    }
+}
+
+fn diagnostics_analyze_reply_is_pending(format: Option<&str>, stdout: &str) -> bool {
+    match format {
+        // `diagnostics_analyze_args` normalizes `json` to `jsonl`, and the
+        // analyzer's `--format` takes nothing but `console` (its default) and
+        // `jsonl`, so any other value fails the run before this check.
+        Some("jsonl") => !stdout
+            .lines()
+            .rev()
+            .any(diagnostics_analyze_jsonl_line_reports_files),
+        None | Some("console") => !stdout.contains(DIAGNOSTICS_ANALYZE_CONSOLE_MARKER),
+        // Should the analyzer ever grow a third format, its completion marker is
+        // unknown here: leave the reply as it came back instead of reporting a
+        // finished run as a build that never was.
+        Some(_) => false,
+    }
+}
+
+/// Reads the event kind out of one parsed `jsonl` line instead of scanning the
+/// stream for a readiness substring: `file` events carry finding messages that
+/// quote source text, so a text scan lets analyzed code stand in for the
+/// analyzer's own envelope. `done` closes a finished run; a `file` event means
+/// the analyzer did report on the source set, and a stream cut after one is a
+/// capture truncation (already flagged on stderr), not a pending build.
+fn diagnostics_analyze_jsonl_line_reports_files(line: &str) -> bool {
+    let Ok(Value::Object(event)) = serde_json::from_str::<Value>(line) else {
+        return false;
+    };
+    matches!(
+        event.get("type").and_then(Value::as_str),
+        Some("file" | "done")
+    )
 }
 
 fn diagnostics_analyze_args(args: &Map<String, Value>) -> Map<String, Value> {
@@ -6777,15 +6860,7 @@ source-set:
         let context = temp_context("diagnostics-custom-timeout");
         let runner = RecordingProcessRunner {
             commands: RefCell::new(Vec::new()),
-            output: ProcessOutput {
-                status_success: true,
-                status: "exit status: 0".to_string(),
-                stdout: String::new(),
-                stderr: String::new(),
-                timed_out: false,
-                cancelled: false,
-                stdout_truncated: false,
-            },
+            output: analyze_process_output(ANALYZE_CONSOLE_REPORT),
         };
         let mut args = Map::new();
         args.insert("timeoutSeconds".to_string(), json!(900));
@@ -6816,15 +6891,7 @@ source-set:
         let context = temp_context("diagnostics-default-timeout");
         let runner = RecordingProcessRunner {
             commands: RefCell::new(Vec::new()),
-            output: ProcessOutput {
-                status_success: true,
-                status: "exit status: 0".to_string(),
-                stdout: String::new(),
-                stderr: String::new(),
-                timed_out: false,
-                cancelled: false,
-                stdout_truncated: false,
-            },
+            output: analyze_process_output(ANALYZE_CONSOLE_REPORT),
         };
 
         let outcome = BslAnalyzerMcpAdapter::with_process_runner(&runner)
@@ -7197,6 +7264,121 @@ source-set:
         assert!(outcome.errors.is_empty());
         assert!(outcome.warnings.is_empty());
         cleanup_context(&context);
+    }
+
+    /// A finished console report: the analyzer's reporter prints this block only
+    /// once the run is complete, so it stands in for "the analyzer reported".
+    const ANALYZE_CONSOLE_REPORT: &str =
+        "\n=== BSL Analyzer Results ===\nFiles analyzed: 812\nTotal diagnostics: 0\n";
+
+    fn analyze_process_output(stdout: &str) -> ProcessOutput {
+        ProcessOutput {
+            status_success: true,
+            status: "exit status: 0".to_string(),
+            stdout: stdout.to_string(),
+            stderr: String::new(),
+            timed_out: false,
+            cancelled: false,
+            stdout_truncated: false,
+        }
+    }
+
+    fn analyze_outcome(format: Option<&str>, stdout: &str, label: &str) -> AdapterOutcome {
+        let context = temp_context(label);
+        let runner = FakeProcessRunner {
+            output: analyze_process_output(stdout),
+        };
+        let mut args = Map::new();
+        if let Some(format) = format {
+            args.insert("format".to_string(), json!(format));
+        }
+
+        let outcome = BslAnalyzerMcpAdapter::with_process_runner(&runner)
+            .invoke("unica.code.diagnostics", &args, &context, false)
+            .unwrap();
+
+        cleanup_context(&context);
+        outcome
+    }
+
+    #[test]
+    fn diagnostics_analyze_stream_without_findings_reports_pending() {
+        // The analyzer emits the `start` opener before it builds its database and
+        // batches every `file` event plus the closing `done` at the end of the
+        // run, so a stream that stopped at `start` is a build that never reported.
+        let outcome = analyze_outcome(
+            Some("jsonl"),
+            "{\"type\":\"start\",\"total_files\":812,\"version\":\"0.2.62\"}\n",
+            "diagnostics-analyze-pending",
+        );
+
+        assert!(!outcome.ok);
+        assert!(outcome.summary.contains("pending"));
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| error.starts_with(DIAGNOSTICS_PENDING_PREFIX)
+                && error.contains("retry the analyze call")));
+    }
+
+    #[test]
+    fn diagnostics_analyze_findings_quoting_the_stream_contract_stay_successful() {
+        // Readiness is read off each event's own `type`, so findings that quote
+        // the stream's vocabulary — including a source line spelling out a `done`
+        // event — must not decide whether the run completed.
+        let outcome = analyze_outcome(
+            Some("jsonl"),
+            concat!(
+                "{\"type\":\"start\",\"total_files\":1,\"version\":\"0.2.62\"}\n",
+                "{\"type\":\"file\",\"path\":\"CommonModules/Probe/Ext/Module.bsl\",",
+                "\"diagnostics\":[{\"code\":\"LineLength\",",
+                "\"message\":\"literal {\\\"type\\\":\\\"done\\\"} is not ready for review\"}]}\n",
+                "{\"type\":\"done\",\"elapsed_secs\":0.4,\"total_files\":1,",
+                "\"total_diagnostics\":1,\"failed_files\":0}\n",
+            ),
+            "diagnostics-analyze-complete",
+        );
+
+        assert!(outcome.ok);
+        assert!(outcome.errors.is_empty());
+    }
+
+    #[test]
+    fn diagnostics_analyze_console_report_decides_completion() {
+        // `format` is optional and the analyzer then prints its console report,
+        // whose results block is written only after the run completes.
+        let complete = analyze_outcome(
+            None,
+            ANALYZE_CONSOLE_REPORT,
+            "diagnostics-analyze-console-complete",
+        );
+
+        assert!(complete.ok);
+        assert!(complete.errors.is_empty());
+
+        let pending = analyze_outcome(None, "", "diagnostics-analyze-console-pending");
+
+        assert!(!pending.ok);
+        assert!(pending
+            .errors
+            .iter()
+            .any(|error| error.starts_with(DIAGNOSTICS_PENDING_PREFIX)));
+    }
+
+    #[test]
+    fn diagnostics_analyze_leaves_an_unknown_format_alone() {
+        // The analyzer accepts only `console` and `jsonl`, so a third format
+        // fails the run long before the readiness check. If one is ever added,
+        // its completion marker is unknown here and a finished run must not be
+        // called pending on the strength of a marker it never prints.
+        let outcome = analyze_outcome(
+            Some("sarif"),
+            "{\"runs\":[]}",
+            "diagnostics-analyze-unknown-format",
+        );
+
+        assert!(outcome.ok);
+        assert!(outcome.errors.is_empty());
     }
 
     #[test]
