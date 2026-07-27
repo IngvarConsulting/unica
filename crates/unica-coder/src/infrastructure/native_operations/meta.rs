@@ -2048,14 +2048,18 @@ mod edit_tests {
     use serde_json::{json, Map, Value};
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static NEXT_TEMP_CONTEXT: AtomicU64 = AtomicU64::new(0);
 
     fn temp_context(name: &str) -> WorkspaceContext {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("unica-meta-{name}-{nanos}"));
+        let sequence = NEXT_TEMP_CONTEXT.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("unica-meta-{name}-{nanos}-{sequence}"));
         fs::create_dir_all(&root).unwrap();
         WorkspaceContext {
             cwd: root.clone(),

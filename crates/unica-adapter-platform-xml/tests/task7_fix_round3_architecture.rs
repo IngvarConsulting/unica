@@ -70,17 +70,129 @@ struct CallGraph {
     methods_by_name: BTreeMap<String, Vec<MethodTarget>>,
     associated_methods: BTreeMap<String, BTreeSet<String>>,
     local_types: BTreeSet<String>,
+    return_provenance: BTreeMap<String, ReceiverProvenance>,
 }
 
 impl CallGraph {
     fn from_sources(sources: impl IntoIterator<Item = (String, String)>) -> Self {
         let mut graph = Self::default();
-        for (module, source) in sources {
-            let file = syn::parse_file(&source)
-                .unwrap_or_else(|error| panic!("failed to parse {module}: {error}"));
+        let parsed = sources
+            .into_iter()
+            .map(|(module, source)| {
+                let file = syn::parse_file(&source)
+                    .unwrap_or_else(|error| panic!("failed to parse {module}: {error}"));
+                (module, file)
+            })
+            .collect::<Vec<_>>();
+        for (module, file) in &parsed {
+            graph.index_local_types(module, &file.items);
+        }
+        for (module, file) in &parsed {
+            graph.index_return_provenance(module, &file.items);
+        }
+        for (module, file) in parsed {
             graph.insert_items(&module, &file.items);
         }
         graph
+    }
+
+    fn index_local_types(&mut self, module: &str, items: &[Item]) {
+        let imports = module_imports(module, items);
+        for item in items {
+            let ident = match item {
+                Item::Struct(item) => Some(&item.ident),
+                Item::Enum(item) => Some(&item.ident),
+                Item::Union(item) => Some(&item.ident),
+                Item::Type(item) => Some(&item.ident),
+                _ => None,
+            };
+            if let Some(ident) = ident {
+                self.local_types.insert(
+                    resolve_decl_path(module, &imports, vec![ident.to_string()]).join("::"),
+                );
+            }
+            if let Item::Mod(item_mod) = item {
+                if item_mod.attrs.iter().any(is_cfg_test) {
+                    continue;
+                }
+                if let Some((_, nested)) = &item_mod.content {
+                    self.index_local_types(&format!("{module}::{}", item_mod.ident), nested);
+                }
+            }
+        }
+    }
+
+    fn index_return_provenance(&mut self, module: &str, items: &[Item]) {
+        let imports = module_imports(module, items);
+        for item in items {
+            match item {
+                Item::Fn(function) => {
+                    self.return_provenance.insert(
+                        format!("{module}::{}", function.sig.ident),
+                        signature_return_provenance(module, &imports, &function.sig),
+                    );
+                }
+                Item::Const(item_const) => {
+                    self.return_provenance.insert(
+                        format!("{module}::{}", item_const.ident),
+                        type_provenance(module, &imports, &item_const.ty),
+                    );
+                }
+                Item::Static(item_static) => {
+                    self.return_provenance.insert(
+                        format!("{module}::{}", item_static.ident),
+                        type_provenance(module, &imports, &item_static.ty),
+                    );
+                }
+                Item::Impl(item_impl) => {
+                    let owner = canonical_type_owner(module, &imports, None, &item_impl.self_ty);
+                    let trait_path = item_impl.trait_.as_ref().map(|(_, path, _)| {
+                        resolve_decl_path(module, &imports, path_segments(path))
+                    });
+                    for impl_item in &item_impl.items {
+                        let ImplItem::Fn(method) = impl_item else {
+                            continue;
+                        };
+                        let method_name = method.sig.ident.to_string();
+                        let provenance = signature_return_provenance(module, &imports, &method.sig);
+                        self.return_provenance
+                            .insert(format!("{}::{method_name}", owner.join("::")), provenance);
+                        if let Some(trait_path) = &trait_path {
+                            self.return_provenance.insert(
+                                format!("{}::{method_name}", trait_path.join("::")),
+                                provenance,
+                            );
+                        }
+                    }
+                }
+                Item::Trait(item_trait) => {
+                    let trait_path =
+                        resolve_decl_path(module, &imports, vec![item_trait.ident.to_string()]);
+                    for trait_item in &item_trait.items {
+                        let TraitItem::Fn(method) = trait_item else {
+                            continue;
+                        };
+                        let provenance = signature_return_provenance(module, &imports, &method.sig);
+                        self.return_provenance.insert(
+                            format!("{}::{}", trait_path.join("::"), method.sig.ident),
+                            provenance,
+                        );
+                    }
+                }
+                Item::Mod(item_mod) => {
+                    if item_mod.attrs.iter().any(is_cfg_test) {
+                        continue;
+                    }
+                    if let Some((_, nested)) = &item_mod.content {
+                        self.index_return_provenance(
+                            &format!("{module}::{}", item_mod.ident),
+                            nested,
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     fn insert_items(&mut self, module: &str, items: &[Item]) {
@@ -212,6 +324,8 @@ impl CallGraph {
             owner.clone(),
             neutral_port_receivers(module, imports, signature),
             receiver_parameters(module, imports, signature),
+            self.return_provenance.clone(),
+            self.local_types.clone(),
         );
         visitor.visit_block(block);
         self.functions.insert(
@@ -452,6 +566,8 @@ struct FactVisitor {
     owner: Option<Vec<String>>,
     neutral_receivers: BTreeMap<String, BTreeSet<String>>,
     receiver_scopes: Vec<BTreeMap<String, ReceiverProvenance>>,
+    return_provenance: BTreeMap<String, ReceiverProvenance>,
+    local_types: BTreeSet<String>,
     facts: FunctionFacts,
 }
 
@@ -462,6 +578,18 @@ enum ReceiverProvenance {
     Unknown,
 }
 
+fn merge_provenance(values: impl IntoIterator<Item = ReceiverProvenance>) -> ReceiverProvenance {
+    let mut merged = ReceiverProvenance::External;
+    for value in values {
+        match value {
+            ReceiverProvenance::Local => return ReceiverProvenance::Local,
+            ReceiverProvenance::Unknown => merged = ReceiverProvenance::Unknown,
+            ReceiverProvenance::External => {}
+        }
+    }
+    merged
+}
+
 impl FactVisitor {
     fn new(
         module: &str,
@@ -469,6 +597,8 @@ impl FactVisitor {
         owner: Option<Vec<String>>,
         neutral_receivers: BTreeMap<String, BTreeSet<String>>,
         receiver_parameters: BTreeMap<String, ReceiverProvenance>,
+        return_provenance: BTreeMap<String, ReceiverProvenance>,
+        local_types: BTreeSet<String>,
     ) -> Self {
         Self {
             module: module.to_string(),
@@ -477,6 +607,8 @@ impl FactVisitor {
             owner,
             neutral_receivers,
             receiver_scopes: vec![receiver_parameters],
+            return_provenance,
+            local_types,
             facts: FunctionFacts::default(),
         }
     }
@@ -505,7 +637,18 @@ impl FactVisitor {
                 if known != ReceiverProvenance::Unknown {
                     known
                 } else {
-                    path_provenance(&self.module, &self.effective_imports(), &path.path)
+                    let imports = self.effective_imports();
+                    let resolved = resolve_call_path(
+                        &self.module,
+                        &imports,
+                        self.owner.as_ref(),
+                        path_segments(&path.path),
+                    )
+                    .join("::");
+                    self.return_provenance
+                        .get(&resolved)
+                        .copied()
+                        .unwrap_or_else(|| path_provenance(&self.module, &imports, &path.path))
                 }
             }
             Expr::Path(path) if path.qself.is_none() => {
@@ -522,25 +665,92 @@ impl FactVisitor {
                 let Expr::Path(path) = call.func.as_ref() else {
                     return ReceiverProvenance::Unknown;
                 };
-                if path.path.segments.len() != 1 {
-                    return ReceiverProvenance::Unknown;
+                let imports = self.effective_imports();
+                let segments = path_segments(&path.path);
+                let mut candidates = vec![resolve_call_path(
+                    &self.module,
+                    &imports,
+                    self.owner.as_ref(),
+                    segments.clone(),
+                )];
+                if let [name] = segments.as_slice() {
+                    if let Some(imported) = imports.aliases.get(name) {
+                        candidates.push(imported.clone());
+                    }
+                    for glob in &imports.globs {
+                        let mut candidate = glob.clone();
+                        candidate.push(name.clone());
+                        candidates.push(candidate);
+                    }
                 }
-                let first = path.path.segments.first().map(|segment| {
-                    segment
-                        .ident
-                        .to_string()
-                        .chars()
-                        .next()
-                        .is_some_and(|character| character.is_ascii_uppercase())
-                });
-                if first == Some(true) {
-                    path_provenance(&self.module, &self.effective_imports(), &path.path)
-                } else {
-                    ReceiverProvenance::Unknown
+                if let Some(provenance) = candidates
+                    .iter()
+                    .find_map(|candidate| self.return_provenance.get(&candidate.join("::")))
+                {
+                    return *provenance;
+                }
+                if path.path.segments.len() > 1 {
+                    let owner = resolve_call_path(
+                        &self.module,
+                        &imports,
+                        self.owner.as_ref(),
+                        path_segments(&path.path)[..path.path.segments.len().saturating_sub(1)]
+                            .to_vec(),
+                    )
+                    .join("::");
+                    if !self.local_types.contains(&owner) {
+                        return ReceiverProvenance::External;
+                    }
+                }
+                match path_provenance(&self.module, &imports, &path.path) {
+                    ReceiverProvenance::Unknown => ReceiverProvenance::Local,
+                    provenance => provenance,
                 }
             }
-            Expr::MethodCall(_) => ReceiverProvenance::Unknown,
+            // Every same-name host method is already connected by the call graph.
+            // Treat the produced value as opaque instead of borrowing an unrelated
+            // same-name method's return type for a later receiver call.
+            Expr::MethodCall(_) => ReceiverProvenance::External,
+            Expr::Field(_) | Expr::Index(_) => ReceiverProvenance::External,
+            Expr::Range(_) => ReceiverProvenance::External,
+            Expr::Block(block) => self.block_provenance(&block.block),
+            Expr::If(expression) => {
+                let mut values = vec![self.block_provenance(&expression.then_branch)];
+                if let Some((_, otherwise)) = &expression.else_branch {
+                    values.push(self.expression_provenance(otherwise));
+                } else {
+                    values.push(ReceiverProvenance::External);
+                }
+                merge_provenance(values)
+            }
+            Expr::Match(expression) => merge_provenance(expression.arms.iter().map(|arm| {
+                let provenance = self.expression_provenance(&arm.body);
+                if provenance == ReceiverProvenance::Unknown {
+                    if let Expr::Path(path) = arm.body.as_ref() {
+                        if path.qself.is_none() && path.path.segments.len() == 1 {
+                            let name = path.path.segments[0].ident.to_string();
+                            if pattern_binds_ident(&arm.pat, &name) {
+                                return ReceiverProvenance::External;
+                            }
+                        }
+                    }
+                }
+                provenance
+            })),
+            Expr::Try(expression) => self.expression_provenance(&expression.expr),
+            Expr::Await(expression) => self.expression_provenance(&expression.base),
+            Expr::Cast(expression) => {
+                type_provenance(&self.module, &self.effective_imports(), &expression.ty)
+            }
+            Expr::Return(_) | Expr::Break(_) | Expr::Continue(_) => ReceiverProvenance::External,
             _ => ReceiverProvenance::Unknown,
+        }
+    }
+
+    fn block_provenance(&self, block: &syn::Block) -> ReceiverProvenance {
+        match block.stmts.last() {
+            Some(Stmt::Expr(expression, None)) => self.expression_provenance(expression),
+            _ => ReceiverProvenance::External,
         }
     }
 }
@@ -562,23 +772,77 @@ impl<'ast> Visit<'ast> for FactVisitor {
 
     fn visit_local(&mut self, node: &'ast syn::Local) {
         visit::visit_local(self, node);
-        let (pattern, provenance) = match &node.pat {
-            Pat::Type(pattern) => (
-                pattern.pat.as_ref(),
-                type_provenance(&self.module, &self.effective_imports(), pattern.ty.as_ref()),
-            ),
-            pattern => (
-                pattern,
-                node.init
-                    .as_ref()
-                    .map(|init| self.expression_provenance(&init.expr))
-                    .unwrap_or(ReceiverProvenance::Unknown),
-            ),
-        };
-        if let Pat::Ident(pattern) = pattern {
-            if let Some(scope) = self.receiver_scopes.last_mut() {
-                scope.insert(pattern.ident.to_string(), provenance);
+        let provenance = match &node.pat {
+            Pat::Type(pattern) => {
+                type_provenance(&self.module, &self.effective_imports(), pattern.ty.as_ref())
             }
+            _ => node
+                .init
+                .as_ref()
+                .map(|init| self.expression_provenance(&init.expr))
+                .unwrap_or(ReceiverProvenance::Unknown),
+        };
+        if let Some(scope) = self.receiver_scopes.last_mut() {
+            bind_pattern(&node.pat, provenance, scope);
+        }
+    }
+
+    fn visit_expr_closure(&mut self, node: &'ast syn::ExprClosure) {
+        let mut scope = BTreeMap::new();
+        for input in &node.inputs {
+            let provenance = if let Pat::Type(pattern) = input {
+                type_provenance(&self.module, &self.effective_imports(), &pattern.ty)
+            } else {
+                ReceiverProvenance::External
+            };
+            bind_pattern(input, provenance, &mut scope);
+        }
+        self.receiver_scopes.push(scope);
+        self.visit_expr(&node.body);
+        self.receiver_scopes.pop();
+    }
+
+    fn visit_expr_for_loop(&mut self, node: &'ast syn::ExprForLoop) {
+        self.visit_expr(&node.expr);
+        let provenance = match self.expression_provenance(&node.expr) {
+            ReceiverProvenance::Unknown => ReceiverProvenance::External,
+            provenance => provenance,
+        };
+        let mut scope = BTreeMap::new();
+        bind_pattern(&node.pat, provenance, &mut scope);
+        self.receiver_scopes.push(scope);
+        self.visit_block(&node.body);
+        self.receiver_scopes.pop();
+    }
+
+    fn visit_expr_match(&mut self, node: &'ast syn::ExprMatch) {
+        self.visit_expr(&node.expr);
+        for arm in &node.arms {
+            let mut scope = BTreeMap::new();
+            // A destructured payload does not inherit the scrutinee enum's
+            // implementation owner. Local method bodies remain reachable through
+            // conservative same-name method edges.
+            bind_pattern(&arm.pat, ReceiverProvenance::External, &mut scope);
+            self.receiver_scopes.push(scope);
+            if let Some((_, guard)) = &arm.guard {
+                self.visit_expr(guard);
+            }
+            self.visit_expr(&arm.body);
+            self.receiver_scopes.pop();
+        }
+    }
+
+    fn visit_expr_if(&mut self, node: &'ast syn::ExprIf) {
+        self.visit_expr(&node.cond);
+        let mut scope = BTreeMap::new();
+        if let Expr::Let(binding) = node.cond.as_ref() {
+            bind_pattern(&binding.pat, ReceiverProvenance::External, &mut scope);
+        }
+        self.receiver_scopes.push(scope);
+        self.visit_block(&node.then_branch);
+        self.receiver_scopes.pop();
+        if let Some((_, otherwise)) = &node.else_branch {
+            self.visit_expr(otherwise);
         }
     }
 
@@ -630,11 +894,8 @@ impl<'ast> Visit<'ast> for FactVisitor {
             .as_ref()
             .and_then(|receiver| self.neutral_receivers.get(receiver))
             .is_some_and(|methods| methods.contains(&method));
-        let fail_if_unresolved = receiver
-            .as_deref()
-            .map(|receiver| self.receiver_provenance(receiver))
-            .unwrap_or_else(|| self.expression_provenance(node.receiver.as_ref()))
-            == ReceiverProvenance::Local;
+        let fail_if_unresolved =
+            self.expression_provenance(node.receiver.as_ref()) != ReceiverProvenance::External;
         self.facts.calls.push(CallFact::Method {
             name: method,
             approved_neutral_port,
@@ -815,6 +1076,86 @@ fn receiver_ident(receiver: &Expr) -> Option<String> {
         .map(|segment| segment.ident.to_string())
 }
 
+fn bind_pattern(
+    pattern: &Pat,
+    provenance: ReceiverProvenance,
+    scope: &mut BTreeMap<String, ReceiverProvenance>,
+) {
+    match pattern {
+        Pat::Ident(pattern) => {
+            scope.insert(pattern.ident.to_string(), provenance);
+            if let Some((_, subpattern)) = &pattern.subpat {
+                bind_pattern(subpattern, provenance, scope);
+            }
+        }
+        Pat::Type(pattern) => bind_pattern(&pattern.pat, provenance, scope),
+        Pat::Reference(pattern) => bind_pattern(&pattern.pat, provenance, scope),
+        Pat::Paren(pattern) => bind_pattern(&pattern.pat, provenance, scope),
+        Pat::Tuple(pattern) => {
+            for element in &pattern.elems {
+                bind_pattern(element, provenance, scope);
+            }
+        }
+        Pat::TupleStruct(pattern) => {
+            for element in &pattern.elems {
+                bind_pattern(element, provenance, scope);
+            }
+        }
+        Pat::Struct(pattern) => {
+            for field in &pattern.fields {
+                bind_pattern(&field.pat, provenance, scope);
+            }
+        }
+        Pat::Slice(pattern) => {
+            for element in &pattern.elems {
+                bind_pattern(element, provenance, scope);
+            }
+        }
+        Pat::Or(pattern) => {
+            for case in &pattern.cases {
+                bind_pattern(case, provenance, scope);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn pattern_binds_ident(pattern: &Pat, name: &str) -> bool {
+    match pattern {
+        Pat::Ident(pattern) => {
+            pattern.ident == name
+                || pattern
+                    .subpat
+                    .as_ref()
+                    .is_some_and(|(_, subpattern)| pattern_binds_ident(subpattern, name))
+        }
+        Pat::Type(pattern) => pattern_binds_ident(&pattern.pat, name),
+        Pat::Reference(pattern) => pattern_binds_ident(&pattern.pat, name),
+        Pat::Paren(pattern) => pattern_binds_ident(&pattern.pat, name),
+        Pat::Tuple(pattern) => pattern
+            .elems
+            .iter()
+            .any(|element| pattern_binds_ident(element, name)),
+        Pat::TupleStruct(pattern) => pattern
+            .elems
+            .iter()
+            .any(|element| pattern_binds_ident(element, name)),
+        Pat::Struct(pattern) => pattern
+            .fields
+            .iter()
+            .any(|field| pattern_binds_ident(&field.pat, name)),
+        Pat::Slice(pattern) => pattern
+            .elems
+            .iter()
+            .any(|element| pattern_binds_ident(element, name)),
+        Pat::Or(pattern) => pattern
+            .cases
+            .iter()
+            .any(|case| pattern_binds_ident(case, name)),
+        _ => false,
+    }
+}
+
 fn neutral_port_receivers(
     module: &str,
     imports: &Imports,
@@ -861,6 +1202,17 @@ fn receiver_parameters(
     parameters
 }
 
+fn signature_return_provenance(
+    module: &str,
+    imports: &Imports,
+    signature: &Signature,
+) -> ReceiverProvenance {
+    match &signature.output {
+        syn::ReturnType::Default => ReceiverProvenance::External,
+        syn::ReturnType::Type(_, ty) => type_provenance(module, imports, ty),
+    }
+}
+
 fn type_provenance(module: &str, imports: &Imports, ty: &Type) -> ReceiverProvenance {
     match ty {
         Type::Reference(reference) => type_provenance(module, imports, &reference.elem),
@@ -871,7 +1223,18 @@ fn type_provenance(module: &str, imports: &Imports, ty: &Type) -> ReceiverProven
             ReceiverProvenance::External
         }
         Type::TraitObject(_) => ReceiverProvenance::Local,
-        Type::ImplTrait(_) => ReceiverProvenance::Unknown,
+        Type::ImplTrait(impl_trait) => {
+            if impl_trait.bounds.iter().all(|bound| {
+                let TypeParamBound::Trait(bound) = bound else {
+                    return true;
+                };
+                path_provenance(module, imports, &bound.path) == ReceiverProvenance::External
+            }) {
+                ReceiverProvenance::External
+            } else {
+                ReceiverProvenance::Local
+            }
+        }
         _ => ReceiverProvenance::Unknown,
     }
 }
@@ -930,6 +1293,15 @@ fn is_prelude_type(name: &str) -> bool {
             | "HashSet"
             | "Arc"
             | "Rc"
+            | "AsMut"
+            | "AsRef"
+            | "Borrow"
+            | "BorrowMut"
+            | "From"
+            | "Into"
+            | "Iterator"
+            | "TryFrom"
+            | "TryInto"
     )
 }
 
@@ -1727,7 +2099,8 @@ fn receiver_method_without_any_candidate_fails_closed() {
         "missing-method-candidate",
         &[(
             "entry.rs",
-            "pub struct Unknown; pub fn run(value: Unknown) { value.hidden_native_reader(); }",
+            "pub struct Unknown; fn make() -> Unknown { Unknown } \
+             pub fn run() { let value = make(); value.hidden_native_reader(); }",
         )],
     );
 
