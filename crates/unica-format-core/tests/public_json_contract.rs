@@ -9,12 +9,11 @@ use unica_format_core::{
         NavigationNode, NavigationSelection, NavigationStatus, ObjectKey, ObjectRef,
         PropertySelection, RelationSelection, ResolutionState,
     },
-    property::{PropertyCapability, PropertyProvenance, SemanticProperty},
+    property::{PropertyCapability, SemanticProperty},
     semantic_ids::{SemanticObjectKind, SemanticPropertyId, SemanticRelationId},
     source::{SnapshotConsistency, SourceId, SourceRevision, SourceSnapshot},
     value::{
-        PropertyType, PropertyValue, StringLength, StringQualifiers, TypeQualifiers, TypeSetValue,
-        TypeVariant,
+        PropertyValue, StringLength, StringQualifiers, TypeQualifiers, TypeSetValue, TypeVariant,
     },
 };
 
@@ -42,29 +41,28 @@ fn navigation_json_has_exact_top_level_fields_and_stable_semantic_keys() {
     node.properties.insert(
         SemanticPropertyId::METADATA_NAME,
         SemanticProperty::explicit(
-            PropertyType::String,
+            SemanticPropertyId::METADATA_NAME,
             PropertyValue::String("Shipment".to_string()),
-            PropertyProvenance::Declared,
         )
         .unwrap()
-        .with_capability(PropertyCapability::ReadOnly),
+        .with_capability(PropertyCapability::ReadOnly)
+        .unwrap(),
     );
     node.properties.insert(
         SemanticPropertyId::METADATA_SYNONYM,
         SemanticProperty::explicit(
-            PropertyType::LocalizedString,
+            SemanticPropertyId::METADATA_SYNONYM,
             PropertyValue::LocalizedString(BTreeMap::from([
                 ("en".to_string(), "Shipment".to_string()),
                 ("ru".to_string(), "Отгрузка".to_string()),
             ])),
-            PropertyProvenance::Declared,
         )
         .unwrap(),
     );
     node.properties.insert(
         SemanticPropertyId::FIELD_TYPE,
         SemanticProperty::explicit(
-            PropertyType::TypeSet,
+            SemanticPropertyId::FIELD_TYPE,
             PropertyValue::TypeSet(TypeSetValue {
                 variants: vec![TypeVariant::Primitive {
                     kind: unica_format_core::value::PrimitiveTypeKind::String,
@@ -74,7 +72,6 @@ fn navigation_json_has_exact_top_level_fields_and_stable_semantic_keys() {
                     })),
                 }],
             }),
-            PropertyProvenance::Declared,
         )
         .unwrap(),
     );
@@ -187,17 +184,15 @@ fn selections_serialize_registered_ids_and_cannot_hold_arbitrary_strings() {
 fn every_property_value_state_uses_the_neutral_envelope() {
     let value = PropertyValue::Integer(11);
     let properties = [
-        SemanticProperty::explicit(
-            PropertyType::Integer,
-            value.clone(),
-            PropertyProvenance::Declared,
-        )
-        .unwrap(),
-        SemanticProperty::defaulted(PropertyType::Integer, value.clone()).unwrap(),
-        SemanticProperty::inherited(PropertyType::Integer, value.clone()).unwrap(),
-        SemanticProperty::computed(PropertyType::Integer, value).unwrap(),
-        SemanticProperty::absent(PropertyType::Integer),
-        SemanticProperty::unresolved(PropertyType::Integer),
+        SemanticProperty::explicit(SemanticPropertyId::DOCUMENT_NUMBER_LENGTH, value.clone())
+            .unwrap(),
+        SemanticProperty::defaulted(SemanticPropertyId::DOCUMENT_NUMBER_LENGTH, value.clone())
+            .unwrap(),
+        SemanticProperty::inherited(SemanticPropertyId::DOCUMENT_NUMBER_LENGTH, value.clone())
+            .unwrap(),
+        SemanticProperty::computed(SemanticPropertyId::DOCUMENT_NUMBER_LENGTH, value).unwrap(),
+        SemanticProperty::absent(SemanticPropertyId::DOCUMENT_NUMBER_LENGTH),
+        SemanticProperty::unresolved(SemanticPropertyId::DOCUMENT_NUMBER_LENGTH),
     ];
     let states = properties
         .into_iter()

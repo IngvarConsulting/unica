@@ -2,12 +2,12 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
 use uuid::Uuid;
 
 use crate::{navigation::ObjectRef, semantic_ids::SemanticEnumValue};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PropertyType {
     Boolean,
@@ -26,13 +26,13 @@ pub enum PropertyType {
     Unknown,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TypeSetValue {
     pub variants: Vec<TypeVariant>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PrimitiveTypeKind {
     Boolean,
@@ -52,21 +52,21 @@ impl PrimitiveTypeKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum StringLength {
     Fixed,
     Variable,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum NumberSign {
     Any,
     Nonnegative,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DateFractions {
     Date,
@@ -74,7 +74,7 @@ pub enum DateFractions {
     Time,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StringQualifiers {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -83,7 +83,7 @@ pub struct StringQualifiers {
     pub allowed_length: Option<StringLength>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NumberQualifiers {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -94,14 +94,14 @@ pub struct NumberQualifiers {
     pub allowed_sign: Option<NumberSign>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DateQualifiers {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub date_fractions: Option<DateFractions>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TypeQualifiers {
     String(StringQualifiers),
@@ -111,7 +111,7 @@ pub enum TypeQualifiers {
 
 /// A complete 1C type variant. Native qualified names are normalized before
 /// they enter this contract.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TypeVariant {
     Primitive {
@@ -146,6 +146,27 @@ pub enum PropertyValue {
     Structure(BTreeMap<String, PropertyValue>),
     Null,
     Unknown { summary: String },
+}
+
+impl PropertyValue {
+    pub const fn value_type(&self) -> PropertyType {
+        match self {
+            Self::Boolean(_) => PropertyType::Boolean,
+            Self::Integer(_) => PropertyType::Integer,
+            Self::Decimal(_) => PropertyType::Decimal,
+            Self::String(_) => PropertyType::String,
+            Self::LocalizedString(_) => PropertyType::LocalizedString,
+            Self::Uuid(_) => PropertyType::Uuid,
+            Self::EnumSymbol(_) => PropertyType::Enum,
+            Self::Date(_) => PropertyType::Date,
+            Self::TypeSet(_) => PropertyType::TypeSet,
+            Self::ObjectRef(_) => PropertyType::ObjectRef,
+            Self::List(_) => PropertyType::List,
+            Self::Structure(_) => PropertyType::Structure,
+            Self::Null => PropertyType::Null,
+            Self::Unknown { .. } => PropertyType::Unknown,
+        }
+    }
 }
 
 impl Serialize for PropertyValue {

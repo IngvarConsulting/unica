@@ -258,9 +258,10 @@ impl CachedNavigation {
     pub(crate) fn new(
         scope: String,
         binding: SourceBinding,
-        navigation: unica_format_core::navigation::NavigationEnvelope,
+        mut navigation: unica_format_core::navigation::NavigationEnvelope,
         limits: SnapshotCacheLimits,
     ) -> Result<Self, SourceAdapterError> {
+        navigation.reconcile_partial_coverage();
         validate_cached_navigation_key(&scope, &binding, limits)?;
         validate_navigation_cache_payload(&binding, &navigation, limits)?;
         let charge = CachedNavigationCharge {
@@ -445,9 +446,9 @@ fn validate_navigation_node(
     validate_capability_vector(&node.capability)?;
     validate_action_profile(node.action_profile)?;
     validate_navigation_facet_visibility(node.facet_visibility)?;
-    for (name, property) in &node.properties {
-        validate_semantic_string(name.as_str(), limits.max_semantic_string_bytes)?;
-        validate_semantic_property(property, limits)?;
+    for (id, property) in &node.properties {
+        validate_semantic_string(id.as_str(), limits.max_semantic_string_bytes)?;
+        validate_semantic_property(*id, property, limits)?;
     }
     for descriptor in &node.semantic_actions {
         validate_semantic_action_descriptor(descriptor)?;
@@ -459,18 +460,20 @@ fn validate_navigation_node(
 }
 
 fn validate_semantic_property(
+    id: unica_format_core::navigation::SemanticPropertyId,
     property: &unica_format_core::navigation::SemanticProperty,
     limits: SnapshotCacheLimits,
 ) -> Result<(), SourceAdapterError> {
-    validate_property_type(&property.value_type, limits.max_semantic_string_bytes)?;
-    validate_property_value_state(property.value_state)?;
-    validate_property_provenance(property.provenance)?;
-    validate_property_capability(property.capability)?;
-    if let Some(value) = &property.value {
+    property.validate_for(id)?;
+    validate_property_type(&property.value_type(), limits.max_semantic_string_bytes)?;
+    validate_property_value_state(property.value_state())?;
+    validate_property_provenance(property.provenance())?;
+    validate_property_capability(property.capability())?;
+    if let Some(value) = property.value() {
         validate_property_value(value, limits, 0)?;
     }
     serialized_bytes_with_limit(property, limits.max_property_bytes)?;
-    if let Some(value) = &property.value {
+    if let Some(value) = property.value() {
         serialized_bytes_with_limit(value, limits.max_property_value_bytes)?;
     }
     Ok(())
@@ -1187,7 +1190,7 @@ impl<'a> BindingValidator<'a> {
         self.validate_object_ref(&node.reference)?;
         self.charge(node.properties.len())?;
         for property in node.properties.values() {
-            if let Some(value) = &property.value {
+            if let Some(value) = property.value() {
                 self.validate_property_value(value, 0)?;
             }
         }
@@ -1329,9 +1332,9 @@ mod tests {
         navigation::{
             ActionAvailability, Atomicity, Authorability, CapabilityState, IdentityStrength,
             NavigationRelationPage, NavigationStatus, NodeKind, ObjectKey, ObjectRef,
-            OperationBinding, PropertyCapability, PropertyProvenance, PropertyType, PropertyValue,
-            PropertyValueState, RelationGroupRef, RelationKind, RelationRole, ResolutionState,
-            SemanticAction, SemanticProperty, SemanticPropertyId, SourceAdapterDiagnostic,
+            OperationBinding, PropertyCapability, PropertyValue, RelationGroupRef, RelationKind,
+            RelationRole, ResolutionState, SemanticAction, SemanticProperty, SemanticPropertyId,
+            SourceAdapterDiagnostic,
         },
         source::{SnapshotConsistency, SourceRevision, SourceSnapshot},
     };
@@ -1355,8 +1358,10 @@ mod tests {
             reference.clone(),
             CapabilityState::new(ResolutionState::Resolved, Authorability::DerivedReadOnly),
         );
-        node.properties
-            .insert(SemanticPropertyId::METADATA_NAME, string_property("Items"));
+        node.properties.insert(
+            SemanticPropertyId::METADATA_NAME,
+            string_property(SemanticPropertyId::METADATA_NAME, "Items"),
+        );
         (
             test_cache_binding(&snapshot),
             NavigationEnvelope {
@@ -1372,18 +1377,45 @@ mod tests {
         )
     }
 
-    fn string_property(value: &str) -> SemanticProperty {
-        SemanticProperty {
-            value_type: PropertyType::String,
-            value_state: PropertyValueState::Explicit,
-            value: Some(PropertyValue::String(value.to_string())),
-            provenance: PropertyProvenance::Declared,
-            capability: PropertyCapability::ReadOnly,
-        }
+    fn string_property(id: SemanticPropertyId, value: &str) -> SemanticProperty {
+        SemanticProperty::explicit(id, PropertyValue::String(value.to_string()))
+            .unwrap()
+            .with_capability(PropertyCapability::ReadOnly)
+            .unwrap()
     }
 
-    fn first_property(navigation: &mut NavigationEnvelope) -> &mut SemanticProperty {
-        navigation.nodes[0].properties.values_mut().next().unwrap()
+    #[test]
+    fn cache_rejects_a_property_type_not_registered_for_its_key() {
+        let (binding, mut navigation) = fixture();
+        navigation.nodes[0].properties.insert(
+            SemanticPropertyId::METADATA_NAME,
+            SemanticProperty::explicit(
+                SemanticPropertyId::DOCUMENT_NUMBER_LENGTH,
+                PropertyValue::Integer(11),
+            )
+            .unwrap()
+            .with_capability(PropertyCapability::ReadOnly)
+            .unwrap(),
+        );
+
+        let error = CachedNavigation::new(
+            "divergent-property-type".to_string(),
+            binding,
+            navigation,
+            DEFAULT_SNAPSHOT_CACHE_LIMITS,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, SourceAdapterErrorKind::ProjectionAmbiguous);
+    }
+
+    fn set_fill_value(navigation: &mut NavigationEnvelope, value: PropertyValue) {
+        navigation.nodes[0].properties = BTreeMap::from([(
+            SemanticPropertyId::FIELD_FILL_VALUE,
+            SemanticProperty::explicit(SemanticPropertyId::FIELD_FILL_VALUE, value)
+                .unwrap()
+                .with_capability(PropertyCapability::ReadOnly)
+                .unwrap(),
+        )]);
     }
 
     #[test]
@@ -1416,7 +1448,7 @@ mod tests {
         node.semantic_actions.clear();
         node.properties.insert(
             SemanticPropertyId::METADATA_COMMENT,
-            string_property("value"),
+            string_property(SemanticPropertyId::METADATA_COMMENT, "value"),
         );
         navigation.nodes = (0..25_000).map(|_| node.clone()).collect();
         let cached = CachedNavigation::new(
@@ -1434,17 +1466,16 @@ mod tests {
         let (binding, mut navigation) = fixture();
         navigation.nodes[0].properties = BTreeMap::from([(
             SemanticPropertyId::FIELD_FILL_VALUE,
-            SemanticProperty {
-                value_type: PropertyType::List,
-                value_state: PropertyValueState::Explicit,
-                value: Some(PropertyValue::List(vec![
+            SemanticProperty::explicit(
+                SemanticPropertyId::FIELD_FILL_VALUE,
+                PropertyValue::List(vec![
                     PropertyValue::Null;
-                    MAX_IDENTITY_BEARING_VALIDATION_ITEMS
-                        + 1
-                ])),
-                provenance: PropertyProvenance::Declared,
-                capability: PropertyCapability::ReadOnly,
-            },
+                    MAX_IDENTITY_BEARING_VALIDATION_ITEMS + 1
+                ]),
+            )
+            .unwrap()
+            .with_capability(PropertyCapability::ReadOnly)
+            .unwrap(),
         )]);
         let error = CachedNavigation::new(
             "over-limit-identity-graph".to_string(),
@@ -1479,7 +1510,7 @@ mod tests {
         for _ in 0..=SNAPSHOT_CACHE_MAX_PROPERTY_VALUE_DEPTH {
             value = PropertyValue::List(vec![value]);
         }
-        first_property(&mut navigation).value = Some(value);
+        set_fill_value(&mut navigation, value);
         let error = CachedNavigation::new(
             "depth-limit".to_string(),
             binding,
@@ -1499,7 +1530,7 @@ mod tests {
                 .unwrap(),
             2,
         );
-        first_property(&mut navigation).value = Some(shallow);
+        set_fill_value(&mut navigation, shallow);
         let entry = CachedNavigation::new(
             "broad-shallow".to_string(),
             binding,
@@ -1542,7 +1573,7 @@ mod tests {
                 )
             })
             .collect();
-        first_property(&mut navigation).value = Some(PropertyValue::Structure(values));
+        set_fill_value(&mut navigation, PropertyValue::Structure(values));
         let entry = CachedNavigation::new(
             "structured-value".to_string(),
             binding,
@@ -1556,9 +1587,10 @@ mod tests {
     #[test]
     fn individual_semantic_string_larger_than_limit_is_not_cacheable() {
         let (binding, mut navigation) = fixture();
-        first_property(&mut navigation).value = Some(PropertyValue::String(
-            "x".repeat(SNAPSHOT_CACHE_MAX_SEMANTIC_STRING_BYTES + 1),
-        ));
+        set_fill_value(
+            &mut navigation,
+            PropertyValue::String("x".repeat(SNAPSHOT_CACHE_MAX_SEMANTIC_STRING_BYTES + 1)),
+        );
         let error = CachedNavigation::new(
             "semantic-string".to_string(),
             binding,
@@ -1577,7 +1609,13 @@ mod tests {
         for _ in 0..=SNAPSHOT_CACHE_MAX_PROPERTY_VALUE_DEPTH {
             value = PropertyValue::List(vec![value]);
         }
-        item.properties.values_mut().next().unwrap().value = Some(value);
+        item.properties = BTreeMap::from([(
+            SemanticPropertyId::FIELD_FILL_VALUE,
+            SemanticProperty::explicit(SemanticPropertyId::FIELD_FILL_VALUE, value)
+                .unwrap()
+                .with_capability(PropertyCapability::ReadOnly)
+                .unwrap(),
+        )]);
         let owner = navigation.root.clone().unwrap();
         navigation.relations.push(NavigationRelationPage {
             relation: RelationGroupRef::new(

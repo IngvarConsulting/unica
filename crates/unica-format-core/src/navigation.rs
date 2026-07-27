@@ -27,8 +27,11 @@ use crate::source::{
 };
 pub use crate::{
     facets::SemanticFacets,
-    property::{PropertyCapability, PropertyProvenance, PropertyValueState, SemanticProperty},
-    semantic_ids::{SemanticObjectKind, SemanticPropertyId, SemanticRelationId},
+    property::{
+        property_definition, PropertyCapability, PropertyProvenance, PropertyValueState,
+        SemanticProperty,
+    },
+    semantic_ids::{SemanticEnumValue, SemanticObjectKind, SemanticPropertyId, SemanticRelationId},
     value::{
         DateFractions, DateQualifiers, NumberQualifiers, NumberSign, PrimitiveTypeKind,
         PropertyType, PropertyValue, StringLength, StringQualifiers, TypeQualifiers, TypeSetValue,
@@ -1048,6 +1051,62 @@ impl NavigationEnvelope {
             .find(|node| node.object_ref.display_name == name)
             .and_then(|node| node.actions.iter().find(|action| action.kind == kind))
     }
+
+    pub fn reconcile_partial_coverage(&mut self) {
+        if self.status == NavigationStatus::Unavailable {
+            return;
+        }
+        let partial = self.status == NavigationStatus::Partial
+            || self.nodes.iter().any(node_has_partial_coverage)
+            || self
+                .relations
+                .iter()
+                .flat_map(|page| page.items.iter())
+                .any(node_has_partial_coverage)
+            || self.relation_index.iter().any(|relation| {
+                relation.capability.coverage == CoverageState::Partial
+                    || relation.capability.resolution == ResolutionState::Unresolved
+            });
+        if partial {
+            self.mark_partial_coverage();
+        }
+    }
+
+    pub fn mark_partial_coverage(&mut self) {
+        if self.status == NavigationStatus::Unavailable {
+            return;
+        }
+        self.status = NavigationStatus::Partial;
+        if !self
+            .diagnostics
+            .iter()
+            .any(SourceAdapterDiagnostic::explains_partial_coverage)
+        {
+            self.diagnostics.push(SourceAdapterDiagnostic {
+                code: "partialCoverage".to_string(),
+                message: "requested semantic coverage is partial".to_string(),
+                details: None,
+            });
+        }
+    }
+}
+
+impl SourceAdapterDiagnostic {
+    pub fn explains_partial_coverage(&self) -> bool {
+        matches!(
+            self.code.as_str(),
+            "partialCoverage" | "unmappedSemanticFact" | "unresolvedSemanticFact"
+        )
+    }
+}
+
+fn node_has_partial_coverage(node: &NavigationNode) -> bool {
+    node.capability.coverage == CoverageState::Partial
+        || node.capability.resolution == ResolutionState::Unresolved
+        || node.properties.values().any(|property| {
+            property.value_type() == PropertyType::Unknown
+                || property.value_state() == PropertyValueState::Unresolved
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2098,9 +2157,8 @@ mod tests {
     #[test]
     fn properties_preserve_type_value_and_value_state() {
         let property = SemanticProperty::explicit(
-            PropertyType::Integer,
+            SemanticPropertyId::DOCUMENT_NUMBER_LENGTH,
             PropertyValue::Integer(11),
-            PropertyProvenance::Declared,
         )
         .unwrap();
         let value = serde_json::to_value(property).unwrap();
@@ -2112,9 +2170,8 @@ mod tests {
     #[test]
     fn incompatible_property_type_and_value_are_rejected() {
         let error = SemanticProperty::explicit(
-            PropertyType::Integer,
+            SemanticPropertyId::DOCUMENT_NUMBER_LENGTH,
             PropertyValue::String("11".to_string()),
-            PropertyProvenance::Declared,
         )
         .unwrap_err();
         assert_eq!(error.kind, SourceAdapterErrorKind::ProjectionAmbiguous);
@@ -2597,8 +2654,11 @@ mod tests {
 
     #[test]
     fn defaulted_property_keeps_a_typed_exact_projector_profile() {
-        let property =
-            SemanticProperty::defaulted(PropertyType::Integer, PropertyValue::Integer(11)).unwrap();
+        let property = SemanticProperty::defaulted(
+            SemanticPropertyId::DOCUMENT_NUMBER_LENGTH,
+            PropertyValue::Integer(11),
+        )
+        .unwrap();
         let value = serde_json::to_value(property).unwrap();
         assert_eq!(value["valueState"], "defaulted");
         assert_eq!(value["provenance"], "default");

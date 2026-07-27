@@ -453,7 +453,7 @@ impl<'a> BindingValidator<'a> {
         self.validate_object_ref(&node.reference)?;
         self.charge(node.properties.len())?;
         for property in node.properties.values() {
-            if let Some(value) = &property.value {
+            if let Some(value) = property.value() {
                 self.validate_property_value(value, 0)?;
             }
         }
@@ -598,9 +598,8 @@ mod registry_tests {
         navigation::{
             CapabilityState, IdentityStrength, NavigationCursor, NavigationNode,
             NavigationRelationPage, NodeKind, ObjectKey, ObjectRef, PropertyCapability,
-            PropertyProvenance, PropertyType, PropertyValue, PropertyValueState, RelationGroupRef,
-            RelationKey, RelationKind, RelationRef, RelationRole, SemanticAction, SemanticProperty,
-            SemanticRelation, SourceAdapterDiagnostic,
+            PropertyValue, RelationGroupRef, RelationKey, RelationKind, RelationRef, RelationRole,
+            SemanticAction, SemanticProperty, SemanticRelation, SourceAdapterDiagnostic,
         },
         source::{
             AdapterMaturity, FormatRange, FormatVersion, SnapshotConsistency, SnapshotEvidence,
@@ -1143,16 +1142,10 @@ mod registry_tests {
         let mut nodes = Vec::with_capacity(25_000);
         for index in 0..25_000 {
             let mut node = bound_node(bound_reference(&binding, &format!("ordinary-{index}")));
-            node.properties = std::collections::BTreeMap::from([
-                (
-                    unica_format_core::semantic_ids::SemanticPropertyId::METADATA_NAME,
-                    property.clone(),
-                ),
-                (
-                    unica_format_core::semantic_ids::SemanticPropertyId::METADATA_COMMENT,
-                    property.clone(),
-                ),
-            ]);
+            node.properties = std::collections::BTreeMap::from([(
+                unica_format_core::semantic_ids::SemanticPropertyId::FIELD_FILL_VALUE,
+                property.clone(),
+            )]);
             nodes.push(node);
         }
         let envelope = available_envelope(None, nodes);
@@ -1429,7 +1422,7 @@ mod registry_tests {
             }
             None => {
                 envelope.nodes[0].properties.insert(
-                    unica_format_core::semantic_ids::SemanticPropertyId::METADATA_COMMENT,
+                    unica_format_core::semantic_ids::SemanticPropertyId::FIELD_FILL_VALUE,
                     structure_property(PropertyValue::Structure(std::collections::BTreeMap::from(
                         [
                             (
@@ -1516,13 +1509,13 @@ mod registry_tests {
     }
 
     fn structure_property(value: PropertyValue) -> SemanticProperty {
-        SemanticProperty {
-            value_type: PropertyType::Structure,
-            value_state: PropertyValueState::Explicit,
-            value: Some(value),
-            provenance: PropertyProvenance::Declared,
-            capability: PropertyCapability::ReadOnly,
-        }
+        SemanticProperty::explicit(
+            unica_format_core::semantic_ids::SemanticPropertyId::FIELD_FILL_VALUE,
+            value,
+        )
+        .unwrap()
+        .with_capability(PropertyCapability::ReadOnly)
+        .unwrap()
     }
 
     fn available_envelope(

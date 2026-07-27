@@ -325,7 +325,7 @@ fn inspect_located_source(
             binding,
         ));
     }
-    let envelope = located.registration.read.read(&FormatReadRequest {
+    let mut envelope = located.registration.read.read(&FormatReadRequest {
         captured,
         query: NavigationQuery {
             target: NavigationTarget::CapturedTarget(binding.target_identity.clone()),
@@ -336,6 +336,7 @@ fn inspect_located_source(
             },
         },
     })?;
+    envelope.reconcile_partial_coverage();
     validate_ready_envelope(&envelope, &binding, &located.registration)?;
     Ok((envelope, binding))
 }
@@ -477,7 +478,7 @@ pub(crate) fn materialize_navigation_pages_with_secret(
                 "navigation target cannot be re-resolved from the retained snapshot",
             )
         })?;
-    let target_node = project_selected_node(target_node, &selection);
+    let mut target_node = project_selected_node(target_node, &selection);
     let bound_group = cursor
         .as_ref()
         .map(|cursor| {
@@ -596,18 +597,37 @@ pub(crate) fn materialize_navigation_pages_with_secret(
             next_cursor,
         });
     }
-    Ok(NavigationEnvelope {
+    let requested_property_missing = match &selection.properties {
+        PropertySelection::All => false,
+        PropertySelection::Named(names) => std::iter::once(&target_node)
+            .chain(pages.iter().flat_map(|page| page.items.iter()))
+            .any(|node| names.iter().any(|name| !node.properties.contains_key(name))),
+    };
+    target_node.facets = unica_format_core::facets::SemanticFacets::for_available(
+        target_node.properties.keys().copied(),
+        pages.iter().map(|page| page.relation.role),
+    );
+    let diagnostics =
+        if include_cached_diagnostics || navigation.status == NavigationStatus::Partial {
+            navigation.diagnostics.clone()
+        } else {
+            Vec::new()
+        };
+    let mut projected = NavigationEnvelope {
         schema_version: navigation.schema_version.clone(),
         status: navigation.status,
         snapshot: Some(snapshot),
         root: Some(target),
         nodes: vec![target_node],
         relations: pages,
-        diagnostics: include_cached_diagnostics
-            .then(|| navigation.diagnostics.clone())
-            .unwrap_or_default(),
+        diagnostics,
         relation_index: Arc::clone(&navigation.relation_index),
-    })
+    };
+    if requested_property_missing {
+        projected.mark_partial_coverage();
+    }
+    projected.reconcile_partial_coverage();
+    Ok(projected)
 }
 
 pub(crate) fn project_selected_node(
@@ -617,6 +637,10 @@ pub(crate) fn project_selected_node(
     if let PropertySelection::Named(names) = &selection.properties {
         node.properties.retain(|name, _| names.contains(name));
     }
+    node.facets = unica_format_core::facets::SemanticFacets::for_available(
+        node.properties.keys().copied(),
+        std::iter::empty(),
+    );
     node.facet_visibility = match selection.facets {
         FacetSelection::None => NavigationFacetVisibility::None,
         FacetSelection::Summary => NavigationFacetVisibility::Summary,
@@ -644,9 +668,9 @@ mod tests {
     use unica_format_core::{
         navigation::{
             Authorability, CapabilityState, IdentityStrength, NodeKind, PropertyCapability,
-            PropertyProvenance, PropertyType, PropertyValue, PropertyValueState, RelationGroupRef,
-            RelationKind, RelationRef, RelationRole, ResolutionState, SemanticProperty,
-            SemanticPropertyId, SemanticRelation, SourceAdapterDiagnostic,
+            PropertyValue, RelationGroupRef, RelationKind, RelationRef, RelationRole,
+            ResolutionState, SemanticProperty, SemanticPropertyId, SemanticRelation,
+            SourceAdapterDiagnostic,
         },
         ports::{
             AdapterFormatProfile, CapturePort, CapturedSource, CapturedSourceSession,
@@ -897,12 +921,13 @@ mod tests {
         let configuration = object_ref(&source_id, "uuid:configuration", "Configuration");
         let item = object_ref(&source_id, "uuid:items", "Items");
         let mut item_node = node(item.clone());
-        item_node
-            .properties
-            .insert(SemanticPropertyId::METADATA_NAME, string_property("Items"));
+        item_node.properties.insert(
+            SemanticPropertyId::METADATA_NAME,
+            string_property(SemanticPropertyId::METADATA_NAME, "Items"),
+        );
         item_node.properties.insert(
             SemanticPropertyId::METADATA_SYNONYM,
-            string_property("Items synonym"),
+            string_property(SemanticPropertyId::METADATA_SYNONYM, "Items synonym"),
         );
         let mut nodes = vec![item_node];
         let mut relations = vec![relation(
@@ -922,12 +947,16 @@ mod tests {
             };
             let attribute = object_ref(&source_id, &format!("uuid:attribute-{index}"), &name);
             let mut attribute_node = node(attribute.clone());
-            attribute_node
-                .properties
-                .insert(SemanticPropertyId::METADATA_NAME, string_property(&name));
+            attribute_node.properties.insert(
+                SemanticPropertyId::METADATA_NAME,
+                string_property(SemanticPropertyId::METADATA_NAME, &name),
+            );
             attribute_node.properties.insert(
                 SemanticPropertyId::METADATA_SYNONYM,
-                string_property(&format!("{name} synonym")),
+                string_property(
+                    SemanticPropertyId::METADATA_SYNONYM,
+                    &format!("{name} synonym"),
+                ),
             );
             nodes.push(attribute_node);
             relations.push(relation(
@@ -976,14 +1005,19 @@ mod tests {
         )
     }
 
-    fn string_property(value: &str) -> SemanticProperty {
-        SemanticProperty {
-            value_type: PropertyType::String,
-            value_state: PropertyValueState::Explicit,
-            value: Some(PropertyValue::String(value.to_string())),
-            provenance: PropertyProvenance::Declared,
-            capability: PropertyCapability::ReadOnly,
-        }
+    fn string_property(id: SemanticPropertyId, value: &str) -> SemanticProperty {
+        let value = if id == SemanticPropertyId::METADATA_SYNONYM {
+            PropertyValue::LocalizedString(std::collections::BTreeMap::from([(
+                "und".to_string(),
+                value.to_string(),
+            )]))
+        } else {
+            PropertyValue::String(value.to_string())
+        };
+        SemanticProperty::explicit(id, value)
+            .unwrap()
+            .with_capability(PropertyCapability::ReadOnly)
+            .unwrap()
     }
 
     fn relation(
@@ -1116,6 +1150,79 @@ mod tests {
             &harness.inspect(path_command(None)),
             "snapshot_inconsistent",
         );
+    }
+
+    #[test]
+    fn partial_node_forces_partial_envelope_and_neutral_diagnostic() {
+        let harness = Harness::new(1, "2.20");
+        harness.port.envelope.lock().unwrap().nodes[0]
+            .capability
+            .coverage = unica_format_core::navigation::CoverageState::Partial;
+
+        let result = harness.first_page(1);
+
+        assert_eq!(result.status, NavigationStatus::Partial);
+        assert!(result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "partialCoverage"));
+    }
+
+    #[test]
+    fn partial_cursor_retains_explanatory_diagnostics() {
+        let harness = Harness::new(2, "2.20");
+        {
+            let mut envelope = harness.port.envelope.lock().unwrap();
+            envelope.status = NavigationStatus::Partial;
+            envelope.nodes[0].capability.coverage =
+                unica_format_core::navigation::CoverageState::Partial;
+            envelope.diagnostics.push(SourceAdapterDiagnostic {
+                code: "unmappedSemanticFact".to_string(),
+                message: "a semantic fact is not mapped".to_string(),
+                details: None,
+            });
+        }
+        let first = harness.first_page(1);
+
+        let continued = harness.inspect(cursor_command(
+            first.relations[0].next_cursor.clone().unwrap(),
+        ));
+
+        assert_eq!(continued.status, NavigationStatus::Partial);
+        assert!(continued
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "unmappedSemanticFact"));
+    }
+
+    #[test]
+    fn selected_facets_reference_only_returned_properties_and_relation_pages() {
+        let harness = Harness::new(2, "2.20");
+        {
+            let mut envelope = harness.port.envelope.lock().unwrap();
+            let item = &mut envelope.nodes[0];
+            item.facets = unica_format_core::facets::SemanticFacets::for_available(
+                item.properties.keys().copied(),
+                [SemanticRelationId::ATTRIBUTES, SemanticRelationId::COMMANDS],
+            );
+        }
+        let result = harness.inspect(path_command(Some(selection(
+            PropertySelection::Named(BTreeSet::from([SemanticPropertyId::METADATA_NAME])),
+            FacetSelection::Full,
+            RelationKind::Contains,
+            1,
+        ))));
+
+        let value = serde_json::to_value(&result).unwrap();
+        assert_eq!(
+            value["nodes"][0]["facets"]["identity"],
+            serde_json::json!(["metadata.name"])
+        );
+        assert_eq!(
+            value["nodes"][0]["facets"]["fields"],
+            serde_json::json!(["attributes"])
+        );
+        assert!(!value["nodes"][0]["facets"].to_string().contains("commands"));
     }
 
     #[test]
@@ -1291,21 +1398,22 @@ mod tests {
         *harness.port.target_identity.lock().unwrap() = second_identity.clone();
         harness.resolver.located.lock().unwrap().target_identity = second_identity;
         let mut second_envelope = fixture_envelope(2);
-        second_envelope.nodes[0]
-            .properties
-            .insert(SemanticPropertyId::METADATA_NAME, string_property("Other"));
+        second_envelope.nodes[0].properties.insert(
+            SemanticPropertyId::METADATA_NAME,
+            string_property(SemanticPropertyId::METADATA_NAME, "Other"),
+        );
         *harness.port.envelope.lock().unwrap() = second_envelope;
         let second = harness.first_page(1);
         assert_eq!(
-            second.nodes[0].properties[&SemanticPropertyId::METADATA_NAME].value,
-            Some(PropertyValue::String("Other".to_string()))
+            second.nodes[0].properties[&SemanticPropertyId::METADATA_NAME].value(),
+            Some(&PropertyValue::String("Other".to_string()))
         );
 
         let continued = harness.inspect(cursor_command(first_cursor));
         assert_eq!(continued.root, first.root);
         assert_eq!(
-            continued.nodes[0].properties[&SemanticPropertyId::METADATA_NAME].value,
-            Some(PropertyValue::String("Items".to_string()))
+            continued.nodes[0].properties[&SemanticPropertyId::METADATA_NAME].value(),
+            Some(&PropertyValue::String("Items".to_string()))
         );
         assert_unavailable(
             &harness.inspect(object_command(
