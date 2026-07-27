@@ -359,37 +359,6 @@ fn classify_source_format(
     }
 }
 
-pub(crate) fn classify_physical_source_inventory<'a>(
-    kind: SourceSetKind,
-    relative_files: impl IntoIterator<Item = &'a Path>,
-) -> SourceFormat {
-    let mut has_platform_evidence = false;
-    let mut has_edt_evidence = false;
-    for relative in relative_files {
-        if relative == Path::new("Configuration.xml") {
-            has_platform_evidence = true;
-        }
-        if EDT_SOURCE_MARKERS
-            .iter()
-            .any(|marker| relative == Path::new(marker))
-        {
-            has_edt_evidence = true;
-        }
-        if matches!(
-            kind,
-            SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
-        ) && relative.parent().is_none()
-            && relative
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
-        {
-            has_platform_evidence = true;
-        }
-    }
-    classify_source_format(has_platform_evidence, has_edt_evidence, None)
-}
-
 fn platform_xml_evidence(
     workspace_root: &Path,
     source_root: &Path,

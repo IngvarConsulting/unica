@@ -9,30 +9,7 @@
 
 #![cfg_attr(windows, allow(dead_code))]
 
-use crate::application::AdapterOutcome;
-use crate::domain::cancellation::CancellationToken;
-use crate::domain::format_profile::ACTIVE_FORMAT_PROFILE;
-use crate::domain::project_sources::{SourceFormat, SourceSetKind};
-use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::bundled_tools::resolve_bundled_tool;
-use crate::infrastructure::internal_adapters::{
-    system_process_runner, ProcessCommand, ProcessOutput, ProcessRunner,
-};
-use crate::infrastructure::native_operations::single_file_publisher::{
-    with_publication_locks_mode, PublicationTreeLockMode,
-};
-#[cfg(unix)]
-use crate::infrastructure::platform::filesystem::hard_link_count;
-use crate::infrastructure::platform::filesystem::{
-    file_identity, metadata_is_link_or_reparse_point, restrict_stage_to_owner, FileIdentity,
-};
-use crate::infrastructure::platform_xml_owner::{
-    inspect_platform_xml_compatibility, inspect_platform_xml_versionless, FormatCompatibility,
-};
-use crate::infrastructure::plugin_runtime::find_plugin_root;
-use crate::infrastructure::project_sources::classify_physical_source_inventory;
-use crate::infrastructure::redaction::redactor;
-use crate::infrastructure::source_roots::normalize_path_identity;
+use crate::versions::v2_20;
 use roxmltree::Document;
 use serde_json::{Map, Value};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
@@ -48,7 +25,21 @@ use std::fs::{self, File};
 use std::io::Read;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
+use unica_format_core::{
+    ports::{
+        FormatCompatibility, FormatInspectionMode, FormatInspectionRequest,
+        OperationCancellation as CancellationToken, PublicationHostPort, PublicationLockResult,
+        PublicationPort, PublicationProcessCommand as ProcessCommand,
+        PublicationProcessOutput as ProcessOutput, PublicationRequest, PublicationResult,
+    },
+    redaction::redactor,
+    source::{
+        ConfiguredSourceSetKind as SourceSetKind, SourceAdapterError, SourceAdapterErrorKind,
+        SourceContext, SourceFamily, SourceLocation,
+    },
+};
 use uuid::Uuid;
 
 #[cfg(unix)]
@@ -56,13 +47,410 @@ use std::os::fd::{AsRawFd, FromRawFd};
 #[cfg(unix)]
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 
-const TARGET_PLATFORM_LINE: &str = ACTIVE_FORMAT_PROFILE.platform_line;
-const TARGET_EXPORT_FORMAT: &str = ACTIVE_FORMAT_PROFILE.export_format;
+const TARGET_PLATFORM_LINE: &str = v2_20::PLATFORM_LINE;
+const TARGET_EXPORT_FORMAT: &str = v2_20::EXPORT_FORMAT;
 const EFFECTIVE_CONFIG_NAME: &str = "v8project.yaml";
 const LOCAL_CONFIG_NAME: &str = "v8project.local.yaml";
 const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 const BUILD_DUMP_TIMEOUT: Duration = Duration::from_secs(120);
 const PLATFORM_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
+
+#[derive(Debug, Clone)]
+struct WorkspaceContext {
+    cwd: PathBuf,
+    workspace_root: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceFormat {
+    PlatformXml,
+    Edt,
+    Unknown,
+    Invalid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AdapterOutcome {
+    ok: bool,
+    summary: String,
+    changes: Vec<String>,
+    warnings: Vec<String>,
+    errors: Vec<String>,
+    artifacts: Vec<String>,
+    stdout: Option<String>,
+    stderr: Option<String>,
+    command: Option<Vec<String>>,
+}
+
+impl AdapterOutcome {
+    fn cancelled(summary: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            summary: summary.into(),
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: Vec::new(),
+            artifacts: Vec::new(),
+            stdout: None,
+            stderr: None,
+            command: None,
+        }
+    }
+
+    fn into_publication_result(self) -> PublicationResult {
+        let cancelled = self.summary.contains("cancelled")
+            || self.errors.iter().any(|error| error.contains("cancelled"));
+        let recovery_required = self
+            .errors
+            .iter()
+            .any(|error| error.contains("recovery") || error.contains("quarantin"));
+        PublicationResult {
+            ok: self.ok,
+            cancelled,
+            recovery_required,
+            summary: self.summary,
+            changes: self.changes,
+            warnings: self.warnings,
+            errors: self.errors,
+            artifacts: self.artifacts,
+            stdout: self.stdout,
+            stderr: self.stderr,
+            command: self.command,
+        }
+    }
+}
+
+trait ProcessRunner {
+    fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String>;
+
+    fn resolve_bundled_tool(
+        &self,
+        _cwd: &Path,
+        _tool: &str,
+        _require_executable: bool,
+    ) -> Result<(PathBuf, Vec<String>), String> {
+        Err("publication process host cannot resolve bundled tools".to_string())
+    }
+}
+
+trait PublicationGate {
+    fn exclusive(
+        &self,
+        targets: &[PathBuf],
+        action: &mut dyn FnMut() -> Result<Vec<String>, String>,
+    ) -> Result<Result<Vec<String>, String>, String>;
+}
+
+#[cfg(test)]
+struct DirectPublicationGate;
+#[cfg(test)]
+static DIRECT_PUBLICATION_GATE: DirectPublicationGate = DirectPublicationGate;
+
+#[cfg(test)]
+impl PublicationGate for DirectPublicationGate {
+    fn exclusive(
+        &self,
+        _targets: &[PathBuf],
+        action: &mut dyn FnMut() -> Result<Vec<String>, String>,
+    ) -> Result<Result<Vec<String>, String>, String> {
+        Ok(action())
+    }
+}
+
+pub(crate) struct PlatformXmlPublication {
+    host: Arc<dyn PublicationHostPort>,
+}
+
+impl PlatformXmlPublication {
+    pub(crate) fn new(host: Arc<dyn PublicationHostPort>) -> Self {
+        Self { host }
+    }
+}
+
+struct HostProcessRunner<'a>(&'a dyn PublicationHostPort);
+
+impl ProcessRunner for HostProcessRunner<'_> {
+    fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+        self.0.run_process(command)
+    }
+
+    fn resolve_bundled_tool(
+        &self,
+        cwd: &Path,
+        tool: &str,
+        require_executable: bool,
+    ) -> Result<(PathBuf, Vec<String>), String> {
+        self.0
+            .resolve_bundled_tool(cwd, tool, require_executable)
+            .map(|resolved| (resolved.program, resolved.warnings))
+    }
+}
+
+struct HostPublicationGate<'a>(&'a dyn PublicationHostPort);
+
+impl PublicationGate for HostPublicationGate<'_> {
+    fn exclusive(
+        &self,
+        targets: &[PathBuf],
+        action: &mut dyn FnMut() -> Result<Vec<String>, String>,
+    ) -> Result<Result<Vec<String>, String>, String> {
+        match self.0.with_exclusive_publication_lock(targets, action)? {
+            PublicationLockResult::Action(result) => Ok(result),
+        }
+    }
+}
+
+impl PublicationPort for PlatformXmlPublication {
+    fn publish(
+        &self,
+        request: &PublicationRequest,
+    ) -> Result<PublicationResult, SourceAdapterError> {
+        let mut args = Map::new();
+        args.insert("mode".to_string(), Value::String("full".to_string()));
+        args.insert("dryRun".to_string(), Value::Bool(false));
+        if let Some(path) = &request.config {
+            args.insert(
+                "config".to_string(),
+                Value::String(path.display().to_string()),
+            );
+        }
+        if let Some(path) = &request.workdir {
+            args.insert(
+                "workdir".to_string(),
+                Value::String(path.display().to_string()),
+            );
+        }
+        if let Some(source_set) = &request.source_set {
+            args.insert("sourceSet".to_string(), Value::String(source_set.clone()));
+        }
+        if let Some(extension) = &request.extension {
+            args.insert("extension".to_string(), Value::String(extension.clone()));
+        }
+        for argument in &request.unsupported_arguments {
+            args.insert(argument.clone(), Value::Null);
+        }
+        let context = WorkspaceContext {
+            cwd: request.cwd.clone(),
+            workspace_root: request.workspace_root.clone(),
+        };
+        let runner = HostProcessRunner(self.host.as_ref());
+        let gate = HostPublicationGate(self.host.as_ref());
+        let adapter = VerifiedFullDumpAdapter {
+            runner: &runner,
+            platform_resolver: &SYSTEM_PLATFORM_RESOLVER,
+            publication_gate: &gate,
+            bundled_program_override: None,
+        };
+        adapter
+            .invoke(
+                &request.operation_name,
+                match request.invocation {
+                    unica_format_core::ports::PublicationInvocation::BuildDump => {
+                        FullDumpInvocation::BuildDump
+                    }
+                    unica_format_core::ports::PublicationInvocation::RuntimeExecute => {
+                        FullDumpInvocation::RuntimeExecute
+                    }
+                },
+                &args,
+                &context,
+                &request.cancellation,
+            )
+            .map(AdapterOutcome::into_publication_result)
+            .map_err(|error| {
+                SourceAdapterError::new(SourceAdapterErrorKind::ValidationFailed, error)
+            })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileIdentity {
+    volume: u64,
+    file: u64,
+}
+
+#[cfg(unix)]
+fn restrict_stage_to_owner(file: &File) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    file.set_permissions(fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn restrict_stage_to_owner(_file: &File) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn hard_link_count(file: &File) -> std::io::Result<u64> {
+    use std::os::unix::fs::MetadataExt;
+    Ok(file.metadata()?.nlink())
+}
+
+#[cfg(unix)]
+fn file_identity(file: &File) -> std::io::Result<FileIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata()?;
+    Ok(FileIdentity {
+        volume: metadata.dev(),
+        file: metadata.ino(),
+    })
+}
+
+#[cfg(windows)]
+fn hard_link_count(file: &File) -> std::io::Result<u64> {
+    use std::os::windows::fs::MetadataExt;
+    Ok(u64::from(file.metadata()?.number_of_links()))
+}
+
+#[cfg(windows)]
+fn file_identity(file: &File) -> std::io::Result<FileIdentity> {
+    use std::os::windows::fs::MetadataExt;
+    let metadata = file.metadata()?;
+    Ok(FileIdentity {
+        volume: metadata.volume_serial_number().unwrap_or_default(),
+        file: metadata.file_index().unwrap_or_default(),
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn hard_link_count(_file: &File) -> std::io::Result<u64> {
+    Err(std::io::Error::new(
+        ErrorKind::Unsupported,
+        "hard-link count is unavailable",
+    ))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn file_identity(_file: &File) -> std::io::Result<FileIdentity> {
+    Err(std::io::Error::new(
+        ErrorKind::Unsupported,
+        "file identity is unavailable",
+    ))
+}
+
+fn metadata_is_link_or_reparse_point(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        return metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+    }
+    #[cfg(not(windows))]
+    false
+}
+
+fn normalize_path_identity(path: &Path) -> Result<PathBuf, String> {
+    if path.exists() {
+        return fs::canonicalize(path)
+            .map_err(|error| format!("failed to resolve {}: {error}", path.display()));
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| format!("failed to resolve current directory: {error}"))?
+            .join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    Ok(normalized)
+}
+
+#[derive(Debug)]
+struct PlatformXmlOwnerError {
+    message: String,
+}
+
+fn inspect_platform_xml_compatibility(
+    target: &Path,
+) -> Result<FormatCompatibility, PlatformXmlOwnerError> {
+    let result = crate::factory::PlatformXmlAdapterFactory::new()
+        .registration()
+        .format_inspection
+        .inspect(&FormatInspectionRequest {
+            source: inspection_source(target),
+            mode: FormatInspectionMode::Versioned,
+        })
+        .map_err(|error| PlatformXmlOwnerError {
+            message: error.message,
+        })?;
+    result.compatibility.ok_or_else(|| PlatformXmlOwnerError {
+        message: "source has no format-owning root".to_string(),
+    })
+}
+
+fn inspect_platform_xml_versionless(target: &Path) -> Result<(), PlatformXmlOwnerError> {
+    crate::factory::PlatformXmlAdapterFactory::new()
+        .registration()
+        .format_inspection
+        .inspect(&FormatInspectionRequest {
+            source: inspection_source(target),
+            mode: FormatInspectionMode::Versionless,
+        })
+        .map(|_| ())
+        .map_err(|error| PlatformXmlOwnerError {
+            message: error.message,
+        })
+}
+
+fn inspection_source(target: &Path) -> SourceContext {
+    let source_root = target
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .to_path_buf();
+    SourceContext::new(
+        SourceLocation::new(source_root.clone(), source_root, target.to_path_buf()),
+        None,
+        SourceFamily::PlatformXml,
+        None,
+    )
+}
+
+fn classify_physical_source_inventory<'a>(
+    kind: SourceSetKind,
+    relative_files: impl IntoIterator<Item = &'a Path>,
+) -> SourceFormat {
+    const EDT_MARKERS: &[&str] = &[
+        "Configuration/Configuration.mdo",
+        "src/Configuration/Configuration.mdo",
+    ];
+    let mut platform = false;
+    let mut edt = false;
+    for relative in relative_files {
+        platform |= relative == Path::new("Configuration.xml");
+        edt |= EDT_MARKERS
+            .iter()
+            .any(|marker| relative == Path::new(marker));
+        if matches!(
+            kind,
+            SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+        ) && relative.parent().is_none()
+            && relative
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+        {
+            platform = true;
+        }
+    }
+    match (platform, edt) {
+        (true, false) => SourceFormat::PlatformXml,
+        (false, true) => SourceFormat::Edt,
+        (false, false) => SourceFormat::Unknown,
+        (true, true) => SourceFormat::Invalid,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FullDumpInvocation {
@@ -170,17 +558,8 @@ impl PlatformResolver for SystemPlatformResolver {
 pub(crate) struct VerifiedFullDumpAdapter<'a> {
     runner: &'a dyn ProcessRunner,
     platform_resolver: &'a dyn PlatformResolver,
+    publication_gate: &'a dyn PublicationGate,
     bundled_program_override: Option<PathBuf>,
-}
-
-impl VerifiedFullDumpAdapter<'static> {
-    pub(crate) fn new() -> Self {
-        Self {
-            runner: system_process_runner(),
-            platform_resolver: &SYSTEM_PLATFORM_RESOLVER,
-            bundled_program_override: None,
-        }
-    }
 }
 
 impl<'a> VerifiedFullDumpAdapter<'a> {
@@ -193,11 +572,12 @@ impl<'a> VerifiedFullDumpAdapter<'a> {
         Self {
             runner,
             platform_resolver,
+            publication_gate: &DIRECT_PUBLICATION_GATE,
             bundled_program_override: Some(bundled_program),
         }
     }
 
-    pub(crate) fn invoke(
+    fn invoke(
         &self,
         tool_name: &str,
         invocation: FullDumpInvocation,
@@ -229,22 +609,15 @@ impl<'a> VerifiedFullDumpAdapter<'a> {
         let bundled = if let Some(program) = &self.bundled_program_override {
             (program.clone(), Vec::new())
         } else {
-            let Some(plugin_root) = find_plugin_root(&context.cwd) else {
-                finish_prepared!(dump_failure(
-                    tool_name,
-                    "could not locate Unica plugin root for internal adapter lookup".to_string(),
-                    None,
-                    None,
-                    None,
-                ));
-            };
-            let bundled = match resolve_bundled_tool(&plugin_root, "v8-runner", true) {
+            match self
+                .runner
+                .resolve_bundled_tool(&context.cwd, "v8-runner", true)
+            {
                 Ok(bundled) => bundled,
                 Err(error) => {
                     finish_prepared!(dump_failure(tool_name, error, None, None, None));
                 }
-            };
-            (bundled.program, bundled.warnings)
+            }
         };
 
         let execution_args = dump_process_args(
@@ -374,10 +747,9 @@ impl<'a> VerifiedFullDumpAdapter<'a> {
 
         let target = prepared.target.clone();
         let mut private = prepared.private;
-        let publication = with_publication_locks_mode(
+        let publication = self.publication_gate.exclusive(
             std::slice::from_ref(&target),
-            PublicationTreeLockMode::Exclusive,
-            |_| {
+            &mut || {
                 for snapshot in &prepared.config_inputs {
                     snapshot.recheck()?;
                 }
@@ -5034,18 +5406,50 @@ mod tests {
         normalize_key_value_connection, staged_root_version_policy, validate_staged_dump,
         with_private_create_hook, with_publication_failpoint, with_publication_hook,
         with_secure_read_hook, with_target_parent_capture_hook, with_targeted_read_hooks,
-        with_tree_open_hook, Document, FullDumpInvocation, PlatformResolver, PlatformUtility,
-        PublicationCheckpoint, StagedRootVersionPolicy, SystemPlatformResolver, TreeSnapshot,
-        VerifiedFullDumpAdapter, VerifiedPlatform, STAGED_ROOT_REGISTRY, TARGET_EXPORT_FORMAT,
+        with_tree_open_hook, AdapterOutcome, CancellationToken, Document, FullDumpInvocation,
+        PlatformResolver, PlatformUtility, ProcessCommand, ProcessOutput, ProcessRunner,
+        PublicationCheckpoint, SourceSetKind, StagedRootVersionPolicy, SystemPlatformResolver,
+        TreeSnapshot, VerifiedFullDumpAdapter, VerifiedPlatform, WorkspaceContext,
+        STAGED_ROOT_REGISTRY, TARGET_EXPORT_FORMAT,
     };
-    use crate::domain::cancellation::CancellationToken;
-    use crate::domain::project_sources::SourceSetKind;
-    use crate::domain::workspace::WorkspaceContext;
-    use crate::infrastructure::internal_adapters::{ProcessCommand, ProcessOutput, ProcessRunner};
     use serde_json::{Map, Value};
     use std::collections::BTreeSet;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct TestSystemProcessRunner;
+
+    impl ProcessRunner for TestSystemProcessRunner {
+        fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+            if command.cancellation.is_cancelled() {
+                return Ok(ProcessOutput {
+                    status_success: false,
+                    status: "cancelled".to_string(),
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    timed_out: false,
+                    cancelled: true,
+                    stdout_truncated: false,
+                });
+            }
+            let output = std::process::Command::new(&command.program)
+                .args(&command.args)
+                .current_dir(&command.cwd)
+                .output()
+                .map_err(|error| error.to_string())?;
+            Ok(ProcessOutput {
+                status_success: output.status.success(),
+                status: output.status.to_string(),
+                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+            })
+        }
+    }
+
+    static TEST_SYSTEM_PROCESS_RUNNER: TestSystemProcessRunner = TestSystemProcessRunner;
 
     #[test]
     fn key_value_connection_preserves_quoted_file_path_and_semicolons() {
@@ -5309,8 +5713,6 @@ mod tests {
         let context = WorkspaceContext {
             cwd: workspace.clone(),
             workspace_root: workspace,
-            cache_root: root.join("cache"),
-            workspace_epoch: 0,
         };
         (root, context, config)
     }
@@ -5343,7 +5745,7 @@ mod tests {
         invocation: FullDumpInvocation,
         context: &WorkspaceContext,
         args: &Map<String, Value>,
-    ) -> crate::application::AdapterOutcome {
+    ) -> AdapterOutcome {
         VerifiedFullDumpAdapter::with_dependencies(
             runner,
             platform,
@@ -5374,7 +5776,7 @@ mod tests {
         platform: &dyn PlatformResolver,
         invocation: FullDumpInvocation,
         context: &WorkspaceContext,
-    ) -> crate::application::AdapterOutcome {
+    ) -> AdapterOutcome {
         invoke_with_args(runner, platform, invocation, context, &args())
     }
 
@@ -5805,7 +6207,7 @@ mod tests {
                 &wrong_config,
                 &root,
                 PlatformUtility::Designer,
-                crate::infrastructure::internal_adapters::system_process_runner(),
+                &TEST_SYSTEM_PROCESS_RUNNER,
                 &CancellationToken::new(),
             )
             .unwrap_err();
@@ -5826,7 +6228,7 @@ mod tests {
                 &exact_config,
                 &root,
                 PlatformUtility::Designer,
-                crate::infrastructure::internal_adapters::system_process_runner(),
+                &TEST_SYSTEM_PROCESS_RUNNER,
                 &CancellationToken::new(),
             )
             .expect_err("a user-owned platform installation must be refused");
@@ -5913,7 +6315,7 @@ mod tests {
                 &config,
                 &root,
                 PlatformUtility::Designer,
-                crate::infrastructure::internal_adapters::system_process_runner(),
+                &TEST_SYSTEM_PROCESS_RUNNER,
                 &CancellationToken::new(),
             )
             .expect_err("a directory name is not platform attestation");
@@ -6649,7 +7051,7 @@ mod tests {
         ),
         (
             "ExchangePlans/Обмен/Ext/Content.xml",
-            include_bytes!("../../../../../tests/fixtures/platform_8_3_27/exchange_plan/Content.xml"),
+            include_bytes!("../../../tests/fixtures/platform_8_3_27/exchange_plan/Content.xml"),
             StagedRootVersionPolicy::ExactRootVersion,
         ),
         (
@@ -6660,28 +7062,28 @@ mod tests {
         (
             "CommonPictures/Логотип/Ext/Picture.xml",
             include_bytes!(
-                "../../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/Picture.xml"
+                "../../../tests/fixtures/platform_8_3_27/staged_dump_roots/Picture.xml"
             ),
             StagedRootVersionPolicy::ExactRootVersion,
         ),
         (
             "ScheduledJobs/ОбновлениеКурсов/Ext/Schedule.xml",
             include_bytes!(
-                "../../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/Schedule.xml"
+                "../../../tests/fixtures/platform_8_3_27/staged_dump_roots/Schedule.xml"
             ),
             StagedRootVersionPolicy::ExactRootVersion,
         ),
         (
             "Catalogs/Товары/Ext/Predefined.xml",
             include_bytes!(
-                "../../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/Predefined.xml"
+                "../../../tests/fixtures/platform_8_3_27/staged_dump_roots/Predefined.xml"
             ),
             StagedRootVersionPolicy::ExactRootVersion,
         ),
         (
             "ConfigDumpInfo.xml",
             include_bytes!(
-                "../../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/ConfigDumpInfo.xml"
+                "../../../tests/fixtures/platform_8_3_27/staged_dump_roots/ConfigDumpInfo.xml"
             ),
             StagedRootVersionPolicy::ExactRootVersion,
         ),
@@ -6703,19 +7105,19 @@ mod tests {
         (
             "CommonTemplates/ОформлениеОтчетов/Ext/Template.xml",
             include_bytes!(
-                "../../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/Template.xml"
+                "../../../tests/fixtures/platform_8_3_27/staged_dump_roots/Template.xml"
             ),
             StagedRootVersionPolicy::Versionless,
         ),
         (
             "CommonTemplates/ПечатнаяФорма/Ext/Template.xml",
-            include_bytes!("../../../../../tests/fixtures/platform_8_3_27/mxl/Template.xml"),
+            include_bytes!("../../../tests/fixtures/platform_8_3_27/mxl/Template.xml"),
             StagedRootVersionPolicy::Versionless,
         ),
         (
             "WSReferences/СлужбаОбмена/Ext/WSDefinition.xml",
             include_bytes!(
-                "../../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/WSDefinition.xml"
+                "../../../tests/fixtures/platform_8_3_27/staged_dump_roots/WSDefinition.xml"
             ),
             StagedRootVersionPolicy::Versionless,
         ),

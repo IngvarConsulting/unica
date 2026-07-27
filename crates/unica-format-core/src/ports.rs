@@ -1,6 +1,15 @@
 //! Format-neutral ports implemented by concrete source adapters.
 
-use std::{any::Any, ffi::OsString, path::PathBuf, sync::Arc};
+use std::{
+    any::Any,
+    ffi::OsString,
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 use crate::{
     navigation::{
@@ -10,7 +19,7 @@ use crate::{
     semantic_ids::{SemanticPropertyId, SemanticRelationId},
     source::{
         AdapterManifest, ConfiguredSourceSetKind, FormatVersion, SourceAdapterError, SourceBinding,
-        SourceContext, SourceDescriptor, SourceRevision, SourceSnapshot,
+        SourceContext, SourceDescriptor, SourceFamily, SourceRevision, SourceSnapshot,
     },
 };
 
@@ -381,4 +390,296 @@ pub trait CapabilityPort: Send + Sync {
         &self,
         request: &CapabilityRequest,
     ) -> Result<CapabilityResult, SourceAdapterError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormatDiagnostic {
+    pub code: String,
+    pub message: String,
+    pub details: std::collections::BTreeMap<String, String>,
+}
+
+impl FormatDiagnostic {
+    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+            details: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompatibilityTarget {
+    pub source: SourceContext,
+    pub mode: OwnerResolutionMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompatibilityRequest {
+    pub targets: Vec<CompatibilityTarget>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompatibilityIssueKind {
+    Older,
+    Newer,
+    Malformed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompatibilityIssue {
+    pub kind: CompatibilityIssueKind,
+    pub diagnostic: FormatDiagnostic,
+    pub actual_format: Option<FormatVersion>,
+    pub target_format: Option<FormatVersion>,
+    pub producer_version: Option<FormatVersion>,
+    pub source_kind: Option<ConfiguredSourceSetKind>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompatibilityResult {
+    pub issue: Option<CompatibilityIssue>,
+}
+
+pub trait CompatibilityPort: Send + Sync {
+    fn inspect(
+        &self,
+        request: &CompatibilityRequest,
+    ) -> Result<CompatibilityResult, SourceAdapterError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceCompatibilityEvidence {
+    Detected {
+        source_set_name: String,
+        family: Option<SourceFamily>,
+        invalid: bool,
+    },
+    DeclaredProjectFormat {
+        value: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceCompatibilityRequest {
+    pub operation_name: String,
+    pub evidence: SourceCompatibilityEvidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceCompatibilityResult {
+    pub diagnostic: Option<FormatDiagnostic>,
+}
+
+pub trait SourceCompatibilityPort: Send + Sync {
+    fn inspect_source(
+        &self,
+        request: &SourceCompatibilityRequest,
+    ) -> Result<SourceCompatibilityResult, SourceAdapterError>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthorabilityRequirement {
+    Editable,
+    Removed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorabilityRequest {
+    pub source: SourceContext,
+    pub requirement: AuthorabilityRequirement,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorabilityViolation {
+    pub diagnostic: FormatDiagnostic,
+    pub target: PathBuf,
+    pub source_root: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorabilityResult {
+    pub authorability: Authorability,
+    pub violation: Option<AuthorabilityViolation>,
+}
+
+pub trait AuthorabilityPort: Send + Sync {
+    fn inspect(
+        &self,
+        request: &AuthorabilityRequest,
+    ) -> Result<AuthorabilityResult, SourceAdapterError>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidationOwnerKind {
+    Aggregate,
+    Extension,
+    Standalone,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidationContext {
+    pub owner_kind: ValidationOwnerKind,
+    pub owner_root: PathBuf,
+    pub language_codes: Vec<String>,
+    pub registrar_present: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidationContextRequest {
+    pub source: SourceContext,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidationContextResult {
+    pub dependencies: Vec<PathBuf>,
+    pub context: Option<ValidationContext>,
+    pub diagnostics: Vec<FormatDiagnostic>,
+}
+
+pub trait ValidationContextPort: Send + Sync {
+    fn inspect(
+        &self,
+        request: &ValidationContextRequest,
+    ) -> Result<ValidationContextResult, SourceAdapterError>;
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct OperationCancellation(Arc<AtomicBool>);
+
+impl OperationCancellation {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublicationInvocation {
+    BuildDump,
+    RuntimeExecute,
+}
+
+#[derive(Debug, Clone)]
+pub struct PublicationRequest {
+    pub operation_name: String,
+    pub invocation: PublicationInvocation,
+    pub workspace_root: PathBuf,
+    pub cwd: PathBuf,
+    pub config: Option<PathBuf>,
+    pub workdir: Option<PathBuf>,
+    pub source_set: Option<String>,
+    pub extension: Option<String>,
+    pub unsupported_arguments: Vec<String>,
+    pub cancellation: OperationCancellation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicationResult {
+    pub ok: bool,
+    pub cancelled: bool,
+    pub recovery_required: bool,
+    pub summary: String,
+    pub changes: Vec<String>,
+    pub warnings: Vec<String>,
+    pub errors: Vec<String>,
+    pub artifacts: Vec<String>,
+    pub stdout: Option<String>,
+    pub stderr: Option<String>,
+    pub command: Option<Vec<String>>,
+}
+
+impl PublicationResult {
+    pub fn cancelled(summary: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            cancelled: true,
+            recovery_required: false,
+            summary: summary.into(),
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: Vec::new(),
+            artifacts: Vec::new(),
+            stdout: None,
+            stderr: None,
+            command: None,
+        }
+    }
+}
+
+pub trait PublicationPort: Send + Sync {
+    fn publish(
+        &self,
+        request: &PublicationRequest,
+    ) -> Result<PublicationResult, SourceAdapterError>;
+}
+
+#[derive(Debug, Clone)]
+pub struct PublicationProcessCommand {
+    pub program: PathBuf,
+    pub args: Vec<String>,
+    pub cwd: PathBuf,
+    pub timeout: Option<Duration>,
+    pub cancellation: OperationCancellation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicationProcessOutput {
+    pub status_success: bool,
+    pub status: String,
+    pub stdout: String,
+    pub stderr: String,
+    pub timed_out: bool,
+    pub cancelled: bool,
+    pub stdout_truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedPublicationTool {
+    pub program: PathBuf,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PublicationLockResult {
+    Action(Result<Vec<String>, String>),
+}
+
+pub trait PublicationHostPort: Send + Sync {
+    fn run_process(
+        &self,
+        command: &PublicationProcessCommand,
+    ) -> Result<PublicationProcessOutput, String>;
+
+    fn resolve_bundled_tool(
+        &self,
+        cwd: &Path,
+        tool: &str,
+        require_executable: bool,
+    ) -> Result<ResolvedPublicationTool, String>;
+
+    fn with_exclusive_publication_lock(
+        &self,
+        targets: &[PathBuf],
+        action: &mut dyn FnMut() -> Result<Vec<String>, String>,
+    ) -> Result<PublicationLockResult, String>;
+
+    fn redact(&self, text: &str) -> String;
+}
+
+#[derive(Clone)]
+pub struct OperationalAdapterRegistration {
+    pub compatibility: Arc<dyn CompatibilityPort>,
+    pub source_compatibility: Arc<dyn SourceCompatibilityPort>,
+    pub authorability: Arc<dyn AuthorabilityPort>,
+    pub validation_context: Arc<dyn ValidationContextPort>,
+    pub publication: Arc<dyn PublicationPort>,
 }

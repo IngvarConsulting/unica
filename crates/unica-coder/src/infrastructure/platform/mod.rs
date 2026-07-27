@@ -1,6 +1,5 @@
 mod entrypoint;
 pub(crate) mod filesystem;
-pub(crate) mod full_dump_publication;
 mod process;
 mod target;
 #[cfg(test)]

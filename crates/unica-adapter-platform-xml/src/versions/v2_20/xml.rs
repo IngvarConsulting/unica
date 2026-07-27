@@ -3,6 +3,11 @@ use roxmltree::Document;
 
 use crate::domain::navigation_limits::MAX_NAVIGATION_NESTING_DEPTH;
 
+pub(crate) const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
+pub(crate) const SPREADSHEET_DOCUMENT_NS: &str = "http://v8.1c.ru/8.2/data/spreadsheet";
+pub(crate) const DATA_COMPOSITION_SCHEMA_NS: &str =
+    "http://v8.1c.ru/8.1/data-composition-system/schema";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BoundedXmlError {
     InvalidUtf8,

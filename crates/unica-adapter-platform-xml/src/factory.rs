@@ -5,10 +5,10 @@ use unica_format_core::{
     ports::{
         AdapterFormatProfile, CapturePort, CaptureResult, CapturedSource, EffectiveSupportRule,
         FormatCompatibility, FormatInspectionMode, FormatInspectionPort, FormatInspectionRequest,
-        FormatInspectionResult, FormatReadRequest, OwnerResolutionRequest, OwnerResolutionResult,
-        OwnershipPort, ProbePort, ProbeResult, ReadPort, SourceAdapterRegistration,
-        SupportEvidence, SupportInspectionRequest, SupportPort, SupportSourceState,
-        SupportVendorEvidence,
+        FormatInspectionResult, FormatReadRequest, OperationalAdapterRegistration,
+        OwnerResolutionRequest, OwnerResolutionResult, OwnershipPort, ProbePort, ProbeResult,
+        PublicationHostPort, ReadPort, SourceAdapterRegistration, SupportEvidence,
+        SupportInspectionRequest, SupportPort, SupportSourceState, SupportVendorEvidence,
     },
     source::{SourceAdapterError, SourceAdapterErrorKind, SourceContext, SourceFamily},
 };
@@ -43,6 +43,70 @@ impl PlatformXmlAdapterFactory {
             format_inspection: adapter.clone(),
             support: adapter,
         }
+    }
+
+    pub fn operational_registration(
+        self,
+        host: Arc<dyn PublicationHostPort>,
+    ) -> OperationalAdapterRegistration {
+        let guards = Arc::new(crate::guards::PlatformXmlGuards);
+        OperationalAdapterRegistration {
+            compatibility: guards.clone(),
+            source_compatibility: guards.clone(),
+            authorability: guards,
+            validation_context: Arc::new(crate::validation::PlatformXmlValidation),
+            publication: Arc::new(crate::publication::PlatformXmlPublication::new(host)),
+        }
+    }
+
+    pub fn compatibility_port(self) -> Arc<dyn unica_format_core::ports::CompatibilityPort> {
+        Arc::new(crate::guards::PlatformXmlGuards)
+    }
+
+    pub fn source_compatibility_port(
+        self,
+    ) -> Arc<dyn unica_format_core::ports::SourceCompatibilityPort> {
+        Arc::new(crate::guards::PlatformXmlGuards)
+    }
+
+    pub fn authorability_port(self) -> Arc<dyn unica_format_core::ports::AuthorabilityPort> {
+        Arc::new(crate::guards::PlatformXmlGuards)
+    }
+
+    pub fn validation_context_port(
+        self,
+    ) -> Arc<dyn unica_format_core::ports::ValidationContextPort> {
+        Arc::new(crate::validation::PlatformXmlValidation)
+    }
+
+    #[doc(hidden)]
+    pub fn validation_type_uses_list_presentation(value: &str) -> bool {
+        crate::validation::type_uses_list_presentation(value)
+    }
+
+    #[doc(hidden)]
+    pub fn validation_types_with_list_presentation() -> &'static [&'static str] {
+        crate::validation::types_with_list_presentation()
+    }
+
+    #[doc(hidden)]
+    pub fn scan_validation_registrars(
+        documents_dir: &std::path::Path,
+        register_reference: &str,
+    ) -> Result<(Vec<PathBuf>, bool), String> {
+        crate::validation::scan_registrar_documents(documents_dir, register_reference)
+    }
+
+    #[doc(hidden)]
+    pub fn normalize_metadata_category(value: &str) -> Option<&'static str> {
+        crate::guards::normalize_metadata_category(value)
+    }
+
+    #[doc(hidden)]
+    pub fn registered_subsystem_names(
+        path: &std::path::Path,
+    ) -> Result<std::collections::HashSet<String>, String> {
+        crate::guards::registered_subsystem_names(path)
     }
 
     pub fn profile() -> AdapterFormatProfile {
@@ -204,7 +268,7 @@ impl SupportPort for PlatformXmlAdapter {
     }
 }
 
-fn authorized_target(source: &SourceContext) -> Result<PathBuf, SourceAdapterError> {
+pub(crate) fn authorized_target(source: &SourceContext) -> Result<PathBuf, SourceAdapterError> {
     if source.declared_family() != &SourceFamily::PlatformXml {
         return Err(SourceAdapterError::new(
             SourceAdapterErrorKind::SourceUnavailable,

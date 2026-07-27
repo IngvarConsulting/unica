@@ -3,7 +3,6 @@ use crate::application::operation_descriptors::{
 };
 use crate::application::ports::FormatGuardCheck;
 use crate::application::{AdapterOutcome, ToolHandler, ToolSpec};
-use crate::domain::format_profile::{FormatCompatibility, ACTIVE_FORMAT_PROFILE};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::cf::{
     cf_edit_format_dependency_paths, cf_init_planned_xml, cf_init_post_validation_dependency_paths,
@@ -43,14 +42,15 @@ use crate::infrastructure::native_operations::subsystem::{
 };
 use crate::infrastructure::native_operations::support::support_edit_reads_uuid_dependency;
 use crate::infrastructure::native_operations::template::template_add_object_type_folders;
-use crate::infrastructure::platform_xml_owner::{
-    resolve_existing_platform_xml_owners_for_new_output, resolve_platform_xml_owners,
-};
-use roxmltree::Document;
+use crate::infrastructure::platform_xml_owner::compatibility_target;
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use unica_application::{
+    CompatibilityPolicyCommand, OperationalPolicyDecision, OperationalPolicyService,
+};
+use unica_format_core::ports::{CompatibilityRequest, FormatDiagnostic, OwnerResolutionMode};
 
 pub(crate) fn evaluate_format_guard(
     spec: ToolSpec,
@@ -78,16 +78,15 @@ pub(crate) fn evaluate_format_guard(
     })
     .collect::<Vec<_>>();
     deduplicate_targets(&mut targets);
-    let mut owners = Vec::new();
-    let mut owner_paths = HashSet::new();
+    let mut compatibility_targets = Vec::new();
     for (target, new_output) in targets {
-        let resolved = if new_output {
-            resolve_existing_platform_xml_owners_for_new_output(&target, context)
+        let mode = if new_output {
+            OwnerResolutionMode::ExistingForNewOutput
         } else {
-            resolve_platform_xml_owners(&target, context)
+            OwnerResolutionMode::Existing
         };
-        let resolved_owners = match resolved {
-            Ok(resolved_owners) => resolved_owners,
+        match compatibility_target(&target, context, mode) {
+            Ok(target) => compatibility_targets.push(target),
             Err(error) => {
                 let warning = format!(
                     "Некорректный корневой файл формата выгрузки {}: {}",
@@ -97,74 +96,57 @@ pub(crate) fn evaluate_format_guard(
                 let diagnostic = json!({
                     "code": "formatVersionInvalid",
                     "actualFormat": Value::Null,
-                    "targetFormat": ACTIVE_FORMAT_PROFILE.export_format,
-                    "targetPlatform": ACTIVE_FORMAT_PROFILE.platform_line,
                     "compatibility": "invalid",
                     "root": error.path.display().to_string(),
                 });
                 return Ok(format_check(spec, warning, diagnostic));
             }
-        };
-        for owner in resolved_owners {
-            if owner_paths.insert(owner.path.clone()) {
-                owners.push(owner);
-            }
         }
     }
-    let mut older = None;
-    let mut newer = None;
-    for owner in owners {
-        let compatibility = owner.format.clone();
-        match compatibility {
-            FormatCompatibility::Supported { .. } => {}
-            FormatCompatibility::Older { .. } if older.is_none() => {
-                older = Some((owner, compatibility));
+    let port = unica_adapter_platform_xml::PlatformXmlAdapterFactory::new().compatibility_port();
+    let decision = OperationalPolicyService::check_compatibility(
+        port.as_ref(),
+        CompatibilityPolicyCommand {
+            request: CompatibilityRequest {
+                targets: compatibility_targets,
+            },
+            mutating: spec.mutating,
+        },
+    )
+    .map_err(|error| error.message)?;
+    Ok(match decision {
+        OperationalPolicyDecision::Allow => FormatGuardCheck::Allow,
+        OperationalPolicyDecision::Warn(diagnostic) => {
+            let warning = format!("{} Доступен только режим чтения.", diagnostic.message);
+            FormatGuardCheck::Warn {
+                warning,
+                diagnostic: diagnostic_json(&diagnostic),
             }
-            FormatCompatibility::Newer { .. } if newer.is_none() => {
-                newer = Some((owner, compatibility));
-            }
-            FormatCompatibility::Older { .. } | FormatCompatibility::Newer { .. } => {}
         }
-    }
-    if let Some((owner, compatibility)) = newer.or(older) {
-        let actual = compatibility.actual().to_string();
-        let (code, warning) = match compatibility {
-            FormatCompatibility::Older { .. } => {
-                let access = if spec.mutating {
-                    "Изменение отменено."
+        OperationalPolicyDecision::Block(diagnostic) => {
+            let warning = format!("{} Изменение отменено.", diagnostic.message);
+            format_check(spec, warning, diagnostic_json(&diagnostic))
+        }
+    })
+}
+
+fn diagnostic_json(diagnostic: &FormatDiagnostic) -> Value {
+    let mut value = diagnostic
+        .details
+        .iter()
+        .map(|(key, value)| {
+            (
+                key.clone(),
+                if value == "null" {
+                    Value::Null
                 } else {
-                    "Доступен только режим чтения."
-                };
-                let warning = format!(
-                    "Формат выгрузки {actual} старше поддерживаемого {} для платформы 1С {}. {access} Чтобы редактировать исходники, явно перенесите выгрузку средствами платформы 1С 8.3.27: загрузите исходники и повторно выгрузите их. Unica не выполняет эту миграцию автоматически.",
-                    ACTIVE_FORMAT_PROFILE.export_format, ACTIVE_FORMAT_PROFILE.platform_line
-                );
-                ("formatMigrationAvailable", warning)
-            }
-            FormatCompatibility::Newer { .. } => (
-                "platformVersionUnsupported",
-                format!(
-                    "Формат выгрузки {actual} новее поддерживаемого {} для платформы 1С {}. Unica пока не поддерживает работу с этой выгрузкой. Поддержка платформы 1С 8.5 планируется в ближайших версиях.",
-                    ACTIVE_FORMAT_PROFILE.export_format, ACTIVE_FORMAT_PROFILE.platform_line
-                ),
-            ),
-            FormatCompatibility::Supported { .. } => unreachable!(),
-        };
-        let diagnostic = json!({
-            "code": code,
-            "actualFormat": actual,
-            "targetFormat": ACTIVE_FORMAT_PROFILE.export_format,
-            "targetPlatform": ACTIVE_FORMAT_PROFILE.platform_line,
-            "compatibility": compatibility.label(),
-            "root": owner.path.display().to_string(),
-            "ownerKind": owner
-                .configured_source_kind
-                .map(|kind| kind.label())
-                .unwrap_or("standalone"),
-        });
-        return Ok(format_check(spec, warning, diagnostic));
-    }
-    Ok(FormatGuardCheck::Allow)
+                    Value::String(value.clone())
+                },
+            )
+        })
+        .collect::<Map<String, Value>>();
+    value.insert("code".to_string(), Value::String(diagnostic.code.clone()));
+    Value::Object(value)
 }
 
 fn format_check(spec: ToolSpec, warning: String, diagnostic: Value) -> FormatGuardCheck {
@@ -590,23 +572,13 @@ fn add_subsystem_edit_format_dependencies(
         return Ok(());
     };
     let mut validation_descriptors = vec![target.clone()];
-    let source = match fs::read_to_string(&target) {
-        Ok(source) => source,
-        Err(_) => return Ok(()),
-    };
-    let document = match Document::parse(source.trim_start_matches('\u{feff}')) {
-        Ok(document) => document,
-        Err(_) => return Ok(()),
-    };
-    let mut registered = document
-        .descendants()
-        .find(|node| node.is_element() && node.tag_name().name() == "ChildObjects")
-        .into_iter()
-        .flat_map(|node| node.children())
-        .filter(|node| node.is_element() && node.tag_name().name() == "Subsystem")
-        .filter_map(|node| node.text())
-        .map(str::to_string)
-        .collect::<HashSet<_>>();
+    let mut registered =
+        match unica_adapter_platform_xml::PlatformXmlAdapterFactory::registered_subsystem_names(
+            &target,
+        ) {
+            Ok(registered) => registered,
+            Err(_) => return Ok(()),
+        };
     let definition_file = ["definitionFile", "DefinitionFile"]
         .iter()
         .find_map(|name| args.get(*name).and_then(Value::as_str))
@@ -2666,12 +2638,6 @@ mod tests {
 
         for (operation, argument, directory, expected) in [
             (
-                "meta-info",
-                "path",
-                catalog_dir.clone(),
-                catalog_xml.clone(),
-            ),
-            (
                 "meta-validate",
                 "Path",
                 catalog_dir,
@@ -2700,20 +2666,17 @@ mod tests {
     #[test]
     fn read_only_xml_analyzers_warn_for_resolved_newer_roots_and_allow_exact_2_20_roots() {
         let root = test_root("read-resolved-version");
-        let catalog_dir = root.join("detached/Catalogs/Goods");
-        let catalog_xml = root.join("detached/Catalogs/Goods.xml");
-        let form_dir = catalog_dir.join("Forms/Main");
+        let form_dir = root.join("detached/Catalogs/Goods/Forms/Main");
         let form_xml = form_dir.join("Ext/Form.xml");
-        let dcs_dir = catalog_dir.join("Templates/Schema");
+        let dcs_dir = root.join("detached/Catalogs/Goods/Templates/Schema");
         let dcs_wrapper = root.join("detached/Catalogs/Goods/Templates/Schema.xml");
         let dcs_xml = dcs_dir.join("Ext/Template.xml");
-        let mxl_dir = catalog_dir.join("Templates/Print");
+        let mxl_dir = root.join("detached/Catalogs/Goods/Templates/Print");
         let mxl_wrapper = root.join("detached/Catalogs/Goods/Templates/Print.xml");
         let mxl_xml = mxl_dir.join("Ext/Template.xml");
         let interface_dir = root.join("detached/Subsystems/Sales");
         let interface_xml = interface_dir.join("Ext/CommandInterface.xml");
         for path in [
-            &catalog_dir,
             &form_xml,
             &dcs_wrapper,
             &dcs_xml,
@@ -2728,11 +2691,6 @@ mod tests {
             })
             .unwrap();
         }
-        std::fs::write(
-            &catalog_xml,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Catalog/></MetaDataObject>"#,
-        )
-        .unwrap();
         std::fs::write(
             &form_xml,
             r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.21"/>"#,
@@ -2762,7 +2720,6 @@ mod tests {
         .unwrap();
 
         for (tool, argument, directory) in [
-            ("unica.meta.info", "ObjectPath", catalog_dir.clone()),
             ("unica.form.info", "FormPath", form_dir.clone()),
             ("unica.form.validate", "FormPath", form_dir),
             ("unica.dcs.validate", "TemplatePath", dcs_dir),
@@ -2782,11 +2739,6 @@ mod tests {
         }
 
         std::fs::write(
-            &catalog_xml,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog/></MetaDataObject>"#,
-        )
-        .unwrap();
-        std::fs::write(
             &form_xml,
             r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"/>"#,
         )
@@ -2804,7 +2756,6 @@ mod tests {
             .unwrap();
         }
         for (tool, argument, exact) in [
-            ("unica.meta.info", "ObjectPath", catalog_xml),
             ("unica.form.info", "FormPath", form_xml),
             ("unica.dcs.validate", "TemplatePath", dcs_xml),
             ("unica.mxl.validate", "TemplatePath", mxl_xml),

@@ -6,20 +6,88 @@ use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::events::DomainEvent;
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::internal_adapters::{
-    BslAnalyzerMcpAdapter, CliAdapter, CodeNavigationAdapter, CodeSearchAdapter,
-    ConfigDumpInfoGitCheck, GitTrackingAdapter, RuntimeAdapter, RuntimeJobAdapter,
-    StandardsAdapter,
+    system_process_runner, BslAnalyzerMcpAdapter, CliAdapter, CodeNavigationAdapter,
+    CodeSearchAdapter, ConfigDumpInfoGitCheck, GitTrackingAdapter, ProcessCommand, RuntimeAdapter,
+    RuntimeJobAdapter, StandardsAdapter,
+};
+use crate::infrastructure::native_operations::single_file_publisher::{
+    with_publication_locks_mode, PublicationTreeLockMode,
 };
 use crate::infrastructure::native_operations::NativeOperationAdapter;
-use crate::infrastructure::platform::full_dump_publication::{
-    FullDumpInvocation, VerifiedFullDumpAdapter,
-};
+use crate::infrastructure::plugin_runtime::find_plugin_root;
+use crate::infrastructure::redaction::redactor;
 use crate::infrastructure::workspace_services::WorkspaceServiceManager;
 use crate::infrastructure::workspace_state::WorkspaceStateRepository;
 use serde_json::{Map, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
+use unica_application::OperationalPolicyService;
+use unica_format_core::ports::{
+    PublicationHostPort, PublicationInvocation, PublicationLockResult, PublicationProcessCommand,
+    PublicationProcessOutput, PublicationRequest, ResolvedPublicationTool,
+};
 pub(crate) struct InfrastructureApplicationPorts;
+
+struct InfrastructurePublicationHost;
+
+impl PublicationHostPort for InfrastructurePublicationHost {
+    fn run_process(
+        &self,
+        command: &PublicationProcessCommand,
+    ) -> Result<PublicationProcessOutput, String> {
+        system_process_runner()
+            .run(&ProcessCommand {
+                program: command.program.clone(),
+                args: command.args.clone(),
+                cwd: command.cwd.clone(),
+                timeout: command.timeout,
+                cancellation: command.cancellation.clone(),
+            })
+            .map(|output| PublicationProcessOutput {
+                status_success: output.status_success,
+                status: output.status,
+                stdout: output.stdout,
+                stderr: output.stderr,
+                timed_out: output.timed_out,
+                cancelled: output.cancelled,
+                stdout_truncated: output.stdout_truncated,
+            })
+    }
+
+    fn resolve_bundled_tool(
+        &self,
+        cwd: &Path,
+        tool: &str,
+        require_executable: bool,
+    ) -> Result<ResolvedPublicationTool, String> {
+        let plugin_root = find_plugin_root(cwd).ok_or_else(|| {
+            "could not locate Unica plugin root for publication adapter lookup".to_string()
+        })?;
+        resolve_bundled_tool(&plugin_root, tool, require_executable).map(|resolved| {
+            ResolvedPublicationTool {
+                program: resolved.program,
+                warnings: resolved.warnings,
+            }
+        })
+    }
+
+    fn with_exclusive_publication_lock(
+        &self,
+        targets: &[PathBuf],
+        action: &mut dyn FnMut() -> Result<Vec<String>, String>,
+    ) -> Result<PublicationLockResult, String> {
+        with_publication_locks_mode(targets, PublicationTreeLockMode::Exclusive, |_| action())
+            .map(PublicationLockResult::Action)
+            .map_err(|error| error.to_string())
+    }
+
+    fn redact(&self, text: &str) -> String {
+        redactor(text)
+    }
+}
 
 impl ApplicationPorts for InfrastructureApplicationPorts {
     fn discover_workspace(
@@ -72,8 +140,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
             ))));
         }
         if let Some(invocation) = verified_full_dump_invocation(spec, args, dry_run) {
-            return VerifiedFullDumpAdapter::new()
-                .invoke(spec.name, invocation, args, context, cancellation)
+            return invoke_verified_full_dump(spec.name, invocation, args, context, cancellation)
                 .map(HandlerOutcome::plain);
         }
         match spec.handler {
@@ -222,22 +289,86 @@ fn is_applied_full_dump(args: &Map<String, Value>, dry_run: bool) -> bool {
     !dry_run && args.get("mode").and_then(Value::as_str) == Some("full")
 }
 
+fn invoke_verified_full_dump(
+    operation_name: &str,
+    invocation: PublicationInvocation,
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+    cancellation: &CancellationToken,
+) -> Result<AdapterOutcome, String> {
+    const ALLOWED: &[&str] = &[
+        "cwd",
+        "dryRun",
+        "confirm",
+        "operation",
+        "config",
+        "workdir",
+        "mode",
+        "sourceSet",
+        "extension",
+    ];
+    let unsupported_arguments = args
+        .keys()
+        .filter(|key| !ALLOWED.contains(&key.as_str()))
+        .cloned()
+        .collect();
+    let request = PublicationRequest {
+        operation_name: operation_name.to_string(),
+        invocation,
+        workspace_root: context.workspace_root.clone(),
+        cwd: context.cwd.clone(),
+        config: args
+            .get("config")
+            .and_then(Value::as_str)
+            .map(PathBuf::from),
+        workdir: args
+            .get("workdir")
+            .and_then(Value::as_str)
+            .map(PathBuf::from),
+        source_set: args
+            .get("sourceSet")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        extension: args
+            .get("extension")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        unsupported_arguments,
+        cancellation: cancellation.clone(),
+    };
+    let registration = PlatformXmlAdapterFactory::new()
+        .operational_registration(Arc::new(InfrastructurePublicationHost));
+    OperationalPolicyService::publish(registration.publication.as_ref(), &request)
+        .map(|result| AdapterOutcome {
+            ok: result.ok,
+            summary: result.summary,
+            changes: result.changes,
+            warnings: result.warnings,
+            errors: result.errors,
+            artifacts: result.artifacts,
+            stdout: result.stdout,
+            stderr: result.stderr,
+            command: result.command,
+        })
+        .map_err(|error| error.to_string())
+}
+
 fn verified_full_dump_invocation(
     spec: ToolSpec,
     args: &Map<String, Value>,
     dry_run: bool,
-) -> Option<FullDumpInvocation> {
+) -> Option<PublicationInvocation> {
     if !is_applied_full_dump(args, dry_run) {
         return None;
     }
     match spec.handler {
         ToolHandler::BuildRuntime { command, .. } if command == ["dump"] => {
-            Some(FullDumpInvocation::BuildDump)
+            Some(PublicationInvocation::BuildDump)
         }
         ToolHandler::RuntimeAdapter
             if args.get("operation").and_then(Value::as_str) == Some("dump") =>
         {
-            Some(FullDumpInvocation::RuntimeExecute)
+            Some(PublicationInvocation::RuntimeExecute)
         }
         _ => None,
     }
@@ -248,8 +379,8 @@ mod tests {
     use super::verified_full_dump_invocation;
     use crate::application::{RuntimeJobAction, ToolHandler, ToolSpec};
     use crate::domain::cache::CacheAccess;
-    use crate::infrastructure::platform::full_dump_publication::FullDumpInvocation;
     use serde_json::{json, Map};
+    use unica_format_core::ports::PublicationInvocation;
 
     fn spec(name: &'static str, handler: ToolHandler) -> ToolSpec {
         ToolSpec {
@@ -284,11 +415,11 @@ mod tests {
 
         assert_eq!(
             verified_full_dump_invocation(build, &build_args, false),
-            Some(FullDumpInvocation::BuildDump)
+            Some(PublicationInvocation::BuildDump)
         );
         assert_eq!(
             verified_full_dump_invocation(runtime, &runtime_args, false),
-            Some(FullDumpInvocation::RuntimeExecute)
+            Some(PublicationInvocation::RuntimeExecute)
         );
         assert_eq!(
             verified_full_dump_invocation(job, &runtime_args, false),

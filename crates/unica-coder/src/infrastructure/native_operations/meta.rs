@@ -29,7 +29,6 @@ use crate::domain::source_adapters::{
     SourceId,
 };
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::metadata_kinds::metadata_kind;
 use crate::infrastructure::platform_xml_owner::{
     inspect_platform_xml_compatibility, resolve_platform_xml_owners_with_provenance,
     PlatformXmlOwnerProvenance,
@@ -44,6 +43,7 @@ use std::fs;
 use std::io::{self, ErrorKind, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
+use unica_adapter_platform_xml::legacy_metadata_kind as metadata_kind;
 use unica_format_core::source::{ConfiguredSourceSetKind, FormatVersion};
 
 use super::common::*;

@@ -6,7 +6,6 @@ use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use crate::domain::project_sources::{config_dump_info_xml_kind, ConfigDumpInfoXmlKind};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
-use crate::infrastructure::metadata_kinds::{metadata_kind, metadata_kind_by_directory};
 use crate::infrastructure::platform::filesystem::path_lock_identity;
 use crate::infrastructure::platform::{
     ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedOutput,
@@ -29,6 +28,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
+use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
 
 const DEFAULT_PROCESS_TIMEOUT: Duration = Duration::from_secs(120);
 const GIT_TRACKING_TIMEOUT: Duration = Duration::from_secs(5);
@@ -2636,17 +2636,17 @@ fn split_profile_name(raw: &str) -> (Option<String>, String) {
     let Some((prefix, name)) = trimmed.split_once('.') else {
         return (None, trimmed.to_string());
     };
-    let category = metadata_kind(prefix)
-        .or_else(|| metadata_kind_by_directory(prefix))
-        .map(|kind| kind.tag)
-        .unwrap_or_else(|| match prefix {
-            "Документ" => "Document",
-            "Справочник" => "Catalog",
-            "ОбщийМодуль" | "ОбщиеМодули" => "CommonModule",
-            "РегистрСведений" => "InformationRegister",
-            "РегистрНакопления" => "AccumulationRegister",
-            "Перечисление" => "Enum",
-            other => other,
+    let category =
+        PlatformXmlAdapterFactory::normalize_metadata_category(prefix).unwrap_or_else(|| {
+            match prefix {
+                "Документ" => "Document",
+                "Справочник" => "Catalog",
+                "ОбщийМодуль" | "ОбщиеМодули" => "CommonModule",
+                "РегистрСведений" => "InformationRegister",
+                "РегистрНакопления" => "AccumulationRegister",
+                "Перечисление" => "Enum",
+                other => other,
+            }
         });
     (Some(category.to_string()), name.trim().to_string())
 }
@@ -4245,7 +4245,6 @@ fn _path_list(paths: &[PathBuf]) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::application::UnicaApplication;
-    use crate::infrastructure::metadata_kinds::METADATA_KINDS;
     use crate::infrastructure::platform::testing;
     use crate::infrastructure::workspace_index::{IndexBackgroundJob, IndexCommand, IndexOutput};
     use rusqlite::Connection;
@@ -4256,6 +4255,7 @@ mod tests {
     use std::path::Path;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+    use unica_adapter_platform_xml::legacy_metadata_kinds;
 
     #[test]
     fn only_active_building_readiness_reports_index_building() {
@@ -4707,7 +4707,7 @@ mod tests {
 
     #[test]
     fn metadata_profile_selector_normalizes_every_registry_tag_and_directory() {
-        for kind in METADATA_KINDS {
+        for kind in legacy_metadata_kinds() {
             let tag_selector = format!("{}.ObjectName", kind.tag);
             assert_eq!(
                 split_profile_name(&tag_selector),
@@ -4759,7 +4759,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        for kind in METADATA_KINDS {
+        for kind in legacy_metadata_kinds() {
             assert!(
                 !local_match_patterns.contains(&format!("\"{}\"", kind.tag)),
                 "{} must be resolved through the shared registry",

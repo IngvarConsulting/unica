@@ -8,6 +8,11 @@ use crate::infrastructure::project_sources::discover_project_source_map;
 use crate::infrastructure::source_roots::deepest_source_set_matches;
 use serde_json::{Map, Value};
 use std::path::{Component, Path, PathBuf};
+use unica_application::{OperationalPolicyDecision, OperationalPolicyService};
+use unica_format_core::{
+    ports::{SourceCompatibilityEvidence, SourceCompatibilityRequest},
+    source::SourceFamily,
+};
 
 pub(crate) fn validate_tool_context(
     tool: ToolSpec,
@@ -125,17 +130,12 @@ fn validate_external_project_format(
     tool: ToolSpec,
     source_map: &ProjectSourceMap,
 ) -> Result<(), String> {
-    match source_map.configured_format_raw.as_deref() {
-        None | Some("DESIGNER") => Ok(()),
-        Some("EDT") => Err(format!(
-            "{} requires v8project.yaml format=DESIGNER; format=EDT uses a different external-project layout",
-            tool.name
-        )),
-        Some(other) => Err(format!(
-            "{} requires v8project.yaml format to be exact `DESIGNER` (or omitted for the Designer default); got {other:?}",
-            tool.name
-        )),
-    }
+    enforce_source_compatibility(SourceCompatibilityRequest {
+        operation_name: tool.name.to_string(),
+        evidence: SourceCompatibilityEvidence::DeclaredProjectFormat {
+            value: source_map.configured_format_raw.clone(),
+        },
+    })
 }
 
 fn validate_initializer_destination(
@@ -202,16 +202,31 @@ fn validate_platform_xml_source_format(
     tool: ToolSpec,
     source_set: &crate::domain::project_sources::ProjectSourceSet,
 ) -> Result<(), String> {
-    match source_set.source_format {
-        SourceFormat::PlatformXml | SourceFormat::Unknown => Ok(()),
-        SourceFormat::Edt => Err(format!(
-            "{} targets source-set `{}` with sourceFormat=edt; native platform XML tools require sourceFormat=platform_xml",
-            tool.name, source_set.name
-        )),
-        SourceFormat::Invalid => Err(format!(
-            "{} targets source-set `{}` with invalid/ambiguous format; native platform XML tools require sourceFormat=platform_xml",
-            tool.name, source_set.name
-        )),
+    let (family, invalid) = match source_set.source_format {
+        SourceFormat::PlatformXml => (Some(SourceFamily::PlatformXml), false),
+        SourceFormat::Edt => (Some(SourceFamily::Edt), false),
+        SourceFormat::Unknown => (None, false),
+        SourceFormat::Invalid => (None, true),
+    };
+    enforce_source_compatibility(SourceCompatibilityRequest {
+        operation_name: tool.name.to_string(),
+        evidence: SourceCompatibilityEvidence::Detected {
+            source_set_name: source_set.name.clone(),
+            family,
+            invalid,
+        },
+    })
+}
+
+fn enforce_source_compatibility(request: SourceCompatibilityRequest) -> Result<(), String> {
+    let port =
+        unica_adapter_platform_xml::PlatformXmlAdapterFactory::new().source_compatibility_port();
+    match OperationalPolicyService::check_source_compatibility(port.as_ref(), &request)
+        .map_err(|error| error.message)?
+    {
+        OperationalPolicyDecision::Allow => Ok(()),
+        OperationalPolicyDecision::Warn(diagnostic)
+        | OperationalPolicyDecision::Block(diagnostic) => Err(diagnostic.message),
     }
 }
 

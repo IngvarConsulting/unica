@@ -1296,6 +1296,7 @@ impl CompileTransaction {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn snapshot_directory_membership(
     directory: &Path,
     selector: DirectoryMembershipSelector,

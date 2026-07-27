@@ -38,10 +38,17 @@
 //! ```
 
 mod factory;
+mod guards;
 mod owner;
+mod publication;
+mod validation;
 mod versions;
 
 pub use factory::PlatformXmlAdapterFactory;
+pub use guards::{
+    legacy_metadata_kind, legacy_metadata_kind_by_directory, legacy_metadata_kind_index,
+    legacy_metadata_kind_tags, legacy_metadata_kinds, LegacyMetadataKind,
+};
 
 mod domain {
     pub(crate) use unica_format_core::limits as navigation_limits;

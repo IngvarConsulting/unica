@@ -380,7 +380,18 @@ fn decode_certified_v6(
                     "removed profile",
                 ));
             }
-            return Ok(removed());
+            return Ok(if global {
+                removed()
+            } else {
+                SupportFacts {
+                    source: SupportSourceState::Parsed,
+                    object_rules: BTreeMap::new(),
+                    global_editing_enabled: Some(false),
+                    configuration_rule: None,
+                    vendors: Vec::new(),
+                    multi_vendor_semantics_unproven: false,
+                }
+            });
         }
         count if count > MAX_VENDOR_COUNT => {
             return Err(cursor.error(

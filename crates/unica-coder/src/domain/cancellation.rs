@@ -1,29 +1,9 @@
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
+pub use unica_format_core::ports::OperationCancellation as CancellationToken;
 
 pub const CANCELLED_PREFIX: &str = "cancelled:";
 
 pub fn cancelled_error(detail: impl AsRef<str>) -> String {
     format!("{CANCELLED_PREFIX} {}", detail.as_ref())
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct CancellationToken(Arc<AtomicBool>);
-
-impl CancellationToken {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn cancel(&self) {
-        self.0.store(true, Ordering::Release);
-    }
-
-    pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Acquire)
-    }
 }
 
 #[cfg(test)]

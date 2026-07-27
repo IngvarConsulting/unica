@@ -3,16 +3,15 @@ use crate::application::operation_descriptors::{
 };
 use crate::application::ports::SupportGuardCheck;
 use crate::application::{AdapterOutcome, ToolHandler, ToolSpec};
-use crate::domain::navigation::Authorability;
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::native_operations::common::{
-    absolutize, find_support_config_dir, inspect_support_state, path_arg, required_string,
-    support_object_uuid_for_path, support_root_uuid,
-};
+use crate::infrastructure::native_operations::common::{absolutize, path_arg, required_string};
 use crate::infrastructure::native_operations::{meta, template};
+use crate::infrastructure::platform_xml_owner::validation_source_context;
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
-use unica_format_core::ports::{EffectiveSupportRule, SupportSourceState};
+use unica_application::{GuardEnforcement, OperationalPolicyDecision, OperationalPolicyService};
+use unica_format_core::ports::{AuthorabilityRequest, AuthorabilityRequirement, FormatDiagnostic};
+use unica_format_core::source::SourceContext;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SupportGuardMode {
@@ -27,94 +26,97 @@ pub(crate) struct SupportGuardViolation {
     pub reason: String,
     pub target_path: PathBuf,
     pub config_dir: PathBuf,
+    pub support_state_path: PathBuf,
 }
 
-pub(crate) fn support_guard_violation(
+fn support_guard_violation_with_context(
     target_path: &Path,
     requirement: SupportGuardRequirement,
+    context: &WorkspaceContext,
 ) -> Option<SupportGuardViolation> {
     let target_path = target_path
         .canonicalize()
         .unwrap_or_else(|_| target_path.to_path_buf());
-    let config_dir = find_support_config_dir(&target_path)?;
-    let object_uuid = support_object_uuid_for_path(&target_path)
-        .or_else(|| support_root_uuid(&config_dir.join("Configuration.xml")));
-    let evidence = match inspect_support_state(&config_dir, object_uuid.as_deref().unwrap_or("")) {
-        Ok(evidence) => evidence,
+    let source = match validation_source_context(&target_path, context) {
+        Ok(source) => source,
         Err(error) => {
             return Some(SupportGuardViolation {
                 code: "support-state-unreadable",
-                reason: format!(
-                    "не удалось прочитать состояние поддержки (ParentConfigurations.bin): {}; безопасность правки не подтверждена",
-                    error.message,
-                ),
+                reason: error.message,
                 target_path,
-                config_dir,
+                config_dir: context.workspace_root.clone(),
+                support_state_path: context.workspace_root.clone(),
             })
         }
     };
-    if let SupportSourceState::Unreadable { context, offset } = &evidence.source {
-        let location = offset
-            .map(|offset| format!(" at byte {offset}"))
-            .unwrap_or_default();
-        return Some(SupportGuardViolation {
-                code: "support-state-unreadable",
-                reason: format!(
-                    "не удалось прочитать состояние поддержки (ParentConfigurations.bin): {}{}; безопасность правки не подтверждена",
-                    context,
-                    location,
-                ),
-                target_path,
-                config_dir,
-            });
-    }
-    if requirement == SupportGuardRequirement::Removed {
-        return match evidence.effective_rule {
-            EffectiveSupportRule::Removed => None,
-            EffectiveSupportRule::ConfigurationReadOnly => Some(SupportGuardViolation {
-                code: "capability-off",
-                reason: "возможность изменения конфигурации выключена (вся конфигурация read-only)"
-                    .to_string(),
-                target_path,
-                config_dir,
-            }),
-            EffectiveSupportRule::Locked
-            | EffectiveSupportRule::Editable
-            | EffectiveSupportRule::Absent
-            | EffectiveSupportRule::UnknownReadOnly
-            | EffectiveSupportRule::Unreadable => Some(SupportGuardViolation {
-                code: "not-removed",
-                reason: "объект не снят с поддержки; удаление сломает обновления".to_string(),
-                target_path,
-                config_dir,
-            }),
-        };
-    }
-    match evidence.authorability {
-        Authorability::Authorable => None,
-        Authorability::ConfigurationReadOnly => Some(SupportGuardViolation {
-            code: "capability-off",
-            reason: "возможность изменения конфигурации выключена (вся конфигурация read-only)".to_string(),
-            target_path,
-            config_dir,
-        }),
-        Authorability::SupportLocked => Some(SupportGuardViolation {
-            code: if requirement == SupportGuardRequirement::Removed { "not-removed" } else { "locked" },
-            reason: if requirement == SupportGuardRequirement::Removed {
-                "объект или конфигурация не сняты с поддержки — удаление сломает обновления".to_string()
-            } else {
-                "объект или конфигурация на замке — редактирование сломает обновления".to_string()
+    support_guard_violation_for_source(source, requirement, &context.workspace_root)
+}
+
+fn support_guard_violation_for_source(
+    source: SourceContext,
+    requirement: SupportGuardRequirement,
+    fallback_root: &Path,
+) -> Option<SupportGuardViolation> {
+    let port = unica_adapter_platform_xml::PlatformXmlAdapterFactory::new().authorability_port();
+    let result = port
+        .inspect(&AuthorabilityRequest {
+            source,
+            requirement: match requirement {
+                SupportGuardRequirement::Editable => AuthorabilityRequirement::Editable,
+                SupportGuardRequirement::Removed => AuthorabilityRequirement::Removed,
             },
-            target_path,
-            config_dir,
-        }),
-        Authorability::UnknownSupportState | Authorability::UnknownReadOnly | Authorability::DerivedReadOnly => Some(SupportGuardViolation {
-            code: "support-state-unreadable",
-            reason: "состояние поддержки объекта или конфигурации неизвестно; безопасность правки не подтверждена".to_string(),
-            target_path,
-            config_dir,
-        }),
-    }
+        })
+        .ok()?;
+    result.violation.map(|violation| {
+        let code = match violation.diagnostic.code.as_str() {
+            "capability-off" => "capability-off",
+            "not-removed" => "not-removed",
+            "locked" => "locked",
+            _ => "support-state-unreadable",
+        };
+        SupportGuardViolation {
+            code,
+            reason: violation.diagnostic.message,
+            target_path: violation.target,
+            config_dir: violation.source_root,
+            support_state_path: violation
+                .diagnostic
+                .details
+                .get("supportStatePath")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| fallback_root.to_path_buf()),
+        }
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn support_guard_violation(
+    target_path: &Path,
+    requirement: SupportGuardRequirement,
+) -> Option<SupportGuardViolation> {
+    use unica_format_core::source::{SourceFamily, SourceLocation};
+
+    let target_path = target_path
+        .canonicalize()
+        .unwrap_or_else(|_| target_path.to_path_buf());
+    let source_root = target_path
+        .ancestors()
+        .find(|ancestor| ancestor.join("Configuration.xml").is_file())?
+        .to_path_buf();
+    support_guard_violation_for_source(
+        SourceContext::new(
+            SourceLocation::new(
+                source_root.clone(),
+                source_root.clone(),
+                target_path.clone(),
+            ),
+            None,
+            SourceFamily::PlatformXml,
+            None,
+        ),
+        requirement,
+        &source_root,
+    )
 }
 
 pub(crate) fn evaluate_support_guard(
@@ -125,21 +127,33 @@ pub(crate) fn evaluate_support_guard(
     let Some((target_path, requirement)) = support_guard_target(spec, args, context) else {
         return Ok(SupportGuardCheck::Allow);
     };
-    let Some(violation) = support_guard_violation(&target_path, requirement) else {
+    let Some(violation) = support_guard_violation_with_context(&target_path, requirement, context)
+    else {
         return Ok(SupportGuardCheck::Allow);
     };
-
-    Ok(match support_guard_mode(&violation.config_dir, context) {
-        SupportGuardMode::Off => SupportGuardCheck::Allow,
-        SupportGuardMode::Warn => SupportGuardCheck::Warn(format!(
-            "[support guard] ПРЕДУПРЕЖДЕНИЕ: {}. Цель: {}",
-            violation.reason,
-            violation.target_path.display()
-        )),
-        SupportGuardMode::Deny => {
-            SupportGuardCheck::Block(support_guard_blocked_outcome(spec, &violation, requirement))
-        }
-    })
+    let enforcement = match support_guard_mode(&violation.config_dir, context) {
+        SupportGuardMode::Off => GuardEnforcement::Off,
+        SupportGuardMode::Warn => GuardEnforcement::Warn,
+        SupportGuardMode::Deny => GuardEnforcement::Deny,
+    };
+    let mut diagnostic = FormatDiagnostic::new(violation.code, violation.reason.clone());
+    diagnostic.details.insert(
+        "target".to_string(),
+        violation.target_path.display().to_string(),
+    );
+    Ok(
+        match OperationalPolicyService::decide_authorability(Some(diagnostic), enforcement) {
+            OperationalPolicyDecision::Allow => SupportGuardCheck::Allow,
+            OperationalPolicyDecision::Warn(_) => SupportGuardCheck::Warn(format!(
+                "[support guard] ПРЕДУПРЕЖДЕНИЕ: {}. Цель: {}",
+                violation.reason,
+                violation.target_path.display()
+            )),
+            OperationalPolicyDecision::Block(_) => SupportGuardCheck::Block(
+                support_guard_blocked_outcome(spec, &violation, requirement),
+            ),
+        },
+    )
 }
 
 fn support_guard_target(
@@ -308,11 +322,7 @@ fn support_guard_blocked_outcome(
         let message = format!(
             "[support-guard] Редактирование отклонено: состояние поддержки для объекта «{target}» нельзя достоверно прочитать.\nСостояние: {}.\nПроверьте или восстановите {}. Пока состояние поддержки не прочитано, правки заблокированы.",
             violation.reason,
-            violation
-                .config_dir
-                .join("Ext")
-                .join("ParentConfigurations.bin")
-                .display(),
+            violation.support_state_path.display(),
         );
         return AdapterOutcome {
             ok: false,
@@ -397,6 +407,7 @@ mod tests {
                 reason: "не удалось прочитать состояние поддержки".to_string(),
                 target_path: PathBuf::from("/workspace/src/Documents/Shipment.xml"),
                 config_dir: PathBuf::from("/workspace/src"),
+                support_state_path: PathBuf::from("/workspace/src/Ext/ParentConfigurations.bin"),
             },
             crate::application::SupportGuardRequirement::Editable,
         );

@@ -10,8 +10,8 @@ pub(crate) use unica_format_core::ports::{
 };
 use unica_format_core::{
     ports::{
-        FormatInspectionMode, FormatInspectionRequest, OwnerResolutionMode, OwnerResolutionRequest,
-        SourceInputEvidence,
+        CompatibilityTarget, FormatInspectionMode, FormatInspectionRequest, OwnerResolutionMode,
+        OwnerResolutionRequest, SourceInputEvidence,
     },
     source::{ConfiguredSourceSetKind, SourceContext, SourceFamily, SourceLocation},
 };
@@ -100,14 +100,6 @@ pub(crate) fn resolve_platform_xml_owners_with_provenance(
     resolve(target, context, OwnerResolutionMode::Existing)
 }
 
-pub(crate) fn resolve_existing_platform_xml_owners_for_new_output(
-    target: &Path,
-    context: &WorkspaceContext,
-) -> Result<Vec<PlatformXmlOwner>, PlatformXmlOwnerError> {
-    resolve_existing_platform_xml_owners_for_new_output_with_provenance(target, context)
-        .map(|resolution| resolution.owners)
-}
-
 pub(crate) fn resolve_existing_platform_xml_owners_for_new_output_with_provenance(
     target: &Path,
     context: &WorkspaceContext,
@@ -139,30 +131,50 @@ pub(crate) fn inspect_platform_xml_compatibility(
     })
 }
 
-pub(crate) fn inspect_platform_xml_versionless(target: &Path) -> Result<(), PlatformXmlOwnerError> {
-    let target = normalize_path_identity(target).map_err(|message| PlatformXmlOwnerError {
-        path: target.to_path_buf(),
-        message,
-    })?;
-    PlatformXmlAdapterFactory::new()
-        .registration()
-        .format_inspection
-        .inspect(&FormatInspectionRequest {
-            source: inspection_source(&target),
-            mode: FormatInspectionMode::Versionless,
-        })
-        .map(|_| ())
-        .map_err(|error| PlatformXmlOwnerError {
-            path: target,
-            message: error.message,
-        })
-}
-
 fn resolve(
     target: &Path,
     context: &WorkspaceContext,
     mode: OwnerResolutionMode,
 ) -> Result<PlatformXmlOwnerResolution, PlatformXmlOwnerError> {
+    let (source, source_map_provenance) = operation_source_context(target, context)?;
+    let target = source.location().target().to_path_buf();
+    let result = PlatformXmlAdapterFactory::new()
+        .registration()
+        .ownership
+        .resolve(&OwnerResolutionRequest { source, mode })
+        .map_err(|error| PlatformXmlOwnerError {
+            path: target,
+            message: error.message,
+        })?;
+    Ok(PlatformXmlOwnerResolution {
+        owners: result.owners,
+        provenance: PlatformXmlOwnerProvenance {
+            source_map: source_map_provenance,
+            evidence: result.evidence,
+        },
+    })
+}
+
+pub(crate) fn compatibility_target(
+    target: &Path,
+    context: &WorkspaceContext,
+    mode: OwnerResolutionMode,
+) -> Result<CompatibilityTarget, PlatformXmlOwnerError> {
+    operation_source_context(target, context)
+        .map(|(source, _)| CompatibilityTarget { source, mode })
+}
+
+pub(crate) fn validation_source_context(
+    target: &Path,
+    context: &WorkspaceContext,
+) -> Result<SourceContext, PlatformXmlOwnerError> {
+    operation_source_context(target, context).map(|(source, _)| source)
+}
+
+fn operation_source_context(
+    target: &Path,
+    context: &WorkspaceContext,
+) -> Result<(SourceContext, ProjectSourceMapProvenance), PlatformXmlOwnerError> {
     let target = if target.is_absolute() {
         target.to_path_buf()
     } else {
@@ -199,10 +211,11 @@ fn resolve(
                 message,
             }
         })?;
+    let has_explicit_source_map = source_map.config_path.is_some();
     let (configured_source_set, configured_kind, source_root) = match selected {
         Some((source_set, source_root)) => (
             Some(source_set.name.clone()),
-            Some(configured_kind(source_set.kind)),
+            has_explicit_source_map.then(|| configured_kind(source_set.kind)),
             source_root,
         ),
         None if target.is_dir() => (None, None, target.clone()),
@@ -222,21 +235,7 @@ fn resolve(
         None,
     )
     .with_configured_source_set_kind(configured_kind);
-    let result = PlatformXmlAdapterFactory::new()
-        .registration()
-        .ownership
-        .resolve(&OwnerResolutionRequest { source, mode })
-        .map_err(|error| PlatformXmlOwnerError {
-            path: target,
-            message: error.message,
-        })?;
-    Ok(PlatformXmlOwnerResolution {
-        owners: result.owners,
-        provenance: PlatformXmlOwnerProvenance {
-            source_map: source_map_provenance,
-            evidence: result.evidence,
-        },
-    })
+    Ok((source, source_map_provenance))
 }
 
 fn inspection_source(target: &Path) -> SourceContext {
@@ -310,8 +309,9 @@ mod tests {
         .unwrap();
         let target = context.cwd.join("src/new/Missing.xml");
         assert!(
-            resolve_existing_platform_xml_owners_for_new_output(&target, &context)
+            resolve_existing_platform_xml_owners_for_new_output_with_provenance(&target, &context)
                 .unwrap()
+                .owners
                 .is_empty()
         );
 
@@ -322,7 +322,9 @@ mod tests {
         )
         .unwrap();
         let owners =
-            resolve_existing_platform_xml_owners_for_new_output(&target, &context).unwrap();
+            resolve_existing_platform_xml_owners_for_new_output_with_provenance(&target, &context)
+                .unwrap()
+                .owners;
         assert_eq!(owners.len(), 1);
         assert_eq!(owners[0].path, fs::canonicalize(nested).unwrap());
         fs::remove_dir_all(context.cwd).unwrap();

@@ -1,7 +1,6 @@
 use crate::application::AdapterOutcome;
 use crate::domain::project_sources::{SourceFormat, SourceSetKind};
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::metadata_kinds::metadata_kind_by_directory;
 use crate::infrastructure::path_policy::WorkspacePathPolicy;
 use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
 use crate::infrastructure::project_sources::discover_project_source_map;
@@ -13,6 +12,7 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use unica_adapter_platform_xml::legacy_metadata_kind_by_directory as metadata_kind_by_directory;
 
 use super::common::guard_active_format_owner;
 use super::compile_transaction::CompileTransaction;
