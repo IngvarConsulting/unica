@@ -76,6 +76,53 @@ fn compile_preview_without_payload_uses_the_safe_dry_run_placeholder() {
     fs::remove_dir_all(root).unwrap();
 }
 
+/// Verifies the facade routes meta-edit dry-runs to the detailed preview.
+#[test]
+fn meta_edit_dry_run_dispatches_to_projected_diff_preview() {
+    let root = temp_root("meta-edit-dry-run-dispatch");
+    let object_path = root.join("Catalogs/Preview.xml");
+    fs::create_dir_all(object_path.parent().unwrap()).unwrap();
+    let original = br#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+	<Catalog uuid="11111111-1111-4111-8111-111111111111">
+		<Properties>
+			<Name>Preview</Name>
+			<Synonym/>
+			<Comment/>
+			<Owners/>
+			<InputByString/>
+			<BasedOn/>
+		</Properties>
+		<ChildObjects/>
+	</Catalog>
+</MetaDataObject>
+"#;
+    fs::write(&object_path, original).unwrap();
+    let context = discover_workspace(Some(root.clone())).unwrap();
+    let args = serde_json::from_value(json!({
+        "ObjectPath": object_path.display().to_string(),
+        "Operation": "modify-property",
+        "Value": "Comment=Dispatched"
+    }))
+    .unwrap();
+
+    let result =
+        NativeOperationAdapter::invoke("meta-edit", "unica.meta.edit", &args, &context, true, true)
+            .unwrap();
+
+    assert!(result.ok, "{result:?}");
+    let stdout = result.stdout.as_deref().unwrap_or_default();
+    assert!(stdout.contains("--- a/"), "{stdout}");
+    assert!(stdout.contains("-\t\t\t<Comment/>"), "{stdout}");
+    assert!(
+        stdout.contains("+\t\t\t<Comment>Dispatched</Comment>"),
+        "{stdout}"
+    );
+    assert_eq!(fs::read(&object_path).unwrap(), original);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn subsystem_preview_with_unavailable_parent_uses_the_legacy_placeholder() {
     let root = temp_root("subsystem-preview-parent-fallback");
