@@ -46,3 +46,8 @@ Task 5: started.
 - Detailed evidence and parity inventory: `task-5-report.md`.
 Task 5: initial review failed — coverage manifest can drift; role rights are silently omitted; real type-set variants are unresolved; catalog hierarchy control fields are ignored; unknown objects/children fail instead of readable partial; form/template facts are advertised but not projected; parity tests are synthetic and non-independent.
 Task 5: fix round 1 started (base 9e8bb83a).
+Task 5: fix round 1 implemented.
+- Runtime/core/fixture commit: `71f366d95f419ccc736895b2042bf36192aee7cc`.
+- Independent frozen-parity commit: `6463ec51efc10a79f47af0da204690606280203b`.
+- Scoped validation: `cargo test -p unica-adapter-platform-xml --test legacy_parity --test unmapped_fact` passed (13 tests, 0 failures, no warnings).
+- Fix-round evidence, parity inventory, decisions, and intentional gaps are appended to `task-5-report.md`.

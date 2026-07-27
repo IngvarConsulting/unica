@@ -101,3 +101,128 @@ unmapped_fact: 1 passed; 0 failed
 ```
 
 Only the Task 5 validation command prescribed by the plan was run. No workspace-wide validation was run.
+
+## Fix Round 1
+
+Base: `9e8bb83a12d1957453b56c87ae8a824aea1d4ef8`.
+
+Implementation commits:
+
+- `71f366d95f419ccc736895b2042bf36192aee7cc` (`fix: make platform xml coverage authoritative`)
+- `6463ec51efc10a79f47af0da204690606280203b` (`test: freeze platform xml legacy fact parity`)
+
+The report and completion ledger are committed separately because a commit cannot contain its own SHA and existing commits must not be amended.
+
+### Reviewer findings resolved
+
+1. **Authoritative non-drifting coverage.** `coverage.json` is now the single serialized source consumed into a typed, immutable 2.20 registry. Decoder, schema, probe, projector, owner detection, and adapter profile metadata all query that registry. Runtime validation rejects duplicate or missing object mappings, per-kind/generic property drift, relation-property drift, overlapping or unused child rules, enum/type alias drift, backing-kind disagreement, and unreferenced intentional-partial cases. A runtime mapping cannot exist outside the registry because the former Rust mapping tables and legacy top-level string constant were removed.
+2. **Role rights.** Domain-neutral access object kinds, properties, relations, facets, and validated value types were added to core. The adapter reads `Ext/Rights.xml`, preserves defaults, each target, permission name/value, all readable restriction/condition leaves, restriction templates, and backing availability. Unknown target classes remain readable `unknown` references and force neutral partial diagnostics. A role with absent rights backing is never complete.
+3. **Type sets.** The closed type model now distinguishes UUID, opaque storage, table values, null, references, objects, record sets, managers, keys, enumerations, defined types, and unknown variants. The registry inventories XML Schema, data-core, and current-configuration aliases, including subscription object aliases and all supported register/manager/key families. String, number, and date qualifier groups can coexist and apply to their matching primitive variants. Unknown official aliases remain in the type set as `unknown` and force partial coverage.
+4. **Hierarchy semantics.** `Hierarchical`, `HierarchyType`, `LimitLevelCount`, and `LevelCount` are explicit closed facts. The active hierarchy level limit is computed only when both hierarchy and level limiting are true; otherwise it is explicitly absent while configured controls/count remain visible.
+5. **Unknown readable facts.** Structurally valid unknown roots and children probe and decode as closed `unknown` objects. Unknown children use the neutral `unknown` relation. Unknown property values, reference targets, type variants, and backing files remain readable through neutral structures without native class/property/file labels in output diagnostics.
+6. **Forms/templates.** Common and object-owned forms/templates retain descriptor identity, `FormType`/`TemplateType`, descriptor availability/UUID, content availability, and opaque-content state. Valid opaque content remains intentionally partial; validation alone no longer implies semantic completeness.
+7. **Independent parity.** The old inline synthetic snapshots were replaced by tracked 2.20 corpus files plus frozen semantic fact inventories. Tests compare information sets. The real BSP corpus assertions cover identity and useful facts for catalogs, common modules, documents, enumerations, information registers, languages, and reports. A valid tracked configuration registration corpus covers every supported top-level object kind. Separate adversarial fixtures cover rights, backed/common forms and templates, hierarchy controls, all type categories, subscription aliases, and all unknown root/child/property/relation/value/backing paths. Frozen inventories independently pin every known enum semantic and every registered type alias/category/target.
+
+### Files
+
+Adapter runtime:
+
+- `crates/unica-adapter-platform-xml/src/factory.rs`
+- `crates/unica-adapter-platform-xml/src/owner.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/coverage.json`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/decoder.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/mod.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/native_model.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/probe.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/projector.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/schema.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/semantic_map.rs`
+
+Domain-neutral core:
+
+- `crates/unica-format-core/src/facets.rs`
+- `crates/unica-format-core/src/property.rs`
+- `crates/unica-format-core/src/semantic_ids.rs`
+- `crates/unica-format-core/src/value.rs`
+- `crates/unica-format-core/tests/semantic_registry.rs`
+
+Task-scoped tests and tracked corpus:
+
+- `crates/unica-adapter-platform-xml/tests/legacy_parity.rs`
+- `crates/unica-adapter-platform-xml/tests/unmapped_fact.rs`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/all_kinds/Configuration.xml`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport.xml`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport/Forms/MainForm.xml`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport/Forms/MainForm/Ext/Form.xml`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport/Templates/MainSchema.xml`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport/Templates/MainSchema/Ext/Template.xml`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_form/CommonDashboard.xml`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_form/CommonDashboard/Ext/Form.xml`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_template/CommonLayout.xml`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_template/CommonLayout/Ext/Template.bin`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/expected-semantic-facts.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/hierarchy/DisabledContradiction.xml`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/hierarchy/EnabledLimited.xml`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/hierarchy/EnabledUnlimited.xml`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights/SalesReader.xml`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/types/AllTypes.xml`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/types/EventSources.xml`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/unknown_root/Mystery.xml`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/unknowns/UnknownCases.xml`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/unknowns/UnknownCases/Ext/Future.bin`
+
+SDD artifacts:
+
+- `.superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/progress.md`
+- `.superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/task-5-report.md`
+
+### RED evidence
+
+The Task 5 scoped command was used throughout:
+
+```text
+cargo test -p unica-adapter-platform-xml --test legacy_parity --test unmapped_fact
+```
+
+Initial RED after writing the fix-round tests: exit 101. The tests referenced missing closed hierarchy/access/backing/unknown IDs, object kinds, enum symbols, and type variants. Three test-harness compile defects were corrected without adding behavior; the command remained RED on the missing production semantics.
+
+First integration checkpoint: exit 101 because replacing the independent class constant exposed two consumers (`owner.rs` and `v2_20/mod.rs`) that had not yet been moved to the typed registry. They were changed to query the same registry rather than restoring a second list.
+
+Behavior checkpoint: exit 101. Rights and form/template tests passed, while hierarchy fixtures exposed an invalid capability on an absent computed property and the complete type fixture exposed `ValueStorage`/`ValueTable` collapsing into one variant. The fixes kept inactive hierarchy limits absent and introduced the distinct domain-neutral table type.
+
+Independent real-corpus inventory checkpoint: exit 101 with 6 parity tests passing and the real-corpus information-set test failing on its string canonicalization helper. The helper was corrected; production behavior was unchanged.
+
+### Final GREEN evidence
+
+Command:
+
+```text
+cargo test -p unica-adapter-platform-xml --test legacy_parity --test unmapped_fact
+```
+
+Result: exit 0, no warnings.
+
+```text
+legacy_parity: 7 passed; 0 failed
+unmapped_fact: 6 passed; 0 failed
+```
+
+Only the Task 5 scoped validation prescribed by the plan was run. No workspace-wide test, lint, format, or unrelated validation command was run.
+
+### Parity inventory
+
+- Every registered native top-level class has a closed object kind and is exercised through a tracked valid 2.20 configuration registration.
+- Real tracked BSP facts: catalog hierarchy/code/description and specialized children; common-module execution flags; document numbering/posting and attributes/tabular sections/forms/templates; enumeration comments/values; information-register periodicity/write mode/dimensions; language identity; report data-composition-schema and backed template facts.
+- Rights: three defaults, two object targets, six permission values, condition text, one restriction template, and backing availability from the real `SalesReader/Ext/Rights.xml`.
+- Type aliases: XML primitives, `UUID`, `ValueStorage`, `ValueTable`, `Null`, all registered reference/object/record-set/manager/key aliases, enumeration/defined-type aliases, subscription source-object aliases, and simultaneous string/number/date qualifiers.
+- Hierarchy adversaries: enabled/unlimited, enabled/limited, and disabled with contradictory configured limit controls, plus the real `Валюты.xml` case.
+- Artifacts: object-owned and common forms/templates, descriptor UUID, form/template type, content availability, and explicit opaque content.
+- Unknowns: root class, child class/relation, direct and nested property values, reference target, type alias, and backing file.
+- Registry audit: object profiles, generic/per-kind properties, relation properties, child mappings, enum aliases, type aliases, backing artifacts, and intentional partial cases.
+
+### Intentional gaps and concerns
+
+- Form and template content internals remain opaque. All readable descriptor/type/backing facts are retained and the result is partial, as required; no unsupported semantic decomposition is fabricated.
+- Future official aliases/classes/properties retain readable neutral values and partial diagnostics, but their private native labels are intentionally not exposed through core output.
+- The checked-in BSP corpus has full real descriptors for seven top-level kinds. The remaining supported top-level kinds are exercised by a tracked structurally valid 2.20 registration corpus and the registry bijection audit, not by full BSP descriptors. This is a corpus-availability limitation, not a known loss of a legacy baseline fact.
+- No known fact exercised by the approved legacy useful-information baseline remains silently omitted.
