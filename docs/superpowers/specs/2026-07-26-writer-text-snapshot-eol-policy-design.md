@@ -108,13 +108,13 @@ pub(crate) enum EolPolicy {
 }
 ```
 
-`SourceTextSnapshot::from_bytes` accepts exactly zero or one leading UTF-8 BOM.
-The BOM is retained unchanged in `raw` and represented as U+FEFF in
+`SourceTextSnapshot::from_bytes` observes at most the first leading UTF-8 BOM as
+a preamble. It is retained unchanged in `raw` and represented as U+FEFF in
 `decoded_text`. The `text()` accessor returns the content after that one
 preamble, while `decoded_text()` returns the byte-aligned decoded source for
-consumers whose UTF-8 offsets must still index `raw`. A second leading BOM is
-rejected as an ambiguous text preamble. Invalid UTF-8 is rejected without lossy
-conversion.
+consumers whose UTF-8 offsets must still index `raw`. Any subsequent U+FEFF is
+valid UTF-8 content and remains byte-exact. Invalid UTF-8 is rejected without
+lossy conversion.
 
 The module exposes borrowed accessors instead of public fields. Callers cannot
 mutate the snapshot after construction.
@@ -200,8 +200,7 @@ selector planning rather than inserting CR or borrowing a distant LF.
 
 Snapshot construction fails before planning when:
 
-- bytes are not valid UTF-8 after the optional BOM;
-- more than one leading UTF-8 BOM is present.
+- bytes are not valid UTF-8 after the optional BOM.
 
 Policy resolution fails before postimage construction when:
 
@@ -219,7 +218,7 @@ cache changes.
 Focused `text_snapshot` unit tests cover:
 
 - BOM present and absent;
-- duplicate BOM rejection;
+- a second leading U+FEFF retained as content;
 - invalid UTF-8 rejection;
 - no line ending;
 - uniform LF, CRLF, and CR;
@@ -237,6 +236,7 @@ tests prove:
 
 - no-EOL preview, apply, and repeat apply use LF and remain idempotent;
 - LF, CRLF, and mixed-local insertion still choose the same bytes;
+- preview, apply, and repeat apply preserve two leading U+FEFF markers;
 - BOM and untouched suffix remain exact;
 - repeat apply remains a no-op;
 - dry-run and apply report identical planned postimage hashes.

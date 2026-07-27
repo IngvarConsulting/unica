@@ -69,7 +69,6 @@ pub(crate) enum LineEndingProfile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SnapshotError {
     InvalidUtf8,
-    DuplicateUtf8Bom,
 }
 ```
 
@@ -100,12 +99,12 @@ fn snapshot_preserves_raw_bytes_and_excludes_one_bom_from_text() {
 }
 
 #[test]
-fn snapshot_rejects_duplicate_bom() {
+fn snapshot_treats_only_the_first_bom_as_preamble() {
     let raw = b"\xef\xbb\xbf\xef\xbb\xbfProcedure Run()\nEndProcedure\n";
-    assert_eq!(
-        SourceTextSnapshot::from_bytes(raw),
-        Err(SnapshotError::DuplicateUtf8Bom)
-    );
+    let snapshot = SourceTextSnapshot::from_bytes(raw).unwrap();
+    assert_eq!(snapshot.raw(), raw);
+    assert_eq!(snapshot.text(), "\u{feff}Procedure Run()\nEndProcedure\n");
+    assert_eq!(snapshot.bom(), Utf8Bom::Present);
 }
 
 #[test]
@@ -156,10 +155,7 @@ Record the byte length of exactly one leading BOM:
 const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
 
 pub(crate) fn from_bytes(raw: &[u8]) -> Result<Self, SnapshotError> {
-    let (bom, content_start) = if let Some(without_bom) = raw.strip_prefix(UTF8_BOM) {
-        if without_bom.starts_with(UTF8_BOM) {
-            return Err(SnapshotError::DuplicateUtf8Bom);
-        }
+    let (bom, content_start) = if raw.starts_with(UTF8_BOM) {
         (Utf8Bom::Present, UTF8_BOM.len())
     } else {
         (Utf8Bom::Absent, 0)
@@ -190,7 +186,6 @@ fallback.
 Implement `Display` for `SnapshotError` with:
 
 ```text
-source contains more than one UTF-8 BOM
 source is not valid UTF-8
 ```
 
@@ -718,6 +713,70 @@ cargo clippy -p unica-coder --all-targets --all-features -- -D warnings
 cargo test -p unica-coder -- --test-threads=1
 python3 scripts/ci/check-rust-platform-boundary.py
 git diff --check upstream/main...HEAD
+```
+
+Expected: every command exits 0; existing ignored tests remain ignored.
+
+---
+
+### Task 6: Review Follow-up for Repeated Leading U+FEFF
+
+**Files:**
+- Modify: `crates/unica-coder/src/infrastructure/native_operations/text_snapshot.rs`
+- Modify: `crates/unica-coder/src/infrastructure/native_operations/code.rs`
+- Modify: `docs/superpowers/specs/2026-07-26-writer-text-snapshot-eol-policy-design.md`
+- Modify: `spec/architecture/code-patch-v1.md`
+- Modify: `docs/superpowers/plans/2026-07-26-writer-text-snapshot-eol-policy.md`
+
+**Interfaces:**
+- Consumes: byte-exact `SourceTextSnapshot` and existing `code.patch`
+  preview/apply/idempotence pipeline.
+- Produces: first-BOM-only preamble observation; later U+FEFF markers remain
+  content without weakening invalid UTF-8 rejection or no-EOL LF behavior.
+
+- [x] **Step 1: Add failing snapshot and end-to-end regression tests**
+
+Add a snapshot test proving that only the first BOM is excluded from `text()`.
+Add a `code.patch` test proving preview, apply, and repeated apply preserve both
+leading markers byte-for-byte.
+
+- [x] **Step 2: Run both tests and verify RED**
+
+Run:
+
+```bash
+cargo test -p unica-coder infrastructure::native_operations::text_snapshot::tests::snapshot_treats_only_the_first_bom_as_preamble -- --exact
+cargo test -p unica-coder infrastructure::native_operations::code::tests::code_patch_preserves_two_leading_boms_for_preview_apply_and_repeat_noop -- --exact
+```
+
+Expected: both fail through `DuplicateUtf8Bom`.
+
+- [x] **Step 3: Remove repeated-BOM rejection from snapshot observation**
+
+Use `raw.starts_with(UTF8_BOM)` to classify only the first preamble. Remove
+`SnapshotError::DuplicateUtf8Bom`; keep `SnapshotError::InvalidUtf8`.
+
+- [x] **Step 4: Run regression tests and verify GREEN**
+
+Run the two tests from Step 2 plus the existing no-EOL regression. Expected:
+all three exit 0.
+
+- [x] **Step 5: Align contract documentation**
+
+State that only the first leading BOM is a preamble and later U+FEFF markers are
+valid byte-preserved content.
+
+- [x] **Step 6: Run full verification**
+
+Run:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy -p unica-coder --all-targets --all-features -- -D warnings
+cargo test -p unica-coder -- --test-threads=1
+python3 scripts/ci/check-rust-platform-boundary.py
+git diff --check upstream/main...HEAD
+git diff --check
 ```
 
 Expected: every command exits 0; existing ignored tests remain ignored.

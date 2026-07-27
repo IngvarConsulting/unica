@@ -1731,6 +1731,37 @@ mod tests {
     }
 
     #[test]
+    fn code_patch_preserves_two_leading_boms_for_preview_apply_and_repeat_noop() {
+        let context = temp_context("two-leading-boms");
+        let module = context
+            .workspace_root
+            .join("src/CommonModules/Sample/Ext/Module.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        let before = b"\xef\xbb\xbf\xef\xbb\xbfProcedure Run()\nEndProcedure\n";
+        let expected = b"\xef\xbb\xbf\xef\xbb\xbfProcedure Run()\nEndProcedure\nProcedure Added()\nEndProcedure\n";
+        fs::write(&module, before).unwrap();
+        let args = patch_args(
+            "src/CommonModules/Sample/Ext/Module.bsl",
+            "Run",
+            "Procedure Added()\nEndProcedure",
+        );
+
+        let preview = patch_inner(&args, &context, PatchMode::Preview);
+        assert!(preview.outcome.ok, "{:?}", preview.outcome.errors);
+        assert_eq!(fs::read(&module).unwrap(), before);
+
+        let applied = patch_inner(&args, &context, PatchMode::Apply);
+        assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
+        assert_eq!(fs::read(&module).unwrap(), expected);
+
+        let repeated = patch_inner(&args, &context, PatchMode::Apply);
+        assert!(repeated.outcome.ok, "{:?}", repeated.outcome.errors);
+        assert!(repeated.data.unwrap().no_op);
+        assert_eq!(fs::read(&module).unwrap(), expected);
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    #[test]
     fn mixed_eol_apply_preserves_untouched_bytes_and_uses_target_eol() {
         let context = temp_context("mixed-eol");
         let module = context

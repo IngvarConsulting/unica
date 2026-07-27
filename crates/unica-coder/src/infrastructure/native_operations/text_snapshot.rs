@@ -14,10 +14,7 @@ pub(crate) struct SourceTextSnapshot {
 
 impl SourceTextSnapshot {
     pub(crate) fn from_bytes(raw: &[u8]) -> Result<Self, SnapshotError> {
-        let (bom, content_start) = if let Some(without_bom) = raw.strip_prefix(UTF8_BOM) {
-            if without_bom.starts_with(UTF8_BOM) {
-                return Err(SnapshotError::DuplicateUtf8Bom);
-            }
+        let (bom, content_start) = if raw.starts_with(UTF8_BOM) {
             (Utf8Bom::Present, UTF8_BOM.len())
         } else {
             (Utf8Bom::Absent, 0)
@@ -103,16 +100,12 @@ pub(crate) enum LineEndingProfile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SnapshotError {
     InvalidUtf8,
-    DuplicateUtf8Bom,
 }
 
 impl fmt::Display for SnapshotError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidUtf8 => formatter.write_str("source is not valid UTF-8"),
-            Self::DuplicateUtf8Bom => {
-                formatter.write_str("source contains more than one UTF-8 BOM")
-            }
         }
     }
 }
@@ -243,13 +236,17 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_rejects_duplicate_bom() {
+    fn snapshot_treats_only_the_first_bom_as_preamble() {
         let raw = b"\xef\xbb\xbf\xef\xbb\xbfProcedure Run()\nEndProcedure\n";
+        let snapshot = SourceTextSnapshot::from_bytes(raw).unwrap();
 
+        assert_eq!(snapshot.raw(), raw);
         assert_eq!(
-            SourceTextSnapshot::from_bytes(raw),
-            Err(SnapshotError::DuplicateUtf8Bom)
+            snapshot.decoded_text(),
+            "\u{feff}\u{feff}Procedure Run()\nEndProcedure\n"
         );
+        assert_eq!(snapshot.text(), "\u{feff}Procedure Run()\nEndProcedure\n");
+        assert_eq!(snapshot.bom(), Utf8Bom::Present);
     }
 
     #[test]
