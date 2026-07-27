@@ -1,6 +1,6 @@
 # ADR-0014: Provider-neutral code intelligence
 
-- Статус: `proposed`
+- Статус: `accepted`
 - Дата: `2026-07-26`
 
 ## Контекст
