@@ -437,11 +437,14 @@ fn call_tool(
             job: None,
         });
     }
-    let mut support_guard_warning = if spec.mutating && !dry_run {
+    let support_guard_warning = if spec.mutating {
         match ports.evaluate_support_guard(spec, args, &context)? {
             SupportGuardCheck::Allow => None,
             SupportGuardCheck::Warn(warning) => Some(warning),
-            SupportGuardCheck::Block(outcome) => {
+            SupportGuardCheck::Block(mut outcome) => {
+                if dry_run {
+                    outcome.summary = format!("dry run: {}", outcome.summary);
+                }
                 let cache = ports.cache_report(&context, &[], dry_run, spec.cache_access)?;
                 return Ok(OperationResult {
                     ok: outcome.ok,
@@ -466,30 +469,6 @@ fn call_tool(
 
     let handler_outcome = ports.invoke_handler(spec, args, &context, dry_run, cancellation)?;
     let mut outcome = handler_outcome.adapter;
-    if is_successful_detailed_compile_preview(spec, dry_run, &outcome) {
-        match ports.evaluate_support_guard(spec, args, &context)? {
-            SupportGuardCheck::Allow => {}
-            SupportGuardCheck::Warn(warning) => support_guard_warning = Some(warning),
-            SupportGuardCheck::Block(blocked) => {
-                let cache = ports.cache_report(&context, &[], dry_run, spec.cache_access)?;
-                return Ok(OperationResult {
-                    ok: blocked.ok,
-                    summary: blocked.summary,
-                    changes: blocked.changes,
-                    warnings: blocked.warnings,
-                    errors: blocked.errors,
-                    artifacts: blocked.artifacts,
-                    cache,
-                    stdout: blocked.stdout,
-                    stderr: blocked.stderr,
-                    command: blocked.command,
-                    diagnostics: None,
-                    data: None,
-                    job: None,
-                });
-            }
-        }
-    }
     if let Some(warning) = support_guard_warning {
         outcome.warnings.insert(0, warning);
     }
@@ -715,23 +694,6 @@ fn should_emit_events(
             )
         });
     !is_semantic_form_edit_preview
-}
-
-fn is_successful_detailed_compile_preview(
-    spec: ToolSpec,
-    dry_run: bool,
-    outcome: &AdapterOutcome,
-) -> bool {
-    dry_run
-        && outcome.ok
-        && outcome.summary.contains("planned native")
-        && matches!(
-            spec.handler,
-            ToolHandler::NativeOperation {
-                operation: "meta-compile" | "role-compile" | "subsystem-compile",
-                ..
-            }
-        )
 }
 
 fn runtime_result_diagnostics(
@@ -9981,10 +9943,71 @@ mod tests {
             .unwrap();
 
         assert!(!result.ok, "{result:?}");
-        assert!(result.summary.contains("support guard"), "{result:?}");
+        assert_eq!(
+            result.summary,
+            "dry run: unica.meta.compile blocked by support guard"
+        );
         assert!(result.cache.events.is_empty(), "{result:?}");
         assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
         assert!(!src.join("CommonModules/PreviewSupportGuard.xml").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn support_guard_blocks_meta_edit_before_dry_run_planning_in_both_modes() {
+        let (root, workspace, _bin_path) = support_test_workspace(
+            "unica-meta-edit-preview-support-guard",
+            support_test_parent_configurations_bin(
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            ),
+        );
+        let object_path = workspace.join("src/Catalogs/Items.xml");
+        let before = std::fs::read(&object_path).unwrap();
+        let mut results = Vec::new();
+
+        for dry_run in [false, true] {
+            let mut args = Map::new();
+            args.insert(
+                "cwd".to_string(),
+                Value::String(workspace.display().to_string()),
+            );
+            args.insert("dryRun".to_string(), Value::Bool(dry_run));
+            args.insert(
+                "ObjectPath".to_string(),
+                Value::String("src/Catalogs/Items.xml".to_string()),
+            );
+            args.insert(
+                "Operation".to_string(),
+                Value::String("modify-property".to_string()),
+            );
+            args.insert(
+                "Value".to_string(),
+                Value::String("Name=Changed".to_string()),
+            );
+
+            results.push(
+                UnicaApplication::new()
+                    .call_tool("unica.meta.edit", &args)
+                    .unwrap(),
+            );
+        }
+
+        let applied = &results[0];
+        let preview = &results[1];
+        assert!(!applied.ok, "{applied:?}");
+        assert!(!preview.ok, "{preview:?}");
+        assert_eq!(applied.summary, "unica.meta.edit blocked by support guard");
+        assert_eq!(
+            preview.summary,
+            "dry run: unica.meta.edit blocked by support guard"
+        );
+        assert_eq!(preview.errors, applied.errors);
+        assert_eq!(preview.artifacts, applied.artifacts);
+        assert!(preview.stdout.is_none(), "{preview:?}");
+        assert!(preview.cache.events.is_empty(), "{preview:?}");
+        assert_eq!(std::fs::read(&object_path).unwrap(), before);
         let _ = std::fs::remove_dir_all(root);
     }
 
