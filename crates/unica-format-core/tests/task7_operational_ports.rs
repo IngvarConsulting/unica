@@ -3,10 +3,10 @@ use unica_format_core::{
     ports::{
         AuthorabilityPort, CompatibilityIssueKind, CompatibilityPort, FormatDiagnostic,
         FormatDiagnosticCode, FormatDiagnosticDetail, OperationCancellation,
-        OperationalSourceSession, PublicationCancellation, PublicationCleanup, PublicationPort,
-        PublicationFailureKind, PublicationLifecycle, PublicationRecovery,
-        PublicationResult, PublicationRollback,
-        SupportState, ValidationContext, ValidationContextPort, ValidationOwnerKind,
+        OperationalEvidenceRevision, OperationalSourceSession, PublicationCancellation,
+        PublicationCleanup, PublicationFailureKind, PublicationLifecycle, PublicationPort,
+        PublicationRecovery, PublicationResult, PublicationRollback, SupportState,
+        ValidationContext, ValidationContextPort, ValidationOwnerKind,
     },
 };
 
@@ -119,13 +119,9 @@ fn task7_publication_lifecycle_rejects_impossible_combinations() {
 
 #[test]
 fn task7_support_state_is_closed_semantic_evidence() {
-    let summary = unica_format_core::ports::SupportSummary::new(
-        SupportState::Unreadable,
-        None,
-        0,
-        [0; 3],
-    )
-    .unwrap();
+    let summary =
+        unica_format_core::ports::SupportSummary::new(SupportState::Unreadable, None, 0, [0; 3])
+            .unwrap();
     let result = unica_format_core::ports::AuthorabilityResult::denied(
         Authorability::UnknownSupportState,
         summary,
@@ -134,6 +130,7 @@ fn task7_support_state_is_closed_semantic_evidence() {
             FormatDiagnosticDetail::Support(SupportState::Unreadable),
         )
         .unwrap(),
+        OperationalEvidenceRevision::from_digest([9; 32]),
     )
     .unwrap();
     assert_eq!(

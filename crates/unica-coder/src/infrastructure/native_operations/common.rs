@@ -12,9 +12,7 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
-use unica_format_core::ports::{
-    EffectiveSupportRule, OwnerResolutionMode, SupportSourceState,
-};
+use unica_format_core::ports::{EffectiveSupportRule, OwnerResolutionMode, SupportSourceState};
 
 use super::compile_transaction::CompileTransaction;
 use super::single_file_publisher::{publish, PublishMode, PublishRequest};
@@ -2111,9 +2109,7 @@ fn semantic_platform_xml_output_preimage(
     target: &Path,
     role: unica_format_core::ports::SemanticArtifactRole,
 ) -> Result<Option<Vec<u8>>, String> {
-    use unica_format_core::ports::{
-        SemanticArtifactReadRequest, SemanticArtifactReadResult,
-    };
+    use unica_format_core::ports::{SemanticArtifactReadRequest, SemanticArtifactReadResult};
 
     let authorized_root = target
         .ancestors()
@@ -2203,11 +2199,7 @@ fn bind_operational_compatibility_guard<'a>(
         .into_iter()
         .map(|(target, tree)| {
             if tree {
-                factory.capture_unscoped_tree_source(
-                    target,
-                    &context.workspace_root,
-                    mode,
-                )
+                factory.capture_unscoped_tree_source(target, &context.workspace_root, mode)
             } else {
                 factory.capture_unscoped_source(target, &context.workspace_root, mode)
             }
@@ -2215,8 +2207,7 @@ fn bind_operational_compatibility_guard<'a>(
         .collect::<Vec<_>>();
     transaction.guard_semantic_check(move || {
         use unica_application::{
-            CompatibilityPolicyCommand, OperationalPolicyDecision,
-            OperationalPolicyService,
+            CompatibilityPolicyCommand, OperationalPolicyDecision, OperationalPolicyService,
         };
         use unica_format_core::ports::CompatibilityRequest;
 
@@ -2302,7 +2293,10 @@ pub(crate) fn support_state_lines_for_configuration(
         config_path.parent().unwrap_or_else(|| Path::new("")),
     );
     let Some(result) = result else {
-        return vec!["Поддержка:      состояние поддержки не удалось прочитать — правки не подтверждены".to_string()];
+        return vec![
+            "Поддержка:      состояние поддержки не удалось прочитать — правки не подтверждены"
+                .to_string(),
+        ];
     };
     let summary = result.summary();
     match summary.state() {
@@ -2316,7 +2310,8 @@ pub(crate) fn support_state_lines_for_configuration(
         }
         unica_format_core::ports::SupportState::Unreadable
         | unica_format_core::ports::SupportState::UnknownReadOnly => vec![
-            "Поддержка:      состояние поддержки не удалось прочитать — правки не подтверждены".to_string(),
+            "Поддержка:      состояние поддержки не удалось прочитать — правки не подтверждены"
+                .to_string(),
         ],
         _ if summary.editing_enabled() == Some(false) => vec![
             "Поддержка:      на поддержке".to_string(),
@@ -2328,7 +2323,10 @@ pub(crate) fn support_state_lines_for_configuration(
             vec![
                 "Поддержка:      на поддержке".to_string(),
                 "  Возможность изменения: включена".to_string(),
-                format!("  Объектов: на замке {} / редактируется {} / снято {}", counts[0], counts[1], counts[2]),
+                format!(
+                    "  Объектов: на замке {} / редактируется {} / снято {}",
+                    counts[0], counts[1], counts[2]
+                ),
                 format!("  Конфигураций поставщика: {}", summary.vendor_count()),
             ]
         }
@@ -2361,9 +2359,13 @@ fn inspect_authorability(
         authorized_root,
         unica_format_core::ports::OwnerResolutionMode::Existing,
     );
-    factory.authorability_port().inspect(
-        &AuthorabilityRequest::new(session, AuthorabilityRequirement::Editable),
-    ).ok()
+    factory
+        .authorability_port()
+        .inspect(&AuthorabilityRequest::new(
+            session,
+            AuthorabilityRequirement::Editable,
+        ))
+        .ok()
 }
 
 /*
@@ -2557,10 +2559,7 @@ mod exact_artifact_family_guard_tests {
             fs::write(&target, rejected).unwrap();
             let before = fs::read(&target).unwrap();
             let error = semantic_platform_xml_output_preimage(&target, role).unwrap_err();
-            assert!(
-                error.contains("semantic artifact"),
-                "{error}"
-            );
+            assert!(error.contains("semantic artifact"), "{error}");
             assert_eq!(fs::read(&target).unwrap(), before);
         }
         fs::remove_dir_all(root).unwrap();

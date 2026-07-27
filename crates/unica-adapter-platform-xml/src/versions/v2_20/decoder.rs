@@ -238,14 +238,14 @@ fn decode_inline_node(
         target_discriminator,
         occurrence: None,
         state: NativeNodeState::ResolvedInline,
-            properties: properties.properties,
-            references: properties.references,
-            children: Vec::new(),
-            unmapped_facts: properties.unmapped_facts
-                + children.unmapped_facts
-                + usize::from(profile.source != MappingSource::Native),
-            backing: NativeNodeBacking::None,
-        };
+        properties: properties.properties,
+        references: properties.references,
+        children: Vec::new(),
+        unmapped_facts: properties.unmapped_facts
+            + children.unmapped_facts
+            + usize::from(profile.source != MappingSource::Native),
+        backing: NativeNodeBacking::None,
+    };
     apply_inline_backing(
         provider,
         profile,
@@ -330,13 +330,12 @@ fn decode_children(
             }
         })?;
         if profile.role == MetadataClassRole::Unknown {
-            let occurrence = u32::try_from(position + 1)
-                .map_err(|_| {
-                    error(
-                        SourceAdapterErrorKind::ResourceLimit,
-                        "too many Platform XML child occurrences",
-                    )
-                })?;
+            let occurrence = u32::try_from(position + 1).map_err(|_| {
+                error(
+                    SourceAdapterErrorKind::ResourceLimit,
+                    "too many Platform XML child occurrences",
+                )
+            })?;
             decoded.node.occurrence = Some(occurrence);
             decoded.node.properties.insert(
                 "@unknownOccurrence".to_string(),
@@ -366,8 +365,8 @@ fn decode_children(
             &decoded.node,
             *occurrence,
         );
-        complete &= decoded.complete
-            && !semantic_map::child_mapping_is_partial(owner_profile, profile);
+        complete &=
+            decoded.complete && !semantic_map::child_mapping_is_partial(owner_profile, profile);
         nodes.push(NativeMetadataChild {
             role,
             identity_discriminator,
@@ -438,12 +437,8 @@ fn decode_backed_registration(
             let (descriptor, descriptor_properties) = match snapshot_file(provider, &descriptor_key)
             {
                 Some(bytes) => {
-                    let parsed = parse_registered_descriptor(
-                        &bytes,
-                        profile,
-                        &registration.name,
-                        context,
-                    )?;
+                    let parsed =
+                        parse_registered_descriptor(&bytes, profile, &registration.name, context)?;
                     (
                         descriptor_evidence(
                             NativeEvidenceState::Validated,
@@ -504,15 +499,11 @@ fn decode_backed_registration(
                 ));
             }
             let descriptor_key = format!("{base_key}/Templates/{}.xml", registration.name);
-            let (descriptor, descriptor_properties) =
-                match snapshot_file(provider, &descriptor_key) {
+            let (descriptor, descriptor_properties) = match snapshot_file(provider, &descriptor_key)
+            {
                 Some(bytes) => {
-                    let parsed = parse_registered_descriptor(
-                        &bytes,
-                        profile,
-                        &registration.name,
-                        context,
-                    )?;
+                    let parsed =
+                        parse_registered_descriptor(&bytes, profile, &registration.name, context)?;
                     (
                         descriptor_evidence(
                             NativeEvidenceState::Validated,
@@ -657,10 +648,7 @@ fn parse_registered_descriptor(
     }
     let uuid = parse_optional_uuid(class)?;
     let properties = decode_properties_for_profile(properties, expected_profile, context)?;
-    Ok(ParsedDescriptor {
-        uuid,
-        properties,
-    })
+    Ok(ParsedDescriptor { uuid, properties })
 }
 
 fn validate_metadata_wrapper(wrapper: Node<'_, '_>) -> Result<(), SourceAdapterError> {
@@ -830,10 +818,7 @@ fn decode_property_value(
             ));
         }
         let value = property.text().unwrap_or_default().trim();
-        return Ok((
-            scalar_property_value(None, property, value),
-            false,
-        ));
+        return Ok((scalar_property_value(None, property, value), false));
     };
     match mapping.value_kind {
         NativeValueKind::LocalizedString => Ok(decode_localized_string(property)),
@@ -1378,9 +1363,7 @@ fn decode_rights(
         "access backing is malformed XML",
     )?;
     let root = document.root_element();
-    if root.tag_name().name() != "Rights"
-        || root.tag_name().namespace() != Some(RIGHTS_NAMESPACE)
-    {
+    if root.tag_name().name() != "Rights" || root.tag_name().namespace() != Some(RIGHTS_NAMESPACE) {
         return Err(corrupted("access backing root identity is invalid"));
     }
     let mut properties = BTreeMap::new();
@@ -1491,16 +1474,12 @@ fn decode_rights(
                 &["name", "value", "restrictionByCondition"],
                 &mut permission_unknown,
             );
-            let permission_name = rights_scalar_checked(
-                right,
-                "name",
-                false,
-                &mut permission_unknown,
-            )
-            .unwrap_or_else(|| {
-                permission_unknown.record_marker();
-                format!("unknown-permission-{ordinal}")
-            });
+            let permission_name =
+                rights_scalar_checked(right, "name", false, &mut permission_unknown)
+                    .unwrap_or_else(|| {
+                        permission_unknown.record_marker();
+                        format!("unknown-permission-{ordinal}")
+                    });
             let permission_value =
                 rights_scalar_checked(right, "value", false, &mut permission_unknown);
             let permission_allowed = permission_value.as_deref().and_then(parse_boolean);
@@ -1515,8 +1494,7 @@ fn decode_rights(
             if permission_unknown.facts > 0 {
                 complete = false;
             }
-            let permission_identity_name =
-                format!("{target_name}:{permission_name}:{ordinal}");
+            let permission_identity_name = format!("{target_name}:{permission_name}:{ordinal}");
             let mut permission_properties = synthetic_name_property(&permission_identity_name);
             permission_properties.insert(
                 "@permissionName".to_string(),
@@ -1833,10 +1811,7 @@ fn insert_rights_unknown_evidence(
     if unknown.facts > 0 {
         properties.insert(
             key.to_string(),
-            native_property(
-                key,
-                NativePropertyValue::StringList(unknown.values.clone()),
-            ),
+            native_property(key, NativePropertyValue::StringList(unknown.values.clone())),
         );
     }
 }
@@ -3207,10 +3182,7 @@ mod tests {
             .unwrap();
         }
         let xml = metadata_document(&format!("<ChildObjects>{children}</ChildObjects>"));
-        assert!(
-            (xml.len() as u64)
-                < crate::safe_root::ArtifactReadLimit::Descriptor.bytes()
-        );
+        assert!((xml.len() as u64) < crate::safe_root::ArtifactReadLimit::Descriptor.bytes());
         let fixture = fixture("Shipment.xml", &[("Shipment.xml", xml)]);
         let navigation = crate::versions::v2_20::PlatformXmlReadAdapter::new()
             .inspect_provider(&fixture.provider, &fixture.descriptor)

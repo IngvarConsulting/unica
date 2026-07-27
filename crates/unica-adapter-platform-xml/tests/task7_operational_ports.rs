@@ -14,10 +14,10 @@ use unica_format_core::{
     navigation::Authorability,
     ports::{
         AuthorabilityRequest, AuthorabilityRequirement, CompatibilityIssueKind,
-        CompatibilityRequest, FormatDiagnosticCode, OperationCancellation, OwnerResolutionMode,
-        OperationalValidationRequest, PublicationCancellation, PublicationInvocation,
-        PublicationRequest, PublicationStatus, SupportState, ValidationContextRequest,
-        ValidationFindingCode, ValidationIssueKind, ValidationOptions,
+        CompatibilityRequest, FormatDiagnosticCode, OperationCancellation,
+        OperationalValidationRequest, OwnerResolutionMode, PublicationCancellation,
+        PublicationInvocation, PublicationRequest, PublicationStatus, SupportState,
+        ValidationContextRequest, ValidationFindingCode, ValidationIssueKind, ValidationOptions,
     },
     source::{SourceContext, SourceFamily, SourceLocation},
 };
@@ -77,11 +77,13 @@ fn task7_compatibility_port_classifies_supported_older_newer_and_malformed_profi
         let owner = write_owner(&root, version);
         let result = operations
             .compatibility()
-            .inspect(
-                &CompatibilityRequest::new(vec![capture(&root, &owner)]).unwrap(),
-            )
+            .inspect(&CompatibilityRequest::new(vec![capture(&root, &owner)]).unwrap())
             .unwrap();
-        assert_eq!(result.issue().map(|issue| issue.kind()), expected, "{version}");
+        assert_eq!(
+            result.issue().map(|issue| issue.kind()),
+            expected,
+            "{version}"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }
@@ -137,7 +139,10 @@ fn task7_authorability_binds_absent_and_present_support_evidence_across_races() 
             .unwrap()
     };
 
-    assert_eq!(inspect(session.clone()).summary().state(), SupportState::Absent);
+    assert_eq!(
+        inspect(session.clone()).summary().state(),
+        SupportState::Absent
+    );
     fs::create_dir_all(root.join("Ext")).unwrap();
     let support = "{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"VendorConf\",1,1,0,00000000-0000-0000-0000-000000000001}";
     fs::write(root.join("Ext/ParentConfigurations.bin"), support).unwrap();
@@ -334,9 +339,15 @@ fn task7_publication_cancellation_is_explicit_and_public_result_is_path_free() {
     let called = Arc::new(AtomicBool::new(false));
     let called_by_runner = called.clone();
     let args = Map::from_iter([
-        ("config".to_string(), json!("/private/unix/Configuration.xml")),
+        (
+            "config".to_string(),
+            json!("/private/unix/Configuration.xml"),
+        ),
         ("workdir".to_string(), json!(r"C:\private\workspace")),
-        ("nativeTag".to_string(), Value::String("MetaDataObject".to_string())),
+        (
+            "nativeTag".to_string(),
+            Value::String("MetaDataObject".to_string()),
+        ),
     ]);
     let factory = PlatformXmlAdapterFactory::new();
     let session = factory.capture_publication_session(

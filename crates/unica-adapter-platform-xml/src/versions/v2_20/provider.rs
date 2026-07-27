@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     ffi::OsString,
     path::{Component, Path, PathBuf},
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use sha2::{Digest, Sha256};
@@ -110,16 +110,22 @@ impl NavigationReadBudget {
 }
 
 #[derive(Debug)]
+struct NavigationSnapshot {
+    files: BTreeMap<String, Arc<[u8]>>,
+    revision: SourceRevision,
+}
+
+#[derive(Debug)]
 pub(crate) struct PlatformXmlProvider {
     source_root: SafeSourceRoot,
     scope_root: SafeSourceRoot,
     descriptor_bytes: Arc<[u8]>,
     configuration: Option<Arc<[u8]>>,
     parent_configurations: Option<Arc<[u8]>>,
-    revision: SourceRevision,
     target_identity: TargetIdentity,
     descriptor_key: String,
-    navigation_files: OnceLock<BTreeMap<String, Arc<[u8]>>>,
+    navigation_snapshot: OnceLock<NavigationSnapshot>,
+    navigation_lock: Mutex<()>,
 }
 
 impl PlatformXmlProvider {
@@ -175,8 +181,7 @@ impl PlatformXmlProvider {
 
         after_evidence_capture();
 
-        let descriptor_check =
-            read_bound_arc(&root, &descriptor, ArtifactReadLimit::Descriptor)?;
+        let descriptor_check = read_bound_arc(&root, &descriptor, ArtifactReadLimit::Descriptor)?;
         if descriptor_check.as_ref() != descriptor_bytes.as_ref() {
             return Err(stale());
         }
@@ -219,24 +224,16 @@ impl PlatformXmlProvider {
             .filter(|name| !name.is_empty())
             .ok_or_else(|| unavailable("source descriptor identity is not UTF-8"))?
             .to_string();
-        let revision = revision_for(
-            &target_identity,
-            &descriptor_key,
-            &descriptor_bytes,
-            &configuration,
-            &parent_configurations,
-        )?;
-
         Ok(Self {
             source_root: root,
             scope_root,
             descriptor_bytes,
             configuration,
             parent_configurations,
-            revision,
             target_identity,
             descriptor_key,
-            navigation_files: OnceLock::new(),
+            navigation_snapshot: OnceLock::new(),
+            navigation_lock: Mutex::new(()),
         })
     }
 
@@ -245,17 +242,22 @@ impl PlatformXmlProvider {
         raw: impl AsRef<Path>,
     ) -> Result<Arc<[u8]>, SourceAdapterError> {
         let key = normalized_relative_key(raw.as_ref())?;
-        if key == self.descriptor_key {
-            return Ok(Arc::clone(&self.descriptor_bytes));
-        }
-        self.scope_root
-            .read_relative(&key, ArtifactReadLimit::Descriptor)
-            .map(|read| Arc::from(read.into_bytes()))
-            .map_err(|error| safe_error(error, "selected source artifact is unavailable"))
+        self.prepare_navigation_snapshot()?;
+        self.navigation_snapshot
+            .get()
+            .and_then(|snapshot| snapshot.files.get(&key))
+            .cloned()
+            .ok_or_else(|| unavailable("selected source artifact is unavailable"))
     }
 
     pub(crate) fn revision(&self) -> Result<SourceRevision, SourceAdapterError> {
-        Ok(self.revision.clone())
+        self.prepare_navigation_snapshot()?;
+        Ok(self
+            .navigation_snapshot
+            .get()
+            .expect("navigation snapshot must be finalized")
+            .revision
+            .clone())
     }
 
     pub(crate) fn target_identity(&self) -> &TargetIdentity {
@@ -304,8 +306,7 @@ impl PlatformXmlProvider {
         };
         if children.next().is_some()
             || configuration.tag_name().name() != "Configuration"
-            || configuration.tag_name().namespace()
-                != Some(super::schema::METADATA_NAMESPACE_2_20)
+            || configuration.tag_name().namespace() != Some(super::schema::METADATA_NAMESPACE_2_20)
         {
             return Err(unavailable(
                 "configuration descriptor has invalid element identity",
@@ -325,7 +326,14 @@ impl PlatformXmlProvider {
     }
 
     pub(super) fn prepare_navigation_snapshot(&self) -> Result<(), SourceAdapterError> {
-        if self.navigation_files.get().is_some() {
+        if self.navigation_snapshot.get().is_some() {
+            return Ok(());
+        }
+        let _guard = self
+            .navigation_lock
+            .lock()
+            .map_err(|_| unavailable("navigation snapshot finalization failed"))?;
+        if self.navigation_snapshot.get().is_some() {
             return Ok(());
         }
         let mut files = BTreeMap::new();
@@ -341,12 +349,9 @@ impl PlatformXmlProvider {
             .strip_suffix(".xml")
             .ok_or_else(|| unavailable("source descriptor identity is not XML"))?;
         match self.scope_root.is_directory(Path::new(base_key)) {
-            Ok(true) => self.collect_selected_directory(
-                Path::new(base_key),
-                1,
-                &mut budget,
-                &mut files,
-            )?,
+            Ok(true) => {
+                self.collect_selected_directory(Path::new(base_key), 1, &mut budget, &mut files)?
+            }
             Ok(false) | Err(SafeRootError::Missing) => {}
             Err(error) => {
                 return Err(safe_error(
@@ -356,14 +361,32 @@ impl PlatformXmlProvider {
             }
         }
 
-        let _ = self.navigation_files.set(files);
+        let source_evidence = self
+            .source_root
+            .finalize_evidence(b"navigation-source")
+            .map_err(|error| safe_error(error, "source evidence could not be finalized"))?;
+        let companion_evidence = self
+            .scope_root
+            .finalize_evidence(b"navigation-companions")
+            .map_err(|error| safe_error(error, "companion evidence could not be finalized"))?;
+        let revision = revision_for(
+            &self.target_identity,
+            &self.descriptor_key,
+            &files,
+            source_evidence.digest(),
+            companion_evidence.digest(),
+        )?;
+        self.navigation_snapshot
+            .set(NavigationSnapshot { files, revision })
+            .map_err(|_| unavailable("navigation snapshot finalization raced"))?;
         Ok(())
     }
 
     pub(super) fn snapshot_files(&self) -> impl Iterator<Item = (&str, Arc<[u8]>)> + '_ {
-        self.navigation_files
+        self.navigation_snapshot
             .get()
             .expect("navigation snapshot must be prepared before decoding")
+            .files
             .iter()
             .map(|(relative, bytes)| (relative.as_str(), Arc::clone(bytes)))
     }
@@ -397,13 +420,9 @@ impl PlatformXmlProvider {
                 }
                 Ok(false) => {
                     let key = normalized_relative_key(&relative)?;
-                    if !self
-                        .scope_root
-                        .exists_regular(&key)
-                        .map_err(|error| {
-                            safe_error(error, "selected source artifact is unavailable")
-                        })?
-                    {
+                    if !self.scope_root.exists_regular(&key).map_err(|error| {
+                        safe_error(error, "selected source artifact is unavailable")
+                    })? {
                         return Err(unavailable(
                             "selected source entry is not a regular artifact",
                         ));
@@ -424,10 +443,7 @@ impl PlatformXmlProvider {
                     }
                 }
                 Err(error) => {
-                    return Err(safe_error(
-                        error,
-                        "selected source entry is unavailable",
-                    ))
+                    return Err(safe_error(error, "selected source entry is unavailable"))
                 }
             }
         }
@@ -527,27 +543,24 @@ fn normalized_relative_key(raw: &Path) -> Result<String, SourceAdapterError> {
 fn revision_for(
     target_identity: &TargetIdentity,
     descriptor_key: &str,
-    descriptor: &[u8],
-    configuration: &Option<Arc<[u8]>>,
-    support: &Option<Arc<[u8]>>,
+    files: &BTreeMap<String, Arc<[u8]>>,
+    source_evidence: &[u8; 32],
+    companion_evidence: &[u8; 32],
 ) -> Result<SourceRevision, SourceAdapterError> {
     let mut digest = Sha256::new();
-    digest.update(b"unica:platform-xml:authorized-session:v4\0");
+    digest.update(b"unica:platform-xml:authorized-session:v5\0");
     digest.update((target_identity.as_str().len() as u64).to_be_bytes());
     digest.update(target_identity.as_str().as_bytes());
     digest.update((descriptor_key.len() as u64).to_be_bytes());
     digest.update(descriptor_key.as_bytes());
-    digest.update((descriptor.len() as u64).to_be_bytes());
-    digest.update(Sha256::digest(descriptor));
-    for evidence in [configuration, support] {
-        match evidence {
-            Some(bytes) => {
-                digest.update([1]);
-                digest.update((bytes.len() as u64).to_be_bytes());
-                digest.update(Sha256::digest(bytes));
-            }
-            None => digest.update([0]),
-        }
+    digest.update(source_evidence);
+    digest.update(companion_evidence);
+    digest.update((files.len() as u64).to_be_bytes());
+    for (key, bytes) in files {
+        digest.update((key.len() as u64).to_be_bytes());
+        digest.update(key.as_bytes());
+        digest.update((bytes.len() as u64).to_be_bytes());
+        digest.update(Sha256::digest(bytes));
     }
     SourceRevision::new(format!("sha256:{:x}", digest.finalize()))
 }
@@ -598,9 +611,8 @@ mod tests {
         let sparse = File::create(root.join("unrelated-sparse.bin")).unwrap();
         sparse.set_len(96 * 1024 * 1024).unwrap();
 
-        let provider =
-            PlatformXmlProvider::capture(root.join("Roles/Reader.xml"), &root).unwrap();
-        assert!(provider.navigation_files.get().is_none());
+        let provider = PlatformXmlProvider::capture(root.join("Roles/Reader.xml"), &root).unwrap();
+        assert!(provider.navigation_snapshot.get().is_none());
 
         provider.prepare_navigation_snapshot().unwrap();
         let keys = provider
@@ -667,6 +679,30 @@ mod tests {
         let provider = PlatformXmlProvider::open(&root).unwrap();
 
         assert_eq!(provider.configuration_uuid().unwrap(), uuid);
+    }
+
+    #[test]
+    fn finalized_navigation_revision_never_permits_untracked_later_reads() {
+        let root = fixture_root();
+        let target = root.join("Catalogs/Items.xml");
+        write_descriptor(&target, "Catalog", "Items");
+        let tracked = root.join("Catalogs/Items/Ext/ObjectModule.bsl");
+        fs::create_dir_all(tracked.parent().unwrap()).unwrap();
+        fs::write(&tracked, b"before").unwrap();
+        let provider = PlatformXmlProvider::capture(&target, &root).unwrap();
+
+        provider.revision().unwrap();
+        fs::write(&tracked, b"after").unwrap();
+        fs::write(root.join("Catalogs/Items/Ext/LateModule.bsl"), b"late").unwrap();
+
+        assert_eq!(
+            provider
+                .read_relative("Items/Ext/ObjectModule.bsl")
+                .unwrap()
+                .as_ref(),
+            b"before"
+        );
+        assert!(provider.read_relative("Items/Ext/LateModule.bsl").is_err());
     }
 
     fn fixture_root() -> PathBuf {

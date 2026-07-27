@@ -1239,9 +1239,7 @@ pub fn normalize_navigation_selection(
     Ok(selection)
 }
 
-fn relation_kind_for_role(
-    role: SemanticRelationId,
-) -> Result<RelationKind, SourceAdapterError> {
+fn relation_kind_for_role(role: SemanticRelationId) -> Result<RelationKind, SourceAdapterError> {
     if role.is_contains_role() {
         Ok(RelationKind::Contains)
     } else if role.is_reference_role() {

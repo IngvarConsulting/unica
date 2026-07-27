@@ -91,10 +91,12 @@ mod meta_info_contract_tests {
                 ["role"]["enum"],
             serde_json::to_value(unica_format_core::semantic_ids::SemanticRelationId::ALL).unwrap()
         );
-        assert!(schema["properties"]["select"]["properties"]["relations"]["items"]["properties"]
-            ["kind"]
-            .get("default")
-            .is_none());
+        assert!(
+            schema["properties"]["select"]["properties"]["relations"]["items"]["properties"]
+                ["kind"]
+                .get("default")
+                .is_none()
+        );
         assert_eq!(
             schema["properties"]["select"]["properties"]["relations"]["items"]["allOf"]
                 .as_array()

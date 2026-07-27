@@ -264,19 +264,14 @@ fn invoke_verified_full_dump(
                 })
         },
         |cwd, tool, require_executable| {
-            let plugin_root = find_plugin_root(cwd).ok_or_else(|| {
-                "publication runtime is unavailable".to_string()
-            })?;
+            let plugin_root = find_plugin_root(cwd)
+                .ok_or_else(|| "publication runtime is unavailable".to_string())?;
             resolve_bundled_tool(&plugin_root, tool, require_executable)
                 .map(|resolved| (resolved.program, resolved.warnings))
         },
         |targets, action| {
-            with_publication_locks_mode(
-                targets,
-                PublicationTreeLockMode::Exclusive,
-                |_| action(),
-            )
-            .map_err(|_| "publication lock failed".to_string())
+            with_publication_locks_mode(targets, PublicationTreeLockMode::Exclusive, |_| action())
+                .map_err(|_| "publication lock failed".to_string())
         },
     );
     let request = PublicationRequest::new(session, invocation, cancellation.clone());
@@ -409,7 +404,10 @@ mod task7_fix_round1_publication_tests {
             workspace_epoch: 1,
         };
         let args = Map::from_iter([
-            ("config".to_string(), json!("/private/unix/Configuration.xml")),
+            (
+                "config".to_string(),
+                json!("/private/unix/Configuration.xml"),
+            ),
             ("workdir".to_string(), json!(r"C:\private\workspace")),
             ("nativeTag".to_string(), json!("MetaDataObject")),
         ]);
@@ -453,11 +451,7 @@ mod task7_fix_round1_publication_tests {
     #[test]
     fn every_publication_outcome_ignores_path_bearing_free_form_text() {
         let diagnostic = |code, issue| {
-            FormatDiagnostic::new(
-                code,
-                FormatDiagnosticDetail::Publication(issue),
-            )
-            .unwrap()
+            FormatDiagnostic::new(code, FormatDiagnosticDetail::Publication(issue)).unwrap()
         };
         let cases = [
             PublicationResult::new(

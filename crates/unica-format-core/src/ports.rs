@@ -531,8 +531,10 @@ impl ObjectKindProjection {
 }
 
 pub trait ObjectKindRegistryPort: Send + Sync {
-    fn resolve(&self, selector: &ObjectKindSelector)
-        -> Option<crate::semantic_ids::SemanticObjectKind>;
+    fn resolve(
+        &self,
+        selector: &ObjectKindSelector,
+    ) -> Option<crate::semantic_ids::SemanticObjectKind>;
 
     fn ordered_kinds(&self) -> Vec<crate::semantic_ids::SemanticObjectKind>;
 
@@ -556,10 +558,7 @@ pub struct SemanticArtifactReadRequest {
 }
 
 impl SemanticArtifactReadRequest {
-    pub const fn new(
-        session: OperationalSourceSession,
-        role: SemanticArtifactRole,
-    ) -> Self {
+    pub const fn new(session: OperationalSourceSession, role: SemanticArtifactRole) -> Self {
         Self { session, role }
     }
 
@@ -746,8 +745,7 @@ const fn diagnostic_detail_matches(
             FormatDiagnosticDetail::Compatibility(CompatibilityIssueKind::Newer),
         )
         | (
-            FormatDiagnosticCode::SourceMalformed
-            | FormatDiagnosticCode::SourceFamilyIncompatible,
+            FormatDiagnosticCode::SourceMalformed | FormatDiagnosticCode::SourceFamilyIncompatible,
             FormatDiagnosticDetail::Compatibility(CompatibilityIssueKind::Malformed),
         )
         | (
@@ -809,6 +807,57 @@ const fn diagnostic_detail_matches(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct OperationalEvidenceRevision([u8; 32]);
+
+impl OperationalEvidenceRevision {
+    pub const fn from_digest(digest: [u8; 32]) -> Self {
+        Self(digest)
+    }
+
+    pub const fn digest(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl Serialize for OperationalEvidenceRevision {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut encoded = String::with_capacity(64);
+        for byte in self.0 {
+            use std::fmt::Write;
+            write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
+        }
+        serializer.serialize_str(&encoded)
+    }
+}
+
+impl<'de> Deserialize<'de> for OperationalEvidenceRevision {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let encoded = String::deserialize(deserializer)?;
+        if encoded.len() != 64
+            || !encoded
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(D::Error::custom(
+                OperationalContractError::InvalidSemanticValue,
+            ));
+        }
+        let mut digest = [0_u8; 32];
+        for (index, byte) in digest.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&encoded[index * 2..index * 2 + 2], 16)
+                .map_err(D::Error::custom)?;
+        }
+        Ok(Self(digest))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CompatibilityRequest {
     sessions: Vec<OperationalSourceSession>,
@@ -854,15 +903,25 @@ impl CompatibilityIssue {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompatibilityResult {
     issue: Option<CompatibilityIssue>,
+    evidence_revision: OperationalEvidenceRevision,
 }
 
 impl CompatibilityResult {
-    pub const fn compatible() -> Self {
-        Self { issue: None }
+    pub const fn compatible(evidence_revision: OperationalEvidenceRevision) -> Self {
+        Self {
+            issue: None,
+            evidence_revision,
+        }
     }
 
-    pub fn incompatible(issue: CompatibilityIssue) -> Self {
-        Self { issue: Some(issue) }
+    pub fn incompatible(
+        issue: CompatibilityIssue,
+        evidence_revision: OperationalEvidenceRevision,
+    ) -> Self {
+        Self {
+            issue: Some(issue),
+            evidence_revision,
+        }
     }
 
     pub fn issue(&self) -> Option<&CompatibilityIssue> {
@@ -871,6 +930,10 @@ impl CompatibilityResult {
 
     pub fn into_issue(self) -> Option<CompatibilityIssue> {
         self.issue
+    }
+
+    pub const fn evidence_revision(&self) -> &OperationalEvidenceRevision {
+        &self.evidence_revision
     }
 }
 
@@ -970,6 +1033,7 @@ pub struct AuthorabilityDenial {
     authorability: Authorability,
     summary: SupportSummary,
     diagnostic: FormatDiagnostic,
+    evidence_revision: OperationalEvidenceRevision,
 }
 
 impl AuthorabilityDenial {
@@ -977,6 +1041,7 @@ impl AuthorabilityDenial {
         authorability: Authorability,
         summary: SupportSummary,
         diagnostic: FormatDiagnostic,
+        evidence_revision: OperationalEvidenceRevision,
     ) -> Result<Self, OperationalContractError> {
         let requirement_specific_denial = authorability == Authorability::Authorable
             && diagnostic.code() == FormatDiagnosticCode::SupportRemovalRequired;
@@ -994,6 +1059,7 @@ impl AuthorabilityDenial {
             authorability,
             summary,
             diagnostic,
+            evidence_revision,
         })
     }
 
@@ -1008,6 +1074,10 @@ impl AuthorabilityDenial {
     pub fn diagnostic(&self) -> &FormatDiagnostic {
         &self.diagnostic
     }
+
+    pub const fn evidence_revision(&self) -> &OperationalEvidenceRevision {
+        &self.evidence_revision
+    }
 }
 
 impl<'de> Deserialize<'de> for AuthorabilityDenial {
@@ -1021,10 +1091,17 @@ impl<'de> Deserialize<'de> for AuthorabilityDenial {
             authorability: Authorability,
             summary: SupportSummary,
             diagnostic: FormatDiagnostic,
+            evidence_revision: OperationalEvidenceRevision,
         }
 
         let wire = Wire::deserialize(deserializer)?;
-        Self::new(wire.authorability, wire.summary, wire.diagnostic).map_err(D::Error::custom)
+        Self::new(
+            wire.authorability,
+            wire.summary,
+            wire.diagnostic,
+            wire.evidence_revision,
+        )
+        .map_err(D::Error::custom)
     }
 }
 
@@ -1103,11 +1180,16 @@ impl<'de> Deserialize<'de> for SupportSummary {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorabilityEvidence {
     summary: SupportSummary,
+    evidence_revision: OperationalEvidenceRevision,
 }
 
 impl AuthorabilityEvidence {
     pub const fn summary(&self) -> &SupportSummary {
         &self.summary
+    }
+
+    pub const fn evidence_revision(&self) -> &OperationalEvidenceRevision {
+        &self.evidence_revision
     }
 }
 
@@ -1118,7 +1200,10 @@ pub enum AuthorabilityResult {
 }
 
 impl AuthorabilityResult {
-    pub fn allowed(summary: SupportSummary) -> Result<Self, OperationalContractError> {
+    pub fn allowed(
+        summary: SupportSummary,
+        evidence_revision: OperationalEvidenceRevision,
+    ) -> Result<Self, OperationalContractError> {
         if matches!(
             summary.state(),
             SupportState::Locked
@@ -1128,15 +1213,20 @@ impl AuthorabilityResult {
         ) {
             return Err(OperationalContractError::InvalidStateCombination);
         }
-        Ok(Self::Allowed(AuthorabilityEvidence { summary }))
+        Ok(Self::Allowed(AuthorabilityEvidence {
+            summary,
+            evidence_revision,
+        }))
     }
 
     pub fn denied(
         authorability: Authorability,
         summary: SupportSummary,
         diagnostic: FormatDiagnostic,
+        evidence_revision: OperationalEvidenceRevision,
     ) -> Result<Self, OperationalContractError> {
-        AuthorabilityDenial::new(authorability, summary, diagnostic).map(Self::Denied)
+        AuthorabilityDenial::new(authorability, summary, diagnostic, evidence_revision)
+            .map(Self::Denied)
     }
 
     pub const fn is_allowed(&self) -> bool {
@@ -1154,6 +1244,13 @@ impl AuthorabilityResult {
         match self {
             Self::Allowed(evidence) => evidence.summary(),
             Self::Denied(denial) => denial.summary(),
+        }
+    }
+
+    pub const fn evidence_revision(&self) -> &OperationalEvidenceRevision {
+        match self {
+            Self::Allowed(evidence) => evidence.evidence_revision(),
+            Self::Denied(denial) => denial.evidence_revision(),
         }
     }
 
@@ -1181,18 +1278,20 @@ impl Serialize for AuthorabilityResult {
 
         match self {
             Self::Allowed(evidence) => {
-                let mut state = serializer.serialize_struct("AuthorabilityResult", 3)?;
+                let mut state = serializer.serialize_struct("AuthorabilityResult", 4)?;
                 state.serialize_field("decision", "allowed")?;
                 state.serialize_field("authorability", &Authorability::Authorable)?;
                 state.serialize_field("summary", evidence.summary())?;
+                state.serialize_field("evidenceRevision", evidence.evidence_revision())?;
                 state.end()
             }
             Self::Denied(denial) => {
-                let mut state = serializer.serialize_struct("AuthorabilityResult", 4)?;
+                let mut state = serializer.serialize_struct("AuthorabilityResult", 5)?;
                 state.serialize_field("decision", "denied")?;
                 state.serialize_field("authorability", &denial.authorability())?;
                 state.serialize_field("summary", denial.summary())?;
                 state.serialize_field("diagnostic", denial.diagnostic())?;
+                state.serialize_field("evidenceRevision", denial.evidence_revision())?;
                 state.end()
             }
         }
@@ -1210,21 +1309,24 @@ impl<'de> Deserialize<'de> for AuthorabilityResult {
             Allowed {
                 authorability: Authorability,
                 summary: SupportSummary,
+                #[serde(rename = "evidenceRevision")]
+                evidence_revision: OperationalEvidenceRevision,
             },
             Denied {
                 authorability: Authorability,
                 summary: SupportSummary,
                 diagnostic: FormatDiagnostic,
+                #[serde(rename = "evidenceRevision")]
+                evidence_revision: OperationalEvidenceRevision,
             },
         }
 
         match Wire::deserialize(deserializer)? {
             Wire::Allowed {
-                authorability,
+                authorability: Authorability::Authorable,
                 summary,
-            } if authorability == Authorability::Authorable => {
-                Self::allowed(summary).map_err(D::Error::custom)
-            }
+                evidence_revision,
+            } => Self::allowed(summary, evidence_revision).map_err(D::Error::custom),
             Wire::Allowed { .. } => Err(D::Error::custom(
                 OperationalContractError::InvalidStateCombination,
             )),
@@ -1232,7 +1334,9 @@ impl<'de> Deserialize<'de> for AuthorabilityResult {
                 authorability,
                 summary,
                 diagnostic,
-            } => Self::denied(authorability, summary, diagnostic).map_err(D::Error::custom),
+                evidence_revision,
+            } => Self::denied(authorability, summary, diagnostic, evidence_revision)
+                .map_err(D::Error::custom),
         }
     }
 }
@@ -1273,10 +1377,9 @@ impl ValidationContext {
         if language_codes.iter().any(|code| {
             code.is_empty()
                 || code.len() > 32
-                || !code
-                    .chars()
-                    .all(|character| character.is_ascii_alphanumeric() || character == '-'
-                        || character == '_')
+                || !code.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || character == '-' || character == '_'
+                })
         }) {
             return Err(OperationalContractError::InvalidSemanticValue);
         }
@@ -1334,23 +1437,32 @@ impl ValidationContextRequest {
 pub struct ValidationContextResult {
     context: Option<ValidationContext>,
     diagnostics: Vec<FormatDiagnostic>,
+    evidence_revision: OperationalEvidenceRevision,
 }
 
 impl ValidationContextResult {
-    pub fn valid(context: ValidationContext) -> Self {
+    pub fn valid(
+        context: ValidationContext,
+        evidence_revision: OperationalEvidenceRevision,
+    ) -> Self {
         Self {
             context: Some(context),
             diagnostics: Vec::new(),
+            evidence_revision,
         }
     }
 
-    pub fn invalid(diagnostics: Vec<FormatDiagnostic>) -> Result<Self, OperationalContractError> {
+    pub fn invalid(
+        diagnostics: Vec<FormatDiagnostic>,
+        evidence_revision: OperationalEvidenceRevision,
+    ) -> Result<Self, OperationalContractError> {
         if diagnostics.is_empty() {
             return Err(OperationalContractError::EmptyDiagnostics);
         }
         Ok(Self {
             context: None,
             diagnostics,
+            evidence_revision,
         })
     }
 
@@ -1364,6 +1476,10 @@ impl ValidationContextResult {
 
     pub fn diagnostics(&self) -> &[FormatDiagnostic] {
         &self.diagnostics
+    }
+
+    pub const fn evidence_revision(&self) -> &OperationalEvidenceRevision {
+        &self.evidence_revision
     }
 }
 
@@ -1410,10 +1526,7 @@ pub struct ValidationFinding {
 }
 
 impl ValidationFinding {
-    pub const fn new(
-        severity: ValidationFindingSeverity,
-        code: ValidationFindingCode,
-    ) -> Self {
+    pub const fn new(severity: ValidationFindingSeverity, code: ValidationFindingCode) -> Self {
         Self { severity, code }
     }
 
@@ -1534,8 +1647,8 @@ impl<'de> Deserialize<'de> for ValidationReport {
         }
 
         let wire = Wire::deserialize(deserializer)?;
-        let report = Self::new(wire.subject, wire.checks, wire.findings)
-            .map_err(D::Error::custom)?;
+        let report =
+            Self::new(wire.subject, wire.checks, wire.findings).map_err(D::Error::custom)?;
         if report.status != wire.status {
             return Err(D::Error::custom(
                 OperationalContractError::InvalidStateCombination,
@@ -1552,10 +1665,7 @@ pub struct ValidationOptions {
 }
 
 impl ValidationOptions {
-    pub fn new(
-        detailed: bool,
-        max_findings: u16,
-    ) -> Result<Self, OperationalContractError> {
+    pub fn new(detailed: bool, max_findings: u16) -> Result<Self, OperationalContractError> {
         if max_findings == 0 || max_findings > 1_000 {
             return Err(OperationalContractError::InvalidSemanticValue);
         }
@@ -1603,18 +1713,29 @@ impl OperationalValidationRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationalValidationResult {
     reports: Vec<ValidationReport>,
+    evidence_revision: OperationalEvidenceRevision,
 }
 
 impl OperationalValidationResult {
-    pub fn new(reports: Vec<ValidationReport>) -> Result<Self, OperationalContractError> {
+    pub fn new(
+        reports: Vec<ValidationReport>,
+        evidence_revision: OperationalEvidenceRevision,
+    ) -> Result<Self, OperationalContractError> {
         if reports.is_empty() {
             return Err(OperationalContractError::EmptyRequest);
         }
-        Ok(Self { reports })
+        Ok(Self {
+            reports,
+            evidence_revision,
+        })
     }
 
     pub fn reports(&self) -> &[ValidationReport] {
         &self.reports
+    }
+
+    pub const fn evidence_revision(&self) -> &OperationalEvidenceRevision {
+        &self.evidence_revision
     }
 }
 
@@ -1818,13 +1939,7 @@ impl PublicationLifecycle {
         cleanup: PublicationCleanup,
         recovery: PublicationRecovery,
     ) -> Result<Self, OperationalContractError> {
-        if !publication_failure_is_consistent(
-            kind,
-            cancellation,
-            rollback,
-            cleanup,
-            recovery,
-        ) {
+        if !publication_failure_is_consistent(kind, cancellation, rollback, cleanup, recovery) {
             return Err(OperationalContractError::InvalidStateCombination);
         }
         Ok(Self::Failed(PublicationFailure {
@@ -1926,10 +2041,8 @@ const fn publication_failure_is_consistent(
                 && matches!(recovery, PublicationRecovery::NotRequired)
         }
         PublicationFailureKind::Publication => {
-            !matches!(
-                cancellation,
-                PublicationCancellation::DuringExecution
-            ) && !matches!(cleanup, PublicationCleanup::Failed)
+            !matches!(cancellation, PublicationCancellation::DuringExecution)
+                && !matches!(cleanup, PublicationCleanup::Failed)
                 && match cancellation {
                     PublicationCancellation::BeforePublication => {
                         matches!(rollback, PublicationRollback::NotNeeded)
@@ -2095,18 +2208,15 @@ impl PublicationResult {
             });
         let valid = diagnostics_are_exact
             && match lifecycle {
-            PublicationLifecycle::Published | PublicationLifecycle::DryRun => {
-                diagnostics.is_empty()
+                PublicationLifecycle::Published | PublicationLifecycle::DryRun => {
+                    diagnostics.is_empty()
+                }
+                PublicationLifecycle::Cancelled(_) | PublicationLifecycle::Failed(_) => {
+                    diagnostics.iter().all(|diagnostic| {
+                        matches!(diagnostic.detail(), FormatDiagnosticDetail::Publication(_))
+                    })
+                }
             }
-            PublicationLifecycle::Cancelled(_) | PublicationLifecycle::Failed(_) => diagnostics
-                .iter()
-                .all(|diagnostic| {
-                    matches!(
-                        diagnostic.detail(),
-                        FormatDiagnosticDetail::Publication(_)
-                    )
-                }),
-        }
             && match lifecycle {
                 PublicationLifecycle::Published => {
                     changes == [PublicationChange::FullSourceReplaced]
@@ -2172,9 +2282,7 @@ impl PublicationResult {
     }
 }
 
-fn publication_diagnostic_codes(
-    lifecycle: PublicationLifecycle,
-) -> Vec<FormatDiagnosticCode> {
+fn publication_diagnostic_codes(lifecycle: PublicationLifecycle) -> Vec<FormatDiagnosticCode> {
     match lifecycle {
         PublicationLifecycle::Published | PublicationLifecycle::DryRun => Vec::new(),
         PublicationLifecycle::Cancelled(_) => {

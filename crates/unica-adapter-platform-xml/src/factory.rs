@@ -8,17 +8,15 @@ use unica_format_core::{
     navigation::{NavigationSelection, NavigationTarget},
     ports::{
         CapturePort, CaptureResult, CapturedSource, FormatInspectionPort, FormatInspectionRequest,
-        FormatInspectionResult,
-        FormatReadRequest, OperationalAdapterRegistration, OperationalSourceSession,
-        ObjectKindProjection, ObjectKindRegistryPort, ObjectKindSelector, OwnerResolutionMode,
-        OwnerResolutionRequest, OwnerResolutionResult, OwnershipPort, ProbePort, ProbeResult,
-        ReadPort, ReservedSourceArtifactKind, SemanticArtifactLease, SourceAdapterRegistration,
-        SourceSetMatch, SupportEvidence, SupportInspectionRequest, SupportPort,
+        FormatInspectionResult, FormatReadRequest, ObjectKindProjection, ObjectKindRegistryPort,
+        ObjectKindSelector, OperationalAdapterRegistration, OperationalSourceSession,
+        OwnerResolutionMode, OwnerResolutionRequest, OwnerResolutionResult, OwnershipPort,
+        ProbePort, ProbeResult, ReadPort, ReservedSourceArtifactKind, SemanticArtifactLease,
+        SourceAdapterRegistration, SourceSetMatch, SupportEvidence, SupportInspectionRequest,
+        SupportPort,
     },
     semantic_ids::SemanticObjectKind,
-    source::{
-        ConfiguredSourceSetKind, SourceAdapterError, SourceAdapterErrorKind, SourceContext,
-    },
+    source::{ConfiguredSourceSetKind, SourceAdapterError, SourceAdapterErrorKind, SourceContext},
 };
 
 use crate::versions::v2_20;
@@ -53,8 +51,7 @@ impl PlatformXmlAdapterFactory {
         let guards = Arc::new(crate::guards::PlatformXmlGuards);
         let validation = Arc::new(crate::validation::PlatformXmlValidation);
         let object_kinds = Arc::new(PlatformXmlObjectKinds);
-        let semantic_artifacts =
-            Arc::new(crate::artifact_access::PlatformXmlSemanticArtifacts);
+        let semantic_artifacts = Arc::new(crate::artifact_access::PlatformXmlSemanticArtifacts);
         OperationalAdapterRegistration::new(
             guards.clone(),
             guards.clone(),
@@ -93,11 +90,13 @@ impl PlatformXmlAdapterFactory {
         authorized_root: &Path,
         mode: OwnerResolutionMode,
     ) -> OperationalSourceSession {
-        OperationalSourceSession::new(v2_20::operations::PlatformOperationSession::capture_unscoped(
-            target,
-            authorized_root,
-            mode,
-        ))
+        OperationalSourceSession::new(
+            v2_20::operations::PlatformOperationSession::capture_unscoped(
+                target,
+                authorized_root,
+                mode,
+            ),
+        )
     }
 
     pub fn capture_unscoped_validation_source(
@@ -123,15 +122,13 @@ impl PlatformXmlAdapterFactory {
         authorized_root: &Path,
         mode: OwnerResolutionMode,
     ) -> OperationalSourceSession {
-        OperationalSourceSession::new(
-            v2_20::operations::PlatformOperationSession::capture_object(
-                source_root,
-                selector,
-                object_name,
-                authorized_root,
-                mode,
-            ),
-        )
+        OperationalSourceSession::new(v2_20::operations::PlatformOperationSession::capture_object(
+            source_root,
+            selector,
+            object_name,
+            authorized_root,
+            mode,
+        ))
     }
 
     pub fn capture_named_object_source(
@@ -175,10 +172,7 @@ impl PlatformXmlAdapterFactory {
         v2_20::source_sets::inspect(source_root, authorized_root, kind)
     }
 
-    pub fn classify_reserved_source_artifact(
-        self,
-        bytes: &[u8],
-    ) -> ReservedSourceArtifactKind {
+    pub fn classify_reserved_source_artifact(self, bytes: &[u8]) -> ReservedSourceArtifactKind {
         v2_20::source_sets::classify_reserved_source_artifact(bytes)
     }
 
@@ -204,10 +198,7 @@ impl PlatformXmlAdapterFactory {
             + Send
             + Sync
             + 'static,
-        S: Fn(&Path, &str, bool) -> Result<(PathBuf, Vec<String>), String>
-            + Send
-            + Sync
-            + 'static,
+        S: Fn(&Path, &str, bool) -> Result<(PathBuf, Vec<String>), String> + Send + Sync + 'static,
         L: Fn(
                 &[PathBuf],
                 &mut dyn FnMut() -> Result<Vec<String>, String>,
@@ -246,7 +237,6 @@ impl PlatformXmlAdapterFactory {
     ) -> Arc<dyn unica_format_core::ports::ValidationContextPort> {
         Arc::new(crate::validation::PlatformXmlValidation)
     }
-
 }
 
 struct PlatformXmlObjectKinds;
@@ -276,8 +266,7 @@ impl ObjectKindRegistryPort for PlatformXmlObjectKinds {
 }
 
 fn object_kind_projections() -> &'static [ObjectKindProjection] {
-    static PROJECTIONS: std::sync::OnceLock<Vec<ObjectKindProjection>> =
-        std::sync::OnceLock::new();
+    static PROJECTIONS: std::sync::OnceLock<Vec<ObjectKindProjection>> = std::sync::OnceLock::new();
     PROJECTIONS
         .get_or_init(|| {
             v2_20::semantic_map::writer_object_kinds()
@@ -285,9 +274,8 @@ fn object_kind_projections() -> &'static [ObjectKindProjection] {
                 .map(|kind| {
                     let canonical = v2_20::semantic_map::writer_native_class(kind)
                         .expect("ordered writer kind has a canonical selector");
-                    let collection =
-                        v2_20::semantic_map::native_descriptor_directory(kind)
-                            .expect("ordered writer kind has a collection selector");
+                    let collection = v2_20::semantic_map::native_descriptor_directory(kind)
+                        .expect("ordered writer kind has a collection selector");
                     let display = v2_20::semantic_map::metadata_class_profile(canonical)
                         .and_then(|profile| profile.display_name_ru.as_deref())
                         .expect("ordered writer kind has a display label");

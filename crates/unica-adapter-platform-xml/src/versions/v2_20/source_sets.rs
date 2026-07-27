@@ -60,12 +60,14 @@ fn inspect_external_root(
         let Some(name) = name.to_str() else {
             return Ok(DirectoryVisit::Ignore);
         };
-        if Path::new(name).extension().and_then(|extension| extension.to_str()) != Some("xml") {
+        if Path::new(name)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            != Some("xml")
+        {
             return Ok(DirectoryVisit::Ignore);
         }
-        let bytes = root
-            .read_relative(name, ArtifactReadLimit::Descriptor)
-            ?;
+        let bytes = root.read_relative(name, ArtifactReadLimit::Descriptor)?;
         if !is_reserved_sidecar(name, bytes.bytes(), kind) {
             matched = true;
         }
@@ -82,11 +84,7 @@ fn source_error(_error: SafeRootError) -> SourceAdapterError {
     )
 }
 
-fn is_reserved_sidecar(
-    relative: &str,
-    bytes: &[u8],
-    kind: ConfiguredSourceSetKind,
-) -> bool {
+fn is_reserved_sidecar(relative: &str, bytes: &[u8], kind: ConfiguredSourceSetKind) -> bool {
     let is_reserved_name = Path::new(relative)
         .file_name()
         .and_then(|name| name.to_str())
@@ -138,9 +136,7 @@ pub(crate) fn classify_reserved_source_artifact(bytes: &[u8]) -> ReservedSourceA
         ReservedDescriptorKind::RuntimeSidecar => ReservedSourceArtifactKind::RuntimeState,
         ReservedDescriptorKind::ExternalProcessor
         | ReservedDescriptorKind::ExternalReport
-        | ReservedDescriptorKind::MetadataDescriptor => {
-            ReservedSourceArtifactKind::AuthoredSource
-        }
+        | ReservedDescriptorKind::MetadataDescriptor => ReservedSourceArtifactKind::AuthoredSource,
         ReservedDescriptorKind::Other => ReservedSourceArtifactKind::Unknown,
     }
 }
@@ -214,22 +210,12 @@ mod tests {
         let workspace = temp_root("boundary");
         let missing = workspace.join("missing");
         assert_eq!(
-            inspect(
-                &missing,
-                &workspace,
-                ConfiguredSourceSetKind::Configuration
-            )
-            .unwrap(),
+            inspect(&missing, &workspace, ConfiguredSourceSetKind::Configuration).unwrap(),
             SourceSetMatch::NoMatch
         );
 
         let outside = temp_root("outside");
-        assert!(inspect(
-            &outside,
-            &workspace,
-            ConfiguredSourceSetKind::Configuration
-        )
-        .is_err());
+        assert!(inspect(&outside, &workspace, ConfiguredSourceSetKind::Configuration).is_err());
         fs::remove_dir_all(workspace).unwrap();
         fs::remove_dir_all(outside).unwrap();
     }

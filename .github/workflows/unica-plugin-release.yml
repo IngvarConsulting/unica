@@ -78,8 +78,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: x86_64-pc-windows-msvc
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Compile adapter Windows safety paths
+        run: cargo check -p unica-adapter-platform-xml --target x86_64-pc-windows-msvc --lib --tests
       - run: cargo test --workspace -- --test-threads=1
 
   test-rust-platforms:

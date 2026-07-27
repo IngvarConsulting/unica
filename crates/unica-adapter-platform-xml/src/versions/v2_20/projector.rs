@@ -86,6 +86,8 @@ struct GraphBuilder<'a> {
     loaded_targets: BTreeMap<NativeIdentityDiscriminator, Option<ProjectedReferenceTarget>>,
     loaded_uuids: BTreeMap<Uuid, ProjectedReferenceTarget>,
     reference_stubs: BTreeMap<NativeIdentityDiscriminator, ProjectedReferenceTarget>,
+    external_targets: BTreeMap<NativeIdentityDiscriminator, ProjectedReferenceTarget>,
+    external_target_ordinals: BTreeMap<(String, String), usize>,
     diagnostics: Vec<SourceAdapterDiagnostic>,
     partial: bool,
 }
@@ -107,6 +109,8 @@ impl<'a> GraphBuilder<'a> {
             loaded_targets: BTreeMap::new(),
             loaded_uuids: BTreeMap::new(),
             reference_stubs: BTreeMap::new(),
+            external_targets: BTreeMap::new(),
+            external_target_ordinals: BTreeMap::new(),
             diagnostics: Vec::new(),
             partial: false,
         }
@@ -196,12 +200,7 @@ impl<'a> GraphBuilder<'a> {
             .map(|uuid| self.support.authorability_for(&uuid.to_string()))
             .unwrap_or(Authorability::DerivedReadOnly);
         let mut property_projection = self.project_properties(&kind, &native_node.properties)?;
-        self.add_synthetic_properties(
-            kind,
-            native_node,
-            authorability,
-            &mut property_projection,
-        )?;
+        self.add_synthetic_properties(kind, native_node, authorability, &mut property_projection)?;
         let mut coverage = node_coverage(native_node, self.native.coverage);
         if property_projection.incomplete || native_node.unmapped_facts > 0 {
             coverage = CoverageState::Partial;
@@ -359,10 +358,11 @@ impl<'a> GraphBuilder<'a> {
         owner: &ObjectRef,
         native_target: &NativeSemanticReference,
         role: RelationRole,
+        preserve_unknown_collision: bool,
     ) -> Result<RelationRef, SourceAdapterError> {
         self.reserve_output_relation()?;
         self.reserve_identity_item()?;
-        let target = self.ensure_reference_node(native_target)?;
+        let target = self.ensure_reference_node(native_target, role, preserve_unknown_collision)?;
         let relation_key = relation_key(
             &self.native.source.source_id,
             &owner.object_key,
@@ -410,8 +410,30 @@ impl<'a> GraphBuilder<'a> {
 
     fn project_references(&mut self) -> Result<(), SourceAdapterError> {
         let pending = std::mem::take(&mut self.pending_references);
+        let mut unknown_counts = BTreeMap::<(String, String), usize>::new();
+        for reference in &pending {
+            if reference.target.kind == crate::domain::navigation::SemanticObjectKind::Unknown {
+                *unknown_counts
+                    .entry((
+                        reference.target.kind.as_str().to_string(),
+                        reference.target.name.clone(),
+                    ))
+                    .or_default() += 1;
+            }
+        }
         for reference in pending {
-            self.add_reference(&reference.owner, &reference.target, reference.role)?;
+            let preserve_unknown_collision = unknown_counts
+                .get(&(
+                    reference.target.kind.as_str().to_string(),
+                    reference.target.name.clone(),
+                ))
+                .is_some_and(|count| *count > 1);
+            self.add_reference(
+                &reference.owner,
+                &reference.target,
+                reference.role,
+                preserve_unknown_collision,
+            )?;
         }
         Ok(())
     }
@@ -419,16 +441,23 @@ impl<'a> GraphBuilder<'a> {
     fn ensure_reference_node(
         &mut self,
         native_target: &NativeSemanticReference,
+        role: RelationRole,
+        preserve_unknown_collision: bool,
     ) -> Result<ProjectedReferenceTarget, SourceAdapterError> {
+        if role == RelationRole::ACCESS_TARGET {
+            return self.ensure_external_reference_target(native_target, CoverageState::Complete);
+        }
+        if native_target.kind == crate::domain::navigation::SemanticObjectKind::Unknown
+            && !preserve_unknown_collision
+        {
+            return self.ensure_external_reference_target(native_target, self.native.coverage);
+        }
         if let Some(uuid) = native_target.uuid {
             if let Some(existing) = self.loaded_uuids.get(&uuid) {
                 return Ok(existing.clone());
             }
         }
-        if let Some(Some(existing)) = self
-            .loaded_targets
-            .get(&native_target.target_discriminator)
-        {
+        if let Some(Some(existing)) = self.loaded_targets.get(&native_target.target_discriminator) {
             return Ok(existing.clone());
         }
         if let Some(existing) = self
@@ -461,10 +490,8 @@ impl<'a> GraphBuilder<'a> {
             native_target.kind,
             native_target.name.clone(),
         );
-        let capability_state = CapabilityState::new(
-            ResolutionState::Unresolved,
-            Authorability::UnknownReadOnly,
-        );
+        let capability_state =
+            CapabilityState::new(ResolutionState::Unresolved, Authorability::UnknownReadOnly);
         let properties = BTreeMap::from([(
             SemanticPropertyId::METADATA_NAME,
             SemanticProperty::computed(
@@ -503,12 +530,71 @@ impl<'a> GraphBuilder<'a> {
             projected.clone(),
         );
         self.partial = true;
-        self.diagnostics.push(SourceAdapterDiagnostic {
-            code: "referenceTargetUnresolved".to_string(),
-            message: "a referenced object is not present in the captured semantic graph"
-                .to_string(),
-            details: Some(serde_json::json!({"objectRef": reference})),
-        });
+        if native_target.kind != crate::domain::navigation::SemanticObjectKind::Unknown {
+            self.diagnostics.push(SourceAdapterDiagnostic {
+                code: "referenceTargetUnresolved".to_string(),
+                message: "a referenced object is not present in the captured semantic graph"
+                    .to_string(),
+                details: Some(serde_json::json!({"objectRef": reference})),
+            });
+        }
+        Ok(projected)
+    }
+
+    fn ensure_external_reference_target(
+        &mut self,
+        native_target: &NativeSemanticReference,
+        coverage: CoverageState,
+    ) -> Result<ProjectedReferenceTarget, SourceAdapterError> {
+        if let Some(existing) = self
+            .external_targets
+            .get(&native_target.target_discriminator)
+        {
+            return Ok(existing.clone());
+        }
+        let ordinal = self
+            .external_target_ordinals
+            .entry((
+                native_target.kind.as_str().to_string(),
+                native_target.name.clone(),
+            ))
+            .or_default();
+        *ordinal = ordinal.checked_add(1).ok_or_else(|| {
+            SourceAdapterError::new(
+                SourceAdapterErrorKind::ResourceLimit,
+                "external reference occurrence accounting overflow",
+            )
+        })?;
+        let key = ObjectKey::new(format!(
+            "external:{}:{}#{}",
+            native_target.kind.as_str(),
+            native_target.name,
+            *ordinal
+        ))?;
+        let object_ref = ObjectRef::new(
+            self.native.source.source_id.clone(),
+            key,
+            IdentityStrength::Derived,
+            native_target.kind,
+            native_target.name.clone(),
+        );
+        let capability = CapabilityVector {
+            resolution: ResolutionState::Resolved,
+            identity: IdentityStrength::Derived,
+            consistency: self.native.source.consistency.clone(),
+            coverage,
+            format: FormatCompatibility::Compatible,
+            source_access: SourceAccess::ReadOnly,
+            authorability: Authorability::DerivedReadOnly,
+        };
+        let projected = ProjectedReferenceTarget {
+            object_ref,
+            capability,
+        };
+        self.external_targets.insert(
+            native_target.target_discriminator.clone(),
+            projected.clone(),
+        );
         Ok(projected)
     }
 
@@ -662,8 +748,7 @@ impl<'a> GraphBuilder<'a> {
                 .get(&SemanticPropertyId::FIELD_FILL_CHECKING)
                 .map(|fill_checking| match fill_checking.value() {
                     Some(PropertyValue::EnumSymbol(value))
-                        if *value
-                            == crate::domain::navigation::SemanticEnumValue::SHOW_ERROR =>
+                        if *value == crate::domain::navigation::SemanticEnumValue::SHOW_ERROR =>
                     {
                         SemanticProperty::computed(
                             SemanticPropertyId::FIELD_REQUIRED,
@@ -697,10 +782,7 @@ impl<'a> GraphBuilder<'a> {
                 } else {
                     required
                 };
-                projected.insert(
-                    SemanticPropertyId::FIELD_REQUIRED,
-                    required,
-                );
+                projected.insert(SemanticPropertyId::FIELD_REQUIRED, required);
             }
         }
         if *kind == NodeKind::Catalog {
@@ -729,15 +811,11 @@ impl<'a> GraphBuilder<'a> {
             };
             let limit = match active_limit {
                 Some(value) => SemanticProperty::computed(
-                        SemanticPropertyId::CATALOG_HIERARCHY_LEVEL_LIMIT,
-                        PropertyValue::Integer(value),
-                    )?
-                    .with_capability(PropertyCapability::ReadOnly)?,
-                None => {
-                    SemanticProperty::absent(
-                        SemanticPropertyId::CATALOG_HIERARCHY_LEVEL_LIMIT,
-                    )
-                }
+                    SemanticPropertyId::CATALOG_HIERARCHY_LEVEL_LIMIT,
+                    PropertyValue::Integer(value),
+                )?
+                .with_capability(PropertyCapability::ReadOnly)?,
+                None => SemanticProperty::absent(SemanticPropertyId::CATALOG_HIERARCHY_LEVEL_LIMIT),
             };
             if projected.len() >= MAX_NAVIGATION_PROPERTIES_PER_NODE {
                 return Err(resource_limit("semantic node has too many properties"));
@@ -747,10 +825,7 @@ impl<'a> GraphBuilder<'a> {
                 MAX_NAVIGATION_IDENTITY_ITEMS,
                 "semantic properties",
             )?;
-            projected.insert(
-                SemanticPropertyId::CATALOG_HIERARCHY_LEVEL_LIMIT,
-                limit,
-            );
+            projected.insert(SemanticPropertyId::CATALOG_HIERARCHY_LEVEL_LIMIT, limit);
         }
         Ok(PropertyProjection {
             properties: projected,
@@ -790,11 +865,9 @@ impl<'a> GraphBuilder<'a> {
         let support_state = match support_state_case(rule) {
             Some(case) => SemanticProperty::computed(
                 SemanticPropertyId::SUPPORT_STATE,
-                PropertyValue::EnumSymbol(
-                    semantic_map::derived_enum_value(case).ok_or_else(|| {
-                        ambiguous("support state is absent from the coverage registry")
-                    })?,
-                ),
+                PropertyValue::EnumSymbol(semantic_map::derived_enum_value(case).ok_or_else(
+                    || ambiguous("support state is absent from the coverage registry"),
+                )?),
             )?,
             None => {
                 projection.incomplete = true;
@@ -856,10 +929,7 @@ impl<'a> GraphBuilder<'a> {
                     semantic_map::BackingKind::Rights,
                     NativeNodeBacking::Rights(_)
                 )
-                | (
-                    semantic_map::BackingKind::Form,
-                    NativeNodeBacking::Form(_)
-                )
+                | (semantic_map::BackingKind::Form, NativeNodeBacking::Form(_))
                 | (
                     semantic_map::BackingKind::Template,
                     NativeNodeBacking::Template(_)
@@ -873,16 +943,15 @@ impl<'a> GraphBuilder<'a> {
         let (descriptor, content) = match &native_node.backing {
             NativeNodeBacking::None => (None, None),
             NativeNodeBacking::Rights(content) => (None, Some(content)),
-            NativeNodeBacking::Form(form) => {
-                (Some(&form.descriptor), Some(&form.managed_content))
-            }
-            NativeNodeBacking::Template(template) => {
-                (Some(&template.descriptor), Some(&template.canonical_content))
-            }
+            NativeNodeBacking::Form(form) => (Some(&form.descriptor), Some(&form.managed_content)),
+            NativeNodeBacking::Template(template) => (
+                Some(&template.descriptor),
+                Some(&template.canonical_content),
+            ),
         };
         if mapping.descriptor {
-            let available = descriptor
-                .is_some_and(|value| value.state == NativeEvidenceState::Validated);
+            let available =
+                descriptor.is_some_and(|value| value.state == NativeEvidenceState::Validated);
             self.insert_synthetic(
                 projection,
                 SemanticProperty::computed(
@@ -1272,21 +1341,16 @@ struct PropertyProjection {
 
 fn readable_unknown_fact(property: &NativeProperty) -> PropertyValue {
     let value = match &property.value {
-        NativePropertyValue::Scalar(value)
-        | NativePropertyValue::AnnotatedScalar { value, .. } => {
+        NativePropertyValue::Scalar(value) | NativePropertyValue::AnnotatedScalar { value, .. } => {
             PropertyValue::String(value.clone())
         }
         NativePropertyValue::TypeSet(value) => PropertyValue::TypeSet(value.clone()),
         NativePropertyValue::LocalizedString(value) => {
             PropertyValue::LocalizedString(value.clone())
         }
-        NativePropertyValue::StringList(values) => PropertyValue::List(
-            values
-                .iter()
-                .cloned()
-                .map(PropertyValue::String)
-                .collect(),
-        ),
+        NativePropertyValue::StringList(values) => {
+            PropertyValue::List(values.iter().cloned().map(PropertyValue::String).collect())
+        }
         NativePropertyValue::Null => PropertyValue::Null,
         NativePropertyValue::EmptyReference => PropertyValue::EmptyReference,
         NativePropertyValue::ReadableUnknownScalar { category, values } => {
@@ -1320,19 +1384,13 @@ fn project_property(
         NativePropertyValue::Absent => SemanticProperty::absent(semantic_id),
         NativePropertyValue::Unresolved => SemanticProperty::unresolved(semantic_id),
         NativePropertyValue::UnresolvedScalar { .. } => SemanticProperty::unresolved(semantic_id),
-        NativePropertyValue::EmptyReference => SemanticProperty::explicit(
-            semantic_id,
-            PropertyValue::EmptyReference,
-        )?,
+        NativePropertyValue::EmptyReference => {
+            SemanticProperty::explicit(semantic_id, PropertyValue::EmptyReference)?
+        }
         NativePropertyValue::ReadableUnknownScalar { category, values } => {
-            SemanticProperty::explicit(
-                semantic_id,
-                readable_unknown_scalar(*category, values),
-            )?
+            SemanticProperty::explicit(semantic_id, readable_unknown_scalar(*category, values))?
         }
-        NativePropertyValue::Scalar(value) => {
-            scalar_property(kind, mapping, value, None)?
-        }
+        NativePropertyValue::Scalar(value) => scalar_property(kind, mapping, value, None)?,
         NativePropertyValue::AnnotatedScalar {
             value,
             type_annotation,
@@ -1340,23 +1398,14 @@ fn project_property(
         NativePropertyValue::TypeSet(type_set) => {
             SemanticProperty::explicit(semantic_id, PropertyValue::TypeSet(type_set.clone()))?
         }
-        NativePropertyValue::LocalizedString(values) => SemanticProperty::explicit(
-            semantic_id,
-            PropertyValue::LocalizedString(values.clone()),
-        )?,
+        NativePropertyValue::LocalizedString(values) => {
+            SemanticProperty::explicit(semantic_id, PropertyValue::LocalizedString(values.clone()))?
+        }
         NativePropertyValue::StringList(values) => SemanticProperty::explicit(
             semantic_id,
-            PropertyValue::List(
-                values
-                    .iter()
-                    .cloned()
-                    .map(PropertyValue::String)
-                    .collect(),
-            ),
+            PropertyValue::List(values.iter().cloned().map(PropertyValue::String).collect()),
         )?,
-        NativePropertyValue::Null => {
-            SemanticProperty::explicit(semantic_id, PropertyValue::Null)?
-        }
+        NativePropertyValue::Null => SemanticProperty::explicit(semantic_id, PropertyValue::Null)?,
         NativePropertyValue::Structured => SemanticProperty::unresolved(semantic_id),
     };
     if projected.value().is_some() {
@@ -1379,13 +1428,7 @@ fn readable_unknown_scalar(
         ),
         (
             "evidence".to_string(),
-            PropertyValue::List(
-                values
-                    .iter()
-                    .cloned()
-                    .map(PropertyValue::String)
-                    .collect(),
-            ),
+            PropertyValue::List(values.iter().cloned().map(PropertyValue::String).collect()),
         ),
     ]))
 }
@@ -1507,9 +1550,7 @@ fn normalize_xml_schema_decimal(value: &str) -> Option<String> {
     ))
 }
 
-fn support_state_case(
-    rule: EffectiveSupportRule,
-) -> Option<semantic_map::DerivedEnumCase> {
+fn support_state_case(rule: EffectiveSupportRule) -> Option<semantic_map::DerivedEnumCase> {
     match rule {
         EffectiveSupportRule::Absent => Some(semantic_map::DerivedEnumCase::SupportAbsent),
         EffectiveSupportRule::Removed => Some(semantic_map::DerivedEnumCase::SupportRemoved),
@@ -2169,8 +2210,7 @@ mod tests {
         };
         std::fs::create_dir_all(root.join("Ext")).unwrap();
         std::fs::write(root.join("Ext/ParentConfigurations.bin"), support("0")).unwrap();
-        let provider =
-            PlatformXmlProvider::capture(root.join("Order.xml"), &root).unwrap();
+        let provider = PlatformXmlProvider::capture(root.join("Order.xml"), &root).unwrap();
         let descriptor = SourceDescriptor {
             source_id: SourceId::new("workspace:main").unwrap(),
             family: SourceFamily::PlatformXml,

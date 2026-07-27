@@ -7,10 +7,10 @@ use unica_application::{
 use unica_format_core::{
     navigation::Authorability,
     ports::{
-        AuthorabilityPort, AuthorabilityRequest, AuthorabilityResult,
-        CompatibilityIssue, CompatibilityIssueKind, CompatibilityPort, CompatibilityRequest,
-        CompatibilityResult, FormatDiagnostic, FormatDiagnosticCode, FormatDiagnosticDetail,
-        OperationalSourceSession, OperationCancellation, PublicationArtifact,
+        AuthorabilityPort, AuthorabilityRequest, AuthorabilityResult, CompatibilityIssue,
+        CompatibilityIssueKind, CompatibilityPort, CompatibilityRequest, CompatibilityResult,
+        FormatDiagnostic, FormatDiagnosticCode, FormatDiagnosticDetail, OperationCancellation,
+        OperationalEvidenceRevision, OperationalSourceSession, PublicationArtifact,
         PublicationCancellation, PublicationCleanup, PublicationFailureKind, PublicationIssueKind,
         PublicationLifecycle, PublicationPort, PublicationRecovery, PublicationRequest,
         PublicationResult, PublicationRollback, SupportState, SupportSummary,
@@ -23,6 +23,10 @@ struct AlternateRevision(u64);
 
 fn alternate_session() -> OperationalSourceSession {
     OperationalSourceSession::new(AlternateRevision(41))
+}
+
+fn evidence() -> OperationalEvidenceRevision {
+    OperationalEvidenceRevision::from_digest([5; 32])
 }
 
 struct FakeCompatibility {
@@ -78,9 +82,10 @@ fn compatibility_issue(kind: CompatibilityIssueKind) -> CompatibilityIssue {
 fn task7_alternate_fake_adapter_proves_compatibility_policy_is_format_agnostic() {
     let seen_generation = Arc::new(Mutex::new(None));
     let port = FakeCompatibility {
-        result: CompatibilityResult::incompatible(compatibility_issue(
-            CompatibilityIssueKind::Older,
-        )),
+        result: CompatibilityResult::incompatible(
+            compatibility_issue(CompatibilityIssueKind::Older),
+            evidence(),
+        ),
         seen_generation: seen_generation.clone(),
     };
 
@@ -107,7 +112,7 @@ fn task7_application_policy_treats_newer_and_malformed_without_version_concepts(
         CompatibilityIssueKind::Malformed,
     ] {
         let port = FakeCompatibility {
-            result: CompatibilityResult::incompatible(compatibility_issue(kind)),
+            result: CompatibilityResult::incompatible(compatibility_issue(kind), evidence()),
             seen_generation: Arc::new(Mutex::new(None)),
         };
         assert!(matches!(
@@ -132,6 +137,7 @@ fn task7_authorability_enforcement_is_application_policy_not_adapter_policy() {
                 FormatDiagnosticDetail::Support(SupportState::Locked),
             )
             .unwrap(),
+            evidence(),
         )
         .unwrap(),
     };

@@ -2869,14 +2869,18 @@ mod tests {
                 "wrong owner for {role}"
             );
         }
-        assert!(query_for("methods")["params"]["arguments"]["objectRef"]["objectKey"]
-            .as_str()
-            .unwrap()
-            .contains("URL template"));
-        assert!(query_for("parameters")["params"]["arguments"]["objectRef"]["objectKey"]
-            .as_str()
-            .unwrap()
-            .contains("operation"));
+        assert!(
+            query_for("methods")["params"]["arguments"]["objectRef"]["objectKey"]
+                .as_str()
+                .unwrap()
+                .contains("URL template")
+        );
+        assert!(
+            query_for("parameters")["params"]["arguments"]["objectRef"]["objectKey"]
+                .as_str()
+                .unwrap()
+                .contains("operation")
+        );
 
         let status_rows = skill
             .lines()

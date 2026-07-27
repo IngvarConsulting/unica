@@ -44,9 +44,8 @@ fn support_guard_violation_for_session(
         Err(_) => {
             return Some(SupportGuardViolation {
                 code: "support-state-unreadable",
-                reason:
-                    "состояние поддержки не удалось прочитать — правки не подтверждены"
-                        .to_string(),
+                reason: "состояние поддержки не удалось прочитать — правки не подтверждены"
+                    .to_string(),
             })
         }
     };
@@ -61,10 +60,7 @@ fn support_guard_violation_for_session(
                 _ => "support-state-unreadable",
             };
             let reason = public_support_diagnostic_message(diagnostic).to_string();
-            Some(SupportGuardViolation {
-                code,
-                reason,
-            })
+            Some(SupportGuardViolation { code, reason })
         }
     }
 }
@@ -107,8 +103,7 @@ pub(crate) fn evaluate_support_guard(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<SupportGuardCheck, String> {
-    let Some((session, policy_root, requirement)) =
-        support_guard_session(spec, args, context)
+    let Some((session, policy_root, requirement)) = support_guard_session(spec, args, context)
     else {
         return Ok(SupportGuardCheck::Allow);
     };
@@ -174,10 +169,7 @@ fn support_guard_session(
             Some((session, policy_root, requirement))
         }
         SupportGuardPolicy::MetaRemove { requirement } => {
-            let config_dir = absolutize(
-                path_arg(args, &["configDir", "ConfigDir"])?,
-                &context.cwd,
-            );
+            let config_dir = absolutize(path_arg(args, &["configDir", "ConfigDir"])?, &context.cwd);
             let object = required_string(args, &["object", "Object"], "Object").ok()?;
             let (selector, object_name) = object.split_once('.')?;
             let selector = ObjectKindSelector::new(selector).ok()?;
@@ -199,8 +191,7 @@ fn support_guard_session(
             )
             .ok()?;
             let source_root = absolutize(
-                path_arg(args, &["srcDir", "SrcDir"])
-                    .unwrap_or_else(|| PathBuf::from("src")),
+                path_arg(args, &["srcDir", "SrcDir"]).unwrap_or_else(|| PathBuf::from("src")),
                 &context.cwd,
             );
             let session = unica_adapter_platform_xml::PlatformXmlAdapterFactory::new()
@@ -367,8 +358,8 @@ fn support_guard_blocked_outcome(
 #[cfg(test)]
 mod tests {
     use super::{
-        public_support_diagnostic_message, support_guard_blocked_outcome,
-        support_guard_violation, SupportGuardViolation,
+        public_support_diagnostic_message, support_guard_blocked_outcome, support_guard_violation,
+        SupportGuardViolation,
     };
     use crate::application::{SupportGuardRequirement, ToolHandler, ToolSpec};
     use crate::domain::cache::CacheAccess;

@@ -1,7 +1,4 @@
-use std::{
-    fs,
-    path::Path,
-};
+use std::{fs, path::Path};
 
 use sha2::{Digest, Sha256};
 use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
@@ -10,8 +7,8 @@ pub(crate) use unica_format_core::ports::{
 };
 use unica_format_core::{
     ports::{
-        FormatInspectionMode, FormatInspectionRequest, ObjectKindSelector,
-        OwnerResolutionMode, OwnerResolutionRequest, SourceInputEvidence,
+        FormatInspectionMode, FormatInspectionRequest, ObjectKindSelector, OwnerResolutionMode,
+        OwnerResolutionRequest, SourceInputEvidence,
     },
     source::{ConfiguredSourceSetKind, SourceContext, SourceFamily, SourceLocation},
 };
@@ -159,10 +156,9 @@ fn operation_source_context(
     };
     let target =
         normalize_path_identity(&target).map_err(|message| PlatformXmlOwnerError { message })?;
-    let (source_map, source_map_provenance) = discover_project_source_map_with_provenance(
-        &context.workspace_root,
-    )
-    .map_err(|message| PlatformXmlOwnerError { message })?;
+    let (source_map, source_map_provenance) =
+        discover_project_source_map_with_provenance(&context.workspace_root)
+            .map_err(|message| PlatformXmlOwnerError { message })?;
     let mut containing = Vec::new();
     for source_set in &source_map.source_sets {
         let source_root =
@@ -172,9 +168,8 @@ fn operation_source_context(
             containing.push((source_set, source_root));
         }
     }
-    let selected =
-        select_unique_deepest_source_set_match(&target, containing)
-            .map_err(|message| PlatformXmlOwnerError { message })?;
+    let selected = select_unique_deepest_source_set_match(&target, containing)
+        .map_err(|message| PlatformXmlOwnerError { message })?;
     let has_explicit_source_map = source_map.config_path.is_some();
     let (configured_source_set, configured_kind, source_root) = match selected {
         Some((source_set, source_root)) => (

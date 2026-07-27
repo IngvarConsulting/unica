@@ -4868,7 +4868,10 @@ mod tests {
             .commit()
             .expect_err("changed semantic evidence must deny publication");
 
-        assert!(error.contains("semantic source evidence changed"), "{error}");
+        assert!(
+            error.contains("semantic source evidence changed"),
+            "{error}"
+        );
         assert!(!target.exists());
         fs::remove_dir_all(root).expect("temporary root must be removed");
     }

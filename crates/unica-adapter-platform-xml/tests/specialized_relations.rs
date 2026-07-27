@@ -7,8 +7,8 @@ use std::{
 use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
 use unica_format_core::{
     navigation::{
-        FacetSelection, NavigationEnvelope, NavigationQuery, NavigationSelection,
-        NavigationStatus, NavigationTarget, PropertySelection, RelationKind,
+        FacetSelection, NavigationEnvelope, NavigationQuery, NavigationSelection, NavigationStatus,
+        NavigationTarget, PropertySelection, RelationKind,
     },
     ports::{CaptureResult, FormatReadRequest},
     semantic_ids::{SemanticObjectKind, SemanticPropertyId, SemanticRelationId},
@@ -187,7 +187,10 @@ fn task6_unknown_specialized_children_remain_distinct_readable_partial_facts() {
         })
         .collect::<Vec<_>>();
     assert_eq!(unknown.len(), 2);
-    assert_ne!(unknown[0].object_ref.object_key, unknown[1].object_ref.object_key);
+    assert_ne!(
+        unknown[0].object_ref.object_key,
+        unknown[1].object_ref.object_key
+    );
     let readable = unknown
         .iter()
         .map(|node| {
@@ -199,8 +202,12 @@ fn task6_unknown_specialized_children_remain_distinct_readable_partial_facts() {
             .unwrap()
         })
         .collect::<Vec<_>>();
-    assert!(readable.iter().any(|value| value.contains("first-readable-value")));
-    assert!(readable.iter().any(|value| value.contains("second-readable-value")));
+    assert!(readable
+        .iter()
+        .any(|value| value.contains("first-readable-value")));
+    assert!(readable
+        .iter()
+        .any(|value| value.contains("second-readable-value")));
     assert_targets(
         &envelope,
         "Items",
@@ -246,11 +253,7 @@ fn task6_fix1_loaded_forward_reference_resolves_only_to_the_real_node() {
         ),
     );
     let invoice = node_named(&envelope, "Invoice");
-    let targets = relation_targets(
-        &envelope,
-        &invoice.object_ref,
-        SemanticRelationId::BASED_ON,
-    );
+    let targets = relation_targets(&envelope, &invoice.object_ref, SemanticRelationId::BASED_ON);
     assert_eq!(targets.len(), 1);
     assert_eq!(
         targets[0].object_key.as_str(),
@@ -261,7 +264,10 @@ fn task6_fix1_loaded_forward_reference_resolves_only_to_the_real_node() {
         .iter()
         .find(|node| node.object_ref == targets[0])
         .expect("forward target must be the loaded node");
-    assert_eq!(target.capability.resolution, unica_format_core::navigation::ResolutionState::Resolved);
+    assert_eq!(
+        target.capability.resolution,
+        unica_format_core::navigation::ResolutionState::Resolved
+    );
     assert!(!envelope
         .diagnostics
         .iter()
@@ -279,13 +285,9 @@ fn task6_fix1_external_known_reference_is_an_unresolved_partial_stub_without_own
     );
     assert_eq!(envelope.status, NavigationStatus::Partial);
     let invoice = node_named(&envelope, "Invoice");
-    let target = relation_targets(
-        &envelope,
-        &invoice.object_ref,
-        SemanticRelationId::BASED_ON,
-    )
-    .pop()
-    .expect("external target");
+    let target = relation_targets(&envelope, &invoice.object_ref, SemanticRelationId::BASED_ON)
+        .pop()
+        .expect("external target");
     let stub = envelope
         .nodes
         .iter()
@@ -322,11 +324,7 @@ fn task6_fix1_external_unknown_same_name_targets_do_not_merge_or_leak_native_ide
         ),
     );
     let invoice = node_named(&envelope, "Invoice");
-    let targets = relation_targets(
-        &envelope,
-        &invoice.object_ref,
-        SemanticRelationId::BASED_ON,
-    );
+    let targets = relation_targets(&envelope, &invoice.object_ref, SemanticRelationId::BASED_ON);
     assert_eq!(targets.len(), 2);
     assert_eq!(targets[0].display_name, "Shared");
     assert_eq!(targets[1].display_name, "Shared");

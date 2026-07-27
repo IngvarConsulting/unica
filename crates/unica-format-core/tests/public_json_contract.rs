@@ -7,8 +7,8 @@ use unica_format_core::{
     navigation::{
         normalize_navigation_selection, Authorability, CapabilityState, FacetSelection,
         IdentityStrength, NavigationEnvelope, NavigationNode, NavigationSelection,
-        NavigationStatus, ObjectKey, ObjectRef, PropertySelection, RelationKind,
-        RelationSelection, ResolutionState,
+        NavigationStatus, ObjectKey, ObjectRef, PropertySelection, RelationKind, RelationSelection,
+        ResolutionState,
     },
     property::{PropertyCapability, SemanticProperty},
     semantic_ids::{SemanticObjectKind, SemanticPropertyId, SemanticRelationId},
@@ -293,11 +293,8 @@ fn every_property_value_state_uses_the_neutral_envelope() {
 fn type_variant_exposes_a_closed_compiler_exhaustive_discriminant() {
     let cases = [
         (
-            TypeVariant::primitive(
-                unica_format_core::value::PrimitiveTypeKind::Boolean,
-                None,
-            )
-            .unwrap(),
+            TypeVariant::primitive(unica_format_core::value::PrimitiveTypeKind::Boolean, None)
+                .unwrap(),
             TypeVariantKind::Primitive,
         ),
         (
@@ -309,8 +306,7 @@ fn type_variant_exposes_a_closed_compiler_exhaustive_discriminant() {
             TypeVariantKind::Object,
         ),
         (
-            TypeVariant::record_set(SemanticObjectKind::InformationRegister, "Prices")
-                .unwrap(),
+            TypeVariant::record_set(SemanticObjectKind::InformationRegister, "Prices").unwrap(),
             TypeVariantKind::RecordSet,
         ),
         (
@@ -318,8 +314,7 @@ fn type_variant_exposes_a_closed_compiler_exhaustive_discriminant() {
             TypeVariantKind::Manager,
         ),
         (
-            TypeVariant::key(SemanticObjectKind::AccumulationRegister, "Balances")
-                .unwrap(),
+            TypeVariant::key(SemanticObjectKind::AccumulationRegister, "Balances").unwrap(),
             TypeVariantKind::Key,
         ),
         (

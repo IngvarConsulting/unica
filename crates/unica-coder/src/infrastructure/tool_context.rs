@@ -9,9 +9,7 @@ use crate::infrastructure::source_roots::deepest_source_set_matches;
 use serde_json::{Map, Value};
 use std::path::{Component, Path, PathBuf};
 use unica_application::{OperationalPolicyDecision, OperationalPolicyService};
-use unica_format_core::{
-    ports::{SourceCompatibilityEvidence, SourceCompatibilityRequest},
-};
+use unica_format_core::ports::{SourceCompatibilityEvidence, SourceCompatibilityRequest};
 
 pub(crate) fn validate_tool_context(
     tool: ToolSpec,
@@ -217,7 +215,7 @@ fn enforce_source_compatibility(request: SourceCompatibilityRequest) -> Result<(
         registration.source_compatibility(),
         &request,
     )
-        .map_err(|_| "source compatibility inspection failed".to_string())?
+    .map_err(|_| "source compatibility inspection failed".to_string())?
     {
         OperationalPolicyDecision::Allow => Ok(()),
         OperationalPolicyDecision::Warn(diagnostic)
@@ -594,10 +592,7 @@ mod tests {
             "/private/source/Configuration.xml",
             r"../C:\private\source\MetaDataObject.xml",
         ] {
-            let args = json!({"stderrOutput": raw})
-                .as_object()
-                .unwrap()
-                .clone();
+            let args = json!({"stderrOutput": raw}).as_object().unwrap().clone();
             for tool in runtime_write_tools() {
                 let error = validate_tool_context(tool, &args, false, &context)
                     .expect_err("outside output must be rejected");

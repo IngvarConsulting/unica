@@ -1686,8 +1686,10 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2",
+ "syn 2.0.119",
  "unica-format-core",
  "uuid",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

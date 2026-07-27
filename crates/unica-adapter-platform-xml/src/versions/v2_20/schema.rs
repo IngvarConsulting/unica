@@ -23,6 +23,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use roxmltree::Node;
 
+use super::semantic_map::{NativeTypeNamespace, TypeAliasCategory};
 use crate::domain::{
     identifiers::is_1c_identifier,
     navigation::{
@@ -33,7 +34,6 @@ use crate::domain::{
     navigation_limits::MAX_NAVIGATION_TYPE_VARIANTS,
     source_adapters::{SourceAdapterError, SourceAdapterErrorKind},
 };
-use super::semantic_map::{NativeTypeNamespace, TypeAliasCategory};
 
 pub(crate) const METADATA_NAMESPACE_2_20: &str = "http://v8.1c.ru/8.3/MDClasses";
 
@@ -341,10 +341,8 @@ fn parse_type_variant(
             .map_err(|_| projection_error("invalid semantic reference target")),
         (TypeAliasCategory::Object(kind), Some(target)) => TypeVariant::object(kind, target)
             .map_err(|_| projection_error("invalid semantic object target")),
-        (TypeAliasCategory::RecordSet(kind), Some(target)) => {
-            TypeVariant::record_set(kind, target)
-                .map_err(|_| projection_error("invalid semantic record-set target"))
-        }
+        (TypeAliasCategory::RecordSet(kind), Some(target)) => TypeVariant::record_set(kind, target)
+            .map_err(|_| projection_error("invalid semantic record-set target")),
         (TypeAliasCategory::Manager(kind), Some(target)) => TypeVariant::manager(kind, target)
             .map_err(|_| projection_error("invalid semantic manager target")),
         (TypeAliasCategory::Key(kind), Some(target)) => TypeVariant::key(kind, target)

@@ -38,11 +38,7 @@ pub(crate) fn evaluate_format_guard(
                 OwnerResolutionMode::ExistingForNewOutput
             };
             if operation == "meta-validate" {
-                factory.capture_unscoped_validation_source(
-                    target,
-                    &context.workspace_root,
-                    mode,
-                )
+                factory.capture_unscoped_validation_source(target, &context.workspace_root, mode)
             } else {
                 factory.capture_unscoped_source(target, &context.workspace_root, mode)
             }

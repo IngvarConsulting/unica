@@ -127,9 +127,7 @@ fn inspect_support_state(
                 unica_format_core::source::SourceLocation::new(
                     config_dir.to_path_buf(),
                     config_dir.to_path_buf(),
-                    config_dir
-                        .join("Ext")
-                        .join("ParentConfigurations.bin"),
+                    config_dir.join("Ext").join("ParentConfigurations.bin"),
                 ),
                 None,
                 unica_format_core::source::SourceFamily::PlatformXml,

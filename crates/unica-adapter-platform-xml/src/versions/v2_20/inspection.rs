@@ -1,8 +1,8 @@
 use unica_format_core::{
     ports::{
-        EffectiveSupportRule, FormatCompatibility, FormatInspectionMode,
-        FormatInspectionRequest, FormatInspectionResult, SupportEvidence,
-        SupportInspectionRequest, SupportSourceState, SupportVendorEvidence,
+        EffectiveSupportRule, FormatCompatibility, FormatInspectionMode, FormatInspectionRequest,
+        FormatInspectionResult, SupportEvidence, SupportInspectionRequest, SupportSourceState,
+        SupportVendorEvidence,
     },
     source::{FormatVersion, SourceAdapterError, SourceAdapterErrorKind, SourceFamily},
 };
@@ -29,8 +29,7 @@ pub(crate) fn inspect_format(
             compatibility: None,
         }),
         FormatInspectionMode::Versioned => {
-            let compatibility =
-                profile::classify_root_version(version).map_err(|_| malformed())?;
+            let compatibility = profile::classify_root_version(version).map_err(|_| malformed())?;
             let actual = FormatVersion::parse(&compatibility.actual().to_string())?;
             let target = FormatVersion::parse(EXPORT_FORMAT)?;
             Ok(FormatInspectionResult {

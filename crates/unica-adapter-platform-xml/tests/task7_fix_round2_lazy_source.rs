@@ -7,12 +7,10 @@ use std::{
 use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
 use unica_format_core::{
     ports::{
-        AuthorabilityRequest, AuthorabilityRequirement, AuthorabilityResult,
-        CompatibilityRequest, OwnerResolutionMode, ValidationContextRequest,
+        AuthorabilityRequest, AuthorabilityRequirement, AuthorabilityResult, CompatibilityRequest,
+        OwnerResolutionMode, ValidationContextRequest,
     },
-    source::{
-        ConfiguredSourceSetKind, SourceContext, SourceFamily, SourceLocation,
-    },
+    source::{ConfiguredSourceSetKind, SourceContext, SourceFamily, SourceLocation},
 };
 
 fn temp_root(label: &str) -> PathBuf {
@@ -72,20 +70,16 @@ fn operational_reads_ignore_more_than_512_unrelated_files_and_sparse_64_mib() {
         .unwrap();
 
     let factory = PlatformXmlAdapterFactory::new();
-    let session = factory.capture_operational_source(
-        &source(&root, &owner),
-        OwnerResolutionMode::Existing,
-    );
+    let session =
+        factory.capture_operational_source(&source(&root, &owner), OwnerResolutionMode::Existing);
     let registration = factory.operational_registration();
 
-    assert!(
-        registration
-            .compatibility()
-            .inspect(&CompatibilityRequest::new(vec![session.clone()]).unwrap())
-            .unwrap()
-            .issue()
-            .is_none()
-    );
+    assert!(registration
+        .compatibility()
+        .inspect(&CompatibilityRequest::new(vec![session.clone()]).unwrap())
+        .unwrap()
+        .issue()
+        .is_none());
     assert!(matches!(
         registration
             .authorability()
@@ -96,19 +90,13 @@ fn operational_reads_ignore_more_than_512_unrelated_files_and_sparse_64_mib() {
             .unwrap(),
         AuthorabilityResult::Allowed(_)
     ));
-    assert!(
-        registration
-            .validation_context()
-            .inspect(&ValidationContextRequest::new(session))
-            .is_ok()
-    );
+    assert!(registration
+        .validation_context()
+        .inspect(&ValidationContextRequest::new(session))
+        .is_ok());
     assert_eq!(
         factory
-            .inspect_source_set(
-                &root,
-                &root,
-                ConfiguredSourceSetKind::Configuration,
-            )
+            .inspect_source_set(&root, &root, ConfiguredSourceSetKind::Configuration,)
             .unwrap(),
         unica_format_core::ports::SourceSetMatch::Match
     );
@@ -131,10 +119,8 @@ fn artifact_replacement_after_capture_is_not_satisfied_by_cached_whole_tree_byte
     .unwrap();
 
     let factory = PlatformXmlAdapterFactory::new();
-    let session = factory.capture_operational_source(
-        &source(&root, &owner),
-        OwnerResolutionMode::Existing,
-    );
+    let session =
+        factory.capture_operational_source(&source(&root, &owner), OwnerResolutionMode::Existing);
     fs::rename(&owner, root.join("owner.original")).unwrap();
     symlink(&outside, &owner).unwrap();
 
@@ -168,11 +154,7 @@ fn tree_session_binds_selected_bytes_and_membership_but_ignores_unrelated_files(
 
     let factory = PlatformXmlAdapterFactory::new();
     let port = factory.operational_registration();
-    let session = factory.capture_unscoped_tree_source(
-        &root,
-        &root,
-        OwnerResolutionMode::Existing,
-    );
+    let session = factory.capture_unscoped_tree_source(&root, &root, OwnerResolutionMode::Existing);
     let inspect = || {
         port.compatibility()
             .inspect(&CompatibilityRequest::new(vec![session.clone()]).unwrap())
@@ -197,20 +179,16 @@ fn tree_session_binds_selected_bytes_and_membership_but_ignores_unrelated_files(
         "in-place selected-byte changes must invalidate bound evidence"
     );
 
-    let membership_session = factory.capture_unscoped_tree_source(
-        &root,
-        &root,
-        OwnerResolutionMode::Existing,
-    );
+    let membership_session =
+        factory.capture_unscoped_tree_source(&root, &root, OwnerResolutionMode::Existing);
     let membership_request =
         || CompatibilityRequest::new(vec![membership_session.clone()]).unwrap();
-    assert!(
-        port.compatibility()
-            .inspect(&membership_request())
-            .unwrap()
-            .issue()
-            .is_none()
-    );
+    assert!(port
+        .compatibility()
+        .inspect(&membership_request())
+        .unwrap()
+        .issue()
+        .is_none());
     fs::write(
         catalogs.join("Added.xml"),
         r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="00000000-0000-0000-0000-000000000003"><Properties><Name>Added</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#,

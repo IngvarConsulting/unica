@@ -33,6 +33,9 @@ use crate::infrastructure::platform_xml_owner::{
     inspect_platform_xml_compatibility, resolve_platform_xml_owners_with_provenance,
     PlatformXmlOwnerProvenance,
 };
+use crate::infrastructure::platform_xml_owner::{
+    task8_metadata_kind, task8_metadata_kind_directory,
+};
 use crate::infrastructure::project_sources::discover_project_source_map;
 use roxmltree::Document;
 use serde::Serialize;
@@ -43,9 +46,6 @@ use std::fs;
 use std::io::{self, ErrorKind, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use crate::infrastructure::platform_xml_owner::{
-    task8_metadata_kind, task8_metadata_kind_directory,
-};
 use unica_format_core::ports::ValidationMethodReferenceStatus;
 use unica_format_core::source::{ConfiguredSourceSetKind, FormatVersion};
 
@@ -4980,7 +4980,10 @@ mod edit_tests {
 
         assert!(!outcome.ok, "{outcome:?}");
         assert!(
-            outcome.errors.join("\n").contains("validation:sourceUnreadable"),
+            outcome
+                .errors
+                .join("\n")
+                .contains("validation:sourceUnreadable"),
             "{outcome:?}"
         );
         let _ = fs::remove_dir_all(&context.cwd);
@@ -5142,7 +5145,10 @@ mod edit_tests {
         let errors = outcome.errors.join("\n");
 
         assert!(!outcome.ok, "{outcome:?}");
-        assert!(errors.contains("validation:languageProfileMissing"), "{outcome:?}");
+        assert!(
+            errors.contains("validation:languageProfileMissing"),
+            "{outcome:?}"
+        );
         assert!(!errors.contains(&canonical_path(&language).display().to_string()));
         let _ = fs::remove_dir_all(&context.cwd);
     }
@@ -5160,7 +5166,10 @@ mod edit_tests {
         let errors = outcome.errors.join("\n");
 
         assert!(!outcome.ok, "{outcome:?}");
-        assert!(errors.contains("validation:languageProfileMissing"), "{outcome:?}");
+        assert!(
+            errors.contains("validation:languageProfileMissing"),
+            "{outcome:?}"
+        );
         assert!(!errors.contains(&canonical_path(&language).display().to_string()));
         let _ = fs::remove_dir_all(&context.cwd);
     }
@@ -5627,11 +5636,9 @@ fn run_meta_validation(
         .map_err(|error| error.to_string())?;
     let factory = unica_adapter_platform_xml::PlatformXmlAdapterFactory::new();
     let registration = factory.operational_registration();
-    let result = unica_application::OperationalPolicyService::validate(
-        registration.validation(),
-        &request,
-    )
-    .map_err(|_| "validation adapter operation failed".to_string())?;
+    let result =
+        unica_application::OperationalPolicyService::validate(registration.validation(), &request)
+            .map_err(|_| "validation adapter operation failed".to_string())?;
 
     let mut stdout = Vec::new();
     let mut artifacts = Vec::new();
@@ -5668,9 +5675,7 @@ fn run_meta_validation(
     })
 }
 
-fn validation_finding_code(
-    code: unica_format_core::ports::ValidationFindingCode,
-) -> &'static str {
+fn validation_finding_code(code: unica_format_core::ports::ValidationFindingCode) -> &'static str {
     use unica_format_core::ports::ValidationFindingCode;
     match code {
         ValidationFindingCode::SourceUnreadable => "sourceUnreadable",
@@ -5725,7 +5730,6 @@ pub(crate) fn meta_info_localized_values(
         .collect()
 }
 
-
 pub(crate) fn meta_writer_valid_types() -> &'static [&'static str] {
     &[
         "Catalog",
@@ -5756,9 +5760,7 @@ pub(crate) fn meta_writer_valid_types() -> &'static [&'static str] {
     ]
 }
 
-
-pub(crate) fn meta_writer_property_values() -> &'static [(&'static str, &'static [&'static str])]
-{
+pub(crate) fn meta_writer_property_values() -> &'static [(&'static str, &'static [&'static str])] {
     &[
         ("CodeType", &["String", "Number"]),
         ("CodeAllowedLength", &["Variable", "Fixed"]),
@@ -5874,7 +5876,6 @@ pub(crate) fn meta_writer_property_values() -> &'static [(&'static str, &'static
         ("TransferDirection", &["In", "InOut", "Out"]),
     ]
 }
-
 
 pub(crate) fn resolve_meta_info_path(mut object_path: PathBuf) -> Result<PathBuf, String> {
     if object_path.is_dir() {
@@ -9112,8 +9113,7 @@ fn meta_compile_event_subscription_dependencies(
                     "DefinedType" => "DefinedType",
                     _ => continue,
                 };
-                let Some(source_directory) =
-                    task8_metadata_kind_directory(source_object_type)
+                let Some(source_directory) = task8_metadata_kind_directory(source_object_type)
                 else {
                     continue;
                 };
@@ -10359,10 +10359,7 @@ fn validate_generated_metadata_boolean_contract(
     Ok(())
 }
 
-fn validate_generated_metadata_enum_contract(
-    xml_text: &str,
-    context: &str,
-) -> Result<(), String> {
+fn validate_generated_metadata_enum_contract(xml_text: &str, context: &str) -> Result<(), String> {
     let document = Document::parse(xml_text.trim_start_matches('\u{feff}'))
         .map_err(|error| format!("XML parse error: {error}"))?;
     let root_object = meta_edit_object_node(&document)?;
@@ -10401,7 +10398,10 @@ pub(crate) fn validate_semantic_metadata_artifact(
     workspace: &WorkspaceContext,
     operation: &str,
 ) -> Result<(), String> {
-    let options = MetaValidationOptions { detailed: true, max_errors: 30 };
+    let options = MetaValidationOptions {
+        detailed: true,
+        max_errors: 30,
+    };
     let run = meta_validate_one(object_path.to_path_buf(), &options, workspace)?;
     if run.ok {
         Ok(())
@@ -14657,11 +14657,7 @@ pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -
             let validation_path = object_path.clone();
             warnings = transaction
                 .commit_with_post_validation(move || {
-                    validate_semantic_metadata_artifact(
-                        &validation_path,
-                        context,
-                        "meta.edit",
-                    )
+                    validate_semantic_metadata_artifact(&validation_path, context, "meta.edit")
                 })?
                 .cleanup_warnings;
             info_lines.push(format!("[INFO] Saved: {}", object_path.display()));

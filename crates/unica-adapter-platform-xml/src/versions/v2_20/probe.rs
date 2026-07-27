@@ -4,11 +4,11 @@ use uuid::Uuid;
 
 use super::{
     provider::PlatformXmlProvider,
-    semantic_map::unknown_metadata_class_profile,
     schema::{
         child_metadata_class_profile, metadata_class_profile, MetadataClassProfile,
         MetadataClassRole, METADATA_NAMESPACE_2_20, ROOT_STRUCTURAL_CHILDREN,
     },
+    semantic_map::unknown_metadata_class_profile,
     xml::{parse_bounded_xml_document, BoundedXmlError},
     ProbeOutcome,
 };

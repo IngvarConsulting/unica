@@ -11,10 +11,7 @@ use serde_yaml::Value as YamlValue;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
-use unica_format_core::{
-    ports::SourceSetMatch,
-    source::ConfiguredSourceSetKind,
-};
+use unica_format_core::{ports::SourceSetMatch, source::ConfiguredSourceSetKind};
 
 const EDT_SOURCE_MARKERS: &[&str] = &[
     ".project",
@@ -291,11 +288,8 @@ fn autodetect_source_sets(
 ) -> Result<Vec<ConfigSourceSet>, String> {
     for path in [".", "src", "src/cf"] {
         let root = workspace_root.join(path);
-        let mut found = platform_source_set_matches(
-            workspace_root,
-            &root,
-            SourceSetKind::Configuration,
-        )?;
+        let mut found =
+            platform_source_set_matches(workspace_root, &root, SourceSetKind::Configuration)?;
         for marker in [
             root.join("Configuration/Configuration.mdo"),
             root.join("src/Configuration/Configuration.mdo"),
@@ -399,12 +393,7 @@ fn platform_source_set_matches(
     PlatformXmlAdapterFactory::new()
         .inspect_source_set(&source_root, &authorized_root, kind)
         .map(|result| result == SourceSetMatch::Match)
-        .map_err(|error| {
-            format!(
-                "source adapter inspection failed: {:?}",
-                error.kind
-            )
-        })
+        .map_err(|error| format!("source adapter inspection failed: {:?}", error.kind))
 }
 
 fn edt_evidence(
@@ -696,10 +685,7 @@ source-set:
 
         let error = discover_project_source_map(&root)
             .expect_err("adapter capture must reject symlinked source evidence");
-        assert_eq!(
-            error,
-            "source adapter inspection failed: SourceUnavailable"
-        );
+        assert_eq!(error, "source adapter inspection failed: SourceUnavailable");
 
         fs::remove_dir_all(root).unwrap();
     }

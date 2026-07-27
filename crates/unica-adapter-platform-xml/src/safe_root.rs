@@ -4,11 +4,11 @@ use std::{
     fs::File,
     io::{self, Read},
     path::{Component, Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 
 use sha2::{Digest, Sha256};
-use unica_format_core::ports::SemanticArtifactId;
+use unica_format_core::ports::{OperationalEvidenceRevision, SemanticArtifactId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ArtifactReadLimit {
@@ -75,7 +75,7 @@ enum ArtifactEvidence {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct BoundArtifact {
     relative: PathBuf,
     identity: Option<FileIdentity>,
@@ -142,8 +142,11 @@ pub(crate) struct SafeSourceRoot {
     scope_path: PathBuf,
     directory: File,
     identity: FileIdentity,
+    baseline_artifact_evidence: Arc<Mutex<BTreeMap<PathBuf, ArtifactEvidence>>>,
+    baseline_directory_evidence: Arc<Mutex<BTreeMap<(PathBuf, DirectoryPageLimit), Vec<OsString>>>>,
     artifact_evidence: Mutex<BTreeMap<PathBuf, ArtifactEvidence>>,
     directory_evidence: Mutex<BTreeMap<(PathBuf, DirectoryPageLimit), Vec<OsString>>>,
+    sealed: Mutex<bool>,
 }
 
 impl SafeSourceRoot {
@@ -159,47 +162,47 @@ impl SafeSourceRoot {
         if file_identity(&authorized_rebound)? != authorized_identity {
             return Err(SafeRootError::IdentityChanged);
         }
-        let (scope_path, relative, requested_scope_identity) =
-            match requested_scope_path.strip_prefix(&authorized_path) {
-                Ok(relative) => (
-                    requested_scope_path.clone(),
-                    validated_relative(relative)?,
-                    None,
-                ),
-                Err(_) => {
-                    #[cfg(unix)]
-                    {
-                        let canonical_authorized = std::fs::canonicalize(&authorized_path)
-                            .map_err(|_| SafeRootError::Unauthorized)?;
-                        let canonical_scope = std::fs::canonicalize(&requested_scope_path)
-                            .map_err(|_| SafeRootError::Unauthorized)?;
-                        let canonical_authorized =
-                            absolute_lexical_path(&canonical_authorized)?;
-                        let canonical_scope = absolute_lexical_path(&canonical_scope)?;
-                        let canonical_anchor =
-                            open_directory_nofollow(&canonical_authorized)?;
-                        if file_identity(&canonical_anchor)? != authorized_identity {
-                            return Err(SafeRootError::IdentityChanged);
-                        }
-                        let relative = validated_relative(
-                            canonical_scope
-                                .strip_prefix(&canonical_authorized)
-                                .map_err(|_| SafeRootError::Unauthorized)?,
-                        )?;
-                        let requested_scope =
-                            open_directory_nofollow(&requested_scope_path)?;
-                        (
-                            canonical_scope,
-                            relative,
-                            Some(file_identity(&requested_scope)?),
-                        )
+        let (scope_path, relative, requested_scope_identity): (
+            PathBuf,
+            PathBuf,
+            Option<FileIdentity>,
+        ) = match requested_scope_path.strip_prefix(&authorized_path) {
+            Ok(relative) => (
+                requested_scope_path.clone(),
+                validated_relative(relative)?,
+                None,
+            ),
+            Err(_) => {
+                #[cfg(unix)]
+                {
+                    let canonical_authorized = std::fs::canonicalize(&authorized_path)
+                        .map_err(|_| SafeRootError::Unauthorized)?;
+                    let canonical_scope = std::fs::canonicalize(&requested_scope_path)
+                        .map_err(|_| SafeRootError::Unauthorized)?;
+                    let canonical_authorized = absolute_lexical_path(&canonical_authorized)?;
+                    let canonical_scope = absolute_lexical_path(&canonical_scope)?;
+                    let canonical_anchor = open_directory_nofollow(&canonical_authorized)?;
+                    if file_identity(&canonical_anchor)? != authorized_identity {
+                        return Err(SafeRootError::IdentityChanged);
                     }
-                    #[cfg(not(unix))]
-                    {
-                        return Err(SafeRootError::Unauthorized);
-                    }
+                    let relative = validated_relative(
+                        canonical_scope
+                            .strip_prefix(&canonical_authorized)
+                            .map_err(|_| SafeRootError::Unauthorized)?,
+                    )?;
+                    let requested_scope = open_directory_nofollow(&requested_scope_path)?;
+                    (
+                        canonical_scope,
+                        relative,
+                        Some(file_identity(&requested_scope)?),
+                    )
                 }
-            };
+                #[cfg(not(unix))]
+                {
+                    return Err(SafeRootError::Unauthorized);
+                }
+            }
+        };
         let directory = open_directory_relative_nofollow(&authorized, &relative)?;
         let identity = file_identity(&directory)?;
         if requested_scope_identity.is_some_and(|requested| requested != identity) {
@@ -213,8 +216,11 @@ impl SafeSourceRoot {
             scope_path,
             directory,
             identity,
+            baseline_artifact_evidence: Arc::new(Mutex::new(BTreeMap::new())),
+            baseline_directory_evidence: Arc::new(Mutex::new(BTreeMap::new())),
             artifact_evidence: Mutex::new(BTreeMap::new()),
             directory_evidence: Mutex::new(BTreeMap::new()),
+            sealed: Mutex::new(false),
         })
     }
 
@@ -270,8 +276,28 @@ impl SafeSourceRoot {
             scope_path: self.scope_path.join(relative),
             directory,
             identity,
+            baseline_artifact_evidence: Arc::new(Mutex::new(BTreeMap::new())),
+            baseline_directory_evidence: Arc::new(Mutex::new(BTreeMap::new())),
             artifact_evidence: Mutex::new(BTreeMap::new()),
             directory_evidence: Mutex::new(BTreeMap::new()),
+            sealed: Mutex::new(false),
+        })
+    }
+
+    pub(crate) fn fork(&self) -> Result<Self, SafeRootError> {
+        self.verify_root()?;
+        Ok(Self {
+            scope_path: self.scope_path.clone(),
+            directory: self
+                .directory
+                .try_clone()
+                .map_err(|_| SafeRootError::Unreadable)?,
+            identity: self.identity,
+            baseline_artifact_evidence: Arc::clone(&self.baseline_artifact_evidence),
+            baseline_directory_evidence: Arc::clone(&self.baseline_directory_evidence),
+            artifact_evidence: Mutex::new(BTreeMap::new()),
+            directory_evidence: Mutex::new(BTreeMap::new()),
+            sealed: Mutex::new(false),
         })
     }
 
@@ -304,7 +330,8 @@ impl SafeSourceRoot {
         limit: ArtifactReadLimit,
     ) -> Result<SafeArtifactRead, SafeRootError> {
         let relative = validated_relative(Path::new(relative))?;
-        self.read_relative_path(&relative, limit).map(|(read, _)| read)
+        self.read_relative_path(&relative, limit)
+            .map(|(read, _)| read)
     }
 
     pub(crate) fn exists_regular(&self, relative: &str) -> Result<bool, SafeRootError> {
@@ -338,8 +365,24 @@ impl SafeSourceRoot {
     pub(crate) fn is_directory(&self, relative: &Path) -> Result<bool, SafeRootError> {
         let relative = validated_relative(relative)?;
         match self.open_entry(&relative) {
-            Ok(OpenedEntry::Directory(_)) => Ok(true),
-            Ok(OpenedEntry::File(_)) | Err(SafeRootError::NotRegular) => Ok(false),
+            Ok(OpenedEntry::Directory(directory)) => {
+                self.bind_artifact_evidence(
+                    &relative,
+                    ArtifactEvidence::Directory(file_identity(&directory)?),
+                )?;
+                Ok(true)
+            }
+            Ok(OpenedEntry::File(file)) => {
+                self.bind_artifact_evidence(
+                    &relative,
+                    ArtifactEvidence::File {
+                        identity: file_identity(&file)?,
+                        digest: None,
+                    },
+                )?;
+                Ok(false)
+            }
+            Err(SafeRootError::NotRegular) => Ok(false),
             Err(error) => Err(error),
         }
     }
@@ -350,6 +393,7 @@ impl SafeSourceRoot {
         limit: DirectoryPageLimit,
         mut visitor: impl FnMut(&OsStr) -> Result<DirectoryVisit, SafeRootError>,
     ) -> Result<(), SafeRootError> {
+        self.ensure_unsealed()?;
         self.verify_root()?;
         let relative = validated_relative(Path::new(relative))?;
         let directory = open_directory_relative_nofollow(&self.directory, &relative)?;
@@ -369,20 +413,8 @@ impl SafeSourceRoot {
         })?;
         selected_names.sort();
         let key = (relative, limit);
-        let mut evidence = self
-            .directory_evidence
-            .lock()
-            .map_err(|_| SafeRootError::Unreadable)?;
-        match evidence.get(&key) {
-            Some(expected) if expected != &selected_names => {
-                Err(SafeRootError::IdentityChanged)
-            }
-            Some(_) => Ok(()),
-            None => {
-                evidence.insert(key, selected_names);
-                Ok(())
-            }
-        }
+        bind_directory_evidence(&self.baseline_directory_evidence, &key, &selected_names)?;
+        bind_directory_evidence(&self.directory_evidence, &key, &selected_names)
     }
 
     fn read_relative_path(
@@ -437,8 +469,7 @@ impl SafeSourceRoot {
             digest: Some(digest_bytes),
         };
         self.bind_artifact_evidence(relative, observed)?;
-        let id = SemanticArtifactId::new(semantic_id)
-            .map_err(|_| SafeRootError::Unreadable)?;
+        let id = SemanticArtifactId::new(semantic_id).map_err(|_| SafeRootError::Unreadable)?;
         Ok((SafeArtifactRead { bytes, id }, identity))
     }
 
@@ -454,6 +485,7 @@ impl SafeSourceRoot {
     }
 
     fn open_entry(&self, relative: &Path) -> Result<OpenedEntry, SafeRootError> {
+        self.ensure_unsealed()?;
         let (parent, name) = split_relative_leaf(relative)?;
         let parent = open_directory_relative_nofollow(&self.directory, parent)?;
         run_before_artifact_open(relative);
@@ -471,41 +503,8 @@ impl SafeSourceRoot {
         relative: &Path,
         observed: ArtifactEvidence,
     ) -> Result<(), SafeRootError> {
-        let mut evidence = self
-            .artifact_evidence
-            .lock()
-            .map_err(|_| SafeRootError::Unreadable)?;
-        match (evidence.get(relative).copied(), observed) {
-            (None, observed) => {
-                evidence.insert(relative.to_path_buf(), observed);
-                Ok(())
-            }
-            (Some(ArtifactEvidence::Missing), ArtifactEvidence::Missing)
-            | (
-                Some(ArtifactEvidence::Directory(_)),
-                ArtifactEvidence::Directory(_),
-            ) if evidence.get(relative).copied() == Some(observed) => Ok(()),
-            (
-                Some(ArtifactEvidence::File {
-                    identity: expected_identity,
-                    digest: expected_digest,
-                }),
-                ArtifactEvidence::File {
-                    identity: observed_identity,
-                    digest: observed_digest,
-                },
-            ) if expected_identity == observed_identity
-                && (expected_digest.is_none()
-                    || observed_digest.is_none()
-                    || expected_digest == observed_digest) =>
-            {
-                if expected_digest.is_none() && observed_digest.is_some() {
-                    evidence.insert(relative.to_path_buf(), observed);
-                }
-                Ok(())
-            }
-            _ => Err(SafeRootError::IdentityChanged),
-        }
+        bind_artifact_evidence_map(&self.baseline_artifact_evidence, relative, observed)?;
+        bind_artifact_evidence_map(&self.artifact_evidence, relative, observed)
     }
 
     fn verify_root(&self) -> Result<(), SafeRootError> {
@@ -514,6 +513,148 @@ impl SafeSourceRoot {
         }
         Ok(())
     }
+
+    pub(crate) fn finalize_evidence(
+        &self,
+        operation: &'static [u8],
+    ) -> Result<OperationalEvidenceRevision, SafeRootError> {
+        self.verify_root()?;
+        let mut sealed = self.sealed.lock().map_err(|_| SafeRootError::Unreadable)?;
+        if *sealed {
+            return Err(SafeRootError::IdentityChanged);
+        }
+        let artifacts = self
+            .artifact_evidence
+            .lock()
+            .map_err(|_| SafeRootError::Unreadable)?;
+        let directories = self
+            .directory_evidence
+            .lock()
+            .map_err(|_| SafeRootError::Unreadable)?;
+        let mut digest = Sha256::new();
+        digest.update(b"unica:platform-xml:operational-evidence:v1\0");
+        digest.update((operation.len() as u64).to_le_bytes());
+        digest.update(operation);
+        digest.update(self.identity.device.to_le_bytes());
+        digest.update(self.identity.file.to_le_bytes());
+        for (relative, evidence) in artifacts.iter() {
+            update_relative_path(&mut digest, relative);
+            match evidence {
+                ArtifactEvidence::Missing => digest.update([0]),
+                ArtifactEvidence::Directory(identity) => {
+                    digest.update([1]);
+                    update_file_identity(&mut digest, *identity);
+                }
+                ArtifactEvidence::File {
+                    identity,
+                    digest: bytes_digest,
+                } => {
+                    digest.update([2]);
+                    update_file_identity(&mut digest, *identity);
+                    match bytes_digest {
+                        Some(bytes_digest) => {
+                            digest.update([1]);
+                            digest.update(bytes_digest);
+                        }
+                        None => digest.update([0]),
+                    }
+                }
+            }
+        }
+        for ((relative, limit), names) in directories.iter() {
+            digest.update([3]);
+            update_relative_path(&mut digest, relative);
+            digest.update(match limit {
+                DirectoryPageLimit::RootDiscovery => [0],
+                DirectoryPageLimit::MetadataRegistry => [1],
+            });
+            digest.update((names.len() as u64).to_le_bytes());
+            for name in names {
+                let name = name.to_string_lossy();
+                digest.update((name.len() as u64).to_le_bytes());
+                digest.update(name.as_bytes());
+            }
+        }
+        *sealed = true;
+        Ok(OperationalEvidenceRevision::from_digest(
+            digest.finalize().into(),
+        ))
+    }
+
+    fn ensure_unsealed(&self) -> Result<(), SafeRootError> {
+        if *self.sealed.lock().map_err(|_| SafeRootError::Unreadable)? {
+            Err(SafeRootError::IdentityChanged)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn bind_artifact_evidence_map(
+    evidence: &Mutex<BTreeMap<PathBuf, ArtifactEvidence>>,
+    relative: &Path,
+    observed: ArtifactEvidence,
+) -> Result<(), SafeRootError> {
+    let mut evidence = evidence.lock().map_err(|_| SafeRootError::Unreadable)?;
+    match (evidence.get(relative).copied(), observed) {
+        (None, observed) => {
+            evidence.insert(relative.to_path_buf(), observed);
+            Ok(())
+        }
+        (Some(ArtifactEvidence::Missing), ArtifactEvidence::Missing)
+        | (Some(ArtifactEvidence::Directory(_)), ArtifactEvidence::Directory(_))
+            if evidence.get(relative).copied() == Some(observed) =>
+        {
+            Ok(())
+        }
+        (
+            Some(ArtifactEvidence::File {
+                identity: expected_identity,
+                digest: expected_digest,
+            }),
+            ArtifactEvidence::File {
+                identity: observed_identity,
+                digest: observed_digest,
+            },
+        ) if expected_identity == observed_identity
+            && (expected_digest.is_none()
+                || observed_digest.is_none()
+                || expected_digest == observed_digest) =>
+        {
+            if expected_digest.is_none() && observed_digest.is_some() {
+                evidence.insert(relative.to_path_buf(), observed);
+            }
+            Ok(())
+        }
+        _ => Err(SafeRootError::IdentityChanged),
+    }
+}
+
+fn bind_directory_evidence(
+    evidence: &Mutex<BTreeMap<(PathBuf, DirectoryPageLimit), Vec<OsString>>>,
+    key: &(PathBuf, DirectoryPageLimit),
+    observed: &[OsString],
+) -> Result<(), SafeRootError> {
+    let mut evidence = evidence.lock().map_err(|_| SafeRootError::Unreadable)?;
+    match evidence.get(key) {
+        Some(expected) if expected != observed => Err(SafeRootError::IdentityChanged),
+        Some(_) => Ok(()),
+        None => {
+            evidence.insert(key.clone(), observed.to_vec());
+            Ok(())
+        }
+    }
+}
+
+fn update_file_identity(digest: &mut Sha256, identity: FileIdentity) {
+    digest.update(identity.device.to_le_bytes());
+    digest.update(identity.file.to_le_bytes());
+}
+
+fn update_relative_path(digest: &mut Sha256, relative: &Path) {
+    let relative = relative.to_string_lossy();
+    digest.update((relative.len() as u64).to_le_bytes());
+    digest.update(relative.as_bytes());
 }
 
 enum OpenedEntry {
@@ -583,17 +724,14 @@ fn relative_key(path: &Path) -> Option<String> {
 fn open_directory_nofollow(path: &Path) -> Result<File, SafeRootError> {
     use std::{
         ffi::CString,
-        os::{
-            unix::ffi::OsStrExt,
-            unix::io::FromRawFd,
-        },
+        os::{unix::ffi::OsStrExt, unix::io::FromRawFd},
     };
 
     if !path.is_absolute() {
         return Err(SafeRootError::Unauthorized);
     }
-    let path = CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| SafeRootError::Unauthorized)?;
+    let path =
+        CString::new(path.as_os_str().as_bytes()).map_err(|_| SafeRootError::Unauthorized)?;
     // The command-selected root is captured once. All source and artifact
     // traversal after this point is descriptor-relative and no-follow.
     let fd = unsafe {
@@ -610,10 +748,7 @@ fn open_directory_nofollow(path: &Path) -> Result<File, SafeRootError> {
 }
 
 #[cfg(unix)]
-fn open_directory_relative_nofollow(
-    root: &File,
-    relative: &Path,
-) -> Result<File, SafeRootError> {
+fn open_directory_relative_nofollow(root: &File, relative: &Path) -> Result<File, SafeRootError> {
     let relative = validated_relative(relative)?;
     let mut current = open_directory_child_nofollow(root, OsStr::new("."))?;
     for component in relative.components() {
@@ -676,12 +811,7 @@ fn open_regular_child_nofollow(parent: &File, name: &OsStr) -> Result<File, Safe
     }
     // SAFETY: fd was returned as a newly owned descriptor.
     let file = unsafe { File::from_raw_fd(fd) };
-    if !file
-        .metadata()
-        .map_err(map_io)?
-        .file_type()
-        .is_file()
-    {
+    if !file.metadata().map_err(map_io)?.file_type().is_file() {
         return Err(SafeRootError::NotRegular);
     }
     Ok(file)
@@ -694,10 +824,7 @@ fn visit_directory_names(
 ) -> Result<(), SafeRootError> {
     use std::{
         ffi::CStr,
-        os::{
-            unix::ffi::OsStringExt,
-            unix::io::AsRawFd,
-        },
+        os::{unix::ffi::OsStringExt, unix::io::AsRawFd},
     };
 
     // SAFETY: fcntl duplicates the live descriptor; fdopendir owns the duplicate on success.
@@ -759,10 +886,7 @@ fn open_directory_nofollow(path: &Path) -> Result<File, SafeRootError> {
 }
 
 #[cfg(windows)]
-fn open_directory_relative_nofollow(
-    root: &File,
-    relative: &Path,
-) -> Result<File, SafeRootError> {
+fn open_directory_relative_nofollow(root: &File, relative: &Path) -> Result<File, SafeRootError> {
     let relative = validated_relative(relative)?;
     let mut current = open_directory_child_nofollow(root, OsStr::new("."))?;
     for component in relative.components() {
@@ -917,10 +1041,7 @@ fn visit_directory_names(
 ) -> Result<(), SafeRootError> {
     use std::{
         ffi::c_void,
-        os::windows::{
-            ffi::OsStringExt,
-            io::AsRawHandle,
-        },
+        os::windows::{ffi::OsStringExt, io::AsRawHandle},
         ptr,
     };
 
@@ -987,13 +1108,9 @@ fn visit_directory_names(
         }
         let mut offset = 0usize;
         while offset < io_status.information {
-            let entry = unsafe {
-                &*(buffer.as_ptr().add(offset).cast::<FileNamesInformation>())
-            };
+            let entry = unsafe { &*(buffer.as_ptr().add(offset).cast::<FileNamesInformation>()) };
             let length = entry.file_name_length as usize / 2;
-            let name = unsafe {
-                std::slice::from_raw_parts(entry.file_name.as_ptr(), length)
-            };
+            let name = unsafe { std::slice::from_raw_parts(entry.file_name.as_ptr(), length) };
             let name = OsString::from_wide(name);
             if name != "." && name != ".." {
                 visitor(&name)?;
@@ -1010,11 +1127,10 @@ fn visit_directory_names(
 
 #[cfg(windows)]
 fn file_identity(file: &File) -> Result<FileIdentity, SafeRootError> {
-    use std::os::windows::fs::MetadataExt;
-    let metadata = file.metadata().map_err(map_io)?;
+    let identity = crate::platform_handle::query(file).map_err(map_io)?;
     Ok(FileIdentity {
-        device: metadata.volume_serial_number().unwrap_or_default(),
-        file: metadata.file_index().unwrap_or_default(),
+        device: identity.volume,
+        file: identity.file,
     })
 }
 
@@ -1022,13 +1138,7 @@ fn file_identity(file: &File) -> Result<FileIdentity, SafeRootError> {
 fn reject_windows_reparse(file: &File) -> Result<(), SafeRootError> {
     use std::os::windows::fs::MetadataExt;
     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
-    if file
-        .metadata()
-        .map_err(map_io)?
-        .file_attributes()
-        & FILE_ATTRIBUTE_REPARSE_POINT
-        != 0
-    {
+    if file.metadata().map_err(map_io)?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(SafeRootError::LinkOrReparsePoint);
     }
     Ok(())
@@ -1052,10 +1162,7 @@ fn open_directory_nofollow(_path: &Path) -> Result<File, SafeRootError> {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn open_directory_relative_nofollow(
-    _root: &File,
-    _relative: &Path,
-) -> Result<File, SafeRootError> {
+fn open_directory_relative_nofollow(_root: &File, _relative: &Path) -> Result<File, SafeRootError> {
     Err(SafeRootError::UnsupportedHost)
 }
 
@@ -1108,15 +1215,33 @@ thread_local! {
         std::cell::RefCell::new(None);
     static AFTER_ARTIFACT_OPEN: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> =
         std::cell::RefCell::new(None);
+    static ARTIFACT_OPEN_LOG: std::cell::RefCell<Option<Vec<PathBuf>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
 fn run_before_artifact_open(relative: &Path) {
+    ARTIFACT_OPEN_LOG.with(|slot| {
+        if let Some(log) = slot.borrow_mut().as_mut() {
+            log.push(relative.to_path_buf());
+        }
+    });
     BEFORE_ARTIFACT_OPEN.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
             hook(relative);
         }
     });
+}
+
+#[cfg(test)]
+pub(crate) fn with_artifact_open_log<T>(action: impl FnOnce() -> T) -> (T, Vec<PathBuf>) {
+    ARTIFACT_OPEN_LOG.with(|slot| {
+        assert!(slot.borrow().is_none());
+        *slot.borrow_mut() = Some(Vec::new());
+    });
+    let result = action();
+    let log = ARTIFACT_OPEN_LOG.with(|slot| slot.borrow_mut().take().unwrap_or_default());
+    (result, log)
 }
 
 #[cfg(not(test))]
@@ -1150,7 +1275,7 @@ pub(crate) fn with_before_artifact_open<T>(
     result
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn with_artifact_open_hooks<T>(
     before: impl FnOnce(&Path) + 'static,
     after: impl FnOnce(&Path) + 'static,
@@ -1236,17 +1361,17 @@ mod tests {
             },
             move |_| {
                 std::fs::rename(after_root.join("owner.xml"), &after_outside).unwrap();
-                std::fs::rename(
-                    after_root.join("owner.saved"),
-                    after_root.join("owner.xml"),
-                )
-                .unwrap();
+                std::fs::rename(after_root.join("owner.saved"), after_root.join("owner.xml"))
+                    .unwrap();
             },
             || root.read_relative("owner.xml", ArtifactReadLimit::Descriptor),
         );
 
         assert!(matches!(result, Err(SafeRootError::IdentityChanged)));
-        assert_eq!(std::fs::read(root_path.join("owner.xml")).unwrap(), b"authorized");
+        assert_eq!(
+            std::fs::read(root_path.join("owner.xml")).unwrap(),
+            b"authorized"
+        );
         std::fs::remove_dir_all(parent).unwrap();
     }
 }

@@ -604,9 +604,7 @@ pub struct TypeVariant {
 /// The payload remains encapsulated by `TypeVariant`; this kind exists so
 /// public contract inventories can be compiler-exhaustive without exposing
 /// native aliases or invalid constructor combinations.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TypeVariantKind {
     Primitive,
@@ -925,9 +923,7 @@ impl Serialize for TypeVariant {
             TypeVariantValue::Key(target) => Wire::Key { target },
             TypeVariantValue::Enumeration(target) => Wire::Enumeration { target },
             TypeVariantValue::DefinedType(target) => Wire::DefinedType { target },
-            TypeVariantValue::Unknown { ordinal } => Wire::Unknown {
-                ordinal: *ordinal,
-            },
+            TypeVariantValue::Unknown { ordinal } => Wire::Unknown { ordinal: *ordinal },
         }
         .serialize(serializer)
     }
@@ -992,9 +988,7 @@ impl<'de> Deserialize<'de> for TypeVariant {
             Wire::Reference { target } => {
                 Self::reference(target_kind::<D::Error>(&target)?, target.name)
             }
-            Wire::Object { target } => {
-                Self::object(target_kind::<D::Error>(&target)?, target.name)
-            }
+            Wire::Object { target } => Self::object(target_kind::<D::Error>(&target)?, target.name),
             Wire::RecordSet { target } => {
                 Self::record_set(target_kind::<D::Error>(&target)?, target.name)
             }
@@ -1234,10 +1228,9 @@ impl<'de> Deserialize<'de> for PropertyValue {
         if matches!(
             raw.get("type").and_then(serde_json::Value::as_str),
             Some("null" | "emptyReference")
-        )
-            && raw
-                .as_object()
-                .is_some_and(|value| value.contains_key("value"))
+        ) && raw
+            .as_object()
+            .is_some_and(|value| value.contains_key("value"))
         {
             return Err(D::Error::custom(
                 "payload-free semantic value cannot carry a payload",

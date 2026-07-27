@@ -1,37 +1,72 @@
 use std::collections::BTreeSet;
 
+use sha2::{Digest, Sha256};
 use unica_format_core::{
     ports::{
-        FormatDiagnosticDetail, OperationalValidationResult, SemanticArtifactId,
-        ValidationFinding, ValidationFindingCode, ValidationFindingSeverity, ValidationOptions,
-        ValidationReport,
+        OperationalEvidenceRevision, OperationalValidationResult, SemanticArtifactId,
+        ValidationFinding, ValidationFindingCode, ValidationFindingSeverity, ValidationIssueKind,
+        ValidationOptions, ValidationReport,
     },
     source::{SourceAdapterError, SourceAdapterErrorKind},
 };
 
-use super::{
-    operations::PlatformOperationSession, profile, schema, semantic_map, xml,
-};
+use super::{operations::PlatformOperationSession, profile, schema, semantic_map, xml};
 
 pub(crate) fn validate(
     sessions: &[unica_format_core::ports::OperationalSourceSession],
     options: ValidationOptions,
 ) -> Result<OperationalValidationResult, SourceAdapterError> {
-    let reports = sessions
+    let outcomes = sessions
         .iter()
         .map(|session| {
             let session = super::operations::session_from_handle(session)?;
             validate_one(session, options)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    OperationalValidationResult::new(reports).map_err(contract_error)
+    let mut evidence = Sha256::new();
+    evidence.update(b"unica:platform-xml:validation-request:v1\0");
+    let mut reports = Vec::with_capacity(outcomes.len());
+    for (report, revision) in outcomes {
+        evidence.update(revision.digest());
+        reports.push(report);
+    }
+    OperationalValidationResult::new(
+        reports,
+        OperationalEvidenceRevision::from_digest(evidence.finalize().into()),
+    )
+    .map_err(contract_error)
 }
 
 fn validate_one(
     session: &PlatformOperationSession,
     options: ValidationOptions,
+) -> Result<(ValidationReport, OperationalEvidenceRevision), SourceAdapterError> {
+    let provider = match session.validation_provider() {
+        Ok(provider) => provider,
+        Err(_) => {
+            return Ok((
+                report(
+                    SemanticArtifactId::new("artifact:unavailable").expect("constant semantic id"),
+                    1,
+                    vec![error(ValidationFindingCode::SourceUnreadable)],
+                )?,
+                session.failure_evidence(b"validation"),
+            ))
+        }
+    };
+    let report = validate_one_with_provider(session, &provider, options)?;
+    let evidence = provider
+        .finalize_evidence(b"validation")
+        .unwrap_or_else(|_| session.failure_evidence(b"validation"));
+    Ok((report, evidence))
+}
+
+fn validate_one_with_provider(
+    session: &PlatformOperationSession,
+    provider: &super::operations::LazyPlatformSource,
+    options: ValidationOptions,
 ) -> Result<ValidationReport, SourceAdapterError> {
-    let subject = match session.validation_subject() {
+    let subject = match PlatformOperationSession::validation_subject(provider) {
         Ok(subject) => subject,
         Err(_) => {
             return report(
@@ -70,9 +105,7 @@ fn validate_one(
 
     let children = root
         .children()
-        .filter(|node| {
-            node.is_element() && node.tag_name().namespace() == Some(xml::MD_CLASSES_NS)
-        })
+        .filter(|node| node.is_element() && node.tag_name().namespace() == Some(xml::MD_CLASSES_NS))
         .collect::<Vec<_>>();
     if children.len() != 1 {
         findings.push(error(ValidationFindingCode::SemanticStructureInvalid));
@@ -151,34 +184,22 @@ fn validate_one(
         }
     }
 
-    let context = super::operations::validation(session);
-    if context.context().is_none() {
-        for diagnostic in context.diagnostics() {
-            let code = match diagnostic.detail() {
-                FormatDiagnosticDetail::Validation(issue) => match issue {
-                    unica_format_core::ports::ValidationIssueKind::SourceUnreadable
-                    | unica_format_core::ports::ValidationIssueKind::OwnerUnavailable => {
-                        ValidationFindingCode::SourceUnreadable
-                    }
-                    unica_format_core::ports::ValidationIssueKind::RegistrationMissing => {
-                        ValidationFindingCode::RegistrationMissing
-                    }
-                    unica_format_core::ports::ValidationIssueKind::LanguageProfileMissing => {
-                        ValidationFindingCode::LanguageProfileMissing
-                    }
-                    unica_format_core::ports::ValidationIssueKind::ReferenceMissing => {
-                        ValidationFindingCode::ReferenceMissing
-                    }
-                    unica_format_core::ports::ValidationIssueKind::RegistrarMissing => {
-                        ValidationFindingCode::RegistrarMissing
-                    }
-                },
-                _ => ValidationFindingCode::SourceUnreadable,
-            };
-            findings.push(error(code));
-            checks = checks.saturating_add(1);
-        }
-    } else if let Some(context) = context.context() {
+    let context = super::operations::validation_context_for_provider(session, provider);
+    if let Err(issue) = context {
+        let code = match issue {
+            ValidationIssueKind::SourceUnreadable | ValidationIssueKind::OwnerUnavailable => {
+                ValidationFindingCode::SourceUnreadable
+            }
+            ValidationIssueKind::RegistrationMissing => ValidationFindingCode::RegistrationMissing,
+            ValidationIssueKind::LanguageProfileMissing => {
+                ValidationFindingCode::LanguageProfileMissing
+            }
+            ValidationIssueKind::ReferenceMissing => ValidationFindingCode::ReferenceMissing,
+            ValidationIssueKind::RegistrarMissing => ValidationFindingCode::RegistrarMissing,
+        };
+        findings.push(error(code));
+        checks = checks.saturating_add(1);
+    } else if let Ok(context) = context {
         if context.command_text_validation_required() {
             if let Some(object) = children.first().copied() {
                 append_command_presentation_findings(
@@ -195,12 +216,9 @@ fn validate_one(
         if context.registrar_present() == Some(false) {
             findings.push(error(ValidationFindingCode::RegistrarMissing));
         }
-        if context
-            .method_reference_status()
-            .is_some_and(|status| {
-                status != unica_format_core::ports::ValidationMethodReferenceStatus::Valid
-            })
-        {
+        if context.method_reference_status().is_some_and(|status| {
+            status != unica_format_core::ports::ValidationMethodReferenceStatus::Valid
+        }) {
             findings.push(error(ValidationFindingCode::MethodReferenceInvalid));
         }
         checks = checks.saturating_add(3);
@@ -242,9 +260,7 @@ fn append_command_presentation_findings(
             .filter(|value| !value.is_empty())
             .or_else(|| localized_text(synonym, language).filter(|value| !value.is_empty()));
         if text.is_some_and(|value| value.chars().count() > 38) {
-            findings.push(warning(
-                ValidationFindingCode::CommandPresentationTooLong,
-            ));
+            findings.push(warning(ValidationFindingCode::CommandPresentationTooLong));
         }
     }
 }

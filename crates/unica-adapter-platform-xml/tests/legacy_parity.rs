@@ -1,7 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fmt,
-    fs,
+    fmt, fs,
     path::{Path, PathBuf},
     process::Command,
     sync::{
@@ -24,15 +23,12 @@ use unica_format_core::{
         NavigationFacetVisibility, NavigationNode, NavigationQuery, NavigationRelationPage,
         NavigationSelection, NavigationStatus, NavigationTarget, ObjectKey, ObjectRef,
         OpaqueNavigationCursor, OperationBinding, PropertyCapability, PropertyProvenance,
-        PropertySelection,
-        PropertyValueState, RelationGroupRef, RelationKey, RelationKind, RelationRef,
-        RelationSelection, ResolutionState, SemanticAction, SemanticActionDescriptor,
+        PropertySelection, PropertyValueState, RelationGroupRef, RelationKey, RelationKind,
+        RelationRef, RelationSelection, ResolutionState, SemanticAction, SemanticActionDescriptor,
         SemanticActionKind, SemanticFacets, SemanticProperty, SemanticRelation,
     },
     ports::{CaptureResult, FormatReadRequest},
-    semantic_ids::{
-        SemanticEnumValue, SemanticObjectKind, SemanticPropertyId, SemanticRelationId,
-    },
+    semantic_ids::{SemanticEnumValue, SemanticObjectKind, SemanticPropertyId, SemanticRelationId},
     source::{
         SnapshotConsistency, SourceAccess, SourceAdapterErrorKind, SourceContext, SourceFamily,
         SourceId, SourceLocation, SourceRevision, SourceSnapshot, TargetIdentity,
@@ -151,8 +147,7 @@ fn canonicalize_and_compare(
             cursor_authenticator,
         )?;
     }
-    compare_fact_multisets(expected, &actual_raw_facts)
-        .map_err(PublicWireParityError::FactSetDiff)
+    compare_fact_multisets(expected, &actual_raw_facts).map_err(PublicWireParityError::FactSetDiff)
 }
 
 fn canonicalize_named_cursor_fields(
@@ -242,11 +237,12 @@ fn canonicalize_cursor_wire(
             }
         }
     })?;
-    let round_trip = serde_json::to_value(&authenticated)
-        .map_err(|error| PublicWireParityError::CursorPayloadMismatch {
+    let round_trip = serde_json::to_value(&authenticated).map_err(|error| {
+        PublicWireParityError::CursorPayloadMismatch {
             occurrence: occurrence.clone(),
             message: format!("authenticated cursor cannot serialize: {error}"),
-        })?;
+        }
+    })?;
     if round_trip.as_str() != Some(token.as_str()) {
         return Err(PublicWireParityError::CursorPayloadMismatch {
             occurrence,
@@ -358,7 +354,10 @@ impl fmt::Display for FactDiff {
             "firstDifference={:?}\nmissingFacts={}\nunexpectedFacts={}",
             self.first_difference,
             self.missing.iter().map(|(_, count)| count).sum::<usize>(),
-            self.unexpected.iter().map(|(_, count)| count).sum::<usize>(),
+            self.unexpected
+                .iter()
+                .map(|(_, count)| count)
+                .sum::<usize>(),
         )
     }
 }
@@ -412,7 +411,10 @@ fn legacy_oracle_regenerates_and_hashes_every_declared_source_without_adapter_de
         "rawLegacyOutput",
         "legacySemanticOracle",
     ] {
-        assert!(roles.contains(required), "missing provenance role {required}");
+        assert!(
+            roles.contains(required),
+            "missing provenance role {required}"
+        );
     }
     for entry in entries {
         let path = repo_root().join(entry["path"].as_str().unwrap());
@@ -478,8 +480,7 @@ fn source_extracted_enum_aliases_are_bijective_with_runtime_property_and_object_
 fn coordinated_crosswalk_and_coverage_context_drift_fails_against_source_and_hashes() {
     let root = oracle_root();
     let source_contexts: Value =
-        serde_json::from_slice(&fs::read(root.join("enum-source-contexts.json")).unwrap())
-            .unwrap();
+        serde_json::from_slice(&fs::read(root.join("enum-source-contexts.json")).unwrap()).unwrap();
     assert_eq!(source_contexts["schemaVersion"], 1);
     let contexts = source_contexts["contexts"].as_array().unwrap();
     let source_facts = contexts
@@ -504,8 +505,7 @@ fn coordinated_crosswalk_and_coverage_context_drift_fails_against_source_and_has
     let code_series = &mut crosswalk["enumDomains"]["catalogCodeSeries"];
     code_series["nativeProperty"] = json!("NumberPeriodicity");
     code_series["objectKinds"] = json!(["document"]);
-    code_series["sourceFacts"] =
-        json!(["metaCompile:emit_document_properties:NumberPeriodicity"]);
+    code_series["sourceFacts"] = json!(["metaCompile:emit_document_properties:NumberPeriodicity"]);
 
     let mut coordinated_coverage = expanded_registry_enum_coverage(&coverage_manifest());
     let whole_catalog = coordinated_coverage
@@ -539,8 +539,7 @@ fn coordinated_crosswalk_and_coverage_context_drift_fails_against_source_and_has
 fn fix_round6_every_source_enum_context_is_consumed_once_and_fixture_observed() {
     let root = oracle_root();
     let source_contexts: Value =
-        serde_json::from_slice(&fs::read(root.join("enum-source-contexts.json")).unwrap())
-            .unwrap();
+        serde_json::from_slice(&fs::read(root.join("enum-source-contexts.json")).unwrap()).unwrap();
     let contexts = source_contexts["contexts"].as_array().unwrap();
     let crosswalk = legacy_crosswalk();
     let referenced = crosswalk["enumDomains"]
@@ -617,9 +616,8 @@ fn fix_round6_every_source_enum_context_is_consumed_once_and_fixture_observed() 
         .as_str()
         .expect("removed enum domain semantic property");
     let mut removed_coverage = expanded_registry_enum_coverage(&coverage_manifest());
-    removed_coverage.retain(|fact| {
-        fact["semanticProperty"].as_str() != Some(removed_semantic_property)
-    });
+    removed_coverage
+        .retain(|fact| fact["semanticProperty"].as_str() != Some(removed_semantic_property));
     assert!(
         extracted
             .iter()
@@ -656,12 +654,7 @@ fn multi_target_role_oracle_keeps_each_source_group_identity_and_restriction() {
         .as_object()
         .unwrap()
         .iter()
-        .map(|(prefix, kind)| {
-            (
-                kind.as_str().unwrap(),
-                format!("{prefix}Target"),
-            )
-        })
+        .map(|(prefix, kind)| (kind.as_str().unwrap(), format!("{prefix}Target")))
         .collect::<BTreeSet<_>>();
     assert_eq!(targets, expected);
     assert!(case.facts.iter().any(|fact| {
@@ -745,15 +738,13 @@ fn fix_round6_rights_target_crosswalk_equals_runtime_supported_top_level_registr
         case.facts
             .iter()
             .filter(|fact| {
-                fact["kind"] == "node"
-                    && fact["value"]["kind"] == "accessRestrictionTemplate"
+                fact["kind"] == "node" && fact["value"]["kind"] == "accessRestrictionTemplate"
             })
             .count(),
         expected_targets.len()
     );
     let projected = read_path(
-        &repo_root()
-            .join("crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights"),
+        &repo_root().join("crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights"),
         &repo_root().join(
             "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights/MultiTargetReader.xml",
         ),
@@ -770,14 +761,9 @@ fn fix_round6_rights_target_crosswalk_equals_runtime_supported_top_level_registr
 fn every_frozen_legacy_case_matches_the_corresponding_new_projection_exactly() {
     let oracle = oracle();
     assert_eq!(oracle.schema_version, 1);
-    assert_eq!(
-        oracle.provenance,
-        "legacy-tools-plus-independent-crosswalk"
-    );
-    let declared_inputs: Value = serde_json::from_slice(
-        &fs::read(oracle_root().join("inputs.json")).unwrap(),
-    )
-    .unwrap();
+    assert_eq!(oracle.provenance, "legacy-tools-plus-independent-crosswalk");
+    let declared_inputs: Value =
+        serde_json::from_slice(&fs::read(oracle_root().join("inputs.json")).unwrap()).unwrap();
     let declared_case_ids = declared_inputs["cases"]
         .as_array()
         .unwrap()
@@ -836,12 +822,15 @@ fn the_real_comparator_rejects_all_required_semantic_mutations() {
     let unknown_index = removed_unknown
         .iter()
         .position(|fact| {
-            fact["predicate"] == "field.type"
-                && canonical_json(&fact["value"]).contains("unknown")
+            fact["predicate"] == "field.type" && canonical_json(&fact["value"]).contains("unknown")
         })
         .expect("legacy unknown type fact");
     removed_unknown.remove(unknown_index);
-    assert_comparator_rejects(&unknown_case.facts, &removed_unknown, "removed unknown fact");
+    assert_comparator_rejects(
+        &unknown_case.facts,
+        &removed_unknown,
+        "removed unknown fact",
+    );
 
     let mut duplicate_node = unknown_actual.clone();
     duplicate_node.push(
@@ -885,7 +874,6 @@ fn the_real_comparator_rejects_all_required_semantic_mutations() {
         .unwrap();
     missing_relation.remove(relation_index);
     assert_comparator_rejects(&artifact_case.facts, &missing_relation, "missing relation");
-
 }
 
 #[test]
@@ -943,7 +931,11 @@ fn enum_values_are_projected_only_in_source_declared_property_and_owner_context(
             ),
         );
         let property = &node(&envelope, kind, "CrossContext").properties[&property_id];
-        assert_eq!(property.value_state(), PropertyValueState::Unresolved, "{label}");
+        assert_eq!(
+            property.value_state(),
+            PropertyValueState::Unresolved,
+            "{label}"
+        );
         assert_eq!(property.value(), None, "{label}");
         assert_eq!(envelope.status, NavigationStatus::Partial, "{label}");
     }
@@ -970,8 +962,7 @@ fn hierarchy_and_empty_reference_contracts_remain_adapter_only_and_truthful() {
         .expect("tracked EmptyRef must be present");
     assert_eq!(fill_value, &PropertyValue::EmptyReference);
     assert_eq!(
-        serde_json::from_str::<PropertyValue>(&serde_json::to_string(fill_value).unwrap())
-            .unwrap(),
+        serde_json::from_str::<PropertyValue>(&serde_json::to_string(fill_value).unwrap()).unwrap(),
         PropertyValue::EmptyReference
     );
     assert_ne!(fill_value, &PropertyValue::Null);
@@ -1001,7 +992,11 @@ fn hierarchy_and_empty_reference_contracts_remain_adapter_only_and_truthful() {
         SemanticPropertyId::CATALOG_HIERARCHY_LEVEL_LIMIT,
         PropertyValue::Integer(4),
     );
-    let disabled = node(&disabled, SemanticObjectKind::Catalog, "DisabledContradiction");
+    let disabled = node(
+        &disabled,
+        SemanticObjectKind::Catalog,
+        "DisabledContradiction",
+    );
     assert_value(
         disabled,
         SemanticPropertyId::CATALOG_HIERARCHICAL,
@@ -1098,7 +1093,10 @@ fn rights_mixed_content_remains_typed_where_known_and_opaque_where_unknown() {
         "direct-tail",
         "not-a-condition",
     ] {
-        assert!(output.contains(retained), "missing mixed-content evidence {retained}");
+        assert!(
+            output.contains(retained),
+            "missing mixed-content evidence {retained}"
+        );
     }
     assert!(!output.contains("futureRight"));
     assert!(!output.contains("futureCondition"));
@@ -1109,8 +1107,9 @@ fn complete_type_variants_and_distinct_unknown_ordinals_remain_structured() {
     let envelope = read_tracked("types/AllTypes.xml");
     assert_eq!(envelope.status, NavigationStatus::Available);
     let type_node = node(&envelope, SemanticObjectKind::DefinedType, "AllTypes");
-    let PropertyValue::TypeSet(types) =
-        type_node.properties[&SemanticPropertyId::DEFINED_TYPE].value().unwrap()
+    let PropertyValue::TypeSet(types) = type_node.properties[&SemanticPropertyId::DEFINED_TYPE]
+        .value()
+        .unwrap()
     else {
         panic!("defined type set")
     };
@@ -1128,7 +1127,10 @@ fn complete_type_variants_and_distinct_unknown_ordinals_remain_structured() {
         "enumeration",
         "definedType",
     ] {
-        assert!(serialized.contains(category), "missing type category {category}");
+        assert!(
+            serialized.contains(category),
+            "missing type category {category}"
+        );
     }
     for primitive in [
         PrimitiveTypeKind::String,
@@ -1217,10 +1219,8 @@ fn form_template_backing_and_adapter_only_status_facets_are_checked_separately()
 }
 
 fn oracle() -> LegacyOracle {
-    serde_json::from_slice(
-        &fs::read(oracle_root().join("legacy-semantic-oracle.json")).unwrap(),
-    )
-    .unwrap()
+    serde_json::from_slice(&fs::read(oracle_root().join("legacy-semantic-oracle.json")).unwrap())
+        .unwrap()
 }
 
 fn oracle_case<'a>(oracle: &'a LegacyOracle, id: &str) -> &'a LegacyCase {
@@ -1333,9 +1333,7 @@ fn first_json_difference(expected: &Value, actual: &Value, path: &str) -> Option
                 let next = format!("{path}.{key}");
                 match (expected.get(&key), actual.get(&key)) {
                     (Some(expected), Some(actual)) => {
-                        if let Some(difference) =
-                            first_json_difference(expected, actual, &next)
-                        {
+                        if let Some(difference) = first_json_difference(expected, actual, &next) {
                             return Some(difference);
                         }
                     }
@@ -1671,7 +1669,10 @@ fn add_root_properties(facts: &mut Vec<Value>, subject: &str, node: &NavigationN
                 SemanticPropertyId::MODULE_CLIENT_ORDINARY_APPLICATION,
                 SemanticPropertyId::MODULE_SERVER_CALL,
             ] {
-                if node.properties.get(&id).and_then(|property| property.value())
+                if node
+                    .properties
+                    .get(&id)
+                    .and_then(|property| property.value())
                     == Some(&PropertyValue::Boolean(true))
                 {
                     add_direct_property(facts, subject, node, id);
@@ -1679,8 +1680,18 @@ fn add_root_properties(facts: &mut Vec<Value>, subject: &str, node: &NavigationN
             }
         }
         SemanticObjectKind::InformationRegister => {
-            add_direct_property(facts, subject, node, SemanticPropertyId::REGISTER_PERIODICITY);
-            add_direct_property(facts, subject, node, SemanticPropertyId::REGISTER_WRITE_MODE);
+            add_direct_property(
+                facts,
+                subject,
+                node,
+                SemanticPropertyId::REGISTER_PERIODICITY,
+            );
+            add_direct_property(
+                facts,
+                subject,
+                node,
+                SemanticPropertyId::REGISTER_WRITE_MODE,
+            );
         }
         SemanticObjectKind::Report => add_direct_property(
             facts,
@@ -1721,9 +1732,15 @@ fn add_type_presentation(facts: &mut Vec<Value>, subject: &str, node: &Navigatio
         SemanticPropertyId::METADATA_SYNONYM,
     ]
     .into_iter()
-    .find_map(|id| node.properties.get(&id).and_then(|property| property.value()))
+    .find_map(|id| {
+        node.properties
+            .get(&id)
+            .and_then(|property| property.value())
+    })
     .map(legacy_value)
-    .unwrap_or_else(|| json!({"type": "localizedString", "value": {"ru": node.object_ref.display_name}}));
+    .unwrap_or_else(
+        || json!({"type": "localizedString", "value": {"ru": node.object_ref.display_name}}),
+    );
     facts.push(property_fact(subject, "presentation.type", value));
 }
 
@@ -1760,8 +1777,10 @@ fn add_legacy_subscription_property(
     node: &NavigationNode,
     id: SemanticPropertyId,
 ) {
-    let Some(PropertyValue::String(value)) =
-        node.properties.get(&id).and_then(|property| property.value())
+    let Some(PropertyValue::String(value)) = node
+        .properties
+        .get(&id)
+        .and_then(|property| property.value())
     else {
         return;
     };
@@ -1799,15 +1818,13 @@ fn add_distinct_synonym(facts: &mut Vec<Value>, subject: &str, node: &Navigation
     else {
         return;
     };
-    if values.values().all(|value| value == &node.object_ref.display_name) {
+    if values
+        .values()
+        .all(|value| value == &node.object_ref.display_name)
+    {
         return;
     }
-    add_direct_property(
-        facts,
-        subject,
-        node,
-        SemanticPropertyId::METADATA_SYNONYM,
-    );
+    add_direct_property(facts, subject, node, SemanticPropertyId::METADATA_SYNONYM);
 }
 
 fn add_child_properties(
@@ -1849,7 +1866,8 @@ fn add_child_properties(
             {
                 add_direct_property(facts, subject, node, SemanticPropertyId::FIELD_MULTI_LINE);
             }
-            if node.object_ref.kind == SemanticObjectKind::Dimension && profile == "meta-drilldown" {
+            if node.object_ref.kind == SemanticObjectKind::Dimension && profile == "meta-drilldown"
+            {
                 add_direct_property(facts, subject, node, SemanticPropertyId::FIELD_MASTER);
                 add_direct_property(facts, subject, node, SemanticPropertyId::FIELD_MAIN_FILTER);
             } else if node
@@ -1874,7 +1892,11 @@ fn add_direct_property(
     node: &NavigationNode,
     id: SemanticPropertyId,
 ) {
-    let Some(value) = node.properties.get(&id).and_then(|property| property.value()) else {
+    let Some(value) = node
+        .properties
+        .get(&id)
+        .and_then(|property| property.value())
+    else {
         return;
     };
     facts.push(property_fact(subject, id.as_str(), legacy_value(value)));
@@ -1970,8 +1992,7 @@ fn legacy_role_facts(case: &LegacyCase, envelope: &NavigationEnvelope) -> Vec<Va
             PropertyValue::String(value) => value.clone(),
             value => panic!("permission name is not a string: {value:?}"),
         };
-        let allowed = permission.properties[&SemanticPropertyId::ACCESS_PERMISSION_ALLOWED]
-            .value()
+        let allowed = permission.properties[&SemanticPropertyId::ACCESS_PERMISSION_ALLOWED].value()
             == Some(&PropertyValue::Boolean(true));
         if allowed {
             allowed_count += 1;
@@ -1982,8 +2003,7 @@ fn legacy_role_facts(case: &LegacyCase, envelope: &NavigationEnvelope) -> Vec<Va
             .relation_index
             .iter()
             .find(|relation| {
-                relation.source == permission.object_ref
-                    && relation.role.as_str() == "accessTarget"
+                relation.source == permission.object_ref && relation.role.as_str() == "accessTarget"
             })
             .expect("permission target");
         let target_kind = legacy_kind(target.target.kind).to_string();
@@ -1996,10 +2016,7 @@ fn legacy_role_facts(case: &LegacyCase, envelope: &NavigationEnvelope) -> Vec<Va
             "{}/accessPermission/{}:{}:{}#{}",
             case.id, target_kind, target_name, name, count
         );
-        let target_identity = format!(
-            "{}/external/{}/{}",
-            case.id, target_kind, target_name
-        );
+        let target_identity = format!("{}/external/{}/{}", case.id, target_kind, target_name);
         facts.push(node_fact(&subject, "accessPermission", &name));
         facts.push(property_fact(
             &subject,
@@ -2131,7 +2148,10 @@ fn read_real_rights() -> NavigationEnvelope {
 
 fn read_tracked(relative: &str) -> NavigationEnvelope {
     let target = tracked_root().join(relative);
-    let source_root = target.parent().expect("tracked fixture parent").to_path_buf();
+    let source_root = target
+        .parent()
+        .expect("tracked fixture parent")
+        .to_path_buf();
     read_path(&source_root, &target)
 }
 
@@ -2309,12 +2329,10 @@ fn fix_round5_static_new_only_contract_is_exact_and_mutation_sensitive() {
         let envelope = read_path(&source_root, &input);
         let expected = case["facts"].as_array().expect("contract facts");
         let actual = adapter_only_contract_facts(id, &envelope);
-        validate_contract_public_schema(schema, &actual).unwrap_or_else(|error| {
-            panic!("adapter-only public schema drifted for {id}: {error}")
-        });
-        compare_fact_multisets(expected, &actual).unwrap_or_else(|diff| {
-            panic!("adapter-only exact contract drifted for {id}:\n{diff}")
-        });
+        validate_contract_public_schema(schema, &actual)
+            .unwrap_or_else(|error| panic!("adapter-only public schema drifted for {id}: {error}"));
+        compare_fact_multisets(expected, &actual)
+            .unwrap_or_else(|diff| panic!("adapter-only exact contract drifted for {id}:\n{diff}"));
         all_expected.extend(expected.iter().cloned());
         all_actual.extend(actual);
     }
@@ -2323,15 +2341,12 @@ fn fix_round5_static_new_only_contract_is_exact_and_mutation_sensitive() {
         .iter()
         .position(|fact| {
             fact["kind"] == "envelope"
-                && fact["value"]["nodes"]
-                    .as_array()
-                    .is_some_and(|nodes| nodes.iter().any(|node| {
-                        !node["properties"].as_object().unwrap().is_empty()
-                    }))
-                && !fact["value"]["diagnostics"]
-                    .as_array()
-                    .unwrap()
-                    .is_empty()
+                && fact["value"]["nodes"].as_array().is_some_and(|nodes| {
+                    nodes
+                        .iter()
+                        .any(|node| !node["properties"].as_object().unwrap().is_empty())
+                })
+                && !fact["value"]["diagnostics"].as_array().unwrap().is_empty()
         })
         .expect("contract envelope with properties and diagnostics");
     let relation_index = all_actual
@@ -2443,10 +2458,9 @@ fn fix_round5_static_new_only_contract_is_exact_and_mutation_sensitive() {
 
 #[test]
 fn fix_round6_adapter_only_normalizer_covers_complete_public_schema() {
-    let contract: Value = serde_json::from_slice(
-        &fs::read(oracle_root().join("new-only-contract.json")).unwrap(),
-    )
-    .unwrap();
+    let contract: Value =
+        serde_json::from_slice(&fs::read(oracle_root().join("new-only-contract.json")).unwrap())
+            .unwrap();
     assert_eq!(contract["schemaVersion"], 2);
     let schema = contract["publicSchema"]
         .as_object()
@@ -2463,7 +2477,10 @@ fn fix_round6_adapter_only_normalizer_covers_complete_public_schema() {
         "SourceSnapshot",
         "SourceAdapterDiagnostic",
     ] {
-        assert!(schema.contains_key(required), "missing schema guard {required}");
+        assert!(
+            schema.contains_key(required),
+            "missing schema guard {required}"
+        );
     }
 
     let case = contract["cases"].as_array().unwrap().first().unwrap();
@@ -2494,7 +2511,12 @@ fn fix_round6_adapter_only_normalizer_covers_complete_public_schema() {
         .iter()
         .find(|node| !node["properties"].as_object().unwrap().is_empty())
         .expect("contract node with semantic properties");
-    let property = node["properties"].as_object().unwrap().values().next().unwrap();
+    let property = node["properties"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap();
     assert!(property.get("provenance").is_some());
     assert!(property.get("capability").is_some());
     let capability = node["capability"].as_object().unwrap();
@@ -2568,10 +2590,9 @@ fn fix_round6_support_states_are_lossless_and_removed_is_inactive() {
 
 #[test]
 fn fix_round7_template_type_never_rewrites_the_legacy_template_owner() {
-    let contexts: Value = serde_json::from_slice(
-        &fs::read(oracle_root().join("enum-source-contexts.json")).unwrap(),
-    )
-    .unwrap();
+    let contexts: Value =
+        serde_json::from_slice(&fs::read(oracle_root().join("enum-source-contexts.json")).unwrap())
+            .unwrap();
     let context = contexts["contexts"]
         .as_array()
         .unwrap()
@@ -2600,9 +2621,8 @@ fn fix_round7_template_type_never_rewrites_the_legacy_template_owner() {
         .trim_start_matches('\u{feff}')
         .starts_with("=== Template: EnumContextSpreadsheetDocument ==="));
 
-    let spreadsheet = read_tracked(
-        "legacy-oracle/enum-context-inputs/EnumContextSpreadsheetDocument.xml",
-    );
+    let spreadsheet =
+        read_tracked("legacy-oracle/enum-context-inputs/EnumContextSpreadsheetDocument.xml");
     let template = node(
         &spreadsheet,
         SemanticObjectKind::Template,
@@ -2613,9 +2633,10 @@ fn fix_round7_template_type_never_rewrites_the_legacy_template_owner() {
         SemanticPropertyId::TEMPLATE_TYPE,
         PropertyValue::EnumSymbol(SemanticEnumValue::SPREADSHEET_DOCUMENT),
     );
-    assert!(!spreadsheet.nodes.iter().any(|node| {
-        node.object_ref.kind == SemanticObjectKind::SpreadsheetDocumentTemplate
-    }));
+    assert!(!spreadsheet
+        .nodes
+        .iter()
+        .any(|node| { node.object_ref.kind == SemanticObjectKind::SpreadsheetDocumentTemplate }));
 
     let binary = read_inline(
         "generic-template-binary",
@@ -2647,7 +2668,10 @@ fn fix_round7_full_public_contract_specimen_covers_every_nested_shape() {
         "SemanticActionDescriptor",
         "OperationBinding",
     ] {
-        assert!(schema.contains_key(nested), "missing nested schema {nested}");
+        assert!(
+            schema.contains_key(nested),
+            "missing nested schema {nested}"
+        );
     }
     let facts = specimen["facts"].as_array().unwrap();
     let actual = full_public_contract_specimen_facts();
@@ -2696,7 +2720,14 @@ fn fix_round7_full_public_contract_specimen_covers_every_nested_shape() {
         &["nodes", "0", "semanticActions", "0", "executionPolicy"][..],
         &["nodes", "0", "actions", "0", "blockingReasons", "0"][..],
         &["nodes", "0", "actions", "1", "operationBinding", "tool"][..],
-        &["nodes", "0", "actions", "1", "operationBinding", "schemaVersion"][..],
+        &[
+            "nodes",
+            "0",
+            "actions",
+            "1",
+            "operationBinding",
+            "schemaVersion",
+        ][..],
     ] {
         let mut changed = actual.clone();
         mutate_json_path(
@@ -2720,8 +2751,8 @@ fn fix_round7_full_public_contract_specimen_covers_every_nested_shape() {
     assert!(validate_contract_public_schema(schema, &missing_descriptor_field).is_err());
 
     let mut extra_binding_field = actual.clone();
-    extra_binding_field[envelope_index]["value"]["nodes"][0]["actions"][1]
-        ["operationBinding"]["futureField"] = json!("must-fail");
+    extra_binding_field[envelope_index]["value"]["nodes"][0]["actions"][1]["operationBinding"]
+        ["futureField"] = json!("must-fail");
     assert!(validate_contract_public_schema(schema, &extra_binding_field).is_err());
 
     for field in ["relation", "items"] {
@@ -2879,8 +2910,7 @@ fn fix_round8_public_contract_variant_oracle_is_exhaustive() {
         );
 
         let mut wrong_payload = actual.clone();
-        wrong_payload[family_index]["value"]["wire"] =
-            json!({"unexpectedPayload": family});
+        wrong_payload[family_index]["value"]["wire"] = json!({"unexpectedPayload": family});
         assert_public_wire_pipeline_rejects(
             &expected,
             wrong_payload,
@@ -3050,10 +3080,7 @@ fn fix_round9_public_navigation_request_and_response_wire_is_complete() {
     assert_static_round_trip::<Option<StrictObjectRefWire>>(families, "envelopeRootOption");
     assert_static_round_trip::<StrictDiagnosticWire>(families, "diagnosticDetailsOption");
     assert_static_round_trip::<StrictRelationPageWire>(families, "relationPageCursorOption");
-    assert_static_round_trip::<Option<StrictObjectRefWire>>(
-        families,
-        "semanticActionTargetOption",
-    );
+    assert_static_round_trip::<Option<StrictObjectRefWire>>(families, "semanticActionTargetOption");
     assert_static_round_trip::<Option<StrictRelationRefWire>>(
         families,
         "semanticActionOwningRelationOption",
@@ -3062,16 +3089,12 @@ fn fix_round9_public_navigation_request_and_response_wire_is_complete() {
         families,
         "semanticActionOperationBindingOption",
     );
-    assert_static_round_trip::<StrictSemanticPropertyWire>(
-        families,
-        "semanticPropertyValueOption",
-    );
+    assert_static_round_trip::<StrictSemanticPropertyWire>(families, "semanticPropertyValueOption");
     assert_static_round_trip::<TypeVariant>(families, "typeVariantQualifiersOption");
     assert_static_round_trip::<StringQualifiers>(families, "stringQualifierOptionShape");
     assert_static_round_trip::<NumberQualifiers>(families, "numberQualifierOptionShape");
     for entry in families["navigationQuery"].as_array().unwrap() {
-        let query: StrictNavigationQueryWire =
-            serde_json::from_value(entry[1].clone()).unwrap();
+        let query: StrictNavigationQueryWire = serde_json::from_value(entry[1].clone()).unwrap();
         query.validate();
     }
 
@@ -3083,9 +3106,7 @@ fn fix_round9_public_navigation_request_and_response_wire_is_complete() {
     assert!(serde_json::from_value::<StrictNavigationQueryWire>(unknown_target).is_err());
     let mut extra_envelope_field = families["navigationEnvelope"][0][1].clone();
     extra_envelope_field["futureField"] = json!(true);
-    assert!(
-        serde_json::from_value::<StrictNavigationEnvelopeWire>(extra_envelope_field).is_err()
-    );
+    assert!(serde_json::from_value::<StrictNavigationEnvelopeWire>(extra_envelope_field).is_err());
 }
 
 #[test]
@@ -3113,7 +3134,9 @@ fn fix_round7_every_source_enum_alias_is_executed_by_legacy_and_adapter() {
     compare_fact_multisets(&expected, &actual)
         .unwrap_or_else(|diff| panic!("enum alias execution inventory drifted:\n{diff}"));
     assert!(rows.iter().all(|row| {
-        row["inputXml"].as_str().is_some_and(|value| !value.is_empty())
+        row["inputXml"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
             && row["rawLegacyOutput"]
                 .as_str()
                 .is_some_and(|value| !value.is_empty())
@@ -3127,17 +3150,12 @@ fn fix_round7_every_source_enum_alias_is_executed_by_legacy_and_adapter() {
             row["inputFileName"].as_str().unwrap(),
             row["inputXml"].as_str().unwrap(),
         );
-        let owner_kind =
-            SemanticObjectKind::parse(row["objectKind"].as_str().unwrap()).unwrap();
+        let owner_kind = SemanticObjectKind::parse(row["objectKind"].as_str().unwrap()).unwrap();
         let owner = node(&envelope, owner_kind, row["ownerName"].as_str().unwrap());
         let property =
             SemanticPropertyId::parse(row["semanticProperty"].as_str().unwrap()).unwrap();
         let semantic = SemanticEnumValue::parse(row["semantic"].as_str().unwrap()).unwrap();
-        assert_value(
-            owner,
-            property,
-            PropertyValue::EnumSymbol(semantic),
-        );
+        assert_value(owner, property, PropertyValue::EnumSymbol(semantic));
     }
 }
 
@@ -3167,9 +3185,7 @@ fn fix_round7_multitarget_executes_every_supported_rights_prefix() {
     assert_eq!(
         case.facts
             .iter()
-            .filter(|fact| {
-                fact["kind"] == "relation" && fact["predicate"] == "accessTarget"
-            })
+            .filter(|fact| { fact["kind"] == "relation" && fact["predicate"] == "accessTarget" })
             .count(),
         45
     );
@@ -3236,9 +3252,11 @@ fn fix_round7_adapter_intentionally_exposes_no_projected_pages_or_bindings() {
         .nodes
         .iter()
         .all(|node| node.semantic_actions.is_empty()));
-    assert!(envelope.nodes.iter().flat_map(|node| &node.actions).all(|action| {
-        action.operation_binding.is_none()
-    }));
+    assert!(envelope
+        .nodes
+        .iter()
+        .flat_map(|node| &node.actions)
+        .all(|action| { action.operation_binding.is_none() }));
 
     let target = tracked_root().join("contract/ContractCatalog.xml");
     let source_root = target.parent().unwrap();
@@ -3263,13 +3281,11 @@ fn fix_round7_adapter_intentionally_exposes_no_projected_pages_or_bindings() {
                 select: NavigationSelection {
                     properties: PropertySelection::All,
                     facets: FacetSelection::Full,
-                    relations: vec![
-                        RelationSelection::new(
-                            SemanticRelationId::ATTRIBUTES,
-                            Some(1),
-                        )
-                        .unwrap(),
-                    ],
+                    relations: vec![RelationSelection::new(
+                        SemanticRelationId::ATTRIBUTES,
+                        Some(1),
+                    )
+                    .unwrap()],
                 },
             },
         })
@@ -3351,10 +3367,7 @@ fn validate_contract_public_schema(
         validate_keys(schema, "CapabilityVector", value)
     }
 
-    fn validate_node(
-        schema: &serde_json::Map<String, Value>,
-        node: &Value,
-    ) -> Result<(), String> {
+    fn validate_node(schema: &serde_json::Map<String, Value>, node: &Value) -> Result<(), String> {
         validate_keys(schema, "NavigationNode", node)?;
         validate_object_ref(schema, &node["objectRef"])?;
         validate_object_ref(schema, &node["reference"])?;
@@ -3403,13 +3416,9 @@ fn validate_contract_public_schema(
                         validate_node(schema, item)?;
                     }
                     if let Some(cursor) = page.get("nextCursor") {
-                        if !cursor
-                            .as_str()
-                            .is_some_and(|value| !value.is_empty())
-                        {
+                        if !cursor.as_str().is_some_and(|value| !value.is_empty()) {
                             return Err(
-                                "NavigationRelationPage nextCursor is not opaque text"
-                                    .to_string(),
+                                "NavigationRelationPage nextCursor is not opaque text".to_string()
                             );
                         }
                     }
@@ -3706,10 +3715,7 @@ fn full_public_contract_specimen_facts() -> Vec<Value> {
             source_access: SourceAccess::ReadOnly,
             authorability: Authorability::DerivedReadOnly,
         },
-        facets: SemanticFacets::for_available(
-            child_properties.keys().copied(),
-            std::iter::empty(),
-        ),
+        facets: SemanticFacets::for_available(child_properties.keys().copied(), std::iter::empty()),
         properties: child_properties,
         action_profile: ActionProfile::UnmodeledChild,
         semantic_actions: vec![SemanticActionDescriptor {
@@ -3806,7 +3812,10 @@ fn adapter_only_contract_facts(case_id: &str, envelope: &NavigationEnvelope) -> 
             .to_string();
         relation_ids.insert(
             relation.relation_ref.relation_key.as_str().to_string(),
-            format!("relation:{source}:{}:{target}:{kind}", relation.role.as_str()),
+            format!(
+                "relation:{source}:{}:{target}:{kind}",
+                relation.role.as_str()
+            ),
         );
         group_ids.insert(
             relation.group_ref.group_key.as_str().to_string(),
@@ -3931,11 +3940,9 @@ fn normalize_contract_value(
 fn contract_identities(envelope: &NavigationEnvelope) -> BTreeMap<String, String> {
     let mut identities = BTreeMap::new();
     let mut counts = BTreeMap::<(String, String, &'static str), usize>::new();
-    let mut register = |
-        object_ref: &ObjectRef,
-        category: &'static str,
-        identities: &mut BTreeMap<String, String>,
-    | {
+    let mut register = |object_ref: &ObjectRef,
+                        category: &'static str,
+                        identities: &mut BTreeMap<String, String>| {
         let native_key = object_ref.object_key.as_str().to_string();
         if identities.contains_key(&native_key) {
             return;
@@ -3991,10 +3998,8 @@ fn static_variant_facts(families: &serde_json::Map<String, Value>) -> Vec<Value>
     facts
 }
 
-fn assert_static_round_trip<T>(
-    families: &serde_json::Map<String, Value>,
-    family: &str,
-) where
+fn assert_static_round_trip<T>(families: &serde_json::Map<String, Value>, family: &str)
+where
     T: DeserializeOwned + Serialize,
 {
     for entry in families[family].as_array().unwrap() {
@@ -4026,12 +4031,7 @@ fn variant_fact(family: &str, variant: &str, wire: Value) -> Value {
     })
 }
 
-fn push_variant<T: Serialize>(
-    facts: &mut Vec<Value>,
-    family: &str,
-    variant: &str,
-    value: &T,
-) {
+fn push_variant<T: Serialize>(facts: &mut Vec<Value>, family: &str, variant: &str, value: &T) {
     facts.push(variant_fact(
         family,
         variant,
@@ -4597,25 +4597,16 @@ fn type_qualifier_specimens() -> Vec<(&'static str, TypeQualifiers)> {
         ),
         (
             "numberDigitsOnly",
-            TypeQualifiers::Number(
-                NumberQualifiers::new(Some(8), None, None).unwrap(),
-            ),
+            TypeQualifiers::Number(NumberQualifiers::new(Some(8), None, None).unwrap()),
         ),
         (
             "numberDigitsFraction",
-            TypeQualifiers::Number(
-                NumberQualifiers::new(Some(8), Some(2), None).unwrap(),
-            ),
+            TypeQualifiers::Number(NumberQualifiers::new(Some(8), Some(2), None).unwrap()),
         ),
         (
             "numberDigitsAndSign",
             TypeQualifiers::Number(
-                NumberQualifiers::new(
-                    Some(8),
-                    None,
-                    Some(NumberSign::Nonnegative),
-                )
-                .unwrap(),
+                NumberQualifiers::new(Some(8), None, Some(NumberSign::Nonnegative)).unwrap(),
             ),
         ),
         (
@@ -4627,12 +4618,7 @@ fn type_qualifier_specimens() -> Vec<(&'static str, TypeQualifiers)> {
         (
             "numberNonnegative",
             TypeQualifiers::Number(
-                NumberQualifiers::new(
-                    Some(15),
-                    Some(3),
-                    Some(NumberSign::Nonnegative),
-                )
-                .unwrap(),
+                NumberQualifiers::new(Some(15), Some(3), Some(NumberSign::Nonnegative)).unwrap(),
             ),
         ),
         (
@@ -4730,12 +4716,8 @@ fn type_variant_specimens() -> Vec<(&'static str, TypeVariant)> {
             TypeVariant::primitive(
                 PrimitiveTypeKind::Number,
                 Some(TypeQualifiers::Number(
-                    NumberQualifiers::new(
-                        Some(15),
-                        Some(3),
-                        Some(NumberSign::Nonnegative),
-                    )
-                    .unwrap(),
+                    NumberQualifiers::new(Some(15), Some(3), Some(NumberSign::Nonnegative))
+                        .unwrap(),
                 )),
             )
             .unwrap(),
@@ -4780,8 +4762,7 @@ fn type_variant_specimens() -> Vec<(&'static str, TypeVariant)> {
         ),
         (
             "recordSet",
-            TypeVariant::record_set(SemanticObjectKind::InformationRegister, "Prices")
-                .unwrap(),
+            TypeVariant::record_set(SemanticObjectKind::InformationRegister, "Prices").unwrap(),
         ),
         (
             "manager",
@@ -4791,10 +4772,7 @@ fn type_variant_specimens() -> Vec<(&'static str, TypeVariant)> {
             "key",
             TypeVariant::key(SemanticObjectKind::AccumulationRegister, "Balances").unwrap(),
         ),
-        (
-            "enumeration",
-            TypeVariant::enumeration("Status").unwrap(),
-        ),
+        ("enumeration", TypeVariant::enumeration("Status").unwrap()),
         (
             "definedType",
             TypeVariant::defined_type("Identifier").unwrap(),
@@ -5055,11 +5033,7 @@ fn push_relation_page_shape_variants(facts: &mut Vec<Value>) {
         next_cursor: Some(cursor),
     };
     let wire = serde_json::to_value(with_cursor).unwrap();
-    facts.push(variant_fact(
-        "relationPageOptionShape",
-        "withCursor",
-        wire,
-    ));
+    facts.push(variant_fact("relationPageOptionShape", "withCursor", wire));
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -5363,7 +5337,10 @@ fn public_navigation_targets() -> Vec<(&'static str, NavigationTarget)> {
                 snapshot_revision: SourceRevision::new("revision:public-variants").unwrap(),
             },
         ),
-        ("cursor", NavigationTarget::Cursor(public_navigation_cursor())),
+        (
+            "cursor",
+            NavigationTarget::Cursor(public_navigation_cursor()),
+        ),
     ]
 }
 
@@ -5461,11 +5438,7 @@ fn push_navigation_request_variants(facts: &mut Vec<Value>) {
     }
 
     let cursor_wire = serde_json::to_value(public_navigation_cursor()).unwrap();
-    facts.push(variant_fact(
-        "navigationCursor",
-        "opaque",
-        cursor_wire,
-    ));
+    facts.push(variant_fact("navigationCursor", "opaque", cursor_wire));
 }
 
 fn navigation_envelope_specimens() -> Vec<(&'static str, NavigationEnvelope)> {
@@ -5502,13 +5475,11 @@ fn navigation_envelope_specimens() -> Vec<(&'static str, NavigationEnvelope)> {
                 root: Some(variant_object_ref(IdentityStrength::SnapshotOnly)),
                 nodes: Vec::new(),
                 relations: Vec::new(),
-                diagnostics: vec![
-                    unica_format_core::navigation::SourceAdapterDiagnostic {
-                        code: "partialCoverage".to_string(),
-                        message: "public navigation coverage is partial".to_string(),
-                        details: Some(json!({"coverage": "partial"})),
-                    },
-                ],
+                diagnostics: vec![unica_format_core::navigation::SourceAdapterDiagnostic {
+                    code: "partialCoverage".to_string(),
+                    message: "public navigation coverage is partial".to_string(),
+                    details: Some(json!({"coverage": "partial"})),
+                }],
                 relation_index: std::sync::Arc::new(Vec::new()),
             },
         ),
@@ -5521,13 +5492,11 @@ fn navigation_envelope_specimens() -> Vec<(&'static str, NavigationEnvelope)> {
                 root: None,
                 nodes: Vec::new(),
                 relations: Vec::new(),
-                diagnostics: vec![
-                    unica_format_core::navigation::SourceAdapterDiagnostic {
-                        code: "sourceUnavailable".to_string(),
-                        message: "public navigation is unavailable".to_string(),
-                        details: None,
-                    },
-                ],
+                diagnostics: vec![unica_format_core::navigation::SourceAdapterDiagnostic {
+                    code: "sourceUnavailable".to_string(),
+                    message: "public navigation is unavailable".to_string(),
+                    details: None,
+                }],
                 relation_index: std::sync::Arc::new(Vec::new()),
             },
         ),
@@ -5551,18 +5520,8 @@ fn push_navigation_response_variants(facts: &mut Vec<Value>) {
         "none",
         &envelopes[2].1.snapshot,
     );
-    push_variant(
-        facts,
-        "envelopeRootOption",
-        "some",
-        &envelopes[0].1.root,
-    );
-    push_variant(
-        facts,
-        "envelopeRootOption",
-        "none",
-        &envelopes[2].1.root,
-    );
+    push_variant(facts, "envelopeRootOption", "some", &envelopes[0].1.root);
+    push_variant(facts, "envelopeRootOption", "none", &envelopes[2].1.root);
 
     let diagnostics = [
         (
@@ -5591,12 +5550,7 @@ fn push_navigation_response_variants(facts: &mut Vec<Value>) {
         items: Vec::new(),
         next_cursor: None,
     };
-    push_variant(
-        facts,
-        "relationPageCursorOption",
-        "none",
-        &without_cursor,
-    );
+    push_variant(facts, "relationPageCursorOption", "none", &without_cursor);
     let with_cursor = NavigationRelationPage {
         relation: variant_relation_group(),
         items: Vec::new(),
@@ -5618,16 +5572,8 @@ fn push_navigation_response_variants(facts: &mut Vec<Value>) {
     ] {
         push_variant(facts, "semanticActionTargetOption", variant, &value);
     }
-    for (variant, value) in [
-        ("none", None),
-        ("some", Some(variant_relation_ref())),
-    ] {
-        push_variant(
-            facts,
-            "semanticActionOwningRelationOption",
-            variant,
-            &value,
-        );
+    for (variant, value) in [("none", None), ("some", Some(variant_relation_ref()))] {
+        push_variant(facts, "semanticActionOwningRelationOption", variant, &value);
     }
     for (variant, value) in [
         ("none", None),
@@ -5653,18 +5599,8 @@ fn push_navigation_response_variants(facts: &mut Vec<Value>) {
         PropertyValue::String("VariantObject".to_string()),
     )
     .unwrap();
-    push_variant(
-        facts,
-        "semanticPropertyValueOption",
-        "none",
-        &absent,
-    );
-    push_variant(
-        facts,
-        "semanticPropertyValueOption",
-        "some",
-        &explicit,
-    );
+    push_variant(facts, "semanticPropertyValueOption", "none", &absent);
+    push_variant(facts, "semanticPropertyValueOption", "some", &explicit);
 
     let no_qualifiers = TypeVariant::primitive(PrimitiveTypeKind::String, None).unwrap();
     let with_qualifiers = TypeVariant::primitive(
@@ -5674,12 +5610,7 @@ fn push_navigation_response_variants(facts: &mut Vec<Value>) {
         )),
     )
     .unwrap();
-    push_variant(
-        facts,
-        "typeVariantQualifiersOption",
-        "none",
-        &no_qualifiers,
-    );
+    push_variant(facts, "typeVariantQualifiersOption", "none", &no_qualifiers);
     push_variant(
         facts,
         "typeVariantQualifiersOption",
@@ -5688,10 +5619,7 @@ fn push_navigation_response_variants(facts: &mut Vec<Value>) {
     );
 
     for (variant, value) in [
-        (
-            "lengthOnly",
-            StringQualifiers::new(Some(8), None).unwrap(),
-        ),
+        ("lengthOnly", StringQualifiers::new(Some(8), None).unwrap()),
         (
             "lengthAndAllowed",
             StringQualifiers::new(Some(8), Some(StringLength::Variable)).unwrap(),
@@ -5714,21 +5642,11 @@ fn push_navigation_response_variants(facts: &mut Vec<Value>) {
         ),
         (
             "digitsAndSign",
-            NumberQualifiers::new(
-                Some(8),
-                None,
-                Some(NumberSign::Nonnegative),
-            )
-            .unwrap(),
+            NumberQualifiers::new(Some(8), None, Some(NumberSign::Nonnegative)).unwrap(),
         ),
         (
             "all",
-            NumberQualifiers::new(
-                Some(15),
-                Some(3),
-                Some(NumberSign::Nonnegative),
-            )
-            .unwrap(),
+            NumberQualifiers::new(Some(15), Some(3), Some(NumberSign::Nonnegative)).unwrap(),
         ),
     ] {
         push_variant(facts, "numberQualifierOptionShape", variant, &value);

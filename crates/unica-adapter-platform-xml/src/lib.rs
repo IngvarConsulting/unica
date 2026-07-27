@@ -41,6 +41,7 @@ mod artifact_access;
 mod factory;
 mod guards;
 mod owner;
+mod platform_handle;
 mod publication;
 mod safe_root;
 mod validation;

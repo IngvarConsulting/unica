@@ -1043,13 +1043,8 @@ mod tests {
         kind: RelationKind,
         index: usize,
     ) -> SemanticRelation {
-        let group_ref = RelationGroupRef::new(
-            source_id.clone(),
-            source.clone(),
-            role,
-            kind,
-        )
-        .unwrap();
+        let group_ref =
+            RelationGroupRef::new(source_id.clone(), source.clone(), role, kind).unwrap();
         let kind_label = match kind {
             RelationKind::Contains => "contains",
             RelationKind::References => "references",
@@ -1133,10 +1128,11 @@ mod tests {
         NavigationSelection {
             properties: PropertySelection::All,
             facets,
-            relations: vec![
-                unica_format_core::navigation::RelationSelection::new(role, Some(page_size))
-                    .unwrap(),
-            ],
+            relations: vec![unica_format_core::navigation::RelationSelection::new(
+                role,
+                Some(page_size),
+            )
+            .unwrap()],
         }
     }
 
@@ -1215,11 +1211,8 @@ mod tests {
                 };
                 let target = ObjectRef::new(
                     source_id.clone(),
-                    ObjectKey::new(format!(
-                        "derived:task6:{}:{item_index}",
-                        role.as_str()
-                    ))
-                    .unwrap(),
+                    ObjectKey::new(format!("derived:task6:{}:{item_index}", role.as_str()))
+                        .unwrap(),
                     IdentityStrength::Derived,
                     NodeKind::Catalog,
                     name.clone(),
@@ -1244,14 +1237,8 @@ mod tests {
                 } else {
                     RelationKind::Contains
                 };
-                let mut edge = relation_with_kind(
-                    &source_id,
-                    &owner,
-                    &target,
-                    role,
-                    kind,
-                    relation_index,
-                );
+                let mut edge =
+                    relation_with_kind(&source_id, &owner, &target, role, kind, relation_index);
                 edge.capability = target_node.capability.clone();
                 relations.push(edge);
                 nodes.push(target_node);
@@ -1750,8 +1737,7 @@ mod tests {
         let mut authenticated_cursor = None;
 
         for role in roles {
-            let owner_key =
-                ObjectKey::new(format!("uuid:owner-{}", role.as_str())).unwrap();
+            let owner_key = ObjectKey::new(format!("uuid:owner-{}", role.as_str())).unwrap();
             let first = harness.inspect(object_selection_command(
                 &bootstrap,
                 owner_key,

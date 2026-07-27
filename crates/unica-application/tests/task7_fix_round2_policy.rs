@@ -7,7 +7,7 @@ use unica_format_core::{
     ports::{
         AuthorabilityPort, AuthorabilityRequest, AuthorabilityRequirement, AuthorabilityResult,
         FormatDiagnostic, FormatDiagnosticCode, FormatDiagnosticDetail,
-        OperationalSourceSession, SupportState, SupportSummary,
+        OperationalEvidenceRevision, OperationalSourceSession, SupportState, SupportSummary,
     },
     source::SourceAdapterError,
 };
@@ -30,6 +30,7 @@ impl AuthorabilityPort for AlternateDeniedPort {
                 FormatDiagnosticDetail::Support(SupportState::Unreadable),
             )
             .unwrap(),
+            OperationalEvidenceRevision::from_digest([3; 32]),
         )
         .map_err(|error| {
             SourceAdapterError::new(

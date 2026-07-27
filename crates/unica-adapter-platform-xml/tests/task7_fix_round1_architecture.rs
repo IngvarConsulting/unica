@@ -84,8 +84,7 @@ fn task7_native_registry_and_queries_are_adapter_private() {
 #[test]
 fn task7_host_has_no_moved_support_or_validation_readers() {
     let support_guard = include_str!("../../unica-coder/src/infrastructure/support_guard.rs");
-    let common =
-        include_str!("../../unica-coder/src/infrastructure/native_operations/common.rs");
+    let common = include_str!("../../unica-coder/src/infrastructure/native_operations/common.rs");
     let meta = include_str!("../../unica-coder/src/infrastructure/native_operations/meta.rs");
     let native_operations =
         include_str!("../../unica-coder/src/infrastructure/native_operations.rs");
@@ -154,12 +153,15 @@ fn task7_moved_policy_flows_have_no_native_layout_or_direct_reads() {
             .unwrap_or(source)
     }
 
-    let support_guard =
-        production(include_str!("../../unica-coder/src/infrastructure/support_guard.rs"));
-    let project_sources =
-        production(include_str!("../../unica-coder/src/infrastructure/project_sources.rs"));
-    let project_source_domain =
-        production(include_str!("../../unica-coder/src/domain/project_sources.rs"));
+    let support_guard = production(include_str!(
+        "../../unica-coder/src/infrastructure/support_guard.rs"
+    ));
+    let project_sources = production(include_str!(
+        "../../unica-coder/src/infrastructure/project_sources.rs"
+    ));
+    let project_source_domain = production(include_str!(
+        "../../unica-coder/src/domain/project_sources.rs"
+    ));
     for (name, source) in [
         ("support guard", support_guard),
         ("project source discovery", project_sources),
@@ -181,8 +183,9 @@ fn task7_moved_policy_flows_have_no_native_layout_or_direct_reads() {
         }
     }
 
-    let format_guard =
-        production(include_str!("../../unica-coder/src/infrastructure/format_guard.rs"));
+    let format_guard = production(include_str!(
+        "../../unica-coder/src/infrastructure/format_guard.rs"
+    ));
     for (name, source) in [
         ("format guard", format_guard),
         ("support guard", support_guard),

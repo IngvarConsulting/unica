@@ -30,10 +30,10 @@ use std::time::Duration;
 use unica_format_core::{
     ports::{
         FormatDiagnostic, FormatDiagnosticCode, FormatDiagnosticDetail,
-        OperationCancellation as CancellationToken, OperationalSourceSession,
-        PublicationArtifact, PublicationCancellation, PublicationChange, PublicationCleanup,
-        PublicationFailureKind, PublicationIssueKind, PublicationLifecycle, PublicationPort,
-        PublicationRecovery, PublicationRequest, PublicationResult, PublicationRollback,
+        OperationCancellation as CancellationToken, OperationalSourceSession, PublicationArtifact,
+        PublicationCancellation, PublicationChange, PublicationCleanup, PublicationFailureKind,
+        PublicationIssueKind, PublicationLifecycle, PublicationPort, PublicationRecovery,
+        PublicationRequest, PublicationResult, PublicationRollback,
     },
     redaction::redactor,
     source::{
@@ -138,11 +138,7 @@ impl AdapterOutcome {
                 vec![PublicationChange::FullSourceReplaced],
                 vec![PublicationArtifact::PublishedSource],
             ),
-            PublicationLifecycle::DryRun => (
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-            ),
+            PublicationLifecycle::DryRun => (Vec::new(), Vec::new(), Vec::new()),
             PublicationLifecycle::Cancelled(_) => (
                 vec![FormatDiagnostic::new(
                     FormatDiagnosticCode::PublicationCancelled,
@@ -199,13 +195,8 @@ impl AdapterOutcome {
                 )
             }
         };
-        PublicationResult::new(
-            lifecycle,
-            diagnostics,
-            changes,
-            artifacts,
-        )
-        .expect("adapter publication lifecycle is validated")
+        PublicationResult::new(lifecycle, diagnostics, changes, artifacts)
+            .expect("adapter publication lifecycle is validated")
     }
 }
 
@@ -289,22 +280,16 @@ where
             &command.cancellation,
         )
         .map(
-            |(
-                status_success,
-                status,
-                stdout,
-                stderr,
-                timed_out,
-                cancelled,
-                stdout_truncated,
-            )| ProcessOutput {
-                status_success,
-                status,
-                stdout,
-                stderr,
-                timed_out,
-                cancelled,
-                stdout_truncated,
+            |(status_success, status, stdout, stderr, timed_out, cancelled, stdout_truncated)| {
+                ProcessOutput {
+                    status_success,
+                    status,
+                    stdout,
+                    stderr,
+                    timed_out,
+                    cancelled,
+                    stdout_truncated,
+                }
             },
         )
     }
@@ -360,10 +345,7 @@ where
         + Send
         + Sync
         + 'static,
-    S: Fn(&Path, &str, bool) -> Result<(PathBuf, Vec<String>), String>
-        + Send
-        + Sync
-        + 'static,
+    S: Fn(&Path, &str, bool) -> Result<(PathBuf, Vec<String>), String> + Send + Sync + 'static,
     L: Fn(
             &[PathBuf],
             &mut dyn FnMut() -> Result<Vec<String>, String>,
@@ -479,17 +461,15 @@ fn file_identity(file: &File) -> std::io::Result<FileIdentity> {
 
 #[cfg(windows)]
 fn hard_link_count(file: &File) -> std::io::Result<u64> {
-    use std::os::windows::fs::MetadataExt;
-    Ok(u64::from(file.metadata()?.number_of_links()))
+    Ok(crate::platform_handle::query(file)?.links)
 }
 
 #[cfg(windows)]
 fn file_identity(file: &File) -> std::io::Result<FileIdentity> {
-    use std::os::windows::fs::MetadataExt;
-    let metadata = file.metadata()?;
+    let identity = crate::platform_handle::query(file)?;
     Ok(FileIdentity {
-        volume: metadata.volume_serial_number().unwrap_or_default(),
-        file: metadata.file_index().unwrap_or_default(),
+        volume: identity.volume,
+        file: identity.file,
     })
 }
 
@@ -4919,13 +4899,10 @@ fn finalize_private_outcome(
     outcome.lifecycle = match base {
         PublicationLifecycle::Published => PublicationLifecycle::published(),
         PublicationLifecycle::DryRun => PublicationLifecycle::dry_run(),
-        PublicationLifecycle::Cancelled(_) => PublicationLifecycle::cancelled(
-            cancellation,
-            rollback,
-            cleanup,
-            recovery,
-        )
-        .expect("final cancellation lifecycle is valid"),
+        PublicationLifecycle::Cancelled(_) => {
+            PublicationLifecycle::cancelled(cancellation, rollback, cleanup, recovery)
+                .expect("final cancellation lifecycle is valid")
+        }
         PublicationLifecycle::Failed(_) => PublicationLifecycle::failed(
             base.failure_kind()
                 .expect("failed lifecycle carries a failure kind"),
@@ -4939,13 +4916,9 @@ fn finalize_private_outcome(
     if private.cancellation != PublicationCancellation::NotRequested
         && recovery == PublicationRecovery::NotRequired
     {
-        outcome.lifecycle = PublicationLifecycle::cancelled(
-            cancellation,
-            rollback,
-            cleanup,
-            recovery,
-        )
-        .expect("final cancellation lifecycle is valid");
+        outcome.lifecycle =
+            PublicationLifecycle::cancelled(cancellation, rollback, cleanup, recovery)
+                .expect("final cancellation lifecycle is valid");
     }
     outcome
 }
@@ -5767,8 +5740,8 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use unica_format_core::ports::{
-        PublicationCancellation, PublicationCleanup, PublicationFailureKind,
-        PublicationLifecycle, PublicationRecovery, PublicationRollback,
+        PublicationCancellation, PublicationCleanup, PublicationFailureKind, PublicationLifecycle,
+        PublicationRecovery, PublicationRollback,
     };
 
     struct TestSystemProcessRunner;
@@ -5805,9 +5778,7 @@ mod tests {
 
     static TEST_SYSTEM_PROCESS_RUNNER: TestSystemProcessRunner = TestSystemProcessRunner;
 
-    fn lifecycle_outcome(
-        lifecycle: PublicationLifecycle,
-    ) -> AdapterOutcome {
+    fn lifecycle_outcome(lifecycle: PublicationLifecycle) -> AdapterOutcome {
         AdapterOutcome {
             lifecycle,
             summary: "/private/source/Configuration.xml MetaDataObject 2.20".to_string(),
@@ -5858,10 +5829,7 @@ mod tests {
             recovery_required.cleanup(),
             PublicationCleanup::RetainedForRecovery
         );
-        assert_eq!(
-            recovery_required.recovery(),
-            PublicationRecovery::Required
-        );
+        assert_eq!(recovery_required.recovery(), PublicationRecovery::Required);
 
         let public = format!("{during_publication:?}{recovery_required:?}");
         for forbidden in [
@@ -6940,10 +6908,7 @@ mod tests {
             result.lifecycle.cancellation(),
             PublicationCancellation::BeforePublication
         );
-        assert_eq!(
-            result.lifecycle.rollback(),
-            PublicationRollback::NotNeeded
-        );
+        assert_eq!(result.lifecycle.rollback(), PublicationRollback::NotNeeded);
         assert_eq!(
             result.lifecycle.recovery(),
             PublicationRecovery::NotRequired
@@ -7020,10 +6985,7 @@ mod tests {
 
             assert!(!result.is_ok(), "{case}: {result:?}");
             assert_eq!(result.lifecycle.rollback(), PublicationRollback::Failed);
-            assert_eq!(
-                result.lifecycle.recovery(),
-                PublicationRecovery::Required
-            );
+            assert_eq!(result.lifecycle.recovery(), PublicationRecovery::Required);
             assert_eq!(
                 result.lifecycle.cleanup(),
                 PublicationCleanup::RetainedForRecovery

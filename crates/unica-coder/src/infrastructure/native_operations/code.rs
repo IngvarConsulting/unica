@@ -3,6 +3,9 @@ use crate::domain::project_sources::{SourceFormat, SourceSetKind};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::path_policy::WorkspacePathPolicy;
 use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
+use crate::infrastructure::platform_xml_owner::{
+    task8_metadata_kind_by_directory, task8_metadata_kind_tag,
+};
 use crate::infrastructure::project_sources::discover_project_source_map;
 use crate::infrastructure::source_roots::{normalize_path_identity, resolve_source_root};
 use bsl_syntax::ast::{AstNode, FunctionDef, ProcedureDef};
@@ -12,9 +15,6 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use crate::infrastructure::platform_xml_owner::{
-    task8_metadata_kind_by_directory, task8_metadata_kind_tag,
-};
 
 use super::common::guard_active_format_owner;
 use super::compile_transaction::CompileTransaction;
@@ -533,8 +533,8 @@ fn module_identity(relative: &Path) -> Result<ModuleIdentity, String> {
         }),
         [directory, name, "Ext", file] => {
             let role = direct_module_role(file).ok_or_else(unsupported_module_layout)?;
-            let kind =
-                task8_metadata_kind_by_directory(directory).ok_or_else(unsupported_module_layout)?;
+            let kind = task8_metadata_kind_by_directory(directory)
+                .ok_or_else(unsupported_module_layout)?;
             let tag = task8_metadata_kind_tag(kind).ok_or_else(unsupported_module_layout)?;
             if !direct_role_is_supported(tag, role) {
                 return Err(unsupported_module_layout());
@@ -581,8 +581,7 @@ fn metadata_module_identity(
     name: &str,
     role: ModuleRole,
 ) -> Result<ModuleIdentity, String> {
-    let kind =
-        task8_metadata_kind_by_directory(directory).ok_or_else(unsupported_module_layout)?;
+    let kind = task8_metadata_kind_by_directory(directory).ok_or_else(unsupported_module_layout)?;
     let tag = task8_metadata_kind_tag(kind).ok_or_else(unsupported_module_layout)?;
     Ok(ModuleIdentity {
         owner: format!("{tag}.{name}"),
@@ -598,8 +597,7 @@ fn nested_module_identity(
     nested_name: &str,
     role: ModuleRole,
 ) -> Result<ModuleIdentity, String> {
-    let kind =
-        task8_metadata_kind_by_directory(directory).ok_or_else(unsupported_module_layout)?;
+    let kind = task8_metadata_kind_by_directory(directory).ok_or_else(unsupported_module_layout)?;
     let tag = task8_metadata_kind_tag(kind).ok_or_else(unsupported_module_layout)?;
     if !nested_modules_are_supported(tag) {
         return Err(unsupported_module_layout());

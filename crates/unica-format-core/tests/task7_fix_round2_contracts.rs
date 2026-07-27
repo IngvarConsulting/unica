@@ -3,22 +3,26 @@ use unica_format_core::{
     navigation::Authorability,
     ports::{
         AuthorabilityResult, CompatibilityIssueKind, FormatDiagnostic, FormatDiagnosticCode,
-        FormatDiagnosticDetail, ObjectKindProjection, ObjectKindRegistryPort,
-        ObjectKindSelector, PublicationCancellation, PublicationCleanup, PublicationFailureKind,
-        PublicationArtifact, PublicationChange, PublicationIssueKind, PublicationLifecycle,
-        PublicationRecovery, PublicationResult, PublicationRollback, SemanticArtifactLease,
-        SemanticArtifactPort, SemanticArtifactReadRequest, SemanticArtifactReadResult,
-        SemanticArtifactRole, SupportState, SupportSummary, ValidationFinding,
-        ValidationFindingCode, ValidationFindingSeverity, ValidationIssueKind,
+        FormatDiagnosticDetail, ObjectKindProjection, ObjectKindRegistryPort, ObjectKindSelector,
+        OperationalEvidenceRevision, PublicationArtifact, PublicationCancellation,
+        PublicationChange, PublicationCleanup, PublicationFailureKind, PublicationIssueKind,
+        PublicationLifecycle, PublicationRecovery, PublicationResult, PublicationRollback,
+        SemanticArtifactLease, SemanticArtifactPort, SemanticArtifactReadRequest,
+        SemanticArtifactReadResult, SemanticArtifactRole, SupportState, SupportSummary,
+        ValidationFinding, ValidationFindingCode, ValidationFindingSeverity, ValidationIssueKind,
     },
     semantic_ids::SemanticObjectKind,
     source::SourceAdapterError,
 };
 
+fn evidence() -> OperationalEvidenceRevision {
+    OperationalEvidenceRevision::from_digest([7; 32])
+}
+
 #[test]
 fn authorability_is_a_closed_allowed_or_denied_decision() {
     let writable = SupportSummary::new(SupportState::Absent, None, 0, [0; 3]).unwrap();
-    let allowed = AuthorabilityResult::allowed(writable).unwrap();
+    let allowed = AuthorabilityResult::allowed(writable, evidence()).unwrap();
     assert!(allowed.is_allowed());
 
     let unreadable = SupportSummary::new(SupportState::Unreadable, None, 0, [0; 3]).unwrap();
@@ -31,6 +35,7 @@ fn authorability_is_a_closed_allowed_or_denied_decision() {
         Authorability::UnknownSupportState,
         unreadable,
         denial,
+        evidence(),
     )
     .unwrap();
     assert!(!denied.is_allowed());
@@ -39,8 +44,7 @@ fn authorability_is_a_closed_allowed_or_denied_decision() {
         FormatDiagnosticCode::SupportStateUnreadable
     );
 
-    let editable = SupportSummary::new(SupportState::Editable, Some(true), 1, [1, 0, 0])
-        .unwrap();
+    let editable = SupportSummary::new(SupportState::Editable, Some(true), 1, [1, 0, 0]).unwrap();
     let removal_required = AuthorabilityResult::denied(
         Authorability::Authorable,
         editable,
@@ -49,6 +53,7 @@ fn authorability_is_a_closed_allowed_or_denied_decision() {
             FormatDiagnosticDetail::Support(SupportState::Editable),
         )
         .unwrap(),
+        evidence(),
     )
     .unwrap();
     assert!(!removal_required.is_allowed());
@@ -65,7 +70,8 @@ fn malicious_authorability_wire_states_are_rejected() {
                 "editingEnabled": null,
                 "vendorCount": 0,
                 "ruleCounts": [0, 0, 0]
-            }
+            },
+            "evidenceRevision": "0707070707070707070707070707070707070707070707070707070707070707"
         }),
         json!({
             "decision": "denied",
@@ -79,7 +85,8 @@ fn malicious_authorability_wire_states_are_rejected() {
             "diagnostic": {
                 "code": "supportStateUnreadable",
                 "detail": {"support": "unreadable"}
-            }
+            },
+            "evidenceRevision": "0707070707070707070707070707070707070707070707070707070707070707"
         }),
         json!({
             "decision": "allowed",
@@ -89,7 +96,8 @@ fn malicious_authorability_wire_states_are_rejected() {
                 "editingEnabled": true,
                 "vendorCount": 9,
                 "ruleCounts": [1, 2, 3]
-            }
+            },
+            "evidenceRevision": "0707070707070707070707070707070707070707070707070707070707070707"
         }),
     ] {
         assert!(
@@ -271,8 +279,7 @@ struct AlternateKindRegistry;
 
 impl ObjectKindRegistryPort for AlternateKindRegistry {
     fn resolve(&self, selector: &ObjectKindSelector) -> Option<SemanticObjectKind> {
-        matches!(selector.as_str(), "Widget" | "Widgets")
-            .then_some(SemanticObjectKind::Catalog)
+        matches!(selector.as_str(), "Widget" | "Widgets").then_some(SemanticObjectKind::Catalog)
     }
 
     fn ordered_kinds(&self) -> Vec<SemanticObjectKind> {
@@ -286,8 +293,7 @@ impl ObjectKindRegistryPort for AlternateKindRegistry {
 
     fn project(&self, lease: &SemanticArtifactLease) -> Option<&'static ObjectKindProjection> {
         lease.adapter_state::<AlternateKindLease>()?;
-        static PROJECTION: std::sync::OnceLock<ObjectKindProjection> =
-            std::sync::OnceLock::new();
+        static PROJECTION: std::sync::OnceLock<ObjectKindProjection> = std::sync::OnceLock::new();
         Some(PROJECTION.get_or_init(|| {
             ObjectKindProjection::new(
                 SemanticObjectKind::Catalog,

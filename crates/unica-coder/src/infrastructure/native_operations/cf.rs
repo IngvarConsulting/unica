@@ -4,6 +4,11 @@ use crate::application::AdapterOutcome;
 use crate::domain::format_profile::{FormatCompatibility, ACTIVE_FORMAT_PROFILE};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform_xml_owner::inspect_platform_xml_compatibility;
+use crate::infrastructure::platform_xml_owner::{
+    task8_metadata_kind, task8_metadata_kind_by_directory, task8_metadata_kind_directory,
+    task8_metadata_kind_display_name_ru, task8_metadata_kind_index, task8_metadata_kind_tag,
+    task8_metadata_kind_tags,
+};
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -11,11 +16,6 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use crate::infrastructure::platform_xml_owner::{
-    task8_metadata_kind, task8_metadata_kind_by_directory, task8_metadata_kind_directory,
-    task8_metadata_kind_display_name_ru, task8_metadata_kind_index, task8_metadata_kind_tag,
-    task8_metadata_kind_tags,
-};
 
 use super::common::*;
 use super::compile_transaction::CompileTransaction;
@@ -3562,9 +3562,8 @@ pub(crate) fn cf_edit_add_child_object_text(
     type_name: &str,
     object_name: &str,
 ) -> Result<bool, String> {
-    let new_type_index =
-        task8_metadata_kind_index(type_name)
-            .ok_or_else(|| format!("Unknown type '{type_name}'"))?;
+    let new_type_index = task8_metadata_kind_index(type_name)
+        .ok_or_else(|| format!("Unknown type '{type_name}'"))?;
     let ((child_start, child_end, body_range), entries) = cf_edit_root_child_objects(text)?;
     let line_ending = cf_edit_line_ending(text);
     if entries

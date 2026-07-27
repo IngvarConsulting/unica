@@ -7,7 +7,10 @@ use std::{
 
 use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
 use unica_format_core::{
-    navigation::{FacetSelection, NavigationEnvelope, NavigationQuery, NavigationSelection, NavigationStatus, NavigationTarget, PropertySelection},
+    navigation::{
+        FacetSelection, NavigationEnvelope, NavigationQuery, NavigationSelection, NavigationStatus,
+        NavigationTarget, PropertySelection,
+    },
     ports::{CaptureResult, FormatReadRequest},
     semantic_ids::{SemanticObjectKind, SemanticPropertyId, SemanticRelationId},
     source::{SourceContext, SourceFamily, SourceLocation},
@@ -20,16 +23,29 @@ static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 fn unknown_native_root_is_readable_unknown_and_partial() {
     let envelope = read_tracked("unknown_root/Mystery.xml");
     assert_eq!(envelope.status, NavigationStatus::Partial);
-    let root = envelope.nodes.iter().find(|node| node.object_ref.kind == SemanticObjectKind::Unknown && node.object_ref.display_name == "Mystery").expect("unknown root node");
-    assert!(root.properties.contains_key(&SemanticPropertyId::UNKNOWN_FACTS));
+    let root = envelope
+        .nodes
+        .iter()
+        .find(|node| {
+            node.object_ref.kind == SemanticObjectKind::Unknown
+                && node.object_ref.display_name == "Mystery"
+        })
+        .expect("unknown root node");
+    assert!(root
+        .properties
+        .contains_key(&SemanticPropertyId::UNKNOWN_FACTS));
     assert_neutral(&envelope);
 }
 
 #[test]
 fn unknown_child_is_retained_through_the_neutral_relation() {
     let envelope = read_tracked("unknowns/UnknownCases.xml");
-    assert!(envelope.relation_index.iter().any(|relation| relation.role == SemanticRelationId::UNKNOWN
-        && relation.target.kind == SemanticObjectKind::Unknown && relation.target.display_name == "NestedUnknown"));
+    assert!(envelope
+        .relation_index
+        .iter()
+        .any(|relation| relation.role == SemanticRelationId::UNKNOWN
+            && relation.target.kind == SemanticObjectKind::Unknown
+            && relation.target.display_name == "NestedUnknown"));
     assert_neutral(&envelope);
 }
 
@@ -52,8 +68,7 @@ fn unknown_children_under_no_vocabulary_owners_preserve_occurrence_and_position(
     ];
     let manifest: serde_json::Value = serde_json::from_slice(
         &fs::read(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("src/versions/v2_20/coverage.json"),
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/versions/v2_20/coverage.json"),
         )
         .unwrap(),
     )
@@ -62,9 +77,7 @@ fn unknown_children_under_no_vocabulary_owners_preserve_occurrence_and_position(
         .as_array()
         .unwrap()
         .iter()
-        .filter(|profile| {
-            profile["source"] == "native" && profile["childVocabulary"] == "none"
-        })
+        .filter(|profile| profile["source"] == "native" && profile["childVocabulary"] == "none")
         .map(|profile| profile["nativeClass"].as_str().unwrap())
         .collect::<BTreeSet<_>>();
     assert_eq!(
@@ -132,8 +145,15 @@ fn unknown_children_under_no_vocabulary_owners_preserve_occurrence_and_position(
                     && node.object_ref.display_name == "Repeated"
             })
             .collect::<Vec<_>>();
-        assert_eq!(unknown.len(), 2, "{owner_name} must retain both occurrences");
-        assert_ne!(unknown[0].object_ref.object_key, unknown[1].object_ref.object_key);
+        assert_eq!(
+            unknown.len(),
+            2,
+            "{owner_name} must retain both occurrences"
+        );
+        assert_ne!(
+            unknown[0].object_ref.object_key,
+            unknown[1].object_ref.object_key
+        );
         let ordinals = unknown
             .iter()
             .map(|node| {
@@ -145,9 +165,17 @@ fn unknown_children_under_no_vocabulary_owners_preserve_occurrence_and_position(
                 json
             })
             .collect::<BTreeSet<_>>();
-        assert_eq!(ordinals.len(), 2, "neutral occurrence evidence must distinguish duplicates");
-        assert!(ordinals.iter().any(|value| value.contains("first-readable-value")));
-        assert!(ordinals.iter().any(|value| value.contains("second-readable-value")));
+        assert_eq!(
+            ordinals.len(),
+            2,
+            "neutral occurrence evidence must distinguish duplicates"
+        );
+        assert!(ordinals
+            .iter()
+            .any(|value| value.contains("first-readable-value")));
+        assert!(ordinals
+            .iter()
+            .any(|value| value.contains("second-readable-value")));
         assert_neutral(&envelope);
     }
 }
@@ -155,8 +183,14 @@ fn unknown_children_under_no_vocabulary_owners_preserve_occurrence_and_position(
 #[test]
 fn unknown_property_keeps_its_readable_value_without_native_label() {
     let envelope = read_tracked("unknowns/UnknownCases.xml");
-    let document = envelope.nodes.iter().find(|node| node.object_ref.kind == SemanticObjectKind::Document).unwrap();
-    let value = document.properties[&SemanticPropertyId::UNKNOWN_FACTS].value().expect("unknown facts");
+    let document = envelope
+        .nodes
+        .iter()
+        .find(|node| node.object_ref.kind == SemanticObjectKind::Document)
+        .unwrap();
+    let value = document.properties[&SemanticPropertyId::UNKNOWN_FACTS]
+        .value()
+        .expect("unknown facts");
     let text = serde_json::to_string(value).unwrap();
     assert!(text.contains("property-readable-value"));
     assert!(!text.contains("NativeOnlyFact"));
@@ -165,17 +199,35 @@ fn unknown_property_keeps_its_readable_value_without_native_label() {
 #[test]
 fn unknown_relation_target_is_retained_as_unknown_reference() {
     let envelope = read_tracked("unknowns/UnknownCases.xml");
-    assert!(envelope.relation_index.iter().any(|relation| relation.role == SemanticRelationId::BASED_ON
+    assert!(envelope.relation_index.iter().any(|relation| relation.role
+        == SemanticRelationId::BASED_ON
         && relation.kind == unica_format_core::navigation::RelationKind::References
-        && relation.target.kind == SemanticObjectKind::Unknown && relation.target.display_name == "Target"));
+        && relation.target.kind == SemanticObjectKind::Unknown
+        && relation.target.display_name == "Target"));
+    assert!(
+        envelope
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code != "referenceTargetUnresolved"),
+        "opaque unknown references must not add a second missing-known-target diagnostic"
+    );
 }
 
 #[test]
 fn unknown_type_variant_remains_in_the_type_set_and_marks_partial() {
     let envelope = read_tracked("unknowns/UnknownCases.xml");
     assert_eq!(envelope.status, NavigationStatus::Partial);
-    let attribute = envelope.nodes.iter().find(|node| node.object_ref.display_name == "MysteryType").unwrap();
-    let PropertyValue::TypeSet(types) = attribute.properties[&SemanticPropertyId::FIELD_TYPE].value().expect("readable type set") else { panic!("type set"); };
+    let attribute = envelope
+        .nodes
+        .iter()
+        .find(|node| node.object_ref.display_name == "MysteryType")
+        .unwrap();
+    let PropertyValue::TypeSet(types) = attribute.properties[&SemanticPropertyId::FIELD_TYPE]
+        .value()
+        .expect("readable type set")
+    else {
+        panic!("type set");
+    };
     let json = serde_json::to_string(types).unwrap();
     assert_eq!(json.matches("\"kind\":\"unknown\"").count(), 2);
     assert!(json.contains("\"ordinal\":1"));
@@ -220,16 +272,37 @@ fn unknown_design_time_reference_retains_neutral_readable_evidence() {
 fn unknown_backing_file_is_explicit_opaque_fact_not_silent_success() {
     let envelope = read_tracked("unknowns/UnknownCases.xml");
     assert_eq!(envelope.status, NavigationStatus::Partial);
-    let document = envelope.nodes.iter().find(|node| node.object_ref.kind == SemanticObjectKind::Document).unwrap();
-    let text = serde_json::to_string(document.properties[&SemanticPropertyId::UNKNOWN_FACTS].value().unwrap()).unwrap();
+    let document = envelope
+        .nodes
+        .iter()
+        .find(|node| node.object_ref.kind == SemanticObjectKind::Document)
+        .unwrap();
+    let text = serde_json::to_string(
+        document.properties[&SemanticPropertyId::UNKNOWN_FACTS]
+            .value()
+            .unwrap(),
+    )
+    .unwrap();
     assert!(text.contains("backing"));
     assert!(!text.contains("Future.bin"));
 }
 
 fn assert_neutral(envelope: &NavigationEnvelope) {
     let diagnostics = serde_json::to_string(&envelope.diagnostics).unwrap();
-    for forbidden in ["FutureObject", "FutureChild", "FutureReference", "FutureRecord", "NativeOnlyFact", "Future.bin", "MetaDataObject", "http://"] {
-        assert!(!diagnostics.contains(forbidden), "diagnostic leaked native vocabulary: {forbidden}");
+    for forbidden in [
+        "FutureObject",
+        "FutureChild",
+        "FutureReference",
+        "FutureRecord",
+        "NativeOnlyFact",
+        "Future.bin",
+        "MetaDataObject",
+        "http://",
+    ] {
+        assert!(
+            !diagnostics.contains(forbidden),
+            "diagnostic leaked native vocabulary: {forbidden}"
+        );
     }
 }
 
@@ -239,10 +312,36 @@ fn read_tracked(relative: &str) -> NavigationEnvelope {
 }
 
 fn read_path(source_root: &Path, target: &Path) -> NavigationEnvelope {
-    let source = SourceContext::new(SourceLocation::new(repo_root(), source_root.to_path_buf(), target.to_path_buf()), Some("main".to_string()), SourceFamily::PlatformXml, None);
+    let source = SourceContext::new(
+        SourceLocation::new(repo_root(), source_root.to_path_buf(), target.to_path_buf()),
+        Some("main".to_string()),
+        SourceFamily::PlatformXml,
+        None,
+    );
     let registration = PlatformXmlAdapterFactory::new().registration();
-    let CaptureResult::Captured(captured) = registration.capture.capture(&source).expect("unknown readable XML must probe") else { panic!("fixture must be captured"); };
-    registration.read.read(&FormatReadRequest { captured: captured.clone(), query: NavigationQuery { target: NavigationTarget::CapturedTarget(captured.binding().target_identity.clone()), select: NavigationSelection { properties: PropertySelection::All, facets: FacetSelection::Full, relations: Vec::new() } } }).expect("unknown readable XML must project")
+    let CaptureResult::Captured(captured) = registration
+        .capture
+        .capture(&source)
+        .expect("unknown readable XML must probe")
+    else {
+        panic!("fixture must be captured");
+    };
+    registration
+        .read
+        .read(&FormatReadRequest {
+            captured: captured.clone(),
+            query: NavigationQuery {
+                target: NavigationTarget::CapturedTarget(
+                    captured.binding().target_identity.clone(),
+                ),
+                select: NavigationSelection {
+                    properties: PropertySelection::All,
+                    facets: FacetSelection::Full,
+                    relations: Vec::new(),
+                },
+            },
+        })
+        .expect("unknown readable XML must project")
 }
 
 fn read_inline(label: &str, file_name: &str, xml: &str) -> NavigationEnvelope {
@@ -259,7 +358,10 @@ fn read_inline(label: &str, file_name: &str, xml: &str) -> NavigationEnvelope {
     envelope
 }
 
-fn node_by_name<'a>(envelope: &'a NavigationEnvelope, name: &str) -> &'a unica_format_core::navigation::NavigationNode {
+fn node_by_name<'a>(
+    envelope: &'a NavigationEnvelope,
+    name: &str,
+) -> &'a unica_format_core::navigation::NavigationNode {
     envelope
         .nodes
         .iter()
@@ -267,5 +369,12 @@ fn node_by_name<'a>(envelope: &'a NavigationEnvelope, name: &str) -> &'a unica_f
         .unwrap_or_else(|| panic!("missing node {name}"))
 }
 
-fn tracked_root() -> PathBuf { PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v2_20") }
-fn repo_root() -> PathBuf { PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap() }
+fn tracked_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v2_20")
+}
+fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap()
+}
