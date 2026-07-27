@@ -508,12 +508,17 @@
     {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/generate_oracle.py",
       "role": "oracleGenerator",
-      "sha256": "4958b7e80982435ae77b4a106e142637adee536186a34c03f0c78ffa0236d066"
+      "sha256": "d1cb43cf16a33370d640d392a1589a68d60d2cb76c0d6786e2a8ada1e4c1909d"
     },
     {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/inputs.json",
       "role": "oracleInputs",
       "sha256": "5cf726fceaa63f8bbff1af2fe7b361314b56154708c5f46f184c31bab0c8f6c0"
+    },
+    {
+      "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/public-contract-variant-specimen.json",
+      "role": "publicContractVariantSpecimen",
+      "sha256": "512b107672d00e9b753986520bcdf629b11574916534ada8222dbb07ab77efe2"
     },
     {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/AccountingRegister.txt",

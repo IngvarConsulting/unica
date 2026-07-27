@@ -10,21 +10,22 @@ use std::{
     },
 };
 
-use serde::Deserialize;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
 use unica_format_core::{
+    facets::SemanticFacetMember,
     navigation::{
         ActionAvailability, ActionExecutionPolicy, ActionProfile, Atomicity, Authorability,
         CapabilityBlockReason, CapabilityState, CapabilityVector, CoverageState, FacetSelection,
         FormatCompatibility, IdentityStrength, NavigationCursor, NavigationEnvelope,
         NavigationFacetVisibility, NavigationNode, NavigationQuery, NavigationRelationPage,
         NavigationSelection, NavigationStatus, NavigationTarget, ObjectKey, ObjectRef,
-        OperationBinding, PropertyCapability, PropertySelection, PropertyValueState,
-        RelationGroupRef, RelationKey, RelationKind, RelationRef, RelationSelection,
-        ResolutionState, SemanticAction, SemanticActionDescriptor, SemanticActionKind,
-        SemanticFacets, SemanticProperty, SemanticRelation,
+        OperationBinding, PropertyCapability, PropertyProvenance, PropertySelection,
+        PropertyValueState, RelationGroupRef, RelationKey, RelationKind, RelationRef,
+        RelationSelection, ResolutionState, SemanticAction, SemanticActionDescriptor,
+        SemanticActionKind, SemanticFacets, SemanticProperty, SemanticRelation,
     },
     ports::{CaptureResult, FormatReadRequest},
     semantic_ids::{
@@ -34,7 +35,11 @@ use unica_format_core::{
         SnapshotConsistency, SourceAccess, SourceAdapterErrorKind, SourceContext, SourceFamily,
         SourceId, SourceLocation, SourceRevision, SourceSnapshot,
     },
-    value::{PrimitiveTypeKind, PropertyType, PropertyValue},
+    value::{
+        DateFractions, DateQualifiers, NumberQualifiers, NumberSign, PrimitiveTypeKind,
+        PropertyType, PropertyValue, StringLength, StringQualifiers, TypeQualifiers, TypeSetValue,
+        TypeVariant,
+    },
 };
 
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
@@ -117,6 +122,7 @@ fn legacy_oracle_regenerates_and_hashes_every_declared_source_without_adapter_de
         "enumSourceExtractor",
         "enumAliasExecutions",
         "fullPublicContractSpecimen",
+        "publicContractVariantSpecimen",
         "newOnlyContractBuilder",
         "newOnlyContractSource",
         "enumSourceContexts",
@@ -2611,6 +2617,119 @@ fn fix_round7_full_public_contract_specimen_covers_every_nested_shape() {
 }
 
 #[test]
+fn fix_round8_public_contract_variant_oracle_is_exhaustive() {
+    let specimen: Value = serde_json::from_slice(
+        &fs::read(oracle_root().join("public-contract-variant-specimen.json"))
+            .expect("independent public-contract variant specimen"),
+    )
+    .unwrap();
+    assert_eq!(specimen["schemaVersion"], 1);
+    assert_eq!(
+        specimen["provenance"],
+        "independently-hand-authored-closed-public-variant-contract"
+    );
+    let families = specimen["families"].as_object().unwrap();
+    let required_families = [
+        "semanticObjectKind",
+        "identityStrength",
+        "objectRefIdentity",
+        "resolutionState",
+        "authorability",
+        "formatCompatibility",
+        "coverageState",
+        "snapshotConsistency",
+        "sourceAccess",
+        "capabilityBlockReason",
+        "capabilityState",
+        "capabilityVector",
+        "relationKind",
+        "actionAvailability",
+        "atomicity",
+        "semanticActionKind",
+        "actionExecutionPolicy",
+        "actionProfile",
+        "navigationFacetVisibility",
+        "navigationStatus",
+        "propertyValueState",
+        "propertyProvenance",
+        "propertyCapability",
+        "propertyType",
+        "primitiveTypeKind",
+        "stringLength",
+        "numberSign",
+        "dateFractions",
+        "typeQualifiers",
+        "typeVariant",
+        "semanticFacetMember",
+        "propertyValue",
+        "operationBindingOption",
+        "semanticActionOptionShape",
+        "relationPageOptionShape",
+    ];
+    assert_eq!(
+        families.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+        required_families.into_iter().collect(),
+        "the static oracle must inventory every reachable closed variant family exactly"
+    );
+
+    let expected = static_variant_facts(families);
+    let actual = public_contract_variant_facts();
+    compare_fact_multisets(&expected, &actual)
+        .unwrap_or_else(|diff| panic!("public variant contract drifted:\n{diff}"));
+
+    for family in families.keys() {
+        let family_index = actual
+            .iter()
+            .position(|fact| fact["kind"] == *family)
+            .unwrap_or_else(|| panic!("typed inventory omitted family {family}"));
+
+        let mut missing = actual.clone();
+        missing.remove(family_index);
+        assert_comparator_rejects(
+            &expected,
+            &missing,
+            &format!("missing {family} variant"),
+        );
+
+        let mut extra = actual.clone();
+        let mut extra_fact = extra[family_index].clone();
+        extra_fact["value"]["variant"] = json!("futureVariant");
+        extra.push(extra_fact);
+        assert_comparator_rejects(&expected, &extra, &format!("extra {family} variant"));
+
+        let mut wrong_variant = actual.clone();
+        wrong_variant[family_index]["value"]["variant"] = json!("wrongVariant");
+        assert_comparator_rejects(
+            &expected,
+            &wrong_variant,
+            &format!("wrong {family} variant"),
+        );
+
+        let mut wrong_payload = actual.clone();
+        wrong_payload[family_index]["value"]["wire"] =
+            json!({"unexpectedPayload": family});
+        assert_comparator_rejects(
+            &expected,
+            &wrong_payload,
+            &format!("wrong {family} payload"),
+        );
+    }
+
+    assert_static_round_trip::<RelationKind>(families, "relationKind");
+    assert_static_round_trip::<PropertyValueState>(families, "propertyValueState");
+    assert_static_round_trip::<PropertyProvenance>(families, "propertyProvenance");
+    assert_static_round_trip::<PropertyCapability>(families, "propertyCapability");
+    assert_static_round_trip::<PropertyType>(families, "propertyType");
+    assert_static_round_trip::<PrimitiveTypeKind>(families, "primitiveTypeKind");
+    assert_static_round_trip::<StringLength>(families, "stringLength");
+    assert_static_round_trip::<NumberSign>(families, "numberSign");
+    assert_static_round_trip::<DateFractions>(families, "dateFractions");
+    assert_static_round_trip::<TypeQualifiers>(families, "typeQualifiers");
+    assert_static_round_trip::<TypeVariant>(families, "typeVariant");
+    assert_static_round_trip::<PropertyValue>(families, "propertyValue");
+}
+
+#[test]
 fn fix_round7_every_source_enum_alias_is_executed_by_legacy_and_adapter() {
     let executions: Value = serde_json::from_slice(
         &fs::read(oracle_root().join("enum-alias-executions.json"))
@@ -3490,4 +3609,1039 @@ fn contract_identities(envelope: &NavigationEnvelope) -> BTreeMap<String, String
         register(&relation.target, "external", &mut identities);
     }
     identities
+}
+
+fn static_variant_facts(families: &serde_json::Map<String, Value>) -> Vec<Value> {
+    let mut facts = Vec::new();
+    for (family, entries) in families {
+        for entry in entries
+            .as_array()
+            .unwrap_or_else(|| panic!("{family} variant inventory is not an array"))
+        {
+            let pair = entry
+                .as_array()
+                .unwrap_or_else(|| panic!("{family} variant entry is not a pair"));
+            assert_eq!(pair.len(), 2, "{family} variant entry is not a pair");
+            facts.push(variant_fact(
+                family,
+                pair[0].as_str().expect("static variant name"),
+                pair[1].clone(),
+            ));
+        }
+    }
+    facts.sort_by_key(canonical_json);
+    facts
+}
+
+fn assert_static_round_trip<T>(
+    families: &serde_json::Map<String, Value>,
+    family: &str,
+) where
+    T: DeserializeOwned + Serialize,
+{
+    for entry in families[family].as_array().unwrap() {
+        let pair = entry.as_array().unwrap();
+        let expected = pair[1].clone();
+        let decoded: T = serde_json::from_value(expected.clone()).unwrap_or_else(|error| {
+            panic!(
+                "{family}.{} static wire did not strictly deserialize: {error}",
+                pair[0]
+            )
+        });
+        assert_eq!(
+            serde_json::to_value(decoded).unwrap(),
+            expected,
+            "{family}.{} did not round-trip exactly",
+            pair[0]
+        );
+    }
+}
+
+fn variant_fact(family: &str, variant: &str, wire: Value) -> Value {
+    json!({
+        "case": "publicContractVariants",
+        "kind": family,
+        "value": {
+            "variant": variant,
+            "wire": wire,
+        },
+    })
+}
+
+fn push_variant<T: Serialize>(
+    facts: &mut Vec<Value>,
+    family: &str,
+    variant: &str,
+    value: &T,
+) {
+    facts.push(variant_fact(
+        family,
+        variant,
+        serde_json::to_value(value).unwrap(),
+    ));
+}
+
+macro_rules! push_closed_enum_family {
+    ($facts:expr, $family:literal, $($path:path => $variant:literal),+ $(,)?) => {{
+        for value in [$($path),+] {
+            let wire = serde_json::to_value(&value).unwrap();
+            let variant = match value {
+                $($path => $variant),+
+            };
+            $facts.push(variant_fact($family, variant, wire));
+        }
+    }};
+}
+
+fn public_contract_variant_facts() -> Vec<Value> {
+    let mut facts = Vec::new();
+
+    push_closed_enum_family!(
+        facts,
+        "semanticObjectKind",
+        SemanticObjectKind::SourceRoot => "sourceRoot",
+        SemanticObjectKind::Unknown => "unknown",
+        SemanticObjectKind::Configuration => "configuration",
+        SemanticObjectKind::Language => "language",
+        SemanticObjectKind::Subsystem => "subsystem",
+        SemanticObjectKind::StyleItem => "styleItem",
+        SemanticObjectKind::Style => "style",
+        SemanticObjectKind::CommonPicture => "commonPicture",
+        SemanticObjectKind::SessionParameter => "sessionParameter",
+        SemanticObjectKind::Role => "role",
+        SemanticObjectKind::CommonTemplate => "commonTemplate",
+        SemanticObjectKind::FilterCriterion => "filterCriterion",
+        SemanticObjectKind::CommonModule => "commonModule",
+        SemanticObjectKind::Bot => "bot",
+        SemanticObjectKind::CommonAttribute => "commonAttribute",
+        SemanticObjectKind::ExchangePlan => "exchangePlan",
+        SemanticObjectKind::XdtoPackage => "xdtoPackage",
+        SemanticObjectKind::WebService => "webService",
+        SemanticObjectKind::HttpService => "httpService",
+        SemanticObjectKind::WebServiceReference => "webServiceReference",
+        SemanticObjectKind::EventSubscription => "eventSubscription",
+        SemanticObjectKind::ScheduledJob => "scheduledJob",
+        SemanticObjectKind::SettingsStorage => "settingsStorage",
+        SemanticObjectKind::FunctionalOption => "functionalOption",
+        SemanticObjectKind::FunctionalOptionsParameter => "functionalOptionsParameter",
+        SemanticObjectKind::DefinedType => "definedType",
+        SemanticObjectKind::CommonCommand => "commonCommand",
+        SemanticObjectKind::CommandGroup => "commandGroup",
+        SemanticObjectKind::Constant => "constant",
+        SemanticObjectKind::CommonForm => "commonForm",
+        SemanticObjectKind::Catalog => "catalog",
+        SemanticObjectKind::Document => "document",
+        SemanticObjectKind::DocumentNumerator => "documentNumerator",
+        SemanticObjectKind::Sequence => "sequence",
+        SemanticObjectKind::DocumentJournal => "documentJournal",
+        SemanticObjectKind::Enumeration => "enumeration",
+        SemanticObjectKind::Report => "report",
+        SemanticObjectKind::DataProcessor => "dataProcessor",
+        SemanticObjectKind::InformationRegister => "informationRegister",
+        SemanticObjectKind::AccumulationRegister => "accumulationRegister",
+        SemanticObjectKind::ChartOfCharacteristicTypes => "chartOfCharacteristicTypes",
+        SemanticObjectKind::ChartOfAccounts => "chartOfAccounts",
+        SemanticObjectKind::AccountingRegister => "accountingRegister",
+        SemanticObjectKind::ChartOfCalculationTypes => "chartOfCalculationTypes",
+        SemanticObjectKind::CalculationRegister => "calculationRegister",
+        SemanticObjectKind::BusinessProcess => "businessProcess",
+        SemanticObjectKind::Task => "task",
+        SemanticObjectKind::IntegrationService => "integrationService",
+        SemanticObjectKind::HttpServiceUrlTemplate => "httpServiceUrlTemplate",
+        SemanticObjectKind::HttpServiceMethod => "httpServiceMethod",
+        SemanticObjectKind::WebServiceOperation => "webServiceOperation",
+        SemanticObjectKind::WebServiceParameter => "webServiceParameter",
+        SemanticObjectKind::EnumerationValue => "enumerationValue",
+        SemanticObjectKind::Attribute => "attribute",
+        SemanticObjectKind::Dimension => "dimension",
+        SemanticObjectKind::Resource => "resource",
+        SemanticObjectKind::TabularSection => "tabularSection",
+        SemanticObjectKind::Form => "form",
+        SemanticObjectKind::FormAttribute => "formAttribute",
+        SemanticObjectKind::FormCommand => "formCommand",
+        SemanticObjectKind::FormElement => "formElement",
+        SemanticObjectKind::Template => "template",
+        SemanticObjectKind::SpreadsheetDocumentTemplate => "spreadsheetDocumentTemplate",
+        SemanticObjectKind::Command => "command",
+        SemanticObjectKind::AccessPermission => "accessPermission",
+        SemanticObjectKind::AccessRestrictionTemplate => "accessRestrictionTemplate",
+    );
+    push_closed_enum_family!(
+        facts,
+        "identityStrength",
+        IdentityStrength::Persistent => "persistent",
+        IdentityStrength::Derived => "derived",
+        IdentityStrength::SnapshotOnly => "snapshotOnly",
+    );
+    push_closed_enum_family!(
+        facts,
+        "resolutionState",
+        ResolutionState::Resolved => "resolved",
+        ResolutionState::Unresolved => "unresolved",
+    );
+    push_closed_enum_family!(
+        facts,
+        "authorability",
+        Authorability::Authorable => "authorable",
+        Authorability::SupportLocked => "supportLocked",
+        Authorability::ConfigurationReadOnly => "configurationReadOnly",
+        Authorability::UnknownSupportState => "unknownSupportState",
+        Authorability::UnknownReadOnly => "unknownReadOnly",
+        Authorability::DerivedReadOnly => "derivedReadOnly",
+    );
+    push_closed_enum_family!(
+        facts,
+        "formatCompatibility",
+        FormatCompatibility::Compatible => "compatible",
+        FormatCompatibility::Incompatible => "incompatible",
+        FormatCompatibility::Unknown => "unknown",
+    );
+    push_closed_enum_family!(
+        facts,
+        "coverageState",
+        CoverageState::Complete => "complete",
+        CoverageState::Partial => "partial",
+        CoverageState::Unknown => "unknown",
+    );
+    push_closed_enum_family!(
+        facts,
+        "snapshotConsistency",
+        SnapshotConsistency::Consistent => "consistent",
+        SnapshotConsistency::Partial => "partial",
+        SnapshotConsistency::Changed => "changed",
+        SnapshotConsistency::Unverifiable => "unverifiable",
+    );
+    push_closed_enum_family!(
+        facts,
+        "sourceAccess",
+        SourceAccess::ReadOnly => "readOnly",
+        SourceAccess::ReadWrite => "readWrite",
+    );
+    push_closed_enum_family!(
+        facts,
+        "capabilityBlockReason",
+        CapabilityBlockReason::ResolutionUnresolved => "resolutionUnresolved",
+        CapabilityBlockReason::IdentitySnapshotOnly => "identitySnapshotOnly",
+        CapabilityBlockReason::SnapshotInconsistent => "snapshotInconsistent",
+        CapabilityBlockReason::CoverageIncomplete => "coverageIncomplete",
+        CapabilityBlockReason::FormatIncompatible => "formatIncompatible",
+        CapabilityBlockReason::SourceReadOnly => "sourceReadOnly",
+        CapabilityBlockReason::NotAuthorable => "notAuthorable",
+        CapabilityBlockReason::OwningRelationMissing => "owningRelationMissing",
+        CapabilityBlockReason::OperationBindingInvalid => "operationBindingInvalid",
+    );
+    push_closed_enum_family!(
+        facts,
+        "relationKind",
+        RelationKind::Contains => "contains",
+        RelationKind::References => "references",
+    );
+    push_closed_enum_family!(
+        facts,
+        "actionAvailability",
+        ActionAvailability::Modeled => "modeled",
+        ActionAvailability::Executable => "executable",
+        ActionAvailability::Blocked => "blocked",
+    );
+    push_closed_enum_family!(
+        facts,
+        "atomicity",
+        Atomicity::SingleFileAtomicReplace => "singleFileAtomicReplace",
+        Atomicity::AggregateSwapWithRecovery => "aggregateSwapWithRecovery",
+        Atomicity::BackendTransaction => "backendTransaction",
+        Atomicity::ReadOnly => "readOnly",
+    );
+    push_closed_enum_family!(
+        facts,
+        "semanticActionKind",
+        SemanticActionKind::Inspect => "inspect",
+        SemanticActionKind::EditProperties => "editProperties",
+        SemanticActionKind::Clone => "clone",
+        SemanticActionKind::Remove => "remove",
+        SemanticActionKind::AddAttribute => "addAttribute",
+        SemanticActionKind::AddTabularSection => "addTabularSection",
+        SemanticActionKind::AddForm => "addForm",
+        SemanticActionKind::AddMxl => "addMxl",
+        SemanticActionKind::AddCommand => "addCommand",
+        SemanticActionKind::AddFormAttribute => "addFormAttribute",
+        SemanticActionKind::AddFormCommand => "addFormCommand",
+        SemanticActionKind::AddFormElement => "addFormElement",
+        SemanticActionKind::Move => "move",
+        SemanticActionKind::BindData => "bindData",
+        SemanticActionKind::RebindData => "rebindData",
+        SemanticActionKind::UnbindData => "unbindData",
+        SemanticActionKind::BindCommand => "bindCommand",
+        SemanticActionKind::RebindCommand => "rebindCommand",
+        SemanticActionKind::UnbindCommand => "unbindCommand",
+        SemanticActionKind::CreateHandler => "createHandler",
+        SemanticActionKind::EditMxl => "editMxl",
+    );
+    push_closed_enum_family!(
+        facts,
+        "actionExecutionPolicy",
+        ActionExecutionPolicy::ReadOnly => "readOnly",
+        ActionExecutionPolicy::AtomicNodeMutation => "atomicNodeMutation",
+        ActionExecutionPolicy::AtomicRelationMutation => "atomicRelationMutation",
+    );
+    push_closed_enum_family!(
+        facts,
+        "actionProfile",
+        ActionProfile::DocumentMetadataObject => "documentMetadataObject",
+        ActionProfile::GenericMetadataObject => "genericMetadataObject",
+        ActionProfile::Form => "form",
+        ActionProfile::FormElement => "formElement",
+        ActionProfile::TabularSection => "tabularSection",
+        ActionProfile::MxlTemplate => "mxlTemplate",
+        ActionProfile::UnmodeledTemplate => "unmodeledTemplate",
+        ActionProfile::UnmodeledChild => "unmodeledChild",
+    );
+    push_closed_enum_family!(
+        facts,
+        "navigationStatus",
+        NavigationStatus::Available => "available",
+        NavigationStatus::Partial => "partial",
+        NavigationStatus::Unavailable => "unavailable",
+    );
+    push_closed_enum_family!(
+        facts,
+        "propertyValueState",
+        PropertyValueState::Explicit => "explicit",
+        PropertyValueState::Defaulted => "defaulted",
+        PropertyValueState::Inherited => "inherited",
+        PropertyValueState::Computed => "computed",
+        PropertyValueState::Absent => "absent",
+        PropertyValueState::Unresolved => "unresolved",
+    );
+    push_closed_enum_family!(
+        facts,
+        "propertyProvenance",
+        PropertyProvenance::Declared => "declared",
+        PropertyProvenance::Default => "default",
+        PropertyProvenance::Inherited => "inherited",
+        PropertyProvenance::Derived => "derived",
+        PropertyProvenance::Unknown => "unknown",
+    );
+    push_closed_enum_family!(
+        facts,
+        "propertyCapability",
+        PropertyCapability::ReadOnly => "readOnly",
+        PropertyCapability::Authorable => "authorable",
+        PropertyCapability::Unavailable => "unavailable",
+        PropertyCapability::Unknown => "unknown",
+    );
+    push_closed_enum_family!(
+        facts,
+        "propertyType",
+        PropertyType::Boolean => "boolean",
+        PropertyType::Integer => "integer",
+        PropertyType::Decimal => "decimal",
+        PropertyType::String => "string",
+        PropertyType::LocalizedString => "localizedString",
+        PropertyType::Uuid => "uuid",
+        PropertyType::Enum => "enum",
+        PropertyType::Date => "date",
+        PropertyType::TypeSet => "typeSet",
+        PropertyType::ObjectRef => "objectRef",
+        PropertyType::List => "list",
+        PropertyType::Structure => "structure",
+        PropertyType::EmptyReference => "emptyReference",
+        PropertyType::Null => "null",
+        PropertyType::Unknown => "unknown",
+    );
+    push_closed_enum_family!(
+        facts,
+        "primitiveTypeKind",
+        PrimitiveTypeKind::Boolean => "boolean",
+        PrimitiveTypeKind::String => "string",
+        PrimitiveTypeKind::Number => "number",
+        PrimitiveTypeKind::Date => "date",
+        PrimitiveTypeKind::Uuid => "uuid",
+        PrimitiveTypeKind::Opaque => "opaque",
+        PrimitiveTypeKind::Table => "table",
+        PrimitiveTypeKind::Null => "null",
+    );
+    push_closed_enum_family!(
+        facts,
+        "stringLength",
+        StringLength::Fixed => "fixed",
+        StringLength::Variable => "variable",
+    );
+    push_closed_enum_family!(
+        facts,
+        "numberSign",
+        NumberSign::Any => "any",
+        NumberSign::Nonnegative => "nonnegative",
+    );
+    push_closed_enum_family!(
+        facts,
+        "dateFractions",
+        DateFractions::Date => "date",
+        DateFractions::DateTime => "dateTime",
+        DateFractions::Time => "time",
+    );
+
+    push_object_ref_identity_variants(&mut facts);
+    push_capability_state_variants(&mut facts);
+    push_capability_vector_variants(&mut facts);
+    push_navigation_visibility_variants(&mut facts);
+    push_type_qualifier_variants(&mut facts);
+    push_type_variant_variants(&mut facts);
+    push_semantic_facet_member_variants(&mut facts);
+    push_property_value_variants(&mut facts);
+    push_operation_binding_variants(&mut facts);
+    push_semantic_action_shape_variants(&mut facts);
+    push_relation_page_shape_variants(&mut facts);
+
+    facts.sort_by_key(canonical_json);
+    facts
+}
+
+fn variant_source_id() -> SourceId {
+    SourceId::new("source:public-variants").unwrap()
+}
+
+fn variant_object_ref(identity_strength: IdentityStrength) -> ObjectRef {
+    ObjectRef::new(
+        variant_source_id(),
+        ObjectKey::new("uuid:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap(),
+        identity_strength,
+        SemanticObjectKind::Document,
+        "VariantObject",
+    )
+}
+
+fn push_object_ref_identity_variants(facts: &mut Vec<Value>) {
+    for identity in [
+        IdentityStrength::Persistent,
+        IdentityStrength::Derived,
+        IdentityStrength::SnapshotOnly,
+    ] {
+        let variant = match identity {
+            IdentityStrength::Persistent => "persistent",
+            IdentityStrength::Derived => "derived",
+            IdentityStrength::SnapshotOnly => "snapshotOnly",
+        };
+        push_variant(
+            facts,
+            "objectRefIdentity",
+            variant,
+            &variant_object_ref(identity),
+        );
+    }
+}
+
+fn resolution_variant(value: ResolutionState) -> &'static str {
+    match value {
+        ResolutionState::Resolved => "resolved",
+        ResolutionState::Unresolved => "unresolved",
+    }
+}
+
+fn authorability_variant(value: Authorability) -> &'static str {
+    match value {
+        Authorability::Authorable => "authorable",
+        Authorability::SupportLocked => "supportLocked",
+        Authorability::ConfigurationReadOnly => "configurationReadOnly",
+        Authorability::UnknownSupportState => "unknownSupportState",
+        Authorability::UnknownReadOnly => "unknownReadOnly",
+        Authorability::DerivedReadOnly => "derivedReadOnly",
+    }
+}
+
+fn push_capability_state_variants(facts: &mut Vec<Value>) {
+    for resolution in [ResolutionState::Resolved, ResolutionState::Unresolved] {
+        for authorability in [
+            Authorability::Authorable,
+            Authorability::SupportLocked,
+            Authorability::ConfigurationReadOnly,
+            Authorability::UnknownSupportState,
+            Authorability::UnknownReadOnly,
+            Authorability::DerivedReadOnly,
+        ] {
+            push_variant(
+                facts,
+                "capabilityState",
+                &format!(
+                    "{}.{}",
+                    resolution_variant(resolution),
+                    authorability_variant(authorability)
+                ),
+                &CapabilityState::new(resolution, authorability),
+            );
+        }
+    }
+}
+
+fn push_capability_vector_variants(facts: &mut Vec<Value>) {
+    let cases = [
+        (
+            "complete",
+            CapabilityVector {
+                resolution: ResolutionState::Resolved,
+                identity: IdentityStrength::Persistent,
+                consistency: SnapshotConsistency::Consistent,
+                coverage: CoverageState::Complete,
+                format: FormatCompatibility::Compatible,
+                source_access: SourceAccess::ReadWrite,
+                authorability: Authorability::Authorable,
+            },
+        ),
+        (
+            "partial",
+            CapabilityVector {
+                resolution: ResolutionState::Resolved,
+                identity: IdentityStrength::Derived,
+                consistency: SnapshotConsistency::Partial,
+                coverage: CoverageState::Partial,
+                format: FormatCompatibility::Compatible,
+                source_access: SourceAccess::ReadOnly,
+                authorability: Authorability::SupportLocked,
+            },
+        ),
+        (
+            "unknown",
+            CapabilityVector {
+                resolution: ResolutionState::Unresolved,
+                identity: IdentityStrength::SnapshotOnly,
+                consistency: SnapshotConsistency::Unverifiable,
+                coverage: CoverageState::Unknown,
+                format: FormatCompatibility::Unknown,
+                source_access: SourceAccess::ReadOnly,
+                authorability: Authorability::UnknownSupportState,
+            },
+        ),
+        (
+            "incompatible",
+            CapabilityVector {
+                resolution: ResolutionState::Resolved,
+                identity: IdentityStrength::Persistent,
+                consistency: SnapshotConsistency::Changed,
+                coverage: CoverageState::Complete,
+                format: FormatCompatibility::Incompatible,
+                source_access: SourceAccess::ReadWrite,
+                authorability: Authorability::ConfigurationReadOnly,
+            },
+        ),
+        (
+            "unknownReadOnly",
+            CapabilityVector {
+                resolution: ResolutionState::Unresolved,
+                identity: IdentityStrength::Derived,
+                consistency: SnapshotConsistency::Consistent,
+                coverage: CoverageState::Partial,
+                format: FormatCompatibility::Compatible,
+                source_access: SourceAccess::ReadOnly,
+                authorability: Authorability::UnknownReadOnly,
+            },
+        ),
+        (
+            "derivedReadOnly",
+            CapabilityVector {
+                resolution: ResolutionState::Resolved,
+                identity: IdentityStrength::Derived,
+                consistency: SnapshotConsistency::Consistent,
+                coverage: CoverageState::Complete,
+                format: FormatCompatibility::Compatible,
+                source_access: SourceAccess::ReadOnly,
+                authorability: Authorability::DerivedReadOnly,
+            },
+        ),
+    ];
+    for (variant, value) in cases {
+        push_variant(facts, "capabilityVector", variant, &value);
+    }
+}
+
+fn push_navigation_visibility_variants(facts: &mut Vec<Value>) {
+    for visibility in [
+        NavigationFacetVisibility::Full,
+        NavigationFacetVisibility::Summary,
+        NavigationFacetVisibility::None,
+    ] {
+        let variant = match visibility {
+            NavigationFacetVisibility::Full => "full",
+            NavigationFacetVisibility::Summary => "summary",
+            NavigationFacetVisibility::None => "none",
+        };
+        let reference = variant_object_ref(IdentityStrength::Persistent);
+        let node = NavigationNode {
+            object_ref: reference.clone(),
+            reference,
+            capability_state: CapabilityState::resolved_authorable(),
+            capability: CapabilityVector {
+                resolution: ResolutionState::Resolved,
+                identity: IdentityStrength::Persistent,
+                consistency: SnapshotConsistency::Consistent,
+                coverage: CoverageState::Complete,
+                format: FormatCompatibility::Compatible,
+                source_access: SourceAccess::ReadWrite,
+                authorability: Authorability::Authorable,
+            },
+            properties: BTreeMap::new(),
+            facets: SemanticFacets::default(),
+            action_profile: ActionProfile::GenericMetadataObject,
+            semantic_actions: Vec::new(),
+            actions: Vec::new(),
+            facet_visibility: visibility,
+        };
+        let mut fields = serde_json::to_value(node)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        fields.sort();
+        facts.push(variant_fact(
+            "navigationFacetVisibility",
+            variant,
+            json!(fields),
+        ));
+    }
+}
+
+fn type_qualifier_specimens() -> Vec<(&'static str, TypeQualifiers)> {
+    vec![
+        (
+            "stringFixed",
+            TypeQualifiers::String(
+                StringQualifiers::new(Some(12), Some(StringLength::Fixed)).unwrap(),
+            ),
+        ),
+        (
+            "stringVariable",
+            TypeQualifiers::String(
+                StringQualifiers::new(Some(0), Some(StringLength::Variable)).unwrap(),
+            ),
+        ),
+        (
+            "numberAny",
+            TypeQualifiers::Number(
+                NumberQualifiers::new(Some(10), Some(0), Some(NumberSign::Any)).unwrap(),
+            ),
+        ),
+        (
+            "numberNonnegative",
+            TypeQualifiers::Number(
+                NumberQualifiers::new(
+                    Some(15),
+                    Some(3),
+                    Some(NumberSign::Nonnegative),
+                )
+                .unwrap(),
+            ),
+        ),
+        (
+            "date",
+            TypeQualifiers::Date(DateQualifiers::new(Some(DateFractions::Date)).unwrap()),
+        ),
+        (
+            "dateTime",
+            TypeQualifiers::Date(DateQualifiers::new(Some(DateFractions::DateTime)).unwrap()),
+        ),
+        (
+            "time",
+            TypeQualifiers::Date(DateQualifiers::new(Some(DateFractions::Time)).unwrap()),
+        ),
+    ]
+}
+
+fn push_type_qualifier_variants(facts: &mut Vec<Value>) {
+    for (variant, value) in type_qualifier_specimens() {
+        match &value {
+            TypeQualifiers::String(_) => {}
+            TypeQualifiers::Number(_) => {}
+            TypeQualifiers::Date(_) => {}
+        }
+        push_variant(facts, "typeQualifiers", variant, &value);
+    }
+}
+
+fn type_variant_specimens() -> Vec<(&'static str, TypeVariant)> {
+    vec![
+        (
+            "primitiveBoolean",
+            TypeVariant::primitive(PrimitiveTypeKind::Boolean, None).unwrap(),
+        ),
+        (
+            "primitiveString",
+            TypeVariant::primitive(PrimitiveTypeKind::String, None).unwrap(),
+        ),
+        (
+            "primitiveNumber",
+            TypeVariant::primitive(PrimitiveTypeKind::Number, None).unwrap(),
+        ),
+        (
+            "primitiveDate",
+            TypeVariant::primitive(PrimitiveTypeKind::Date, None).unwrap(),
+        ),
+        (
+            "primitiveUuid",
+            TypeVariant::primitive(PrimitiveTypeKind::Uuid, None).unwrap(),
+        ),
+        (
+            "primitiveOpaque",
+            TypeVariant::primitive(PrimitiveTypeKind::Opaque, None).unwrap(),
+        ),
+        (
+            "primitiveTable",
+            TypeVariant::primitive(PrimitiveTypeKind::Table, None).unwrap(),
+        ),
+        (
+            "primitiveNull",
+            TypeVariant::primitive(PrimitiveTypeKind::Null, None).unwrap(),
+        ),
+        (
+            "qualifiedStringFixed",
+            TypeVariant::primitive(
+                PrimitiveTypeKind::String,
+                Some(TypeQualifiers::String(
+                    StringQualifiers::new(Some(12), Some(StringLength::Fixed)).unwrap(),
+                )),
+            )
+            .unwrap(),
+        ),
+        (
+            "qualifiedStringVariable",
+            TypeVariant::primitive(
+                PrimitiveTypeKind::String,
+                Some(TypeQualifiers::String(
+                    StringQualifiers::new(Some(0), Some(StringLength::Variable)).unwrap(),
+                )),
+            )
+            .unwrap(),
+        ),
+        (
+            "qualifiedNumberAny",
+            TypeVariant::primitive(
+                PrimitiveTypeKind::Number,
+                Some(TypeQualifiers::Number(
+                    NumberQualifiers::new(Some(10), Some(0), Some(NumberSign::Any)).unwrap(),
+                )),
+            )
+            .unwrap(),
+        ),
+        (
+            "qualifiedNumberNonnegative",
+            TypeVariant::primitive(
+                PrimitiveTypeKind::Number,
+                Some(TypeQualifiers::Number(
+                    NumberQualifiers::new(
+                        Some(15),
+                        Some(3),
+                        Some(NumberSign::Nonnegative),
+                    )
+                    .unwrap(),
+                )),
+            )
+            .unwrap(),
+        ),
+        (
+            "qualifiedDate",
+            TypeVariant::primitive(
+                PrimitiveTypeKind::Date,
+                Some(TypeQualifiers::Date(
+                    DateQualifiers::new(Some(DateFractions::Date)).unwrap(),
+                )),
+            )
+            .unwrap(),
+        ),
+        (
+            "qualifiedDateTime",
+            TypeVariant::primitive(
+                PrimitiveTypeKind::Date,
+                Some(TypeQualifiers::Date(
+                    DateQualifiers::new(Some(DateFractions::DateTime)).unwrap(),
+                )),
+            )
+            .unwrap(),
+        ),
+        (
+            "qualifiedTime",
+            TypeVariant::primitive(
+                PrimitiveTypeKind::Date,
+                Some(TypeQualifiers::Date(
+                    DateQualifiers::new(Some(DateFractions::Time)).unwrap(),
+                )),
+            )
+            .unwrap(),
+        ),
+        (
+            "reference",
+            TypeVariant::reference(SemanticObjectKind::Catalog, "Products").unwrap(),
+        ),
+        (
+            "object",
+            TypeVariant::object(SemanticObjectKind::Document, "SalesOrder").unwrap(),
+        ),
+        (
+            "recordSet",
+            TypeVariant::record_set(SemanticObjectKind::InformationRegister, "Prices")
+                .unwrap(),
+        ),
+        (
+            "manager",
+            TypeVariant::manager(SemanticObjectKind::Catalog, "Products").unwrap(),
+        ),
+        (
+            "key",
+            TypeVariant::key(SemanticObjectKind::AccumulationRegister, "Balances").unwrap(),
+        ),
+        (
+            "enumeration",
+            TypeVariant::enumeration("Status").unwrap(),
+        ),
+        (
+            "definedType",
+            TypeVariant::defined_type("Identifier").unwrap(),
+        ),
+        ("unknown", TypeVariant::unknown_with_ordinal(7).unwrap()),
+    ]
+}
+
+fn push_type_variant_variants(facts: &mut Vec<Value>) {
+    for (variant, value) in type_variant_specimens() {
+        push_variant(facts, "typeVariant", variant, &value);
+    }
+}
+
+fn push_semantic_facet_member_variants(facts: &mut Vec<Value>) {
+    for (variant, value) in [
+        (
+            "property",
+            SemanticFacetMember::Property(SemanticPropertyId::METADATA_NAME),
+        ),
+        (
+            "relation",
+            SemanticFacetMember::Relation(SemanticRelationId::ATTRIBUTES),
+        ),
+    ] {
+        match value {
+            SemanticFacetMember::Property(_) => {}
+            SemanticFacetMember::Relation(_) => {}
+        }
+        push_variant(facts, "semanticFacetMember", variant, &value);
+    }
+}
+
+fn property_value_specimens() -> Vec<(&'static str, PropertyValue)> {
+    let type_set = TypeSetValue::new(vec![
+        TypeVariant::primitive(PrimitiveTypeKind::Boolean, None).unwrap(),
+        TypeVariant::primitive(
+            PrimitiveTypeKind::String,
+            Some(TypeQualifiers::String(
+                StringQualifiers::new(Some(12), Some(StringLength::Fixed)).unwrap(),
+            )),
+        )
+        .unwrap(),
+        TypeVariant::reference(SemanticObjectKind::Catalog, "Products").unwrap(),
+        TypeVariant::unknown_with_ordinal(7).unwrap(),
+    ])
+    .unwrap();
+    let recursive_structure = BTreeMap::from([
+        ("empty".to_string(), PropertyValue::EmptyReference),
+        (
+            "nestedList".to_string(),
+            PropertyValue::List(vec![PropertyValue::Integer(2), PropertyValue::Null]),
+        ),
+        (
+            "nestedStructure".to_string(),
+            PropertyValue::Structure(BTreeMap::from([(
+                "flag".to_string(),
+                PropertyValue::Boolean(false),
+            )])),
+        ),
+    ]);
+    vec![
+        ("boolean", PropertyValue::Boolean(true)),
+        ("integer", PropertyValue::Integer(-42)),
+        ("decimal", PropertyValue::Decimal("-12.50".to_string())),
+        ("string", PropertyValue::String("semantic text".to_string())),
+        (
+            "localizedString",
+            PropertyValue::LocalizedString(BTreeMap::from([
+                ("en".to_string(), "Hello".to_string()),
+                ("fr".to_string(), "Bonjour".to_string()),
+            ])),
+        ),
+        (
+            "uuid",
+            PropertyValue::Uuid(
+                uuid::Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap(),
+            ),
+        ),
+        (
+            "enum",
+            PropertyValue::EnumSymbol(SemanticEnumValue::SPREADSHEET_DOCUMENT),
+        ),
+        ("date", PropertyValue::Date("2026-07-27".to_string())),
+        ("typeSet", PropertyValue::TypeSet(type_set)),
+        (
+            "objectRef",
+            PropertyValue::ObjectRef(variant_object_ref(IdentityStrength::SnapshotOnly)),
+        ),
+        (
+            "list",
+            PropertyValue::List(vec![
+                PropertyValue::Boolean(true),
+                PropertyValue::Structure(BTreeMap::from([(
+                    "nested".to_string(),
+                    PropertyValue::String("value".to_string()),
+                )])),
+            ]),
+        ),
+        ("structure", PropertyValue::Structure(recursive_structure)),
+        ("emptyReference", PropertyValue::EmptyReference),
+        ("null", PropertyValue::Null),
+        (
+            "unknown",
+            PropertyValue::Unknown {
+                summary: "opaque semantic evidence".to_string(),
+            },
+        ),
+    ]
+}
+
+fn push_property_value_variants(facts: &mut Vec<Value>) {
+    for (declared_variant, value) in property_value_specimens() {
+        let matched_variant = match &value {
+            PropertyValue::Boolean(_) => "boolean",
+            PropertyValue::Integer(_) => "integer",
+            PropertyValue::Decimal(_) => "decimal",
+            PropertyValue::String(_) => "string",
+            PropertyValue::LocalizedString(_) => "localizedString",
+            PropertyValue::Uuid(_) => "uuid",
+            PropertyValue::EnumSymbol(_) => "enum",
+            PropertyValue::Date(_) => "date",
+            PropertyValue::TypeSet(_) => "typeSet",
+            PropertyValue::ObjectRef(_) => "objectRef",
+            PropertyValue::List(_) => "list",
+            PropertyValue::Structure(_) => "structure",
+            PropertyValue::EmptyReference => "emptyReference",
+            PropertyValue::Null => "null",
+            PropertyValue::Unknown { .. } => "unknown",
+        };
+        assert_eq!(declared_variant, matched_variant);
+        push_variant(facts, "propertyValue", declared_variant, &value);
+    }
+}
+
+fn push_operation_binding_variants(facts: &mut Vec<Value>) {
+    for (variant, value) in [
+        ("none", None),
+        (
+            "someValid",
+            Some(OperationBinding {
+                tool: "unica.meta.edit".to_string(),
+                schema_version: "1".to_string(),
+            }),
+        ),
+        (
+            "someInvalid",
+            Some(OperationBinding {
+                tool: "external.invalid".to_string(),
+                schema_version: "".to_string(),
+            }),
+        ),
+    ] {
+        push_variant(facts, "operationBindingOption", variant, &value);
+    }
+}
+
+fn variant_relation_ref() -> RelationRef {
+    RelationRef {
+        source_id: variant_source_id(),
+        relation_key: RelationKey::new("relation:public-variants").unwrap(),
+        kind: RelationKind::Contains,
+    }
+}
+
+fn push_semantic_action_shape_variants(facts: &mut Vec<Value>) {
+    let actions = [
+        (
+            "allOptionalAbsent",
+            SemanticAction {
+                kind: SemanticActionKind::Inspect,
+                target: None,
+                owning_relation: None,
+                availability: ActionAvailability::Modeled,
+                blocking_reasons: Vec::new(),
+                operation_binding: None,
+                atomicity: Atomicity::ReadOnly,
+            },
+        ),
+        (
+            "allOptionalPresent",
+            SemanticAction {
+                kind: SemanticActionKind::Clone,
+                target: Some(variant_object_ref(IdentityStrength::SnapshotOnly)),
+                owning_relation: Some(variant_relation_ref()),
+                availability: ActionAvailability::Blocked,
+                blocking_reasons: vec![CapabilityBlockReason::OperationBindingInvalid],
+                operation_binding: Some(OperationBinding {
+                    tool: "external.invalid".to_string(),
+                    schema_version: "".to_string(),
+                }),
+                atomicity: Atomicity::AggregateSwapWithRecovery,
+            },
+        ),
+    ];
+    for (variant, action) in actions {
+        push_variant(facts, "semanticActionOptionShape", variant, &action);
+    }
+}
+
+fn variant_relation_group() -> RelationGroupRef {
+    RelationGroupRef {
+        source_id: variant_source_id(),
+        group_key: RelationKey::new("group:public-variants").unwrap(),
+        owner: variant_object_ref(IdentityStrength::Persistent),
+        role: SemanticRelationId::ATTRIBUTES,
+        kind: RelationKind::Contains,
+    }
+}
+
+fn push_relation_page_shape_variants(facts: &mut Vec<Value>) {
+    let no_cursor = NavigationRelationPage {
+        relation: variant_relation_group(),
+        items: Vec::new(),
+        next_cursor: None,
+    };
+    push_variant(
+        facts,
+        "relationPageOptionShape",
+        "withoutCursor",
+        &no_cursor,
+    );
+
+    let cursor = NavigationCursor::issue(
+        b"public-variant-cursor-secret",
+        variant_source_id(),
+        SourceRevision::new("revision:public-variants").unwrap(),
+        ObjectKey::new("uuid:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap(),
+        variant_relation_group(),
+        NavigationSelection {
+            properties: PropertySelection::All,
+            facets: FacetSelection::Full,
+            relations: vec![RelationSelection {
+                kind: RelationKind::Contains,
+                role: SemanticRelationId::ATTRIBUTES,
+                page_size: 1,
+            }],
+        },
+        1,
+    )
+    .unwrap();
+    let with_cursor = NavigationRelationPage {
+        relation: variant_relation_group(),
+        items: Vec::new(),
+        next_cursor: Some(cursor),
+    };
+    let mut wire = serde_json::to_value(with_cursor).unwrap();
+    wire["nextCursor"] = json!("opaque:cursor");
+    facts.push(variant_fact(
+        "relationPageOptionShape",
+        "withCursor",
+        wire,
+    ));
 }

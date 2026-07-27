@@ -1,0 +1,619 @@
+{
+  "schemaVersion": 1,
+  "provenance": "independently-hand-authored-closed-public-variant-contract",
+  "families": {
+    "actionAvailability": [
+      ["modeled", "modeled"],
+      ["executable", "executable"],
+      ["blocked", "blocked"]
+    ],
+    "actionExecutionPolicy": [
+      ["readOnly", "read_only"],
+      ["atomicNodeMutation", "atomic_node_mutation"],
+      ["atomicRelationMutation", "atomic_relation_mutation"]
+    ],
+    "actionProfile": [
+      ["documentMetadataObject", "document_metadata_object"],
+      ["genericMetadataObject", "generic_metadata_object"],
+      ["form", "form"],
+      ["formElement", "form_element"],
+      ["tabularSection", "tabular_section"],
+      ["mxlTemplate", "mxl_template"],
+      ["unmodeledTemplate", "unmodeled_template"],
+      ["unmodeledChild", "unmodeled_child"]
+    ],
+    "atomicity": [
+      ["singleFileAtomicReplace", "single_file_atomic_replace"],
+      ["aggregateSwapWithRecovery", "aggregate_swap_with_recovery"],
+      ["backendTransaction", "backend_transaction"],
+      ["readOnly", "read_only"]
+    ],
+    "authorability": [
+      ["authorable", "authorable"],
+      ["supportLocked", "support_locked"],
+      ["configurationReadOnly", "configuration_read_only"],
+      ["unknownSupportState", "unknown_support_state"],
+      ["unknownReadOnly", "unknown_read_only"],
+      ["derivedReadOnly", "derived_read_only"]
+    ],
+    "capabilityBlockReason": [
+      ["resolutionUnresolved", "resolutionUnresolved"],
+      ["identitySnapshotOnly", "identitySnapshotOnly"],
+      ["snapshotInconsistent", "snapshotInconsistent"],
+      ["coverageIncomplete", "coverageIncomplete"],
+      ["formatIncompatible", "formatIncompatible"],
+      ["sourceReadOnly", "sourceReadOnly"],
+      ["notAuthorable", "notAuthorable"],
+      ["owningRelationMissing", "owningRelationMissing"],
+      ["operationBindingInvalid", "operationBindingInvalid"]
+    ],
+    "capabilityState": [
+      ["resolved.authorable", {"authorability": "authorable", "resolutionState": "resolved"}],
+      ["resolved.supportLocked", {"authorability": "support_locked", "resolutionState": "resolved"}],
+      ["resolved.configurationReadOnly", {"authorability": "configuration_read_only", "resolutionState": "resolved"}],
+      ["resolved.unknownSupportState", {"authorability": "unknown_support_state", "resolutionState": "resolved"}],
+      ["resolved.unknownReadOnly", {"authorability": "unknown_read_only", "resolutionState": "resolved"}],
+      ["resolved.derivedReadOnly", {"authorability": "derived_read_only", "resolutionState": "resolved"}],
+      ["unresolved.authorable", {"authorability": "authorable", "resolutionState": "unresolved"}],
+      ["unresolved.supportLocked", {"authorability": "support_locked", "resolutionState": "unresolved"}],
+      ["unresolved.configurationReadOnly", {"authorability": "configuration_read_only", "resolutionState": "unresolved"}],
+      ["unresolved.unknownSupportState", {"authorability": "unknown_support_state", "resolutionState": "unresolved"}],
+      ["unresolved.unknownReadOnly", {"authorability": "unknown_read_only", "resolutionState": "unresolved"}],
+      ["unresolved.derivedReadOnly", {"authorability": "derived_read_only", "resolutionState": "unresolved"}]
+    ],
+    "capabilityVector": [
+      ["complete", {
+        "authorability": "authorable",
+        "consistency": "consistent",
+        "coverage": "complete",
+        "format": "compatible",
+        "identity": "persistent",
+        "resolution": "resolved",
+        "sourceAccess": "readWrite"
+      }],
+      ["partial", {
+        "authorability": "support_locked",
+        "consistency": "partial",
+        "coverage": "partial",
+        "format": "compatible",
+        "identity": "derived",
+        "resolution": "resolved",
+        "sourceAccess": "readOnly"
+      }],
+      ["unknown", {
+        "authorability": "unknown_support_state",
+        "consistency": "unverifiable",
+        "coverage": "unknown",
+        "format": "unknown",
+        "identity": "snapshotOnly",
+        "resolution": "unresolved",
+        "sourceAccess": "readOnly"
+      }],
+      ["incompatible", {
+        "authorability": "configuration_read_only",
+        "consistency": "changed",
+        "coverage": "complete",
+        "format": "incompatible",
+        "identity": "persistent",
+        "resolution": "resolved",
+        "sourceAccess": "readWrite"
+      }],
+      ["unknownReadOnly", {
+        "authorability": "unknown_read_only",
+        "consistency": "consistent",
+        "coverage": "partial",
+        "format": "compatible",
+        "identity": "derived",
+        "resolution": "unresolved",
+        "sourceAccess": "readOnly"
+      }],
+      ["derivedReadOnly", {
+        "authorability": "derived_read_only",
+        "consistency": "consistent",
+        "coverage": "complete",
+        "format": "compatible",
+        "identity": "derived",
+        "resolution": "resolved",
+        "sourceAccess": "readOnly"
+      }]
+    ],
+    "coverageState": [
+      ["complete", "complete"],
+      ["partial", "partial"],
+      ["unknown", "unknown"]
+    ],
+    "dateFractions": [
+      ["date", "date"],
+      ["dateTime", "dateTime"],
+      ["time", "time"]
+    ],
+    "formatCompatibility": [
+      ["compatible", "compatible"],
+      ["incompatible", "incompatible"],
+      ["unknown", "unknown"]
+    ],
+    "identityStrength": [
+      ["persistent", "persistent"],
+      ["derived", "derived"],
+      ["snapshotOnly", "snapshotOnly"]
+    ],
+    "navigationFacetVisibility": [
+      ["full", [
+        "actionProfile",
+        "actions",
+        "capability",
+        "capabilityState",
+        "facets",
+        "objectRef",
+        "properties",
+        "reference",
+        "semanticActions"
+      ]],
+      ["summary", [
+        "actionProfile",
+        "capabilityState",
+        "facets",
+        "objectRef",
+        "properties",
+        "reference"
+      ]],
+      ["none", [
+        "objectRef",
+        "properties",
+        "reference"
+      ]]
+    ],
+    "navigationStatus": [
+      ["available", "ready"],
+      ["partial", "partial"],
+      ["unavailable", "unavailable"]
+    ],
+    "numberSign": [
+      ["any", "any"],
+      ["nonnegative", "nonnegative"]
+    ],
+    "objectRefIdentity": [
+      ["persistent", {
+        "displayName": "VariantObject",
+        "identityStrength": "persistent",
+        "kind": "document",
+        "objectKey": "uuid:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "sourceId": "source:public-variants"
+      }],
+      ["derived", {
+        "displayName": "VariantObject",
+        "identityStrength": "derived",
+        "kind": "document",
+        "objectKey": "uuid:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "sourceId": "source:public-variants"
+      }],
+      ["snapshotOnly", {
+        "displayName": "VariantObject",
+        "identityStrength": "snapshotOnly",
+        "kind": "document",
+        "objectKey": "uuid:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "sourceId": "source:public-variants"
+      }]
+    ],
+    "operationBindingOption": [
+      ["none", null],
+      ["someValid", {"schemaVersion": "1", "tool": "unica.meta.edit"}],
+      ["someInvalid", {"schemaVersion": "", "tool": "external.invalid"}]
+    ],
+    "primitiveTypeKind": [
+      ["boolean", "boolean"],
+      ["string", "string"],
+      ["number", "number"],
+      ["date", "date"],
+      ["uuid", "uuid"],
+      ["opaque", "opaque"],
+      ["table", "table"],
+      ["null", "null"]
+    ],
+    "propertyCapability": [
+      ["readOnly", "readOnly"],
+      ["authorable", "authorable"],
+      ["unavailable", "unavailable"],
+      ["unknown", "unknown"]
+    ],
+    "propertyProvenance": [
+      ["declared", "declared"],
+      ["default", "default"],
+      ["inherited", "inherited"],
+      ["derived", "derived"],
+      ["unknown", "unknown"]
+    ],
+    "propertyType": [
+      ["boolean", "boolean"],
+      ["integer", "integer"],
+      ["decimal", "decimal"],
+      ["string", "string"],
+      ["localizedString", "localizedString"],
+      ["uuid", "uuid"],
+      ["enum", "enum"],
+      ["date", "date"],
+      ["typeSet", "typeSet"],
+      ["objectRef", "objectRef"],
+      ["list", "list"],
+      ["structure", "structure"],
+      ["emptyReference", "emptyReference"],
+      ["null", "null"],
+      ["unknown", "unknown"]
+    ],
+    "propertyValue": [
+      ["boolean", {"type": "boolean", "value": true}],
+      ["integer", {"type": "integer", "value": -42}],
+      ["decimal", {"type": "decimal", "value": "-12.50"}],
+      ["string", {"type": "string", "value": "semantic text"}],
+      ["localizedString", {
+        "type": "localizedString",
+        "value": {"en": "Hello", "fr": "Bonjour"}
+      }],
+      ["uuid", {
+        "type": "uuid",
+        "value": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+      }],
+      ["enum", {"type": "enum", "value": "spreadsheetDocument"}],
+      ["date", {"type": "date", "value": "2026-07-27"}],
+      ["typeSet", {
+        "type": "typeSet",
+        "value": {
+          "variants": [
+            {"kind": "primitive", "primitive": "boolean"},
+            {
+              "kind": "primitive",
+              "primitive": "string",
+              "qualifiers": {
+                "string": {"allowedLength": "fixed", "length": 12}
+              }
+            },
+            {
+              "kind": "reference",
+              "target": {"kind": "catalog", "name": "Products"}
+            },
+            {"kind": "unknown", "ordinal": 7}
+          ]
+        }
+      }],
+      ["objectRef", {
+        "type": "objectRef",
+        "value": {
+          "displayName": "VariantObject",
+          "identityStrength": "snapshotOnly",
+          "kind": "document",
+          "objectKey": "uuid:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "sourceId": "source:public-variants"
+        }
+      }],
+      ["list", {
+        "type": "list",
+        "value": [
+          {"type": "boolean", "value": true},
+          {
+            "type": "structure",
+            "value": {
+              "nested": {"type": "string", "value": "value"}
+            }
+          }
+        ]
+      }],
+      ["structure", {
+        "type": "structure",
+        "value": {
+          "empty": {"type": "emptyReference"},
+          "nestedList": {
+            "type": "list",
+            "value": [
+              {"type": "integer", "value": 2},
+              {"type": "null"}
+            ]
+          },
+          "nestedStructure": {
+            "type": "structure",
+            "value": {
+              "flag": {"type": "boolean", "value": false}
+            }
+          }
+        }
+      }],
+      ["emptyReference", {"type": "emptyReference"}],
+      ["null", {"type": "null"}],
+      ["unknown", {
+        "type": "unknown",
+        "value": {"summary": "opaque semantic evidence"}
+      }]
+    ],
+    "propertyValueState": [
+      ["explicit", "explicit"],
+      ["defaulted", "defaulted"],
+      ["inherited", "inherited"],
+      ["computed", "computed"],
+      ["absent", "absent"],
+      ["unresolved", "unresolved"]
+    ],
+    "relationKind": [
+      ["contains", "contains"],
+      ["references", "references"]
+    ],
+    "relationPageOptionShape": [
+      ["withoutCursor", {
+        "items": [],
+        "relation": {
+          "groupKey": "group:public-variants",
+          "kind": "contains",
+          "owner": {
+            "displayName": "VariantObject",
+            "identityStrength": "persistent",
+            "kind": "document",
+            "objectKey": "uuid:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "sourceId": "source:public-variants"
+          },
+          "role": "attributes",
+          "sourceId": "source:public-variants"
+        }
+      }],
+      ["withCursor", {
+        "items": [],
+        "nextCursor": "opaque:cursor",
+        "relation": {
+          "groupKey": "group:public-variants",
+          "kind": "contains",
+          "owner": {
+            "displayName": "VariantObject",
+            "identityStrength": "persistent",
+            "kind": "document",
+            "objectKey": "uuid:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "sourceId": "source:public-variants"
+          },
+          "role": "attributes",
+          "sourceId": "source:public-variants"
+        }
+      }]
+    ],
+    "resolutionState": [
+      ["resolved", "resolved"],
+      ["unresolved", "unresolved"]
+    ],
+    "semanticActionKind": [
+      ["inspect", "inspect"],
+      ["editProperties", "edit_properties"],
+      ["clone", "clone"],
+      ["remove", "remove"],
+      ["addAttribute", "add_attribute"],
+      ["addTabularSection", "add_tabular_section"],
+      ["addForm", "add_form"],
+      ["addMxl", "add_mxl"],
+      ["addCommand", "add_command"],
+      ["addFormAttribute", "add_form_attribute"],
+      ["addFormCommand", "add_form_command"],
+      ["addFormElement", "add_form_element"],
+      ["move", "move"],
+      ["bindData", "bind_data"],
+      ["rebindData", "rebind_data"],
+      ["unbindData", "unbind_data"],
+      ["bindCommand", "bind_command"],
+      ["rebindCommand", "rebind_command"],
+      ["unbindCommand", "unbind_command"],
+      ["createHandler", "create_handler"],
+      ["editMxl", "edit_mxl"]
+    ],
+    "semanticActionOptionShape": [
+      ["allOptionalAbsent", {
+        "atomicity": "read_only",
+        "availability": "modeled",
+        "blockingReasons": [],
+        "kind": "inspect",
+        "operationBinding": null,
+        "owningRelation": null,
+        "target": null
+      }],
+      ["allOptionalPresent", {
+        "atomicity": "aggregate_swap_with_recovery",
+        "availability": "blocked",
+        "blockingReasons": ["operationBindingInvalid"],
+        "kind": "clone",
+        "operationBinding": {
+          "schemaVersion": "",
+          "tool": "external.invalid"
+        },
+        "owningRelation": {
+          "kind": "contains",
+          "relationKey": "relation:public-variants",
+          "sourceId": "source:public-variants"
+        },
+        "target": {
+          "displayName": "VariantObject",
+          "identityStrength": "snapshotOnly",
+          "kind": "document",
+          "objectKey": "uuid:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "sourceId": "source:public-variants"
+        }
+      }]
+    ],
+    "semanticFacetMember": [
+      ["property", "metadata.name"],
+      ["relation", "attributes"]
+    ],
+    "semanticObjectKind": [
+      ["sourceRoot", "sourceRoot"],
+      ["unknown", "unknown"],
+      ["configuration", "configuration"],
+      ["language", "language"],
+      ["subsystem", "subsystem"],
+      ["styleItem", "styleItem"],
+      ["style", "style"],
+      ["commonPicture", "commonPicture"],
+      ["sessionParameter", "sessionParameter"],
+      ["role", "role"],
+      ["commonTemplate", "commonTemplate"],
+      ["filterCriterion", "filterCriterion"],
+      ["commonModule", "commonModule"],
+      ["bot", "bot"],
+      ["commonAttribute", "commonAttribute"],
+      ["exchangePlan", "exchangePlan"],
+      ["xdtoPackage", "xdtoPackage"],
+      ["webService", "webService"],
+      ["httpService", "httpService"],
+      ["webServiceReference", "webServiceReference"],
+      ["eventSubscription", "eventSubscription"],
+      ["scheduledJob", "scheduledJob"],
+      ["settingsStorage", "settingsStorage"],
+      ["functionalOption", "functionalOption"],
+      ["functionalOptionsParameter", "functionalOptionsParameter"],
+      ["definedType", "definedType"],
+      ["commonCommand", "commonCommand"],
+      ["commandGroup", "commandGroup"],
+      ["constant", "constant"],
+      ["commonForm", "commonForm"],
+      ["catalog", "catalog"],
+      ["document", "document"],
+      ["documentNumerator", "documentNumerator"],
+      ["sequence", "sequence"],
+      ["documentJournal", "documentJournal"],
+      ["enumeration", "enumeration"],
+      ["report", "report"],
+      ["dataProcessor", "dataProcessor"],
+      ["informationRegister", "informationRegister"],
+      ["accumulationRegister", "accumulationRegister"],
+      ["chartOfCharacteristicTypes", "chartOfCharacteristicTypes"],
+      ["chartOfAccounts", "chartOfAccounts"],
+      ["accountingRegister", "accountingRegister"],
+      ["chartOfCalculationTypes", "chartOfCalculationTypes"],
+      ["calculationRegister", "calculationRegister"],
+      ["businessProcess", "businessProcess"],
+      ["task", "task"],
+      ["integrationService", "integrationService"],
+      ["httpServiceUrlTemplate", "httpServiceUrlTemplate"],
+      ["httpServiceMethod", "httpServiceMethod"],
+      ["webServiceOperation", "webServiceOperation"],
+      ["webServiceParameter", "webServiceParameter"],
+      ["enumerationValue", "enumerationValue"],
+      ["attribute", "attribute"],
+      ["dimension", "dimension"],
+      ["resource", "resource"],
+      ["tabularSection", "tabularSection"],
+      ["form", "form"],
+      ["formAttribute", "formAttribute"],
+      ["formCommand", "formCommand"],
+      ["formElement", "formElement"],
+      ["template", "template"],
+      ["spreadsheetDocumentTemplate", "spreadsheetDocumentTemplate"],
+      ["command", "command"],
+      ["accessPermission", "accessPermission"],
+      ["accessRestrictionTemplate", "accessRestrictionTemplate"]
+    ],
+    "snapshotConsistency": [
+      ["consistent", "consistent"],
+      ["partial", "partial"],
+      ["changed", "changed"],
+      ["unverifiable", "unverifiable"]
+    ],
+    "sourceAccess": [
+      ["readOnly", "readOnly"],
+      ["readWrite", "readWrite"]
+    ],
+    "stringLength": [
+      ["fixed", "fixed"],
+      ["variable", "variable"]
+    ],
+    "typeQualifiers": [
+      ["stringFixed", {
+        "string": {"allowedLength": "fixed", "length": 12}
+      }],
+      ["stringVariable", {
+        "string": {"allowedLength": "variable", "length": 0}
+      }],
+      ["numberAny", {
+        "number": {"allowedSign": "any", "digits": 10, "fractionDigits": 0}
+      }],
+      ["numberNonnegative", {
+        "number": {"allowedSign": "nonnegative", "digits": 15, "fractionDigits": 3}
+      }],
+      ["date", {"date": {"dateFractions": "date"}}],
+      ["dateTime", {"date": {"dateFractions": "dateTime"}}],
+      ["time", {"date": {"dateFractions": "time"}}]
+    ],
+    "typeVariant": [
+      ["primitiveBoolean", {"kind": "primitive", "primitive": "boolean"}],
+      ["primitiveString", {"kind": "primitive", "primitive": "string"}],
+      ["primitiveNumber", {"kind": "primitive", "primitive": "number"}],
+      ["primitiveDate", {"kind": "primitive", "primitive": "date"}],
+      ["primitiveUuid", {"kind": "primitive", "primitive": "uuid"}],
+      ["primitiveOpaque", {"kind": "primitive", "primitive": "opaque"}],
+      ["primitiveTable", {"kind": "primitive", "primitive": "table"}],
+      ["primitiveNull", {"kind": "primitive", "primitive": "null"}],
+      ["qualifiedStringFixed", {
+        "kind": "primitive",
+        "primitive": "string",
+        "qualifiers": {"string": {"allowedLength": "fixed", "length": 12}}
+      }],
+      ["qualifiedStringVariable", {
+        "kind": "primitive",
+        "primitive": "string",
+        "qualifiers": {"string": {"allowedLength": "variable", "length": 0}}
+      }],
+      ["qualifiedNumberAny", {
+        "kind": "primitive",
+        "primitive": "number",
+        "qualifiers": {
+          "number": {"allowedSign": "any", "digits": 10, "fractionDigits": 0}
+        }
+      }],
+      ["qualifiedNumberNonnegative", {
+        "kind": "primitive",
+        "primitive": "number",
+        "qualifiers": {
+          "number": {
+            "allowedSign": "nonnegative",
+            "digits": 15,
+            "fractionDigits": 3
+          }
+        }
+      }],
+      ["qualifiedDate", {
+        "kind": "primitive",
+        "primitive": "date",
+        "qualifiers": {"date": {"dateFractions": "date"}}
+      }],
+      ["qualifiedDateTime", {
+        "kind": "primitive",
+        "primitive": "date",
+        "qualifiers": {"date": {"dateFractions": "dateTime"}}
+      }],
+      ["qualifiedTime", {
+        "kind": "primitive",
+        "primitive": "date",
+        "qualifiers": {"date": {"dateFractions": "time"}}
+      }],
+      ["reference", {
+        "kind": "reference",
+        "target": {"kind": "catalog", "name": "Products"}
+      }],
+      ["object", {
+        "kind": "object",
+        "target": {"kind": "document", "name": "SalesOrder"}
+      }],
+      ["recordSet", {
+        "kind": "recordSet",
+        "target": {"kind": "informationRegister", "name": "Prices"}
+      }],
+      ["manager", {
+        "kind": "manager",
+        "target": {"kind": "catalog", "name": "Products"}
+      }],
+      ["key", {
+        "kind": "key",
+        "target": {"kind": "accumulationRegister", "name": "Balances"}
+      }],
+      ["enumeration", {
+        "kind": "enumeration",
+        "target": {"kind": "enumeration", "name": "Status"}
+      }],
+      ["definedType", {
+        "kind": "definedType",
+        "target": {"kind": "definedType", "name": "Identifier"}
+      }],
+      ["unknown", {"kind": "unknown", "ordinal": 7}]
+    ]
+  }
+}

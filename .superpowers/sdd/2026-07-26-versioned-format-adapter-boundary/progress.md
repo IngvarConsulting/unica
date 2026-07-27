@@ -65,3 +65,5 @@ Task 5: fix round 5 review failed — enum owner/context authority still permits
 Task 5: fix round 6 started (base 1a2071d3).
 Task 5: fix round 6 review failed — spreadsheet template owner is still inferred from TemplateType alias rather than legacy object identity; schema guard never exercises nonempty operation binding, semantic actions, or relation pages.
 Task 5: fix round 7 started (base de4d9410).
+Task 5: fix round 7 review failed — full public-contract specimen is structurally deep but not variant-complete across identities, coverage/resolution/status/capability/action profiles, and PropertyValue variants; report overstates static-specimen regeneration.
+Task 5: fix round 8 started (base 4997a5bc).

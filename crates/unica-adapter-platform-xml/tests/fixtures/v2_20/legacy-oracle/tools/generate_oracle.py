@@ -29,6 +29,9 @@ ENUM_ALIAS_EXECUTIONS_PATH = ORACLE_DIR / "enum-alias-executions.json"
 NEW_ONLY_CONTRACT_PATH = ORACLE_DIR / "new-only-contract.json"
 NEW_ONLY_CONTRACT_SOURCE_PATH = ORACLE_DIR / "new-only-contract-source.json"
 FULL_PUBLIC_CONTRACT_SPECIMEN_PATH = ORACLE_DIR / "full-public-contract-specimen.json"
+PUBLIC_CONTRACT_VARIANT_SPECIMEN_PATH = (
+    ORACLE_DIR / "public-contract-variant-specimen.json"
+)
 ORACLE_PATH = ORACLE_DIR / "legacy-semantic-oracle.json"
 MANIFEST_PATH = ORACLE_DIR / "oracle-manifest.json"
 
@@ -1896,6 +1899,10 @@ def provenance_entries(
     add("independentCrosswalk", CROSSWALK_PATH)
     add("rightsTargetCrosswalk", RIGHTS_TARGET_CROSSWALK_PATH)
     add("fullPublicContractSpecimen", FULL_PUBLIC_CONTRACT_SPECIMEN_PATH)
+    add(
+        "publicContractVariantSpecimen",
+        PUBLIC_CONTRACT_VARIANT_SPECIMEN_PATH,
+    )
     add("newOnlyContractSource", NEW_ONLY_CONTRACT_SOURCE_PATH)
     add("newOnlyContract", NEW_ONLY_CONTRACT_PATH, new_only_contract_data)
     for path in inputs["referenceSources"].values():
