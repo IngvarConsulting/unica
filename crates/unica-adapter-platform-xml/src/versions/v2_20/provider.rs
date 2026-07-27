@@ -54,6 +54,39 @@ impl PlatformXmlProvider {
         Self::capture_root_with_hook(root, || {})
     }
 
+    pub(crate) fn capture_authorized_root(
+        root: &Path,
+        authorized_root: &Path,
+    ) -> Result<Option<Self>, SourceAdapterError> {
+        let before = Self::authorize_unscoped_target(root, authorized_root)?;
+        let metadata = match fs::symlink_metadata(&before.target) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let after = Self::authorize_unscoped_target(root, authorized_root)?;
+                if before.target != after.target || before.boundary != after.boundary {
+                    return Err(stale());
+                }
+                return Ok(None);
+            }
+            Err(_) => return Err(unavailable("authorized source root")),
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_dir() || !before.target_is_directory {
+            return Err(unavailable(
+                "authorized source root must be a regular directory",
+            ));
+        }
+        let provider = Self::open(&before.target)?;
+        let after = Self::authorize_unscoped_target(root, authorized_root)?;
+        if before.target != after.target
+            || before.boundary != after.boundary
+            || !after.target_is_directory
+            || provider.captured_source_root() != before.target
+        {
+            return Err(stale());
+        }
+        Ok(Some(provider))
+    }
+
     pub(crate) fn capture(
         target: impl AsRef<Path>,
         source_root: impl AsRef<Path>,

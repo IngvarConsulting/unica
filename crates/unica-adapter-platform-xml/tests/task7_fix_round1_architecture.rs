@@ -159,15 +159,24 @@ fn task7_moved_flows_have_no_native_layout_and_remaining_joins_are_writer_locati
     let validation = production(include_str!(
         "../../unica-coder/src/infrastructure/native_operations/meta_validation_context.rs"
     ));
+    let project_sources =
+        production(include_str!("../../unica-coder/src/infrastructure/project_sources.rs"));
+    let project_source_domain =
+        production(include_str!("../../unica-coder/src/domain/project_sources.rs"));
     for (name, source) in [
         ("support guard", support_guard),
         ("validation context", validation),
+        ("project source discovery", project_sources),
+        ("project source domain", project_source_domain),
     ] {
         for forbidden in [
             "Configuration.xml",
+            "ConfigDumpInfo.xml",
             "ParentConfigurations.bin",
             "MetaDataObject",
             "MDClasses",
+            r#""ExternalDataProcessor""#,
+            r#""ExternalReport""#,
         ] {
             assert!(
                 !source.contains(forbidden),

@@ -21,6 +21,7 @@ pub(crate) mod projector;
 pub(crate) mod provider;
 pub(crate) mod schema;
 pub(crate) mod semantic_map;
+pub(crate) mod source_sets;
 pub(crate) mod support;
 pub(crate) mod xml;
 

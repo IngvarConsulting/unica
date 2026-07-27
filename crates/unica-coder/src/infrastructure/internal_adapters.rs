@@ -3,7 +3,6 @@ use crate::application::{
     DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
 };
 use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
-use crate::domain::project_sources::{config_dump_info_xml_kind, ConfigDumpInfoXmlKind};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::metadata_kinds::{metadata_kind, metadata_kind_by_directory};
@@ -16,6 +15,8 @@ use crate::infrastructure::redaction::{is_secret_key, redactor};
 use crate::infrastructure::runtime_jobs::{
     self, RuntimeJobOperation, RuntimeJobRequest, RuntimeJobService,
 };
+use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
+use unica_format_core::ports::ReservedSourceArtifactKind;
 use crate::infrastructure::source_roots::normalize_path_identity;
 use crate::infrastructure::source_roots::resolve_source_root;
 use crate::infrastructure::workspace::discover_workspace;
@@ -141,7 +142,7 @@ struct GitIndexPath {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GitBlobClassification {
-    Classified(ConfigDumpInfoXmlKind),
+    Classified(ReservedSourceArtifactKind),
     Inconclusive,
     Cancelled,
 }
@@ -467,15 +468,11 @@ impl<'a> GitTrackingAdapter<'a> {
                 GitBlobClassification::Cancelled => {
                     return ConfigDumpInfoGitCheck::Cancelled;
                 }
-                GitBlobClassification::Classified(ConfigDumpInfoXmlKind::RuntimeSidecar) => {
+                GitBlobClassification::Classified(ReservedSourceArtifactKind::RuntimeState) => {
                     runtime_paths.push(entry.path);
                 }
-                GitBlobClassification::Classified(
-                    ConfigDumpInfoXmlKind::ExternalProcessor
-                    | ConfigDumpInfoXmlKind::ExternalReport
-                    | ConfigDumpInfoXmlKind::MetadataDescriptor,
-                ) => {}
-                GitBlobClassification::Classified(ConfigDumpInfoXmlKind::Other)
+                GitBlobClassification::Classified(ReservedSourceArtifactKind::AuthoredSource) => {}
+                GitBlobClassification::Classified(ReservedSourceArtifactKind::Unknown)
                 | GitBlobClassification::Inconclusive => {
                     ambiguous_paths.push(entry.path);
                 }
@@ -518,7 +515,10 @@ impl<'a> GitTrackingAdapter<'a> {
         {
             return GitBlobClassification::Inconclusive;
         }
-        GitBlobClassification::Classified(config_dump_info_xml_kind(output.stdout.as_bytes()))
+        GitBlobClassification::Classified(
+            PlatformXmlAdapterFactory::new()
+                .classify_reserved_source_artifact(output.stdout.as_bytes()),
+        )
     }
 }
 

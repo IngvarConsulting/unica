@@ -12,10 +12,13 @@ use unica_format_core::{
         FormatInspectionResult, FormatReadRequest, OperationalAdapterRegistration,
         OperationalSourceSession, OwnerResolutionMode, OwnerResolutionRequest,
         OwnerResolutionResult, OwnershipPort, ProbePort, ProbeResult, ReadPort,
-        SourceAdapterRegistration, SupportEvidence,
+        ReservedSourceArtifactKind, SourceAdapterRegistration, SourceSetMatch, SupportEvidence,
         SupportInspectionRequest, SupportPort, SupportSourceState, SupportVendorEvidence,
     },
-    source::{SourceAdapterError, SourceAdapterErrorKind, SourceContext, SourceFamily},
+    source::{
+        ConfiguredSourceSetKind, SourceAdapterError, SourceAdapterErrorKind, SourceContext,
+        SourceFamily,
+    },
 };
 
 use crate::versions::v2_20;
@@ -99,6 +102,22 @@ impl PlatformXmlAdapterFactory {
                 mode,
             ),
         )
+    }
+
+    pub fn inspect_source_set(
+        self,
+        source_root: &Path,
+        authorized_root: &Path,
+        kind: ConfiguredSourceSetKind,
+    ) -> Result<SourceSetMatch, SourceAdapterError> {
+        v2_20::source_sets::inspect(source_root, authorized_root, kind)
+    }
+
+    pub fn classify_reserved_source_artifact(
+        self,
+        bytes: &[u8],
+    ) -> ReservedSourceArtifactKind {
+        v2_20::source_sets::classify_reserved_source_artifact(bytes)
     }
 
     #[allow(clippy::type_complexity, clippy::too_many_arguments)]

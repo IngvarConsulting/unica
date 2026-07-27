@@ -1,6 +1,5 @@
 use crate::domain::project_sources::{
-    config_dump_info_xml_kind, ConfigDumpInfoXmlKind, ProjectSourceMap, ProjectSourceSet,
-    SourceFormat, SourceSetKind,
+    ProjectSourceMap, ProjectSourceSet, SourceFormat, SourceSetKind,
 };
 use crate::domain::source_roots::select_default_source_set;
 use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
@@ -10,10 +9,13 @@ use crate::infrastructure::source_roots::{
 };
 use serde_yaml::Value as YamlValue;
 use std::collections::BTreeMap;
-use std::io::Read;
 use std::path::{Path, PathBuf};
+use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
+use unica_format_core::{
+    ports::SourceSetMatch,
+    source::ConfiguredSourceSetKind,
+};
 
-const MAX_RESERVED_EXTERNAL_DESCRIPTOR_BYTES: u64 = 8 * 1024 * 1024;
 const EDT_SOURCE_MARKERS: &[&str] = &[
     ".project",
     "DT-INF/PROJECT.PMF",
@@ -289,9 +291,12 @@ fn autodetect_source_sets(
 ) -> Result<Vec<ConfigSourceSet>, String> {
     for path in [".", "src", "src/cf"] {
         let root = workspace_root.join(path);
-        let mut found = false;
+        let mut found = platform_source_set_matches(
+            workspace_root,
+            &root,
+            SourceSetKind::Configuration,
+        )?;
         for marker in [
-            root.join("Configuration.xml"),
             root.join("Configuration/Configuration.mdo"),
             root.join("src/Configuration/Configuration.mdo"),
         ] {
@@ -315,7 +320,13 @@ fn detect_source_set_format(
     provenance: &mut ProjectSourceMapProvenance,
 ) -> Result<ProjectSourceSet, String> {
     let source_root = workspace_root.join(&source_set.path);
-    let platform_evidence = platform_xml_evidence(workspace_root, &source_root, source_set.kind);
+    let platform_evidence =
+        match normalize_contained_source_root(workspace_root, Path::new(&source_set.path)) {
+            Ok(normalized_root) => {
+                platform_xml_evidence(workspace_root, &normalized_root, source_set.kind)?
+            }
+            Err(_) => Vec::new(),
+        };
     let edt_evidence = edt_evidence(workspace_root, &source_root, provenance)?;
     let source_format = classify_source_format(
         !platform_evidence.is_empty(),
@@ -363,92 +374,35 @@ fn platform_xml_evidence(
     workspace_root: &Path,
     source_root: &Path,
     kind: SourceSetKind,
-) -> Vec<String> {
-    let mut evidence = Vec::new();
-    // The exact configuration descriptor is authorization-bound by the
-    // platform-owner resolver. Keeping format detection itself non-owning also
-    // preserves the structured owner diagnostic for a link/reparse candidate.
-    push_existing(
-        &mut evidence,
-        workspace_root,
-        &source_root.join("Configuration.xml"),
-    );
-
-    if matches!(
-        kind,
-        SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
-    ) {
-        // Multiplicity does not affect source-format classification: one or
-        // several descriptor files are the same `has_platform_evidence=true`.
-        // The target-specific owner resolver binds exact descriptor bytes, and
-        // root-level external mutations additionally bind directory membership.
-        if let Ok(entries) = std::fs::read_dir(source_root) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|ext| ext.to_str()) == Some("xml")
-                    && !is_config_dump_info_sidecar(&path, kind)
-                {
-                    push_existing(&mut evidence, workspace_root, &path);
-                }
-            }
-        }
-    }
-    evidence.sort();
-    evidence.dedup();
-    evidence
+) -> Result<Vec<String>, String> {
+    platform_source_set_matches(workspace_root, source_root, kind).map(|matched| {
+        matched
+            .then(|| "adapter:source-family".to_string())
+            .into_iter()
+            .collect()
+    })
 }
 
-fn is_config_dump_info_sidecar(path: &Path, kind: SourceSetKind) -> bool {
-    if !has_config_dump_info_filename(path) {
-        return false;
-    }
-    !matches!(
-        (config_dump_info_xml_file_kind(path), kind),
-        (
-            ConfigDumpInfoXmlKind::ExternalProcessor,
-            SourceSetKind::ExternalProcessor
-        ) | (
-            ConfigDumpInfoXmlKind::ExternalReport,
-            SourceSetKind::ExternalReport
-        )
-    )
-}
-
-fn config_dump_info_xml_file_kind(path: &Path) -> ConfigDumpInfoXmlKind {
-    if !has_config_dump_info_filename(path) {
-        return ConfigDumpInfoXmlKind::Other;
-    }
-    let Ok(link_metadata) = std::fs::symlink_metadata(path) else {
-        return ConfigDumpInfoXmlKind::Other;
+fn platform_source_set_matches(
+    workspace_root: &Path,
+    source_root: &Path,
+    kind: SourceSetKind,
+) -> Result<bool, String> {
+    let kind = match kind {
+        SourceSetKind::Configuration => ConfiguredSourceSetKind::Configuration,
+        SourceSetKind::Extension => ConfiguredSourceSetKind::Extension,
+        SourceSetKind::ExternalProcessor => ConfiguredSourceSetKind::ExternalProcessor,
+        SourceSetKind::ExternalReport => ConfiguredSourceSetKind::ExternalReport,
     };
-    if link_metadata.file_type().is_symlink() || !link_metadata.file_type().is_file() {
-        return ConfigDumpInfoXmlKind::Other;
-    }
-    let Ok(mut file) = std::fs::File::open(path) else {
-        return ConfigDumpInfoXmlKind::Other;
-    };
-    let Ok(metadata) = file.metadata() else {
-        return ConfigDumpInfoXmlKind::Other;
-    };
-    if !metadata.file_type().is_file() || metadata.len() > MAX_RESERVED_EXTERNAL_DESCRIPTOR_BYTES {
-        return ConfigDumpInfoXmlKind::Other;
-    }
-    let mut bytes = Vec::new();
-    if (&mut file)
-        .take(MAX_RESERVED_EXTERNAL_DESCRIPTOR_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .is_err()
-        || bytes.len() as u64 > MAX_RESERVED_EXTERNAL_DESCRIPTOR_BYTES
-    {
-        return ConfigDumpInfoXmlKind::Other;
-    }
-    config_dump_info_xml_kind(&bytes)
-}
-
-fn has_config_dump_info_filename(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.eq_ignore_ascii_case("ConfigDumpInfo.xml"))
+    PlatformXmlAdapterFactory::new()
+        .inspect_source_set(source_root, workspace_root, kind)
+        .map(|result| result == SourceSetMatch::Match)
+        .map_err(|error| {
+            format!(
+                "source adapter inspection failed: {:?}",
+                error.kind
+            )
+        })
 }
 
 fn edt_evidence(
@@ -480,12 +434,6 @@ fn push_snapshot_existing(
         evidence.push(path_relative_to(workspace_root, path));
     }
     Ok(())
-}
-
-fn push_existing(evidence: &mut Vec<String>, workspace_root: &Path, path: &Path) {
-    if path.is_file() {
-        evidence.push(path_relative_to(workspace_root, path));
-    }
 }
 
 fn path_relative_to(root: &Path, path: &Path) -> String {
@@ -583,7 +531,7 @@ source-set:
             "external-processors",
             SourceSetKind::ExternalProcessor,
             SourceFormat::PlatformXml,
-            &["epf/PriceLoader.xml"],
+            &["adapter:source-family"],
         );
 
         fs::remove_dir_all(root).unwrap();
@@ -651,7 +599,7 @@ source-set:
             "external-processors",
             SourceSetKind::ExternalProcessor,
             SourceFormat::PlatformXml,
-            &["epf/ConfigDumpInfo.xml"],
+            &["adapter:source-family"],
         );
 
         fs::remove_dir_all(root).unwrap();
@@ -718,7 +666,7 @@ source-set:
     }
 
     #[test]
-    fn symlinked_config_dump_info_is_not_external_source_format_evidence() {
+    fn symlinked_config_dump_info_is_rejected_by_safe_adapter_capture() {
         let root = temp_workspace("unica-source-map-symlinked-external-cdfi");
         write(
             &root.join("v8project.yaml"),
@@ -744,14 +692,11 @@ source-set:
         };
         symlink_result.unwrap();
 
-        let map = discover_project_source_map(&root).unwrap();
-
-        assert_source_set(
-            &map,
-            "external-processors",
-            SourceSetKind::ExternalProcessor,
-            SourceFormat::Unknown,
-            &[],
+        let error = discover_project_source_map(&root)
+            .expect_err("adapter capture must reject symlinked source evidence");
+        assert_eq!(
+            error,
+            "source adapter inspection failed: SourceUnavailable"
         );
 
         fs::remove_dir_all(root).unwrap();
@@ -780,7 +725,7 @@ source-set:
             "main",
             SourceSetKind::Configuration,
             SourceFormat::PlatformXml,
-            &["src/Configuration.xml"],
+            &["adapter:source-family"],
         );
 
         fs::remove_dir_all(root).unwrap();
@@ -847,7 +792,7 @@ source-set:
             "main",
             SourceSetKind::Configuration,
             SourceFormat::PlatformXml,
-            &["src/Configuration.xml"],
+            &["adapter:source-family"],
         );
         assert!(
             map.source_sets
@@ -917,7 +862,7 @@ source-set:
             SourceSetKind::Configuration,
             SourceFormat::Invalid,
             &[
-                "src/Configuration.xml",
+                "adapter:source-family",
                 "src/Configuration/Configuration.mdo",
             ],
         );
@@ -940,7 +885,7 @@ source-set:
             "main",
             SourceSetKind::Configuration,
             SourceFormat::PlatformXml,
-            &["src/Configuration.xml"],
+            &["adapter:source-family"],
         );
         write(&root.join("src/.project"), "<projectDescription/>");
 

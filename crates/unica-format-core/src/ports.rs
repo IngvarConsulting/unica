@@ -28,6 +28,19 @@ pub enum ProbeResult {
     Match(SourceDescriptor),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceSetMatch {
+    NoMatch,
+    Match,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReservedSourceArtifactKind {
+    RuntimeState,
+    AuthoredSource,
+    Unknown,
+}
+
 pub trait ProbePort: Send + Sync {
     fn probe(&self, captured: &CapturedSource) -> Result<ProbeResult, SourceAdapterError>;
 }
