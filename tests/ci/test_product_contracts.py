@@ -4,6 +4,7 @@ import importlib.util
 import json
 import re
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -916,16 +917,28 @@ class ProductContractTests(unittest.TestCase):
         for removed in ("sqlite3", "RLM_SCHEMA_COLUMNS", "check_rlm_schema", "--rlm-db"):
             self.assertNotIn(removed, checker)
 
-        rust_root = repo_root / "crates" / "unica-coder" / "src"
+        lock = tomllib.loads((repo_root / "Cargo.lock").read_text(encoding="utf-8"))
+        dependency_names = {package["name"] for package in lock["package"]}
+        self.assertEqual(
+            sorted(name for name in dependency_names if "sqlite" in name.lower()),
+            [],
+        )
+
+        rust_roots = [
+            repo_root / "crates" / "unica-coder" / "src",
+            repo_root / "crates" / "unica-bootstrap" / "src",
+        ]
         production = "\n".join(
             path.read_text(encoding="utf-8")
+            for rust_root in rust_roots
             for path in sorted(rust_root.rglob("*.rs"))
         )
         for removed in (
             "rusqlite",
+            "libsqlite3",
+            "sqlite3",
             "Connection::open",
             "methods_fts",
-            "object_attributes",
         ):
             self.assertNotIn(removed, production)
 

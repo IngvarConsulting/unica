@@ -578,6 +578,37 @@ def validate_project_map(scenario: dict[str, Any], payload: dict[str, Any] | Non
         scenario["errors"].append(f"project map did not detect {SOURCE_DIR} as platform XML")
 
 
+def validate_code_search(scenario: dict[str, Any], payload: dict[str, Any] | None) -> None:
+    if payload is None:
+        return
+    data = payload.get("data")
+    sections = data.get("sections") if isinstance(data, dict) else None
+    expected = ["rlm", "bsl-analyzer", "git-grep"]
+    providers = (
+        [section.get("provider") for section in sections if isinstance(section, dict)]
+        if isinstance(sections, list)
+        else []
+    )
+    errors: list[str] = []
+    if providers != expected:
+        errors.append(
+            "code search data.sections must contain exactly rlm, bsl-analyzer, git-grep in that order"
+        )
+    elif any(
+        section.get("status") not in {"ok", "empty", "unavailable", "failed"}
+        or not isinstance(section.get("hits"), list)
+        or not isinstance(section.get("diagnostics"), list)
+        or not isinstance(section.get("artifacts"), list)
+        for section in sections
+    ):
+        errors.append(
+            "code search sections must expose a valid status plus hits, diagnostics, and artifacts arrays"
+        )
+    if errors:
+        scenario["status"] = "failed"
+        scenario["errors"].extend(errors)
+
+
 def relpath(path: Path, root: Path) -> str:
     return path.relative_to(root).as_posix()
 
@@ -672,7 +703,7 @@ def base_tool_scenarios(bsp_root: Path) -> list[tuple[str, str, str, dict[str, A
             "BSL indexed search smoke",
             "unica.code.search",
             code_search_args,
-            False,
+            True,
             True,
         ),
     ]
@@ -788,6 +819,8 @@ def build_assessment_report(
         )
         if scenario_id == "project-map":
             validate_project_map(scenario, payload)
+        if scenario_id == "code-search":
+            validate_code_search(scenario, payload)
         scenarios.append(scenario)
         diagnostic_codes.extend(extract_diagnostic_codes(payload))
 

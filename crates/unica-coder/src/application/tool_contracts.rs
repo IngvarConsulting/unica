@@ -1,5 +1,5 @@
 use super::operation_descriptors::{native_operation_descriptor, native_path_alias_groups};
-use super::{RuntimeJobAction, ToolHandler, ToolSpec};
+use super::{CodeIntelligenceOperation, RuntimeJobAction, ToolHandler, ToolSpec};
 use crate::domain::form_edit::{form_edit_definition_schema, validate_form_edit_definition};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
@@ -1491,6 +1491,9 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
         ToolHandler::BuildRuntime { .. } => names.extend(BUILD_ARGS),
         ToolHandler::RuntimeAdapter => names.extend(RUNTIME_ARGS),
         ToolHandler::RuntimeJob { action } => names.extend(runtime_job_args(action)),
+        ToolHandler::CodeIntelligence { operation } => {
+            names.extend(code_intelligence_args(operation))
+        }
         ToolHandler::CodeAdapter { .. } => names.extend(code_args_for(tool.name)),
         ToolHandler::StandardsAdapter { .. } => names.extend(STANDARDS_ARGS),
         ToolHandler::ProjectStatus | ToolHandler::ProjectMap => {}
@@ -1525,12 +1528,15 @@ fn required_args(tool: &ToolSpec) -> Vec<&'static str> {
         } => vec!["query"],
         ToolHandler::RuntimeAdapter => runtime_required_args(tool),
         ToolHandler::RuntimeJob { action } => runtime_job_required_args(action),
+        ToolHandler::CodeIntelligence { operation } => match operation {
+            CodeIntelligenceOperation::Search => vec!["query"],
+            CodeIntelligenceOperation::Definition | CodeIntelligenceOperation::ObjectProfile => {
+                vec!["name"]
+            }
+            CodeIntelligenceOperation::Outline => vec!["path"],
+        },
         ToolHandler::CodeAdapter { .. } => match tool.name {
-            "unica.code.search" => vec!["query"],
-            "unica.code.definition" => vec!["name"],
-            "unica.code.outline" => vec!["path"],
             "unica.code.graph" => vec!["mode"],
-            "unica.meta.profile" => vec!["name"],
             _ => Vec::new(),
         },
         _ => Vec::new(),
@@ -1546,6 +1552,15 @@ fn code_args_for(tool_name: &str) -> &'static [&'static str] {
         "unica.code.diagnostics" => CODE_DIAGNOSTICS_ARGS,
         "unica.meta.profile" => META_PROFILE_ARGS,
         _ => CODE_ARGS,
+    }
+}
+
+fn code_intelligence_args(operation: CodeIntelligenceOperation) -> &'static [&'static str] {
+    match operation {
+        CodeIntelligenceOperation::Search => CODE_SEARCH_ARGS,
+        CodeIntelligenceOperation::Definition => CODE_DEFINITION_ARGS,
+        CodeIntelligenceOperation::Outline => CODE_OUTLINE_ARGS,
+        CodeIntelligenceOperation::ObjectProfile => META_PROFILE_ARGS,
     }
 }
 
@@ -2542,6 +2557,9 @@ fn validate_argument_type(tool_name: &str, key: &str, value: &Value) -> Result<(
         Some("object") if !value.is_object() => {
             Err(format!("{tool_name} argument `{key}` must be object"))
         }
+        Some("string") if !value.is_string() => {
+            Err(format!("{tool_name} argument `{key}` must be string"))
+        }
         _ => Ok(()),
     }
 }
@@ -2604,6 +2622,8 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
             | "includeMethods"
     ) {
         Some("boolean")
+    } else if key == "query" {
+        Some("string")
     } else if matches!(key, "definition" | "selector") {
         Some("object")
     } else if matches!(
@@ -3805,6 +3825,10 @@ mod tests {
 
         for args in [
             json!({"query": "   "}),
+            json!({"query": 42}),
+            json!({"query": null}),
+            json!({"query": true}),
+            json!({"query": {}}),
             json!({"query": "Post", "limit": 0}),
             json!({"query": "Post", "limit": 51}),
         ] {

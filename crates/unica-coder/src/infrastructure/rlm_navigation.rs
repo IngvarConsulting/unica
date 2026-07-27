@@ -109,12 +109,19 @@ impl<'a> RlmNavigationAdapter<'a> {
                 "{tool_name} provider deadline exceeded before readiness check"
             ));
         }
-        let db_path = match self.client.readiness(
+        let readiness = match self.client.readiness(
             &context.workspace,
             &context.source_root.path,
             readiness_timeout,
             cancellation,
-        )? {
+        ) {
+            Ok(readiness) => readiness,
+            Err(error) if error.starts_with(CANCELLED_PREFIX) => {
+                return Ok(cancelled_client_outcome(tool_name, &error));
+            }
+            Err(error) => return Err(error),
+        };
+        let db_path = match readiness {
             IndexReadiness::Ready { db_path } => db_path,
             other => return Ok(index_unavailable_outcome(tool_name, other)),
         };
@@ -123,13 +130,19 @@ impl<'a> RlmNavigationAdapter<'a> {
             return Err(format!("{tool_name} provider deadline exceeded"));
         }
         let operation = operation_for_request(request);
-        let output = self.client.call(
+        let output = match self.client.call(
             &context.workspace,
             &context.source_root.path,
             operation,
             timeout,
             cancellation,
-        )?;
+        ) {
+            Ok(output) => output,
+            Err(error) if error.starts_with(CANCELLED_PREFIX) => {
+                return Ok(cancelled_client_outcome(tool_name, &error));
+            }
+            Err(error) => return Err(error),
+        };
         let value: Value = serde_json::from_str(output.result_text.trim())
             .map_err(|error| format!("{tool_name} received invalid RLM helper JSON: {error}"))?;
         if let Some(error) = value
@@ -184,14 +197,10 @@ fn operation_for_request(request: &CodeIntelligenceReadRequest) -> WorkspaceRlmO
         CodeIntelligenceReadRequest::ObjectProfile {
             name,
             sections,
-            include_flow,
-            include_code_usages,
             limit,
         } => WorkspaceRlmOperation::ObjectProfile {
             name: name.clone(),
             sections: sections.clone(),
-            include_flow: *include_flow,
-            include_code_usages: *include_code_usages,
             limit: *limit,
         },
     }
@@ -209,63 +218,71 @@ fn render_definition(value: &Value) -> Result<String, String> {
     if definitions.is_empty() {
         return Ok(format!("No RLM definitions found for `{name}`."));
     }
-    definitions
-        .iter()
-        .map(|definition| {
-            let file = required_value_string(definition, "file", "RLM definition")?;
-            let line = definition
-                .get("line")
-                .and_then(Value::as_u64)
-                .unwrap_or_default();
-            let kind = definition
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or("method");
-            let method_name = if name.is_empty() { "<unknown>" } else { name };
-            let params = definition
-                .get("params")
-                .and_then(Value::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                })
-                .unwrap_or_default();
-            let export = if definition
-                .get("is_export")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-            {
-                " export"
-            } else {
-                ""
-            };
-            let metadata = [
-                ("category", definition.get("category")),
-                ("object", definition.get("object_name")),
-                ("moduleType", definition.get("module_type")),
-            ]
-            .into_iter()
-            .filter_map(|(label, value)| {
-                value
-                    .and_then(Value::as_str)
-                    .filter(|value| !value.is_empty())
-                    .map(|value| format!("{label}={value}"))
+    let mut lines = Vec::new();
+    for (index, definition) in definitions.iter().enumerate() {
+        let Some(file) = definition
+            .get("file")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        else {
+            lines.push(format!(
+                "diagnostic: ignored malformed RLM definition #{}: missing file",
+                index + 1
+            ));
+            continue;
+        };
+        let line = definition
+            .get("line")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        let kind = definition
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("method");
+        let method_name = if name.is_empty() { "<unknown>" } else { name };
+        let params = definition
+            .get("params")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             })
-            .collect::<Vec<_>>();
-            let suffix = if metadata.is_empty() {
-                String::new()
-            } else {
-                format!(" [{}]", metadata.join(", "))
-            };
-            Ok(format!(
-                "- {file}:{line} {kind} {method_name}({params}){export}{suffix}"
-            ))
+            .unwrap_or_default();
+        let export = if definition
+            .get("is_export")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            " export"
+        } else {
+            ""
+        };
+        let metadata = [
+            ("category", definition.get("category")),
+            ("object", definition.get("object_name")),
+            ("moduleType", definition.get("module_type")),
+        ]
+        .into_iter()
+        .filter_map(|(label, value)| {
+            value
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(|value| format!("{label}={value}"))
         })
-        .collect::<Result<Vec<_>, String>>()
-        .map(|lines| lines.join("\n"))
+        .collect::<Vec<_>>();
+        let suffix = if metadata.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", metadata.join(", "))
+        };
+        lines.push(format!(
+            "- {file}:{line} {kind} {method_name}({params}){export}{suffix}"
+        ));
+    }
+    Ok(lines.join("\n"))
 }
 
 fn render_outline(value: &Value) -> Result<String, String> {
@@ -483,9 +500,18 @@ fn index_unavailable_outcome(tool_name: &str, readiness: IndexReadiness) -> Adap
     outcome
 }
 
+fn cancelled_client_outcome(tool_name: &str, error: &str) -> AdapterOutcome {
+    AdapterOutcome::cancelled(format!(
+        "{tool_name} {}",
+        error.strip_prefix(CANCELLED_PREFIX).unwrap_or(error).trim()
+    ))
+}
+
 fn readiness_warning(readiness: IndexReadiness) -> String {
     match readiness {
-        IndexReadiness::Ready { .. } => "rlm index ready".to_string(),
+        IndexReadiness::Ready { .. } => {
+            unreachable!("ready indexes are handled before readiness warnings")
+        }
         IndexReadiness::Missing => "rlm index unavailable: index is missing".to_string(),
         IndexReadiness::Stale { status } => format!("rlm index stale: {status}"),
         IndexReadiness::Building => "rlm index building".to_string(),
@@ -542,6 +568,28 @@ mod tests {
             text,
             "- CommonModules/X/Module.bsl:7 function Найти(Значение) export [category=CommonModule, object=X, moduleType=Module]"
         );
+    }
+
+    #[test]
+    fn definition_renderer_keeps_valid_rows_and_reports_malformed_siblings() {
+        let text = render_definition(&json!({
+            "name": "Найти",
+            "definitions": [
+                {
+                    "file": "CommonModules/X/Module.bsl",
+                    "line": 7,
+                    "type": "function"
+                },
+                {
+                    "line": 11,
+                    "type": "procedure"
+                }
+            ]
+        }))
+        .unwrap();
+
+        assert!(text.contains("CommonModules/X/Module.bsl:7"));
+        assert!(text.contains("diagnostic: ignored malformed RLM definition #2"));
     }
 
     #[test]
@@ -619,8 +667,6 @@ mod tests {
                 "functionalOptions".to_string(),
                 "predefinedItems".to_string(),
             ]),
-            include_flow: false,
-            include_code_usages: false,
             limit: 11,
         };
         let operation = operation_for_request(&request);
@@ -634,8 +680,6 @@ mod tests {
                     "functionalOptions".to_string(),
                     "predefinedItems".to_string()
                 ]),
-                include_flow: false,
-                include_code_usages: false,
                 limit: 11
             }
         );
@@ -643,6 +687,75 @@ mod tests {
 
     struct RecordingClient {
         operations: Mutex<Vec<WorkspaceRlmOperation>>,
+    }
+
+    struct CancelledClient {
+        cancel_during_call: bool,
+    }
+
+    impl RlmNavigationClient for CancelledClient {
+        fn readiness(
+            &self,
+            _context: &WorkspaceContext,
+            _source_root: &Path,
+            _timeout: Duration,
+            _cancellation: &CancellationToken,
+        ) -> Result<IndexReadiness, String> {
+            if self.cancel_during_call {
+                Ok(IndexReadiness::Ready {
+                    db_path: PathBuf::from("/tmp/index.db"),
+                })
+            } else {
+                Err("cancelled: readiness stopped".to_string())
+            }
+        }
+
+        fn call(
+            &self,
+            _context: &WorkspaceContext,
+            _source_root: &Path,
+            _operation: WorkspaceRlmOperation,
+            _timeout: Duration,
+            _cancellation: &CancellationToken,
+        ) -> Result<WorkspaceServiceRlmOutput, String> {
+            Err("cancelled: provider call stopped".to_string())
+        }
+    }
+
+    #[test]
+    fn adapter_normalizes_client_cancellation_from_readiness_and_call() {
+        let request = CodeIntelligenceReadRequest::Definition {
+            name: "Найти".to_string(),
+            module_hint: String::new(),
+            limit: 50,
+        };
+        let context = CodeIntelligenceContext::new(
+            WorkspaceContext {
+                cwd: PathBuf::from("/workspace"),
+                workspace_root: PathBuf::from("/workspace"),
+                cache_root: PathBuf::from("/cache"),
+                workspace_epoch: 1,
+            },
+            ResolvedSourceRoot {
+                source_set: Some("main".to_string()),
+                path: PathBuf::from("/workspace/src"),
+            },
+        );
+
+        for cancel_during_call in [false, true] {
+            let outcome =
+                RlmNavigationAdapter::with_client(&CancelledClient { cancel_during_call })
+                    .invoke_resolved_cancellable(
+                        &request,
+                        &context,
+                        ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
+                        &CancellationToken::new(),
+                    )
+                    .expect("client cancellation must be normalized into an outcome");
+
+            assert!(!outcome.ok);
+            assert!(outcome.summary.contains("cancelled"));
+        }
     }
 
     impl RlmNavigationClient for RecordingClient {

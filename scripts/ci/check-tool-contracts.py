@@ -566,23 +566,6 @@ def check_rlm_mtime_recovery_contract(
 """,
             encoding="utf-8",
         )
-        sibling = root / "sibling-extension"
-        sibling.mkdir()
-        sibling.joinpath("Configuration.xml").write_text(
-            """<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
-  <Configuration uuid="00000000-0000-0000-0000-000000000002">
-    <Properties>
-      <Name>ContractExtension</Name>
-      <ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose>
-      <NamePrefix>ct_</NamePrefix>
-    </Properties>
-  </Configuration>
-</MetaDataObject>
-""",
-            encoding="utf-8",
-        )
-
         git_without_signing = [
             "git",
             "-c",

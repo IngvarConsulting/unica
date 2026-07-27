@@ -23,8 +23,6 @@ description: "Поиск и исследование BSL-кода и точек 
 - `unica.code.search.limit` is the per-provider result cap: `1..50`, default `20`.
 - Use `unica.code.graph` for callers, callees, neighbors, graph overview, and impact analysis when a method or metadata node id is known or can be resolved.
 - Use `unica.meta.profile` for a compact metadata object profile: structure, modules, roles, event subscriptions, functional options, and predefined items.
-- Use `unica.code.search` for broad BSL search and mixed analyzer/index results.
-
 ## Workflow
 
 1. Map the workspace with `unica.project.map` when the active source-set or source format is unclear.

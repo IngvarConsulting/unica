@@ -65,10 +65,15 @@ impl<'a> GitGrepProvider<'a> {
             );
         }
         let args = vec![
+            "-c".to_string(),
+            "core.quotepath=false".to_string(),
             "grep".to_string(),
             "--no-color".to_string(),
+            "--untracked".to_string(),
             "-n".to_string(),
             "-F".to_string(),
+            "-m".to_string(),
+            request.limit.to_string(),
             "-e".to_string(),
             request.query.clone(),
             "--".to_string(),
@@ -211,6 +216,9 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
                         .push(format!("bsl-analyzer stderr: {}", output.stderr.trim()));
                 }
                 section
+            }
+            Err(error) if is_provider_unavailable_error(&error) => {
+                unavailable_section(ProviderId::BslAnalyzer, error)
             }
             Err(error) => failed_section(ProviderId::BslAnalyzer, error),
         }
@@ -556,7 +564,10 @@ fn parse_bsl_analyzer_search(text: &str) -> ProviderSearchSection {
                     .push_str(snippet_line.strip_prefix(' ').unwrap_or(snippet_line));
             }
         } else if line.starts_with("--") && line.ends_with("--") {
-            diagnostics.push(line.trim_matches('-').trim().to_string());
+            let diagnostic = line.trim_matches('-').trim();
+            if !diagnostic.is_empty() {
+                diagnostics.push(diagnostic.to_string());
+            }
         } else if line.is_empty() {
             if let Some(hit) = current.take() {
                 hits.push(hit);
@@ -644,7 +655,14 @@ fn git_grep_section(output: ProcessOutput, limit: usize) -> ProviderSearchSectio
     if no_matches {
         return empty_section(ProviderId::GitGrep);
     }
-    if !output.status_success {
+    if !output.status_success
+        && output.stderr.contains("not a git repository")
+        && process_exit_code_is(&output.status, 128)
+    {
+        return unavailable_section(ProviderId::GitGrep, output.stderr.trim().to_string());
+    }
+    let captured_success = output.stdout_truncated && process_exit_code_is(&output.status, 0);
+    if !output.status_success && !captured_success {
         let detail = if output.stderr.trim().is_empty() {
             format!("git grep exited with status {}", output.status)
         } else {
@@ -715,6 +733,19 @@ fn parse_git_grep_line(line: &str) -> Option<ProviderSearchHit> {
         snippet: snippet.to_string(),
         attributes: Map::new(),
     })
+}
+
+fn is_provider_unavailable_error(error: &str) -> bool {
+    [
+        "could not locate Unica plugin root",
+        "Unica third-party manifest not found",
+        "bundled tool binary is not present",
+        "tool not found in manifest",
+        "tool not found in tools lock",
+        "No such file or directory",
+    ]
+    .iter()
+    .any(|marker| error.contains(marker))
 }
 
 fn process_exit_code_is(status: &str, code: i32) -> bool {
@@ -835,6 +866,24 @@ mod tests {
         let commands = runner.commands.lock().unwrap();
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].cwd, PathBuf::from("/workspace/src"));
+        assert_eq!(
+            commands[0].args,
+            [
+                "-c",
+                "core.quotepath=false",
+                "grep",
+                "--no-color",
+                "--untracked",
+                "-n",
+                "-F",
+                "-m",
+                "20",
+                "-e",
+                "Post.*",
+                "--",
+                ".",
+            ]
+        );
         assert!(commands[0].args.iter().any(|arg| arg == "-F"));
         assert!(commands[0].args.iter().any(|arg| arg == "Post.*"));
         assert!(!commands[0].args.iter().any(|arg| arg == "-i"));
@@ -871,6 +920,89 @@ mod tests {
         assert_eq!(section.hits[1].path, "a/Module.bsl");
         assert_eq!(section.hits[1].line, 7);
         assert!(section.hits.iter().all(|hit| hit.provider_score.is_none()));
+    }
+
+    #[test]
+    fn git_grep_preserves_utf8_paths() {
+        let runner = FakeRunner {
+            output: output("Catalogs/Номенклатура.xml:7:<Name>Номенклатура</Name>\n"),
+            commands: Mutex::new(Vec::new()),
+        };
+
+        let section = GitGrepProvider::with_runner(&runner).search(
+            &SearchRequest {
+                query: "Номенклатура".to_string(),
+                limit: 20,
+            },
+            &context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
+            &CancellationToken::new(),
+        );
+
+        assert_eq!(section.status, ProviderSectionStatus::Ok);
+        assert_eq!(section.hits[0].path, "Catalogs/Номенклатура.xml");
+    }
+
+    #[test]
+    fn git_grep_keeps_valid_hits_when_capture_was_truncated() {
+        let runner = FakeRunner {
+            output: ProcessOutput {
+                status_success: false,
+                status: "exit status: 0".to_string(),
+                stdout: "CommonModules/Test/Ext/Module.bsl:1:Procedure Test()\n".to_string(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: true,
+            },
+            commands: Mutex::new(Vec::new()),
+        };
+
+        let section = GitGrepProvider::with_runner(&runner).search(
+            &SearchRequest {
+                query: "Procedure".to_string(),
+                limit: 20,
+            },
+            &context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
+            &CancellationToken::new(),
+        );
+
+        assert_eq!(section.status, ProviderSectionStatus::Ok);
+        assert_eq!(section.hits.len(), 1);
+        assert!(section
+            .diagnostics
+            .iter()
+            .any(|item| item.contains("truncated")));
+    }
+
+    #[test]
+    fn git_grep_reports_non_repository_workspace_as_unavailable() {
+        let runner = FakeRunner {
+            output: ProcessOutput {
+                status_success: false,
+                status: "exit status: 128".to_string(),
+                stdout: String::new(),
+                stderr: "fatal: not a git repository".to_string(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+            },
+            commands: Mutex::new(Vec::new()),
+        };
+
+        let section = GitGrepProvider::with_runner(&runner).search(
+            &SearchRequest {
+                query: "Procedure".to_string(),
+                limit: 20,
+            },
+            &context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
+            &CancellationToken::new(),
+        );
+
+        assert_eq!(section.status, ProviderSectionStatus::Unavailable);
+        assert!(section.hits.is_empty());
     }
 
     #[test]
@@ -1001,9 +1133,63 @@ mod tests {
             .any(|item| item.contains("malformed bsl-analyzer search header")));
     }
 
+    #[test]
+    fn bsl_analyzer_separator_without_text_does_not_add_empty_diagnostic() {
+        let section = parse_bsl_analyzer_search(
+            "#1 [L] CommonModules/X/Ext/Module.bsl:2 :: First (procedure)\n\
+               │ Procedure First()\n\
+             \n\
+             ----\n",
+        );
+
+        assert_eq!(section.status, ProviderSectionStatus::Ok);
+        assert_eq!(section.hits.len(), 1);
+        assert!(section
+            .diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.is_empty()));
+    }
+
     struct FakeBslClient {
         calls: Mutex<Vec<(PathBuf, Value, Duration)>>,
         output: WorkspaceServiceBslOutput,
+    }
+
+    struct FailingBslClient {
+        error: String,
+    }
+
+    impl BslSearchClient for FailingBslClient {
+        fn search(
+            &self,
+            _context: &CodeIntelligenceContext,
+            _arguments: Value,
+            _timeout: Duration,
+            _cancellation: &CancellationToken,
+        ) -> Result<WorkspaceServiceBslOutput, String> {
+            Err(self.error.clone())
+        }
+    }
+
+    #[test]
+    fn bsl_analyzer_missing_bundled_runtime_is_unavailable() {
+        let client = FailingBslClient {
+            error: "could not locate Unica plugin root for workspace bsl-analyzer service"
+                .to_string(),
+        };
+
+        let section = BslAnalyzerProvider::with_client(&client).search(
+            &SearchRequest {
+                query: "Post".to_string(),
+                limit: 20,
+            },
+            &context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
+            &CancellationToken::new(),
+        );
+
+        assert_eq!(section.status, ProviderSectionStatus::Unavailable);
+        assert_eq!(section.diagnostics, vec![client.error]);
     }
 
     impl BslSearchClient for FakeBslClient {

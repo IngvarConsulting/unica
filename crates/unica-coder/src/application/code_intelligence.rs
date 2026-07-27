@@ -1,7 +1,8 @@
 use crate::domain::cancellation::{cancelled_error, CancellationToken};
 use crate::domain::code_intelligence::{
-    CodeIntelligenceContext, CodeIntelligenceRegistry, CodeSearchResult, ProviderDeadline,
-    ProviderId, ProviderSearchSection, ProviderSectionStatus, SearchRequest,
+    CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadRequest,
+    CodeIntelligenceRegistry, CodeSearchResult, ProviderDeadline, ProviderId, ProviderReadOutcome,
+    ProviderSearchSection, ProviderSectionStatus, SearchRequest,
 };
 use std::any::Any;
 use std::collections::HashMap;
@@ -13,6 +14,7 @@ use std::time::{Duration, Instant};
 const PUBLIC_SEARCH_BUDGET: Duration = Duration::from_secs(120);
 const RLM_SEARCH_BUDGET: Duration = Duration::from_secs(45);
 const GIT_GREP_SEARCH_BUDGET: Duration = Duration::from_secs(15);
+const PROVIDER_READ_BUDGET: Duration = Duration::from_secs(45);
 const MAX_CONCURRENT_WORKERS_PER_PROVIDER: usize = 32;
 
 #[derive(Debug)]
@@ -84,8 +86,6 @@ impl CodeSearchCoordinator {
             .iter()
             .map(|_| cancellation.linked_child())
             .collect::<Vec<_>>();
-        let mut timed_out = vec![false; providers.len()];
-
         for (index, provider) in providers.into_iter().enumerate() {
             let provider_id = provider.id();
             let Some(worker_permit) = self.worker_admission.try_acquire(provider_id) else {
@@ -139,12 +139,7 @@ impl CodeSearchCoordinator {
         drop(tx);
 
         while slots.iter().any(Option::is_none) {
-            if cancellation.is_cancelled()
-                || provider_cancellations
-                    .iter()
-                    .enumerate()
-                    .any(|(index, token)| !timed_out[index] && token.is_cancelled())
-            {
+            if cancellation.is_cancelled() {
                 for token in &provider_cancellations {
                     token.cancel();
                 }
@@ -156,7 +151,6 @@ impl CodeSearchCoordinator {
             let now = Instant::now();
             for (index, slot) in slots.iter_mut().enumerate() {
                 if slot.is_none() && now >= provider_deadlines[index] {
-                    timed_out[index] = true;
                     provider_cancellations[index].cancel();
                     *slot = Some(provider_timeout_section(
                         provider_ids[index],
@@ -185,12 +179,7 @@ impl CodeSearchCoordinator {
             }
         }
 
-        if cancellation.is_cancelled()
-            || provider_cancellations
-                .iter()
-                .enumerate()
-                .any(|(index, token)| !timed_out[index] && token.is_cancelled())
-        {
+        if cancellation.is_cancelled() {
             for token in &provider_cancellations {
                 token.cancel();
             }
@@ -206,15 +195,19 @@ impl CodeSearchCoordinator {
             .into_iter()
             .zip(provider_ids)
             .map(|(section, provider)| {
-                section.unwrap_or_else(|| ProviderSearchSection {
-                    provider,
-                    status: ProviderSectionStatus::Failed,
-                    hits: Vec::new(),
-                    diagnostics: vec!["provider worker ended without a result".to_string()],
-                    artifacts: Vec::new(),
-                })
+                normalize_provider_section(
+                    section.unwrap_or_else(|| ProviderSearchSection {
+                        provider,
+                        status: ProviderSectionStatus::Failed,
+                        hits: Vec::new(),
+                        diagnostics: vec!["provider worker ended without a result".to_string()],
+                        artifacts: Vec::new(),
+                    }),
+                    request.limit,
+                )
             })
             .collect::<Vec<_>>();
+        self.worker_lifecycle.reap();
         let ok = sections.iter().any(|section| {
             matches!(
                 section.status,
@@ -223,6 +216,9 @@ impl CodeSearchCoordinator {
         });
         let mut warnings = Vec::new();
         let mut errors = Vec::new();
+        if sections.is_empty() {
+            errors.push("no search-capable code intelligence providers are registered".to_string());
+        }
         for section in &sections {
             if matches!(
                 section.status,
@@ -295,6 +291,14 @@ impl ProviderWorkerLifecycle {
         }
     }
 
+    fn reap(&self) {
+        let mut handles = self
+            .handles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Self::reap_finished(&mut handles);
+    }
+
     fn reap_finished(handles: &mut Vec<thread::JoinHandle<()>>) {
         let mut index = 0;
         while index < handles.len() {
@@ -316,6 +320,29 @@ impl ProviderWorkerLifecycle {
         Self::reap_finished(&mut handles);
         handles.len()
     }
+}
+
+fn normalize_provider_section(
+    mut section: ProviderSearchSection,
+    limit: usize,
+) -> ProviderSearchSection {
+    if matches!(
+        section.status,
+        ProviderSectionStatus::Failed | ProviderSectionStatus::Unavailable
+    ) {
+        section.hits.clear();
+        return section;
+    }
+    section.hits.truncate(limit);
+    for (index, hit) in section.hits.iter_mut().enumerate() {
+        hit.rank = index + 1;
+    }
+    section.status = if section.hits.is_empty() {
+        ProviderSectionStatus::Empty
+    } else {
+        ProviderSectionStatus::Ok
+    };
+    section
 }
 
 impl ProviderWorkerAdmission {
@@ -391,6 +418,113 @@ fn global_provider_worker_lifecycle() -> Arc<ProviderWorkerLifecycle> {
 
 pub(crate) fn drain_code_search_workers(timeout: Duration) -> bool {
     global_provider_worker_lifecycle().drain(timeout)
+}
+
+pub(crate) fn execute_provider_read(
+    provider: Arc<dyn CodeIntelligenceProvider>,
+    request: CodeIntelligenceReadRequest,
+    context: CodeIntelligenceContext,
+    cancellation: &CancellationToken,
+) -> Result<ProviderReadOutcome, String> {
+    execute_provider_read_with_policy(
+        provider,
+        request,
+        context,
+        PROVIDER_READ_BUDGET,
+        global_provider_worker_admission(),
+        global_provider_worker_lifecycle(),
+        cancellation,
+    )
+}
+
+fn execute_provider_read_with_policy(
+    provider: Arc<dyn CodeIntelligenceProvider>,
+    request: CodeIntelligenceReadRequest,
+    context: CodeIntelligenceContext,
+    budget: Duration,
+    worker_admission: Arc<ProviderWorkerAdmission>,
+    worker_lifecycle: Arc<ProviderWorkerLifecycle>,
+    cancellation: &CancellationToken,
+) -> Result<ProviderReadOutcome, String> {
+    if cancellation.is_cancelled() {
+        return Err(cancelled_error(
+            "code intelligence read stopped before provider start",
+        ));
+    }
+    let provider_id = provider.id();
+    let _permit = worker_admission.try_acquire(provider_id).ok_or_else(|| {
+        format!(
+            "{} read provider worker capacity exhausted (limit {})",
+            provider_id.as_str(),
+            worker_admission.per_provider_limit
+        )
+    })?;
+    let worker_cancellation = cancellation.linked_child();
+    let worker_token = worker_cancellation.clone();
+    let deadline = Instant::now() + budget;
+    let (tx, rx) = mpsc::sync_channel(1);
+    let handle = thread::Builder::new()
+        .name(format!("unica-code-read-{}", provider_id.as_str()))
+        .spawn(move || {
+            let _permit = _permit;
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                provider.read(
+                    &request,
+                    &context,
+                    ProviderDeadline::new(deadline),
+                    &worker_token,
+                )
+            }))
+            .map_err(|panic| {
+                let detail = panic
+                    .downcast_ref::<&str>()
+                    .map(|value| (*value).to_string())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "unknown panic payload".to_string());
+                format!("{} read provider panicked: {detail}", provider_id.as_str())
+            })
+            .and_then(|result| result);
+            let _ = tx.send(result);
+        })
+        .map_err(|error| {
+            format!(
+                "failed to start {} read provider worker: {error}",
+                provider_id.as_str()
+            )
+        })?;
+    worker_lifecycle.track(handle);
+
+    loop {
+        if cancellation.is_cancelled() {
+            worker_cancellation.cancel();
+            return Err(cancelled_error(
+                "code intelligence read stopped while provider was running",
+            ));
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            worker_cancellation.cancel();
+            return Err(format!(
+                "{} provider exceeded its {} ms read budget",
+                provider_id.as_str(),
+                budget.as_millis()
+            ));
+        }
+        match rx.recv_timeout(remaining.min(Duration::from_millis(25))) {
+            Ok(result) => {
+                worker_lifecycle.reap();
+                return result;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                worker_lifecycle.reap();
+                return Err(format!(
+                    "{} read provider ended without a result",
+                    provider_id.as_str()
+                ));
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -500,15 +634,20 @@ fn render_search_result(result: &CodeSearchResult) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{CodeSearchCoordinator, ProviderWorkerAdmission, ProviderWorkerLifecycle};
-    use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
+    use super::{
+        execute_provider_read_with_policy, CodeSearchCoordinator, ProviderWorkerAdmission,
+        ProviderWorkerLifecycle,
+    };
+    use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::{
-        CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceRegistry,
-        ProviderCapability, ProviderDeadline, ProviderId, ProviderSearchSection,
-        ProviderSectionStatus, SearchRequest,
+        CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadRequest,
+        CodeIntelligenceRegistry, ProviderCapability, ProviderDeadline, ProviderId,
+        ProviderReadOutcome, ProviderSearchHit, ProviderSearchSection, ProviderSectionStatus,
+        SearchRequest,
     };
     use crate::domain::source_roots::ResolvedSourceRoot;
     use crate::domain::workspace::WorkspaceContext;
+    use serde_json::Map;
     use std::path::PathBuf;
     use std::sync::{mpsc, Arc, Barrier};
     use std::thread;
@@ -728,6 +867,76 @@ mod tests {
         assert_eq!(failed.errors.len(), 3);
     }
 
+    #[test]
+    fn empty_registry_reports_why_no_provider_served_search() {
+        let execution =
+            CodeSearchCoordinator::new(CodeIntelligenceRegistry::new(Vec::new()).unwrap())
+                .search(
+                    &SearchRequest {
+                        query: "Post".to_string(),
+                        limit: 20,
+                    },
+                    &context(),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+
+        assert!(!execution.ok);
+        assert_eq!(
+            execution.errors,
+            vec!["no search-capable code intelligence providers are registered"]
+        );
+    }
+
+    #[test]
+    fn coordinator_enforces_limit_and_normalizes_provider_local_ranks() {
+        let hits = (0..4)
+            .map(|index| ProviderSearchHit {
+                rank: if index == 0 { 0 } else { 99 },
+                provider_score: None,
+                path: format!("Module{index}.bsl"),
+                line: index + 1,
+                end_line: None,
+                symbol: None,
+                kind: None,
+                snippet: format!("hit {index}"),
+                attributes: Map::new(),
+            })
+            .collect();
+        let provider = Arc::new(StaticProvider {
+            id: ProviderId::GitGrep,
+            section: ProviderSearchSection {
+                provider: ProviderId::GitGrep,
+                status: ProviderSectionStatus::Ok,
+                hits,
+                diagnostics: Vec::new(),
+                artifacts: Vec::new(),
+            },
+        });
+
+        let execution =
+            CodeSearchCoordinator::new(CodeIntelligenceRegistry::new(vec![provider]).unwrap())
+                .search(
+                    &SearchRequest {
+                        query: "Post".to_string(),
+                        limit: 2,
+                    },
+                    &context(),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+
+        assert_eq!(execution.result.sections[0].hits.len(), 2);
+        assert_eq!(
+            execution.result.sections[0]
+                .hits
+                .iter()
+                .map(|hit| hit.rank)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+    }
+
     struct BudgetProvider {
         id: ProviderId,
         maximum: Duration,
@@ -904,6 +1113,76 @@ mod tests {
         assert_eq!(admission.active_count(ProviderId::BslAnalyzer), 0);
     }
 
+    struct DeadlineIgnoringReadProvider;
+
+    impl CodeIntelligenceProvider for DeadlineIgnoringReadProvider {
+        fn id(&self) -> ProviderId {
+            ProviderId::Rlm
+        }
+
+        fn capabilities(&self) -> &[ProviderCapability] {
+            &[ProviderCapability::Definition]
+        }
+
+        fn search(
+            &self,
+            _request: &SearchRequest,
+            _context: &CodeIntelligenceContext,
+            _deadline: ProviderDeadline,
+            _cancellation: &CancellationToken,
+        ) -> ProviderSearchSection {
+            unreachable!("read-only fixture")
+        }
+
+        fn read(
+            &self,
+            _request: &CodeIntelligenceReadRequest,
+            _context: &CodeIntelligenceContext,
+            _deadline: ProviderDeadline,
+            _cancellation: &CancellationToken,
+        ) -> Result<ProviderReadOutcome, String> {
+            thread::sleep(Duration::from_millis(500));
+            Ok(ProviderReadOutcome {
+                provider: ProviderId::Rlm,
+                ok: true,
+                summary: "late".to_string(),
+                warnings: Vec::new(),
+                errors: Vec::new(),
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: None,
+            })
+        }
+    }
+
+    #[test]
+    fn read_coordinator_enforces_deadline_for_non_cooperative_provider() {
+        let admission = Arc::new(ProviderWorkerAdmission::new(1));
+        let lifecycle = Arc::new(ProviderWorkerLifecycle::new());
+        let started = Instant::now();
+
+        let error = execute_provider_read_with_policy(
+            Arc::new(DeadlineIgnoringReadProvider),
+            CodeIntelligenceReadRequest::Definition {
+                name: "Post".to_string(),
+                module_hint: String::new(),
+                limit: 50,
+            },
+            context(),
+            Duration::from_millis(30),
+            Arc::clone(&admission),
+            Arc::clone(&lifecycle),
+            &CancellationToken::new(),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("30 ms read budget"), "{error}");
+        assert!(started.elapsed() < Duration::from_millis(250));
+        assert_eq!(admission.active_count(ProviderId::Rlm), 1);
+        assert!(lifecycle.drain(Duration::from_secs(2)));
+        assert_eq!(admission.active_count(ProviderId::Rlm), 0);
+    }
+
     struct PanickingProvider;
 
     impl CodeIntelligenceProvider for PanickingProvider {
@@ -986,12 +1265,12 @@ mod tests {
     }
 
     #[test]
-    fn cancellation_has_priority_over_partial_sections() {
+    fn provider_local_cancellation_does_not_cancel_parent_search() {
         let coordinator = CodeSearchCoordinator::new(
             CodeIntelligenceRegistry::new(vec![Arc::new(CancellingProvider)]).unwrap(),
         );
 
-        let error = coordinator
+        let execution = coordinator
             .search(
                 &SearchRequest {
                     query: "Post".to_string(),
@@ -1000,8 +1279,12 @@ mod tests {
                 &context(),
                 &CancellationToken::new(),
             )
-            .unwrap_err();
+            .unwrap();
 
-        assert!(error.starts_with(CANCELLED_PREFIX));
+        assert!(execution.ok);
+        assert_eq!(
+            execution.result.sections[0].status,
+            ProviderSectionStatus::Empty
+        );
     }
 }

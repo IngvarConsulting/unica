@@ -1,7 +1,7 @@
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
-    CodeIntelligenceReadRequest, ProviderDeadline, SearchRequest,
+    CodeIntelligenceContext, CodeIntelligenceReadRequest, SearchRequest,
 };
 use crate::domain::events::{runtime_event_kind, DomainEvent, DomainEventKind};
 use crate::domain::workspace::WorkspaceContext;
@@ -10,7 +10,7 @@ pub(crate) use outcome::AdapterOutcome;
 use ports::{ApplicationPorts, FormatGuardCheck, SupportGuardCheck};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 pub(crate) use tool_contracts::{
     DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS, DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
@@ -48,6 +48,9 @@ pub enum ToolHandler {
     RuntimeJob {
         action: RuntimeJobAction,
     },
+    CodeIntelligence {
+        operation: CodeIntelligenceOperation,
+    },
     CodeAdapter {
         command: &'static [&'static str],
     },
@@ -64,6 +67,14 @@ pub enum RuntimeJobAction {
     Logs,
     Cancel,
     List,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodeIntelligenceOperation {
+    Search,
+    Definition,
+    Outline,
+    ObjectProfile,
 }
 
 #[derive(Debug, Serialize)]
@@ -119,7 +130,14 @@ impl UnicaApplication {
         let spec = tools()
             .into_iter()
             .find(|tool| tool.name == name)
-            .ok_or_else(|| format!("unknown unica tool: {name}"))?;
+            .ok_or_else(|| {
+                if name == "unica.code.grep" {
+                    "unica.code.grep was removed; use unica.code.search and inspect its git-grep section"
+                        .to_string()
+                } else {
+                    format!("unknown unica tool: {name}")
+                }
+            })?;
         call_tool(spec, args, self.ports.as_ref(), &cancellation)
     }
 }
@@ -274,14 +292,14 @@ pub fn tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "unica.code.search",
-            description: "Search code concurrently through provider-local RLM, bsl-analyzer, and literal git-grep sections.",
+            description: "Search code concurrently through provider-local RLM, bsl-analyzer, and literal git-grep sections. Migration: use sourceDir instead of the former path/config fields and a per-provider limit from 1 to 50.",
             mutating: false,
             cache_access: CacheAccess {
-                reads: &["bsl_index"],
+                reads: &["bsl_index", "workspace_graph"],
                 writes: &[],
             },
-            handler: ToolHandler::CodeAdapter {
-                command: &["search"],
+            handler: ToolHandler::CodeIntelligence {
+                operation: CodeIntelligenceOperation::Search,
             },
         },
         ToolSpec {
@@ -292,8 +310,8 @@ pub fn tools() -> Vec<ToolSpec> {
                 reads: &["bsl_index"],
                 writes: &[],
             },
-            handler: ToolHandler::CodeAdapter {
-                command: &["definition"],
+            handler: ToolHandler::CodeIntelligence {
+                operation: CodeIntelligenceOperation::Definition,
             },
         },
         ToolSpec {
@@ -304,8 +322,8 @@ pub fn tools() -> Vec<ToolSpec> {
                 reads: &["bsl_index"],
                 writes: &[],
             },
-            handler: ToolHandler::CodeAdapter {
-                command: &["outline"],
+            handler: ToolHandler::CodeIntelligence {
+                operation: CodeIntelligenceOperation::Outline,
             },
         },
         ToolSpec {
@@ -464,13 +482,19 @@ fn call_tool(
         None
     };
 
-    let handler_outcome = match spec.name {
-        "unica.code.search" => {
-            invoke_code_intelligence_search(ports, args, &context, dry_run, cancellation)?
-        }
-        "unica.code.definition" | "unica.code.outline" | "unica.meta.profile" => {
-            invoke_code_intelligence_read(ports, spec.name, args, &context, dry_run, cancellation)?
-        }
+    let handler_outcome = match spec.handler {
+        ToolHandler::CodeIntelligence {
+            operation: CodeIntelligenceOperation::Search,
+        } => invoke_code_intelligence_search(ports, args, &context, dry_run, cancellation)?,
+        ToolHandler::CodeIntelligence { operation } => invoke_code_intelligence_read(
+            ports,
+            spec.name,
+            operation,
+            args,
+            &context,
+            dry_run,
+            cancellation,
+        )?,
         _ => ports.invoke_handler(spec, args, &context, dry_run, cancellation)?,
     };
     let mut outcome = handler_outcome.adapter;
@@ -581,6 +605,7 @@ fn invoke_code_intelligence_search(
 fn invoke_code_intelligence_read(
     ports: &dyn ApplicationPorts,
     tool_name: &str,
+    operation: CodeIntelligenceOperation,
     args: &Map<String, Value>,
     workspace: &WorkspaceContext,
     dry_run: bool,
@@ -596,7 +621,10 @@ fn invoke_code_intelligence_read(
             .push(context.source_root.path.display().to_string());
         return Ok(ports::HandlerOutcome::plain(outcome));
     }
-    let request = code_intelligence_read_request(tool_name, args)?;
+    let request = normalize_code_intelligence_read_request(
+        code_intelligence_read_request(operation, args)?,
+        &context,
+    )?;
     let registry = ports.code_intelligence_registry()?;
     let provider = registry.provider_for(request.capability()).ok_or_else(|| {
         format!(
@@ -605,12 +633,8 @@ fn invoke_code_intelligence_read(
         )
     })?;
     let provider_id = provider.id();
-    let mut outcome = provider.read(
-        &request,
-        &context,
-        ProviderDeadline::new(std::time::Instant::now() + std::time::Duration::from_secs(45)),
-        cancellation,
-    )?;
+    let mut outcome =
+        code_intelligence::execute_provider_read(provider, request, context, cancellation)?;
     if outcome.provider != provider_id {
         outcome.warnings.insert(
             0,
@@ -635,11 +659,11 @@ fn invoke_code_intelligence_read(
 }
 
 fn code_intelligence_read_request(
-    tool_name: &str,
+    operation: CodeIntelligenceOperation,
     args: &Map<String, Value>,
 ) -> Result<CodeIntelligenceReadRequest, String> {
-    match tool_name {
-        "unica.code.definition" => Ok(CodeIntelligenceReadRequest::Definition {
+    match operation {
+        CodeIntelligenceOperation::Definition => Ok(CodeIntelligenceReadRequest::Definition {
             name: required_code_intelligence_string(args, "name")?.to_string(),
             module_hint: args
                 .get("moduleHint")
@@ -649,46 +673,123 @@ fn code_intelligence_read_request(
                 .to_string(),
             limit: code_intelligence_limit(args, 50),
         }),
-        "unica.code.outline" => Ok(CodeIntelligenceReadRequest::Outline {
+        CodeIntelligenceOperation::Outline => Ok(CodeIntelligenceReadRequest::Outline {
             path: required_code_intelligence_string(args, "path")?.to_string(),
             include_methods: args
                 .get("includeMethods")
                 .and_then(Value::as_bool)
                 .unwrap_or(true),
         }),
-        "unica.meta.profile" => Ok(CodeIntelligenceReadRequest::ObjectProfile {
-            name: required_code_intelligence_string(args, "name")?.to_string(),
-            sections: Some(
-                args.get("sections")
-                    .and_then(Value::as_array)
-                    .map(|items| {
-                        items
-                            .iter()
-                            .filter_map(Value::as_str)
+        CodeIntelligenceOperation::ObjectProfile => {
+            Ok(CodeIntelligenceReadRequest::ObjectProfile {
+                name: required_code_intelligence_string(args, "name")?.to_string(),
+                sections: Some(
+                    args.get("sections")
+                        .and_then(Value::as_array)
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_string)
+                                .collect()
+                        })
+                        .unwrap_or_else(|| {
+                            [
+                                "structure",
+                                "modules",
+                                "roles",
+                                "subscriptions",
+                                "functionalOptions",
+                            ]
+                            .into_iter()
                             .map(str::to_string)
                             .collect()
-                    })
-                    .unwrap_or_else(|| {
-                        [
-                            "structure",
-                            "modules",
-                            "roles",
-                            "subscriptions",
-                            "functionalOptions",
-                        ]
-                        .into_iter()
-                        .map(str::to_string)
-                        .collect()
-                    }),
-            ),
-            include_flow: false,
-            include_code_usages: false,
-            limit: code_intelligence_limit(args, 20),
-        }),
-        _ => Err(format!(
-            "unsupported provider-neutral code intelligence read: {tool_name}"
-        )),
+                        }),
+                ),
+                limit: code_intelligence_limit(args, 20),
+            })
+        }
+        CodeIntelligenceOperation::Search => {
+            Err("search cannot be built as a code intelligence read request".to_string())
+        }
     }
+}
+
+fn normalize_code_intelligence_read_request(
+    mut request: CodeIntelligenceReadRequest,
+    context: &CodeIntelligenceContext,
+) -> Result<CodeIntelligenceReadRequest, String> {
+    match &mut request {
+        CodeIntelligenceReadRequest::Definition { module_hint, .. }
+            if Path::new(module_hint).is_absolute()
+                || module_hint.contains('/')
+                || module_hint.contains('\\') =>
+        {
+            *module_hint = normalize_code_intelligence_path(module_hint, context)?;
+        }
+        CodeIntelligenceReadRequest::Outline { path, .. } => {
+            *path = normalize_code_intelligence_path(path, context)?;
+        }
+        CodeIntelligenceReadRequest::Definition { .. }
+        | CodeIntelligenceReadRequest::ObjectProfile { .. } => {}
+    }
+    Ok(request)
+}
+
+fn normalize_code_intelligence_path(
+    raw: &str,
+    context: &CodeIntelligenceContext,
+) -> Result<String, String> {
+    let source_root = normalize_lexical_path(&context.source_root.path);
+    let workspace_root = normalize_lexical_path(&context.workspace.workspace_root);
+    let raw_path = Path::new(raw);
+    let resolved = if raw_path.is_absolute() {
+        normalize_lexical_path(raw_path)
+    } else {
+        let from_cwd = normalize_lexical_path(&context.workspace.cwd.join(raw_path));
+        let from_workspace = normalize_lexical_path(&workspace_root.join(raw_path));
+        if from_cwd.starts_with(&source_root) {
+            from_cwd
+        } else if from_workspace.starts_with(&source_root) {
+            from_workspace
+        } else if raw_path
+            .components()
+            .any(|component| component == Component::ParentDir)
+        {
+            from_cwd
+        } else {
+            normalize_lexical_path(&source_root.join(raw_path))
+        }
+    };
+    if !resolved.starts_with(&workspace_root) || !resolved.starts_with(&source_root) {
+        return Err(format!(
+            "path `{raw}` resolves outside resolved source root {}",
+            context.source_root.path.display()
+        ));
+    }
+    let relative = resolved
+        .strip_prefix(&source_root)
+        .map_err(|error| format!("failed to normalize code intelligence path `{raw}`: {error}"))?;
+    if relative.as_os_str().is_empty() {
+        return Err(format!(
+            "path `{raw}` resolves to the source root rather than a source file"
+        ));
+    }
+    Ok(relative.to_string_lossy().replace('\\', "/"))
+}
+
+fn normalize_lexical_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
 }
 
 fn required_code_intelligence_string<'a>(
@@ -1311,8 +1412,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
                 reads: &["bsl_index"],
                 writes: &[],
             },
-            handler: ToolHandler::CodeAdapter {
-                command: &["meta-profile"],
+            handler: ToolHandler::CodeIntelligence {
+                operation: CodeIntelligenceOperation::ObjectProfile,
             },
         },
         ToolSpec {
@@ -1722,6 +1823,42 @@ mod tests {
     }
 
     #[test]
+    fn provider_neutral_tools_use_typed_code_intelligence_handlers() {
+        let expected = [
+            ("unica.code.search", CodeIntelligenceOperation::Search),
+            (
+                "unica.code.definition",
+                CodeIntelligenceOperation::Definition,
+            ),
+            ("unica.code.outline", CodeIntelligenceOperation::Outline),
+            (
+                "unica.meta.profile",
+                CodeIntelligenceOperation::ObjectProfile,
+            ),
+        ];
+
+        for (name, operation) in expected {
+            let tool = tools().into_iter().find(|tool| tool.name == name).unwrap();
+            assert!(matches!(
+                tool.handler,
+                ToolHandler::CodeIntelligence {
+                    operation: actual
+                } if actual == operation
+            ));
+        }
+    }
+
+    #[test]
+    fn removed_code_grep_error_points_to_unified_search() {
+        let error = UnicaApplication::new()
+            .call_tool("unica.code.grep", &Map::new())
+            .unwrap_err();
+
+        assert!(error.contains("removed"), "{error}");
+        assert!(error.contains("unica.code.search"), "{error}");
+    }
+
+    #[test]
     fn cfe_patch_method_public_description_states_the_v1_procedure_boundary() {
         let tool = tools()
             .into_iter()
@@ -1772,6 +1909,92 @@ mod tests {
             serde_json::to_value(result(Some(data.clone()))).expect("typed result must serialize");
         assert_eq!(structured["data"], data);
         assert!(structured.get("stdout").is_none());
+    }
+
+    fn code_intelligence_context_for_paths(
+    ) -> crate::domain::code_intelligence::CodeIntelligenceContext {
+        crate::domain::code_intelligence::CodeIntelligenceContext::new(
+            WorkspaceContext {
+                cwd: PathBuf::from("/workspace"),
+                workspace_root: PathBuf::from("/workspace"),
+                cache_root: PathBuf::from("/workspace/.build/unica"),
+                workspace_epoch: 1,
+            },
+            crate::domain::source_roots::ResolvedSourceRoot {
+                source_set: Some("main".to_string()),
+                path: PathBuf::from("/workspace/src/cf"),
+            },
+        )
+    }
+
+    #[test]
+    fn code_intelligence_read_paths_are_normalized_to_the_resolved_source_root() {
+        for raw in [
+            "CommonModules/X/Ext/Module.bsl",
+            "src/cf/CommonModules/X/Ext/Module.bsl",
+            "/workspace/src/cf/CommonModules/X/Ext/Module.bsl",
+        ] {
+            let request = CodeIntelligenceReadRequest::Outline {
+                path: raw.to_string(),
+                include_methods: true,
+            };
+            let normalized = normalize_code_intelligence_read_request(
+                request,
+                &code_intelligence_context_for_paths(),
+            )
+            .unwrap();
+
+            assert_eq!(
+                normalized,
+                CodeIntelligenceReadRequest::Outline {
+                    path: "CommonModules/X/Ext/Module.bsl".to_string(),
+                    include_methods: true,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn code_intelligence_read_path_cannot_escape_the_selected_source_root() {
+        let request = CodeIntelligenceReadRequest::Outline {
+            path: "../../other/Module.bsl".to_string(),
+            include_methods: true,
+        };
+
+        let error = normalize_code_intelligence_read_request(
+            request,
+            &code_intelligence_context_for_paths(),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("outside resolved source root"), "{error}");
+    }
+
+    #[test]
+    fn code_intelligence_read_path_accepts_workspace_and_cwd_relative_forms() {
+        let mut context = code_intelligence_context_for_paths();
+        context.workspace.cwd = PathBuf::from("/workspace/tools");
+
+        for raw in [
+            "src/cf/CommonModules/X/Ext/Module.bsl",
+            "../src/cf/CommonModules/X/Ext/Module.bsl",
+        ] {
+            let normalized = normalize_code_intelligence_read_request(
+                CodeIntelligenceReadRequest::Outline {
+                    path: raw.to_string(),
+                    include_methods: true,
+                },
+                &context,
+            )
+            .unwrap();
+            assert_eq!(
+                normalized,
+                CodeIntelligenceReadRequest::Outline {
+                    path: "CommonModules/X/Ext/Module.bsl".to_string(),
+                    include_methods: true,
+                }
+            );
+        }
     }
 
     #[test]

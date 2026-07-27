@@ -95,8 +95,9 @@ mix public search semantics with replaceable infrastructure.
 - [x] The public coordinator runs all registered search providers in parallel.
 - [x] Production provider code uses supported upstream interfaces and does not
       read, copy, or merge RLM SQLite files.
-- [x] Package and acceptance tests prove the fixed three-section response and
-      the single public MCP server.
+- [x] Rust acceptance tests and the blocking packaged release assessment prove
+      the fixed three-section response; package smoke proves the single public
+      MCP server.
 
 Implementation evidence:
 
@@ -124,11 +125,13 @@ Implementation evidence:
   `rlm-tools-bsl-v1.29.1-build.2` platform assets.
 - `check-tool-contracts.py`, `test_product_contracts.py`, and the packaged MCP
   smoke prove executable compatibility without importing the private RLM
-  SQLite schema.
+  SQLite schema; the blocking release assessment validates the exact
+  `rlm`/`bsl-analyzer`/`git-grep` section order and shape.
 - The extracted `darwin-arm64` runtime was exercised against a real indexed
-  configuration: unified search returned ordered `rlm` (`ok`),
-  `bsl-analyzer` (`unavailable`), and `git-grep` (`ok`) sections, while
-  definition and outline completed through the persistent RLM MCP API.
+  configuration. The cold request returned ordered `rlm` (`ok`),
+  `bsl-analyzer` (`unavailable`), and `git-grep` (`ok`) sections while the
+  analyzer index warmed; the repeated request observed all three providers as
+  `ok`. Definition and outline completed through the persistent RLM MCP API.
 - `docs/superpowers/plans/2026-07-27-rlm-integration-api-issue-draft.md`
   records the post-implementation upstream API audit; it is a review draft and
   is not an accepted Unica architecture dependency.

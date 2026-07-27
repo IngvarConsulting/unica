@@ -106,8 +106,8 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
             .iter()
             .filter(|record| record.kind == "rlm-session-start" && record.sequence == 2)
             .count(),
-        2,
-        "an expired logical session must be restarted once in the same RLM process"
+        3,
+        "rlm_start and rlm_execute session invalidation must each retry in the same RLM process"
     );
     assert!(
         session_records
@@ -139,6 +139,33 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
     assert_tool_ok(&final_responses[&5], "typed bsl-analyzer MCP adapter");
     assert_tool_ok(
         &final_responses[&6],
+        "persistent RLM MCP API",
+    );
+    mcp.send(tool_call(
+        8,
+        "unica.meta.profile",
+        json!({
+            "cwd": fixture.workspace,
+            "name": "Catalog.LogicalError",
+            "sections": []
+        }),
+    ));
+    let logical_error = mcp.receive_ids(&[8], RESPONSE_DEADLINE);
+    assert!(logical_error[&8]["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("invalid logical request")));
+    mcp.send(tool_call(
+        9,
+        "unica.meta.profile",
+        json!({
+            "cwd": fixture.workspace,
+            "name": "Catalog.Test",
+            "sections": []
+        }),
+    ));
+    let after_logical_error = mcp.receive_ids(&[9], RESPONSE_DEADLINE);
+    assert_tool_ok(
+        &after_logical_error[&9],
         "persistent RLM MCP API",
     );
     mcp.send(tool_call(
@@ -600,15 +627,24 @@ impl Fixture {
     }
 
     fn finish(&mut self, records: &[ToolRecord]) -> Result<(), String> {
-        self.shutdown_services(Duration::from_secs(2))?;
-        let final_records = self.try_log_records()?;
-        if final_records
-            .iter()
-            .filter(|record| record.kind == "rlm-end" && record.sequence == 2)
-            .count()
-            < 2
-        {
-            return Err("persistent RLM session was not ended during service shutdown".to_string());
+        self.shutdown_services(RESPONSE_DEADLINE)?;
+        let deadline = Instant::now() + RESPONSE_DEADLINE;
+        loop {
+            let final_records = self.try_log_records()?;
+            if final_records
+                .iter()
+                .filter(|record| record.kind == "rlm-end" && record.sequence == 2)
+                .count()
+                >= 2
+            {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(
+                    "persistent RLM session was not ended during service shutdown".to_string(),
+                );
+            }
+            thread::sleep(Duration::from_millis(10));
         }
         verify_records_dead(records, RESPONSE_DEADLINE)?;
         fs::remove_dir_all(&self.root).map_err(|error| error.to_string())?;
@@ -963,6 +999,7 @@ fn rlm_mcp() {
     let mut descendant = spawn_descendant("rlm", "pending");
     let mut recorded = false;
     let mut root = String::new();
+    let mut start_count = 0_u32;
     let mut execute_count = 0_u32;
     for line in io::stdin().lock().lines() {
         let line = line.unwrap();
@@ -980,12 +1017,21 @@ fn rlm_mcp() {
                 recorded = true;
             }
             record("rlm-session-start", sequence, descendant.id(), &root);
+            start_count += 1;
+            if sequence == 2 && start_count == 1 {
+                respond(id, "{\"error\":\"Sandbox not found\"}");
+                continue;
+            }
             respond(id, &format!("{{\"session_id\":\"session-{sequence}\",\"index\":{{\"index_status\":\"fresh\"}}}}"));
         } else if line.contains("\"name\":\"rlm_execute\"") {
             if sequence == 1 {
                 loop { thread::sleep(Duration::from_secs(60)); }
             }
             execute_count += 1;
+            if line.contains("LogicalError") {
+                respond(id, "{\"error\":\"invalid logical request\"}");
+                continue;
+            }
             if sequence == 2 && execute_count == 1 {
                 respond(id, "{\"error\":\"Session not found or expired\"}");
                 continue;

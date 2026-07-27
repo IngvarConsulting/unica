@@ -333,6 +333,45 @@ class SkillProvenanceTests(unittest.TestCase):
                 locked_tools[name]["sourceCommit"],
                 "8bc6e9fc83b522f9a79eab3193eb13fc2cecb8ed",
             )
+            self.assertEqual(
+                locked_tools[name]["assetTag"],
+                "rlm-tools-bsl-v1.29.1-build.2",
+            )
+
+        self.assertEqual(
+            locked_tools["rlm-tools-bsl"]["assets"],
+            {
+                "darwin-arm64": {
+                    "assetName": "rlm-tools-bsl-darwin-arm64",
+                    "sha256": "4a1cd5c2fc0c6c27f049241a4008dbe382a7d23ab01b5e9cfdc91a75d9eaba65",
+                },
+                "linux-x64": {
+                    "assetName": "rlm-tools-bsl-linux-x64",
+                    "sha256": "dec0334cb640ee94d97b80ff3d0c8e4c39e4426eceffbfe932378526876c4417",
+                },
+                "win-x64": {
+                    "assetName": "rlm-tools-bsl-win-x64.exe",
+                    "sha256": "349d6002ecf551f1ab99e24aa097aeb207087acf9de8ab4adef42c2b7eaf6539",
+                },
+            },
+        )
+        self.assertEqual(
+            locked_tools["rlm-bsl-index"]["assets"],
+            {
+                "darwin-arm64": {
+                    "assetName": "rlm-bsl-index-darwin-arm64",
+                    "sha256": "b20725360b889944547cb2b1823df7ce8bc4b6b39c103debb602d572648d42ad",
+                },
+                "linux-x64": {
+                    "assetName": "rlm-bsl-index-linux-x64",
+                    "sha256": "5e68d6048ad384df36a54a7edf0f4fd0c89cd583cf978cc91d7144cd5f788a5d",
+                },
+                "win-x64": {
+                    "assetName": "rlm-bsl-index-win-x64.exe",
+                    "sha256": "e72ddea7ecc841800a3dde479ac4ef1680f7ea0ca60c9cd75004e727fa939cef",
+                },
+            },
+        )
 
     def test_bsl_analyzer_contract_is_v0_2_62(self) -> None:
         tool_lock = json.loads(

@@ -25,12 +25,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
-const SERVICE_SCHEMA_VERSION: u32 = 1;
+const SERVICE_SCHEMA_VERSION: u32 = 2;
 const DEFAULT_IDLE_SECS: u64 = 7200;
 const DEFAULT_MAX_AGE_SECS: u64 = 28800;
 const SERVICE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const SERVICE_CONTROL_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 const SERVICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+const RLM_LOGICAL_SESSION_RETRY_LIMIT: usize = 2;
 const SERVICE_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 const SERVICE_RESPONSE_LINE_LIMIT: usize = 8 * 1024 * 1024;
 const SERVICE_REQUEST_LINE_LIMIT: usize = 8 * 1024 * 1024;
@@ -40,6 +41,7 @@ const SERVICE_MAX_PENDING_CONTROL: usize = 64;
 const SERVICE_CONTROL_CLASSIFICATION_LIMIT: usize = 64 * 1024;
 const SERVICE_MAX_WORKERS: usize = 8;
 const SERVICE_REQUEST_HEADER_TIMEOUT: Duration = Duration::from_secs(5);
+const SESSION_TEARDOWN_GRACE: Duration = Duration::from_secs(3);
 const SERVICE_SPAWN_CLEANUP_WAIT: Duration = Duration::from_secs(2);
 const BSL_STDERR_TAIL_LIMIT: usize = 64 * 1024;
 const SERVICE_RECORD_LOCK_FILE: &str = "service.record.lock";
@@ -317,7 +319,7 @@ impl<'a> WorkspaceServiceManager<'a> {
                 &deadline,
             )?;
             let send_budget = deadline.remaining(cancellation)?;
-            let attempt_timeout_secs = duration_timeout_secs(call.timeout.min(send_budget));
+            let attempt_timeout_millis = duration_timeout_millis(call.timeout.min(send_budget));
             let send_result = self.connector.send(
                 &record,
                 ServiceRequest {
@@ -326,7 +328,7 @@ impl<'a> WorkspaceServiceManager<'a> {
                         operation_id: Uuid::new_v4().to_string(),
                         tool_name: call.tool_name.to_string(),
                         tool_args: call.tool_args.clone(),
-                        timeout_secs: attempt_timeout_secs,
+                        timeout_millis: attempt_timeout_millis,
                     },
                 },
                 cancellation,
@@ -382,7 +384,7 @@ impl<'a> WorkspaceServiceManager<'a> {
                     kind: ServiceRequestKind::RlmMcp {
                         operation_id: Uuid::new_v4().to_string(),
                         operation: operation.clone(),
-                        timeout_secs: duration_timeout_secs(timeout.min(send_budget)),
+                        timeout_millis: duration_timeout_millis(timeout.min(send_budget)),
                     },
                 },
                 cancellation,
@@ -588,11 +590,12 @@ fn is_retry_safe_bsl_mcp_tool(tool_name: &str) -> bool {
     matches!(tool_name, "diagnostics" | "graph")
 }
 
-fn duration_timeout_secs(duration: Duration) -> u64 {
+fn duration_timeout_millis(duration: Duration) -> u64 {
     duration
-        .as_secs()
-        .saturating_add(u64::from(duration.subsec_nanos() > 0))
-        .max(1)
+        .as_nanos()
+        .div_ceil(1_000_000)
+        .min(u128::from(u64::MAX))
+        .max(1) as u64
 }
 
 fn is_retryable_workspace_service_transport_error(error: &str) -> bool {
@@ -1285,6 +1288,7 @@ struct WorkspaceServiceRuntime {
     rlm_lane: AnalyzerLane,
     rlm: Mutex<Option<RlmMcpSession>>,
     rlm_starter: Arc<RlmSessionStarter>,
+    session_teardowns: SessionTeardownLifecycle,
     analyzer_source_generation: Mutex<u64>,
     rlm_source_generation: Mutex<u64>,
     analyzer_invalidated: AtomicBool,
@@ -1325,6 +1329,7 @@ impl WorkspaceServiceRuntime {
             rlm_lane: AnalyzerLane::default(),
             rlm: Mutex::new(None),
             rlm_starter: Arc::new(RlmMcpSession::start),
+            session_teardowns: SessionTeardownLifecycle::default(),
             analyzer_source_generation: Mutex::new(source_generation),
             rlm_source_generation: Mutex::new(source_generation),
             analyzer_invalidated: AtomicBool::new(false),
@@ -1443,6 +1448,31 @@ impl WorkspaceServiceRuntime {
         }
     }
 
+    fn retire_session<T: Send + 'static>(&self, session: T) {
+        self.session_teardowns
+            .track(thread::spawn(move || drop(session)));
+    }
+
+    fn shutdown_provider_sessions(&self) -> bool {
+        let analyzer = self
+            .analyzer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        let rlm = self
+            .rlm
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        if let Some(session) = analyzer {
+            self.retire_session(session);
+        }
+        if let Some(session) = rlm {
+            self.retire_session(session);
+        }
+        self.session_teardowns.drain(SESSION_TEARDOWN_GRACE)
+    }
+
     fn invalidate(&self, events: &[String]) -> ServiceResponse {
         if events.iter().any(|event| invalidates_analyzer(event)) {
             self.analyzer_invalidated.store(true, Ordering::Release);
@@ -1473,7 +1503,7 @@ impl WorkspaceServiceRuntime {
         &self,
         tool_name: &str,
         tool_args: Value,
-        timeout_secs: u64,
+        timeout_millis: u64,
         cancellation: &CancellationToken,
     ) -> ServiceResponse {
         if cancellation.is_cancelled() {
@@ -1490,23 +1520,33 @@ impl WorkspaceServiceRuntime {
             .analyzer
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        let mut stale_session = None;
         let current_generation = source_generation(Path::new(&self.identity.source_root));
         if let Ok(mut generation) = self.analyzer_source_generation.lock() {
             if self.analyzer_invalidated.swap(false, Ordering::AcqRel)
                 || current_generation != *generation
             {
-                *analyzer = None;
+                stale_session = analyzer.take();
                 *generation = current_generation;
             }
         }
-        let timeout = Duration::from_secs(timeout_secs.max(1));
-        let result = (|| {
-            if analyzer
+        if stale_session.is_none()
+            && analyzer
                 .as_mut()
                 .is_some_and(|session| !session.is_reusable())
-            {
-                *analyzer = None;
-            }
+        {
+            stale_session = analyzer.take();
+        }
+        if let Some(stale_session) = stale_session {
+            drop(analyzer);
+            self.retire_session(stale_session);
+            analyzer = self
+                .analyzer
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+        }
+        let timeout = Duration::from_millis(timeout_millis.max(1));
+        let result = (|| {
             if analyzer.is_none() {
                 *analyzer = Some((self.analyzer_starter)(
                     &self.context,
@@ -1530,7 +1570,7 @@ impl WorkspaceServiceRuntime {
                 let stale_session = analyzer.take();
                 drop(analyzer);
                 if let Some(stale_session) = stale_session {
-                    thread::spawn(move || drop(stale_session));
+                    self.retire_session(stale_session);
                 }
                 ServiceResponse::error(error)
             }
@@ -1553,7 +1593,7 @@ impl WorkspaceServiceRuntime {
     fn handle_rlm_mcp(
         &self,
         operation: WorkspaceRlmOperation,
-        timeout_secs: u64,
+        timeout_millis: u64,
         cancellation: &CancellationToken,
     ) -> ServiceResponse {
         if cancellation.is_cancelled() {
@@ -1564,20 +1604,26 @@ impl WorkspaceServiceRuntime {
             Err(error) => return ServiceResponse::error(error),
         };
         let mut rlm = self.rlm.lock().unwrap_or_else(|error| error.into_inner());
+        let mut stale_session = None;
         let current_generation = source_generation(Path::new(&self.identity.source_root));
         if let Ok(mut generation) = self.rlm_source_generation.lock() {
             if self.rlm_invalidated.swap(false, Ordering::AcqRel)
                 || current_generation != *generation
             {
-                *rlm = None;
+                stale_session = rlm.take();
                 *generation = current_generation;
             }
         }
-        let timeout = Duration::from_secs(timeout_secs.max(1));
+        if stale_session.is_none() && rlm.as_mut().is_some_and(|session| !session.is_reusable()) {
+            stale_session = rlm.take();
+        }
+        if let Some(stale_session) = stale_session {
+            drop(rlm);
+            self.retire_session(stale_session);
+            rlm = self.rlm.lock().unwrap_or_else(|error| error.into_inner());
+        }
+        let timeout = Duration::from_millis(timeout_millis.max(1));
         let result = (|| {
-            if rlm.as_mut().is_some_and(|session| !session.is_reusable()) {
-                *rlm = None;
-            }
             if rlm.is_none() {
                 *rlm = Some((self.rlm_starter)(
                     &self.context,
@@ -1597,12 +1643,65 @@ impl WorkspaceServiceRuntime {
                 ..ServiceResponse::default()
             },
             Err(error) => {
-                let stale_session = rlm.take();
+                let stale_session = if rlm.as_mut().is_some_and(|session| !session.is_reusable()) {
+                    rlm.take()
+                } else {
+                    None
+                };
                 drop(rlm);
                 if let Some(stale_session) = stale_session {
-                    thread::spawn(move || drop(stale_session));
+                    self.retire_session(stale_session);
                 }
                 ServiceResponse::error(error)
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct SessionTeardownLifecycle {
+    handles: Mutex<Vec<thread::JoinHandle<()>>>,
+}
+
+impl SessionTeardownLifecycle {
+    fn track(&self, handle: thread::JoinHandle<()>) {
+        let mut handles = self
+            .handles
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        Self::reap_finished(&mut handles);
+        handles.push(handle);
+    }
+
+    fn drain(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            {
+                let mut handles = self
+                    .handles
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                Self::reap_finished(&mut handles);
+                if handles.is_empty() {
+                    return true;
+                }
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            thread::sleep(remaining.min(Duration::from_millis(10)));
+        }
+    }
+
+    fn reap_finished(handles: &mut Vec<thread::JoinHandle<()>>) {
+        let mut index = 0;
+        while index < handles.len() {
+            if handles[index].is_finished() {
+                let handle = handles.swap_remove(index);
+                let _ = handle.join();
+            } else {
+                index += 1;
             }
         }
     }
@@ -1708,17 +1807,17 @@ impl WorkspaceServiceOperationExecutor for SystemWorkspaceServiceOperationExecut
             ServiceRequestKind::BslMcp {
                 tool_name,
                 tool_args,
-                timeout_secs,
+                timeout_millis,
                 ..
-            } => runtime.handle_bsl_mcp(&tool_name, tool_args, timeout_secs, cancellation),
+            } => runtime.handle_bsl_mcp(&tool_name, tool_args, timeout_millis, cancellation),
             ServiceRequestKind::RlmReady { args, .. } => {
                 runtime.handle_rlm_ready(args, cancellation)
             }
             ServiceRequestKind::RlmMcp {
                 operation,
-                timeout_secs,
+                timeout_millis,
                 ..
-            } => runtime.handle_rlm_mcp(operation, timeout_secs, cancellation),
+            } => runtime.handle_rlm_mcp(operation, timeout_millis, cancellation),
             _ => ServiceResponse::error("workspace service received non-work operation"),
         }
     }
@@ -1738,7 +1837,7 @@ enum ServiceRequestKind {
         operation_id: String,
         tool_name: String,
         tool_args: Value,
-        timeout_secs: u64,
+        timeout_millis: u64,
     },
     RlmReady {
         operation_id: String,
@@ -1747,7 +1846,7 @@ enum ServiceRequestKind {
     RlmMcp {
         operation_id: String,
         operation: WorkspaceRlmOperation,
-        timeout_secs: u64,
+        timeout_millis: u64,
     },
     Cancel {
         operation_id: String,
@@ -1906,8 +2005,6 @@ pub enum WorkspaceRlmOperation {
     ObjectProfile {
         name: String,
         sections: Option<Vec<String>>,
-        include_flow: bool,
-        include_code_usages: bool,
         limit: usize,
     },
 }
@@ -2047,7 +2144,7 @@ impl PersistentMcpSession {
             return Err(cancelled_error("persistent MCP start stopped"));
         }
         let mut child = ManagedChild::spawn_process(command, None, cancellation.clone())
-            .map_err(|err| format!("failed to start persistent MCP MCP: {err}"))?;
+            .map_err(|err| format!("failed to start persistent MCP transport: {err}"))?;
         let stdin = child
             .take_stdin()
             .ok_or_else(|| "failed to open persistent MCP stdin".to_string())?;
@@ -2309,14 +2406,30 @@ impl RlmMcpSession {
         cancellation: &CancellationToken,
     ) -> Result<WorkspaceServiceRlmOutput, String> {
         let deadline = Instant::now() + timeout;
-        for attempt in 0..=1 {
-            self.ensure_logical_session(operation.query_hint(), deadline, cancellation)?;
-            match self.execute_once(operation, deadline, cancellation) {
-                Ok(output) => return Ok(output),
-                Err(error) if attempt == 0 && is_retryable_rlm_session_error(&error) => {
+        for attempt in 0..=RLM_LOGICAL_SESSION_RETRY_LIMIT {
+            match self.ensure_logical_session(operation.query_hint(), deadline, cancellation) {
+                Ok(()) => {}
+                Err(error)
+                    if attempt < RLM_LOGICAL_SESSION_RETRY_LIMIT
+                        && is_retryable_rlm_session_error(&error) =>
+                {
                     self.close_logical_session(deadline, cancellation);
+                    continue;
                 }
                 Err(error) => return Err(error),
+            }
+            match self.execute_once(operation, deadline, cancellation) {
+                Ok(output) => return Ok(output),
+                Err(error)
+                    if attempt < RLM_LOGICAL_SESSION_RETRY_LIMIT
+                        && is_retryable_rlm_session_error(&error) =>
+                {
+                    self.close_logical_session(deadline, cancellation);
+                }
+                Err(error) => {
+                    self.close_logical_session(deadline, cancellation);
+                    return Err(error);
+                }
             }
         }
         Err("persistent RLM session retry exhausted".to_string())
@@ -2421,6 +2534,7 @@ impl RlmMcpSession {
             return;
         };
         let Ok(timeout) = remaining_rlm_time(deadline, cancellation) else {
+            self.transport.invalidate();
             return;
         };
         let _ = self.transport.call(
@@ -2457,7 +2571,7 @@ fn fixed_rlm_helper_code(operation: &WorkspaceRlmOperation) -> Result<String, St
             "_result = get_module_outline(_args[\"path\"], include_methods=_args[\"include_methods\"])\nprint(json.dumps(_result, ensure_ascii=False))"
         }
         WorkspaceRlmOperation::ObjectProfile { .. } => {
-            "_raw_sections = _args[\"sections\"]\n_section_aliases = {\"functionalOptions\": \"functional_options\"}\n_profile_sections = None if _raw_sections is None else [_section_aliases.get(_section, _section) for _section in _raw_sections if _section != \"predefinedItems\"]\n_result = get_object_profile(_args[\"name\"], sections=_profile_sections, include_flow=_args[\"include_flow\"], include_code_usages=_args[\"include_code_usages\"], limit=_args[\"limit\"])\nif _raw_sections is not None and \"predefinedItems\" in _raw_sections and \"error\" not in _result:\n    _category = _result.get(\"category\")\n    _items = find_predefined(object_name=_result.get(\"object_name\") or _args[\"name\"], limit=_args[\"limit\"] + 1)\n    if _category:\n        _items = [_item for _item in _items if not _item.get(\"category\") or _item.get(\"category\") == _category]\n    _has_more = len(_items) > _args[\"limit\"]\n    _items = _items[:_args[\"limit\"]]\n    _result.setdefault(\"sections\", {})[\"predefined_items\"] = {\"status\": \"ok\" if _items else \"empty\", \"summary\": {}, \"items\": _items, \"total\": len(_items) + (1 if _has_more else 0), \"returned\": len(_items), \"has_more\": _has_more, \"_meta\": {\"source\": \"index\", \"truncated\": _has_more}}\nprint(json.dumps(_result, ensure_ascii=False))"
+            "_raw_sections = _args[\"sections\"]\n_section_aliases = {\"functionalOptions\": \"functional_options\"}\n_profile_sections = None if _raw_sections is None else [_section_aliases.get(_section, _section) for _section in _raw_sections if _section != \"predefinedItems\"]\n_result = get_object_profile(_args[\"name\"], sections=_profile_sections, include_flow=False, include_code_usages=False, limit=_args[\"limit\"])\nif _raw_sections is not None and \"predefinedItems\" in _raw_sections and \"error\" not in _result:\n    _category = _result.get(\"category\")\n    _items = find_predefined(object_name=_result.get(\"object_name\") or _args[\"name\"], limit=_args[\"limit\"] + 1)\n    if _category:\n        _items = [_item for _item in _items if not _item.get(\"category\") or _item.get(\"category\") == _category]\n    _has_more = len(_items) > _args[\"limit\"]\n    _items = _items[:_args[\"limit\"]]\n    _result.setdefault(\"sections\", {})[\"predefined_items\"] = {\"status\": \"ok\" if _items else \"empty\", \"summary\": {}, \"items\": _items, \"total\": len(_items) + (1 if _has_more else 0), \"returned\": len(_items), \"has_more\": _has_more, \"_meta\": {\"source\": \"index\", \"truncated\": _has_more}}\nprint(json.dumps(_result, ensure_ascii=False))"
         }
     };
     Ok(format!(
@@ -2997,6 +3111,12 @@ fn serve_workspace_service(
     }
 
     runtime.begin_shutdown();
+    if !runtime.shutdown_provider_sessions() && result.is_ok() {
+        result = Err(format!(
+            "workspace provider sessions did not stop within {} ms",
+            SESSION_TEARDOWN_GRACE.as_millis()
+        ));
+    }
     for pending in pending_control.drain(..) {
         let _ = pending.stream.shutdown(std::net::Shutdown::Both);
     }
@@ -3620,8 +3740,6 @@ mod tests {
                 "functionalOptions".to_string(),
                 "predefinedItems".to_string(),
             ]),
-            include_flow: false,
-            include_code_usages: false,
             limit: 20,
         })
         .unwrap();
@@ -4400,7 +4518,7 @@ mod tests {
                 operation_id: "analyzer-holder-1".to_string(),
                 tool_name: "hold".to_string(),
                 tool_args: json!({}),
-                timeout_secs: 30,
+                timeout_millis: 30_000,
             },
         );
         executor.wait_holder();
@@ -4410,7 +4528,7 @@ mod tests {
                 operation_id: "analyzer-waiter-2".to_string(),
                 tool_name: "wait".to_string(),
                 tool_args: json!({}),
-                timeout_secs: 30,
+                timeout_millis: 30_000,
             },
         );
         let cancel_started = Instant::now();
@@ -4434,6 +4552,54 @@ mod tests {
             .starts_with("cancelled:"));
         server.join().unwrap().unwrap();
         assert!(runtime.operations.lock().unwrap().is_empty());
+        cleanup(&context);
+    }
+
+    #[test]
+    fn runtime_serializes_rlm_operations_on_one_lane() {
+        let context = test_context("rlm-lane-serialization");
+        let identity =
+            WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
+        let record = test_record(&identity, 34567, env!("CARGO_PKG_VERSION"));
+        let runtime = Arc::new(WorkspaceServiceRuntime::new(identity, &record));
+        let first = runtime.acquire_rlm_lane(&CancellationToken::new()).unwrap();
+        let second_runtime = Arc::clone(&runtime);
+        let (acquired_tx, acquired_rx) = mpsc::channel();
+        let waiter = thread::spawn(move || {
+            let cancellation = CancellationToken::new();
+            let _second = second_runtime.acquire_rlm_lane(&cancellation).unwrap();
+            acquired_tx.send(()).unwrap();
+        });
+
+        assert!(acquired_rx
+            .recv_timeout(Duration::from_millis(100))
+            .is_err());
+        drop(first);
+        acquired_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        waiter.join().unwrap();
+        cleanup(&context);
+    }
+
+    #[test]
+    fn runtime_tracks_session_teardown_until_shutdown_drain() {
+        struct DropSignal(Option<mpsc::Sender<()>>);
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                self.0.take().unwrap().send(()).unwrap();
+            }
+        }
+
+        let context = test_context("tracked-session-teardown");
+        let identity =
+            WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
+        let record = test_record(&identity, 34567, env!("CARGO_PKG_VERSION"));
+        let runtime = WorkspaceServiceRuntime::new(identity, &record);
+        let (dropped_tx, dropped_rx) = mpsc::channel();
+
+        runtime.retire_session(DropSignal(Some(dropped_tx)));
+
+        assert!(runtime.shutdown_provider_sessions());
+        dropped_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         cleanup(&context);
     }
 
@@ -5588,7 +5754,7 @@ fn main() {
                 operation_id: "work-budget".to_string(),
                 tool_name: "search".to_string(),
                 tool_args: json!({}),
-                timeout_secs: 120,
+                timeout_millis: 120_000,
             }),
             &cancellation,
             SERVICE_REQUEST_TIMEOUT,
@@ -5816,7 +5982,7 @@ fn main() {
                         operation_id: "race-operation".to_string(),
                         tool_name: "search".to_string(),
                         tool_args: json!({}),
-                        timeout_secs: 120,
+                        timeout_millis: 120_000,
                     }),
                     &cancellation,
                     SERVICE_REQUEST_TIMEOUT,
@@ -5858,7 +6024,7 @@ fn main() {
             operation_id: Uuid::new_v4().to_string(),
             tool_name: "search".to_string(),
             tool_args: json!({"query": "needle"}),
-            timeout_secs: 5,
+            timeout_millis: 5_000,
         };
         let rlm = ServiceRequestKind::RlmReady {
             operation_id: Uuid::new_v4().to_string(),
@@ -5960,7 +6126,7 @@ fn main() {
                         operation_id: operation_id.clone(),
                         tool_name: "search".to_string(),
                         tool_args: json!({}),
-                        timeout_secs: 120,
+                        timeout_millis: 120_000,
                     },
                 },
                 &caller_token,
@@ -6089,7 +6255,7 @@ fn main() {
         let source_root = context.workspace_root.join("src");
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
         let record = WorkspaceServiceRecord {
-            schema_version: 1,
+            schema_version: SERVICE_SCHEMA_VERSION,
             pid: std::process::id(),
             port: 34567,
             token: "token".to_string(),
@@ -6101,6 +6267,10 @@ fn main() {
         };
 
         assert!(record.matches(&identity, env!("CARGO_PKG_VERSION")));
+
+        let mut mismatched_schema = record.clone();
+        mismatched_schema.schema_version = SERVICE_SCHEMA_VERSION - 1;
+        assert!(!mismatched_schema.matches(&identity, env!("CARGO_PKG_VERSION")));
 
         let mut mismatched_version = record.clone();
         mismatched_version.version = "older".to_string();
@@ -6494,6 +6664,18 @@ fn main() {
         manager
             .rlm_readiness(&context, &source_root, &Map::new())
             .unwrap();
+        manager
+            .call_rlm_cancellable(
+                &context,
+                &source_root,
+                WorkspaceRlmOperation::Search {
+                    query: "needle".to_string(),
+                    limit: 20,
+                },
+                Duration::from_secs(1),
+                &CancellationToken::new(),
+            )
+            .unwrap();
 
         let ids = connector
             .requests
@@ -6502,12 +6684,84 @@ fn main() {
             .filter_map(ServiceRequestKind::operation_id)
             .map(str::to_string)
             .collect::<Vec<_>>();
-        assert_eq!(ids.len(), 2);
-        assert_ne!(ids[0], ids[1]);
+        assert_eq!(ids.len(), 3);
+        assert_eq!(
+            ids.iter().collect::<std::collections::HashSet<_>>().len(),
+            3
+        );
         assert!(ids
             .iter()
             .map(|id| Uuid::parse_str(id).unwrap())
             .all(|id| id.get_version_num() == 4));
+        cleanup(&context);
+    }
+
+    #[test]
+    fn manager_retries_rlm_request_once_after_transport_reset() {
+        let context = test_context("rlm-transport-reset-retry");
+        let source_root = context.workspace_root.join("src");
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        write_record(
+            &identity,
+            test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
+        );
+        let connector = ResetRlmConnector::default();
+        let spawner = RecordingSpawner::default();
+        let manager = WorkspaceServiceManager::with_io(&connector, &spawner);
+
+        let output = manager
+            .call_rlm_cancellable(
+                &context,
+                &source_root,
+                WorkspaceRlmOperation::Search {
+                    query: "needle".to_string(),
+                    limit: 20,
+                },
+                Duration::from_millis(50),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        assert_eq!(output.result_text, "[]");
+        assert_eq!(*connector.calls.borrow(), 2);
+        assert_eq!(connector.operation_ids.borrow().len(), 2);
+        assert_ne!(
+            connector.operation_ids.borrow()[0],
+            connector.operation_ids.borrow()[1]
+        );
+        assert!(connector
+            .timeout_millis
+            .borrow()
+            .iter()
+            .all(|timeout| *timeout <= 50));
+        cleanup(&context);
+    }
+
+    #[test]
+    fn rlm_readiness_observes_cancellation_after_transport_returns() {
+        let context = test_context("rlm-readiness-post-send-cancel");
+        let source_root = context.workspace_root.join("src");
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        write_record(
+            &identity,
+            test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
+        );
+        let connector = CancelAfterRlmReadyConnector;
+        let spawner = RecordingSpawner::default();
+        let manager = WorkspaceServiceManager::with_io(&connector, &spawner);
+        let cancellation = CancellationToken::new();
+
+        let error = manager
+            .rlm_readiness_cancellable_with_timeout(
+                &context,
+                &source_root,
+                &Map::new(),
+                Duration::from_secs(1),
+                &cancellation,
+            )
+            .unwrap_err();
+
+        assert!(error.starts_with("cancelled:"), "{error}");
         cleanup(&context);
     }
 
@@ -6586,7 +6840,10 @@ fn main() {
         assert!(bsl_budgets[0] <= ping_budgets[0]);
         assert!(ping_budgets[1] < bsl_budgets[0]);
         assert!(bsl_budgets[1] <= ping_budgets[1]);
-        assert_eq!(connector.bsl_timeout_secs.borrow().as_slice(), &[1, 1]);
+        let timeout_millis = connector.bsl_timeout_millis.borrow();
+        assert_eq!(timeout_millis.len(), 2);
+        assert!(timeout_millis.iter().all(|timeout| *timeout <= 1_000));
+        assert!(timeout_millis[1] < timeout_millis[0]);
         assert_eq!(*spawner.spawns.borrow(), 0);
         cleanup(&context);
     }
@@ -6872,12 +7129,12 @@ fn main() {
 
     #[test]
     fn transport_retry_classifier_excludes_terminal_errors() {
-        assert_eq!(duration_timeout_secs(Duration::ZERO), 1);
-        assert_eq!(duration_timeout_secs(Duration::from_nanos(1)), 1);
-        assert_eq!(duration_timeout_secs(Duration::from_secs(1)), 1);
+        assert_eq!(duration_timeout_millis(Duration::ZERO), 1);
+        assert_eq!(duration_timeout_millis(Duration::from_nanos(1)), 1);
+        assert_eq!(duration_timeout_millis(Duration::from_secs(1)), 1_000);
         assert_eq!(
-            duration_timeout_secs(Duration::from_secs(1) + Duration::from_nanos(1)),
-            2
+            duration_timeout_millis(Duration::from_secs(1) + Duration::from_nanos(1)),
+            1_001
         );
         assert!(is_retry_safe_bsl_mcp_tool("diagnostics"));
         assert!(is_retry_safe_bsl_mcp_tool("graph"));
@@ -6974,9 +7231,85 @@ fn main() {
         operation_ids: std::cell::RefCell<Vec<String>>,
         ping_budgets: std::cell::RefCell<Vec<Duration>>,
         bsl_budgets: std::cell::RefCell<Vec<Duration>>,
-        bsl_timeout_secs: std::cell::RefCell<Vec<u64>>,
+        bsl_timeout_millis: std::cell::RefCell<Vec<u64>>,
         bsl_record_tokens: std::cell::RefCell<Vec<String>>,
         bsl_request_tokens: std::cell::RefCell<Vec<String>>,
+    }
+
+    #[derive(Default)]
+    struct ResetRlmConnector {
+        calls: std::cell::RefCell<u32>,
+        operation_ids: std::cell::RefCell<Vec<String>>,
+        timeout_millis: std::cell::RefCell<Vec<u64>>,
+    }
+
+    impl ServiceConnector for ResetRlmConnector {
+        fn send(
+            &self,
+            _record: &WorkspaceServiceRecord,
+            request: ServiceRequest,
+            _cancellation: &CancellationToken,
+            _budget: Duration,
+        ) -> Result<ServiceResponse, String> {
+            match request.kind {
+                ServiceRequestKind::Ping => Ok(ServiceResponse {
+                    ok: true,
+                    status: Some("alive".to_string()),
+                    ..ServiceResponse::default()
+                }),
+                ServiceRequestKind::RlmMcp {
+                    operation_id,
+                    timeout_millis,
+                    ..
+                } => {
+                    self.operation_ids.borrow_mut().push(operation_id);
+                    self.timeout_millis.borrow_mut().push(timeout_millis);
+                    let mut calls = self.calls.borrow_mut();
+                    *calls += 1;
+                    if *calls == 1 {
+                        Err(
+                            "workspace service disconnected before responding to RLM request"
+                                .to_string(),
+                        )
+                    } else {
+                        Ok(ServiceResponse {
+                            ok: true,
+                            result_text: Some("[]".to_string()),
+                            ..ServiceResponse::default()
+                        })
+                    }
+                }
+                _ => panic!("unexpected request kind"),
+            }
+        }
+    }
+
+    struct CancelAfterRlmReadyConnector;
+
+    impl ServiceConnector for CancelAfterRlmReadyConnector {
+        fn send(
+            &self,
+            _record: &WorkspaceServiceRecord,
+            request: ServiceRequest,
+            cancellation: &CancellationToken,
+            _budget: Duration,
+        ) -> Result<ServiceResponse, String> {
+            match request.kind {
+                ServiceRequestKind::Ping => Ok(ServiceResponse {
+                    ok: true,
+                    status: Some("alive".to_string()),
+                    ..ServiceResponse::default()
+                }),
+                ServiceRequestKind::RlmReady { .. } => {
+                    cancellation.cancel();
+                    Ok(ServiceResponse {
+                        ok: true,
+                        ..ServiceResponse::default()
+                    })
+                }
+                _ => panic!("unexpected request kind"),
+            }
+        }
     }
 
     impl ServiceConnector for ResetBslConnector {
@@ -7005,12 +7338,12 @@ fn main() {
                 }
                 ServiceRequestKind::BslMcp {
                     operation_id,
-                    timeout_secs,
+                    timeout_millis,
                     ..
                 } => {
                     self.operation_ids.borrow_mut().push(operation_id);
                     self.bsl_budgets.borrow_mut().push(budget);
-                    self.bsl_timeout_secs.borrow_mut().push(timeout_secs);
+                    self.bsl_timeout_millis.borrow_mut().push(timeout_millis);
                     self.bsl_record_tokens
                         .borrow_mut()
                         .push(record.token.clone());

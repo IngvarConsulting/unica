@@ -195,9 +195,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                 data: None,
                 job: outcome.job,
             }),
-            ToolHandler::CodeAdapter {
-                command: ["definition"] | ["outline"] | ["meta-profile"],
-            } => Err(format!(
+            ToolHandler::CodeIntelligence { .. } => Err(format!(
                 "{} must be dispatched through the provider-neutral code intelligence registry",
                 spec.name
             )),

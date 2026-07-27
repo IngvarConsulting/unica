@@ -54,8 +54,6 @@ pub enum CodeIntelligenceReadRequest {
     ObjectProfile {
         name: String,
         sections: Option<Vec<String>>,
-        include_flow: bool,
-        include_code_usages: bool,
         limit: usize,
     },
 }
@@ -101,16 +99,8 @@ impl ProviderDeadline {
         Self(deadline)
     }
 
-    pub fn instant(self) -> Instant {
-        self.0
-    }
-
     pub fn remaining(self) -> Duration {
         self.0.saturating_duration_since(Instant::now())
-    }
-
-    pub fn is_expired(self) -> bool {
-        Instant::now() >= self.0
     }
 }
 
@@ -318,27 +308,6 @@ mod tests {
     }
 
     #[test]
-    fn capabilities_match_the_executable_provider_operations() {
-        let operations = [
-            ProviderCapability::Search,
-            ProviderCapability::Definition,
-            ProviderCapability::Outline,
-            ProviderCapability::ObjectProfile,
-        ]
-        .map(|capability| match capability {
-            ProviderCapability::Search => "search",
-            ProviderCapability::Definition => "definition",
-            ProviderCapability::Outline => "outline",
-            ProviderCapability::ObjectProfile => "object-profile",
-        });
-
-        assert_eq!(
-            operations,
-            ["search", "definition", "outline", "object-profile"]
-        );
-    }
-
-    #[test]
     fn registry_preserves_injected_search_provider_order() {
         let registry = CodeIntelligenceRegistry::new(vec![
             Arc::new(FakeProvider {
@@ -490,6 +459,7 @@ mod tests {
                 path: PathBuf::from("/workspace/src"),
             }
         );
-        assert_eq!(provider_deadline.instant(), deadline);
+        assert!(provider_deadline.remaining() <= Duration::from_secs(120));
+        assert!(provider_deadline.remaining() > Duration::from_secs(119));
     }
 }
