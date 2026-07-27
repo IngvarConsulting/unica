@@ -4674,6 +4674,108 @@ mod tests {
     }
 
     #[test]
+    fn mutating_native_support_guard_coverage_is_explicit() {
+        use operation_descriptors::{SupportGuardPolicy, SupportGuardRequirement};
+
+        let mut guarded = Vec::new();
+        let mut exempt = Vec::new();
+        for tool in tools().into_iter().filter(|tool| tool.mutating) {
+            let ToolHandler::NativeOperation { operation, .. } = tool.handler else {
+                continue;
+            };
+            let descriptor = operation_descriptors::native_operation_descriptor(operation).unwrap();
+            match descriptor.support_guard {
+                Some(policy) => {
+                    match policy {
+                        SupportGuardPolicy::PathArgs { names, requirement } => {
+                            assert!(!names.is_empty(), "{operation} guard target is empty");
+                            assert_eq!(
+                                requirement,
+                                SupportGuardRequirement::Editable,
+                                "{operation} path mutation must require an editable owner"
+                            );
+                            if operation == "subsystem-compile" {
+                                assert_eq!(
+                                    names,
+                                    &["Parent", "parent", "OutputDir", "outputDir"],
+                                    "subsystem compilation must guard Parent first and retain OutputDir as the root fallback"
+                                );
+                            }
+                        }
+                        SupportGuardPolicy::MetaRemove { requirement } => {
+                            assert_eq!(operation, "meta-remove");
+                            assert_eq!(requirement, SupportGuardRequirement::Removed);
+                        }
+                        SupportGuardPolicy::ObjectName { requirement } => {
+                            assert!(
+                                matches!(
+                                    operation,
+                                    "help-add" | "form-remove" | "template-add" | "template-remove"
+                                ),
+                                "{operation} unexpectedly uses object-name guard resolution"
+                            );
+                            assert_eq!(requirement, SupportGuardRequirement::Editable);
+                        }
+                    }
+                    guarded.push(operation);
+                }
+                None => exempt.push(operation),
+            }
+        }
+        guarded.sort_unstable();
+        exempt.sort_unstable();
+
+        assert_eq!(
+            guarded,
+            [
+                "cf-edit",
+                "code-patch",
+                "dcs-compile",
+                "dcs-edit",
+                "form-add",
+                "form-compile",
+                "form-edit",
+                "form-remove",
+                "help-add",
+                "interface-edit",
+                "meta-compile",
+                "meta-edit",
+                "meta-remove",
+                "mxl-compile",
+                "role-compile",
+                "subsystem-compile",
+                "subsystem-edit",
+                "template-add",
+                "template-remove",
+            ],
+            "guarded platform-XML mutations changed without updating the support contract"
+        );
+        let expected_exemptions = [
+            ("cf-init", "creates a new configuration tree"),
+            ("cfe-borrow", "writes only into an extension"),
+            ("cfe-init", "creates a new extension tree"),
+            ("cfe-patch-method", "writes only into an extension"),
+            ("epf-init", "creates a new external processor tree"),
+            ("erf-init", "creates a new external report tree"),
+            (
+                "support-edit",
+                "must remain available to change the support lock itself",
+            ),
+        ];
+        assert!(expected_exemptions
+            .iter()
+            .all(|(_, reason)| !reason.is_empty()));
+        assert_eq!(
+            exempt,
+            expected_exemptions
+                .iter()
+                .map(|(operation, _)| *operation)
+                .collect::<Vec<_>>(),
+            "every unguarded native mutation must remain an explicitly justified support-guard exception"
+        );
+    }
+
+    #[test]
     fn mutating_platform_xml_operations_declare_effective_format_paths() {
         use operation_descriptors::FormatGuardPolicy;
 
@@ -8591,21 +8693,33 @@ mod tests {
             "cwd".to_string(),
             Value::String(workspace.display().to_string()),
         );
-        args.insert("dryRun".to_string(), Value::Bool(false));
         args.insert(
             "ObjectName".to_string(),
             Value::String("Catalogs/Items".to_string()),
         );
         args.insert("SrcDir".to_string(), Value::String("src".to_string()));
 
-        let result = UnicaApplication::new()
-            .call_tool("unica.help.add", &args)
-            .unwrap();
+        let mut results = Vec::new();
+        for dry_run in [false, true] {
+            args.insert("dryRun".to_string(), Value::Bool(dry_run));
+            let result = UnicaApplication::new()
+                .call_tool("unica.help.add", &args)
+                .unwrap();
 
-        assert!(!result.ok);
-        assert!(result.summary.contains("support guard"));
-        assert!(!ext.join("Help.xml").exists());
-        assert!(result.cache.events.is_empty());
+            assert!(!result.ok, "dryRun={dry_run}: {result:?}");
+            assert_eq!(
+                result.summary,
+                if dry_run {
+                    "dry run: unica.help.add blocked by support guard"
+                } else {
+                    "unica.help.add blocked by support guard"
+                }
+            );
+            assert!(!ext.join("Help.xml").exists());
+            assert!(result.cache.events.is_empty(), "{result:?}");
+            results.push(result);
+        }
+        assert_support_guard_block_parity(&results[0], &results[1]);
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -9380,21 +9494,37 @@ mod tests {
             "cwd".to_string(),
             Value::String(workspace.display().to_string()),
         );
-        args.insert("dryRun".to_string(), Value::Bool(false));
         args.insert("ConfigDir".to_string(), Value::String("src".to_string()));
         args.insert(
             "Object".to_string(),
             Value::String("Catalog.Items".to_string()),
         );
 
-        let result = UnicaApplication::new()
-            .call_tool("unica.meta.remove", &args)
-            .unwrap();
+        let mut results = Vec::new();
+        for dry_run in [false, true] {
+            args.insert("dryRun".to_string(), Value::Bool(dry_run));
+            let result = UnicaApplication::new()
+                .call_tool("unica.meta.remove", &args)
+                .unwrap();
 
-        assert!(!result.ok);
-        assert!(result.summary.contains("support guard"));
-        assert!(result.errors.join("\n").contains("не снят с поддержки"));
-        assert!(object_path.exists());
+            assert!(!result.ok, "dryRun={dry_run}: {result:?}");
+            assert_eq!(
+                result.summary,
+                if dry_run {
+                    "dry run: unica.meta.remove blocked by support guard"
+                } else {
+                    "unica.meta.remove blocked by support guard"
+                }
+            );
+            assert!(
+                result.errors.join("\n").contains("не снят с поддержки"),
+                "{result:?}"
+            );
+            assert!(object_path.exists(), "dryRun={dry_run}");
+            assert!(result.cache.events.is_empty(), "{result:?}");
+            results.push(result);
+        }
+        assert_support_guard_block_parity(&results[0], &results[1]);
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -9469,6 +9599,52 @@ mod tests {
     </Properties>
   </Form>
 </MetaDataObject>"#
+    }
+
+    fn support_test_subsystem_xml(uuid: &str, name: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Subsystem uuid="{uuid}">
+    <Properties>
+      <Name>{name}</Name>
+      <Synonym/>
+      <Comment/>
+      <IncludeHelpInContents>true</IncludeHelpInContents>
+      <IncludeInCommandInterface>true</IncludeInCommandInterface>
+      <UseOneCommand>false</UseOneCommand>
+      <Explanation/>
+      <Picture/>
+      <Content/>
+    </Properties>
+    <ChildObjects/>
+  </Subsystem>
+</MetaDataObject>"#
+        )
+    }
+
+    fn assert_support_guard_block_parity(applied: &OperationResult, preview: &OperationResult) {
+        assert_eq!(preview.summary, format!("dry run: {}", applied.summary));
+        assert_eq!(preview.ok, applied.ok);
+        assert_eq!(preview.changes, applied.changes);
+        assert_eq!(preview.warnings, applied.warnings);
+        assert_eq!(preview.errors, applied.errors);
+        assert_eq!(preview.artifacts, applied.artifacts);
+        assert_eq!(preview.stdout, applied.stdout);
+        assert_eq!(preview.stderr, applied.stderr);
+        assert_eq!(preview.command, applied.command);
+        assert_eq!(preview.diagnostics, applied.diagnostics);
+        assert_eq!(preview.data, applied.data);
+        assert_eq!(preview.job, applied.job);
+        assert_eq!(preview.cache.mode, applied.cache.mode);
+        assert_eq!(preview.cache.root, applied.cache.root);
+        assert_eq!(preview.cache.workspace_epoch, applied.cache.workspace_epoch);
+        assert_eq!(preview.cache.events, applied.cache.events);
+        assert_eq!(preview.cache.invalidated, applied.cache.invalidated);
+        assert_eq!(preview.cache.refreshed, applied.cache.refreshed);
+        assert_eq!(preview.cache.lazy_rebuilt, applied.cache.lazy_rebuilt);
+        assert_eq!(preview.cache.stale, applied.cache.stale);
+        assert_eq!(preview.cache.fresh, applied.cache.fresh);
     }
 
     fn support_test_workspace(
@@ -10009,6 +10185,128 @@ mod tests {
         assert!(preview.cache.events.is_empty(), "{preview:?}");
         assert_eq!(std::fs::read(&object_path).unwrap(), before);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn subsystem_compile_guards_locked_parent_before_both_planners() {
+        for dry_run in [false, true] {
+            let root = test_workspace_root(if dry_run {
+                "unica-subsystem-parent-guard-preview"
+            } else {
+                "unica-subsystem-parent-guard-apply"
+            });
+            let workspace = root.join("workspace");
+            let src = workspace.join("src");
+            let ext = src.join("Ext");
+            let subsystems = src.join("Subsystems");
+            std::fs::create_dir_all(&ext).unwrap();
+            std::fs::create_dir_all(&subsystems).unwrap();
+            std::fs::write(
+                workspace.join("v8project.yaml"),
+                "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+            )
+            .unwrap();
+            std::fs::write(
+                src.join("Configuration.xml"),
+                support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            )
+            .unwrap();
+            let parent_path = subsystems.join("Parent.xml");
+            std::fs::write(
+                &parent_path,
+                support_test_subsystem_xml("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "Parent"),
+            )
+            .unwrap();
+            std::fs::write(
+                ext.join("ParentConfigurations.bin"),
+                support_test_parent_configurations_bin(
+                    "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                    "cccccccc-cccc-cccc-cccc-cccccccccccc",
+                ),
+            )
+            .unwrap();
+            let before = std::fs::read(&parent_path).unwrap();
+            let args = json!({
+                "cwd": workspace,
+                "dryRun": dry_run,
+                "OutputDir": "src",
+                "Parent": "src/Subsystems/Parent.xml",
+                "Value": r#"{"name":"Child"}"#
+            })
+            .as_object()
+            .unwrap()
+            .clone();
+
+            let result = UnicaApplication::new()
+                .call_tool("unica.subsystem.compile", &args)
+                .unwrap();
+            let after = std::fs::read(&parent_path).unwrap();
+            let normalized_parent = normalized_path(&parent_path).display().to_string();
+            let child_exists = src.join("Subsystems/Parent/Subsystems/Child.xml").exists();
+            std::fs::remove_dir_all(root).unwrap();
+
+            assert!(!result.ok, "dryRun={dry_run}: {result:?}");
+            assert_eq!(
+                result.summary,
+                if dry_run {
+                    "dry run: unica.subsystem.compile blocked by support guard"
+                } else {
+                    "unica.subsystem.compile blocked by support guard"
+                }
+            );
+            assert!(result.errors.join("\n").contains("на замке"), "{result:?}");
+            assert_eq!(result.artifacts, [normalized_parent]);
+            assert!(result.cache.events.is_empty(), "{result:?}");
+            assert_eq!(after, before, "dryRun={dry_run}");
+            assert!(!child_exists, "dryRun={dry_run}");
+        }
+    }
+
+    #[test]
+    fn subsystem_compile_retains_locked_configuration_fallback_without_parent() {
+        let config_uuid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let (root, workspace, _bin_path) = support_test_workspace(
+            "unica-subsystem-root-guard",
+            support_test_parent_configurations_bin(
+                config_uuid,
+                config_uuid,
+                "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            ),
+        );
+        let src = workspace.join("src");
+        let config_path = src.join("Configuration.xml");
+        let before = std::fs::read(&config_path).unwrap();
+        let mut args = json!({
+            "cwd": workspace,
+            "OutputDir": "src",
+            "Value": r#"{"name":"RootChild"}"#
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let mut results = Vec::new();
+
+        for dry_run in [false, true] {
+            args.insert("dryRun".to_string(), Value::Bool(dry_run));
+            let result = UnicaApplication::new()
+                .call_tool("unica.subsystem.compile", &args)
+                .unwrap();
+
+            assert!(!result.ok, "dryRun={dry_run}: {result:?}");
+            assert_eq!(
+                result.artifacts,
+                [normalized_path(&src).display().to_string()]
+            );
+            assert!(result.errors.join("\n").contains("на замке"), "{result:?}");
+            assert!(result.cache.events.is_empty(), "{result:?}");
+            assert_eq!(std::fs::read(&config_path).unwrap(), before);
+            assert!(!src.join("Subsystems/RootChild.xml").exists());
+            results.push(result);
+        }
+        assert_support_guard_block_parity(&results[0], &results[1]);
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
