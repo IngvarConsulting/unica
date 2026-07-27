@@ -71,3 +71,5 @@ Task 5: fix round 8 review failed — public NavigationQuery unions and unavaila
 Task 5: fix round 9 started (base 143eed58).
 Task 5: fix round 9 review failed — missing valid digits+allowedSign/no-fraction qualifier shape; cursor canonicalization overwrites serializer output before validating actual string wire.
 Task 5: fix round 10 started (base 61c4416c).
+Task 5: fix round 10 review failed — malformed/tampered cursor mutations stop at helper error instead of the exact parity comparator; tamper test does not prove authentication-specific rejection.
+Task 5: fix round 11 started (base 9a555928).

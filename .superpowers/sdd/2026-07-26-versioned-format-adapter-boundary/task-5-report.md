@@ -1814,3 +1814,161 @@ was run.
   specimens compare a marker only after the actual serializer and authenticated
   cursor contract have succeeded, so the marker can no longer mask type,
   encoding, or authentication regressions.
+
+## Fix Round 11
+
+Base: `9a55592821a532a4d87fb4631d385ec48b2d1d36`
+
+Implementation commit: `65cae02b357aec0a4165691adae8f923bd3c36d3`
+
+The controller ledger entry recording the Round 10 review failure and Round 11
+start was preserved unchanged and is included with this report.
+
+### Finding closed
+
+Public request/response wire parity now has one fallible top-level pipeline:
+
+```text
+canonicalize_and_compare(actual_raw_facts, expected, cursor_authenticator)
+```
+
+The pipeline owns the complete ordering of operations:
+
+1. Receive untouched facts produced by actual public JSON serialization.
+2. Discover every standalone or nested `cursor`/`nextCursor` occurrence.
+3. Validate JSON type, nonempty text, no padding, and base64url syntax.
+4. Invoke the supplied deterministic authenticator for frame/schema decoding,
+   HMAC verification, and applicable decoded-payload claims.
+5. Verify authenticated cursor serialization preserves the original token.
+6. Replace the validated unpredictable token with the static oracle marker.
+7. Run the existing exact multiset comparator.
+
+Normal full-public, closed-variant, and NavigationQuery/NavigationEnvelope wire
+parity use this pipeline. Their missing/extra/changed mutation loops also use the
+same entry point. No fact producer canonicalizes or overwrites cursors eagerly.
+The Round 11 malformed-cursor matrix invokes this top-level function directly;
+it does not call a cursor helper.
+
+### Structured error contract
+
+`PublicWireParityError` distinguishes:
+
+- non-string wire type, retaining the exact JSON type (`null`, boolean, number,
+  array, or object);
+- empty string;
+- base64url padding;
+- base64url alphabet/length syntax;
+- token frame/decode/payload-schema failure;
+- authentication/HMAC failure;
+- authenticated payload-claim or token-round-trip mismatch;
+- ordinary exact fact-set diff with the existing structured `FactDiff`.
+
+The tamper regression decodes a valid issued token, flips one byte in its HMAC
+frame, and re-encodes it with unpadded base64url. The test independently proves
+that the mutated token remains nonempty, syntax-valid, and byte-decodable before
+passing it through `canonicalize_and_compare`; the exact result must be
+`CursorAuthenticationHmac`, not syntax, decode, payload, or fact-set failure.
+A separately issued same-secret cursor with a changed `nextPosition` proves the
+`CursorPayloadMismatch` category. A valid raw control proves the pipeline reaches
+and passes the exact comparator.
+
+### Files changed
+
+Implementation commit:
+
+- `Cargo.lock`
+- `crates/unica-adapter-platform-xml/Cargo.toml`
+- `crates/unica-adapter-platform-xml/tests/legacy_parity.rs`
+
+`base64` is a test-only dependency used to perform a structure-preserving HMAC
+tag mutation; no adapter/runtime dependency or behavior changed.
+
+Report/ledger commit:
+
+- `.superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/task-5-report.md`
+- `.superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/progress.md`
+
+### RED evidence
+
+Focused command:
+
+```text
+cargo test -p unica-adapter-platform-xml --test legacy_parity fix_round11_public_wire_pipeline_classifies_cursor_failures_before_exact_comparison -- --exact
+```
+
+Initial result: compilation failed at the intended missing boundary with
+`E0425`/`E0433`: `canonicalize_and_compare`,
+`public_navigation_wire_raw_facts`, `authenticate_public_navigation_cursor`,
+`PublicWireParityError`, and `JsonWireType` did not exist. The previous eager
+canonicalization path therefore could not satisfy the test.
+
+### GREEN evidence
+
+Focused Round 11 regression:
+
+```text
+cargo test -p unica-adapter-platform-xml --test legacy_parity fix_round11_public_wire_pipeline_classifies_cursor_failures_before_exact_comparison -- --exact
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out
+```
+
+Oracle regeneration:
+
+```text
+python3.12 crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/generate_oracle.py --repo-root . --write
+wrote 37 raw outputs, 174 enum alias executions, 21 oracle cases, and provenance
+```
+
+No oracle-manifest content changed: this round changed neither the independently
+hand-authored static specimens nor legacy-derived inputs/outputs. Regeneration
+and `--check` recomputed and revalidated the existing SHA-256 entries.
+
+### Task 5 scoped validation
+
+Oracle fail-closed self-test:
+
+```text
+python3.12 crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/generate_oracle.py --repo-root . --self-test
+verified fail-closed parser and source-context negative suite
+```
+
+Oracle and SHA-256 check:
+
+```text
+python3.12 crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/generate_oracle.py --repo-root . --check
+verified 37 raw outputs, 174 enum alias executions, oracle facts, and SHA-256 provenance
+```
+
+Core public JSON contract:
+
+```text
+cargo test -p unica-format-core --test public_json_contract
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+Full Task 5 parity/public-contract/coverage suite:
+
+```text
+cargo test -p unica-adapter-platform-xml --test legacy_parity
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+Unknown/unmapped boundary:
+
+```text
+cargo test -p unica-adapter-platform-xml --test unmapped_fact
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+Only the established Task 5 oracle, core public-wire, parity, and unmapped-fact
+validation was run.
+
+### Remaining gaps and concerns
+
+- No remaining Task 5 public-wire or legacy-comparable parity gap is known.
+- Cursor tokens remain intentionally opaque and nondeterministic. Static
+  comparison sees a marker only after actual serialization, syntax validation,
+  authenticated decoding, payload validation where applicable, and token
+  round-trip verification all succeed.
+- Existing intentional Platform XML adapter absences and opaque form/template
+  internals remain unchanged and explicitly covered by prior contract tests.
