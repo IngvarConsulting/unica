@@ -382,3 +382,168 @@ The three skipped `legacy_parity` tests fail identically at the requested base c
 - Windows reparse-point behavior is implemented with handle-relative no-follow semantics but was not runtime-executed on this macOS validation host.
 - Full workspace validation was intentionally not run; validation was limited to Task 7 scope as requested.
 - The three base-confirmed rights-oracle failures listed above remain outside this fix round.
+
+## Fix Round 3
+
+Base: `88f4a7653593318c3c8bd9aa223eea6bf51b2b92`
+
+Implementation commit: `9c53e058af1ab3b777c22161b979a83b6f7ff1a7`
+
+The controller-owned `.superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/progress.md` remained unstaged and was not modified by this fix round.
+
+### RED
+
+- `cargo check -p unica-adapter-platform-xml --target x86_64-pc-windows-msvc --lib --tests` failed with nine errors: unstable Windows `MetadataExt` APIs, invalid width assumptions, and default/sentinel identity fallback.
+- `cargo test -p unica-format-core --test task7_fix_round3_evidence` initially failed to compile because read-derived operational results had no mandatory evidence revision.
+- `cargo test -p unica-adapter-platform-xml --test task7_fix_round3_lazy_revision` exposed two root defects: changing a reachable form companion did not change the navigation revision, and an unrelated malformed registered descriptor changed target-local validation.
+- The new adapter read-log probe showed global descriptor-index construction opening unrelated registrations before validating the selected semantic target.
+- The existing lexical architecture checks could be bypassed by moving or renaming forbidden native read/layout logic behind another helper module; the new AST call-graph negative fixtures reproduced both bypasses.
+- Unskipped `cargo test -p unica-adapter-platform-xml --test legacy_parity` reproduced all three reported failures: rights registry readiness drift, mixed-content availability drift, and static new-only rights contract drift.
+
+### GREEN responsibility map
+
+| Responsibility | Fix Round 3 owner |
+| --- | --- |
+| Windows opened-handle identity | Private `platform_handle.rs` uses stable `windows-sys::GetFileInformationByHandle`, explicit width conversion, and typed query failure. `safe_root.rs` and publication consume that same opened-handle identity with no pathname/default fallback. |
+| Target-local validation | Private `v2_20/operations.rs` resolves the selected semantic descriptor directly through the checked registry and opens only required dependent artifacts. Global descriptor-index traversal was removed. |
+| Navigation revision | `v2_20/provider.rs` captures the complete reachable descriptor/companion read set before finalizing an immutable deterministic revision, then serves only captured bytes. |
+| Operational evidence | Core requires a validated opaque `OperationalEvidenceRevision` on every read-derived compatibility, authorability, validation-context, and validation result. Adapter operation forks finalize evidence over exactly the artifacts they read. |
+| Architecture boundary | `task7_fix_round3_architecture.rs` builds a Rust AST/module call graph from the three Task 7 host entrypoints. Reachable host parser imports/calls, native layout joins, native wire literals, and parser crates fail; neutral trait-object port calls terminate the graph. |
+| Legacy parity | Private projection/semantic mapping once again distinguishes resolved external rights targets, duplicate unknown occurrences, and known unresolved targets without leaking native identity. All 26 parity cases and affected Task 5/6 relation suites run unconditionally. |
+| Cross-platform CI | The macOS Rust CI job installs `x86_64-pc-windows-msvc` and runs the adapter `--lib --tests` cross-target check, so every `cfg(windows)` adapter module is compiled on non-Windows CI. |
+
+### GREEN validation
+
+```text
+cargo test -p unica-format-core \
+  --test task7_operational_ports \
+  --test task7_fix_round2_contracts \
+  --test task7_fix_round3_evidence \
+  --test public_json_contract
+  public_json_contract: 5 passed
+  task7_fix_round2_contracts: 7 passed
+  task7_fix_round3_evidence: 3 passed
+  task7_operational_ports: 7 passed
+
+cargo test -p unica-application \
+  --test task7_operational_policy \
+  --test task7_fix_round2_policy
+  task7_fix_round2_policy: 2 passed
+  task7_operational_policy: 5 passed
+
+cargo test -p unica-adapter-platform-xml \
+  --test task7_fix_round1_architecture \
+  --test task7_fix_round2_architecture \
+  --test task7_fix_round2_lazy_source \
+  --test task7_fix_round3_architecture \
+  --test task7_fix_round3_lazy_revision \
+  --test task7_operational_ports \
+  --test legacy_parity \
+  --test specialized_relations \
+  --test unmapped_fact
+  legacy_parity: 26 passed
+  specialized_relations: 7 passed
+  task7_fix_round1_architecture: 5 passed
+  task7_fix_round2_architecture: 2 passed
+  task7_fix_round2_lazy_source: 3 passed
+  task7_fix_round3_architecture: 3 passed
+  task7_fix_round3_lazy_revision: 3 passed
+  task7_operational_ports: 9 passed
+  unmapped_fact: 8 passed
+
+cargo test -p unica-adapter-platform-xml --lib platform_handle::tests
+  3 passed
+cargo test -p unica-adapter-platform-xml --lib safe_root::tests
+  2 passed
+cargo test -p unica-adapter-platform-xml --lib versions::v2_20::provider::tests
+  6 passed
+cargo test -p unica-adapter-platform-xml --lib publication::tests
+  39 passed
+
+cargo check -p unica-format-core -p unica-application -p unica-coder \
+  -p unica-adapter-platform-xml --tests
+  passed; unica-coder emitted 21 existing dead-code warnings
+
+cargo check -p unica-adapter-platform-xml \
+  --target x86_64-pc-windows-msvc --lib --tests
+  passed
+
+cargo fmt --all -- --check
+  passed
+git diff --check
+  passed
+```
+
+The target-local validation fixture covers readable, malformed, oversized, and symlinked unrelated registered descriptors and records zero opens for every unrelated descriptor. Revision fixtures cover form, template, object-module, rights, and other companion changes, plus unchanged unrelated-file stability. Opened-handle tests cover swap-open-swap-back, canonical aliases, missing Windows identity data, explicit width conversion, and failure propagation.
+
+### Files in implementation commit
+
+- `.github/workflows/unica-plugin-release.yml`
+- `Cargo.lock`
+- `crates/unica-adapter-platform-xml/Cargo.toml`
+- `crates/unica-adapter-platform-xml/src/factory.rs`
+- `crates/unica-adapter-platform-xml/src/guards.rs`
+- `crates/unica-adapter-platform-xml/src/lib.rs`
+- `crates/unica-adapter-platform-xml/src/platform_handle.rs`
+- `crates/unica-adapter-platform-xml/src/publication.rs`
+- `crates/unica-adapter-platform-xml/src/safe_root.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/decoder.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/inspection.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/operations.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/probe.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/projector.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/provider.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/schema.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/semantic_map.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/source_sets.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/validation.rs`
+- `crates/unica-adapter-platform-xml/tests/legacy_parity.rs`
+- `crates/unica-adapter-platform-xml/tests/specialized_relations.rs`
+- `crates/unica-adapter-platform-xml/tests/task7_fix_round1_architecture.rs`
+- `crates/unica-adapter-platform-xml/tests/task7_fix_round2_architecture.rs`
+- `crates/unica-adapter-platform-xml/tests/task7_fix_round2_lazy_source.rs`
+- `crates/unica-adapter-platform-xml/tests/task7_fix_round3_architecture.rs`
+- `crates/unica-adapter-platform-xml/tests/task7_fix_round3_lazy_revision.rs`
+- `crates/unica-adapter-platform-xml/tests/task7_operational_ports.rs`
+- `crates/unica-adapter-platform-xml/tests/unmapped_fact.rs`
+- `crates/unica-application/src/commands.rs`
+- `crates/unica-application/src/navigation.rs`
+- `crates/unica-application/tests/task7_fix_round2_policy.rs`
+- `crates/unica-application/tests/task7_operational_policy.rs`
+- `crates/unica-coder/src/application/mod.rs`
+- `crates/unica-coder/src/application/tool_contracts.rs`
+- `crates/unica-coder/src/infrastructure/application_ports.rs`
+- `crates/unica-coder/src/infrastructure/format_guard.rs`
+- `crates/unica-coder/src/infrastructure/internal_adapters.rs`
+- `crates/unica-coder/src/infrastructure/native_operations/cf.rs`
+- `crates/unica-coder/src/infrastructure/native_operations/code.rs`
+- `crates/unica-coder/src/infrastructure/native_operations/common.rs`
+- `crates/unica-coder/src/infrastructure/native_operations/compile_transaction.rs`
+- `crates/unica-coder/src/infrastructure/native_operations/meta.rs`
+- `crates/unica-coder/src/infrastructure/native_operations/support.rs`
+- `crates/unica-coder/src/infrastructure/platform_xml_owner.rs`
+- `crates/unica-coder/src/infrastructure/project_sources.rs`
+- `crates/unica-coder/src/infrastructure/support_guard.rs`
+- `crates/unica-coder/src/infrastructure/tool_context.rs`
+- `crates/unica-format-core/src/navigation.rs`
+- `crates/unica-format-core/src/ports.rs`
+- `crates/unica-format-core/src/value.rs`
+- `crates/unica-format-core/tests/public_json_contract.rs`
+- `crates/unica-format-core/tests/task7_fix_round2_contracts.rs`
+- `crates/unica-format-core/tests/task7_fix_round3_evidence.rs`
+- `crates/unica-format-core/tests/task7_operational_ports.rs`
+
+### Remaining native host paths and Task 8 justification
+
+- The mechanical call graph proves that `evaluate_format_guard`, `evaluate_support_guard`, and `validate_meta` cannot reach host native XML readers, parser crates, native layout joins, or native wire literals.
+- `native_operations/common.rs` still contains legacy command/composition path setup (`resolve_cf_edit_config_path`, `resolve_cf_read_config_path`, `resolve_cfe_validate_config_path`, and `resolve_existing_path`) and native writer helpers. These are outside the Task 7 roots and move with their Task 8 serializers.
+- `native_operations/meta.rs`, `form.rs`, `template.rs`, `help.rs`, `role.rs`, `subsystem.rs`, `interface.rs`, `cf.rs`, `cfe.rs`, `mxl.rs`, `dcs.rs`, and `support.rs` retain native serialization, mutation topology, destination paths, and command-specific legacy writer behavior. Moving serialization now would violate the explicit Task 8 boundary.
+- Native strings under tests are adversarial fixtures and recursive public-leak denylist probes, not production policy decisions.
+
+### Residual risks and non-gates
+
+- Windows opened-handle behavior compiled for `x86_64-pc-windows-msvc` and its platform-neutral identity logic is unit tested, but the Windows filesystem race tests were not runtime-executed on this macOS host.
+- Full workspace validation was intentionally not run; validation remained within Task 7 and affected Task 5/6 parity scope.
+- The repository-wide `scripts/ci/check-rust-platform-boundary.py` is not a scoped gate: it reports a broad existing set of OS-specific adapter, writer, and test modules outside its accepted facade list. The new CI cross-target command is the requested compiling invariant.
+- An exploratory stricter workspace clippy command reported existing non-Task-7 lints in `unica-format-core`; it was not used as a scoped gate. The native compile checks above are green.
+- No Task 7 scoped test, parity test, formatting check, native compile check, or Windows cross-target compile remains failing.
