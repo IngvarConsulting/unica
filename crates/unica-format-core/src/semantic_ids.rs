@@ -526,6 +526,7 @@ semantic_id_registry!(
         RECORDER_SUBORDINATE => "recorderSubordinate",
         DONT_CHECK => "dontCheck",
         SHOW_ERROR => "showError",
+        SHOW_WARNING => "showWarning",
         DONT_INDEX => "dontIndex",
         INDEX => "index",
         INDEX_WITH_ADDITIONAL_ORDER => "indexWithAdditionalOrder",
@@ -546,7 +547,5 @@ semantic_id_registry!(
         BINARY_DATA => "binaryData",
         TEXT_DOCUMENT => "textDocument",
         HTML_DOCUMENT => "htmlDocument",
-        GEOGRAPHICAL_SCHEMA => "geographicalSchema",
-        GRAPHICAL_SCHEMA => "graphicalSchema",
     }
 );

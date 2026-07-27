@@ -104,6 +104,7 @@ struct EnumAlias {
     semantic: SemanticEnumValue,
     native_aliases: Vec<String>,
     property_ids: Vec<SemanticPropertyId>,
+    object_kinds: Vec<NodeKind>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,6 +245,7 @@ struct RawEnumAlias {
     semantic: String,
     native_aliases: Vec<String>,
     property_ids: Vec<String>,
+    object_kinds: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -349,6 +351,7 @@ impl CoverageRegistry {
             if alias.native_aliases.is_empty()
                 || alias.native_aliases.iter().any(|value| value.trim().is_empty())
                 || alias.property_ids.is_empty()
+                || alias.object_kinds.is_empty()
             {
                 return Err(invalid_registry(
                     "coverage registry enum aliases and applicability must be nonempty",
@@ -364,20 +367,37 @@ impl CoverageRegistry {
                     ));
                 }
             }
+            for kind in &alias.object_kinds {
+                if !self.properties.iter().any(|property| {
+                    property.value_kind == NativeValueKind::Enum
+                        && alias.property_ids.contains(&property.semantic_id)
+                        && property_applies_to(property, *kind)
+                }) {
+                    return Err(invalid_registry(
+                        "coverage registry enum owner has no applicable enum property",
+                    ));
+                }
+            }
         }
         for property in self
             .properties
             .iter()
             .filter(|property| property.value_kind == NativeValueKind::Enum)
         {
-            if !self
-                .enum_aliases
-                .iter()
-                .any(|alias| alias.property_ids.contains(&property.semantic_id))
-            {
+            if property.all_object_kinds {
                 return Err(invalid_registry(
-                    "coverage registry enum property has no declared aliases",
+                    "coverage registry enum properties must have exact owner applicability",
                 ));
+            }
+            for kind in &property.object_kinds {
+                if !self.enum_aliases.iter().any(|alias| {
+                    alias.property_ids.contains(&property.semantic_id)
+                        && alias.object_kinds.contains(kind)
+                }) {
+                    return Err(invalid_registry(
+                        "coverage registry enum property owner has no declared aliases",
+                    ));
+                }
             }
         }
         let partial_reasons = self
@@ -407,6 +427,10 @@ fn ensure_unique<T: Ord>(values: impl IntoIterator<Item = T>, label: &str) -> Re
         }
     }
     Ok(())
+}
+
+fn property_applies_to(property: &PropertyMapping, kind: NodeKind) -> bool {
+    property.all_object_kinds || property.object_kinds.contains(&kind)
 }
 
 fn parse_kind(raw: &str) -> Result<NodeKind, SourceAdapterError> {
@@ -571,6 +595,11 @@ fn convert_enum(raw: RawEnumAlias) -> Result<EnumAlias, SourceAdapterError> {
                 })
             })
             .collect::<Result<_, _>>()?,
+        object_kinds: raw
+            .object_kinds
+            .iter()
+            .map(|value| parse_kind(value))
+            .collect::<Result<_, _>>()?,
     })
 }
 
@@ -725,23 +754,43 @@ pub(crate) fn validate_coverage_registry() -> Result<(), SourceAdapterError> {
         ));
     }
     for alias in &registry.enum_aliases {
+        let mut exercised = false;
         for property_id in &alias.property_ids {
-            for native in &alias.native_aliases {
-                if enum_value(*property_id, native) != Some(alias.semantic) {
-                    return Err(invalid_registry("enum registry lookup is not bijective"));
+            for kind in &alias.object_kinds {
+                if registry.properties.iter().any(|property| {
+                    property.semantic_id == *property_id
+                        && property.value_kind == NativeValueKind::Enum
+                        && property_applies_to(property, *kind)
+                }) {
+                    exercised = true;
+                    for native in &alias.native_aliases {
+                        if enum_value(*kind, *property_id, native) != Some(alias.semantic) {
+                            return Err(invalid_registry("enum registry lookup is not bijective"));
+                        }
+                    }
                 }
             }
+        }
+        if !exercised {
+            return Err(invalid_registry(
+                "enum registry contains applicability unused by runtime properties",
+            ));
         }
         for property in registry
             .properties
             .iter()
             .filter(|property| property.value_kind == NativeValueKind::Enum)
         {
-            if !alias.property_ids.contains(&property.semantic_id) {
+            for kind in &property.object_kinds {
+                if alias.property_ids.contains(&property.semantic_id)
+                    && alias.object_kinds.contains(kind)
+                {
+                    continue;
+                }
                 for native in &alias.native_aliases {
-                    if enum_value(property.semantic_id, native).is_some() {
+                    if enum_value(*kind, property.semantic_id, native).is_some() {
                         return Err(invalid_registry(
-                            "enum registry accepts an alias outside its declared property context",
+                            "enum registry accepts an alias outside its declared property or owner context",
                         ));
                     }
                 }
@@ -867,6 +916,7 @@ pub(crate) fn reference_kind(native_class: &str) -> Option<NodeKind> {
 }
 
 pub(crate) fn enum_value(
+    kind: NodeKind,
     property_id: SemanticPropertyId,
     native: &str,
 ) -> Option<SemanticEnumValue> {
@@ -875,6 +925,7 @@ pub(crate) fn enum_value(
         .iter()
         .find(|entry| {
             entry.property_ids.contains(&property_id)
+                && entry.object_kinds.contains(&kind)
                 && entry.native_aliases.iter().any(|alias| alias == native)
         })
         .map(|entry| entry.semantic)

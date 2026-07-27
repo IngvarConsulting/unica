@@ -1,0 +1,17 @@
+﻿=== Определяемый тип: AllTypes ===
+Поддержка: не на поддержке
+Типы (14):
+  Строка(40)
+  Число(15,3)
+  ДатаВремя
+  УникальныйИдентификатор
+  ХранилищеЗначения
+  Null
+  v8:ValueTable
+  СправочникСсылка.Products
+  DocumentObject.Order
+  InformationRegisterRecordSet.Prices
+  InformationRegisterManager.Prices
+  InformationRegisterRecordKey.Prices
+  ПеречислениеСсылка.Status
+  ОпределяемыйТип.Identifier

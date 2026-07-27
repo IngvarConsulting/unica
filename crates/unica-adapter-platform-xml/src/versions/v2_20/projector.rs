@@ -433,7 +433,7 @@ impl<'a> GraphBuilder<'a> {
                 unknown_facts.push(readable_unknown_fact(native_property));
                 continue;
             };
-            let property = project_property(mapping, native_property)?;
+            let property = project_property(*kind, mapping, native_property)?;
             incomplete |= matches!(
                 &native_property.value,
                 NativePropertyValue::ReadableUnknownScalar { .. }
@@ -467,6 +467,33 @@ impl<'a> GraphBuilder<'a> {
             );
         }
         if semantic_map::is_field_kind(*kind) {
+            for (id, value) in [
+                (
+                    SemanticPropertyId::FIELD_FILL_CHECKING,
+                    crate::domain::navigation::SemanticEnumValue::DONT_CHECK,
+                ),
+                (
+                    SemanticPropertyId::FIELD_INDEXING,
+                    crate::domain::navigation::SemanticEnumValue::DONT_INDEX,
+                ),
+            ] {
+                if projected.contains_key(&id) {
+                    continue;
+                }
+                if projected.len() >= MAX_NAVIGATION_PROPERTIES_PER_NODE {
+                    return Err(resource_limit("semantic node has too many properties"));
+                }
+                reserve(
+                    &mut self.output_properties,
+                    MAX_NAVIGATION_IDENTITY_ITEMS,
+                    "semantic properties",
+                )?;
+                projected.insert(
+                    id,
+                    SemanticProperty::computed(id, PropertyValue::EnumSymbol(value))?
+                        .with_capability(PropertyCapability::ReadOnly)?,
+                );
+            }
             let required = projected
                 .get(&SemanticPropertyId::FIELD_FILL_CHECKING)
                 .map(|fill_checking| match fill_checking.value() {
@@ -590,23 +617,27 @@ impl<'a> GraphBuilder<'a> {
                     PropertyValue::Uuid(uuid),
                 )?,
             )?;
-            let rule = self.support.effective_rule_for(&uuid.to_string());
-            for property in [
-                SemanticProperty::computed(
-                    SemanticPropertyId::SUPPORT_STATE,
-                    PropertyValue::String(support_rule_label(rule).to_string()),
-                )?,
-                SemanticProperty::computed(
-                    SemanticPropertyId::SUPPORT_AUTHORABILITY,
-                    PropertyValue::String(authorability_label(authorability).to_string()),
-                )?,
-                SemanticProperty::computed(
-                    SemanticPropertyId::SUPPORT_EDIT_CAPABILITY,
-                    PropertyValue::String(edit_capability_label(authorability).to_string()),
-                )?,
-            ] {
-                self.insert_synthetic(projection, property)?;
-            }
+        }
+        let support_identity = native_node
+            .uuid
+            .map(|uuid| uuid.to_string())
+            .unwrap_or_default();
+        let rule = self.support.effective_rule_for(&support_identity);
+        for property in [
+            SemanticProperty::computed(
+                SemanticPropertyId::SUPPORT_STATE,
+                PropertyValue::String(support_rule_label(rule).to_string()),
+            )?,
+            SemanticProperty::computed(
+                SemanticPropertyId::SUPPORT_AUTHORABILITY,
+                PropertyValue::String(authorability_label(authorability).to_string()),
+            )?,
+            SemanticProperty::computed(
+                SemanticPropertyId::SUPPORT_EDIT_CAPABILITY,
+                PropertyValue::String(edit_capability_label(authorability).to_string()),
+            )?,
+        ] {
+            self.insert_synthetic(projection, property)?;
         }
         if kind == NodeKind::Unknown
             && !projection
@@ -1118,6 +1149,7 @@ fn readable_unknown_fact(property: &NativeProperty) -> PropertyValue {
 }
 
 fn project_property(
+    kind: NodeKind,
     mapping: &PropertyMapping,
     property: &NativeProperty,
 ) -> Result<SemanticProperty, SourceAdapterError> {
@@ -1137,12 +1169,12 @@ fn project_property(
             )?
         }
         NativePropertyValue::Scalar(value) => {
-            scalar_property(mapping, value, None)?
+            scalar_property(kind, mapping, value, None)?
         }
         NativePropertyValue::AnnotatedScalar {
             value,
             type_annotation,
-        } => scalar_property(mapping, value, Some(*type_annotation))?,
+        } => scalar_property(kind, mapping, value, Some(*type_annotation))?,
         NativePropertyValue::TypeSet(type_set) => {
             SemanticProperty::explicit(semantic_id, PropertyValue::TypeSet(type_set.clone()))?
         }
@@ -1197,6 +1229,7 @@ fn readable_unknown_scalar(
 }
 
 fn scalar_property(
+    kind: NodeKind,
     mapping: &PropertyMapping,
     value: &str,
     type_annotation: Option<NativeScalarType>,
@@ -1204,7 +1237,7 @@ fn scalar_property(
     let semantic_id = mapping.semantic_id;
     let definition = crate::domain::navigation::property_definition(semantic_id);
     if definition.allowed_types() == [PropertyType::Enum] {
-        return Ok(semantic_map::enum_value(semantic_id, value)
+        return Ok(semantic_map::enum_value(kind, semantic_id, value)
             .map(PropertyValue::EnumSymbol)
             .map(|value| SemanticProperty::explicit(semantic_id, value))
             .transpose()?
@@ -1224,6 +1257,14 @@ fn scalar_property(
             Ok(value) => PropertyValue::Uuid(value),
             Err(_) => return Ok(SemanticProperty::unresolved(semantic_id)),
         },
+        NativeValueKind::String
+            if semantic_id == SemanticPropertyId::REPORT_MAIN_DATA_COMPOSITION_SCHEMA =>
+        {
+            let Some(name) = report_template_name(value) else {
+                return Ok(SemanticProperty::unresolved(semantic_id));
+            };
+            PropertyValue::String(name.to_string())
+        }
         NativeValueKind::String => PropertyValue::String(value.to_string()),
         NativeValueKind::Polymorphic => match type_annotation {
             Some(NativeScalarType::Decimal) => match normalize_xml_schema_decimal(value) {
@@ -1260,6 +1301,16 @@ fn scalar_property(
     } else {
         Ok(SemanticProperty::unresolved(semantic_id))
     }
+}
+
+fn report_template_name(value: &str) -> Option<&str> {
+    if !value.contains('.') {
+        return (!value.is_empty()).then_some(value);
+    }
+    let mut parts = value.rsplit('.');
+    let name = parts.next()?;
+    let role = parts.next()?;
+    (role == "Template" && !name.is_empty()).then_some(name)
 }
 
 fn normalize_xml_schema_decimal(value: &str) -> Option<String> {

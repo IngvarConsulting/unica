@@ -57,3 +57,5 @@ Task 5: fix round 2 implementation complete at bb3c34e3; scoped validation green
 Task 5: fix round 2 review failed — WholeCatalog mapped to wrong property/context; Rights mixed-content text is lost; parity still derives baseline from new envelope, excludes unknown facts, and collapses duplicate node identities.
 Task 5: fix round 3 started (base 9f872bf5).
 Task 5: fix round 3 implementation complete at 3fb22fc7; scoped validation green (legacy_parity 14/14, unmapped_fact 8/8); exact frozen legacy-output oracle and full report recorded.
+Task 5: fix round 3 review failed — committed exact oracle was populated from adapter output; enum inventory still duplicates the manifest instead of deriving from legacy reference table; mutation tests bypass the real oracle comparator.
+Task 5: fix round 4 started (base 39cdb8e5).

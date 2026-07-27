@@ -1,0 +1,4433 @@
+{
+  "cases": [
+    {
+      "adapterInput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/types/AllTypes.xml",
+      "facts": [
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "allTypes/root",
+          "value": {
+            "kind": "definedType",
+            "name": "AllTypes"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "definedType.type",
+          "state": "present",
+          "subject": "allTypes/root",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "dateFractions": "dateTime",
+                  "kind": "primitive",
+                  "primitive": "date"
+                },
+                {
+                  "digits": 15,
+                  "fractionDigits": 3,
+                  "kind": "primitive",
+                  "primitive": "number"
+                },
+                {
+                  "kind": "definedType",
+                  "targetKind": "definedType",
+                  "targetName": "Identifier"
+                },
+                {
+                  "kind": "enumeration",
+                  "targetKind": "enumeration",
+                  "targetName": "Status"
+                },
+                {
+                  "kind": "key",
+                  "targetKind": "informationRegister",
+                  "targetName": "Prices"
+                },
+                {
+                  "kind": "manager",
+                  "targetKind": "informationRegister",
+                  "targetName": "Prices"
+                },
+                {
+                  "kind": "object",
+                  "targetKind": "document",
+                  "targetName": "Order"
+                },
+                {
+                  "kind": "primitive",
+                  "length": 40,
+                  "primitive": "string"
+                },
+                {
+                  "kind": "primitive",
+                  "primitive": "null"
+                },
+                {
+                  "kind": "primitive",
+                  "primitive": "opaque"
+                },
+                {
+                  "kind": "primitive",
+                  "primitive": "table"
+                },
+                {
+                  "kind": "primitive",
+                  "primitive": "uuid"
+                },
+                {
+                  "kind": "recordSet",
+                  "targetKind": "informationRegister",
+                  "targetName": "Prices"
+                },
+                {
+                  "kind": "reference",
+                  "targetKind": "catalog",
+                  "targetName": "Products"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.active",
+          "state": "present",
+          "subject": "allTypes/root",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        }
+      ],
+      "id": "allTypes",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/types/AllTypes.xml",
+      "profile": "meta-full",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/all-types.full.txt",
+      "rootKind": "definedType",
+      "rootName": "AllTypes",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/types"
+    },
+    {
+      "adapterInput": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+      "facts": [
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/ЗагружаетсяИзИнтернета#1",
+          "value": {
+            "kind": "attribute",
+            "name": "ЗагружаетсяИзИнтернета"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/КодЯзыка#1",
+          "value": {
+            "kind": "attribute",
+            "name": "КодЯзыка"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/НаименованиеПолное#1",
+          "value": {
+            "kind": "attribute",
+            "name": "НаименованиеПолное"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/Наценка#1",
+          "value": {
+            "kind": "attribute",
+            "name": "Наценка"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/ОсновнаяВалюта#1",
+          "value": {
+            "kind": "attribute",
+            "name": "ОсновнаяВалюта"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/ПараметрыПрописи#1",
+          "value": {
+            "kind": "attribute",
+            "name": "ПараметрыПрописи"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/ПараметрыПрописи#2",
+          "value": {
+            "kind": "attribute",
+            "name": "ПараметрыПрописи"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/СпособУстановкиКурса#1",
+          "value": {
+            "kind": "attribute",
+            "name": "СпособУстановкиКурса"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/ФормулаРасчетаКурса#1",
+          "value": {
+            "kind": "attribute",
+            "name": "ФормулаРасчетаКурса"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "catalogCurrencies/form/ПараметрыПрописиВалюты_en#1",
+          "value": {
+            "kind": "form",
+            "name": "ПараметрыПрописиВалюты_en"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "catalogCurrencies/form/ПараметрыПрописиВалютыНаДругихЯзыках#1",
+          "value": {
+            "kind": "form",
+            "name": "ПараметрыПрописиВалютыНаДругихЯзыках"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "catalogCurrencies/form/ФормаСписка#1",
+          "value": {
+            "kind": "form",
+            "name": "ФормаСписка"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "catalogCurrencies/form/ФормаЭлемента#1",
+          "value": {
+            "kind": "form",
+            "name": "ФормаЭлемента"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "catalogCurrencies/root",
+          "value": {
+            "kind": "catalog",
+            "name": "Валюты"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "catalogCurrencies/tabularSection/Представления#1",
+          "value": {
+            "kind": "tabularSection",
+            "name": "Представления"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "catalog.code.length",
+          "state": "present",
+          "subject": "catalogCurrencies/root",
+          "value": {
+            "type": "integer",
+            "value": 3
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "catalog.description.length",
+          "state": "present",
+          "subject": "catalogCurrencies/root",
+          "value": {
+            "type": "integer",
+            "value": 10
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/ЗагружаетсяИзИнтернета#1",
+          "value": {
+            "type": "enum",
+            "value": "dontIndex"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/КодЯзыка#1",
+          "value": {
+            "type": "enum",
+            "value": "index"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/НаименованиеПолное#1",
+          "value": {
+            "type": "enum",
+            "value": "dontIndex"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/Наценка#1",
+          "value": {
+            "type": "enum",
+            "value": "dontIndex"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/ОсновнаяВалюта#1",
+          "value": {
+            "type": "enum",
+            "value": "index"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/ПараметрыПрописи#1",
+          "value": {
+            "type": "enum",
+            "value": "dontIndex"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/ПараметрыПрописи#2",
+          "value": {
+            "type": "enum",
+            "value": "dontIndex"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/СпособУстановкиКурса#1",
+          "value": {
+            "type": "enum",
+            "value": "dontIndex"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/ФормулаРасчетаКурса#1",
+          "value": {
+            "type": "enum",
+            "value": "dontIndex"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/ЗагружаетсяИзИнтернета#1",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/КодЯзыка#1",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/НаименованиеПолное#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/Наценка#1",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/ОсновнаяВалюта#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/ПараметрыПрописи#1",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/ПараметрыПрописи#2",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/СпособУстановкиКурса#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/ФормулаРасчетаКурса#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/ЗагружаетсяИзИнтернета#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "primitive",
+                  "primitive": "boolean"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/КодЯзыка#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "primitive",
+                  "length": 10,
+                  "primitive": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/НаименованиеПолное#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "primitive",
+                  "length": 50,
+                  "primitive": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/Наценка#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "digits": 10,
+                  "fractionDigits": 2,
+                  "kind": "primitive",
+                  "primitive": "number"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/ОсновнаяВалюта#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "reference",
+                  "targetKind": "catalog",
+                  "targetName": "Валюты"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/ПараметрыПрописи#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "primitive",
+                  "length": 200,
+                  "primitive": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/ПараметрыПрописи#2",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "primitive",
+                  "length": 200,
+                  "primitive": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/СпособУстановкиКурса#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "enumeration",
+                  "targetKind": "enumeration",
+                  "targetName": "СпособыУстановкиКурсаВалюты"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "catalogCurrencies/attribute/ФормулаРасчетаКурса#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "primitive",
+                  "length": 100,
+                  "primitive": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "presentation.object",
+          "state": "present",
+          "subject": "catalogCurrencies/root",
+          "value": {
+            "type": "localizedString",
+            "value": {
+              "ru": "Валюта"
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "presentation.type",
+          "state": "present",
+          "subject": "catalogCurrencies/root",
+          "value": {
+            "type": "localizedString",
+            "value": {
+              "ru": "Валюта"
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.active",
+          "state": "present",
+          "subject": "catalogCurrencies/root",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "attributes",
+          "state": "present",
+          "subject": "catalogCurrencies/root",
+          "value": {
+            "target": "catalogCurrencies/attribute/ЗагружаетсяИзИнтернета#1",
+            "targetKind": "attribute",
+            "targetName": "ЗагружаетсяИзИнтернета"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "attributes",
+          "state": "present",
+          "subject": "catalogCurrencies/root",
+          "value": {
+            "target": "catalogCurrencies/attribute/НаименованиеПолное#1",
+            "targetKind": "attribute",
+            "targetName": "НаименованиеПолное"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "attributes",
+          "state": "present",
+          "subject": "catalogCurrencies/root",
+          "value": {
+            "target": "catalogCurrencies/attribute/Наценка#1",
+            "targetKind": "attribute",
+            "targetName": "Наценка"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "attributes",
+          "state": "present",
+          "subject": "catalogCurrencies/root",
+          "value": {
+            "target": "catalogCurrencies/attribute/ОсновнаяВалюта#1",
+            "targetKind": "attribute",
+            "targetName": "ОсновнаяВалюта"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "attributes",
+          "state": "present",
+          "subject": "catalogCurrencies/root",
+          "value": {
+            "target": "catalogCurrencies/attribute/ПараметрыПрописи#1",
+            "targetKind": "attribute",
+            "targetName": "ПараметрыПрописи"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "attributes",
+          "state": "present",
+          "subject": "catalogCurrencies/root",
+          "value": {
+            "target": "catalogCurrencies/attribute/СпособУстановкиКурса#1",
+            "targetKind": "attribute",
+            "targetName": "СпособУстановкиКурса"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "attributes",
+          "state": "present",
+          "subject": "catalogCurrencies/root",
+          "value": {
+            "target": "catalogCurrencies/attribute/ФормулаРасчетаКурса#1",
+            "targetKind": "attribute",
+            "targetName": "ФормулаРасчетаКурса"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "columns",
+          "state": "present",
+          "subject": "catalogCurrencies/tabularSection/Представления#1",
+          "value": {
+            "target": "catalogCurrencies/attribute/КодЯзыка#1",
+            "targetKind": "attribute",
+            "targetName": "КодЯзыка"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "columns",
+          "state": "present",
+          "subject": "catalogCurrencies/tabularSection/Представления#1",
+          "value": {
+            "target": "catalogCurrencies/attribute/ПараметрыПрописи#2",
+            "targetKind": "attribute",
+            "targetName": "ПараметрыПрописи"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "forms",
+          "state": "present",
+          "subject": "catalogCurrencies/root",
+          "value": {
+            "target": "catalogCurrencies/form/ПараметрыПрописиВалюты_en#1",
+            "targetKind": "form",
+            "targetName": "ПараметрыПрописиВалюты_en"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "forms",
+          "state": "present",
+          "subject": "catalogCurrencies/root",
+          "value": {
+            "target": "catalogCurrencies/form/ПараметрыПрописиВалютыНаДругихЯзыках#1",
+            "targetKind": "form",
+            "targetName": "ПараметрыПрописиВалютыНаДругихЯзыках"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "forms",
+          "state": "present",
+          "subject": "catalogCurrencies/root",
+          "value": {
+            "target": "catalogCurrencies/form/ФормаСписка#1",
+            "targetKind": "form",
+            "targetName": "ФормаСписка"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "forms",
+          "state": "present",
+          "subject": "catalogCurrencies/root",
+          "value": {
+            "target": "catalogCurrencies/form/ФормаЭлемента#1",
+            "targetKind": "form",
+            "targetName": "ФормаЭлемента"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "tabularSections",
+          "state": "present",
+          "subject": "catalogCurrencies/root",
+          "value": {
+            "target": "catalogCurrencies/tabularSection/Представления#1",
+            "targetKind": "tabularSection",
+            "targetName": "Представления"
+          }
+        }
+      ],
+      "id": "catalogCurrencies",
+      "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+      "profile": "meta-full",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt",
+      "rootKind": "catalog",
+      "rootName": "Валюты",
+      "sourceRoot": "tests/fixtures/unica_mcp_script_parity/bsp/meta"
+    },
+    {
+      "adapterInput": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+      "facts": [
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "catalogCurrenciesMainCurrency/attribute/ОсновнаяВалюта#1",
+          "value": {
+            "kind": "attribute",
+            "name": "ОсновнаяВалюта"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.fillValue",
+          "state": "present",
+          "subject": "catalogCurrenciesMainCurrency/attribute/ОсновнаяВалюта#1",
+          "value": {
+            "type": "emptyReference"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "catalogCurrenciesMainCurrency/attribute/ОсновнаяВалюта#1",
+          "value": {
+            "type": "enum",
+            "value": "index"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "catalogCurrenciesMainCurrency/attribute/ОсновнаяВалюта#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "catalogCurrenciesMainCurrency/attribute/ОсновнаяВалюта#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "reference",
+                  "targetKind": "catalog",
+                  "targetName": "Валюты"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "metadata.synonym",
+          "state": "present",
+          "subject": "catalogCurrenciesMainCurrency/attribute/ОсновнаяВалюта#1",
+          "value": {
+            "type": "localizedString",
+            "value": {
+              "ru": "Основная валюта"
+            }
+          }
+        }
+      ],
+      "id": "catalogCurrenciesMainCurrency",
+      "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+      "parentCase": "catalogCurrencies",
+      "profile": "meta-drilldown",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt",
+      "rootKind": "catalog",
+      "rootName": "Валюты",
+      "sourceRoot": "tests/fixtures/unica_mcp_script_parity/bsp/meta"
+    },
+    {
+      "adapterInput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_form/CommonDashboard.xml",
+      "facts": [
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "commonForm/root",
+          "value": {
+            "kind": "commonForm",
+            "name": "CommonDashboard"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.active",
+          "state": "present",
+          "subject": "commonForm/root",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        }
+      ],
+      "id": "commonForm",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_form/CommonDashboard.xml",
+      "profile": "meta-full",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/common-form.full.txt",
+      "rootKind": "commonForm",
+      "rootName": "CommonDashboard",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_form"
+    },
+    {
+      "adapterInput": "tests/fixtures/unica_mcp_script_parity/bsp/meta/CommonModules/GoogleПереводчик.xml",
+      "facts": [
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "commonModuleGoogleTranslator/root",
+          "value": {
+            "kind": "commonModule",
+            "name": "GoogleПереводчик"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "metadata.synonym",
+          "state": "present",
+          "subject": "commonModuleGoogleTranslator/root",
+          "value": {
+            "type": "localizedString",
+            "value": {
+              "ru": "Google переводчик"
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "module.clientOrdinaryApplication",
+          "state": "present",
+          "subject": "commonModuleGoogleTranslator/root",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "module.externalConnection",
+          "state": "present",
+          "subject": "commonModuleGoogleTranslator/root",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "module.server",
+          "state": "present",
+          "subject": "commonModuleGoogleTranslator/root",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.active",
+          "state": "present",
+          "subject": "commonModuleGoogleTranslator/root",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        }
+      ],
+      "id": "commonModuleGoogleTranslator",
+      "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/CommonModules/GoogleПереводчик.xml",
+      "profile": "meta-full",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/common-module-google-translator.full.txt",
+      "rootKind": "commonModule",
+      "rootName": "GoogleПереводчик",
+      "sourceRoot": "tests/fixtures/unica_mcp_script_parity/bsp/meta"
+    },
+    {
+      "adapterInput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_template/CommonLayout.xml",
+      "facts": [
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "commonTemplate/root",
+          "value": {
+            "kind": "commonTemplate",
+            "name": "CommonLayout"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.active",
+          "state": "present",
+          "subject": "commonTemplate/root",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        }
+      ],
+      "id": "commonTemplate",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_template/CommonLayout.xml",
+      "profile": "meta-full",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/common-template.full.txt",
+      "rootKind": "commonTemplate",
+      "rootName": "CommonLayout",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_template"
+    },
+    {
+      "adapterInput": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+      "facts": [
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ДатаУничтожения#1",
+          "value": {
+            "kind": "attribute",
+            "name": "ДатаУничтожения"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Значение#1",
+          "value": {
+            "kind": "attribute",
+            "name": "Значение"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ИмяОбъекта#1",
+          "value": {
+            "kind": "attribute",
+            "name": "ИмяОбъекта"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ИмяОбъекта#2",
+          "value": {
+            "kind": "attribute",
+            "name": "ИмяОбъекта"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Категория#1",
+          "value": {
+            "kind": "attribute",
+            "name": "Категория"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/КоличествоОбъектов#1",
+          "value": {
+            "kind": "attribute",
+            "name": "КоличествоОбъектов"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Комментарий#1",
+          "value": {
+            "kind": "attribute",
+            "name": "Комментарий"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/НаименованиеИнформационнойСистемы#1",
+          "value": {
+            "kind": "attribute",
+            "name": "НаименованиеИнформационнойСистемы"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/НаименованиеОрганизации#1",
+          "value": {
+            "kind": "attribute",
+            "name": "НаименованиеОрганизации"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Организация#1",
+          "value": {
+            "kind": "attribute",
+            "name": "Организация"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Ответственный#1",
+          "value": {
+            "kind": "attribute",
+            "name": "Ответственный"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ОтветственныйЗаОбработкуПерсональныхДанных#1",
+          "value": {
+            "kind": "attribute",
+            "name": "ОтветственныйЗаОбработкуПерсональныхДанных"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ПричинаУничтожения#1",
+          "value": {
+            "kind": "attribute",
+            "name": "ПричинаУничтожения"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Свойство#1",
+          "value": {
+            "kind": "attribute",
+            "name": "Свойство"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/СпособУничтожения#1",
+          "value": {
+            "kind": "attribute",
+            "name": "СпособУничтожения"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Субъект#1",
+          "value": {
+            "kind": "attribute",
+            "name": "Субъект"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Субъект#2",
+          "value": {
+            "kind": "attribute",
+            "name": "Субъект"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ТекстоваяСтрока#1",
+          "value": {
+            "kind": "attribute",
+            "name": "ТекстоваяСтрока"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ФИООтветственногоЗаОбработкуПДн#1",
+          "value": {
+            "kind": "attribute",
+            "name": "ФИООтветственногоЗаОбработкуПДн"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ФИОСубъекта#1",
+          "value": {
+            "kind": "attribute",
+            "name": "ФИОСубъекта"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ЮридическийАдресОрганизации#1",
+          "value": {
+            "kind": "attribute",
+            "name": "ЮридическийАдресОрганизации"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "documentDestructionAct/form/ФормаДокумента#1",
+          "value": {
+            "kind": "form",
+            "name": "ФормаДокумента"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "documentDestructionAct/form/ФормаСписка#1",
+          "value": {
+            "kind": "form",
+            "name": "ФормаСписка"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "kind": "document",
+            "name": "АктОбУничтоженииПерсональныхДанных"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "documentDestructionAct/tabularSection/ДополнительныеРеквизиты#1",
+          "value": {
+            "kind": "tabularSection",
+            "name": "ДополнительныеРеквизиты"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "documentDestructionAct/tabularSection/КатегорииДанных#1",
+          "value": {
+            "kind": "tabularSection",
+            "name": "КатегорииДанных"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "documentDestructionAct/tabularSection/ОбъектыСУничтожаемымиДанными#1",
+          "value": {
+            "kind": "tabularSection",
+            "name": "ОбъектыСУничтожаемымиДанными"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "documentDestructionAct/template/ДанныеПечати#1",
+          "value": {
+            "kind": "template",
+            "name": "ДанныеПечати"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "documentDestructionAct/template/ПФ_MXL_АктОбУничтоженииПерсональныхДанных#1",
+          "value": {
+            "kind": "template",
+            "name": "ПФ_MXL_АктОбУничтоженииПерсональныхДанных"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "documentDestructionAct/template/ПФ_MXL_ВыгрузкаИзЖурнала#1",
+          "value": {
+            "kind": "template",
+            "name": "ПФ_MXL_ВыгрузкаИзЖурнала"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "document.number.auto",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "document.number.length",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "type": "integer",
+            "value": 11
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "document.number.periodicity",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "type": "enum",
+            "value": "year"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "document.number.type",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "type": "enum",
+            "value": "string"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "document.posting.mode",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "type": "enum",
+            "value": "allow"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ДатаУничтожения#1",
+          "value": {
+            "type": "enum",
+            "value": "dontIndex"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Значение#1",
+          "value": {
+            "type": "enum",
+            "value": "dontIndex"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ИмяОбъекта#1",
+          "value": {
+            "type": "enum",
+            "value": "dontIndex"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ИмяОбъекта#2",
+          "value": {
+            "type": "enum",
+            "value": "dontIndex"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Категория#1",
+          "value": {
+            "type": "enum",
+            "value": "dontIndex"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/КоличествоОбъектов#1",
+          "value": {
+            "type": "enum",
+            "value": "dontIndex"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Комментарий#1",
+          "value": {
+            "type": "enum",
+            "value": "dontIndex"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/НаименованиеИнформационнойСистемы#1",
+          "value": {
+            "type": "enum",
+            "value": "dontIndex"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/НаименованиеОрганизации#1",
+          "value": {
+            "type": "enum",
+            "value": "dontIndex"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Организация#1",
+          "value": {
+            "type": "enum",
+            "value": "dontIndex"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Ответственный#1",
+          "value": {
+            "type": "enum",
+            "value": "dontIndex"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ОтветственныйЗаОбработкуПерсональныхДанных#1",
+          "value": {
+            "type": "enum",
+            "value": "dontIndex"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ПричинаУничтожения#1",
+          "value": {
+            "type": "enum",
+            "value": "dontIndex"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Свойство#1",
+          "value": {
+            "type": "enum",
+            "value": "dontIndex"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/СпособУничтожения#1",
+          "value": {
+            "type": "enum",
+            "value": "dontIndex"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Субъект#1",
+          "value": {
+            "type": "enum",
+            "value": "dontIndex"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Субъект#2",
+          "value": {
+            "type": "enum",
+            "value": "dontIndex"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ТекстоваяСтрока#1",
+          "value": {
+            "type": "enum",
+            "value": "dontIndex"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ФИООтветственногоЗаОбработкуПДн#1",
+          "value": {
+            "type": "enum",
+            "value": "dontIndex"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ФИОСубъекта#1",
+          "value": {
+            "type": "enum",
+            "value": "dontIndex"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ЮридическийАдресОрганизации#1",
+          "value": {
+            "type": "enum",
+            "value": "dontIndex"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ДатаУничтожения#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Значение#1",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ИмяОбъекта#1",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ИмяОбъекта#2",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Категория#1",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/КоличествоОбъектов#1",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Комментарий#1",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/НаименованиеИнформационнойСистемы#1",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/НаименованиеОрганизации#1",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Организация#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Ответственный#1",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ОтветственныйЗаОбработкуПерсональныхДанных#1",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ПричинаУничтожения#1",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Свойство#1",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/СпособУничтожения#1",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Субъект#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Субъект#2",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ТекстоваяСтрока#1",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ФИООтветственногоЗаОбработкуПДн#1",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ФИОСубъекта#1",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ЮридическийАдресОрганизации#1",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ДатаУничтожения#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "dateFractions": "date",
+                  "kind": "primitive",
+                  "primitive": "date"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Значение#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "reference",
+                  "targetKind": "chartOfCharacteristicTypes",
+                  "targetName": "ДополнительныеРеквизитыИСведения"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ИмяОбъекта#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "primitive",
+                  "length": 0,
+                  "primitive": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ИмяОбъекта#2",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "primitive",
+                  "length": 0,
+                  "primitive": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Категория#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "primitive",
+                  "length": 0,
+                  "primitive": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/КоличествоОбъектов#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "digits": 10,
+                  "fractionDigits": 0,
+                  "kind": "primitive",
+                  "primitive": "number"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Комментарий#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "primitive",
+                  "length": 0,
+                  "primitive": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/НаименованиеИнформационнойСистемы#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "primitive",
+                  "length": 0,
+                  "primitive": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/НаименованиеОрганизации#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "primitive",
+                  "length": 0,
+                  "primitive": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Организация#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "definedType",
+                  "targetKind": "definedType",
+                  "targetName": "Организация"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Ответственный#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "reference",
+                  "targetKind": "catalog",
+                  "targetName": "Пользователи"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ОтветственныйЗаОбработкуПерсональныхДанных#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "reference",
+                  "targetKind": "catalog",
+                  "targetName": "Пользователи"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ПричинаУничтожения#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "primitive",
+                  "length": 0,
+                  "primitive": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Свойство#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "reference",
+                  "targetKind": "chartOfCharacteristicTypes",
+                  "targetName": "ДополнительныеРеквизитыИСведения"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/СпособУничтожения#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "primitive",
+                  "length": 0,
+                  "primitive": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Субъект#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "definedType",
+                  "targetKind": "definedType",
+                  "targetName": "СубъектПерсональныхДанных"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/Субъект#2",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "definedType",
+                  "targetKind": "definedType",
+                  "targetName": "СубъектПерсональныхДанных"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ТекстоваяСтрока#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "primitive",
+                  "length": 0,
+                  "primitive": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ФИООтветственногоЗаОбработкуПДн#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "primitive",
+                  "length": 150,
+                  "primitive": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ФИОСубъекта#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "primitive",
+                  "length": 150,
+                  "primitive": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "documentDestructionAct/attribute/ЮридическийАдресОрганизации#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "primitive",
+                  "length": 150,
+                  "primitive": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "metadata.synonym",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "type": "localizedString",
+            "value": {
+              "ru": "Акт об уничтожении персональных данных"
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "presentation.list",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "type": "localizedString",
+            "value": {
+              "ru": "Акты об уничтожении персональных данных"
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "presentation.type",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "type": "localizedString",
+            "value": {
+              "ru": "Акт об уничтожении персональных данных"
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.active",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "attributes",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "target": "documentDestructionAct/attribute/ДатаУничтожения#1",
+            "targetKind": "attribute",
+            "targetName": "ДатаУничтожения"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "attributes",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "target": "documentDestructionAct/attribute/Комментарий#1",
+            "targetKind": "attribute",
+            "targetName": "Комментарий"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "attributes",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "target": "documentDestructionAct/attribute/НаименованиеИнформационнойСистемы#1",
+            "targetKind": "attribute",
+            "targetName": "НаименованиеИнформационнойСистемы"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "attributes",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "target": "documentDestructionAct/attribute/НаименованиеОрганизации#1",
+            "targetKind": "attribute",
+            "targetName": "НаименованиеОрганизации"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "attributes",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "target": "documentDestructionAct/attribute/Организация#1",
+            "targetKind": "attribute",
+            "targetName": "Организация"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "attributes",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "target": "documentDestructionAct/attribute/Ответственный#1",
+            "targetKind": "attribute",
+            "targetName": "Ответственный"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "attributes",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "target": "documentDestructionAct/attribute/ОтветственныйЗаОбработкуПерсональныхДанных#1",
+            "targetKind": "attribute",
+            "targetName": "ОтветственныйЗаОбработкуПерсональныхДанных"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "attributes",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "target": "documentDestructionAct/attribute/ПричинаУничтожения#1",
+            "targetKind": "attribute",
+            "targetName": "ПричинаУничтожения"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "attributes",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "target": "documentDestructionAct/attribute/СпособУничтожения#1",
+            "targetKind": "attribute",
+            "targetName": "СпособУничтожения"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "attributes",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "target": "documentDestructionAct/attribute/Субъект#1",
+            "targetKind": "attribute",
+            "targetName": "Субъект"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "attributes",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "target": "documentDestructionAct/attribute/ФИООтветственногоЗаОбработкуПДн#1",
+            "targetKind": "attribute",
+            "targetName": "ФИООтветственногоЗаОбработкуПДн"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "attributes",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "target": "documentDestructionAct/attribute/ФИОСубъекта#1",
+            "targetKind": "attribute",
+            "targetName": "ФИОСубъекта"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "attributes",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "target": "documentDestructionAct/attribute/ЮридическийАдресОрганизации#1",
+            "targetKind": "attribute",
+            "targetName": "ЮридическийАдресОрганизации"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "columns",
+          "state": "present",
+          "subject": "documentDestructionAct/tabularSection/ДополнительныеРеквизиты#1",
+          "value": {
+            "target": "documentDestructionAct/attribute/Значение#1",
+            "targetKind": "attribute",
+            "targetName": "Значение"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "columns",
+          "state": "present",
+          "subject": "documentDestructionAct/tabularSection/ДополнительныеРеквизиты#1",
+          "value": {
+            "target": "documentDestructionAct/attribute/Свойство#1",
+            "targetKind": "attribute",
+            "targetName": "Свойство"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "columns",
+          "state": "present",
+          "subject": "documentDestructionAct/tabularSection/ДополнительныеРеквизиты#1",
+          "value": {
+            "target": "documentDestructionAct/attribute/ТекстоваяСтрока#1",
+            "targetKind": "attribute",
+            "targetName": "ТекстоваяСтрока"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "columns",
+          "state": "present",
+          "subject": "documentDestructionAct/tabularSection/КатегорииДанных#1",
+          "value": {
+            "target": "documentDestructionAct/attribute/ИмяОбъекта#1",
+            "targetKind": "attribute",
+            "targetName": "ИмяОбъекта"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "columns",
+          "state": "present",
+          "subject": "documentDestructionAct/tabularSection/КатегорииДанных#1",
+          "value": {
+            "target": "documentDestructionAct/attribute/Категория#1",
+            "targetKind": "attribute",
+            "targetName": "Категория"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "columns",
+          "state": "present",
+          "subject": "documentDestructionAct/tabularSection/КатегорииДанных#1",
+          "value": {
+            "target": "documentDestructionAct/attribute/Субъект#2",
+            "targetKind": "attribute",
+            "targetName": "Субъект"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "columns",
+          "state": "present",
+          "subject": "documentDestructionAct/tabularSection/ОбъектыСУничтожаемымиДанными#1",
+          "value": {
+            "target": "documentDestructionAct/attribute/ИмяОбъекта#2",
+            "targetKind": "attribute",
+            "targetName": "ИмяОбъекта"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "columns",
+          "state": "present",
+          "subject": "documentDestructionAct/tabularSection/ОбъектыСУничтожаемымиДанными#1",
+          "value": {
+            "target": "documentDestructionAct/attribute/КоличествоОбъектов#1",
+            "targetKind": "attribute",
+            "targetName": "КоличествоОбъектов"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "forms",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "target": "documentDestructionAct/form/ФормаДокумента#1",
+            "targetKind": "form",
+            "targetName": "ФормаДокумента"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "forms",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "target": "documentDestructionAct/form/ФормаСписка#1",
+            "targetKind": "form",
+            "targetName": "ФормаСписка"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "tabularSections",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "target": "documentDestructionAct/tabularSection/ДополнительныеРеквизиты#1",
+            "targetKind": "tabularSection",
+            "targetName": "ДополнительныеРеквизиты"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "tabularSections",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "target": "documentDestructionAct/tabularSection/КатегорииДанных#1",
+            "targetKind": "tabularSection",
+            "targetName": "КатегорииДанных"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "tabularSections",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "target": "documentDestructionAct/tabularSection/ОбъектыСУничтожаемымиДанными#1",
+            "targetKind": "tabularSection",
+            "targetName": "ОбъектыСУничтожаемымиДанными"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "templates",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "target": "documentDestructionAct/template/ДанныеПечати#1",
+            "targetKind": "template",
+            "targetName": "ДанныеПечати"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "templates",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "target": "documentDestructionAct/template/ПФ_MXL_АктОбУничтоженииПерсональныхДанных#1",
+            "targetKind": "template",
+            "targetName": "ПФ_MXL_АктОбУничтоженииПерсональныхДанных"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "templates",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "target": "documentDestructionAct/template/ПФ_MXL_ВыгрузкаИзЖурнала#1",
+            "targetKind": "template",
+            "targetName": "ПФ_MXL_ВыгрузкаИзЖурнала"
+          }
+        }
+      ],
+      "id": "documentDestructionAct",
+      "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+      "profile": "meta-full",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt",
+      "rootKind": "document",
+      "rootName": "АктОбУничтоженииПерсональныхДанных",
+      "sourceRoot": "tests/fixtures/unica_mcp_script_parity/bsp/meta"
+    },
+    {
+      "adapterInput": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Enums/ВажностьПроблемыУчета.xml",
+      "facts": [
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "enumerationAccountingIssueImportance/enumerationValue/ВажнаяИнформация#1",
+          "value": {
+            "kind": "enumerationValue",
+            "name": "ВажнаяИнформация"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "enumerationAccountingIssueImportance/enumerationValue/Информация#1",
+          "value": {
+            "kind": "enumerationValue",
+            "name": "Информация"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "enumerationAccountingIssueImportance/enumerationValue/Ошибка#1",
+          "value": {
+            "kind": "enumerationValue",
+            "name": "Ошибка"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "enumerationAccountingIssueImportance/enumerationValue/ПолезныйСовет#1",
+          "value": {
+            "kind": "enumerationValue",
+            "name": "ПолезныйСовет"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "enumerationAccountingIssueImportance/enumerationValue/Предупреждение#1",
+          "value": {
+            "kind": "enumerationValue",
+            "name": "Предупреждение"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "enumerationAccountingIssueImportance/root",
+          "value": {
+            "kind": "enumeration",
+            "name": "ВажностьПроблемыУчета"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "metadata.synonym",
+          "state": "present",
+          "subject": "enumerationAccountingIssueImportance/enumerationValue/ВажнаяИнформация#1",
+          "value": {
+            "type": "localizedString",
+            "value": {
+              "ru": "Важная информация"
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "metadata.synonym",
+          "state": "present",
+          "subject": "enumerationAccountingIssueImportance/enumerationValue/ПолезныйСовет#1",
+          "value": {
+            "type": "localizedString",
+            "value": {
+              "ru": "Полезный совет"
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "metadata.synonym",
+          "state": "present",
+          "subject": "enumerationAccountingIssueImportance/root",
+          "value": {
+            "type": "localizedString",
+            "value": {
+              "ru": "Важность проблемы учета"
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "presentation.type",
+          "state": "present",
+          "subject": "enumerationAccountingIssueImportance/root",
+          "value": {
+            "type": "localizedString",
+            "value": {
+              "ru": "Важность проблемы учета"
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.active",
+          "state": "present",
+          "subject": "enumerationAccountingIssueImportance/root",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "enumValues",
+          "state": "present",
+          "subject": "enumerationAccountingIssueImportance/root",
+          "value": {
+            "target": "enumerationAccountingIssueImportance/enumerationValue/ВажнаяИнформация#1",
+            "targetKind": "enumerationValue",
+            "targetName": "ВажнаяИнформация"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "enumValues",
+          "state": "present",
+          "subject": "enumerationAccountingIssueImportance/root",
+          "value": {
+            "target": "enumerationAccountingIssueImportance/enumerationValue/Информация#1",
+            "targetKind": "enumerationValue",
+            "targetName": "Информация"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "enumValues",
+          "state": "present",
+          "subject": "enumerationAccountingIssueImportance/root",
+          "value": {
+            "target": "enumerationAccountingIssueImportance/enumerationValue/Ошибка#1",
+            "targetKind": "enumerationValue",
+            "targetName": "Ошибка"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "enumValues",
+          "state": "present",
+          "subject": "enumerationAccountingIssueImportance/root",
+          "value": {
+            "target": "enumerationAccountingIssueImportance/enumerationValue/ПолезныйСовет#1",
+            "targetKind": "enumerationValue",
+            "targetName": "ПолезныйСовет"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "enumValues",
+          "state": "present",
+          "subject": "enumerationAccountingIssueImportance/root",
+          "value": {
+            "target": "enumerationAccountingIssueImportance/enumerationValue/Предупреждение#1",
+            "targetKind": "enumerationValue",
+            "targetName": "Предупреждение"
+          }
+        }
+      ],
+      "id": "enumerationAccountingIssueImportance",
+      "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Enums/ВажностьПроблемыУчета.xml",
+      "profile": "meta-full",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/enumeration-accounting-issue-importance.full.txt",
+      "rootKind": "enumeration",
+      "rootName": "ВажностьПроблемыУчета",
+      "sourceRoot": "tests/fixtures/unica_mcp_script_parity/bsp/meta"
+    },
+    {
+      "adapterInput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/types/EventSources.xml",
+      "facts": [
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "eventSources/root",
+          "value": {
+            "kind": "eventSubscription",
+            "name": "EventSources"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "subscription.event",
+          "state": "present",
+          "subject": "eventSources/root",
+          "value": {
+            "type": "string",
+            "value": "ПередЗаписью"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "subscription.handler",
+          "state": "present",
+          "subject": "eventSources/root",
+          "value": {
+            "type": "string",
+            "value": "Events.BeforeWrite"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "subscription.source.type",
+          "state": "present",
+          "subject": "eventSources/root",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "object",
+                  "targetKind": "businessProcess",
+                  "targetName": "Approval"
+                },
+                {
+                  "kind": "object",
+                  "targetKind": "catalog",
+                  "targetName": "Products"
+                },
+                {
+                  "kind": "object",
+                  "targetKind": "document",
+                  "targetName": "Order"
+                },
+                {
+                  "kind": "object",
+                  "targetKind": "task",
+                  "targetName": "Review"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.active",
+          "state": "present",
+          "subject": "eventSources/root",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        }
+      ],
+      "id": "eventSources",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/types/EventSources.xml",
+      "profile": "meta-full",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/event-sources.full.txt",
+      "rootKind": "eventSubscription",
+      "rootName": "EventSources",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/types"
+    },
+    {
+      "adapterInput": "tests/fixtures/unica_mcp_script_parity/bsp/meta/InformationRegisters/АдминистративнаяИерархия.xml",
+      "facts": [
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "informationRegisterAdministrativeHierarchy/dimension/Идентификатор#1",
+          "value": {
+            "kind": "dimension",
+            "name": "Идентификатор"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "informationRegisterAdministrativeHierarchy/dimension/КодСубъектаРФ#1",
+          "value": {
+            "kind": "dimension",
+            "name": "КодСубъектаРФ"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "informationRegisterAdministrativeHierarchy/dimension/РодительскийИдентификатор#1",
+          "value": {
+            "kind": "dimension",
+            "name": "РодительскийИдентификатор"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "informationRegisterAdministrativeHierarchy/root",
+          "value": {
+            "kind": "informationRegister",
+            "name": "АдминистративнаяИерархия"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "informationRegisterAdministrativeHierarchy/dimension/Идентификатор#1",
+          "value": {
+            "type": "enum",
+            "value": "dontIndex"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "informationRegisterAdministrativeHierarchy/dimension/КодСубъектаРФ#1",
+          "value": {
+            "type": "enum",
+            "value": "index"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "informationRegisterAdministrativeHierarchy/dimension/РодительскийИдентификатор#1",
+          "value": {
+            "type": "enum",
+            "value": "index"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "informationRegisterAdministrativeHierarchy/dimension/Идентификатор#1",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "informationRegisterAdministrativeHierarchy/dimension/КодСубъектаРФ#1",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "informationRegisterAdministrativeHierarchy/dimension/РодительскийИдентификатор#1",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "informationRegisterAdministrativeHierarchy/dimension/Идентификатор#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "primitive",
+                  "primitive": "uuid"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "informationRegisterAdministrativeHierarchy/dimension/КодСубъектаРФ#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "digits": 2,
+                  "fractionDigits": 0,
+                  "kind": "primitive",
+                  "primitive": "number"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "informationRegisterAdministrativeHierarchy/dimension/РодительскийИдентификатор#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "primitive",
+                  "primitive": "uuid"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "metadata.synonym",
+          "state": "present",
+          "subject": "informationRegisterAdministrativeHierarchy/root",
+          "value": {
+            "type": "localizedString",
+            "value": {
+              "ru": "Административная иерархия"
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "register.periodicity",
+          "state": "present",
+          "subject": "informationRegisterAdministrativeHierarchy/root",
+          "value": {
+            "type": "enum",
+            "value": "nonperiodical"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "register.writeMode",
+          "state": "present",
+          "subject": "informationRegisterAdministrativeHierarchy/root",
+          "value": {
+            "type": "enum",
+            "value": "independent"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.active",
+          "state": "present",
+          "subject": "informationRegisterAdministrativeHierarchy/root",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "dimensions",
+          "state": "present",
+          "subject": "informationRegisterAdministrativeHierarchy/root",
+          "value": {
+            "target": "informationRegisterAdministrativeHierarchy/dimension/Идентификатор#1",
+            "targetKind": "dimension",
+            "targetName": "Идентификатор"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "dimensions",
+          "state": "present",
+          "subject": "informationRegisterAdministrativeHierarchy/root",
+          "value": {
+            "target": "informationRegisterAdministrativeHierarchy/dimension/КодСубъектаРФ#1",
+            "targetKind": "dimension",
+            "targetName": "КодСубъектаРФ"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "dimensions",
+          "state": "present",
+          "subject": "informationRegisterAdministrativeHierarchy/root",
+          "value": {
+            "target": "informationRegisterAdministrativeHierarchy/dimension/РодительскийИдентификатор#1",
+            "targetKind": "dimension",
+            "targetName": "РодительскийИдентификатор"
+          }
+        }
+      ],
+      "id": "informationRegisterAdministrativeHierarchy",
+      "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/InformationRegisters/АдминистративнаяИерархия.xml",
+      "profile": "meta-full",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/information-register-administrative-hierarchy.full.txt",
+      "rootKind": "informationRegister",
+      "rootName": "АдминистративнаяИерархия",
+      "sourceRoot": "tests/fixtures/unica_mcp_script_parity/bsp/meta"
+    },
+    {
+      "adapterInput": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Languages/Русский.xml",
+      "facts": [
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "languageRussian/root",
+          "value": {
+            "kind": "language",
+            "name": "Русский"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.active",
+          "state": "present",
+          "subject": "languageRussian/root",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        }
+      ],
+      "id": "languageRussian",
+      "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Languages/Русский.xml",
+      "profile": "meta-full",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/language-russian.full.txt",
+      "rootKind": "language",
+      "rootName": "Русский",
+      "sourceRoot": "tests/fixtures/unica_mcp_script_parity/bsp/meta"
+    },
+    {
+      "adapterInput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport.xml",
+      "facts": [
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "ownedArtifacts/form/MainForm#1",
+          "value": {
+            "kind": "form",
+            "name": "MainForm"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "ownedArtifacts/root",
+          "value": {
+            "kind": "report",
+            "name": "ArtifactReport"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "ownedArtifacts/template/MainSchema#1",
+          "value": {
+            "kind": "template",
+            "name": "MainSchema"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.active",
+          "state": "present",
+          "subject": "ownedArtifacts/root",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "forms",
+          "state": "present",
+          "subject": "ownedArtifacts/root",
+          "value": {
+            "target": "ownedArtifacts/form/MainForm#1",
+            "targetKind": "form",
+            "targetName": "MainForm"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "templates",
+          "state": "present",
+          "subject": "ownedArtifacts/root",
+          "value": {
+            "target": "ownedArtifacts/template/MainSchema#1",
+            "targetKind": "template",
+            "targetName": "MainSchema"
+          }
+        }
+      ],
+      "id": "ownedArtifacts",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport.xml",
+      "profile": "meta-full",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/owned-artifacts.full.txt",
+      "rootKind": "report",
+      "rootName": "ArtifactReport",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts"
+    },
+    {
+      "adapterInput": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Reports/АнализВерсийОбъектов.xml",
+      "facts": [
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "reportObjectVersionAnalysis/root",
+          "value": {
+            "kind": "report",
+            "name": "АнализВерсийОбъектов"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "reportObjectVersionAnalysis/template/ОсновнаяСхемаКомпоновкиДанных#1",
+          "value": {
+            "kind": "template",
+            "name": "ОсновнаяСхемаКомпоновкиДанных"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "metadata.synonym",
+          "state": "present",
+          "subject": "reportObjectVersionAnalysis/root",
+          "value": {
+            "type": "localizedString",
+            "value": {
+              "ru": "Анализ версий объектов"
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "report.mainDataCompositionSchema",
+          "state": "present",
+          "subject": "reportObjectVersionAnalysis/root",
+          "value": {
+            "type": "string",
+            "value": "ОсновнаяСхемаКомпоновкиДанных"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.active",
+          "state": "present",
+          "subject": "reportObjectVersionAnalysis/root",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "templates",
+          "state": "present",
+          "subject": "reportObjectVersionAnalysis/root",
+          "value": {
+            "target": "reportObjectVersionAnalysis/template/ОсновнаяСхемаКомпоновкиДанных#1",
+            "targetKind": "template",
+            "targetName": "ОсновнаяСхемаКомпоновкиДанных"
+          }
+        }
+      ],
+      "id": "reportObjectVersionAnalysis",
+      "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Reports/АнализВерсийОбъектов.xml",
+      "profile": "meta-full",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/report-object-version-analysis.full.txt",
+      "rootKind": "report",
+      "rootName": "АнализВерсийОбъектов",
+      "sourceRoot": "tests/fixtures/unica_mcp_script_parity/bsp/meta"
+    },
+    {
+      "adapterInput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights/SalesReader.xml",
+      "facts": [
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rights/accessPermission/catalog:Products:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rights/accessPermission/catalog:Products:Update#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Update"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rights/accessPermission/catalog:Products:View#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "View"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rights/accessPermission/document:SalesOrder:Deletion#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Deletion"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rights/accessPermission/document:SalesOrder:Posting#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Posting"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rights/accessPermission/document:SalesOrder:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rights/accessRestrictionTemplate/OnlyOwn#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "OnlyOwn"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rights/external/catalog/Products",
+          "value": {
+            "kind": "catalog",
+            "name": "Products"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rights/root",
+          "value": {
+            "kind": "role",
+            "name": "SalesReader"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.allowed.count",
+          "state": "present",
+          "subject": "rights/root",
+          "value": {
+            "type": "integer",
+            "value": 4
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.attributes.defaultAllowed",
+          "state": "present",
+          "subject": "rights/root",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.childObjects.independent",
+          "state": "present",
+          "subject": "rights/root",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.denied.count",
+          "state": "present",
+          "subject": "rights/root",
+          "value": {
+            "type": "integer",
+            "value": 2
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.newObjects.defaultAllowed",
+          "state": "present",
+          "subject": "rights/root",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rights/accessPermission/catalog:Products:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rights/accessPermission/catalog:Products:Update#1",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rights/accessPermission/catalog:Products:View#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rights/accessPermission/document:SalesOrder:Deletion#1",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rights/accessPermission/document:SalesOrder:Posting#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rights/accessPermission/document:SalesOrder:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rights/accessPermission/catalog:Products:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rights/accessPermission/catalog:Products:Update#1",
+          "value": {
+            "type": "string",
+            "value": "Update"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rights/accessPermission/catalog:Products:View#1",
+          "value": {
+            "type": "string",
+            "value": "View"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rights/accessPermission/document:SalesOrder:Deletion#1",
+          "value": {
+            "type": "string",
+            "value": "Deletion"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rights/accessPermission/document:SalesOrder:Posting#1",
+          "value": {
+            "type": "string",
+            "value": "Posting"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rights/accessPermission/document:SalesOrder:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.count",
+          "state": "present",
+          "subject": "rights/root",
+          "value": {
+            "type": "integer",
+            "value": 1
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rights/external/catalog/Products",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rights/accessRestrictionTemplate/OnlyOwn#1",
+          "value": {
+            "type": "string",
+            "value": "OnlyOwn"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "metadata.synonym",
+          "state": "present",
+          "subject": "rights/root",
+          "value": {
+            "type": "localizedString",
+            "value": {
+              "ru": "Читатель продаж"
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.active",
+          "state": "present",
+          "subject": "rights/root",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rights/root",
+          "value": {
+            "target": "rights/accessPermission/catalog:Products:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rights/root",
+          "value": {
+            "target": "rights/accessPermission/catalog:Products:Update#1",
+            "targetKind": "accessPermission",
+            "targetName": "Update"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rights/root",
+          "value": {
+            "target": "rights/accessPermission/catalog:Products:View#1",
+            "targetKind": "accessPermission",
+            "targetName": "View"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rights/root",
+          "value": {
+            "target": "rights/accessPermission/document:SalesOrder:Deletion#1",
+            "targetKind": "accessPermission",
+            "targetName": "Deletion"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rights/root",
+          "value": {
+            "target": "rights/accessPermission/document:SalesOrder:Posting#1",
+            "targetKind": "accessPermission",
+            "targetName": "Posting"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rights/root",
+          "value": {
+            "target": "rights/accessPermission/document:SalesOrder:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rights/accessPermission/catalog:Products:Read#1",
+          "value": {
+            "target": "rights/external/catalog/Products",
+            "targetKind": "catalog",
+            "targetName": "Products"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rights/accessPermission/catalog:Products:Update#1",
+          "value": {
+            "target": "rights/external/catalog/Products",
+            "targetKind": "catalog",
+            "targetName": "Products"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rights/accessPermission/catalog:Products:View#1",
+          "value": {
+            "target": "rights/external/catalog/Products",
+            "targetKind": "catalog",
+            "targetName": "Products"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rights/accessPermission/document:SalesOrder:Deletion#1",
+          "value": {
+            "target": "rights/external/document/SalesOrder",
+            "targetKind": "document",
+            "targetName": "SalesOrder"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rights/accessPermission/document:SalesOrder:Posting#1",
+          "value": {
+            "target": "rights/external/document/SalesOrder",
+            "targetKind": "document",
+            "targetName": "SalesOrder"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rights/accessPermission/document:SalesOrder:Read#1",
+          "value": {
+            "target": "rights/external/document/SalesOrder",
+            "targetKind": "document",
+            "targetName": "SalesOrder"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rights/root",
+          "value": {
+            "target": "rights/accessRestrictionTemplate/OnlyOwn#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "OnlyOwn"
+          }
+        }
+      ],
+      "id": "rights",
+      "input": "tests/fixtures/unica_mcp_script_parity/role-info/SalesReader/Ext/Rights.xml",
+      "profile": "role-info",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/role-info/sales-reader.all.txt",
+      "rootKind": "role",
+      "rootName": "SalesReader",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights"
+    },
+    {
+      "adapterInput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/unknowns/UnknownCases.xml",
+      "facts": [
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "unknownCases/attribute/MysteryType#1",
+          "value": {
+            "kind": "attribute",
+            "name": "MysteryType"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "unknownCases/root",
+          "value": {
+            "kind": "document",
+            "name": "UnknownCases"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.indexing",
+          "state": "present",
+          "subject": "unknownCases/attribute/MysteryType#1",
+          "value": {
+            "type": "enum",
+            "value": "dontIndex"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.required",
+          "state": "present",
+          "subject": "unknownCases/attribute/MysteryType#1",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "field.type",
+          "state": "present",
+          "subject": "unknownCases/attribute/MysteryType#1",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "unknown",
+                  "ordinal": 1
+                },
+                {
+                  "kind": "unknown",
+                  "ordinal": 2
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "presentation.type",
+          "state": "present",
+          "subject": "unknownCases/root",
+          "value": {
+            "type": "localizedString",
+            "value": {
+              "ru": "UnknownCases"
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.active",
+          "state": "present",
+          "subject": "unknownCases/root",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "attributes",
+          "state": "present",
+          "subject": "unknownCases/root",
+          "value": {
+            "target": "unknownCases/attribute/MysteryType#1",
+            "targetKind": "attribute",
+            "targetName": "MysteryType"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "basedOn",
+          "state": "present",
+          "subject": "unknownCases/root",
+          "value": {
+            "target": "unknownCases/external/unknown/Target",
+            "targetKind": "unknown",
+            "targetName": "Target"
+          }
+        }
+      ],
+      "id": "unknownCases",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/unknowns/UnknownCases.xml",
+      "profile": "meta-full",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/unknown-cases.full.txt",
+      "rootKind": "document",
+      "rootName": "UnknownCases",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/unknowns"
+    }
+  ],
+  "enumCoverage": [
+    {
+      "nativeAlias": "Allow",
+      "nativeProperty": "Posting",
+      "objectKind": "document",
+      "semantic": "allow",
+      "semanticProperty": "document.posting.mode"
+    },
+    {
+      "nativeAlias": "Allow",
+      "nativeProperty": "RealTimePosting",
+      "objectKind": "document",
+      "semantic": "allow",
+      "semanticProperty": "document.realTimePosting.mode"
+    },
+    {
+      "nativeAlias": "AutoDelete",
+      "nativeProperty": "RegisterRecordsDeletion",
+      "objectKind": "document",
+      "semantic": "deleteAutomatic",
+      "semanticProperty": "document.registerRecordsDeletion.mode"
+    },
+    {
+      "nativeAlias": "AutoDeleteOff",
+      "nativeProperty": "RegisterRecordsDeletion",
+      "objectKind": "document",
+      "semantic": "deleteDisabled",
+      "semanticProperty": "document.registerRecordsDeletion.mode"
+    },
+    {
+      "nativeAlias": "AutoDeleteOnUnpost",
+      "nativeProperty": "RegisterRecordsDeletion",
+      "objectKind": "document",
+      "semantic": "deleteOnReversal",
+      "semanticProperty": "document.registerRecordsDeletion.mode"
+    },
+    {
+      "nativeAlias": "AutoUse",
+      "nativeProperty": "ReuseSessions",
+      "objectKind": "httpService",
+      "semantic": "use",
+      "semanticProperty": "httpService.reuseSessions"
+    },
+    {
+      "nativeAlias": "AutoUse",
+      "nativeProperty": "ReuseSessions",
+      "objectKind": "webService",
+      "semantic": "use",
+      "semanticProperty": "webService.reuseSessions"
+    },
+    {
+      "nativeAlias": "Balance",
+      "nativeProperty": "RegisterType",
+      "objectKind": "accumulationRegister",
+      "semantic": "balance",
+      "semanticProperty": "register.type"
+    },
+    {
+      "nativeAlias": "Balances",
+      "nativeProperty": "RegisterType",
+      "objectKind": "accumulationRegister",
+      "semantic": "balance",
+      "semanticProperty": "register.type"
+    },
+    {
+      "nativeAlias": "BinaryData",
+      "nativeProperty": "TemplateType",
+      "objectKind": "commonTemplate",
+      "semantic": "binaryData",
+      "semanticProperty": "template.type"
+    },
+    {
+      "nativeAlias": "BinaryData",
+      "nativeProperty": "TemplateType",
+      "objectKind": "spreadsheetDocumentTemplate",
+      "semantic": "binaryData",
+      "semanticProperty": "template.type"
+    },
+    {
+      "nativeAlias": "BinaryData",
+      "nativeProperty": "TemplateType",
+      "objectKind": "template",
+      "semantic": "binaryData",
+      "semanticProperty": "template.type"
+    },
+    {
+      "nativeAlias": "DataCompositionSchema",
+      "nativeProperty": "TemplateType",
+      "objectKind": "commonTemplate",
+      "semantic": "dataCompositionSchema",
+      "semanticProperty": "template.type"
+    },
+    {
+      "nativeAlias": "DataCompositionSchema",
+      "nativeProperty": "TemplateType",
+      "objectKind": "spreadsheetDocumentTemplate",
+      "semantic": "dataCompositionSchema",
+      "semanticProperty": "template.type"
+    },
+    {
+      "nativeAlias": "DataCompositionSchema",
+      "nativeProperty": "TemplateType",
+      "objectKind": "template",
+      "semantic": "dataCompositionSchema",
+      "semanticProperty": "template.type"
+    },
+    {
+      "nativeAlias": "Day",
+      "nativeProperty": "InformationRegisterPeriodicity",
+      "objectKind": "informationRegister",
+      "semantic": "day",
+      "semanticProperty": "register.periodicity"
+    },
+    {
+      "nativeAlias": "Day",
+      "nativeProperty": "NumberPeriodicity",
+      "objectKind": "document",
+      "semantic": "day",
+      "semanticProperty": "document.number.periodicity"
+    },
+    {
+      "nativeAlias": "Day",
+      "nativeProperty": "Periodicity",
+      "objectKind": "calculationRegister",
+      "semantic": "day",
+      "semanticProperty": "register.periodicity"
+    },
+    {
+      "nativeAlias": "Deny",
+      "nativeProperty": "Posting",
+      "objectKind": "document",
+      "semantic": "deny",
+      "semanticProperty": "document.posting.mode"
+    },
+    {
+      "nativeAlias": "Deny",
+      "nativeProperty": "RealTimePosting",
+      "objectKind": "document",
+      "semantic": "deny",
+      "semanticProperty": "document.realTimePosting.mode"
+    },
+    {
+      "nativeAlias": "DontCheck",
+      "nativeProperty": "FillChecking",
+      "objectKind": "attribute",
+      "semantic": "dontCheck",
+      "semanticProperty": "field.fillChecking"
+    },
+    {
+      "nativeAlias": "DontCheck",
+      "nativeProperty": "FillChecking",
+      "objectKind": "dimension",
+      "semantic": "dontCheck",
+      "semanticProperty": "field.fillChecking"
+    },
+    {
+      "nativeAlias": "DontCheck",
+      "nativeProperty": "FillChecking",
+      "objectKind": "resource",
+      "semantic": "dontCheck",
+      "semanticProperty": "field.fillChecking"
+    },
+    {
+      "nativeAlias": "DontIndex",
+      "nativeProperty": "Indexing",
+      "objectKind": "attribute",
+      "semantic": "dontIndex",
+      "semanticProperty": "field.indexing"
+    },
+    {
+      "nativeAlias": "DontIndex",
+      "nativeProperty": "Indexing",
+      "objectKind": "dimension",
+      "semantic": "dontIndex",
+      "semanticProperty": "field.indexing"
+    },
+    {
+      "nativeAlias": "DontIndex",
+      "nativeProperty": "Indexing",
+      "objectKind": "resource",
+      "semantic": "dontIndex",
+      "semanticProperty": "field.indexing"
+    },
+    {
+      "nativeAlias": "DontUse",
+      "nativeProperty": "ReturnValuesReuse",
+      "objectKind": "commonModule",
+      "semantic": "dontUse",
+      "semanticProperty": "module.returnValuesReuse"
+    },
+    {
+      "nativeAlias": "DontUse",
+      "nativeProperty": "ReuseSessions",
+      "objectKind": "httpService",
+      "semantic": "dontUse",
+      "semanticProperty": "httpService.reuseSessions"
+    },
+    {
+      "nativeAlias": "DontUse",
+      "nativeProperty": "ReuseSessions",
+      "objectKind": "webService",
+      "semantic": "dontUse",
+      "semanticProperty": "webService.reuseSessions"
+    },
+    {
+      "nativeAlias": "DuringRequest",
+      "nativeProperty": "ReturnValuesReuse",
+      "objectKind": "commonModule",
+      "semantic": "duringRequest",
+      "semanticProperty": "module.returnValuesReuse"
+    },
+    {
+      "nativeAlias": "DuringSession",
+      "nativeProperty": "ReturnValuesReuse",
+      "objectKind": "commonModule",
+      "semantic": "duringSession",
+      "semanticProperty": "module.returnValuesReuse"
+    },
+    {
+      "nativeAlias": "ForFolder",
+      "nativeProperty": "Use",
+      "objectKind": "attribute",
+      "semantic": "groupOnly",
+      "semanticProperty": "field.use"
+    },
+    {
+      "nativeAlias": "ForFolder",
+      "nativeProperty": "Use",
+      "objectKind": "dimension",
+      "semantic": "groupOnly",
+      "semanticProperty": "field.use"
+    },
+    {
+      "nativeAlias": "ForFolder",
+      "nativeProperty": "Use",
+      "objectKind": "resource",
+      "semantic": "groupOnly",
+      "semanticProperty": "field.use"
+    },
+    {
+      "nativeAlias": "ForFolderAndItem",
+      "nativeProperty": "Use",
+      "objectKind": "attribute",
+      "semantic": "groupsAndItems",
+      "semanticProperty": "field.use"
+    },
+    {
+      "nativeAlias": "ForFolderAndItem",
+      "nativeProperty": "Use",
+      "objectKind": "dimension",
+      "semantic": "groupsAndItems",
+      "semanticProperty": "field.use"
+    },
+    {
+      "nativeAlias": "ForFolderAndItem",
+      "nativeProperty": "Use",
+      "objectKind": "resource",
+      "semantic": "groupsAndItems",
+      "semanticProperty": "field.use"
+    },
+    {
+      "nativeAlias": "ForItem",
+      "nativeProperty": "Use",
+      "objectKind": "attribute",
+      "semantic": "forItem",
+      "semanticProperty": "field.use"
+    },
+    {
+      "nativeAlias": "ForItem",
+      "nativeProperty": "Use",
+      "objectKind": "dimension",
+      "semantic": "forItem",
+      "semanticProperty": "field.use"
+    },
+    {
+      "nativeAlias": "ForItem",
+      "nativeProperty": "Use",
+      "objectKind": "resource",
+      "semantic": "forItem",
+      "semanticProperty": "field.use"
+    },
+    {
+      "nativeAlias": "HTMLDocument",
+      "nativeProperty": "TemplateType",
+      "objectKind": "commonTemplate",
+      "semantic": "htmlDocument",
+      "semanticProperty": "template.type"
+    },
+    {
+      "nativeAlias": "HTMLDocument",
+      "nativeProperty": "TemplateType",
+      "objectKind": "spreadsheetDocumentTemplate",
+      "semantic": "htmlDocument",
+      "semanticProperty": "template.type"
+    },
+    {
+      "nativeAlias": "HTMLDocument",
+      "nativeProperty": "TemplateType",
+      "objectKind": "template",
+      "semantic": "htmlDocument",
+      "semanticProperty": "template.type"
+    },
+    {
+      "nativeAlias": "HierarchyFoldersAndItems",
+      "nativeProperty": "HierarchyType",
+      "objectKind": "catalog",
+      "semantic": "hierarchyOfGroupsAndItems",
+      "semanticProperty": "catalog.hierarchy.type"
+    },
+    {
+      "nativeAlias": "HierarchyOfItems",
+      "nativeProperty": "HierarchyType",
+      "objectKind": "catalog",
+      "semantic": "hierarchyOfItems",
+      "semanticProperty": "catalog.hierarchy.type"
+    },
+    {
+      "nativeAlias": "In",
+      "nativeProperty": "TransferDirection",
+      "objectKind": "webServiceParameter",
+      "semantic": "in",
+      "semanticProperty": "webService.parameter.direction"
+    },
+    {
+      "nativeAlias": "InOut",
+      "nativeProperty": "TransferDirection",
+      "objectKind": "webServiceParameter",
+      "semantic": "inOut",
+      "semanticProperty": "webService.parameter.direction"
+    },
+    {
+      "nativeAlias": "Independent",
+      "nativeProperty": "WriteMode",
+      "objectKind": "informationRegister",
+      "semantic": "independent",
+      "semanticProperty": "register.writeMode"
+    },
+    {
+      "nativeAlias": "Index",
+      "nativeProperty": "Indexing",
+      "objectKind": "attribute",
+      "semantic": "index",
+      "semanticProperty": "field.indexing"
+    },
+    {
+      "nativeAlias": "Index",
+      "nativeProperty": "Indexing",
+      "objectKind": "dimension",
+      "semantic": "index",
+      "semanticProperty": "field.indexing"
+    },
+    {
+      "nativeAlias": "Index",
+      "nativeProperty": "Indexing",
+      "objectKind": "resource",
+      "semantic": "index",
+      "semanticProperty": "field.indexing"
+    },
+    {
+      "nativeAlias": "IndexWithAdditionalOrder",
+      "nativeProperty": "Indexing",
+      "objectKind": "attribute",
+      "semantic": "indexWithAdditionalOrder",
+      "semanticProperty": "field.indexing"
+    },
+    {
+      "nativeAlias": "IndexWithAdditionalOrder",
+      "nativeProperty": "Indexing",
+      "objectKind": "dimension",
+      "semantic": "indexWithAdditionalOrder",
+      "semanticProperty": "field.indexing"
+    },
+    {
+      "nativeAlias": "IndexWithAdditionalOrder",
+      "nativeProperty": "Indexing",
+      "objectKind": "resource",
+      "semantic": "indexWithAdditionalOrder",
+      "semanticProperty": "field.indexing"
+    },
+    {
+      "nativeAlias": "Managed",
+      "nativeProperty": "FormType",
+      "objectKind": "commonForm",
+      "semantic": "managed",
+      "semanticProperty": "form.type"
+    },
+    {
+      "nativeAlias": "Managed",
+      "nativeProperty": "FormType",
+      "objectKind": "form",
+      "semantic": "managed",
+      "semanticProperty": "form.type"
+    },
+    {
+      "nativeAlias": "Month",
+      "nativeProperty": "InformationRegisterPeriodicity",
+      "objectKind": "informationRegister",
+      "semantic": "month",
+      "semanticProperty": "register.periodicity"
+    },
+    {
+      "nativeAlias": "Month",
+      "nativeProperty": "NumberPeriodicity",
+      "objectKind": "document",
+      "semantic": "month",
+      "semanticProperty": "document.number.periodicity"
+    },
+    {
+      "nativeAlias": "Month",
+      "nativeProperty": "Periodicity",
+      "objectKind": "calculationRegister",
+      "semantic": "month",
+      "semanticProperty": "register.periodicity"
+    },
+    {
+      "nativeAlias": "Nonperiodical",
+      "nativeProperty": "InformationRegisterPeriodicity",
+      "objectKind": "informationRegister",
+      "semantic": "nonperiodical",
+      "semanticProperty": "register.periodicity"
+    },
+    {
+      "nativeAlias": "Nonperiodical",
+      "nativeProperty": "NumberPeriodicity",
+      "objectKind": "document",
+      "semantic": "nonperiodical",
+      "semanticProperty": "document.number.periodicity"
+    },
+    {
+      "nativeAlias": "Number",
+      "nativeProperty": "NumberType",
+      "objectKind": "document",
+      "semantic": "number",
+      "semanticProperty": "document.number.type"
+    },
+    {
+      "nativeAlias": "Ordinary",
+      "nativeProperty": "FormType",
+      "objectKind": "commonForm",
+      "semantic": "ordinary",
+      "semanticProperty": "form.type"
+    },
+    {
+      "nativeAlias": "Ordinary",
+      "nativeProperty": "FormType",
+      "objectKind": "form",
+      "semantic": "ordinary",
+      "semanticProperty": "form.type"
+    },
+    {
+      "nativeAlias": "Out",
+      "nativeProperty": "TransferDirection",
+      "objectKind": "webServiceParameter",
+      "semantic": "out",
+      "semanticProperty": "webService.parameter.direction"
+    },
+    {
+      "nativeAlias": "Quarter",
+      "nativeProperty": "InformationRegisterPeriodicity",
+      "objectKind": "informationRegister",
+      "semantic": "quarter",
+      "semanticProperty": "register.periodicity"
+    },
+    {
+      "nativeAlias": "Quarter",
+      "nativeProperty": "NumberPeriodicity",
+      "objectKind": "document",
+      "semantic": "quarter",
+      "semanticProperty": "document.number.periodicity"
+    },
+    {
+      "nativeAlias": "Quarter",
+      "nativeProperty": "Periodicity",
+      "objectKind": "calculationRegister",
+      "semantic": "quarter",
+      "semanticProperty": "register.periodicity"
+    },
+    {
+      "nativeAlias": "RecorderPosition",
+      "nativeProperty": "InformationRegisterPeriodicity",
+      "objectKind": "informationRegister",
+      "semantic": "recorderPosition",
+      "semanticProperty": "register.periodicity"
+    },
+    {
+      "nativeAlias": "RecorderSubordinate",
+      "nativeProperty": "WriteMode",
+      "objectKind": "informationRegister",
+      "semantic": "recorderSubordinate",
+      "semanticProperty": "register.writeMode"
+    },
+    {
+      "nativeAlias": "Second",
+      "nativeProperty": "InformationRegisterPeriodicity",
+      "objectKind": "informationRegister",
+      "semantic": "second",
+      "semanticProperty": "register.periodicity"
+    },
+    {
+      "nativeAlias": "ShowError",
+      "nativeProperty": "FillChecking",
+      "objectKind": "attribute",
+      "semantic": "showError",
+      "semanticProperty": "field.fillChecking"
+    },
+    {
+      "nativeAlias": "ShowError",
+      "nativeProperty": "FillChecking",
+      "objectKind": "dimension",
+      "semantic": "showError",
+      "semanticProperty": "field.fillChecking"
+    },
+    {
+      "nativeAlias": "ShowError",
+      "nativeProperty": "FillChecking",
+      "objectKind": "resource",
+      "semantic": "showError",
+      "semanticProperty": "field.fillChecking"
+    },
+    {
+      "nativeAlias": "ShowWarning",
+      "nativeProperty": "FillChecking",
+      "objectKind": "attribute",
+      "semantic": "showWarning",
+      "semanticProperty": "field.fillChecking"
+    },
+    {
+      "nativeAlias": "ShowWarning",
+      "nativeProperty": "FillChecking",
+      "objectKind": "dimension",
+      "semantic": "showWarning",
+      "semanticProperty": "field.fillChecking"
+    },
+    {
+      "nativeAlias": "ShowWarning",
+      "nativeProperty": "FillChecking",
+      "objectKind": "resource",
+      "semantic": "showWarning",
+      "semanticProperty": "field.fillChecking"
+    },
+    {
+      "nativeAlias": "SpreadsheetDocument",
+      "nativeProperty": "TemplateType",
+      "objectKind": "commonTemplate",
+      "semantic": "spreadsheetDocument",
+      "semanticProperty": "template.type"
+    },
+    {
+      "nativeAlias": "SpreadsheetDocument",
+      "nativeProperty": "TemplateType",
+      "objectKind": "spreadsheetDocumentTemplate",
+      "semantic": "spreadsheetDocument",
+      "semanticProperty": "template.type"
+    },
+    {
+      "nativeAlias": "SpreadsheetDocument",
+      "nativeProperty": "TemplateType",
+      "objectKind": "template",
+      "semantic": "spreadsheetDocument",
+      "semanticProperty": "template.type"
+    },
+    {
+      "nativeAlias": "String",
+      "nativeProperty": "NumberType",
+      "objectKind": "document",
+      "semantic": "string",
+      "semanticProperty": "document.number.type"
+    },
+    {
+      "nativeAlias": "TextDocument",
+      "nativeProperty": "TemplateType",
+      "objectKind": "commonTemplate",
+      "semantic": "textDocument",
+      "semanticProperty": "template.type"
+    },
+    {
+      "nativeAlias": "TextDocument",
+      "nativeProperty": "TemplateType",
+      "objectKind": "spreadsheetDocumentTemplate",
+      "semantic": "textDocument",
+      "semanticProperty": "template.type"
+    },
+    {
+      "nativeAlias": "TextDocument",
+      "nativeProperty": "TemplateType",
+      "objectKind": "template",
+      "semantic": "textDocument",
+      "semanticProperty": "template.type"
+    },
+    {
+      "nativeAlias": "Turnovers",
+      "nativeProperty": "RegisterType",
+      "objectKind": "accumulationRegister",
+      "semantic": "turnovers",
+      "semanticProperty": "register.type"
+    },
+    {
+      "nativeAlias": "WholeCatalog",
+      "nativeProperty": "CodeSeries",
+      "objectKind": "catalog",
+      "semantic": "wholeCollection",
+      "semanticProperty": "catalog.code.series"
+    },
+    {
+      "nativeAlias": "WithinOwnerSubordination",
+      "nativeProperty": "CodeSeries",
+      "objectKind": "catalog",
+      "semantic": "withinOwnerScope",
+      "semanticProperty": "catalog.code.series"
+    },
+    {
+      "nativeAlias": "WithinSubordination",
+      "nativeProperty": "CodeSeries",
+      "objectKind": "catalog",
+      "semantic": "withinParentScope",
+      "semanticProperty": "catalog.code.series"
+    },
+    {
+      "nativeAlias": "WriteAll",
+      "nativeProperty": "RegisterRecordsWritingOnPost",
+      "objectKind": "document",
+      "semantic": "writeAll",
+      "semanticProperty": "document.registerRecordsWritingOnPost.mode"
+    },
+    {
+      "nativeAlias": "WriteModified",
+      "nativeProperty": "RegisterRecordsWritingOnPost",
+      "objectKind": "document",
+      "semantic": "writeModified",
+      "semanticProperty": "document.registerRecordsWritingOnPost.mode"
+    },
+    {
+      "nativeAlias": "WriteSelected",
+      "nativeProperty": "RegisterRecordsWritingOnPost",
+      "objectKind": "document",
+      "semantic": "writeSelected",
+      "semanticProperty": "document.registerRecordsWritingOnPost.mode"
+    },
+    {
+      "nativeAlias": "Year",
+      "nativeProperty": "InformationRegisterPeriodicity",
+      "objectKind": "informationRegister",
+      "semantic": "year",
+      "semanticProperty": "register.periodicity"
+    },
+    {
+      "nativeAlias": "Year",
+      "nativeProperty": "NumberPeriodicity",
+      "objectKind": "document",
+      "semantic": "year",
+      "semanticProperty": "document.number.periodicity"
+    },
+    {
+      "nativeAlias": "Year",
+      "nativeProperty": "Periodicity",
+      "objectKind": "calculationRegister",
+      "semantic": "year",
+      "semanticProperty": "register.periodicity"
+    }
+  ],
+  "provenance": "legacy-tools-plus-independent-crosswalk",
+  "schemaVersion": 1
+}

@@ -1,1 +1,1 @@
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Role uuid="10000000-0000-0000-0000-000000000001"><Properties><Name>SalesReader</Name></Properties></Role></MetaDataObject>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20"><Role uuid="10000000-0000-0000-0000-000000000001"><Properties><Name>SalesReader</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Читатель продаж</v8:content></v8:item></Synonym></Properties></Role></MetaDataObject>

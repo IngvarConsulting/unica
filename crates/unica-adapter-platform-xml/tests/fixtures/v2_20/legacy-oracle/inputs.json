@@ -1,0 +1,168 @@
+{
+  "schemaVersion": 1,
+  "referenceSources": {
+    "metaInfo": "tests/fixtures/unica_mcp_script_parity/unica_reference_models/meta-info/scripts/meta-info.py",
+    "metaValidate": "tests/fixtures/unica_mcp_script_parity/unica_reference_models/meta-validate/scripts/meta-validate.py",
+    "roleInfo": "tests/fixtures/unica_mcp_script_parity/unica_reference_models/role-info/scripts/role-info.py",
+    "templateAdd": "tests/fixtures/unica_mcp_script_parity/unica_reference_models/template-add/scripts/add-template.py",
+    "formAdd": "tests/fixtures/unica_mcp_script_parity/unica_reference_models/form-add/scripts/form-add.py",
+    "metaEdit": "tests/fixtures/unica_mcp_script_parity/unica_reference_models/meta-edit/scripts/meta-edit.py"
+  },
+  "cases": [
+    {
+      "id": "catalogCurrencies",
+      "tool": "metaInfo",
+      "profile": "meta-full",
+      "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+      "sourceRoot": "tests/fixtures/unica_mcp_script_parity/bsp/meta",
+      "arguments": ["-Mode", "full"],
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+    },
+    {
+      "id": "catalogCurrenciesMainCurrency",
+      "tool": "metaInfo",
+      "profile": "meta-drilldown",
+      "parentCase": "catalogCurrencies",
+      "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+      "sourceRoot": "tests/fixtures/unica_mcp_script_parity/bsp/meta",
+      "arguments": ["-Mode", "full", "-Name", "ОсновнаяВалюта"],
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+    },
+    {
+      "id": "commonModuleGoogleTranslator",
+      "tool": "metaInfo",
+      "profile": "meta-full",
+      "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/CommonModules/GoogleПереводчик.xml",
+      "sourceRoot": "tests/fixtures/unica_mcp_script_parity/bsp/meta",
+      "arguments": ["-Mode", "full"],
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/common-module-google-translator.full.txt"
+    },
+    {
+      "id": "documentDestructionAct",
+      "tool": "metaInfo",
+      "profile": "meta-full",
+      "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+      "sourceRoot": "tests/fixtures/unica_mcp_script_parity/bsp/meta",
+      "arguments": ["-Mode", "full"],
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+    },
+    {
+      "id": "enumerationAccountingIssueImportance",
+      "tool": "metaInfo",
+      "profile": "meta-full",
+      "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Enums/ВажностьПроблемыУчета.xml",
+      "sourceRoot": "tests/fixtures/unica_mcp_script_parity/bsp/meta",
+      "arguments": ["-Mode", "full"],
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/enumeration-accounting-issue-importance.full.txt"
+    },
+    {
+      "id": "informationRegisterAdministrativeHierarchy",
+      "tool": "metaInfo",
+      "profile": "meta-full",
+      "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/InformationRegisters/АдминистративнаяИерархия.xml",
+      "sourceRoot": "tests/fixtures/unica_mcp_script_parity/bsp/meta",
+      "arguments": ["-Mode", "full"],
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/information-register-administrative-hierarchy.full.txt"
+    },
+    {
+      "id": "languageRussian",
+      "tool": "metaInfo",
+      "profile": "meta-full",
+      "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Languages/Русский.xml",
+      "sourceRoot": "tests/fixtures/unica_mcp_script_parity/bsp/meta",
+      "arguments": ["-Mode", "full"],
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/language-russian.full.txt"
+    },
+    {
+      "id": "reportObjectVersionAnalysis",
+      "tool": "metaInfo",
+      "profile": "meta-full",
+      "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Reports/АнализВерсийОбъектов.xml",
+      "sourceRoot": "tests/fixtures/unica_mcp_script_parity/bsp/meta",
+      "arguments": ["-Mode", "full"],
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/report-object-version-analysis.full.txt"
+    },
+    {
+      "id": "ownedArtifacts",
+      "tool": "metaInfo",
+      "profile": "meta-full",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts",
+      "arguments": ["-Mode", "full"],
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/owned-artifacts.full.txt",
+      "inputArtifacts": [
+        "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport/Forms/MainForm.xml",
+        "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport/Forms/MainForm/Ext/Form.xml",
+        "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport/Templates/MainSchema.xml",
+        "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport/Templates/MainSchema/Ext/Template.xml"
+      ]
+    },
+    {
+      "id": "commonForm",
+      "tool": "metaInfo",
+      "profile": "meta-full",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_form/CommonDashboard.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_form",
+      "arguments": ["-Mode", "full"],
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/common-form.full.txt",
+      "inputArtifacts": [
+        "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_form/CommonDashboard/Ext/Form.xml"
+      ]
+    },
+    {
+      "id": "commonTemplate",
+      "tool": "metaInfo",
+      "profile": "meta-full",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_template/CommonLayout.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_template",
+      "arguments": ["-Mode", "full"],
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/common-template.full.txt",
+      "inputArtifacts": [
+        "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_template/CommonLayout/Ext/Template.bin"
+      ]
+    },
+    {
+      "id": "allTypes",
+      "tool": "metaInfo",
+      "profile": "meta-full",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/types/AllTypes.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/types",
+      "arguments": ["-Mode", "full"],
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/all-types.full.txt"
+    },
+    {
+      "id": "eventSources",
+      "tool": "metaInfo",
+      "profile": "meta-full",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/types/EventSources.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/types",
+      "arguments": ["-Mode", "full"],
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/event-sources.full.txt"
+    },
+    {
+      "id": "unknownCases",
+      "tool": "metaInfo",
+      "profile": "meta-full",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/unknowns/UnknownCases.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/unknowns",
+      "arguments": ["-Mode", "full"],
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/unknown-cases.full.txt",
+      "inputArtifacts": [
+        "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/unknowns/UnknownCases/Ext/Future.bin"
+      ]
+    },
+    {
+      "id": "rights",
+      "tool": "roleInfo",
+      "profile": "role-info",
+      "input": "tests/fixtures/unica_mcp_script_parity/role-info/SalesReader/Ext/Rights.xml",
+      "adapterInput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights/SalesReader.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights",
+      "arguments": ["-ShowDenied"],
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/role-info/sales-reader.all.txt",
+      "inputArtifacts": [
+        "tests/fixtures/unica_mcp_script_parity/role-info/SalesReader.xml"
+      ]
+    }
+  ]
+}

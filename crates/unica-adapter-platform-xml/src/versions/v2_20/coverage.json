@@ -721,13 +721,19 @@
     },
     {
       "objectKinds": [
-        "informationRegister",
-        "accumulationRegister",
-        "accountingRegister",
+        "informationRegister"
+      ],
+      "nativeNames": [
+        "InformationRegisterPeriodicity"
+      ],
+      "semanticProperty": "register.periodicity",
+      "valueKind": "enum"
+    },
+    {
+      "objectKinds": [
         "calculationRegister"
       ],
       "nativeNames": [
-        "InformationRegisterPeriodicity",
         "Periodicity"
       ],
       "semanticProperty": "register.periodicity",
@@ -735,10 +741,7 @@
     },
     {
       "objectKinds": [
-        "informationRegister",
-        "accumulationRegister",
-        "accountingRegister",
-        "calculationRegister"
+        "informationRegister"
       ],
       "nativeNames": [
         "WriteMode"
@@ -748,10 +751,7 @@
     },
     {
       "objectKinds": [
-        "informationRegister",
-        "accumulationRegister",
-        "accountingRegister",
-        "calculationRegister"
+        "accumulationRegister"
       ],
       "nativeNames": [
         "RegisterType"
@@ -1671,86 +1671,111 @@
     {
       "semantic": "string",
       "nativeAliases": [
-        "String",
-        "string"
+        "String"
       ],
       "propertyIds": [
         "document.number.type"
+      ],
+      "objectKinds": [
+        "document"
       ]
     },
     {
       "semantic": "number",
       "nativeAliases": [
-        "Number",
-        "number"
+        "Number"
       ],
       "propertyIds": [
         "document.number.type"
+      ],
+      "objectKinds": [
+        "document"
       ]
     },
     {
       "semantic": "nonperiodical",
       "nativeAliases": [
-        "Nonperiodical",
-        "nonperiodical"
+        "Nonperiodical"
       ],
       "propertyIds": [
         "document.number.periodicity",
         "register.periodicity"
+      ],
+      "objectKinds": [
+        "document",
+        "informationRegister"
       ]
     },
     {
       "semantic": "second",
       "nativeAliases": [
-        "Second",
-        "second"
+        "Second"
       ],
       "propertyIds": [
         "register.periodicity"
+      ],
+      "objectKinds": [
+        "informationRegister"
       ]
     },
     {
       "semantic": "day",
       "nativeAliases": [
-        "Day",
-        "day"
+        "Day"
       ],
       "propertyIds": [
         "document.number.periodicity",
         "register.periodicity"
+      ],
+      "objectKinds": [
+        "document",
+        "informationRegister",
+        "calculationRegister"
       ]
     },
     {
       "semantic": "month",
       "nativeAliases": [
-        "Month",
-        "month"
+        "Month"
       ],
       "propertyIds": [
         "document.number.periodicity",
         "register.periodicity"
+      ],
+      "objectKinds": [
+        "document",
+        "informationRegister",
+        "calculationRegister"
       ]
     },
     {
       "semantic": "quarter",
       "nativeAliases": [
-        "Quarter",
-        "quarter"
+        "Quarter"
       ],
       "propertyIds": [
         "document.number.periodicity",
         "register.periodicity"
+      ],
+      "objectKinds": [
+        "document",
+        "informationRegister",
+        "calculationRegister"
       ]
     },
     {
       "semantic": "year",
       "nativeAliases": [
-        "Year",
-        "year"
+        "Year"
       ],
       "propertyIds": [
         "document.number.periodicity",
         "register.periodicity"
+      ],
+      "objectKinds": [
+        "document",
+        "informationRegister",
+        "calculationRegister"
       ]
     },
     {
@@ -1760,6 +1785,9 @@
       ],
       "propertyIds": [
         "catalog.code.series"
+      ],
+      "objectKinds": [
+        "catalog"
       ]
     },
     {
@@ -1769,6 +1797,9 @@
       ],
       "propertyIds": [
         "catalog.code.series"
+      ],
+      "objectKinds": [
+        "catalog"
       ]
     },
     {
@@ -1778,38 +1809,47 @@
       ],
       "propertyIds": [
         "catalog.code.series"
+      ],
+      "objectKinds": [
+        "catalog"
       ]
     },
     {
       "semantic": "recorderPosition",
       "nativeAliases": [
-        "RecorderPosition",
-        "recorderPosition"
+        "RecorderPosition"
       ],
       "propertyIds": [
         "register.periodicity"
+      ],
+      "objectKinds": [
+        "informationRegister"
       ]
     },
     {
       "semantic": "allow",
       "nativeAliases": [
-        "Allow",
-        "allow"
+        "Allow"
       ],
       "propertyIds": [
         "document.posting.mode",
         "document.realTimePosting.mode"
+      ],
+      "objectKinds": [
+        "document"
       ]
     },
     {
       "semantic": "deny",
       "nativeAliases": [
-        "Deny",
-        "deny"
+        "Deny"
       ],
       "propertyIds": [
         "document.posting.mode",
         "document.realTimePosting.mode"
+      ],
+      "objectKinds": [
+        "document"
       ]
     },
     {
@@ -1819,6 +1859,9 @@
       ],
       "propertyIds": [
         "document.registerRecordsDeletion.mode"
+      ],
+      "objectKinds": [
+        "document"
       ]
     },
     {
@@ -1828,6 +1871,9 @@
       ],
       "propertyIds": [
         "document.registerRecordsDeletion.mode"
+      ],
+      "objectKinds": [
+        "document"
       ]
     },
     {
@@ -1837,6 +1883,9 @@
       ],
       "propertyIds": [
         "document.registerRecordsDeletion.mode"
+      ],
+      "objectKinds": [
+        "document"
       ]
     },
     {
@@ -1846,6 +1895,9 @@
       ],
       "propertyIds": [
         "document.registerRecordsWritingOnPost.mode"
+      ],
+      "objectKinds": [
+        "document"
       ]
     },
     {
@@ -1855,6 +1907,9 @@
       ],
       "propertyIds": [
         "document.registerRecordsWritingOnPost.mode"
+      ],
+      "objectKinds": [
+        "document"
       ]
     },
     {
@@ -1864,152 +1919,210 @@
       ],
       "propertyIds": [
         "document.registerRecordsWritingOnPost.mode"
+      ],
+      "objectKinds": [
+        "document"
       ]
     },
     {
       "semantic": "hierarchyOfItems",
       "nativeAliases": [
-        "HierarchyOfItems",
-        "hierarchyOfItems",
-        "HierarchyItems"
+        "HierarchyOfItems"
       ],
       "propertyIds": [
         "catalog.hierarchy.type"
+      ],
+      "objectKinds": [
+        "catalog"
       ]
     },
     {
       "semantic": "hierarchyOfGroupsAndItems",
       "nativeAliases": [
-        "HierarchyOfGroupsAndItems",
-        "hierarchyOfGroupsAndItems",
         "HierarchyFoldersAndItems"
       ],
       "propertyIds": [
         "catalog.hierarchy.type"
+      ],
+      "objectKinds": [
+        "catalog"
       ]
     },
     {
       "semantic": "balance",
       "nativeAliases": [
         "Balance",
-        "balance",
         "Balances"
       ],
       "propertyIds": [
         "register.type"
+      ],
+      "objectKinds": [
+        "accumulationRegister"
       ]
     },
     {
       "semantic": "turnovers",
       "nativeAliases": [
-        "Turnovers",
-        "turnovers"
+        "Turnovers"
       ],
       "propertyIds": [
         "register.type"
+      ],
+      "objectKinds": [
+        "accumulationRegister"
       ]
     },
     {
       "semantic": "independent",
       "nativeAliases": [
-        "Independent",
-        "independent"
+        "Independent"
       ],
       "propertyIds": [
         "register.writeMode"
+      ],
+      "objectKinds": [
+        "informationRegister"
       ]
     },
     {
       "semantic": "recorderSubordinate",
       "nativeAliases": [
-        "RecorderSubordinate",
-        "recorderSubordinate"
+        "RecorderSubordinate"
       ],
       "propertyIds": [
         "register.writeMode"
+      ],
+      "objectKinds": [
+        "informationRegister"
       ]
     },
     {
       "semantic": "dontCheck",
       "nativeAliases": [
-        "DontCheck",
-        "dontCheck"
+        "DontCheck"
       ],
       "propertyIds": [
         "field.fillChecking"
+      ],
+      "objectKinds": [
+        "attribute",
+        "dimension",
+        "resource"
       ]
     },
     {
       "semantic": "showError",
       "nativeAliases": [
-        "ShowError",
-        "showError"
+        "ShowError"
       ],
       "propertyIds": [
         "field.fillChecking"
+      ],
+      "objectKinds": [
+        "attribute",
+        "dimension",
+        "resource"
+      ]
+    },
+    {
+      "semantic": "showWarning",
+      "nativeAliases": [
+        "ShowWarning"
+      ],
+      "propertyIds": [
+        "field.fillChecking"
+      ],
+      "objectKinds": [
+        "attribute",
+        "dimension",
+        "resource"
       ]
     },
     {
       "semantic": "dontIndex",
       "nativeAliases": [
-        "DontIndex",
-        "dontIndex"
+        "DontIndex"
       ],
       "propertyIds": [
         "field.indexing"
+      ],
+      "objectKinds": [
+        "attribute",
+        "dimension",
+        "resource"
       ]
     },
     {
       "semantic": "index",
       "nativeAliases": [
-        "Index",
-        "index"
+        "Index"
       ],
       "propertyIds": [
         "field.indexing"
+      ],
+      "objectKinds": [
+        "attribute",
+        "dimension",
+        "resource"
       ]
     },
     {
       "semantic": "indexWithAdditionalOrder",
       "nativeAliases": [
-        "IndexWithAdditionalOrder",
-        "indexWithAdditionalOrder"
+        "IndexWithAdditionalOrder"
       ],
       "propertyIds": [
         "field.indexing"
+      ],
+      "objectKinds": [
+        "attribute",
+        "dimension",
+        "resource"
       ]
     },
     {
       "semantic": "use",
       "nativeAliases": [
-        "AutoUse",
-        "autoUse"
+        "AutoUse"
       ],
       "propertyIds": [
         "httpService.reuseSessions",
         "webService.reuseSessions"
+      ],
+      "objectKinds": [
+        "httpService",
+        "webService"
       ]
     },
     {
       "semantic": "dontUse",
       "nativeAliases": [
-        "DontUse",
-        "dontUse"
+        "DontUse"
       ],
       "propertyIds": [
         "module.returnValuesReuse",
         "httpService.reuseSessions",
         "webService.reuseSessions"
+      ],
+      "objectKinds": [
+        "commonModule",
+        "httpService",
+        "webService"
       ]
     },
     {
       "semantic": "forItem",
       "nativeAliases": [
-        "ForItem",
-        "forItem"
+        "ForItem"
       ],
       "propertyIds": [
         "field.use"
+      ],
+      "objectKinds": [
+        "attribute",
+        "dimension",
+        "resource"
       ]
     },
     {
@@ -2019,6 +2132,11 @@
       ],
       "propertyIds": [
         "field.use"
+      ],
+      "objectKinds": [
+        "attribute",
+        "dimension",
+        "resource"
       ]
     },
     {
@@ -2028,56 +2146,71 @@
       ],
       "propertyIds": [
         "field.use"
+      ],
+      "objectKinds": [
+        "attribute",
+        "dimension",
+        "resource"
       ]
     },
     {
       "semantic": "duringRequest",
       "nativeAliases": [
-        "DuringRequest",
-        "duringRequest"
+        "DuringRequest"
       ],
       "propertyIds": [
         "module.returnValuesReuse"
+      ],
+      "objectKinds": [
+        "commonModule"
       ]
     },
     {
       "semantic": "duringSession",
       "nativeAliases": [
-        "DuringSession",
-        "duringSession"
+        "DuringSession"
       ],
       "propertyIds": [
         "module.returnValuesReuse"
+      ],
+      "objectKinds": [
+        "commonModule"
       ]
     },
     {
       "semantic": "in",
       "nativeAliases": [
-        "In",
-        "in"
+        "In"
       ],
       "propertyIds": [
         "webService.parameter.direction"
+      ],
+      "objectKinds": [
+        "webServiceParameter"
       ]
     },
     {
       "semantic": "out",
       "nativeAliases": [
-        "Out",
-        "out"
+        "Out"
       ],
       "propertyIds": [
         "webService.parameter.direction"
+      ],
+      "objectKinds": [
+        "webServiceParameter"
       ]
     },
     {
       "semantic": "inOut",
       "nativeAliases": [
-        "InOut",
-        "inOut"
+        "InOut"
       ],
       "propertyIds": [
         "webService.parameter.direction"
+      ],
+      "objectKinds": [
+        "webServiceParameter"
       ]
     },
     {
@@ -2087,6 +2220,10 @@
       ],
       "propertyIds": [
         "form.type"
+      ],
+      "objectKinds": [
+        "form",
+        "commonForm"
       ]
     },
     {
@@ -2096,6 +2233,10 @@
       ],
       "propertyIds": [
         "form.type"
+      ],
+      "objectKinds": [
+        "form",
+        "commonForm"
       ]
     },
     {
@@ -2105,6 +2246,11 @@
       ],
       "propertyIds": [
         "template.type"
+      ],
+      "objectKinds": [
+        "template",
+        "spreadsheetDocumentTemplate",
+        "commonTemplate"
       ]
     },
     {
@@ -2114,6 +2260,11 @@
       ],
       "propertyIds": [
         "template.type"
+      ],
+      "objectKinds": [
+        "template",
+        "spreadsheetDocumentTemplate",
+        "commonTemplate"
       ]
     },
     {
@@ -2123,6 +2274,11 @@
       ],
       "propertyIds": [
         "template.type"
+      ],
+      "objectKinds": [
+        "template",
+        "spreadsheetDocumentTemplate",
+        "commonTemplate"
       ]
     },
     {
@@ -2132,6 +2288,11 @@
       ],
       "propertyIds": [
         "template.type"
+      ],
+      "objectKinds": [
+        "template",
+        "spreadsheetDocumentTemplate",
+        "commonTemplate"
       ]
     },
     {
@@ -2141,24 +2302,11 @@
       ],
       "propertyIds": [
         "template.type"
-      ]
-    },
-    {
-      "semantic": "geographicalSchema",
-      "nativeAliases": [
-        "GeographicalSchema"
       ],
-      "propertyIds": [
-        "template.type"
-      ]
-    },
-    {
-      "semantic": "graphicalSchema",
-      "nativeAliases": [
-        "GraphicalSchema"
-      ],
-      "propertyIds": [
-        "template.type"
+      "objectKinds": [
+        "template",
+        "spreadsheetDocumentTemplate",
+        "commonTemplate"
       ]
     }
   ],

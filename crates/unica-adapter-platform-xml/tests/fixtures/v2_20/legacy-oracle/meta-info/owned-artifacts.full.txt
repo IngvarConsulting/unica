@@ -1,0 +1,4 @@
+﻿=== Отчёт: ArtifactReport ===
+Поддержка: не на поддержке
+Формы: MainForm
+Макеты: MainSchema

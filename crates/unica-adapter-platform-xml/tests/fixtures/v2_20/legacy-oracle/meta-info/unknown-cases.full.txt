@@ -1,0 +1,7 @@
+﻿=== Документ: UnknownCases ===
+Поддержка: не на поддержке
+Представление типа: UnknownCases
+
+Реквизиты (1):
+  MysteryType   FutureRecord.Target | AnotherFuture.Other
+Ввод на основании: Target
