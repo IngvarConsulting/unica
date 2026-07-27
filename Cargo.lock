@@ -1688,6 +1688,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "unica-application"
+version = "0.10.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "unica-format-core",
+]
+
+[[package]]
 name = "unica-bootstrap"
 version = "0.10.0"
 dependencies = [
@@ -1723,6 +1732,7 @@ dependencies = [
  "syntax",
  "tokio",
  "unica-adapter-platform-xml",
+ "unica-application",
  "unica-format-core",
  "ureq",
  "uuid",
