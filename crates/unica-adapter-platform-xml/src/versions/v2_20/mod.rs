@@ -230,8 +230,8 @@ fn captured_session(
         })
 }
 
-pub(crate) const fn metadata_classes() -> &'static [&'static str] {
-    schema::LEGACY_TOP_LEVEL_METADATA_CLASSES
+pub(crate) fn metadata_classes() -> &'static [&'static str] {
+    schema::legacy_top_level_metadata_classes()
 }
 
 pub(crate) const PLATFORM_LINE: &str = profile::ACTIVE_FORMAT_PROFILE.platform_line;

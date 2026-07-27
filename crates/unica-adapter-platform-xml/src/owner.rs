@@ -18,7 +18,7 @@ use unica_format_core::{
     },
 };
 
-use crate::versions::v2_20::schema::LEGACY_TOP_LEVEL_METADATA_CLASSES;
+use crate::versions::v2_20::schema::legacy_top_level_metadata_classes;
 
 const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
@@ -514,7 +514,7 @@ fn is_configuration_extension_artifact(artifact: roxmltree::Node<'_, '_>) -> boo
 }
 
 fn is_supported_metadata_artifact(tag: &str) -> bool {
-    LEGACY_TOP_LEVEL_METADATA_CLASSES.contains(&tag)
+    legacy_top_level_metadata_classes().contains(&tag)
         || matches!(
             tag,
             "Configuration" | "ExternalDataProcessor" | "ExternalReport" | "Form" | "Template"

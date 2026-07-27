@@ -37,7 +37,7 @@ impl PlatformXmlAdapterFactory {
         }
     }
 
-    pub const fn profile() -> AdapterFormatProfile {
+    pub fn profile() -> AdapterFormatProfile {
         AdapterFormatProfile {
             platform_line: v2_20::PLATFORM_LINE,
             export_format: v2_20::EXPORT_FORMAT,

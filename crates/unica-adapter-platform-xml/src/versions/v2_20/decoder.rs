@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::{
     domain::{
         identifiers::is_1c_identifier,
-        navigation::CoverageState,
+        navigation::{CoverageState, RelationRole, SemanticObjectKind},
         navigation_limits::{
             MAX_NAVIGATION_IDENTITY_ITEMS, MAX_NAVIGATION_NESTING_DEPTH, MAX_NAVIGATION_NODES,
             MAX_NAVIGATION_PROPERTIES_PER_NODE, MAX_NAVIGATION_RELATIONS,
@@ -35,7 +35,7 @@ use super::{
         child_metadata_class_profile, metadata_class_profile, parse_type_description_2_20,
         ChildObjectsVocabulary, MetadataClassProfile, MetadataClassRole,
     },
-    semantic_map::{self, NativeValueKind},
+    semantic_map::{self, MappingSource, NativeValueKind},
 };
 
 const METADATA_NAMESPACE: &str = "http://v8.1c.ru/8.3/MDClasses";
@@ -46,6 +46,7 @@ const DATA_CORE_NAMESPACE: &str = "http://v8.1c.ru/8.1/data/core";
 const READABLE_NAMESPACE: &str = "http://v8.1c.ru/8.3/xcf/readable";
 const XML_SCHEMA_INSTANCE_NAMESPACE: &str = "http://www.w3.org/2001/XMLSchema-instance";
 const XML_SCHEMA_NAMESPACE: &str = "http://www.w3.org/2001/XMLSchema";
+const RIGHTS_NAMESPACE: &str = "http://v8.1c.ru/8.2/roles";
 
 pub(crate) fn decode_path(
     input: &SourceInput,
@@ -166,9 +167,30 @@ fn decode_with_context(
     let base_key = root_key
         .strip_suffix(".xml")
         .ok_or_else(|| corrupted("Platform XML root descriptor is not an XML file"))?;
-    let decoded = decode_scoped(context, |context| {
+    let mut decoded = decode_scoped(context, |context| {
         decode_inline_node(provider, class, profile, base_key, xml, context)
     })?;
+    let mut consumed = BTreeSet::from([root_key.to_string()]);
+    collect_backing_keys(&decoded.node, &mut consumed);
+    let backing_prefix = format!("{base_key}/");
+    let unknown_backing_count = provider
+        .snapshot_files()
+        .filter(|(key, _)| key.starts_with(&backing_prefix) && !consumed.contains(*key))
+        .count();
+    if unknown_backing_count > 0 {
+        decoded.node.properties.insert(
+            "@unknownBacking".to_string(),
+            native_property(
+                "@unknownBacking",
+                NativePropertyValue::StringList(
+                    (0..unknown_backing_count)
+                        .map(|_| "backing".to_string())
+                        .collect(),
+                ),
+            ),
+        );
+        decoded.complete = false;
+    }
 
     Ok(PlatformXmlNativeSnapshot {
         source: SourceSnapshot {
@@ -199,20 +221,39 @@ fn decode_inline_node(
     let properties = decode_properties_for_profile(properties_node, profile, context)?;
     let uuid = parse_optional_uuid(node)?;
     context.register_uuid(uuid)?;
-    let children = decode_children(provider, node, profile, base_key, source_xml, context)?;
-    let complete = properties.complete && children.complete;
-    Ok(DecodedNode {
-        node: NativeMetadataNode {
+    let mut children = decode_children(provider, node, profile, base_key, source_xml, context)?;
+    let mut complete = properties.complete
+        && children.complete
+        && profile.source == MappingSource::Native
+        && !matches!(
+            profile.role,
+            MetadataClassRole::Unknown | MetadataClassRole::Unsupported
+        );
+    let mut native_node = NativeMetadataNode {
             class: native_class(profile),
             uuid,
             name,
             state: NativeNodeState::ResolvedInline,
             properties: properties.properties,
             references: properties.references,
-            children: children.nodes,
-            unmapped_facts: properties.unmapped_facts + children.unmapped_facts,
+            children: Vec::new(),
+            unmapped_facts: properties.unmapped_facts
+                + children.unmapped_facts
+                + usize::from(profile.source != MappingSource::Native),
             backing: NativeNodeBacking::None,
-        },
+        };
+    apply_inline_backing(
+        provider,
+        profile,
+        base_key,
+        &mut native_node,
+        &mut children.nodes,
+        &mut complete,
+        context,
+    )?;
+    native_node.children = children.nodes;
+    Ok(DecodedNode {
+        node: native_node,
         complete,
     })
 }
@@ -264,6 +305,9 @@ fn decode_children(
             ) {
                 decode_backed_registration(provider, child, profile, base_key, source_xml, context)
             } else if !has_direct_child(child, "Properties") {
+                if profile.role == MetadataClassRole::Unknown {
+                    return decode_unresolved_registration(child, profile, context);
+                }
                 if owner_profile.child_objects != ChildObjectsVocabulary::ConfigurationTopLevel
                     || profile.role != MetadataClassRole::TopLevelObject
                 {
@@ -276,14 +320,18 @@ fn decode_children(
                 decode_inline_node(provider, child, profile, base_key, source_xml, context)
             }
         })?;
-        let identity = (profile.class_name, decoded.node.name.clone());
+        let identity = (
+            child.tag_name().name().to_string(),
+            decoded.node.name.clone(),
+        );
         if !identities.insert(identity) {
             return Err(error(
                 SourceAdapterErrorKind::IdentityCollision,
                 "Platform XML owner has duplicate child identities of the same class",
             ));
         }
-        complete &= decoded.complete;
+        complete &= decoded.complete
+            && !semantic_map::child_mapping_is_partial(owner_profile, profile);
         nodes.push(NativeMetadataChild {
             role,
             node: decoded.node,
@@ -330,7 +378,7 @@ fn decode_backed_registration(
     context: &mut DecodeContext,
 ) -> Result<DecodedNode, SourceAdapterError> {
     let registration = registration(node)?;
-    let properties = match optional_unique_child(node, "Properties")? {
+    let registration_properties = match optional_unique_child(node, "Properties")? {
         Some(properties) => decode_properties_for_profile(properties, profile, context)?,
         None => DecodedProperties::synthetic_name(&registration.name),
     };
@@ -338,13 +386,30 @@ fn decode_backed_registration(
         MetadataClassRole::Form => {
             let descriptor_key = format!("{base_key}/Forms/{}.xml", registration.name);
             let content_key = format!("{base_key}/Forms/{}/Ext/Form.xml", registration.name);
-            let descriptor = match snapshot_file(provider, &descriptor_key) {
+            let (descriptor, descriptor_properties) = match snapshot_file(provider, &descriptor_key)
+            {
                 Some(bytes) => {
-                    let parsed = parse_registered_descriptor(&bytes, profile, &registration.name)?;
-                    descriptor_evidence(NativeEvidenceState::Validated, descriptor_key, parsed.uuid)
+                    let parsed = parse_registered_descriptor(
+                        &bytes,
+                        profile,
+                        &registration.name,
+                        context,
+                    )?;
+                    (
+                        descriptor_evidence(
+                            NativeEvidenceState::Validated,
+                            descriptor_key,
+                            parsed.uuid,
+                        ),
+                        Some(parsed.properties),
+                    )
                 }
-                None => descriptor_evidence(NativeEvidenceState::Absent, descriptor_key, None),
+                None => (
+                    descriptor_evidence(NativeEvidenceState::Absent, descriptor_key, None),
+                    None,
+                ),
             };
+            let properties = descriptor_properties.unwrap_or(registration_properties);
             let managed_content = match snapshot_file(provider, &content_key) {
                 Some(bytes) => {
                     validate_managed_form(&bytes)?;
@@ -356,9 +421,7 @@ fn decode_backed_registration(
                 }
                 None => content_evidence(NativeEvidenceState::Absent, content_key, None),
             };
-            let complete = properties.complete
-                && descriptor.state == NativeEvidenceState::Validated
-                && managed_content.state == NativeEvidenceState::Validated;
+            let complete = false;
             let effective_uuid = reconcile_registered_uuid(registration.uuid, descriptor.uuid)?;
             context.register_uuid(effective_uuid)?;
             let state = registration_state(&registration, complete);
@@ -383,23 +446,35 @@ fn decode_backed_registration(
         }
         MetadataClassRole::Template => {
             let descriptor_key = format!("{base_key}/Templates/{}.xml", registration.name);
-            let (descriptor, descriptor_type) = match snapshot_file(provider, &descriptor_key) {
+            let (descriptor, descriptor_properties) =
+                match snapshot_file(provider, &descriptor_key) {
                 Some(bytes) => {
-                    let parsed = parse_registered_descriptor(&bytes, profile, &registration.name)?;
+                    let parsed = parse_registered_descriptor(
+                        &bytes,
+                        profile,
+                        &registration.name,
+                        context,
+                    )?;
                     (
                         descriptor_evidence(
                             NativeEvidenceState::Validated,
                             descriptor_key,
                             parsed.uuid,
                         ),
-                        parsed.template_type,
+                        Some(parsed.properties),
                     )
                 }
                 None => (
                     descriptor_evidence(NativeEvidenceState::Absent, descriptor_key, None),
-                    NativePropertyValue::Absent,
+                    None,
                 ),
             };
+            let properties = descriptor_properties.unwrap_or(registration_properties);
+            let descriptor_type = properties
+                .properties
+                .get("TemplateType")
+                .map(|property| property.value.clone())
+                .unwrap_or(NativePropertyValue::Absent);
             let prefix = format!("{base_key}/Templates/{}/Ext/", registration.name);
             let mut candidates = provider
                 .snapshot_files()
@@ -460,13 +535,7 @@ fn decode_backed_registration(
                     }
                 }
             };
-            let complete = properties.complete
-                && descriptor.state == NativeEvidenceState::Validated
-                && !matches!(
-                    descriptor_type,
-                    NativePropertyValue::Absent | NativePropertyValue::Unresolved
-                )
-                && canonical_content.state == NativeEvidenceState::Validated;
+            let complete = false;
             let effective_uuid = reconcile_registered_uuid(registration.uuid, descriptor.uuid)?;
             context.register_uuid(effective_uuid)?;
             let state = registration_state(&registration, complete);
@@ -499,6 +568,7 @@ fn parse_registered_descriptor(
     bytes: &[u8],
     expected_profile: &'static MetadataClassProfile,
     expected_name: &str,
+    context: &mut DecodeContext,
 ) -> Result<ParsedDescriptor, SourceAdapterError> {
     let (_, document) = parse_bounded_xml_document(
         bytes,
@@ -522,16 +592,10 @@ fn parse_registered_descriptor(
         ));
     }
     let uuid = parse_optional_uuid(class)?;
-    let template_type = if expected_profile.role == MetadataClassRole::Template {
-        unique_scalar(properties, "TemplateType")?
-            .map(NativePropertyValue::Scalar)
-            .unwrap_or(NativePropertyValue::Absent)
-    } else {
-        NativePropertyValue::Absent
-    };
+    let properties = decode_properties_for_profile(properties, expected_profile, context)?;
     Ok(ParsedDescriptor {
         uuid,
-        template_type,
+        properties,
     })
 }
 
@@ -600,8 +664,8 @@ fn profile_for_node(
             "Platform XML metadata class namespace is invalid",
         ));
     }
-    metadata_class_profile(node.tag_name().name())
-        .ok_or_else(|| corrupted("Platform XML metadata class is absent from the schema registry"))
+    Ok(metadata_class_profile(node.tag_name().name())
+        .unwrap_or_else(semantic_map::unknown_metadata_class_profile))
 }
 
 fn decode_properties_for_profile(
@@ -626,9 +690,7 @@ fn decode_properties_for_profile(
                 "Platform XML property occurs more than once",
             ));
         }
-        if let Some(role) = kind.and_then(|kind| {
-            semantic_map::relation_property_role(kind, canonical_id.as_str())
-        }) {
+        if let Some(role) = semantic_map::relation_property_role(kind, canonical_id.as_str()) {
             let (targets, relation_unmapped) = decode_reference_targets(property);
             complete &= relation_unmapped == 0;
             unmapped_facts += relation_unmapped;
@@ -637,8 +699,7 @@ fn decode_properties_for_profile(
             }
             continue;
         }
-        let mapping =
-            kind.and_then(|kind| semantic_map::property_mapping(kind, canonical_id.as_str()));
+        let mapping = semantic_map::property_mapping(kind, canonical_id.as_str());
         if mapping.is_none() {
             complete = false;
         }
@@ -687,22 +748,33 @@ fn decode_properties(
 
 fn decode_property_value(
     property: Node<'_, '_>,
-    mapping: Option<semantic_map::PropertyMapping>,
+    mapping: Option<&semantic_map::PropertyMapping>,
 ) -> Result<(NativePropertyValue, bool), SourceAdapterError> {
     let Some(mapping) = mapping else {
         if property.children().any(|child| child.is_element()) {
-            return Ok((NativePropertyValue::Structured, false));
+            let values = readable_leaf_values(property);
+            return Ok((
+                if values.is_empty() {
+                    NativePropertyValue::Structured
+                } else {
+                    NativePropertyValue::StringList(values)
+                },
+                false,
+            ));
         }
         let value = property.text().unwrap_or_default().trim();
         return Ok((
             scalar_property_value(None, property, value),
-            true,
+            false,
         ));
     };
     match mapping.value_kind {
         NativeValueKind::LocalizedString => Ok(decode_localized_string(property)),
         NativeValueKind::TypeSet => match parse_type_description_2_20(property) {
-            Ok(value) => Ok((NativePropertyValue::TypeSet(value), true)),
+            Ok(value) => {
+                let complete = !value.variants().iter().any(|variant| variant.is_unknown());
+                Ok((NativePropertyValue::TypeSet(value), complete))
+            }
             Err(error) if error.kind == SourceAdapterErrorKind::ResourceLimit => Err(error),
             Err(_) => Ok((NativePropertyValue::Unresolved, false)),
         },
@@ -812,20 +884,32 @@ fn decode_reference_targets(property: Node<'_, '_>) -> (Vec<NativeSemanticRefere
             unmapped += 1;
             continue;
         };
-        let Some(kind) = semantic_map::reference_kind(native_class) else {
-            unmapped += 1;
-            continue;
-        };
         if raw.split('.').count() != 2 || !is_1c_identifier(name) {
             unmapped += 1;
             continue;
         }
+        let kind = semantic_map::reference_kind(native_class).unwrap_or_else(|| {
+            unmapped += 1;
+            SemanticObjectKind::Unknown
+        });
         targets.push(NativeSemanticReference {
             kind,
             name: name.to_string(),
         });
     }
     (targets, unmapped)
+}
+
+fn readable_leaf_values(node: Node<'_, '_>) -> Vec<String> {
+    node.descendants()
+        .filter(|descendant| {
+            descendant.is_element()
+                && !descendant.children().any(|child| child.is_element())
+        })
+        .filter_map(|descendant| descendant.text().map(str::trim))
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn scalar_property_value(
@@ -1042,6 +1126,459 @@ fn parse_mxl_root(bytes: &[u8]) -> Result<NativeMxlRootKind, SourceAdapterError>
     }
 }
 
+fn apply_inline_backing(
+    provider: &PlatformXmlProvider,
+    profile: &'static MetadataClassProfile,
+    base_key: &str,
+    node: &mut NativeMetadataNode,
+    children: &mut Vec<NativeMetadataChild>,
+    complete: &mut bool,
+    context: &mut DecodeContext,
+) -> Result<(), SourceAdapterError> {
+    match profile.kind {
+        SemanticObjectKind::Role => {
+            let rights_key = format!("{base_key}/Ext/Rights.xml");
+            let Some(bytes) = snapshot_file(provider, &rights_key) else {
+                node.backing = NativeNodeBacking::Rights(content_evidence(
+                    NativeEvidenceState::Absent,
+                    rights_key,
+                    None,
+                ));
+                *complete = false;
+                return Ok(());
+            };
+            let decoded = decode_rights(&bytes, profile, context)?;
+            node.properties.extend(decoded.properties);
+            node.unmapped_facts += decoded.unmapped_facts;
+            children.extend(decoded.children);
+            node.backing = NativeNodeBacking::Rights(content_evidence(
+                NativeEvidenceState::Validated,
+                rights_key,
+                Some(digest(&bytes)),
+            ));
+            *complete &= decoded.complete;
+        }
+        SemanticObjectKind::CommonForm => {
+            let content_key = format!("{base_key}/Ext/Form.xml");
+            let content = match snapshot_file(provider, &content_key) {
+                Some(bytes) => {
+                    validate_managed_form(&bytes)?;
+                    content_evidence(
+                        NativeEvidenceState::Validated,
+                        content_key,
+                        Some(digest(&bytes)),
+                    )
+                }
+                None => content_evidence(NativeEvidenceState::Absent, content_key, None),
+            };
+            node.backing = NativeNodeBacking::Form(NativeForm {
+                registration: NativeRegistrationEvidence {
+                    uuid: node.uuid,
+                    name: node.name.clone(),
+                },
+                descriptor: descriptor_evidence(
+                    NativeEvidenceState::Validated,
+                    format!("{base_key}.xml"),
+                    node.uuid,
+                ),
+                managed_content: content,
+            });
+            *complete = false;
+        }
+        SemanticObjectKind::CommonTemplate => {
+            let descriptor_type = node
+                .properties
+                .get("TemplateType")
+                .map(|property| property.value.clone())
+                .unwrap_or(NativePropertyValue::Absent);
+            let prefix = format!("{base_key}/Ext/");
+            let mut candidates = provider
+                .snapshot_files()
+                .filter(|(key, _)| direct_template_candidate(key, &prefix))
+                .collect::<Vec<_>>();
+            if candidates.len() > 1 {
+                return Err(error(
+                    SourceAdapterErrorKind::ProjectionAmbiguous,
+                    "Platform XML template has multiple direct content candidates",
+                ));
+            }
+            let (content, mxl_root_kind) = match candidates.pop() {
+                None => (
+                    content_evidence(
+                        NativeEvidenceState::Absent,
+                        format!("{prefix}Template.xml"),
+                        None,
+                    ),
+                    None,
+                ),
+                Some((key, bytes)) => {
+                    let mxl_root_kind = if matches!(
+                        &descriptor_type,
+                        NativePropertyValue::Scalar(value) if value == "SpreadsheetDocument"
+                    ) {
+                        Some(parse_mxl_root(&bytes)?)
+                    } else {
+                        None
+                    };
+                    (
+                        content_evidence(
+                            NativeEvidenceState::Validated,
+                            key.to_string(),
+                            Some(digest(&bytes)),
+                        ),
+                        mxl_root_kind,
+                    )
+                }
+            };
+            node.backing = NativeNodeBacking::Template(NativeTemplate {
+                registration: NativeRegistrationEvidence {
+                    uuid: node.uuid,
+                    name: node.name.clone(),
+                },
+                descriptor: descriptor_evidence(
+                    NativeEvidenceState::Validated,
+                    format!("{base_key}.xml"),
+                    node.uuid,
+                ),
+                descriptor_type,
+                canonical_content: content,
+                mxl_root_kind,
+            });
+            *complete = false;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+struct DecodedRights {
+    properties: BTreeMap<String, NativeProperty>,
+    children: Vec<NativeMetadataChild>,
+    complete: bool,
+    unmapped_facts: usize,
+}
+
+fn decode_rights(
+    bytes: &[u8],
+    role_profile: &'static MetadataClassProfile,
+    context: &mut DecodeContext,
+) -> Result<DecodedRights, SourceAdapterError> {
+    let (_, document) = parse_bounded_xml_document(
+        bytes,
+        "access backing is not valid UTF-8",
+        "access backing is malformed XML",
+    )?;
+    let root = document.root_element();
+    if root.tag_name().name() != "Rights"
+        || root.tag_name().namespace() != Some(RIGHTS_NAMESPACE)
+    {
+        return Err(corrupted("access backing root identity is invalid"));
+    }
+    let mut properties = BTreeMap::new();
+    let mut complete = true;
+    let mut unmapped_facts = 0usize;
+    for (native, semantic_key) in [
+        ("setForNewObjects", "@rightsNewObjectsDefault"),
+        ("setForAttributesByDefault", "@rightsAttributesDefault"),
+        (
+            "independentRightsOfChildObjects",
+            "@rightsChildObjectsIndependent",
+        ),
+    ] {
+        match rights_scalar(root, native).as_deref().and_then(parse_boolean) {
+            Some(value) => {
+                properties.insert(
+                    semantic_key.to_string(),
+                    native_property(
+                        semantic_key,
+                        NativePropertyValue::Scalar(value.to_string()),
+                    ),
+                );
+            }
+            None => {
+                complete = false;
+                unmapped_facts += 1;
+            }
+        }
+    }
+
+    let permission_profile = semantic_map::derived_profile(SemanticObjectKind::AccessPermission);
+    let permission_role = semantic_map::child_relation_role(role_profile, permission_profile)
+        .expect("coverage registry maps access permissions");
+    let template_profile =
+        semantic_map::derived_profile(SemanticObjectKind::AccessRestrictionTemplate);
+    let template_role = semantic_map::child_relation_role(role_profile, template_profile)
+        .expect("coverage registry maps access restriction templates");
+    let mut children = Vec::new();
+    let mut ordinal = 0usize;
+    for object in rights_children(root, "object") {
+        let Some(raw_target) = rights_scalar(object, "name") else {
+            complete = false;
+            unmapped_facts += 1;
+            continue;
+        };
+        let (target_kind, target_name, target_complete) = decode_rights_target(&raw_target);
+        complete &= target_complete;
+        unmapped_facts += usize::from(!target_complete);
+        for right in rights_children(object, "right") {
+            ordinal += 1;
+            let Some(permission_name) = rights_scalar(right, "name") else {
+                complete = false;
+                unmapped_facts += 1;
+                continue;
+            };
+            let permission_value = rights_scalar(right, "value");
+            let permission_allowed = permission_value.as_deref().and_then(parse_boolean);
+            if permission_allowed.is_none() {
+                complete = false;
+                unmapped_facts += 1;
+            }
+            let restrictions = right
+                .children()
+                .filter(Node::is_element)
+                .filter(|child| {
+                    child.tag_name().namespace() == Some(RIGHTS_NAMESPACE)
+                        && !matches!(child.tag_name().name(), "name" | "value")
+                })
+                .flat_map(readable_leaf_values)
+                .collect::<Vec<_>>();
+            let mut permission_properties = synthetic_name_property(&format!(
+                "{target_name}:{permission_name}:{ordinal}"
+            ));
+            permission_properties.insert(
+                "@permissionName".to_string(),
+                native_property(
+                    "@permissionName",
+                    NativePropertyValue::Scalar(permission_name),
+                ),
+            );
+            permission_properties.insert(
+                "@permissionAllowed".to_string(),
+                native_property(
+                    "@permissionAllowed",
+                    permission_allowed
+                        .map(|value| NativePropertyValue::Scalar(value.to_string()))
+                        .unwrap_or(NativePropertyValue::Unresolved),
+                ),
+            );
+            if !restrictions.is_empty() {
+                permission_properties.insert(
+                    "@restrictionConditions".to_string(),
+                    native_property(
+                        "@restrictionConditions",
+                        NativePropertyValue::StringList(restrictions),
+                    ),
+                );
+            }
+            context.register_relation()?;
+            context.register_identity_item()?;
+            let permission_node = decode_scoped(context, |_context| {
+                Ok(NativeMetadataNode {
+                    class: native_class(permission_profile),
+                    uuid: None,
+                    name: format!("{target_name}:{ordinal}"),
+                    state: NativeNodeState::ResolvedInline,
+                    properties: permission_properties,
+                    references: vec![NativeReferenceRelation {
+                        role: RelationRole::ACCESS_TARGET,
+                        targets: vec![NativeSemanticReference {
+                            kind: target_kind,
+                            name: target_name.clone(),
+                        }],
+                    }],
+                    children: Vec::new(),
+                    unmapped_facts: usize::from(!target_complete)
+                        + usize::from(permission_allowed.is_none()),
+                    backing: NativeNodeBacking::None,
+                })
+            })?;
+            children.push(NativeMetadataChild {
+                role: permission_role,
+                node: permission_node,
+            });
+        }
+    }
+    for template in rights_children(root, "restrictionTemplate") {
+        let Some(name) = rights_scalar(template, "name") else {
+            complete = false;
+            unmapped_facts += 1;
+            continue;
+        };
+        let restrictions = template
+            .children()
+            .filter(Node::is_element)
+            .filter(|child| {
+                child.tag_name().namespace() == Some(RIGHTS_NAMESPACE)
+                    && child.tag_name().name() != "name"
+            })
+            .flat_map(readable_leaf_values)
+            .collect::<Vec<_>>();
+        let mut template_properties = synthetic_name_property(&name);
+        if !restrictions.is_empty() {
+            template_properties.insert(
+                "@restrictionConditions".to_string(),
+                native_property(
+                    "@restrictionConditions",
+                    NativePropertyValue::StringList(restrictions),
+                ),
+            );
+        }
+        context.register_relation()?;
+        context.register_identity_item()?;
+        let template_node = decode_scoped(context, |_context| {
+            Ok(NativeMetadataNode {
+                class: native_class(template_profile),
+                uuid: None,
+                name,
+                state: NativeNodeState::ResolvedInline,
+                properties: template_properties,
+                references: Vec::new(),
+                children: Vec::new(),
+                unmapped_facts: 0,
+                backing: NativeNodeBacking::None,
+            })
+        })?;
+        children.push(NativeMetadataChild {
+            role: template_role,
+            node: template_node,
+        });
+    }
+    let known_root_children = [
+        "setForNewObjects",
+        "setForAttributesByDefault",
+        "independentRightsOfChildObjects",
+        "object",
+        "restrictionTemplate",
+    ];
+    let unknown_values = root
+        .children()
+        .filter(Node::is_element)
+        .filter(|child| {
+            child.tag_name().namespace() != Some(RIGHTS_NAMESPACE)
+                || !known_root_children.contains(&child.tag_name().name())
+        })
+        .flat_map(readable_leaf_values)
+        .collect::<Vec<_>>();
+    if !unknown_values.is_empty() {
+        properties.insert(
+            "@unknownRights".to_string(),
+            native_property(
+                "@unknownRights",
+                NativePropertyValue::StringList(unknown_values),
+            ),
+        );
+        complete = false;
+        unmapped_facts += 1;
+    }
+    Ok(DecodedRights {
+        properties,
+        children,
+        complete,
+        unmapped_facts,
+    })
+}
+
+fn rights_children<'a, 'input>(
+    parent: Node<'a, 'input>,
+    name: &'static str,
+) -> impl Iterator<Item = Node<'a, 'input>> {
+    parent.children().filter(move |child| {
+        child.is_element()
+            && child.tag_name().namespace() == Some(RIGHTS_NAMESPACE)
+            && child.tag_name().name() == name
+    })
+}
+
+fn rights_scalar(parent: Node<'_, '_>, name: &str) -> Option<String> {
+    parent
+        .attribute(name)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            let mut children = parent.children().filter(|child| {
+                child.is_element()
+                    && child.tag_name().namespace() == Some(RIGHTS_NAMESPACE)
+                    && child.tag_name().name() == name
+            });
+            let child = children.next()?;
+            if children.next().is_some() || child.children().any(|nested| nested.is_element()) {
+                return None;
+            }
+            child
+                .text()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+}
+
+fn parse_boolean(value: &str) -> Option<bool> {
+    match value {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+fn decode_rights_target(value: &str) -> (SemanticObjectKind, String, bool) {
+    let Some((native_class, name)) = value.split_once('.') else {
+        return (
+            SemanticObjectKind::Unknown,
+            "unknown-target".to_string(),
+            false,
+        );
+    };
+    if value.split('.').count() != 2 || !is_1c_identifier(name) {
+        return (
+            SemanticObjectKind::Unknown,
+            "unknown-target".to_string(),
+            false,
+        );
+    }
+    match semantic_map::reference_kind(native_class) {
+        Some(kind) => (kind, name.to_string(), true),
+        None => (SemanticObjectKind::Unknown, name.to_string(), false),
+    }
+}
+
+fn native_property(id: &str, value: NativePropertyValue) -> NativeProperty {
+    NativeProperty {
+        canonical_id: id.to_string(),
+        provenance: if matches!(value, NativePropertyValue::Absent) {
+            NativePropertyProvenance::Absent
+        } else if matches!(
+            value,
+            NativePropertyValue::Unresolved | NativePropertyValue::UnresolvedScalar { .. }
+        ) {
+            NativePropertyProvenance::Unresolved
+        } else {
+            NativePropertyProvenance::Explicit
+        },
+        value,
+    }
+}
+
+fn collect_backing_keys(node: &NativeMetadataNode, keys: &mut BTreeSet<String>) {
+    match &node.backing {
+        NativeNodeBacking::None => {}
+        NativeNodeBacking::Rights(content) => {
+            keys.insert(content.relative_key.clone());
+        }
+        NativeNodeBacking::Form(form) => {
+            keys.insert(form.descriptor.relative_key.clone());
+            keys.insert(form.managed_content.relative_key.clone());
+        }
+        NativeNodeBacking::Template(template) => {
+            keys.insert(template.descriptor.relative_key.clone());
+            keys.insert(template.canonical_content.relative_key.clone());
+        }
+    }
+    for child in &node.children {
+        collect_backing_keys(child, keys);
+    }
+}
+
 fn snapshot_file(provider: &PlatformXmlProvider, key: &str) -> Option<std::sync::Arc<[u8]>> {
     provider
         .snapshot_files()
@@ -1060,8 +1597,9 @@ fn direct_template_candidate(key: &str, prefix: &str) -> bool {
 
 fn native_class(profile: &'static MetadataClassProfile) -> NativeMetadataClass {
     NativeMetadataClass {
-        canonical_name: profile.class_name,
+        canonical_name: profile.class_name.clone(),
         role: profile.role,
+        kind: profile.kind,
     }
 }
 
@@ -1259,7 +1797,7 @@ struct DecodedChildren {
 
 struct ParsedDescriptor {
     uuid: Option<Uuid>,
-    template_type: NativePropertyValue,
+    properties: DecodedProperties,
 }
 
 fn corrupted(message: impl Into<String>) -> SourceAdapterError {

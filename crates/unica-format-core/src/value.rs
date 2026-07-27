@@ -247,6 +247,10 @@ pub enum PrimitiveTypeKind {
     String,
     Number,
     Date,
+    Uuid,
+    Opaque,
+    Table,
+    Null,
 }
 
 impl PrimitiveTypeKind {
@@ -256,6 +260,10 @@ impl PrimitiveTypeKind {
             Self::String => "string",
             Self::Number => "number",
             Self::Date => "date",
+            Self::Uuid => "uuid",
+            Self::Opaque => "opaque",
+            Self::Table => "table",
+            Self::Null => "null",
         }
     }
 }
@@ -535,6 +543,43 @@ fn is_reference_target_kind(kind: SemanticObjectKind) -> bool {
             | SemanticObjectKind::ChartOfCalculationTypes
             | SemanticObjectKind::BusinessProcess
             | SemanticObjectKind::Task
+            | SemanticObjectKind::InformationRegister
+    )
+}
+
+fn is_metadata_target_kind(kind: SemanticObjectKind) -> bool {
+    !matches!(
+        kind,
+        SemanticObjectKind::SourceRoot
+            | SemanticObjectKind::Unknown
+            | SemanticObjectKind::HttpServiceUrlTemplate
+            | SemanticObjectKind::HttpServiceMethod
+            | SemanticObjectKind::WebServiceOperation
+            | SemanticObjectKind::WebServiceParameter
+            | SemanticObjectKind::EnumerationValue
+            | SemanticObjectKind::Attribute
+            | SemanticObjectKind::Dimension
+            | SemanticObjectKind::Resource
+            | SemanticObjectKind::TabularSection
+            | SemanticObjectKind::Form
+            | SemanticObjectKind::FormAttribute
+            | SemanticObjectKind::FormCommand
+            | SemanticObjectKind::FormElement
+            | SemanticObjectKind::Template
+            | SemanticObjectKind::SpreadsheetDocumentTemplate
+            | SemanticObjectKind::Command
+            | SemanticObjectKind::AccessPermission
+            | SemanticObjectKind::AccessRestrictionTemplate
+    )
+}
+
+fn is_register_target_kind(kind: SemanticObjectKind) -> bool {
+    matches!(
+        kind,
+        SemanticObjectKind::InformationRegister
+            | SemanticObjectKind::AccumulationRegister
+            | SemanticObjectKind::AccountingRegister
+            | SemanticObjectKind::CalculationRegister
     )
 }
 
@@ -560,8 +605,13 @@ enum TypeVariantValue {
         qualifiers: Option<TypeQualifiers>,
     },
     Reference(SemanticTypeTarget),
+    Object(SemanticTypeTarget),
+    RecordSet(SemanticTypeTarget),
+    Manager(SemanticTypeTarget),
+    Key(SemanticTypeTarget),
     Enumeration(SemanticTypeTarget),
     DefinedType(SemanticTypeTarget),
+    Unknown,
 }
 
 impl TypeVariant {
@@ -583,6 +633,13 @@ impl TypeVariant {
                 | (
                     PrimitiveTypeKind::Date,
                     None | Some(TypeQualifiers::Date(_))
+                )
+                | (
+                    PrimitiveTypeKind::Uuid
+                        | PrimitiveTypeKind::Opaque
+                        | PrimitiveTypeKind::Table
+                        | PrimitiveTypeKind::Null,
+                    None
                 )
         );
         if !compatible {
@@ -618,6 +675,68 @@ impl TypeVariant {
         })
     }
 
+    pub fn object(
+        kind: SemanticObjectKind,
+        name: impl Into<String>,
+    ) -> Result<Self, SemanticValueError> {
+        if !is_metadata_target_kind(kind) {
+            return Err(SemanticValueError::new(
+                "semantic object target kind is not addressable",
+            ));
+        }
+        Ok(Self {
+            value: TypeVariantValue::Object(SemanticTypeTarget::new(kind, name)?),
+        })
+    }
+
+    pub fn record_set(
+        kind: SemanticObjectKind,
+        name: impl Into<String>,
+    ) -> Result<Self, SemanticValueError> {
+        if !is_register_target_kind(kind) {
+            return Err(SemanticValueError::new(
+                "semantic record-set target kind is not a register",
+            ));
+        }
+        Ok(Self {
+            value: TypeVariantValue::RecordSet(SemanticTypeTarget::new(kind, name)?),
+        })
+    }
+
+    pub fn manager(
+        kind: SemanticObjectKind,
+        name: impl Into<String>,
+    ) -> Result<Self, SemanticValueError> {
+        if !is_metadata_target_kind(kind) {
+            return Err(SemanticValueError::new(
+                "semantic manager target kind is not addressable",
+            ));
+        }
+        Ok(Self {
+            value: TypeVariantValue::Manager(SemanticTypeTarget::new(kind, name)?),
+        })
+    }
+
+    pub fn key(
+        kind: SemanticObjectKind,
+        name: impl Into<String>,
+    ) -> Result<Self, SemanticValueError> {
+        if !is_register_target_kind(kind) {
+            return Err(SemanticValueError::new(
+                "semantic key target kind is not a register",
+            ));
+        }
+        Ok(Self {
+            value: TypeVariantValue::Key(SemanticTypeTarget::new(kind, name)?),
+        })
+    }
+
+    pub const fn unknown() -> Self {
+        Self {
+            value: TypeVariantValue::Unknown,
+        }
+    }
+
     pub fn defined_type(name: impl Into<String>) -> Result<Self, SemanticValueError> {
         Ok(Self {
             value: TypeVariantValue::DefinedType(SemanticTypeTarget::new(
@@ -634,6 +753,10 @@ impl TypeVariant {
         }
     }
 
+    pub const fn is_unknown(&self) -> bool {
+        matches!(self.value, TypeVariantValue::Unknown)
+    }
+
     pub fn qualifiers(&self) -> Option<&TypeQualifiers> {
         match &self.value {
             TypeVariantValue::Primitive { qualifiers, .. } => qualifiers.as_ref(),
@@ -644,9 +767,13 @@ impl TypeVariant {
     pub fn target(&self) -> Option<&SemanticTypeTarget> {
         match &self.value {
             TypeVariantValue::Reference(target)
+            | TypeVariantValue::Object(target)
+            | TypeVariantValue::RecordSet(target)
+            | TypeVariantValue::Manager(target)
+            | TypeVariantValue::Key(target)
             | TypeVariantValue::Enumeration(target)
             | TypeVariantValue::DefinedType(target) => Some(target),
-            TypeVariantValue::Primitive { .. } => None,
+            TypeVariantValue::Primitive { .. } | TypeVariantValue::Unknown => None,
         }
     }
 
@@ -657,6 +784,18 @@ impl TypeVariant {
             }
             TypeVariantValue::Reference(target) => {
                 Self::reference(target.kind, target.name.clone()).map(|_| ())
+            }
+            TypeVariantValue::Object(target) => {
+                Self::object(target.kind, target.name.clone()).map(|_| ())
+            }
+            TypeVariantValue::RecordSet(target) => {
+                Self::record_set(target.kind, target.name.clone()).map(|_| ())
+            }
+            TypeVariantValue::Manager(target) => {
+                Self::manager(target.kind, target.name.clone()).map(|_| ())
+            }
+            TypeVariantValue::Key(target) => {
+                Self::key(target.kind, target.name.clone()).map(|_| ())
             }
             TypeVariantValue::Enumeration(target)
                 if target.kind == SemanticObjectKind::Enumeration =>
@@ -671,6 +810,7 @@ impl TypeVariant {
             TypeVariantValue::Enumeration(_) | TypeVariantValue::DefinedType(_) => Err(
                 SemanticValueError::new("semantic type target kind is inconsistent"),
             ),
+            TypeVariantValue::Unknown => Ok(()),
         }
     }
 }
@@ -691,12 +831,25 @@ impl Serialize for TypeVariant {
             Reference {
                 target: &'a SemanticTypeTarget,
             },
+            Object {
+                target: &'a SemanticTypeTarget,
+            },
+            RecordSet {
+                target: &'a SemanticTypeTarget,
+            },
+            Manager {
+                target: &'a SemanticTypeTarget,
+            },
+            Key {
+                target: &'a SemanticTypeTarget,
+            },
             Enumeration {
                 target: &'a SemanticTypeTarget,
             },
             DefinedType {
                 target: &'a SemanticTypeTarget,
             },
+            Unknown,
         }
 
         self.validate().map_err(S::Error::custom)?;
@@ -706,8 +859,13 @@ impl Serialize for TypeVariant {
                 qualifiers: qualifiers.as_ref(),
             },
             TypeVariantValue::Reference(target) => Wire::Reference { target },
+            TypeVariantValue::Object(target) => Wire::Object { target },
+            TypeVariantValue::RecordSet(target) => Wire::RecordSet { target },
+            TypeVariantValue::Manager(target) => Wire::Manager { target },
+            TypeVariantValue::Key(target) => Wire::Key { target },
             TypeVariantValue::Enumeration(target) => Wire::Enumeration { target },
             TypeVariantValue::DefinedType(target) => Wire::DefinedType { target },
+            TypeVariantValue::Unknown => Wire::Unknown,
         }
         .serialize(serializer)
     }
@@ -735,12 +893,25 @@ impl<'de> Deserialize<'de> for TypeVariant {
             Reference {
                 target: TargetWire,
             },
+            Object {
+                target: TargetWire,
+            },
+            RecordSet {
+                target: TargetWire,
+            },
+            Manager {
+                target: TargetWire,
+            },
+            Key {
+                target: TargetWire,
+            },
             Enumeration {
                 target: TargetWire,
             },
             DefinedType {
                 target: TargetWire,
             },
+            Unknown,
         }
 
         fn target_kind<E: serde::de::Error>(target: &TargetWire) -> Result<SemanticObjectKind, E> {
@@ -757,6 +928,16 @@ impl<'de> Deserialize<'de> for TypeVariant {
             Wire::Reference { target } => {
                 Self::reference(target_kind::<D::Error>(&target)?, target.name)
             }
+            Wire::Object { target } => {
+                Self::object(target_kind::<D::Error>(&target)?, target.name)
+            }
+            Wire::RecordSet { target } => {
+                Self::record_set(target_kind::<D::Error>(&target)?, target.name)
+            }
+            Wire::Manager { target } => {
+                Self::manager(target_kind::<D::Error>(&target)?, target.name)
+            }
+            Wire::Key { target } => Self::key(target_kind::<D::Error>(&target)?, target.name),
             Wire::Enumeration { target } => {
                 if target_kind::<D::Error>(&target)? != SemanticObjectKind::Enumeration {
                     return Err(D::Error::custom(
@@ -773,6 +954,7 @@ impl<'de> Deserialize<'de> for TypeVariant {
                 }
                 Self::defined_type(target.name)
             }
+            Wire::Unknown => Ok(Self::unknown()),
         }
         .map_err(D::Error::custom)
     }

@@ -1,0 +1,14 @@
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" version="2.20">
+  <DefinedType><Properties><Name>AllTypes</Name><Type>
+    <v8:Type>xs:string</v8:Type><v8:Type>xs:decimal</v8:Type><v8:Type>xs:dateTime</v8:Type>
+    <v8:Type>v8:UUID</v8:Type><v8:Type>v8:ValueStorage</v8:Type><v8:Type>v8:Null</v8:Type><v8:Type>v8:ValueTable</v8:Type>
+    <v8:Type>cfg:CatalogRef.Products</v8:Type><v8:Type>cfg:DocumentObject.Order</v8:Type>
+    <v8:Type>cfg:InformationRegisterRecordSet.Prices</v8:Type>
+    <v8:Type>cfg:InformationRegisterManager.Prices</v8:Type>
+    <v8:Type>cfg:InformationRegisterRecordKey.Prices</v8:Type>
+    <v8:Type>cfg:EnumRef.Status</v8:Type><v8:Type>cfg:DefinedType.Identifier</v8:Type>
+    <v8:StringQualifiers><v8:Length>40</v8:Length><v8:AllowedLength>Variable</v8:AllowedLength></v8:StringQualifiers>
+    <v8:NumberQualifiers><v8:Digits>15</v8:Digits><v8:FractionDigits>3</v8:FractionDigits><v8:AllowedSign>Nonnegative</v8:AllowedSign></v8:NumberQualifiers>
+    <v8:DateQualifiers><v8:DateFractions>DateTime</v8:DateFractions></v8:DateQualifiers>
+  </Type></Properties></DefinedType>
+</MetaDataObject>

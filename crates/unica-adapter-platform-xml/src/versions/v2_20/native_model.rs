@@ -46,10 +46,11 @@ impl Deref for NativeMetadataChild {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeMetadataClass {
-    pub(crate) canonical_name: &'static str,
+    pub(crate) canonical_name: String,
     pub(crate) role: MetadataClassRole,
+    pub(crate) kind: SemanticObjectKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,6 +58,7 @@ pub(crate) enum NativeNodeBacking {
     None,
     Form(NativeForm),
     Template(NativeTemplate),
+    Rights(NativeContentEvidence),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

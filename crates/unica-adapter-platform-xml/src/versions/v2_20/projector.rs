@@ -26,7 +26,7 @@ use super::{
         NativeNodeState, NativeProperty, NativePropertyValue, NativeScalarType,
         NativeSemanticReference, PlatformXmlNativeSnapshot,
     },
-    schema::{metadata_class_profile, MetadataClassRole},
+    schema::MetadataClassRole,
     semantic_map::{self, NativeValueKind, PropertyMapping},
     support::{EffectiveSupportRule, SupportFacts},
 };
@@ -38,9 +38,7 @@ pub(crate) fn project(
     native: &PlatformXmlNativeSnapshot,
     support: &SupportFacts,
 ) -> Result<NavigationEnvelope, SourceAdapterError> {
-    if super::provider::PlatformXmlProvider::coverage_manifest_json().is_empty() {
-        return Err(ambiguous("Platform XML coverage manifest is empty"));
-    }
+    semantic_map::validate_coverage_registry()?;
     if native.source.adapter_id != PROJECTOR_ID {
         return Err(ambiguous(
             "Platform XML projection requires the exact 2.20 decoder",
@@ -186,9 +184,8 @@ impl<'a> GraphBuilder<'a> {
         for _ in 0..native_node.unmapped_facts {
             self.diagnostics.push(SourceAdapterDiagnostic {
                 code: "unmappedSemanticFact".to_string(),
-                message:
-                    "source contains a relation fact outside the registered semantic vocabulary"
-                        .to_string(),
+                message: "source contains a fact outside the registered semantic vocabulary"
+                    .to_string(),
                 details: Some(serde_json::json!({"objectRef": reference.clone()})),
             });
         }
@@ -415,6 +412,7 @@ impl<'a> GraphBuilder<'a> {
         native: &BTreeMap<String, NativeProperty>,
     ) -> Result<PropertyProjection, SourceAdapterError> {
         let mut projected = BTreeMap::new();
+        let mut unknown_facts = Vec::new();
         let mut unmapped_count = 0usize;
         let mut incomplete = false;
         for (id, native_property) in native {
@@ -429,6 +427,7 @@ impl<'a> GraphBuilder<'a> {
             let Some(mapping) = semantic_map::property_mapping(*kind, id) else {
                 unmapped_count += 1;
                 incomplete = true;
+                unknown_facts.push(readable_unknown_fact(native_property));
                 continue;
             };
             let property = project_property(mapping, native_property)?;
@@ -442,6 +441,24 @@ impl<'a> GraphBuilder<'a> {
                     "multiple Platform XML properties map to one semantic property",
                 ));
             }
+        }
+        if !unknown_facts.is_empty() {
+            if projected.len() >= MAX_NAVIGATION_PROPERTIES_PER_NODE {
+                return Err(resource_limit("semantic node has too many properties"));
+            }
+            reserve(
+                &mut self.output_properties,
+                MAX_NAVIGATION_IDENTITY_ITEMS,
+                "semantic properties",
+            )?;
+            projected.insert(
+                SemanticPropertyId::UNKNOWN_FACTS,
+                SemanticProperty::explicit(
+                    SemanticPropertyId::UNKNOWN_FACTS,
+                    PropertyValue::List(unknown_facts),
+                )?
+                .with_capability(PropertyCapability::ReadOnly)?,
+            );
         }
         if semantic_map::is_field_kind(*kind) {
             let required = projected
@@ -489,6 +506,55 @@ impl<'a> GraphBuilder<'a> {
                 );
             }
         }
+        if *kind == NodeKind::Catalog {
+            let hierarchy_active = matches!(
+                projected
+                    .get(&SemanticPropertyId::CATALOG_HIERARCHICAL)
+                    .and_then(SemanticProperty::value),
+                Some(PropertyValue::Boolean(true))
+            );
+            let level_limit_active = matches!(
+                projected
+                    .get(&SemanticPropertyId::CATALOG_HIERARCHY_LEVEL_LIMITED)
+                    .and_then(SemanticProperty::value),
+                Some(PropertyValue::Boolean(true))
+            );
+            let active_limit = if hierarchy_active && level_limit_active {
+                projected
+                    .get(&SemanticPropertyId::CATALOG_HIERARCHY_LEVEL_COUNT)
+                    .and_then(SemanticProperty::value)
+                    .and_then(|value| match value {
+                        PropertyValue::Integer(value) => Some(*value),
+                        _ => None,
+                    })
+            } else {
+                None
+            };
+            let limit = match active_limit {
+                Some(value) => SemanticProperty::computed(
+                        SemanticPropertyId::CATALOG_HIERARCHY_LEVEL_LIMIT,
+                        PropertyValue::Integer(value),
+                    )?
+                    .with_capability(PropertyCapability::ReadOnly)?,
+                None => {
+                    SemanticProperty::absent(
+                        SemanticPropertyId::CATALOG_HIERARCHY_LEVEL_LIMIT,
+                    )
+                }
+            };
+            if projected.len() >= MAX_NAVIGATION_PROPERTIES_PER_NODE {
+                return Err(resource_limit("semantic node has too many properties"));
+            }
+            reserve(
+                &mut self.output_properties,
+                MAX_NAVIGATION_IDENTITY_ITEMS,
+                "semantic properties",
+            )?;
+            projected.insert(
+                SemanticPropertyId::CATALOG_HIERARCHY_LEVEL_LIMIT,
+                limit,
+            );
+        }
         Ok(PropertyProjection {
             properties: projected,
             unmapped_count,
@@ -534,6 +600,115 @@ impl<'a> GraphBuilder<'a> {
                 )?,
             ] {
                 self.insert_synthetic(projection, property)?;
+            }
+        }
+        if kind == NodeKind::Unknown
+            && !projection
+                .properties
+                .contains_key(&SemanticPropertyId::UNKNOWN_FACTS)
+        {
+            self.insert_synthetic(
+                projection,
+                SemanticProperty::computed(
+                    SemanticPropertyId::UNKNOWN_FACTS,
+                    PropertyValue::List(vec![PropertyValue::Structure(BTreeMap::from([
+                        (
+                            "category".to_string(),
+                            PropertyValue::String("object".to_string()),
+                        ),
+                        (
+                            "value".to_string(),
+                            PropertyValue::String("readable-unknown-object".to_string()),
+                        ),
+                    ]))]),
+                )?,
+            )?;
+        }
+        self.add_backing_properties(kind, native_node, projection)?;
+        Ok(())
+    }
+
+    fn add_backing_properties(
+        &mut self,
+        kind: NodeKind,
+        native_node: &NativeMetadataNode,
+        projection: &mut PropertyProjection,
+    ) -> Result<(), SourceAdapterError> {
+        let Some(mapping) = semantic_map::backing_mapping(kind) else {
+            return Ok(());
+        };
+        let backing_matches_registry = matches!(
+            (mapping.kind, &native_node.backing),
+            (_, NativeNodeBacking::None)
+                | (
+                    semantic_map::BackingKind::Rights,
+                    NativeNodeBacking::Rights(_)
+                )
+                | (
+                    semantic_map::BackingKind::Form,
+                    NativeNodeBacking::Form(_)
+                )
+                | (
+                    semantic_map::BackingKind::Template,
+                    NativeNodeBacking::Template(_)
+                )
+        );
+        if !backing_matches_registry {
+            return Err(ambiguous(
+                "native backing evidence disagrees with the coverage registry",
+            ));
+        }
+        let (descriptor, content) = match &native_node.backing {
+            NativeNodeBacking::None => (None, None),
+            NativeNodeBacking::Rights(content) => (None, Some(content)),
+            NativeNodeBacking::Form(form) => {
+                (Some(&form.descriptor), Some(&form.managed_content))
+            }
+            NativeNodeBacking::Template(template) => {
+                (Some(&template.descriptor), Some(&template.canonical_content))
+            }
+        };
+        if mapping.descriptor {
+            let available = descriptor
+                .is_some_and(|value| value.state == NativeEvidenceState::Validated);
+            self.insert_synthetic(
+                projection,
+                SemanticProperty::computed(
+                    SemanticPropertyId::BACKING_DESCRIPTOR_AVAILABLE,
+                    PropertyValue::Boolean(available),
+                )?,
+            )?;
+            if let Some(uuid) = descriptor
+                .filter(|value| value.state == NativeEvidenceState::Validated)
+                .and_then(|value| value.uuid)
+            {
+                self.insert_synthetic(
+                    projection,
+                    SemanticProperty::explicit(
+                        SemanticPropertyId::BACKING_DESCRIPTOR_UUID,
+                        PropertyValue::Uuid(uuid),
+                    )?,
+                )?;
+            }
+        }
+        if mapping.content {
+            let available =
+                content.is_some_and(|value| value.state == NativeEvidenceState::Validated);
+            self.insert_synthetic(
+                projection,
+                SemanticProperty::computed(
+                    SemanticPropertyId::BACKING_CONTENT_AVAILABLE,
+                    PropertyValue::Boolean(available),
+                )?,
+            )?;
+            if mapping.opaque {
+                self.insert_synthetic(
+                    projection,
+                    SemanticProperty::computed(
+                        SemanticPropertyId::BACKING_CONTENT_OPAQUE,
+                        PropertyValue::Boolean(available),
+                    )?,
+                )?;
             }
         }
         Ok(())
@@ -658,11 +833,7 @@ fn validate_name(name: &str) -> Result<(), SourceAdapterError> {
 }
 
 fn node_kind(node: &NativeMetadataNode) -> Result<NodeKind, SourceAdapterError> {
-    let profile = metadata_class_profile(node.class.canonical_name)
-        .filter(|profile| profile.role == node.class.role)
-        .ok_or_else(|| ambiguous("Platform XML object kind has no registered semantic mapping"))?;
-    let mut kind = semantic_map::object_kind(profile)
-        .ok_or_else(|| ambiguous("Platform XML object kind has no registered semantic mapping"))?;
+    let mut kind = node.class.kind;
     if kind == NodeKind::Template
         && template_type(node).as_deref() == Some("SpreadsheetDocument")
     {
@@ -704,13 +875,41 @@ fn node_coverage(node: &NativeMetadataNode, snapshot_coverage: CoverageState) ->
     if !matches!(snapshot_coverage, CoverageState::Complete) {
         return CoverageState::Partial;
     }
-    if matches!(node.class.role, MetadataClassRole::Form) {
+    if node.class.role == MetadataClassRole::Unknown
+        && semantic_map::is_intentionally_partial(node.class.kind, "unknownSemantic")
+    {
+        return CoverageState::Partial;
+    }
+    if semantic_map::is_intentionally_partial(node.class.kind, "opaqueContent")
+        && matches!(
+            &node.backing,
+            NativeNodeBacking::Form(_) | NativeNodeBacking::Template(_)
+        )
+    {
+        return CoverageState::Partial;
+    }
+    if semantic_map::is_intentionally_partial(node.class.kind, "unknownValueVariant")
+        && node.properties.values().any(|property| {
+            matches!(
+                &property.value,
+                NativePropertyValue::TypeSet(value)
+                    if value.variants().iter().any(|variant| variant.is_unknown())
+            )
+        })
+    {
         return CoverageState::Partial;
     }
     match &node.backing {
+        NativeNodeBacking::Rights(content)
+            if !matches!(content.state, NativeEvidenceState::Validated) =>
+        {
+            CoverageState::Partial
+        }
         NativeNodeBacking::Form(form)
             if !matches!(form.descriptor.state, NativeEvidenceState::Validated)
-                || !matches!(form.managed_content.state, NativeEvidenceState::Validated) =>
+                || !matches!(form.managed_content.state, NativeEvidenceState::Validated)
+                || semantic_map::backing_mapping(node.class.kind)
+                    .is_some_and(|mapping| mapping.opaque) =>
         {
             CoverageState::Partial
         }
@@ -719,7 +918,9 @@ fn node_coverage(node: &NativeMetadataNode, snapshot_coverage: CoverageState) ->
                 || !matches!(
                     template.canonical_content.state,
                     NativeEvidenceState::Validated
-                ) =>
+                )
+                || semantic_map::backing_mapping(node.class.kind)
+                    .is_some_and(|mapping| mapping.opaque) =>
         {
             CoverageState::Partial
         }
@@ -871,8 +1072,44 @@ struct PropertyProjection {
     incomplete: bool,
 }
 
+fn readable_unknown_fact(property: &NativeProperty) -> PropertyValue {
+    let value = match &property.value {
+        NativePropertyValue::Scalar(value)
+        | NativePropertyValue::AnnotatedScalar { value, .. } => {
+            PropertyValue::String(value.clone())
+        }
+        NativePropertyValue::TypeSet(value) => PropertyValue::TypeSet(value.clone()),
+        NativePropertyValue::LocalizedString(value) => {
+            PropertyValue::LocalizedString(value.clone())
+        }
+        NativePropertyValue::StringList(values) => PropertyValue::List(
+            values
+                .iter()
+                .cloned()
+                .map(PropertyValue::String)
+                .collect(),
+        ),
+        NativePropertyValue::Null => PropertyValue::Null,
+        NativePropertyValue::Absent => PropertyValue::Unknown {
+            summary: "absent".to_string(),
+        },
+        NativePropertyValue::Unresolved
+        | NativePropertyValue::UnresolvedScalar { .. }
+        | NativePropertyValue::Structured => PropertyValue::Unknown {
+            summary: "readable-unresolved-value".to_string(),
+        },
+    };
+    PropertyValue::Structure(BTreeMap::from([
+        (
+            "category".to_string(),
+            PropertyValue::String("property".to_string()),
+        ),
+        ("value".to_string(), value),
+    ]))
+}
+
 fn project_property(
-    mapping: PropertyMapping,
+    mapping: &PropertyMapping,
     property: &NativeProperty,
 ) -> Result<SemanticProperty, SourceAdapterError> {
     let semantic_id = mapping.semantic_id;
@@ -916,14 +1153,14 @@ fn project_property(
 }
 
 fn scalar_property(
-    mapping: PropertyMapping,
+    mapping: &PropertyMapping,
     value: &str,
     type_annotation: Option<NativeScalarType>,
 ) -> Result<SemanticProperty, SourceAdapterError> {
     let semantic_id = mapping.semantic_id;
     let definition = crate::domain::navigation::property_definition(semantic_id);
     if definition.allowed_types() == [PropertyType::Enum] {
-        return Ok(semantic_enum_value(value)
+        return Ok(semantic_map::enum_value(value)
             .map(PropertyValue::EnumSymbol)
             .map(|value| SemanticProperty::explicit(semantic_id, value))
             .transpose()?
@@ -978,55 +1215,6 @@ fn scalar_property(
             .unwrap_or_else(|_| SemanticProperty::unresolved(semantic_id)))
     } else {
         Ok(SemanticProperty::unresolved(semantic_id))
-    }
-}
-
-fn semantic_enum_value(value: &str) -> Option<crate::domain::navigation::SemanticEnumValue> {
-    use crate::domain::navigation::SemanticEnumValue;
-
-    match value {
-        "String" | "string" => Some(SemanticEnumValue::STRING),
-        "Number" | "number" => Some(SemanticEnumValue::NUMBER),
-        "Nonperiodical" | "nonperiodical" => Some(SemanticEnumValue::NONPERIODICAL),
-        "Second" | "second" => Some(SemanticEnumValue::SECOND),
-        "Day" | "day" => Some(SemanticEnumValue::DAY),
-        "Month" | "month" => Some(SemanticEnumValue::MONTH),
-        "Quarter" | "quarter" => Some(SemanticEnumValue::QUARTER),
-        "Year" | "year" => Some(SemanticEnumValue::YEAR),
-        "RecorderPosition" | "recorderPosition" => Some(SemanticEnumValue::RECORDER_POSITION),
-        "Allow" | "allow" => Some(SemanticEnumValue::ALLOW),
-        "Deny" | "deny" => Some(SemanticEnumValue::DENY),
-        "HierarchyOfItems" | "hierarchyOfItems" => Some(SemanticEnumValue::HIERARCHY_OF_ITEMS),
-        "HierarchyOfGroupsAndItems" | "hierarchyOfGroupsAndItems" => {
-            Some(SemanticEnumValue::HIERARCHY_OF_GROUPS_AND_ITEMS)
-        }
-        "HierarchyItems" => Some(SemanticEnumValue::HIERARCHY_OF_ITEMS),
-        "HierarchyFoldersAndItems" => {
-            Some(SemanticEnumValue::HIERARCHY_OF_GROUPS_AND_ITEMS)
-        }
-        "Balance" | "balance" => Some(SemanticEnumValue::BALANCE),
-        "Balances" => Some(SemanticEnumValue::BALANCE),
-        "Turnovers" | "turnovers" => Some(SemanticEnumValue::TURNOVERS),
-        "Independent" | "independent" => Some(SemanticEnumValue::INDEPENDENT),
-        "RecorderSubordinate" | "recorderSubordinate" => {
-            Some(SemanticEnumValue::RECORDER_SUBORDINATE)
-        }
-        "DontCheck" | "dontCheck" => Some(SemanticEnumValue::DONT_CHECK),
-        "ShowError" | "showError" => Some(SemanticEnumValue::SHOW_ERROR),
-        "DontIndex" | "dontIndex" => Some(SemanticEnumValue::DONT_INDEX),
-        "Index" | "index" => Some(SemanticEnumValue::INDEX),
-        "IndexWithAdditionalOrder" | "indexWithAdditionalOrder" => {
-            Some(SemanticEnumValue::INDEX_WITH_ADDITIONAL_ORDER)
-        }
-        "Use" | "use" => Some(SemanticEnumValue::USE),
-        "DontUse" | "dontUse" => Some(SemanticEnumValue::DONT_USE),
-        "ForItem" | "forItem" => Some(SemanticEnumValue::FOR_ITEM),
-        "DuringRequest" | "duringRequest" => Some(SemanticEnumValue::DURING_REQUEST),
-        "DuringSession" | "duringSession" => Some(SemanticEnumValue::DURING_SESSION),
-        "In" | "in" => Some(SemanticEnumValue::IN),
-        "Out" | "out" => Some(SemanticEnumValue::OUT),
-        "InOut" | "inOut" => Some(SemanticEnumValue::IN_OUT),
-        _ => None,
     }
 }
 

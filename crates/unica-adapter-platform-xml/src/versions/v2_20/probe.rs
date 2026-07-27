@@ -4,6 +4,7 @@ use uuid::Uuid;
 
 use super::{
     provider::PlatformXmlProvider,
+    semantic_map::unknown_metadata_class_profile,
     schema::{
         child_metadata_class_profile, metadata_class_profile, MetadataClassProfile,
         MetadataClassRole, METADATA_NAMESPACE_2_20, ROOT_STRUCTURAL_CHILDREN,
@@ -105,10 +106,15 @@ impl PlatformXmlProbe {
             ));
         }
         let class_name = class.tag_name().name();
-        let profile = metadata_class_profile(class_name)
-            .ok_or_else(|| unsupported("Platform XML metadata class is not supported"))?;
+        let profile =
+            metadata_class_profile(class_name).unwrap_or_else(unknown_metadata_class_profile);
+        let class_label = if profile == unknown_metadata_class_profile() {
+            "unknown"
+        } else {
+            class_name
+        };
         let mut detected_features = BTreeSet::new();
-        detected_features.insert(format!("metadata-class:{class_name}"));
+        detected_features.insert(format!("metadata-class:{class_label}"));
         inspect_structural_features(class, profile, true, &mut detected_features)?;
         let _uuid = match class.attribute("uuid") {
             Some(raw) => Some(
@@ -126,7 +132,7 @@ impl PlatformXmlProbe {
 
         let mut probe_evidence = vec![
             "platform-xml:metadata-namespace".to_string(),
-            format!("platform-xml:metadata-class={class_name}"),
+            format!("platform-xml:metadata-class={class_label}"),
             format!("platform-xml:format-version={}", version.trim()),
         ];
         probe_evidence.extend(
@@ -180,13 +186,13 @@ fn inspect_child_objects(
         let child_profile = child_metadata_class_profile(owner_profile, name).ok_or_else(|| {
             unsupported("Platform XML child objects contain an unsupported structural feature")
         })?;
-        if child_profile.class_name != name {
-            return Err(unsupported(
-                "Platform XML child objects contain an unsupported structural feature",
-            ));
-        }
+        let child_label = if child_profile == unknown_metadata_class_profile() {
+            "unknown"
+        } else {
+            name
+        };
         features.insert(format!(
-            "structural:{}:{name}",
+            "structural:{}:{child_label}",
             child_object_scope(owner_profile)
         ));
         inspect_structural_features(child, child_profile, false, features)?;

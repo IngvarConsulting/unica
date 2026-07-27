@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Configuration uuid="00000000-0000-0000-0000-000000000001">
+    <Properties><Name>CorpusConfiguration</Name></Properties>
+    <ChildObjects>
+      <Language>CorpusLanguage</Language><Subsystem>CorpusSubsystem</Subsystem>
+      <StyleItem>CorpusStyleItem</StyleItem><Style>CorpusStyle</Style>
+      <CommonPicture>CorpusPicture</CommonPicture><SessionParameter>CorpusSessionParameter</SessionParameter>
+      <Role>CorpusRole</Role><CommonTemplate>CorpusCommonTemplate</CommonTemplate>
+      <FilterCriterion>CorpusFilterCriterion</FilterCriterion><CommonModule>CorpusCommonModule</CommonModule>
+      <Bot>CorpusBot</Bot><CommonAttribute>CorpusCommonAttribute</CommonAttribute>
+      <ExchangePlan>CorpusExchangePlan</ExchangePlan><XDTOPackage>CorpusXdtoPackage</XDTOPackage>
+      <WebService>CorpusWebService</WebService><HTTPService>CorpusHttpService</HTTPService>
+      <WSReference>CorpusWebServiceReference</WSReference><EventSubscription>CorpusEventSubscription</EventSubscription>
+      <ScheduledJob>CorpusScheduledJob</ScheduledJob><SettingsStorage>CorpusSettingsStorage</SettingsStorage>
+      <FunctionalOption>CorpusFunctionalOption</FunctionalOption>
+      <FunctionalOptionsParameter>CorpusFunctionalOptionsParameter</FunctionalOptionsParameter>
+      <DefinedType>CorpusDefinedType</DefinedType><CommonCommand>CorpusCommonCommand</CommonCommand>
+      <CommandGroup>CorpusCommandGroup</CommandGroup><Constant>CorpusConstant</Constant>
+      <CommonForm>CorpusCommonForm</CommonForm><Catalog>CorpusCatalog</Catalog>
+      <Document>CorpusDocument</Document><DocumentNumerator>CorpusDocumentNumerator</DocumentNumerator>
+      <Sequence>CorpusSequence</Sequence><DocumentJournal>CorpusDocumentJournal</DocumentJournal>
+      <Enum>CorpusEnumeration</Enum><Report>CorpusReport</Report><DataProcessor>CorpusDataProcessor</DataProcessor>
+      <InformationRegister>CorpusInformationRegister</InformationRegister>
+      <AccumulationRegister>CorpusAccumulationRegister</AccumulationRegister>
+      <ChartOfCharacteristicTypes>CorpusChartOfCharacteristicTypes</ChartOfCharacteristicTypes>
+      <ChartOfAccounts>CorpusChartOfAccounts</ChartOfAccounts>
+      <AccountingRegister>CorpusAccountingRegister</AccountingRegister>
+      <ChartOfCalculationTypes>CorpusChartOfCalculationTypes</ChartOfCalculationTypes>
+      <CalculationRegister>CorpusCalculationRegister</CalculationRegister>
+      <BusinessProcess>CorpusBusinessProcess</BusinessProcess><Task>CorpusTask</Task>
+      <IntegrationService>CorpusIntegrationService</IntegrationService>
+    </ChildObjects>
+  </Configuration>
+</MetaDataObject>

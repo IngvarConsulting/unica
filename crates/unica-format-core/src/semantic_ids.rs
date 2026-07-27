@@ -94,7 +94,10 @@ semantic_id_registry!(
         DOCUMENT_REAL_TIME_POSTING_MODE => "document.realTimePosting.mode",
         DOCUMENT_REGISTER_RECORDS_DELETION_MODE => "document.registerRecordsDeletion.mode",
         DOCUMENT_REGISTER_RECORDS_WRITING_ON_POST_MODE => "document.registerRecordsWritingOnPost.mode",
+        CATALOG_HIERARCHICAL => "catalog.hierarchy.enabled",
         CATALOG_HIERARCHY_TYPE => "catalog.hierarchy.type",
+        CATALOG_HIERARCHY_LEVEL_LIMITED => "catalog.hierarchy.levelLimit.enabled",
+        CATALOG_HIERARCHY_LEVEL_COUNT => "catalog.hierarchy.levelCount",
         CATALOG_HIERARCHY_LEVEL_LIMIT => "catalog.hierarchy.levelLimit",
         CATALOG_CODE_LENGTH => "catalog.code.length",
         CATALOG_DESCRIPTION_LENGTH => "catalog.description.length",
@@ -160,6 +163,17 @@ semantic_id_registry!(
         COMMAND_REPRESENTATION => "command.representation",
         COMMAND_USE_STANDARD => "command.useStandard",
         HELP_INCLUDE_IN_CONTENTS => "help.includeInContents",
+        ACCESS_NEW_OBJECTS_DEFAULT => "access.newObjects.defaultAllowed",
+        ACCESS_ATTRIBUTES_DEFAULT => "access.attributes.defaultAllowed",
+        ACCESS_CHILD_OBJECTS_INDEPENDENT => "access.childObjects.independent",
+        ACCESS_PERMISSION_NAME => "access.permission.name",
+        ACCESS_PERMISSION_ALLOWED => "access.permission.allowed",
+        ACCESS_RESTRICTION_CONDITIONS => "access.restriction.conditions",
+        BACKING_DESCRIPTOR_AVAILABLE => "backing.descriptor.available",
+        BACKING_DESCRIPTOR_UUID => "backing.descriptor.uuid",
+        BACKING_CONTENT_AVAILABLE => "backing.content.available",
+        BACKING_CONTENT_OPAQUE => "backing.content.opaque",
+        UNKNOWN_FACTS => "unknown.facts",
     }
 );
 
@@ -188,6 +202,10 @@ semantic_id_registry!(
         OPERATIONS => "operations",
         PARAMETERS => "parameters",
         REFERENCES => "references",
+        ACCESS_PERMISSIONS => "accessPermissions",
+        ACCESS_TARGET => "accessTarget",
+        RESTRICTION_TEMPLATES => "restrictionTemplates",
+        UNKNOWN => "unknown",
     }
 );
 
@@ -212,6 +230,10 @@ impl SemanticRelationId {
     pub const Operations: Self = Self::OPERATIONS;
     pub const Parameters: Self = Self::PARAMETERS;
     pub const References: Self = Self::REFERENCES;
+    pub const AccessPermissions: Self = Self::ACCESS_PERMISSIONS;
+    pub const AccessTarget: Self = Self::ACCESS_TARGET;
+    pub const RestrictionTemplates: Self = Self::RESTRICTION_TEMPLATES;
+    pub const Unknown: Self = Self::UNKNOWN;
 }
 
 semantic_id_registry!(
@@ -231,6 +253,9 @@ semantic_id_registry!(
         SERVICE => "service",
         OPERATION => "operation",
         STRUCTURE => "structure",
+        ACCESS => "access",
+        BACKING => "backing",
+        UNKNOWN => "unknown",
     }
 );
 
@@ -238,6 +263,7 @@ semantic_id_registry!(
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SemanticObjectKind {
     SourceRoot,
+    Unknown,
     Configuration,
     Language,
     Subsystem,
@@ -300,11 +326,14 @@ pub enum SemanticObjectKind {
     Template,
     SpreadsheetDocumentTemplate,
     Command,
+    AccessPermission,
+    AccessRestrictionTemplate,
 }
 
 impl SemanticObjectKind {
     pub const ALL: &'static [Self] = &[
         Self::SourceRoot,
+        Self::Unknown,
         Self::Configuration,
         Self::Language,
         Self::Subsystem,
@@ -367,11 +396,14 @@ impl SemanticObjectKind {
         Self::Template,
         Self::SpreadsheetDocumentTemplate,
         Self::Command,
+        Self::AccessPermission,
+        Self::AccessRestrictionTemplate,
     ];
 
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::SourceRoot => "sourceRoot",
+            Self::Unknown => "unknown",
             Self::Configuration => "configuration",
             Self::Language => "language",
             Self::Subsystem => "subsystem",
@@ -434,6 +466,8 @@ impl SemanticObjectKind {
             Self::Template => "template",
             Self::SpreadsheetDocumentTemplate => "spreadsheetDocumentTemplate",
             Self::Command => "command",
+            Self::AccessPermission => "accessPermission",
+            Self::AccessRestrictionTemplate => "accessRestrictionTemplate",
         }
     }
 
@@ -493,5 +527,14 @@ semantic_id_registry!(
         IN => "in",
         OUT => "out",
         IN_OUT => "inOut",
+        MANAGED => "managed",
+        ORDINARY => "ordinary",
+        DATA_COMPOSITION_SCHEMA => "dataCompositionSchema",
+        SPREADSHEET_DOCUMENT => "spreadsheetDocument",
+        BINARY_DATA => "binaryData",
+        TEXT_DOCUMENT => "textDocument",
+        HTML_DOCUMENT => "htmlDocument",
+        GEOGRAPHICAL_SCHEMA => "geographicalSchema",
+        GRAPHICAL_SCHEMA => "graphicalSchema",
     }
 );

@@ -1,0 +1,43 @@
+{
+  "allKinds": [
+    ["configuration", "CorpusConfiguration"], ["language", "CorpusLanguage"],
+    ["subsystem", "CorpusSubsystem"], ["styleItem", "CorpusStyleItem"],
+    ["style", "CorpusStyle"], ["commonPicture", "CorpusPicture"],
+    ["sessionParameter", "CorpusSessionParameter"], ["role", "CorpusRole"],
+    ["commonTemplate", "CorpusCommonTemplate"], ["filterCriterion", "CorpusFilterCriterion"],
+    ["commonModule", "CorpusCommonModule"], ["bot", "CorpusBot"],
+    ["commonAttribute", "CorpusCommonAttribute"], ["exchangePlan", "CorpusExchangePlan"],
+    ["xdtoPackage", "CorpusXdtoPackage"], ["webService", "CorpusWebService"],
+    ["httpService", "CorpusHttpService"], ["webServiceReference", "CorpusWebServiceReference"],
+    ["eventSubscription", "CorpusEventSubscription"], ["scheduledJob", "CorpusScheduledJob"],
+    ["settingsStorage", "CorpusSettingsStorage"], ["functionalOption", "CorpusFunctionalOption"],
+    ["functionalOptionsParameter", "CorpusFunctionalOptionsParameter"], ["definedType", "CorpusDefinedType"],
+    ["commonCommand", "CorpusCommonCommand"], ["commandGroup", "CorpusCommandGroup"],
+    ["constant", "CorpusConstant"], ["commonForm", "CorpusCommonForm"],
+    ["catalog", "CorpusCatalog"], ["document", "CorpusDocument"],
+    ["documentNumerator", "CorpusDocumentNumerator"], ["sequence", "CorpusSequence"],
+    ["documentJournal", "CorpusDocumentJournal"], ["enumeration", "CorpusEnumeration"],
+    ["report", "CorpusReport"], ["dataProcessor", "CorpusDataProcessor"],
+    ["informationRegister", "CorpusInformationRegister"], ["accumulationRegister", "CorpusAccumulationRegister"],
+    ["chartOfCharacteristicTypes", "CorpusChartOfCharacteristicTypes"], ["chartOfAccounts", "CorpusChartOfAccounts"],
+    ["accountingRegister", "CorpusAccountingRegister"], ["chartOfCalculationTypes", "CorpusChartOfCalculationTypes"],
+    ["calculationRegister", "CorpusCalculationRegister"], ["businessProcess", "CorpusBusinessProcess"],
+    ["task", "CorpusTask"], ["integrationService", "CorpusIntegrationService"]
+  ],
+  "realFixtureNodes": [
+    ["Catalogs/Валюты.xml", "catalog", "Валюты"],
+    ["CommonModules/GoogleПереводчик.xml", "commonModule", "GoogleПереводчик"],
+    ["Documents/АктОбУничтоженииПерсональныхДанных.xml", "document", "АктОбУничтоженииПерсональныхДанных"],
+    ["Enums/ВажностьПроблемыУчета.xml", "enumeration", "ВажностьПроблемыУчета"],
+    ["InformationRegisters/АдминистративнаяИерархия.xml", "informationRegister", "АдминистративнаяИерархия"],
+    ["Languages/Русский.xml", "language", "Русский"],
+    ["Reports/АнализВерсийОбъектов.xml", "report", "АнализВерсийОбъектов"]
+  ],
+  "currencyFacts": [
+    "property:catalog:Валюты:catalog.hierarchy.enabled=false",
+    "property:catalog:Валюты:catalog.hierarchy.type=hierarchyOfGroupsAndItems",
+    "property:catalog:Валюты:catalog.hierarchy.levelLimit.enabled=false",
+    "property:catalog:Валюты:catalog.hierarchy.levelCount=2",
+    "property:catalog:Валюты:catalog.hierarchy.levelLimit=absent"
+  ]
+}

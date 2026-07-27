@@ -56,7 +56,10 @@ const POSTING: &[SemanticFacetMember] = &[
     SemanticFacetMember::Relation(SemanticRelationId::BASED_ON),
 ];
 const HIERARCHY: &[SemanticFacetMember] = &[
+    SemanticFacetMember::Property(SemanticPropertyId::CATALOG_HIERARCHICAL),
     SemanticFacetMember::Property(SemanticPropertyId::CATALOG_HIERARCHY_TYPE),
+    SemanticFacetMember::Property(SemanticPropertyId::CATALOG_HIERARCHY_LEVEL_LIMITED),
+    SemanticFacetMember::Property(SemanticPropertyId::CATALOG_HIERARCHY_LEVEL_COUNT),
     SemanticFacetMember::Property(SemanticPropertyId::CATALOG_HIERARCHY_LEVEL_LIMIT),
     SemanticFacetMember::Property(SemanticPropertyId::CATALOG_CODE_LENGTH),
     SemanticFacetMember::Property(SemanticPropertyId::CATALOG_DESCRIPTION_LENGTH),
@@ -139,6 +142,27 @@ const STRUCTURE: &[SemanticFacetMember] = &[
     SemanticFacetMember::Relation(SemanticRelationId::TEMPLATES),
     SemanticFacetMember::Relation(SemanticRelationId::ENUM_VALUES),
 ];
+const ACCESS: &[SemanticFacetMember] = &[
+    SemanticFacetMember::Property(SemanticPropertyId::ACCESS_NEW_OBJECTS_DEFAULT),
+    SemanticFacetMember::Property(SemanticPropertyId::ACCESS_ATTRIBUTES_DEFAULT),
+    SemanticFacetMember::Property(SemanticPropertyId::ACCESS_CHILD_OBJECTS_INDEPENDENT),
+    SemanticFacetMember::Property(SemanticPropertyId::ACCESS_PERMISSION_NAME),
+    SemanticFacetMember::Property(SemanticPropertyId::ACCESS_PERMISSION_ALLOWED),
+    SemanticFacetMember::Property(SemanticPropertyId::ACCESS_RESTRICTION_CONDITIONS),
+    SemanticFacetMember::Relation(SemanticRelationId::ACCESS_PERMISSIONS),
+    SemanticFacetMember::Relation(SemanticRelationId::ACCESS_TARGET),
+    SemanticFacetMember::Relation(SemanticRelationId::RESTRICTION_TEMPLATES),
+];
+const BACKING: &[SemanticFacetMember] = &[
+    SemanticFacetMember::Property(SemanticPropertyId::BACKING_DESCRIPTOR_AVAILABLE),
+    SemanticFacetMember::Property(SemanticPropertyId::BACKING_DESCRIPTOR_UUID),
+    SemanticFacetMember::Property(SemanticPropertyId::BACKING_CONTENT_AVAILABLE),
+    SemanticFacetMember::Property(SemanticPropertyId::BACKING_CONTENT_OPAQUE),
+];
+const UNKNOWN: &[SemanticFacetMember] = &[
+    SemanticFacetMember::Property(SemanticPropertyId::UNKNOWN_FACTS),
+    SemanticFacetMember::Relation(SemanticRelationId::UNKNOWN),
+];
 
 pub const SEMANTIC_FACET_REGISTRY: &[SemanticFacetDefinition] = &[
     SemanticFacetDefinition {
@@ -196,6 +220,18 @@ pub const SEMANTIC_FACET_REGISTRY: &[SemanticFacetDefinition] = &[
     SemanticFacetDefinition {
         id: SemanticFacetId::STRUCTURE,
         members: STRUCTURE,
+    },
+    SemanticFacetDefinition {
+        id: SemanticFacetId::ACCESS,
+        members: ACCESS,
+    },
+    SemanticFacetDefinition {
+        id: SemanticFacetId::BACKING,
+        members: BACKING,
+    },
+    SemanticFacetDefinition {
+        id: SemanticFacetId::UNKNOWN,
+        members: UNKNOWN,
     },
 ];
 

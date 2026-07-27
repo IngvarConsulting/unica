@@ -1,211 +1,23 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ChildObjectsVocabulary {
-    None,
-    ConfigurationTopLevel,
-    Object,
-    TabularSection,
-    HttpServiceUrlTemplate,
-    WebServiceOperation,
-}
+pub(crate) use super::semantic_map::{
+    ChildObjectsVocabulary, MetadataClassProfile, MetadataClassRole,
+};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MetadataClassRole {
-    Configuration,
-    TopLevelObject,
-    Attribute,
-    Dimension,
-    Resource,
-    EnumerationValue,
-    TabularSection,
-    Form,
-    Template,
-    Command,
-    Column,
-    HttpServiceUrlTemplate,
-    HttpServiceMethod,
-    WebServiceOperation,
-    WebServiceParameter,
-    Unsupported,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct MetadataClassProfile {
-    pub(crate) class_name: &'static str,
-    pub(crate) role: MetadataClassRole,
-    pub(crate) child_objects: ChildObjectsVocabulary,
-}
-
-pub(crate) const ROOT_STRUCTURAL_CHILDREN: &[&str] = &["Properties", "ChildObjects"];
-
-macro_rules! platform_xml_schema_registry {
-    (top_level: [$($top_level:literal),+ $(,)?]) => {
-        pub(crate) const LEGACY_TOP_LEVEL_METADATA_CLASSES: &[&str] = &[$($top_level),+];
-
-        pub(crate) const METADATA_CLASS_PROFILES: &[MetadataClassProfile] = &[
-            MetadataClassProfile {
-                class_name: "Configuration",
-                role: MetadataClassRole::Configuration,
-                child_objects: ChildObjectsVocabulary::ConfigurationTopLevel,
-            },
-            $(MetadataClassProfile {
-                class_name: $top_level,
-                role: MetadataClassRole::TopLevelObject,
-                child_objects: ChildObjectsVocabulary::Object,
-            },)+
-            MetadataClassProfile {
-                class_name: "Form",
-                role: MetadataClassRole::Form,
-                child_objects: ChildObjectsVocabulary::None,
-            },
-            MetadataClassProfile {
-                class_name: "Template",
-                role: MetadataClassRole::Template,
-                child_objects: ChildObjectsVocabulary::None,
-            },
-            MetadataClassProfile {
-                class_name: "Attribute",
-                role: MetadataClassRole::Attribute,
-                child_objects: ChildObjectsVocabulary::None,
-            },
-            MetadataClassProfile {
-                class_name: "TabularSection",
-                role: MetadataClassRole::TabularSection,
-                child_objects: ChildObjectsVocabulary::TabularSection,
-            },
-            MetadataClassProfile {
-                class_name: "Command",
-                role: MetadataClassRole::Command,
-                child_objects: ChildObjectsVocabulary::None,
-            },
-            MetadataClassProfile {
-                class_name: "Dimension",
-                role: MetadataClassRole::Dimension,
-                child_objects: ChildObjectsVocabulary::None,
-            },
-            MetadataClassProfile {
-                class_name: "Resource",
-                role: MetadataClassRole::Resource,
-                child_objects: ChildObjectsVocabulary::None,
-            },
-            MetadataClassProfile {
-                class_name: "EnumValue",
-                role: MetadataClassRole::EnumerationValue,
-                child_objects: ChildObjectsVocabulary::None,
-            },
-            MetadataClassProfile {
-                class_name: "URLTemplate",
-                role: MetadataClassRole::HttpServiceUrlTemplate,
-                child_objects: ChildObjectsVocabulary::HttpServiceUrlTemplate,
-            },
-            MetadataClassProfile {
-                class_name: "Method",
-                role: MetadataClassRole::HttpServiceMethod,
-                child_objects: ChildObjectsVocabulary::None,
-            },
-            MetadataClassProfile {
-                class_name: "Operation",
-                role: MetadataClassRole::WebServiceOperation,
-                child_objects: ChildObjectsVocabulary::WebServiceOperation,
-            },
-            MetadataClassProfile {
-                class_name: "Parameter",
-                role: MetadataClassRole::WebServiceParameter,
-                child_objects: ChildObjectsVocabulary::None,
-            },
-            MetadataClassProfile {
-                class_name: "Column",
-                role: MetadataClassRole::Column,
-                child_objects: ChildObjectsVocabulary::None,
-            },
-            MetadataClassProfile {
-                class_name: "AccountingFlag",
-                role: MetadataClassRole::Unsupported,
-                child_objects: ChildObjectsVocabulary::None,
-            },
-            MetadataClassProfile {
-                class_name: "ExtDimensionAccountingFlag",
-                role: MetadataClassRole::Unsupported,
-                child_objects: ChildObjectsVocabulary::None,
-            },
-            MetadataClassProfile {
-                class_name: "AddressingAttribute",
-                role: MetadataClassRole::Unsupported,
-                child_objects: ChildObjectsVocabulary::None,
-            },
-        ];
-    };
-}
-
-platform_xml_schema_registry! {
-    top_level: [
-        "Language", "Subsystem", "StyleItem", "Style", "CommonPicture", "SessionParameter",
-        "Role", "CommonTemplate", "FilterCriterion", "CommonModule", "Bot", "CommonAttribute",
-        "ExchangePlan", "XDTOPackage", "WebService", "HTTPService", "WSReference",
-        "EventSubscription", "ScheduledJob", "SettingsStorage", "FunctionalOption",
-        "FunctionalOptionsParameter", "DefinedType", "CommonCommand", "CommandGroup", "Constant",
-        "CommonForm", "Catalog", "Document", "DocumentNumerator", "Sequence", "DocumentJournal",
-        "Enum", "Report", "DataProcessor", "InformationRegister", "AccumulationRegister",
-        "ChartOfCharacteristicTypes", "ChartOfAccounts", "AccountingRegister",
-        "ChartOfCalculationTypes", "CalculationRegister", "BusinessProcess", "Task",
-        "IntegrationService"
-    ]
-}
+pub(crate) const ROOT_STRUCTURAL_CHILDREN: &[&str] =
+    &["InternalInfo", "Properties", "ChildObjects"];
 
 pub(crate) fn metadata_class_profile(class_name: &str) -> Option<&'static MetadataClassProfile> {
-    METADATA_CLASS_PROFILES
-        .iter()
-        .find(|profile| profile.class_name == class_name)
+    super::semantic_map::metadata_class_profile(class_name)
+}
+
+pub(crate) fn legacy_top_level_metadata_classes() -> &'static [&'static str] {
+    super::semantic_map::legacy_top_level_metadata_classes()
 }
 
 pub(crate) fn child_metadata_class_profile(
     owner: &MetadataClassProfile,
     child_class_name: &str,
 ) -> Option<&'static MetadataClassProfile> {
-    let child = metadata_class_profile(child_class_name)?;
-    let allowed = match owner.child_objects {
-        ChildObjectsVocabulary::None => false,
-        ChildObjectsVocabulary::ConfigurationTopLevel => {
-            child.role == MetadataClassRole::TopLevelObject
-        }
-        ChildObjectsVocabulary::Object => match child.role {
-            MetadataClassRole::Dimension | MetadataClassRole::Resource => {
-                owner.class_name.ends_with("Register")
-            }
-            MetadataClassRole::EnumerationValue => owner.class_name == "Enum",
-            MetadataClassRole::HttpServiceUrlTemplate => owner.class_name == "HTTPService",
-            MetadataClassRole::WebServiceOperation => owner.class_name == "WebService",
-            MetadataClassRole::Column => owner.class_name == "DocumentJournal",
-            MetadataClassRole::Attribute
-            | MetadataClassRole::TabularSection
-            | MetadataClassRole::Form
-            | MetadataClassRole::Template
-            | MetadataClassRole::Command
-            | MetadataClassRole::Unsupported => true,
-            _ => false,
-        },
-        ChildObjectsVocabulary::TabularSection => child.role == MetadataClassRole::Attribute,
-        ChildObjectsVocabulary::HttpServiceUrlTemplate => {
-            child.role == MetadataClassRole::HttpServiceMethod
-        }
-        ChildObjectsVocabulary::WebServiceOperation => {
-            child.role == MetadataClassRole::WebServiceParameter
-        }
-    };
-    allowed.then_some(child)
-}
-
-#[cfg(test)]
-mod scalar_tests {
-    use super::LEGACY_TOP_LEVEL_METADATA_CLASSES;
-
-    #[test]
-    fn legacy_metadata_classes_are_unique() {
-        let classes = LEGACY_TOP_LEVEL_METADATA_CLASSES
-            .iter()
-            .copied()
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(classes.len(), LEGACY_TOP_LEVEL_METADATA_CLASSES.len());
-    }
+    super::semantic_map::child_metadata_class_profile(owner, child_class_name)
 }
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -221,6 +33,7 @@ use crate::domain::{
     navigation_limits::MAX_NAVIGATION_TYPE_VARIANTS,
     source_adapters::{SourceAdapterError, SourceAdapterErrorKind},
 };
+use super::semantic_map::{NativeTypeNamespace, TypeAliasCategory};
 
 pub(crate) const METADATA_NAMESPACE_2_20: &str = "http://v8.1c.ru/8.3/MDClasses";
 
@@ -303,28 +116,26 @@ pub(crate) fn parse_type_description_2_20(
             "Platform XML type description has no variants",
         ));
     }
-    if !qualifier_groups.is_empty() {
+    for group in qualifier_groups {
         let primitive_indexes = variants
             .iter()
             .enumerate()
-            .filter_map(|(index, variant)| variant.primitive_kind().map(|_| index))
+            .filter_map(|(index, variant)| {
+                variant
+                    .primitive_kind()
+                    .filter(|kind| group.is_compatible_with(kind))
+                    .map(|_| index)
+            })
             .collect::<Vec<_>>();
         if primitive_indexes.len() != 1 {
             return Err(projection_error(
-                "type qualifiers require one primitive variant",
+                "type qualifier group requires one compatible primitive variant",
             ));
         }
-        let kind = variants[primitive_indexes[0]]
+        let primitive_index = primitive_indexes[0];
+        let kind = variants[primitive_index]
             .primitive_kind()
-            .expect("primitive index was selected above");
-        if !qualifier_groups
-            .iter()
-            .all(|group| group.is_compatible_with(&kind))
-        {
-            return Err(projection_error(
-                "type qualifier group is incompatible with primitive variant",
-            ));
-        }
+            .expect("compatible primitive index was selected above");
         let qualifiers = match kind {
             PrimitiveTypeKind::String => TypeQualifiers::String(
                 StringQualifiers::new(
@@ -366,13 +177,17 @@ pub(crate) fn parse_type_description_2_20(
                 )
                 .map_err(|_| projection_error("invalid semantic date qualifiers"))?,
             ),
-            PrimitiveTypeKind::Boolean => {
+            PrimitiveTypeKind::Boolean
+            | PrimitiveTypeKind::Uuid
+            | PrimitiveTypeKind::Opaque
+            | PrimitiveTypeKind::Table
+            | PrimitiveTypeKind::Null => {
                 return Err(projection_error(
-                    "boolean type cannot carry Platform XML qualifiers",
+                    "primitive type cannot carry Platform XML qualifiers",
                 ))
             }
         };
-        variants[primitive_indexes[0]] = TypeVariant::primitive(kind, Some(qualifiers))
+        variants[primitive_index] = TypeVariant::primitive(kind, Some(qualifiers))
             .map_err(|_| projection_error("invalid qualified semantic primitive"))?;
     }
     variants.sort_by_key(type_variant_key);
@@ -480,47 +295,53 @@ fn parse_type_variant(value: &str, node: Node<'_, '_>) -> Result<TypeVariant, So
     let namespace = node
         .lookup_namespace_uri(Some(prefix))
         .ok_or_else(|| projection_error("Platform XML type value has an undeclared namespace"))?;
-    if namespace == XML_SCHEMA_NAMESPACE {
-        let primitive = match local {
-            "string" => Some(PrimitiveTypeKind::String),
-            "boolean" => Some(PrimitiveTypeKind::Boolean),
-            "decimal" => Some(PrimitiveTypeKind::Number),
-            "date" | "dateTime" => Some(PrimitiveTypeKind::Date),
-            _ => None,
-        };
-        let Some(kind) = primitive else {
-            return Err(projection_error("unsupported XML Schema type variant"));
-        };
-        return TypeVariant::primitive(kind, None)
-            .map_err(|_| projection_error("invalid semantic primitive type"));
-    }
-    if namespace != CURRENT_CONFIGURATION_NAMESPACE {
-        return Err(projection_error(
-            "Platform XML metadata type value has an unsupported namespace",
-        ));
-    }
-    let Some((class, name)) = local.split_once('.') else {
-        return Err(projection_error("unsupported Platform XML type variant"));
-    };
-    if local.split('.').count() != 2 || !is_1c_identifier(name) {
-        return Err(projection_error(
-            "invalid Platform XML metadata type target",
-        ));
-    }
-    let target_kind = match class {
-        "EnumRef" => {
-            return TypeVariant::enumeration(name)
-                .map_err(|_| projection_error("invalid semantic enumeration target"))
+    let native_namespace = match namespace {
+        XML_SCHEMA_NAMESPACE => NativeTypeNamespace::XmlSchema,
+        DATA_CORE_NAMESPACE => NativeTypeNamespace::DataCore,
+        CURRENT_CONFIGURATION_NAMESPACE => NativeTypeNamespace::CurrentConfiguration,
+        _ => {
+            return Err(projection_error(
+                "Platform XML type value has an unsupported namespace",
+            ))
         }
-        "DefinedType" => {
-            return TypeVariant::defined_type(name)
-                .map_err(|_| projection_error("invalid semantic defined-type target"))
-        }
-        class => super::semantic_map::reference_kind(class)
-            .ok_or_else(|| projection_error("unsupported Platform XML metadata type class"))?,
     };
-    TypeVariant::reference(target_kind, name)
-        .map_err(|_| projection_error("invalid semantic reference target"))
+    let (alias, target) = if native_namespace == NativeTypeNamespace::CurrentConfiguration {
+        let Some((alias, target)) = local.split_once('.') else {
+            return Ok(TypeVariant::unknown());
+        };
+        if local.split('.').count() != 2 || !is_1c_identifier(target) {
+            return Err(projection_error(
+                "invalid Platform XML metadata type target",
+            ));
+        }
+        (alias, Some(target))
+    } else {
+        (local, None)
+    };
+    let Some(mapping) = super::semantic_map::type_alias(native_namespace, alias) else {
+        return Ok(TypeVariant::unknown());
+    };
+    match (mapping.category, target) {
+        (TypeAliasCategory::Primitive(kind), None) => TypeVariant::primitive(kind, None)
+            .map_err(|_| projection_error("invalid semantic primitive type")),
+        (TypeAliasCategory::Reference(kind), Some(target)) => TypeVariant::reference(kind, target)
+            .map_err(|_| projection_error("invalid semantic reference target")),
+        (TypeAliasCategory::Object(kind), Some(target)) => TypeVariant::object(kind, target)
+            .map_err(|_| projection_error("invalid semantic object target")),
+        (TypeAliasCategory::RecordSet(kind), Some(target)) => {
+            TypeVariant::record_set(kind, target)
+                .map_err(|_| projection_error("invalid semantic record-set target"))
+        }
+        (TypeAliasCategory::Manager(kind), Some(target)) => TypeVariant::manager(kind, target)
+            .map_err(|_| projection_error("invalid semantic manager target")),
+        (TypeAliasCategory::Key(kind), Some(target)) => TypeVariant::key(kind, target)
+            .map_err(|_| projection_error("invalid semantic key target")),
+        (TypeAliasCategory::Enumeration, Some(target)) => TypeVariant::enumeration(target)
+            .map_err(|_| projection_error("invalid semantic enumeration target")),
+        (TypeAliasCategory::DefinedType, Some(target)) => TypeVariant::defined_type(target)
+            .map_err(|_| projection_error("invalid semantic defined-type target")),
+        _ => Ok(TypeVariant::unknown()),
+    }
 }
 
 fn text_only(node: Node<'_, '_>) -> Result<String, SourceAdapterError> {
@@ -575,6 +396,9 @@ fn qualifier_string<'a>(
 fn type_variant_key(value: &TypeVariant) -> String {
     if let Some(kind) = value.primitive_kind() {
         return format!("primitive:{}", kind.as_str());
+    }
+    if value.is_unknown() {
+        return "unknown".to_string();
     }
     let target = value
         .target()

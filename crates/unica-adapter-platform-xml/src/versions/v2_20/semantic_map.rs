@@ -1,8 +1,64 @@
-use crate::domain::navigation::{
-    NodeKind, RelationRole, SemanticPropertyId, SemanticRelationId,
+use std::{collections::BTreeSet, sync::OnceLock};
+
+use serde::Deserialize;
+
+use crate::domain::{
+    navigation::{
+        NodeKind, PrimitiveTypeKind, RelationRole, SemanticEnumValue, SemanticObjectKind,
+        SemanticPropertyId, SemanticRelationId,
+    },
+    source_adapters::{SourceAdapterError, SourceAdapterErrorKind},
 };
 
-use super::schema::{MetadataClassProfile, MetadataClassRole};
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChildObjectsVocabulary {
+    None,
+    ConfigurationTopLevel,
+    Object,
+    TabularSection,
+    HttpServiceUrlTemplate,
+    WebServiceOperation,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MetadataClassRole {
+    Configuration,
+    TopLevelObject,
+    Attribute,
+    Dimension,
+    Resource,
+    EnumerationValue,
+    TabularSection,
+    Form,
+    Template,
+    Command,
+    Column,
+    HttpServiceUrlTemplate,
+    HttpServiceMethod,
+    WebServiceOperation,
+    WebServiceParameter,
+    AccessPermission,
+    AccessRestrictionTemplate,
+    Unsupported,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MappingSource {
+    Native,
+    Derived,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MetadataClassProfile {
+    pub(crate) class_name: String,
+    pub(crate) role: MetadataClassRole,
+    pub(crate) child_objects: ChildObjectsVocabulary,
+    pub(crate) kind: NodeKind,
+    pub(crate) source: MappingSource,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NativeValueKind {
@@ -17,400 +73,642 @@ pub(crate) enum NativeValueKind {
     StringList,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PropertyMapping {
+    pub(crate) object_kinds: Vec<NodeKind>,
+    pub(crate) all_object_kinds: bool,
+    pub(crate) native_names: Vec<String>,
     pub(crate) semantic_id: SemanticPropertyId,
     pub(crate) value_kind: NativeValueKind,
 }
 
-const fn property(
-    semantic_id: SemanticPropertyId,
-    value_kind: NativeValueKind,
-) -> Option<PropertyMapping> {
-    Some(PropertyMapping {
-        semantic_id,
-        value_kind,
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RelationPropertyMapping {
+    object_kinds: Vec<NodeKind>,
+    native_names: Vec<String>,
+    role: RelationRole,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ChildMapping {
+    owner_kinds: Vec<NodeKind>,
+    owner_roles: Vec<MetadataClassRole>,
+    child_kinds: Vec<NodeKind>,
+    child_roles: Vec<MetadataClassRole>,
+    relation: RelationRole,
+    partial: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EnumAlias {
+    semantic: SemanticEnumValue,
+    native_aliases: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeTypeNamespace {
+    XmlSchema,
+    DataCore,
+    CurrentConfiguration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TypeAliasCategory {
+    Primitive(PrimitiveTypeKind),
+    Reference(NodeKind),
+    Object(NodeKind),
+    RecordSet(NodeKind),
+    Manager(NodeKind),
+    Key(NodeKind),
+    Enumeration,
+    DefinedType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TypeAliasMapping {
+    pub(crate) namespace: NativeTypeNamespace,
+    pub(crate) alias: String,
+    pub(crate) category: TypeAliasCategory,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BackingKind {
+    Rights,
+    Form,
+    Template,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BackingMapping {
+    pub(crate) object_kinds: Vec<NodeKind>,
+    pub(crate) kind: BackingKind,
+    pub(crate) descriptor: bool,
+    pub(crate) content: bool,
+    pub(crate) opaque: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IntentionalPartialCase {
+    object_kinds: Vec<NodeKind>,
+    reason: String,
+}
+
+#[derive(Debug)]
+struct CoverageRegistry {
+    objects: Vec<MetadataClassProfile>,
+    properties: Vec<PropertyMapping>,
+    relation_properties: Vec<RelationPropertyMapping>,
+    children: Vec<ChildMapping>,
+    enum_aliases: Vec<EnumAlias>,
+    type_variants: Vec<TypeAliasMapping>,
+    backing_artifacts: Vec<BackingMapping>,
+    intentional_partial_cases: Vec<IntentionalPartialCase>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawCoverageRegistry {
+    schema_version: u32,
+    adapter_id: String,
+    objects: Vec<RawObjectMapping>,
+    properties: Vec<RawPropertyMapping>,
+    relation_properties: Vec<RawRelationPropertyMapping>,
+    children: Vec<RawChildMapping>,
+    enum_aliases: Vec<RawEnumAlias>,
+    type_variants: Vec<RawTypeAlias>,
+    backing_artifacts: Vec<RawBackingMapping>,
+    intentional_partial_cases: Vec<RawPartialCase>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawObjectMapping {
+    native_class: String,
+    kind: String,
+    role: String,
+    child_vocabulary: String,
+    source: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawPropertyMapping {
+    object_kinds: Vec<String>,
+    native_names: Vec<String>,
+    semantic_property: String,
+    value_kind: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawRelationPropertyMapping {
+    object_kinds: Vec<String>,
+    native_names: Vec<String>,
+    relation: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawChildMapping {
+    #[serde(default)]
+    owner_kinds: Vec<String>,
+    #[serde(default)]
+    owner_roles: Vec<String>,
+    #[serde(default)]
+    child_kinds: Vec<String>,
+    #[serde(default)]
+    child_roles: Vec<String>,
+    relation: String,
+    partial: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawEnumAlias {
+    semantic: String,
+    native_aliases: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawTypeAlias {
+    namespace: String,
+    alias: String,
+    category: String,
+    #[serde(default)]
+    target_kind: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawBackingMapping {
+    object_kinds: Vec<String>,
+    kind: String,
+    descriptor: bool,
+    content: bool,
+    opaque: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawPartialCase {
+    object_kinds: Vec<String>,
+    reason: String,
+}
+
+static REGISTRY: OnceLock<CoverageRegistry> = OnceLock::new();
+
+fn registry() -> &'static CoverageRegistry {
+    REGISTRY.get_or_init(|| {
+        CoverageRegistry::parse(include_str!("coverage.json"))
+            .expect("the embedded Platform XML 2.20 coverage registry must be valid")
     })
 }
 
-pub(crate) fn property_mapping(
-    kind: NodeKind,
-    native_name: &str,
-) -> Option<PropertyMapping> {
-    use NativeValueKind as Value;
-    use SemanticPropertyId as Id;
+impl CoverageRegistry {
+    fn parse(raw: &str) -> Result<Self, SourceAdapterError> {
+        let raw: RawCoverageRegistry = serde_json::from_str(raw)
+            .map_err(|_| invalid_registry("coverage registry JSON is invalid"))?;
+        if raw.schema_version != 2 || raw.adapter_id != "platform-xml-2.20" {
+            return Err(invalid_registry("coverage registry identity is invalid"));
+        }
+        let registry = Self {
+            objects: raw.objects.into_iter().map(convert_object).collect::<Result<_, _>>()?,
+            properties: raw.properties.into_iter().map(convert_property).collect::<Result<_, _>>()?,
+            relation_properties: raw.relation_properties.into_iter().map(convert_relation_property).collect::<Result<_, _>>()?,
+            children: raw.children.into_iter().map(convert_child).collect::<Result<_, _>>()?,
+            enum_aliases: raw.enum_aliases.into_iter().map(convert_enum).collect::<Result<_, _>>()?,
+            type_variants: raw.type_variants.into_iter().map(convert_type).collect::<Result<_, _>>()?,
+            backing_artifacts: raw.backing_artifacts.into_iter().map(convert_backing).collect::<Result<_, _>>()?,
+            intentional_partial_cases: raw.intentional_partial_cases.into_iter().map(convert_partial).collect::<Result<_, _>>()?,
+        };
+        registry.validate()?;
+        Ok(registry)
+    }
 
-    let contextual = match (kind, native_name) {
-        (NodeKind::Document, "NumberType") => property(Id::DOCUMENT_NUMBER_TYPE, Value::Enum),
-        (NodeKind::Document, "NumberLength") => {
-            property(Id::DOCUMENT_NUMBER_LENGTH, Value::Integer)
+    fn validate(&self) -> Result<(), SourceAdapterError> {
+        ensure_unique(self.objects.iter().filter(|entry| entry.source == MappingSource::Native).map(|entry| entry.class_name.as_str()), "native object mapping")?;
+        ensure_unique(self.objects.iter().filter(|entry| entry.source == MappingSource::Derived).map(|entry| entry.kind), "derived object mapping")?;
+        if self.objects.iter().filter(|entry| entry.source == MappingSource::Unknown).count() != 1 {
+            return Err(invalid_registry("coverage registry must have exactly one unknown object mapping"));
         }
-        (NodeKind::Document, "NumberPeriodicity") => {
-            property(Id::DOCUMENT_NUMBER_PERIODICITY, Value::Enum)
+        ensure_unique(self.properties.iter().flat_map(|entry| {
+            entry.native_names.iter().flat_map(move |name| {
+                if entry.all_object_kinds {
+                    vec![format!("*:{name}")]
+                } else {
+                    entry.object_kinds.iter().map(|kind| format!("{}:{name}", kind.as_str())).collect()
+                }
+            })
+        }), "per-kind property mapping")?;
+        ensure_unique(self.relation_properties.iter().flat_map(|entry| entry.object_kinds.iter().flat_map(move |kind| entry.native_names.iter().map(move |name| format!("{}:{name}", kind.as_str())))), "relation-property mapping")?;
+        ensure_unique(self.enum_aliases.iter().flat_map(|entry| entry.native_aliases.iter().cloned()), "enum alias")?;
+        ensure_unique(self.type_variants.iter().map(|entry| format!("{:?}:{}", entry.namespace, entry.alias)), "type alias")?;
+        ensure_unique(self.backing_artifacts.iter().flat_map(|entry| entry.object_kinds.iter().map(|kind| kind.as_str())), "backing mapping")?;
+        ensure_unique(self.intentional_partial_cases.iter().flat_map(|entry| entry.object_kinds.iter().map(move |kind| format!("{}:{}", kind.as_str(), entry.reason.as_str()))), "intentional partial case")?;
+        if self.objects.is_empty() || self.properties.is_empty() || self.children.is_empty()
+            || self.enum_aliases.is_empty() || self.type_variants.is_empty()
+            || self.backing_artifacts.is_empty() || self.intentional_partial_cases.is_empty()
+        {
+            return Err(invalid_registry("coverage registry has an empty required section"));
         }
-        (NodeKind::Document, "Autonumbering" | "AutoNumbering") => {
-            property(Id::DOCUMENT_NUMBER_AUTO, Value::Boolean)
-        }
-        (NodeKind::Document, "Posting") => property(Id::DOCUMENT_POSTING_MODE, Value::Enum),
-        (NodeKind::Document, "RealTimePosting") => {
-            property(Id::DOCUMENT_REAL_TIME_POSTING_MODE, Value::Enum)
-        }
-        (NodeKind::Document, "RegisterRecordsDeletion") => property(
-            Id::DOCUMENT_REGISTER_RECORDS_DELETION_MODE,
-            Value::Enum,
-        ),
-        (NodeKind::Document, "RegisterRecordsWritingOnPost") => property(
-            Id::DOCUMENT_REGISTER_RECORDS_WRITING_ON_POST_MODE,
-            Value::Enum,
-        ),
-        (NodeKind::Catalog, "HierarchyType") => {
-            property(Id::CATALOG_HIERARCHY_TYPE, Value::Enum)
-        }
-        (NodeKind::Catalog, "HierarchyLevelCount" | "LevelCount") => {
-            property(Id::CATALOG_HIERARCHY_LEVEL_LIMIT, Value::Integer)
-        }
-        (NodeKind::Catalog, "CodeLength") => {
-            property(Id::CATALOG_CODE_LENGTH, Value::Integer)
-        }
-        (NodeKind::Catalog, "DescriptionLength") => {
-            property(Id::CATALOG_DESCRIPTION_LENGTH, Value::Integer)
-        }
-        (
-            NodeKind::InformationRegister
-            | NodeKind::AccumulationRegister
-            | NodeKind::AccountingRegister
-            | NodeKind::CalculationRegister,
-            "InformationRegisterPeriodicity" | "Periodicity",
-        ) => property(Id::REGISTER_PERIODICITY, Value::Enum),
-        (
-            NodeKind::InformationRegister
-            | NodeKind::AccumulationRegister
-            | NodeKind::AccountingRegister
-            | NodeKind::CalculationRegister,
-            "WriteMode",
-        ) => property(Id::REGISTER_WRITE_MODE, Value::Enum),
-        (
-            NodeKind::InformationRegister
-            | NodeKind::AccumulationRegister
-            | NodeKind::AccountingRegister
-            | NodeKind::CalculationRegister,
-            "RegisterType",
-        ) => property(Id::REGISTER_TYPE, Value::Enum),
-        (NodeKind::Constant, "Type" | "TypeDescription" | "DataType") => {
-            property(Id::CONSTANT_VALUE_TYPE, Value::TypeSet)
-        }
-        (NodeKind::DefinedType, "Type" | "TypeDescription" | "DataType") => {
-            property(Id::DEFINED_TYPE, Value::TypeSet)
-        }
-        (NodeKind::Report, "MainDataCompositionSchema") => {
-            property(Id::REPORT_MAIN_DATA_COMPOSITION_SCHEMA, Value::String)
-        }
-        (NodeKind::CommonModule, "Global") => property(Id::MODULE_GLOBAL, Value::Boolean),
-        (NodeKind::CommonModule, "ClientManagedApplication") => {
-            property(Id::MODULE_CLIENT_MANAGED_APPLICATION, Value::Boolean)
-        }
-        (NodeKind::CommonModule, "Server") => property(Id::MODULE_SERVER, Value::Boolean),
-        (NodeKind::CommonModule, "ExternalConnection") => {
-            property(Id::MODULE_EXTERNAL_CONNECTION, Value::Boolean)
-        }
-        (NodeKind::CommonModule, "ClientOrdinaryApplication") => {
-            property(Id::MODULE_CLIENT_ORDINARY_APPLICATION, Value::Boolean)
-        }
-        (NodeKind::CommonModule, "ServerCall") => {
-            property(Id::MODULE_SERVER_CALL, Value::Boolean)
-        }
-        (NodeKind::CommonModule, "Privileged") => {
-            property(Id::MODULE_PRIVILEGED, Value::Boolean)
-        }
-        (NodeKind::CommonModule, "ReturnValuesReuse") => {
-            property(Id::MODULE_RETURN_VALUES_REUSE, Value::Enum)
-        }
-        (NodeKind::ScheduledJob, "MethodName") => property(Id::JOB_METHOD, Value::String),
-        (NodeKind::ScheduledJob, "Use") => property(Id::JOB_USE, Value::Boolean),
-        (NodeKind::ScheduledJob, "Predefined") => property(Id::JOB_PREDEFINED, Value::Boolean),
-        (NodeKind::ScheduledJob, "RestartCountOnFailure") => {
-            property(Id::JOB_RESTART_COUNT, Value::Integer)
-        }
-        (NodeKind::ScheduledJob, "RestartIntervalOnFailure") => {
-            property(Id::JOB_RESTART_INTERVAL, Value::Integer)
-        }
-        (NodeKind::ScheduledJob, "Key") => property(Id::JOB_KEY, Value::String),
-        (NodeKind::EventSubscription, "Event") => {
-            property(Id::SUBSCRIPTION_EVENT, Value::String)
-        }
-        (NodeKind::EventSubscription, "Handler") => {
-            property(Id::SUBSCRIPTION_HANDLER, Value::String)
-        }
-        (NodeKind::EventSubscription, "Source") => {
-            property(Id::SUBSCRIPTION_SOURCE_TYPE, Value::TypeSet)
-        }
-        (NodeKind::HttpService, "RootURL" | "RootUrl") => {
-            property(Id::HTTP_SERVICE_ROOT_URL, Value::String)
-        }
-        (NodeKind::HttpService, "ReuseSessions") => {
-            property(Id::HTTP_SERVICE_REUSE_SESSIONS, Value::Enum)
-        }
-        (NodeKind::HttpService, "SessionMaxAge") => {
-            property(Id::HTTP_SERVICE_SESSION_MAX_AGE, Value::Integer)
-        }
-        (NodeKind::HttpServiceUrlTemplate, "Template") => {
-            property(Id::HTTP_SERVICE_URL_TEMPLATE, Value::String)
-        }
-        (NodeKind::HttpServiceMethod, "HTTPMethod") => {
-            property(Id::HTTP_SERVICE_METHOD, Value::String)
-        }
-        (NodeKind::HttpServiceMethod, "Handler") => {
-            property(Id::HTTP_SERVICE_HANDLER, Value::String)
-        }
-        (NodeKind::WebService, "Namespace") => {
-            property(Id::WEB_SERVICE_NAMESPACE, Value::String)
-        }
-        (NodeKind::WebService, "XDTOPackages") => {
-            property(Id::WEB_SERVICE_XDTO_PACKAGES, Value::StringList)
-        }
-        (NodeKind::WebService, "DescriptorFileName") => {
-            property(Id::WEB_SERVICE_DESCRIPTOR_FILE_NAME, Value::String)
-        }
-        (NodeKind::WebService, "ReuseSessions") => {
-            property(Id::WEB_SERVICE_REUSE_SESSIONS, Value::Enum)
-        }
-        (NodeKind::WebService, "SessionMaxAge") => {
-            property(Id::WEB_SERVICE_SESSION_MAX_AGE, Value::Integer)
-        }
-        (NodeKind::WebServiceOperation, "XDTOReturningValueType") => {
-            property(Id::WEB_SERVICE_OPERATION_RETURN_TYPE, Value::TypeSet)
-        }
-        (NodeKind::WebServiceOperation, "Nillable") => {
-            property(Id::WEB_SERVICE_OPERATION_NILLABLE, Value::Boolean)
-        }
-        (NodeKind::WebServiceOperation, "Transactioned") => {
-            property(Id::WEB_SERVICE_OPERATION_TRANSACTIONED, Value::Boolean)
-        }
-        (NodeKind::WebServiceOperation, "ProcedureName") => {
-            property(Id::WEB_SERVICE_OPERATION_PROCEDURE_NAME, Value::String)
-        }
-        (NodeKind::WebServiceParameter, "XDTOValueType") => {
-            property(Id::WEB_SERVICE_PARAMETER_TYPE, Value::TypeSet)
-        }
-        (NodeKind::WebServiceParameter, "Nillable") => {
-            property(Id::WEB_SERVICE_PARAMETER_NILLABLE, Value::Boolean)
-        }
-        (NodeKind::WebServiceParameter, "TransferDirection") => {
-            property(Id::WEB_SERVICE_PARAMETER_DIRECTION, Value::Enum)
-        }
-        (
-            NodeKind::Attribute
-            | NodeKind::Dimension
-            | NodeKind::Resource
-            | NodeKind::WebServiceParameter,
-            "Type" | "TypeDescription" | "DataType",
-        ) => property(Id::FIELD_TYPE, Value::TypeSet),
-        (NodeKind::Attribute | NodeKind::Dimension | NodeKind::Resource, "FillChecking") => {
-            property(Id::FIELD_FILL_CHECKING, Value::Enum)
-        }
-        (NodeKind::Attribute | NodeKind::Dimension | NodeKind::Resource, "Indexing") => {
-            property(Id::FIELD_INDEXING, Value::Enum)
-        }
-        (NodeKind::Attribute | NodeKind::Dimension | NodeKind::Resource, "MultiLine") => {
-            property(Id::FIELD_MULTI_LINE, Value::Boolean)
-        }
-        (NodeKind::Attribute | NodeKind::Dimension | NodeKind::Resource, "Use") => {
-            property(Id::FIELD_USE, Value::Enum)
-        }
-        (NodeKind::Attribute | NodeKind::Dimension | NodeKind::Resource, "FillValue") => {
-            property(Id::FIELD_FILL_VALUE, Value::Polymorphic)
-        }
-        (NodeKind::Dimension, "Master") => property(Id::FIELD_MASTER, Value::Boolean),
-        (NodeKind::Dimension, "MainFilter") => property(Id::FIELD_MAIN_FILTER, Value::Boolean),
-        (NodeKind::Dimension, "DenyIncompleteValues") => {
-            property(Id::FIELD_DENY_INCOMPLETE_VALUES, Value::Boolean)
-        }
-        (NodeKind::TabularSection, "Order") => {
-            property(Id::TABULAR_SECTION_ORDER, Value::Integer)
-        }
-        (NodeKind::TabularSection, "LineNumberLength") => {
-            property(Id::TABULAR_SECTION_LINE_NUMBER_LENGTH, Value::Integer)
-        }
-        (NodeKind::Form, "FormType") => property(Id::FORM_TYPE, Value::String),
-        (NodeKind::Template | NodeKind::SpreadsheetDocumentTemplate, "TemplateType") => {
-            property(Id::TEMPLATE_TYPE, Value::String)
-        }
-        (NodeKind::Command, "Group") => property(Id::COMMAND_GROUP, Value::String),
-        (NodeKind::Command, "Representation") => {
-            property(Id::COMMAND_REPRESENTATION, Value::String)
-        }
-        _ => None,
-    };
-    contextual.or_else(|| match native_name {
-        "Name" => property(Id::METADATA_NAME, Value::String),
-        "Uuid" | "UUID" => property(Id::METADATA_UUID, Value::Uuid),
-        "Synonym" => property(Id::METADATA_SYNONYM, Value::LocalizedString),
-        "Comment" => property(Id::METADATA_COMMENT, Value::String),
-        "Code" => property(Id::METADATA_CODE, Value::String),
-        "Description" => property(Id::METADATA_DESCRIPTION, Value::String),
-        "ObjectPresentation" => property(Id::PRESENTATION_OBJECT, Value::LocalizedString),
-        "ExtendedObjectPresentation" => {
-            property(Id::PRESENTATION_EXTENDED_OBJECT, Value::LocalizedString)
-        }
-        "ListPresentation" => property(Id::PRESENTATION_LIST, Value::LocalizedString),
-        "ExtendedListPresentation" => {
-            property(Id::PRESENTATION_EXTENDED_LIST, Value::LocalizedString)
-        }
-        "Length" => property(Id::FIELD_LENGTH, Value::Integer),
-        "Digits" => property(Id::FIELD_DIGITS, Value::Integer),
-        "FractionDigits" => property(Id::FIELD_FRACTION_DIGITS, Value::Integer),
-        "UseStandardCommands" => property(Id::COMMAND_USE_STANDARD, Value::Boolean),
-        "IncludeHelpInContents" => property(Id::HELP_INCLUDE_IN_CONTENTS, Value::Boolean),
-        _ => None,
-    })
-}
-
-pub(crate) fn relation_property_role(
-    kind: NodeKind,
-    native_name: &str,
-) -> Option<RelationRole> {
-    match (kind, native_name) {
-        (NodeKind::Document, "BasedOn") => Some(SemanticRelationId::BASED_ON),
-        (NodeKind::Document, "RegisterRecords") => {
-            Some(SemanticRelationId::REGISTER_RECORDS)
-        }
-        _ => None,
+        Ok(())
     }
 }
 
-pub(crate) fn object_kind(profile: &MetadataClassProfile) -> Option<NodeKind> {
-    let kind = match profile.role {
-        MetadataClassRole::Configuration => NodeKind::Configuration,
-        MetadataClassRole::TopLevelObject => match profile.class_name {
-            "Language" => NodeKind::Language,
-            "Subsystem" => NodeKind::Subsystem,
-            "StyleItem" => NodeKind::StyleItem,
-            "Style" => NodeKind::Style,
-            "CommonPicture" => NodeKind::CommonPicture,
-            "SessionParameter" => NodeKind::SessionParameter,
-            "Role" => NodeKind::Role,
-            "CommonTemplate" => NodeKind::CommonTemplate,
-            "FilterCriterion" => NodeKind::FilterCriterion,
-            "CommonModule" => NodeKind::CommonModule,
-            "Bot" => NodeKind::Bot,
-            "CommonAttribute" => NodeKind::CommonAttribute,
-            "ExchangePlan" => NodeKind::ExchangePlan,
-            "XDTOPackage" => NodeKind::XdtoPackage,
-            "WebService" => NodeKind::WebService,
-            "HTTPService" => NodeKind::HttpService,
-            "WSReference" => NodeKind::WebServiceReference,
-            "EventSubscription" => NodeKind::EventSubscription,
-            "ScheduledJob" => NodeKind::ScheduledJob,
-            "SettingsStorage" => NodeKind::SettingsStorage,
-            "FunctionalOption" => NodeKind::FunctionalOption,
-            "FunctionalOptionsParameter" => NodeKind::FunctionalOptionsParameter,
-            "DefinedType" => NodeKind::DefinedType,
-            "CommonCommand" => NodeKind::CommonCommand,
-            "CommandGroup" => NodeKind::CommandGroup,
-            "Constant" => NodeKind::Constant,
-            "CommonForm" => NodeKind::CommonForm,
-            "Catalog" => NodeKind::Catalog,
-            "Document" => NodeKind::Document,
-            "DocumentNumerator" => NodeKind::DocumentNumerator,
-            "Sequence" => NodeKind::Sequence,
-            "DocumentJournal" => NodeKind::DocumentJournal,
-            "Enum" => NodeKind::Enumeration,
-            "Report" => NodeKind::Report,
-            "DataProcessor" => NodeKind::DataProcessor,
-            "InformationRegister" => NodeKind::InformationRegister,
-            "AccumulationRegister" => NodeKind::AccumulationRegister,
-            "ChartOfCharacteristicTypes" => NodeKind::ChartOfCharacteristicTypes,
-            "ChartOfAccounts" => NodeKind::ChartOfAccounts,
-            "AccountingRegister" => NodeKind::AccountingRegister,
-            "ChartOfCalculationTypes" => NodeKind::ChartOfCalculationTypes,
-            "CalculationRegister" => NodeKind::CalculationRegister,
-            "BusinessProcess" => NodeKind::BusinessProcess,
-            "Task" => NodeKind::Task,
-            "IntegrationService" => NodeKind::IntegrationService,
-            _ => return None,
-        },
-        MetadataClassRole::Attribute | MetadataClassRole::Column => NodeKind::Attribute,
-        MetadataClassRole::Dimension => NodeKind::Dimension,
-        MetadataClassRole::Resource => NodeKind::Resource,
-        MetadataClassRole::EnumerationValue => NodeKind::EnumerationValue,
-        MetadataClassRole::TabularSection => NodeKind::TabularSection,
-        MetadataClassRole::Form => NodeKind::Form,
-        MetadataClassRole::Template => NodeKind::Template,
-        MetadataClassRole::Command => NodeKind::Command,
-        MetadataClassRole::HttpServiceUrlTemplate => NodeKind::HttpServiceUrlTemplate,
-        MetadataClassRole::HttpServiceMethod => NodeKind::HttpServiceMethod,
-        MetadataClassRole::WebServiceOperation => NodeKind::WebServiceOperation,
-        MetadataClassRole::WebServiceParameter => NodeKind::WebServiceParameter,
-        MetadataClassRole::Unsupported => return None,
-    };
-    Some(kind)
+fn ensure_unique<T: Ord>(values: impl IntoIterator<Item = T>, label: &str) -> Result<(), SourceAdapterError> {
+    let mut seen = BTreeSet::new();
+    for value in values {
+        if !seen.insert(value) {
+            return Err(invalid_registry(&format!("coverage registry has duplicate {label}")));
+        }
+    }
+    Ok(())
 }
 
-pub(crate) fn child_relation_role(
+fn parse_kind(raw: &str) -> Result<NodeKind, SourceAdapterError> {
+    SemanticObjectKind::parse(raw).ok_or_else(|| invalid_registry("coverage registry object kind is not closed"))
+}
+
+fn parse_kinds(raw: Vec<String>) -> Result<(Vec<NodeKind>, bool), SourceAdapterError> {
+    if raw == ["*"] {
+        return Ok((Vec::new(), true));
+    }
+    Ok((raw.iter().map(|value| parse_kind(value)).collect::<Result<_, _>>()?, false))
+}
+
+fn parse_role(raw: &str) -> Result<MetadataClassRole, SourceAdapterError> {
+    match raw {
+        "configuration" => Ok(MetadataClassRole::Configuration),
+        "topLevelObject" => Ok(MetadataClassRole::TopLevelObject),
+        "attribute" => Ok(MetadataClassRole::Attribute),
+        "dimension" => Ok(MetadataClassRole::Dimension),
+        "resource" => Ok(MetadataClassRole::Resource),
+        "enumerationValue" => Ok(MetadataClassRole::EnumerationValue),
+        "tabularSection" => Ok(MetadataClassRole::TabularSection),
+        "form" => Ok(MetadataClassRole::Form),
+        "template" => Ok(MetadataClassRole::Template),
+        "command" => Ok(MetadataClassRole::Command),
+        "column" => Ok(MetadataClassRole::Column),
+        "httpServiceUrlTemplate" => Ok(MetadataClassRole::HttpServiceUrlTemplate),
+        "httpServiceMethod" => Ok(MetadataClassRole::HttpServiceMethod),
+        "webServiceOperation" => Ok(MetadataClassRole::WebServiceOperation),
+        "webServiceParameter" => Ok(MetadataClassRole::WebServiceParameter),
+        "accessPermission" => Ok(MetadataClassRole::AccessPermission),
+        "accessRestrictionTemplate" => Ok(MetadataClassRole::AccessRestrictionTemplate),
+        "unsupported" => Ok(MetadataClassRole::Unsupported),
+        "unknown" => Ok(MetadataClassRole::Unknown),
+        _ => Err(invalid_registry("coverage registry metadata role is invalid")),
+    }
+}
+
+fn parse_child_vocabulary(raw: &str) -> Result<ChildObjectsVocabulary, SourceAdapterError> {
+    match raw {
+        "none" => Ok(ChildObjectsVocabulary::None),
+        "configurationTopLevel" => Ok(ChildObjectsVocabulary::ConfigurationTopLevel),
+        "object" => Ok(ChildObjectsVocabulary::Object),
+        "tabularSection" => Ok(ChildObjectsVocabulary::TabularSection),
+        "httpServiceUrlTemplate" => Ok(ChildObjectsVocabulary::HttpServiceUrlTemplate),
+        "webServiceOperation" => Ok(ChildObjectsVocabulary::WebServiceOperation),
+        "unknown" => Ok(ChildObjectsVocabulary::Unknown),
+        _ => Err(invalid_registry("coverage registry child vocabulary is invalid")),
+    }
+}
+
+fn convert_object(raw: RawObjectMapping) -> Result<MetadataClassProfile, SourceAdapterError> {
+    Ok(MetadataClassProfile {
+        class_name: raw.native_class,
+        kind: parse_kind(&raw.kind)?,
+        role: parse_role(&raw.role)?,
+        child_objects: parse_child_vocabulary(&raw.child_vocabulary)?,
+        source: match raw.source.as_str() {
+            "native" => MappingSource::Native,
+            "derived" => MappingSource::Derived,
+            "unknown" => MappingSource::Unknown,
+            _ => return Err(invalid_registry("coverage registry mapping source is invalid")),
+        },
+    })
+}
+
+fn convert_property(raw: RawPropertyMapping) -> Result<PropertyMapping, SourceAdapterError> {
+    let (object_kinds, all_object_kinds) = parse_kinds(raw.object_kinds)?;
+    Ok(PropertyMapping {
+        object_kinds,
+        all_object_kinds,
+        native_names: raw.native_names,
+        semantic_id: SemanticPropertyId::parse(&raw.semantic_property).ok_or_else(|| invalid_registry("coverage registry property is not closed"))?,
+        value_kind: match raw.value_kind.as_str() {
+            "boolean" => NativeValueKind::Boolean,
+            "integer" => NativeValueKind::Integer,
+            "uuid" => NativeValueKind::Uuid,
+            "string" => NativeValueKind::String,
+            "localizedString" => NativeValueKind::LocalizedString,
+            "enum" => NativeValueKind::Enum,
+            "typeSet" => NativeValueKind::TypeSet,
+            "polymorphic" => NativeValueKind::Polymorphic,
+            "stringList" => NativeValueKind::StringList,
+            _ => return Err(invalid_registry("coverage registry native value kind is invalid")),
+        },
+    })
+}
+
+fn convert_relation_property(raw: RawRelationPropertyMapping) -> Result<RelationPropertyMapping, SourceAdapterError> {
+    let (object_kinds, all) = parse_kinds(raw.object_kinds)?;
+    if all { return Err(invalid_registry("relation-property mapping must be per-kind")); }
+    Ok(RelationPropertyMapping {
+        object_kinds,
+        native_names: raw.native_names,
+        role: SemanticRelationId::parse(&raw.relation).ok_or_else(|| invalid_registry("coverage registry relation is not closed"))?,
+    })
+}
+
+fn convert_child(raw: RawChildMapping) -> Result<ChildMapping, SourceAdapterError> {
+    Ok(ChildMapping {
+        owner_kinds: raw.owner_kinds.iter().map(|value| parse_kind(value)).collect::<Result<_, _>>()?,
+        owner_roles: raw.owner_roles.iter().map(|value| parse_role(value)).collect::<Result<_, _>>()?,
+        child_kinds: raw.child_kinds.iter().map(|value| parse_kind(value)).collect::<Result<_, _>>()?,
+        child_roles: raw.child_roles.iter().map(|value| parse_role(value)).collect::<Result<_, _>>()?,
+        relation: SemanticRelationId::parse(&raw.relation).ok_or_else(|| invalid_registry("coverage registry child relation is not closed"))?,
+        partial: raw.partial,
+    })
+}
+
+fn convert_enum(raw: RawEnumAlias) -> Result<EnumAlias, SourceAdapterError> {
+    Ok(EnumAlias {
+        semantic: SemanticEnumValue::parse(&raw.semantic).ok_or_else(|| invalid_registry("coverage registry enum is not closed"))?,
+        native_aliases: raw.native_aliases,
+    })
+}
+
+fn convert_type(raw: RawTypeAlias) -> Result<TypeAliasMapping, SourceAdapterError> {
+    let namespace = match raw.namespace.as_str() {
+        "xmlSchema" => NativeTypeNamespace::XmlSchema,
+        "dataCore" => NativeTypeNamespace::DataCore,
+        "currentConfiguration" => NativeTypeNamespace::CurrentConfiguration,
+        _ => return Err(invalid_registry("coverage registry type namespace is invalid")),
+    };
+    let target_kind = || raw.target_kind.as_deref().ok_or_else(|| invalid_registry("coverage registry target type has no kind")).and_then(parse_kind);
+    let category = match raw.category.as_str() {
+        "boolean" => TypeAliasCategory::Primitive(PrimitiveTypeKind::Boolean),
+        "string" => TypeAliasCategory::Primitive(PrimitiveTypeKind::String),
+        "number" => TypeAliasCategory::Primitive(PrimitiveTypeKind::Number),
+        "date" => TypeAliasCategory::Primitive(PrimitiveTypeKind::Date),
+        "uuid" => TypeAliasCategory::Primitive(PrimitiveTypeKind::Uuid),
+        "opaque" => TypeAliasCategory::Primitive(PrimitiveTypeKind::Opaque),
+        "table" => TypeAliasCategory::Primitive(PrimitiveTypeKind::Table),
+        "null" => TypeAliasCategory::Primitive(PrimitiveTypeKind::Null),
+        "reference" => TypeAliasCategory::Reference(target_kind()?),
+        "object" => TypeAliasCategory::Object(target_kind()?),
+        "recordSet" => TypeAliasCategory::RecordSet(target_kind()?),
+        "manager" => TypeAliasCategory::Manager(target_kind()?),
+        "key" => TypeAliasCategory::Key(target_kind()?),
+        "enumeration" => TypeAliasCategory::Enumeration,
+        "definedType" => TypeAliasCategory::DefinedType,
+        _ => return Err(invalid_registry("coverage registry type category is invalid")),
+    };
+    Ok(TypeAliasMapping { namespace, alias: raw.alias, category })
+}
+
+fn convert_backing(raw: RawBackingMapping) -> Result<BackingMapping, SourceAdapterError> {
+    let (object_kinds, all) = parse_kinds(raw.object_kinds)?;
+    if all { return Err(invalid_registry("backing mapping must be per-kind")); }
+    Ok(BackingMapping {
+        object_kinds,
+        kind: match raw.kind.as_str() {
+            "rights" => BackingKind::Rights,
+            "form" => BackingKind::Form,
+            "template" => BackingKind::Template,
+            _ => return Err(invalid_registry("coverage registry backing kind is invalid")),
+        },
+        descriptor: raw.descriptor,
+        content: raw.content,
+        opaque: raw.opaque,
+    })
+}
+
+fn convert_partial(raw: RawPartialCase) -> Result<IntentionalPartialCase, SourceAdapterError> {
+    let (object_kinds, all) = parse_kinds(raw.object_kinds)?;
+    if all || raw.reason.is_empty() { return Err(invalid_registry("intentional partial case is invalid")); }
+    Ok(IntentionalPartialCase { object_kinds, reason: raw.reason })
+}
+
+pub(crate) fn validate_coverage_registry() -> Result<(), SourceAdapterError> {
+    let registry = registry();
+    for object in &registry.objects {
+        match object.source {
+            MappingSource::Native
+                if metadata_class_profile(&object.class_name).map(|entry| entry.kind)
+                    != Some(object.kind) =>
+            {
+                return Err(invalid_registry(
+                    "native object registry lookup is not bijective",
+                ));
+            }
+            MappingSource::Derived
+                if derived_profile(object.kind) != object =>
+            {
+                return Err(invalid_registry(
+                    "derived object registry lookup is not bijective",
+                ));
+            }
+            MappingSource::Unknown
+                if unknown_metadata_class_profile() != object =>
+            {
+                return Err(invalid_registry(
+                    "unknown object registry lookup is not bijective",
+                ));
+            }
+            _ => {}
+        }
+    }
+    for property in &registry.properties {
+        let kinds = if property.all_object_kinds { SemanticObjectKind::ALL } else { &property.object_kinds };
+        for kind in kinds {
+            for name in &property.native_names {
+                let found = property_mapping(*kind, name).ok_or_else(|| invalid_registry("property registry lookup is not exhaustive"))?;
+                if found.semantic_id != property.semantic_id || found.value_kind != property.value_kind {
+                    return Err(invalid_registry("property registry lookup is not bijective"));
+                }
+            }
+        }
+    }
+    for relation in &registry.relation_properties {
+        for kind in &relation.object_kinds {
+            for name in &relation.native_names {
+                if relation_property_role(*kind, name) != Some(relation.role) {
+                    return Err(invalid_registry(
+                        "relation-property registry lookup is not bijective",
+                    ));
+                }
+            }
+        }
+    }
+    let mut exercised_children = BTreeSet::new();
+    for owner in &registry.objects {
+        for child in &registry.objects {
+            let matches = registry
+                .children
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| child_mapping_matches(entry, owner, child))
+                .collect::<Vec<_>>();
+            if matches.len() > 1 {
+                return Err(invalid_registry(
+                    "child registry has overlapping runtime mappings",
+                ));
+            }
+            if let Some((index, entry)) = matches.first() {
+                exercised_children.insert(*index);
+                if child_relation_role(owner, child) != Some(entry.relation)
+                    || child_mapping_is_partial(owner, child) != entry.partial
+                {
+                    return Err(invalid_registry(
+                        "child registry lookup is not bijective",
+                    ));
+                }
+            }
+        }
+    }
+    if exercised_children.len() != registry.children.len() {
+        return Err(invalid_registry(
+            "child registry contains a mapping unused by runtime profiles",
+        ));
+    }
+    for alias in &registry.enum_aliases {
+        for native in &alias.native_aliases {
+            if enum_value(native) != Some(alias.semantic) {
+                return Err(invalid_registry("enum registry lookup is not bijective"));
+            }
+        }
+    }
+    for alias in &registry.type_variants {
+        if type_alias(alias.namespace, &alias.alias) != Some(alias) {
+            return Err(invalid_registry("type registry lookup is not bijective"));
+        }
+    }
+    for backing in &registry.backing_artifacts {
+        for kind in &backing.object_kinds {
+            if backing_mapping(*kind) != Some(backing) {
+                return Err(invalid_registry("backing registry lookup is not bijective"));
+            }
+        }
+    }
+    for partial in &registry.intentional_partial_cases {
+        for kind in &partial.object_kinds {
+            if !is_intentionally_partial(*kind, &partial.reason) {
+                return Err(invalid_registry(
+                    "intentional-partial registry lookup is not bijective",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn metadata_class_profiles() -> &'static [MetadataClassProfile] { &registry().objects }
+
+pub(crate) fn legacy_top_level_metadata_classes() -> &'static [&'static str] {
+    static CLASSES: OnceLock<Vec<&'static str>> = OnceLock::new();
+    CLASSES
+        .get_or_init(|| {
+            metadata_class_profiles()
+                .iter()
+                .filter(|entry| {
+                    entry.source == MappingSource::Native
+                        && entry.role == MetadataClassRole::TopLevelObject
+                })
+                .map(|entry| entry.class_name.as_str())
+                .collect()
+        })
+        .as_slice()
+}
+
+pub(crate) fn metadata_class_profile(class_name: &str) -> Option<&'static MetadataClassProfile> {
+    registry().objects.iter().find(|entry| entry.source == MappingSource::Native && entry.class_name == class_name)
+}
+
+pub(crate) fn unknown_metadata_class_profile() -> &'static MetadataClassProfile {
+    registry().objects.iter().find(|entry| entry.source == MappingSource::Unknown).expect("unknown mapping")
+}
+
+pub(crate) fn derived_profile(kind: NodeKind) -> &'static MetadataClassProfile {
+    registry().objects.iter().find(|entry| entry.source == MappingSource::Derived && entry.kind == kind).expect("derived mapping")
+}
+
+pub(crate) fn property_mapping(kind: NodeKind, native_name: &str) -> Option<&'static PropertyMapping> {
+    registry().properties.iter().find(|entry| !entry.all_object_kinds && entry.object_kinds.contains(&kind) && entry.native_names.iter().any(|name| name == native_name))
+        .or_else(|| registry().properties.iter().find(|entry| entry.all_object_kinds && entry.native_names.iter().any(|name| name == native_name)))
+}
+
+pub(crate) fn relation_property_role(kind: NodeKind, native_name: &str) -> Option<RelationRole> {
+    registry().relation_properties.iter().find(|entry| entry.object_kinds.contains(&kind) && entry.native_names.iter().any(|name| name == native_name)).map(|entry| entry.role)
+}
+
+pub(crate) fn object_kind(profile: &MetadataClassProfile) -> NodeKind { profile.kind }
+
+fn child_mapping_matches(
+    entry: &ChildMapping,
     owner: &MetadataClassProfile,
     child: &MetadataClassProfile,
-) -> Option<RelationRole> {
-    let role = match child.role {
-        MetadataClassRole::Attribute
-            if owner.role == MetadataClassRole::TabularSection =>
-        {
-            SemanticRelationId::COLUMNS
-        }
-        MetadataClassRole::Attribute => SemanticRelationId::ATTRIBUTES,
-        MetadataClassRole::Column => SemanticRelationId::COLUMNS,
-        MetadataClassRole::Dimension => SemanticRelationId::DIMENSIONS,
-        MetadataClassRole::Resource => SemanticRelationId::RESOURCES,
-        MetadataClassRole::EnumerationValue => SemanticRelationId::ENUM_VALUES,
-        MetadataClassRole::TabularSection => SemanticRelationId::TABULAR_SECTIONS,
-        MetadataClassRole::Form => SemanticRelationId::FORMS,
-        MetadataClassRole::Template => SemanticRelationId::TEMPLATES,
-        MetadataClassRole::Command => SemanticRelationId::COMMANDS,
-        MetadataClassRole::HttpServiceUrlTemplate => SemanticRelationId::URL_TEMPLATES,
-        MetadataClassRole::HttpServiceMethod => SemanticRelationId::METHODS,
-        MetadataClassRole::WebServiceOperation => SemanticRelationId::OPERATIONS,
-        MetadataClassRole::WebServiceParameter => SemanticRelationId::PARAMETERS,
-        MetadataClassRole::TopLevelObject => SemanticRelationId::CHILDREN,
-        MetadataClassRole::Configuration | MetadataClassRole::Unsupported => return None,
-    };
-    Some(role)
+) -> bool {
+    (entry.owner_kinds.is_empty() || entry.owner_kinds.contains(&owner.kind))
+        && (entry.owner_roles.is_empty() || entry.owner_roles.contains(&owner.role))
+        && (entry.child_kinds.is_empty() || entry.child_kinds.contains(&child.kind))
+        && (entry.child_roles.is_empty() || entry.child_roles.contains(&child.role))
+}
+
+fn child_mapping(owner: &MetadataClassProfile, child: &MetadataClassProfile) -> Option<&'static ChildMapping> {
+    registry()
+        .children
+        .iter()
+        .find(|entry| child_mapping_matches(entry, owner, child))
+}
+
+pub(crate) fn child_metadata_class_profile(owner: &MetadataClassProfile, class_name: &str) -> Option<&'static MetadataClassProfile> {
+    let child = metadata_class_profile(class_name).unwrap_or_else(unknown_metadata_class_profile);
+    child_mapping(owner, child).map(|_| child)
+}
+
+pub(crate) fn child_relation_role(owner: &MetadataClassProfile, child: &MetadataClassProfile) -> Option<RelationRole> {
+    child_mapping(owner, child).map(|entry| entry.relation)
+}
+
+pub(crate) fn child_mapping_is_partial(owner: &MetadataClassProfile, child: &MetadataClassProfile) -> bool {
+    child_mapping(owner, child).is_some_and(|entry| entry.partial)
 }
 
 pub(crate) fn reference_kind(native_class: &str) -> Option<NodeKind> {
-    match native_class {
-        "Catalog" | "CatalogRef" => Some(NodeKind::Catalog),
-        "Document" | "DocumentRef" => Some(NodeKind::Document),
-        "Enum" | "EnumRef" => Some(NodeKind::Enumeration),
-        "DefinedType" => Some(NodeKind::DefinedType),
-        "ExchangePlan" | "ExchangePlanRef" => Some(NodeKind::ExchangePlan),
-        "ChartOfCharacteristicTypes" | "ChartOfCharacteristicTypesRef" | "Characteristic" => {
-            Some(NodeKind::ChartOfCharacteristicTypes)
-        }
-        "ChartOfAccounts" | "ChartOfAccountsRef" => Some(NodeKind::ChartOfAccounts),
-        "ChartOfCalculationTypes" | "ChartOfCalculationTypesRef" => {
-            Some(NodeKind::ChartOfCalculationTypes)
-        }
-        "DocumentJournal" | "DocumentJournalRef" => Some(NodeKind::DocumentJournal),
-        "BusinessProcess" | "BusinessProcessRef" => Some(NodeKind::BusinessProcess),
-        "Task" | "TaskRef" => Some(NodeKind::Task),
-        "InformationRegister" | "InformationRegisterRecordKey" => {
-            Some(NodeKind::InformationRegister)
-        }
-        "AccumulationRegister" | "AccumulationRegisterRecordKey" => {
-            Some(NodeKind::AccumulationRegister)
-        }
-        "AccountingRegister" | "AccountingRegisterRecordKey" => {
-            Some(NodeKind::AccountingRegister)
-        }
-        "CalculationRegister" | "CalculationRegisterRecordKey" => {
-            Some(NodeKind::CalculationRegister)
-        }
-        _ => None,
-    }
+    metadata_class_profile(native_class).map(|entry| entry.kind).or_else(|| {
+        type_alias(NativeTypeNamespace::CurrentConfiguration, native_class).and_then(|entry| match entry.category {
+            TypeAliasCategory::Reference(kind) | TypeAliasCategory::Object(kind) | TypeAliasCategory::RecordSet(kind)
+            | TypeAliasCategory::Manager(kind) | TypeAliasCategory::Key(kind) => Some(kind),
+            TypeAliasCategory::Enumeration => Some(NodeKind::Enumeration),
+            TypeAliasCategory::DefinedType => Some(NodeKind::DefinedType),
+            TypeAliasCategory::Primitive(_) => None,
+        })
+    })
+}
+
+pub(crate) fn enum_value(native: &str) -> Option<SemanticEnumValue> {
+    registry().enum_aliases.iter().find(|entry| entry.native_aliases.iter().any(|alias| alias == native)).map(|entry| entry.semantic)
+}
+
+pub(crate) fn type_alias(namespace: NativeTypeNamespace, alias: &str) -> Option<&'static TypeAliasMapping> {
+    registry().type_variants.iter().find(|entry| entry.namespace == namespace && entry.alias == alias)
+}
+
+pub(crate) fn backing_mapping(kind: NodeKind) -> Option<&'static BackingMapping> {
+    registry().backing_artifacts.iter().find(|entry| entry.object_kinds.contains(&kind))
+}
+
+pub(crate) fn is_intentionally_partial(kind: NodeKind, reason: &str) -> bool {
+    registry().intentional_partial_cases.iter().any(|entry| entry.object_kinds.contains(&kind) && entry.reason == reason)
 }
 
 pub(crate) fn is_field_kind(kind: NodeKind) -> bool {
-    matches!(
-        kind,
-        NodeKind::Attribute | NodeKind::Dimension | NodeKind::Resource
-    )
+    matches!(kind, NodeKind::Attribute | NodeKind::Dimension | NodeKind::Resource)
+}
+
+fn invalid_registry(message: impl Into<String>) -> SourceAdapterError {
+    SourceAdapterError::new(SourceAdapterErrorKind::ProjectionAmbiguous, message)
 }
