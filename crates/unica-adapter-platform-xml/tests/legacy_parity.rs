@@ -28,6 +28,40 @@ fn typed_registry_manifest_is_runtime_checked_and_corpus_covers_every_top_level_
     for section in ["objects", "properties", "children", "enumAliases", "typeVariants", "backingArtifacts", "intentionalPartialCases"] {
         assert!(manifest[section].as_array().is_some_and(|entries| !entries.is_empty()), "missing typed coverage section {section}");
     }
+    let expected_enums = expected["enumSemanticInventory"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap().to_string())
+        .collect::<BTreeSet<_>>();
+    let actual_enums = manifest["enumAliases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["semantic"].as_str().unwrap().to_string())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(actual_enums, expected_enums, "enum coverage drifted from the frozen legacy inventory");
+    let expected_types = expected["typeAliasInventory"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap().to_string())
+        .collect::<BTreeSet<_>>();
+    let actual_types = manifest["typeVariants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            format!(
+                "{}:{}:{}:{}",
+                entry["namespace"].as_str().unwrap(),
+                entry["alias"].as_str().unwrap(),
+                entry["category"].as_str().unwrap(),
+                entry["targetKind"].as_str().unwrap_or("")
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(actual_types, expected_types, "type alias coverage drifted from the frozen legacy inventory");
 }
 
 #[test]
@@ -40,6 +74,18 @@ fn real_tracked_platform_xml_files_match_frozen_identity_inventory() {
         let kind = SemanticObjectKind::parse(case[1].as_str().unwrap()).unwrap();
         node(&envelope, kind, case[2].as_str().unwrap());
         assert_ne!(envelope.status, NavigationStatus::Unavailable);
+        let facts = semantic_fact_set(&envelope);
+        for expected_fact in expected["realFixtureFacts"][case[0].as_str().unwrap()]
+            .as_array()
+            .expect("every real fixture needs an independent fact inventory")
+        {
+            assert!(
+                facts.contains(expected_fact.as_str().unwrap()),
+                "{} is missing frozen legacy fact {}",
+                case[0].as_str().unwrap(),
+                expected_fact
+            );
+        }
     }
 }
 
@@ -166,6 +212,7 @@ fn semantic_fact_set(envelope: &NavigationEnvelope) -> BTreeSet<String> {
                 Some(PropertyValue::Boolean(value)) => value.to_string(),
                 Some(PropertyValue::Integer(value)) => value.to_string(),
                 Some(PropertyValue::EnumSymbol(value)) => value.as_str().to_string(),
+                Some(PropertyValue::String(value)) => serde_json::to_string(value).unwrap(),
                 Some(value) => serde_json::to_string(value).unwrap(),
                 None if property.value_state() == PropertyValueState::Absent => "absent".to_string(),
                 None => "unresolved".to_string(),
