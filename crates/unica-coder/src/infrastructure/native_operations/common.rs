@@ -2051,6 +2051,119 @@ pub(crate) fn guard_active_format_owner(
     guard_active_format_dependencies(transaction, &[target], context)
 }
 
+pub(crate) fn stage_dcs_output(
+    transaction: &mut CompileTransaction,
+    target: &Path,
+    replacement: Vec<u8>,
+) -> Result<(), String> {
+    stage_platform_xml_output(
+        transaction,
+        target,
+        replacement,
+        "http://v8.1c.ru/8.1/data-composition-system/schema",
+        "DataCompositionSchema",
+    )
+}
+
+pub(crate) fn stage_mxl_output(
+    transaction: &mut CompileTransaction,
+    target: &Path,
+    replacement: Vec<u8>,
+) -> Result<(), String> {
+    stage_platform_xml_output(
+        transaction,
+        target,
+        replacement,
+        "http://v8.1c.ru/8.2/data/spreadsheet",
+        "document",
+    )
+}
+
+pub(crate) fn stage_form_output(
+    transaction: &mut CompileTransaction,
+    target: &Path,
+    replacement: Vec<u8>,
+) -> Result<(), String> {
+    stage_platform_xml_output(
+        transaction,
+        target,
+        replacement,
+        "http://v8.1c.ru/8.3/xcf/logform",
+        "Form",
+    )
+}
+
+fn stage_platform_xml_output(
+    transaction: &mut CompileTransaction,
+    target: &Path,
+    replacement: Vec<u8>,
+    expected_namespace: &str,
+    expected_local_name: &str,
+) -> Result<(), String> {
+    match exact_platform_xml_output_preimage(target, expected_namespace, expected_local_name)? {
+        Some(original) => transaction.replace_bytes(target, &original, replacement),
+        None => transaction.create_or_replace_bytes(target, replacement),
+    }
+}
+
+fn exact_platform_xml_output_preimage(
+    target: &Path,
+    expected_namespace: &str,
+    expected_local_name: &str,
+) -> Result<Option<Vec<u8>>, String> {
+    let metadata = match fs::symlink_metadata(target) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "failed to inspect existing platform XML output {}: {error}",
+                target.display()
+            ))
+        }
+    };
+    if metadata.file_type().is_symlink() {
+        return Err(format!(
+            "existing platform XML output must not be a symbolic link or reparse point: {}",
+            target.display()
+        ));
+    }
+    if !metadata.is_file() {
+        return Err(format!(
+            "existing platform XML output must be a regular file: {}",
+            target.display()
+        ));
+    }
+    let raw = fs::read(target).map_err(|error| {
+        format!(
+            "failed to read existing platform XML output {}: {error}",
+            target.display()
+        )
+    })?;
+    let text = std::str::from_utf8(&raw).map_err(|error| {
+        format!(
+            "existing platform XML output is not UTF-8 {}: {error}",
+            target.display()
+        )
+    })?;
+    let document = Document::parse(text.trim_start_matches('\u{feff}')).map_err(|error| {
+        format!(
+            "failed to parse existing platform XML output {}: {error}",
+            target.display()
+        )
+    })?;
+    let root = document.root_element();
+    let actual = (root.tag_name().namespace(), root.tag_name().name());
+    if actual != (Some(expected_namespace), expected_local_name) {
+        return Err(format!(
+            "declared platform XML target root is {{{}}}{}, expected {{{expected_namespace}}}{expected_local_name}: {}",
+            actual.0.unwrap_or(""),
+            actual.1,
+            target.display()
+        ));
+    }
+    Ok(Some(raw))
+}
+
 pub(crate) fn guard_active_format_dependencies(
     transaction: &mut CompileTransaction,
     targets: &[&Path],
@@ -2582,4 +2695,122 @@ pub(crate) fn escape_xml(value: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+#[cfg(test)]
+mod exact_artifact_family_guard_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn exact_family_guards_accept_same_family_and_reject_cross_family_bytes() {
+        let root = fixture_root("family-matrix");
+        fs::create_dir_all(&root).unwrap();
+        let cases = [
+            (
+                "Dcs.xml",
+                "http://v8.1c.ru/8.1/data-composition-system/schema",
+                "DataCompositionSchema",
+                br#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" version="2.20"/>"#
+                    .as_slice(),
+                br#"<document xmlns="http://v8.1c.ru/8.2/data/spreadsheet" version="2.20"/>"#
+                    .as_slice(),
+            ),
+            (
+                "Mxl.xml",
+                "http://v8.1c.ru/8.2/data/spreadsheet",
+                "document",
+                br#"<document xmlns="http://v8.1c.ru/8.2/data/spreadsheet" version="2.20"/>"#
+                    .as_slice(),
+                br#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"/>"#
+                    .as_slice(),
+            ),
+            (
+                "Form.xml",
+                "http://v8.1c.ru/8.3/xcf/logform",
+                "Form",
+                br#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"/>"#.as_slice(),
+                br#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" version="2.20"/>"#
+                    .as_slice(),
+            ),
+        ];
+        for (name, namespace, local_name, accepted, rejected) in cases {
+            let target = root.join(name);
+            fs::write(&target, accepted).unwrap();
+            exact_platform_xml_output_preimage(&target, namespace, local_name).unwrap();
+
+            fs::write(&target, rejected).unwrap();
+            let before = fs::read(&target).unwrap();
+            let error =
+                exact_platform_xml_output_preimage(&target, namespace, local_name).unwrap_err();
+            assert!(
+                error.contains("declared platform XML target root"),
+                "{error}"
+            );
+            assert_eq!(fs::read(&target).unwrap(), before);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_family_guard_rejects_output_symlinks_without_following_them() {
+        let root = fixture_root("symlink");
+        fs::create_dir_all(&root).unwrap();
+        let real = root.join("Real.xml");
+        let target = root.join("Alias.xml");
+        let original =
+            br#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"/>"#.to_vec();
+        fs::write(&real, &original).unwrap();
+        std::os::unix::fs::symlink(&real, &target).unwrap();
+
+        let error =
+            exact_platform_xml_output_preimage(&target, "http://v8.1c.ru/8.3/xcf/logform", "Form")
+                .unwrap_err();
+
+        assert!(error.contains("symbolic link"), "{error}");
+        assert_eq!(fs::read(real).unwrap(), original);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn exact_family_guard_binds_the_checked_preimage_before_staging() {
+        let root = fixture_root("preimage-race");
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("Form.xml");
+        fs::write(
+            &target,
+            br#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"/>"#,
+        )
+        .unwrap();
+        let mut transaction = CompileTransaction::new();
+        stage_form_output(
+            &mut transaction,
+            &target,
+            br#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"/>"#.to_vec(),
+        )
+        .unwrap();
+        let concurrent =
+            br#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><Child/></Form>"#
+                .to_vec();
+        fs::write(&target, &concurrent).unwrap();
+
+        let result = transaction
+            .commit_with_post_validation(|| Ok(()))
+            .map(|_| ());
+
+        assert!(result.is_err());
+        assert_eq!(fs::read(&target).unwrap(), concurrent);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn fixture_root(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "unica-exact-artifact-{label}-{}-{}",
+            std::process::id(),
+            NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
 }

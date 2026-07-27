@@ -3883,7 +3883,7 @@ pub(crate) fn compile_form(
             }
             _ => None,
         };
-        transaction.create_or_replace_bytes(&output_path, utf8_bom_bytes(&plan.xml))?;
+        stage_form_output(&mut transaction, &output_path, utf8_bom_bytes(&plan.xml))?;
         let mut registration_stdout = None;
         if let Some(FormParentRegistrationPlan {
             path,
@@ -16219,7 +16219,7 @@ mod tests {
         let definition_path = context.cwd.join("form.json");
         let output_path = context.cwd.join("Form.xml");
         write_file(&definition_path, "{}");
-        let original = b"<garbage/>".to_vec();
+        let original = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration/></MetaDataObject>"#.to_vec();
         fs::write(&output_path, &original).unwrap();
         let args = Map::from_iter([
             (
@@ -16245,6 +16245,33 @@ mod tests {
         assert_eq!(fs::read(&output_path).unwrap(), original);
         assert!(outcome.changes.is_empty(), "{outcome:?}");
         assert!(outcome.artifacts.is_empty(), "{outcome:?}");
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn form_compile_replaces_an_existing_form_of_the_same_family() {
+        let context = temp_context("compile-existing-same-family");
+        let definition_path = context.cwd.join("form.json");
+        let output_path = context.cwd.join("Form.xml");
+        write_file(&definition_path, "{}");
+        let original =
+            br#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"/>"#.to_vec();
+        fs::write(&output_path, &original).unwrap();
+        let args = Map::from_iter([
+            (
+                "JsonPath".to_string(),
+                json!(definition_path.display().to_string()),
+            ),
+            (
+                "OutputPath".to_string(),
+                json!(output_path.display().to_string()),
+            ),
+        ]);
+
+        let outcome = compile_form(&args, &context);
+
+        assert!(outcome.ok, "{outcome:?}");
+        assert_ne!(fs::read(&output_path).unwrap(), original);
         let _ = fs::remove_dir_all(&context.cwd);
     }
 

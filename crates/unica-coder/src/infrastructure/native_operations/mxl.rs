@@ -2829,7 +2829,7 @@ pub(crate) fn compile_mxl(args: &Map<String, Value>, context: &WorkspaceContext)
         let xml = format!("{}\n", lines.join("\n"));
         Document::parse(&xml).map_err(|error| format!("compiled MXL is not valid XML: {error}"))?;
         let output_path = absolutize(output_path_raw.clone(), &context.cwd);
-        transaction.create_or_replace_bytes(&output_path, utf8_bom_bytes(&xml))?;
+        stage_mxl_output(&mut transaction, &output_path, utf8_bom_bytes(&xml))?;
         guard_active_format_owner(&mut transaction, &output_path, context)?;
         let report = transaction
             .commit_with_post_validation(|| require_mxl_post_validation(&output_path, context))?;
@@ -3574,7 +3574,7 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let original = b"<garbage/>".to_vec();
+        let original = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration/></MetaDataObject>"#.to_vec();
         fs::write(&output_path, &original).unwrap();
         let args = Map::from_iter([
             ("JsonPath".to_string(), json!(definition_path)),
@@ -3594,6 +3594,38 @@ mod tests {
         assert_eq!(fs::read(&output_path).unwrap(), original);
         assert!(outcome.changes.is_empty(), "{outcome:?}");
         assert!(outcome.artifacts.is_empty(), "{outcome:?}");
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn mxl_compile_replaces_an_existing_mxl_of_the_same_family() {
+        let context = test_context("compile-existing-same-family");
+        let definition_path = context.cwd.join("definition.json");
+        let output_path = context.cwd.join("Template.xml");
+        fs::write(
+            &definition_path,
+            serde_json::to_vec(&json!({
+                "columns": 1,
+                "areas": [{
+                    "name": "Area",
+                    "rows": [{"cells": [{"col": 1, "text": "value"}]}]
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let original =
+            br#"<document xmlns="http://v8.1c.ru/8.2/data/spreadsheet" version="2.20"/>"#.to_vec();
+        fs::write(&output_path, &original).unwrap();
+        let args = Map::from_iter([
+            ("JsonPath".to_string(), json!(definition_path)),
+            ("OutputPath".to_string(), json!(output_path)),
+        ]);
+
+        let outcome = compile_mxl(&args, &context);
+
+        assert!(outcome.ok, "{outcome:?}");
+        assert_ne!(fs::read(&output_path).unwrap(), original);
         let _ = fs::remove_dir_all(&context.cwd);
     }
 

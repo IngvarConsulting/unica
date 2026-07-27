@@ -2865,7 +2865,7 @@ pub(crate) fn compile_dcs(args: &Map<String, Value>, context: &WorkspaceContext)
             "OK  {output_path_label}\n    DataSets: {ds_count}  Fields: {field_count}  Calculated: {calc_count}  Totals: {total_count}  Params: {param_count}  Variants: {variant_count}\n    Size: {file_size} bytes\n"
         );
 
-        transaction.create_or_replace_bytes(&output_path, replacement)?;
+        stage_dcs_output(&mut transaction, &output_path, replacement)?;
         guard_active_format_owner(&mut transaction, &output_path, context)?;
         let mut validation_stdout = None;
         let report = transaction.commit_with_post_validation(|| {
@@ -10342,7 +10342,7 @@ mod tests {
     fn dcs_compile_directly_rejects_existing_wrong_root_without_write() {
         let context = temp_context("dcs-compile-existing-wrong-root");
         let output_path = context.cwd.join("Template.xml");
-        let original = b"<garbage/>".to_vec();
+        let original = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration/></MetaDataObject>"#.to_vec();
         fs::write(&output_path, &original).unwrap();
         let args = dcs_compile_args(&valid_compile_definition(), "Template.xml");
 
@@ -10359,6 +10359,23 @@ mod tests {
         assert_eq!(fs::read(&output_path).unwrap(), original);
         assert!(outcome.changes.is_empty(), "{outcome:?}");
         assert!(outcome.artifacts.is_empty(), "{outcome:?}");
+        fs::remove_dir_all(&context.cwd).unwrap();
+    }
+
+    #[test]
+    fn dcs_compile_replaces_an_existing_dcs_of_the_same_family() {
+        let context = temp_context("dcs-compile-existing-same-family");
+        let output_path = context.cwd.join("Template.xml");
+        let original = exact_dcs_bytes(
+            r#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" version="2.20"/>"#,
+        );
+        fs::write(&output_path, &original).unwrap();
+        let args = dcs_compile_args(&valid_compile_definition(), "Template.xml");
+
+        let outcome = compile_dcs(&args, &context);
+
+        assert!(outcome.ok, "{outcome:?}");
+        assert_ne!(fs::read(&output_path).unwrap(), original);
         fs::remove_dir_all(&context.cwd).unwrap();
     }
 
