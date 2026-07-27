@@ -232,7 +232,8 @@
     "property:catalog:Валюты:catalog.hierarchy.type=hierarchyOfGroupsAndItems",
     "property:catalog:Валюты:catalog.hierarchy.levelLimit.enabled=false",
     "property:catalog:Валюты:catalog.hierarchy.levelCount=2",
-    "property:catalog:Валюты:catalog.hierarchy.levelLimit=absent"
+    "property:catalog:Валюты:catalog.hierarchy.levelLimit=absent",
+    "property:catalog:Валюты:catalog.code.series=wholeCollection"
   ],
   "realFixtureFacts": {
     "Catalogs/Валюты.xml": [
@@ -729,7 +730,13 @@
     "textDocument",
     "htmlDocument",
     "geographicalSchema",
-    "graphicalSchema"
+    "graphicalSchema",
+    "withinOwnerScope",
+    "withinParentScope",
+    "deleteAutomatic",
+    "deleteDisabled",
+    "writeModified",
+    "writeAll"
   ],
   "typeAliasInventory": [
     "xmlSchema:string:string:",
@@ -821,6 +828,7 @@
         "nonperiodical"
       ],
       "propertyIds": [
+        "document.number.periodicity",
         "register.periodicity"
       ]
     },
@@ -884,7 +892,7 @@
         "WholeCatalog"
       ],
       "propertyIds": [
-        "document.number.periodicity"
+        "catalog.code.series"
       ]
     },
     {
@@ -1053,8 +1061,8 @@
     {
       "semantic": "use",
       "nativeAliases": [
-        "Use",
-        "use"
+        "AutoUse",
+        "autoUse"
       ],
       "propertyIds": [
         "httpService.reuseSessions",
@@ -1230,6 +1238,60 @@
       ],
       "propertyIds": [
         "template.type"
+      ]
+    },
+    {
+      "semantic": "withinOwnerScope",
+      "nativeAliases": [
+        "WithinOwnerSubordination"
+      ],
+      "propertyIds": [
+        "catalog.code.series"
+      ]
+    },
+    {
+      "semantic": "withinParentScope",
+      "nativeAliases": [
+        "WithinSubordination"
+      ],
+      "propertyIds": [
+        "catalog.code.series"
+      ]
+    },
+    {
+      "semantic": "deleteAutomatic",
+      "nativeAliases": [
+        "AutoDelete"
+      ],
+      "propertyIds": [
+        "document.registerRecordsDeletion.mode"
+      ]
+    },
+    {
+      "semantic": "deleteDisabled",
+      "nativeAliases": [
+        "AutoDeleteOff"
+      ],
+      "propertyIds": [
+        "document.registerRecordsDeletion.mode"
+      ]
+    },
+    {
+      "semantic": "writeModified",
+      "nativeAliases": [
+        "WriteModified"
+      ],
+      "propertyIds": [
+        "document.registerRecordsWritingOnPost.mode"
+      ]
+    },
+    {
+      "semantic": "writeAll",
+      "nativeAliases": [
+        "WriteAll"
+      ],
+      "propertyIds": [
+        "document.registerRecordsWritingOnPost.mode"
       ]
     }
   ],

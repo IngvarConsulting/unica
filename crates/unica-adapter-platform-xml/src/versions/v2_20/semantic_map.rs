@@ -732,6 +732,21 @@ pub(crate) fn validate_coverage_registry() -> Result<(), SourceAdapterError> {
                 }
             }
         }
+        for property in registry
+            .properties
+            .iter()
+            .filter(|property| property.value_kind == NativeValueKind::Enum)
+        {
+            if !alias.property_ids.contains(&property.semantic_id) {
+                for native in &alias.native_aliases {
+                    if enum_value(property.semantic_id, native).is_some() {
+                        return Err(invalid_registry(
+                            "enum registry accepts an alias outside its declared property context",
+                        ));
+                    }
+                }
+            }
+        }
     }
     for alias in &registry.type_variants {
         if type_alias(alias.namespace, &alias.alias) != Some(alias) {

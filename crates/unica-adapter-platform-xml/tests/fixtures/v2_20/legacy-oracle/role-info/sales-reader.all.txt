@@ -1,0 +1,26 @@
+﻿=== Role: SalesReader --- "Читатель продаж" ===
+Поддержка: не на поддержке
+
+Properties: setForNewObjects=false, setForAttributesByDefault=true, independentRightsOfChildObjects=false
+
+Allowed rights:
+
+  Catalog (1):
+    Products: Read, View [RLS]
+
+  Document (1):
+    SalesOrder: Read, Posting
+
+Denied rights:
+
+  Catalog (1):
+    Products: -Update
+
+  Document (1):
+    SalesOrder: -Deletion
+
+RLS: 1 restrictions
+Templates: OnlyOwn
+
+---
+Total: 4 allowed, 2 denied

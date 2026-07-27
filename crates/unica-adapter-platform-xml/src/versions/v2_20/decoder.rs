@@ -797,7 +797,7 @@ fn decode_property_value(
 ) -> Result<(NativePropertyValue, bool), SourceAdapterError> {
     let Some(mapping) = mapping else {
         if property.children().any(|child| child.is_element()) {
-            let values = readable_leaf_values(property);
+            let values = readable_text_occurrences(property);
             return Ok((
                 if values.is_empty() {
                     NativePropertyValue::Structured
@@ -950,13 +950,10 @@ fn decode_reference_targets(property: Node<'_, '_>) -> (Vec<NativeSemanticRefere
     (targets, unmapped)
 }
 
-fn readable_leaf_values(node: Node<'_, '_>) -> Vec<String> {
+fn readable_text_occurrences(node: Node<'_, '_>) -> Vec<String> {
     node.descendants()
-        .filter(|descendant| {
-            descendant.is_element()
-                && !descendant.children().any(|child| child.is_element())
-        })
-        .filter_map(|descendant| descendant.text().map(str::trim))
+        .filter(Node::is_text)
+        .filter_map(|text| text.text().map(str::trim))
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .collect()
@@ -1643,7 +1640,7 @@ impl RightsUnknownEvidence {
     }
 
     fn record_node(&mut self, node: Node<'_, '_>) {
-        let values = readable_leaf_values(node);
+        let values = readable_text_occurrences(node);
         if values.is_empty() {
             self.record_marker();
         } else {

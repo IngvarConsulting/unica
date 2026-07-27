@@ -704,6 +704,16 @@
         "catalog"
       ],
       "nativeNames": [
+        "CodeSeries"
+      ],
+      "semanticProperty": "catalog.code.series",
+      "valueKind": "enum"
+    },
+    {
+      "objectKinds": [
+        "catalog"
+      ],
+      "nativeNames": [
         "DescriptionLength"
       ],
       "semanticProperty": "catalog.description.length",
@@ -1685,6 +1695,7 @@
         "nonperiodical"
       ],
       "propertyIds": [
+        "document.number.periodicity",
         "register.periodicity"
       ]
     },
@@ -1748,7 +1759,25 @@
         "WholeCatalog"
       ],
       "propertyIds": [
-        "document.number.periodicity"
+        "catalog.code.series"
+      ]
+    },
+    {
+      "semantic": "withinOwnerScope",
+      "nativeAliases": [
+        "WithinOwnerSubordination"
+      ],
+      "propertyIds": [
+        "catalog.code.series"
+      ]
+    },
+    {
+      "semantic": "withinParentScope",
+      "nativeAliases": [
+        "WithinSubordination"
+      ],
+      "propertyIds": [
+        "catalog.code.series"
       ]
     },
     {
@@ -1784,6 +1813,15 @@
       ]
     },
     {
+      "semantic": "deleteAutomatic",
+      "nativeAliases": [
+        "AutoDelete"
+      ],
+      "propertyIds": [
+        "document.registerRecordsDeletion.mode"
+      ]
+    },
+    {
       "semantic": "deleteOnReversal",
       "nativeAliases": [
         "AutoDeleteOnUnpost"
@@ -1793,9 +1831,36 @@
       ]
     },
     {
+      "semantic": "deleteDisabled",
+      "nativeAliases": [
+        "AutoDeleteOff"
+      ],
+      "propertyIds": [
+        "document.registerRecordsDeletion.mode"
+      ]
+    },
+    {
+      "semantic": "writeModified",
+      "nativeAliases": [
+        "WriteModified"
+      ],
+      "propertyIds": [
+        "document.registerRecordsWritingOnPost.mode"
+      ]
+    },
+    {
       "semantic": "writeSelected",
       "nativeAliases": [
         "WriteSelected"
+      ],
+      "propertyIds": [
+        "document.registerRecordsWritingOnPost.mode"
+      ]
+    },
+    {
+      "semantic": "writeAll",
+      "nativeAliases": [
+        "WriteAll"
       ],
       "propertyIds": [
         "document.registerRecordsWritingOnPost.mode"
@@ -1917,8 +1982,8 @@
     {
       "semantic": "use",
       "nativeAliases": [
-        "Use",
-        "use"
+        "AutoUse",
+        "autoUse"
       ],
       "propertyIds": [
         "httpService.reuseSessions",

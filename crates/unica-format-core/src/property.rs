@@ -157,6 +157,7 @@ pub const SEMANTIC_PROPERTY_DEFINITIONS: &[SemanticPropertyDefinition] = &[
     fixed!(CATALOG_HIERARCHY_LEVEL_COUNT, Integer),
     fixed!(CATALOG_HIERARCHY_LEVEL_LIMIT, Integer),
     fixed!(CATALOG_CODE_LENGTH, Integer),
+    fixed!(CATALOG_CODE_SERIES, Enum),
     fixed!(CATALOG_DESCRIPTION_LENGTH, Integer),
     fixed!(REGISTER_PERIODICITY, Enum),
     fixed!(REGISTER_WRITE_MODE, Enum),

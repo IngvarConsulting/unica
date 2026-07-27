@@ -35,9 +35,81 @@ fn unknown_child_is_retained_through_the_neutral_relation() {
 
 #[test]
 fn unknown_children_under_no_vocabulary_owners_preserve_occurrence_and_position() {
+    let expected_native_profiles = [
+        "AccountingFlag",
+        "AddressingAttribute",
+        "Attribute",
+        "Column",
+        "Command",
+        "Dimension",
+        "EnumValue",
+        "ExtDimensionAccountingFlag",
+        "Form",
+        "Method",
+        "Parameter",
+        "Resource",
+        "Template",
+    ];
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &fs::read(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("src/versions/v2_20/coverage.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let actual_native_profiles = manifest["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|profile| {
+            profile["source"] == "native" && profile["childVocabulary"] == "none"
+        })
+        .map(|profile| profile["nativeClass"].as_str().unwrap())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        actual_native_profiles,
+        expected_native_profiles.into_iter().collect(),
+        "the independent no-vocabulary owner inventory drifted"
+    );
+
     for (owner_class, owner_name, owner_kind) in [
+        (
+            "AccountingFlag",
+            "AccountingFlagOwner",
+            SemanticObjectKind::Unknown,
+        ),
+        (
+            "AddressingAttribute",
+            "AddressingAttributeOwner",
+            SemanticObjectKind::Unknown,
+        ),
         ("Attribute", "AttributeOwner", SemanticObjectKind::Attribute),
+        ("Column", "ColumnOwner", SemanticObjectKind::Attribute),
+        ("Command", "CommandOwner", SemanticObjectKind::Command),
+        ("Dimension", "DimensionOwner", SemanticObjectKind::Dimension),
+        (
+            "EnumValue",
+            "EnumValueOwner",
+            SemanticObjectKind::EnumerationValue,
+        ),
+        (
+            "ExtDimensionAccountingFlag",
+            "ExtDimensionAccountingFlagOwner",
+            SemanticObjectKind::Unknown,
+        ),
         ("Form", "FormOwner", SemanticObjectKind::Form),
+        (
+            "Method",
+            "MethodOwner",
+            SemanticObjectKind::HttpServiceMethod,
+        ),
+        (
+            "Parameter",
+            "ParameterOwner",
+            SemanticObjectKind::WebServiceParameter,
+        ),
+        ("Resource", "ResourceOwner", SemanticObjectKind::Resource),
         ("Template", "TemplateOwner", SemanticObjectKind::Template),
     ] {
         let xml = format!(

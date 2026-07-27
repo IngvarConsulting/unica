@@ -1,8 +1,17 @@
-use std::{collections::BTreeSet, fs, path::{Path, PathBuf}, sync::atomic::{AtomicU64, Ordering}};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
 use unica_format_core::{
-    navigation::{FacetSelection, NavigationEnvelope, NavigationNode, NavigationQuery, NavigationSelection, NavigationStatus, NavigationTarget, PropertySelection, PropertyValueState},
+    navigation::{
+        FacetSelection, NavigationEnvelope, NavigationNode, NavigationQuery,
+        NavigationSelection, NavigationStatus, NavigationTarget, ObjectRef, PropertySelection,
+        PropertyValueState,
+    },
     ports::{CaptureResult, FormatReadRequest},
     semantic_ids::{SemanticEnumValue, SemanticObjectKind, SemanticPropertyId, SemanticRelationId},
     source::{SourceContext, SourceFamily, SourceLocation},
@@ -57,6 +66,7 @@ fn typed_registry_manifest_is_runtime_checked_and_corpus_covers_every_top_level_
         expected_fact_set(&expected["allKindsEnvelopeFacts"]),
         "supported-kind coverage/status/diagnostics drifted"
     );
+    assert_exact_oracle(&envelope, "allKinds");
 
     let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/versions/v2_20/coverage.json");
     let manifest: serde_json::Value = serde_json::from_slice(&fs::read(manifest_path).unwrap()).unwrap();
@@ -190,15 +200,7 @@ fn real_tracked_platform_xml_files_match_frozen_identity_inventory() {
         let kind = SemanticObjectKind::parse(case[1].as_str().unwrap()).unwrap();
         node(&envelope, kind, case[2].as_str().unwrap());
         assert_ne!(envelope.status, NavigationStatus::Unavailable);
-        let facts = legacy_baseline_fact_set(&envelope);
-        let expected_facts =
-            expected_fact_set(&expected["realFixtureFacts"][case[0].as_str().unwrap()]);
-        assert_eq!(
-            facts,
-            expected_facts,
-            "{} drifted from its exact frozen legacy information set",
-            case[0].as_str().unwrap()
-        );
+        assert_exact_oracle(&envelope, case[0].as_str().unwrap());
     }
 }
 
@@ -222,6 +224,11 @@ fn real_currencies_fixture_preserves_hierarchy_controls_without_false_activation
         "empty reference must round-trip distinctly from null"
     );
     assert_ne!(fill_value, &PropertyValue::Null);
+    assert_value(
+        node(&envelope, SemanticObjectKind::Catalog, "Валюты"),
+        SemanticPropertyId::CATALOG_CODE_SERIES,
+        PropertyValue::EnumSymbol(SemanticEnumValue::WHOLE_COLLECTION),
+    );
 }
 
 #[test]
@@ -248,15 +255,114 @@ fn adversarial_hierarchy_combinations_keep_configured_and_active_facts_distinct(
 
 #[test]
 fn complete_legacy_enum_aliases_map_with_property_specific_applicability() {
-    let document = read_inline(
-        "enum-whole-catalog",
-        "WholeCatalog.xml",
-        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document uuid="71000000-0000-0000-0000-000000000001"><Properties><Name>WholeCatalog</Name><NumberPeriodicity>WholeCatalog</NumberPeriodicity></Properties></Document></MetaDataObject>"#,
+    for (label, native, semantic) in [
+        (
+            "whole-catalog",
+            "WholeCatalog",
+            SemanticEnumValue::WHOLE_COLLECTION,
+        ),
+        (
+            "within-owner",
+            "WithinOwnerSubordination",
+            SemanticEnumValue::WITHIN_OWNER_SCOPE,
+        ),
+        (
+            "within-parent",
+            "WithinSubordination",
+            SemanticEnumValue::WITHIN_PARENT_SCOPE,
+        ),
+    ] {
+        let catalog = read_inline(
+            &format!("catalog-code-series-{label}"),
+            "CatalogSeries.xml",
+            &format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="71000000-0000-0000-0000-000000000001"><Properties><Name>CatalogSeries</Name><CodeSeries>{native}</CodeSeries></Properties></Catalog></MetaDataObject>"#
+            ),
+        );
+        assert_value(
+            node(&catalog, SemanticObjectKind::Catalog, "CatalogSeries"),
+            SemanticPropertyId::CATALOG_CODE_SERIES,
+            PropertyValue::EnumSymbol(semantic),
+        );
+    }
+
+    let document_modes = read_inline(
+        "complete-document-enums",
+        "DocumentModes.xml",
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document uuid="71000000-0000-0000-0000-000000000002"><Properties><Name>DocumentModes</Name><NumberPeriodicity>Nonperiodical</NumberPeriodicity><RegisterRecordsDeletion>AutoDelete</RegisterRecordsDeletion><RegisterRecordsWritingOnPost>WriteModified</RegisterRecordsWritingOnPost></Properties></Document></MetaDataObject>"#,
+    );
+    let document = node(
+        &document_modes,
+        SemanticObjectKind::Document,
+        "DocumentModes",
     );
     assert_value(
-        node(&document, SemanticObjectKind::Document, "WholeCatalog"),
+        document,
         SemanticPropertyId::DOCUMENT_NUMBER_PERIODICITY,
-        PropertyValue::EnumSymbol(SemanticEnumValue::WHOLE_COLLECTION),
+        PropertyValue::EnumSymbol(SemanticEnumValue::NONPERIODICAL),
+    );
+    assert_value(
+        document,
+        SemanticPropertyId::DOCUMENT_REGISTER_RECORDS_DELETION_MODE,
+        PropertyValue::EnumSymbol(SemanticEnumValue::DELETE_AUTOMATIC),
+    );
+    assert_value(
+        document,
+        SemanticPropertyId::DOCUMENT_REGISTER_RECORDS_WRITING_ON_POST_MODE,
+        PropertyValue::EnumSymbol(SemanticEnumValue::WRITE_MODIFIED),
+    );
+
+    for (deletion, deletion_semantic, writing, writing_semantic) in [
+        (
+            "AutoDeleteOnUnpost",
+            SemanticEnumValue::DELETE_ON_REVERSAL,
+            "WriteSelected",
+            SemanticEnumValue::WRITE_SELECTED,
+        ),
+        (
+            "AutoDeleteOff",
+            SemanticEnumValue::DELETE_DISABLED,
+            "WriteAll",
+            SemanticEnumValue::WRITE_ALL,
+        ),
+    ] {
+        let document = read_inline(
+            &format!("document-modes-{deletion}-{writing}"),
+            "OtherDocumentModes.xml",
+            &format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document uuid="71000000-0000-0000-0000-000000000005"><Properties><Name>OtherDocumentModes</Name><RegisterRecordsDeletion>{deletion}</RegisterRecordsDeletion><RegisterRecordsWritingOnPost>{writing}</RegisterRecordsWritingOnPost></Properties></Document></MetaDataObject>"#
+            ),
+        );
+        let document = node(
+            &document,
+            SemanticObjectKind::Document,
+            "OtherDocumentModes",
+        );
+        assert_value(
+            document,
+            SemanticPropertyId::DOCUMENT_REGISTER_RECORDS_DELETION_MODE,
+            PropertyValue::EnumSymbol(deletion_semantic),
+        );
+        assert_value(
+            document,
+            SemanticPropertyId::DOCUMENT_REGISTER_RECORDS_WRITING_ON_POST_MODE,
+            PropertyValue::EnumSymbol(writing_semantic),
+        );
+    }
+
+    let service = read_inline(
+        "auto-use-sessions",
+        "SessionService.xml",
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><HTTPService uuid="71000000-0000-0000-0000-000000000006"><Properties><Name>SessionService</Name><ReuseSessions>AutoUse</ReuseSessions></Properties></HTTPService></MetaDataObject>"#,
+    );
+    assert_value(
+        node(
+            &service,
+            SemanticObjectKind::HttpService,
+            "SessionService",
+        ),
+        SemanticPropertyId::HTTP_SERVICE_REUSE_SESSIONS,
+        PropertyValue::EnumSymbol(SemanticEnumValue::USE),
     );
 
     let catalog = read_inline(
@@ -331,6 +437,60 @@ fn complete_legacy_enum_aliases_map_with_property_specific_applicability() {
 }
 
 #[test]
+fn enum_aliases_are_rejected_outside_their_declared_property_context() {
+    for (label, class, property, value, kind, property_id) in [
+        (
+            "catalog-series-on-document",
+            "Document",
+            "NumberPeriodicity",
+            "WholeCatalog",
+            SemanticObjectKind::Document,
+            SemanticPropertyId::DOCUMENT_NUMBER_PERIODICITY,
+        ),
+        (
+            "document-period-on-catalog",
+            "Catalog",
+            "CodeSeries",
+            "Year",
+            SemanticObjectKind::Catalog,
+            SemanticPropertyId::CATALOG_CODE_SERIES,
+        ),
+        (
+            "module-reuse-on-service",
+            "HTTPService",
+            "ReuseSessions",
+            "DuringRequest",
+            SemanticObjectKind::HttpService,
+            SemanticPropertyId::HTTP_SERVICE_REUSE_SESSIONS,
+        ),
+        (
+            "session-reuse-on-module",
+            "CommonModule",
+            "ReturnValuesReuse",
+            "AutoUse",
+            SemanticObjectKind::CommonModule,
+            SemanticPropertyId::MODULE_RETURN_VALUES_REUSE,
+        ),
+    ] {
+        let envelope = read_inline(
+            label,
+            "CrossContext.xml",
+            &format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{class} uuid="71000000-0000-0000-0000-000000000007"><Properties><Name>CrossContext</Name><{property}>{value}</{property}></Properties></{class}></MetaDataObject>"#
+            ),
+        );
+        assert_eq!(envelope.status, NavigationStatus::Partial, "{label}");
+        let property = &node(&envelope, kind, "CrossContext").properties[&property_id];
+        assert_eq!(
+            property.value_state(),
+            PropertyValueState::Unresolved,
+            "{label}"
+        );
+        assert_eq!(property.value(), None, "{label}");
+    }
+}
+
+#[test]
 fn real_rights_backing_projects_permissions_targets_conditions_and_templates() {
     let root = temp_root("rights");
     let source_root = root.join("src");
@@ -356,12 +516,7 @@ fn real_rights_backing_projects_permissions_targets_conditions_and_templates() {
         && relation.target.display_name == "Products"));
     let template = envelope.nodes.iter().find(|node| node.object_ref.kind == SemanticObjectKind::AccessRestrictionTemplate).expect("restriction template");
     assert_value(template, SemanticPropertyId::ACCESS_RESTRICTION_CONDITIONS, PropertyValue::List(vec![PropertyValue::String("Owner = &CurrentUser".to_string())]));
-    let facts = legacy_baseline_fact_set(&envelope);
-    assert_eq!(
-        facts,
-        expected_fact_set(&expected_inventory()["rightsFacts"]),
-        "rights parity must compare the complete normalized information set"
-    );
+    assert_exact_oracle(&envelope, "rights");
 }
 
 #[test]
@@ -411,37 +566,101 @@ fn rights_extensions_fail_closed_without_becoming_restrictions() {
         SemanticPropertyId::ACCESS_RESTRICTION_CONDITIONS,
         PropertyValue::List(vec![PropertyValue::String("Known = true".to_string())]),
     );
+    assert_value(
+        permission,
+        SemanticPropertyId::UNKNOWN_FACTS,
+        unknown_property_evidence(&[
+            "right-readable-value",
+            "right-child-readable-value",
+            "restriction-readable-value",
+            "not-a-condition",
+            "condition-attribute-readable-value",
+            "nested-condition",
+            "nested-readable-value",
+        ]),
+    );
     let unknown = serde_json::to_string(
         permission.properties[&SemanticPropertyId::UNKNOWN_FACTS]
             .value()
             .expect("unknown right facts remain readable"),
     )
     .unwrap();
-    for value in [
-        "right-readable-value",
-        "restriction-readable-value",
-        "condition-attribute-readable-value",
-        "nested-readable-value",
-        "not-a-condition",
-        "right-child-readable-value",
-    ] {
-        assert!(unknown.contains(value), "missing readable neutral rights evidence {value}");
-    }
     assert!(!unknown.contains("futureRight"));
     assert!(!unknown.contains("futureCondition"));
 
+    let role = node(&envelope, SemanticObjectKind::Role, "SalesReader");
+    assert_value(
+        role,
+        SemanticPropertyId::UNKNOWN_FACTS,
+        unknown_property_evidence(&[
+            "root-readable-value",
+            "root-child-readable-value",
+            "object-readable-value",
+        ]),
+    );
+    let template = envelope
+        .nodes
+        .iter()
+        .find(|node| node.object_ref.kind == SemanticObjectKind::AccessRestrictionTemplate)
+        .expect("known template survives future rights syntax");
+    assert_value(
+        template,
+        SemanticPropertyId::UNKNOWN_FACTS,
+        unknown_property_evidence(&[
+            "template-readable-value",
+            "template-child-readable-value",
+        ]),
+    );
     let all_output = serde_json::to_string(&envelope).unwrap();
-    for value in [
-        "root-readable-value",
-        "object-readable-value",
-        "template-readable-value",
-        "template-child-readable-value",
-        "root-child-readable-value",
-    ] {
-        assert!(all_output.contains(value), "missing readable rights extension evidence {value}");
-    }
     assert!(!all_output.contains("not-a-condition\",\"type\":\"string\"}]"),
         "unknown right children must not be reclassified as known restriction conditions");
+}
+
+#[test]
+fn ambiguous_duplicate_rights_fields_are_retained_and_partial() {
+    let rights = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Rights xmlns="http://v8.1c.ru/8.2/roles" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:type="Rights" version="2.17" setForNewObjects="false"
+        setForAttributesByDefault="true" independentRightsOfChildObjects="false">
+  <object>
+    <name>Catalog.Products</name>
+    <right>
+      <name>View</name>
+      <name>Update</name>
+      <value>true</value>
+      <value>false</value>
+    </right>
+  </object>
+</Rights>"#;
+    let envelope = read_rights_inline("duplicate-rights-fields", rights);
+    assert_eq!(envelope.status, NavigationStatus::Partial);
+    let permission = envelope
+        .nodes
+        .iter()
+        .find(|node| node.object_ref.kind == SemanticObjectKind::AccessPermission)
+        .expect("ambiguous permission remains readable");
+    assert_value(
+        permission,
+        SemanticPropertyId::UNKNOWN_FACTS,
+        unknown_property_evidence(&[
+            "View",
+            "Update",
+            "extension-occurrence-3",
+            "true",
+            "false",
+            "extension-occurrence-6",
+        ]),
+    );
+    for invalid_name in ["View", "Update"] {
+        assert_ne!(
+            permission
+                .properties
+                .get(&SemanticPropertyId::ACCESS_PERMISSION_NAME)
+                .and_then(|property| property.value()),
+            Some(&PropertyValue::String(invalid_name.to_string())),
+            "an ambiguous field must not be projected as typed"
+        );
+    }
 }
 
 #[test]
@@ -491,23 +710,103 @@ fn owned_and_common_forms_and_templates_expose_descriptor_type_and_opaque_backin
     assert_value(template, SemanticPropertyId::TEMPLATE_TYPE, PropertyValue::EnumSymbol(SemanticEnumValue::BINARY_DATA));
     assert_value(template, SemanticPropertyId::BACKING_CONTENT_AVAILABLE, PropertyValue::Boolean(true));
 
-    let expected = expected_inventory();
-    for (label, envelope, inventory) in [
-        ("owned artifacts", &owned, "ownedArtifactFacts"),
-        ("common form", &common_form, "commonFormFacts"),
-        ("common template", &common_template, "commonTemplateFacts"),
+    for (envelope, inventory) in [
+        (&owned, "ownedArtifacts"),
+        (&common_form, "commonForm"),
+        (&common_template, "commonTemplate"),
     ] {
-        let facts = legacy_baseline_fact_set(envelope);
-        assert_eq!(
-            facts,
-            expected_fact_set(&expected[inventory]),
-            "{label} parity must compare the complete normalized information set"
+        assert_exact_oracle(envelope, inventory);
+    }
+}
+
+#[test]
+fn exact_oracle_covers_types_unknowns_and_legacy_provenance() {
+    for (fixture, case) in [
+        ("types/AllTypes.xml", "allTypes"),
+        ("types/EventSources.xml", "eventSources"),
+        ("unknowns/UnknownCases.xml", "unknowns"),
+    ] {
+        assert_exact_oracle(&read_tracked(fixture), case);
+    }
+
+    let oracle = exact_oracle();
+    for case in oracle["cases"].as_object().unwrap().values() {
+        let Some(output) = case.get("legacyOutput").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let frozen = fs::read(tracked_root().join(output))
+            .unwrap_or_else(|_| panic!("missing frozen legacy output {output}"));
+        assert!(
+            frozen.iter().any(|byte| !byte.is_ascii_whitespace()),
+            "frozen legacy output is empty: {output}"
         );
     }
 }
 
+#[test]
+fn exact_parity_comparator_rejects_wrong_enum_omission_and_duplicate_node_mutations() {
+    let source_root = repo_root().join("tests/fixtures/unica_mcp_script_parity/bsp/meta");
+    let currencies = read_path(&source_root, &source_root.join("Catalogs/Валюты.xml"));
+    let currency_facts = normalized_actual_fact_multiset(&currencies);
+    let mut wrong_property = currency_facts.clone();
+    let fact = wrong_property
+        .iter_mut()
+        .find(|fact| fact.contains(":catalog.code.series="))
+        .expect("catalog code-series fact");
+    *fact = fact.replace(
+        ":catalog.code.series=",
+        ":document.number.periodicity=",
+    );
+    assert!(!same_fact_multiset(wrong_property, currency_facts));
+
+    let unknowns = normalized_actual_fact_multiset(&read_tracked("unknowns/UnknownCases.xml"));
+    let mut omitted_unknown = unknowns.clone();
+    let index = omitted_unknown
+        .iter()
+        .position(|fact| fact.contains(":unknown.facts="))
+        .expect("unknown fact in adversarial fixture");
+    omitted_unknown.remove(index);
+    assert!(!same_fact_multiset(omitted_unknown, unknowns.clone()));
+
+    let mut duplicate_node = unknowns.clone();
+    let node = duplicate_node
+        .iter()
+        .find(|fact| fact.starts_with("node:"))
+        .expect("node fact")
+        .clone();
+    duplicate_node.push(node);
+    assert!(!same_fact_multiset(duplicate_node, unknowns));
+}
+
 fn expected_inventory() -> serde_json::Value {
     serde_json::from_slice(&fs::read(tracked_root().join("expected-semantic-facts.json")).unwrap()).unwrap()
+}
+
+fn exact_oracle() -> serde_json::Value {
+    serde_json::from_slice(
+        &fs::read(tracked_root().join("legacy-oracle/exact-semantic-facts.json")).unwrap(),
+    )
+    .unwrap()
+}
+
+fn assert_exact_oracle(envelope: &NavigationEnvelope, case: &str) {
+    let actual = normalized_actual_fact_multiset(envelope);
+    let expected = exact_oracle()["cases"][case]["facts"]
+        .as_array()
+        .unwrap_or_else(|| panic!("missing frozen exact oracle case {case}"))
+        .iter()
+        .map(|value| value.as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actual, expected,
+        "{case} drifted from its independent frozen semantic oracle"
+    );
+}
+
+fn same_fact_multiset(mut left: Vec<String>, mut right: Vec<String>) -> bool {
+    left.sort();
+    right.sort();
+    left == right
 }
 
 fn assert_manifest_mutation_rejected(
@@ -549,57 +848,95 @@ fn semantic_fact_set(envelope: &NavigationEnvelope) -> BTreeSet<String> {
     facts
 }
 
-fn legacy_baseline_fact_set(envelope: &NavigationEnvelope) -> BTreeSet<String> {
-    let mut facts = envelope_contract_fact_set(envelope);
-    for node in &envelope.nodes {
-        if node.object_ref.kind == SemanticObjectKind::SourceRoot {
-            continue;
-        }
-        let kind = node.object_ref.kind.as_str();
-        let name = &node.object_ref.display_name;
-        facts.insert(format!("node:{kind}:{name}"));
-        for (id, property) in &node.properties {
-            if matches!(
-                *id,
-                SemanticPropertyId::METADATA_KIND
-                    | SemanticPropertyId::METADATA_NAME
-                    | SemanticPropertyId::METADATA_UUID
-                    | SemanticPropertyId::SUPPORT_STATE
-                    | SemanticPropertyId::SUPPORT_AUTHORABILITY
-                    | SemanticPropertyId::SUPPORT_EDIT_CAPABILITY
-                    | SemanticPropertyId::UNKNOWN_FACTS
-            ) {
-                continue;
-            }
-            let value = match property.value() {
-                Some(value) => serde_json::to_string(value).unwrap(),
-                None if *id == SemanticPropertyId::CATALOG_HIERARCHY_LEVEL_LIMIT
-                    && property.value_state() == PropertyValueState::Absent =>
-                {
-                    "absent".to_string()
-                }
-                None if property.value_state() == PropertyValueState::Unresolved => {
-                    "unresolved".to_string()
-                }
-                None => continue,
+fn normalized_actual_fact_multiset(envelope: &NavigationEnvelope) -> Vec<String> {
+    let identities = envelope
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(ordinal, node)| {
+            let identity = match node
+                .properties
+                .get(&SemanticPropertyId::METADATA_UUID)
+                .and_then(|property| property.value())
+            {
+                Some(PropertyValue::Uuid(uuid)) => format!("uuid:{uuid}"),
+                _ => format!(
+                    "node:{}:{}:{ordinal}",
+                    node.object_ref.kind,
+                    serde_json::to_string(&node.object_ref.display_name).unwrap()
+                ),
             };
-            facts.insert(format!("property:{kind}:{name}:{id}={value}"));
+            (node.object_ref.clone(), identity)
+        })
+        .collect::<Vec<_>>();
+    let identity = |reference: &ObjectRef| {
+        identities
+            .iter()
+            .find(|(candidate, _)| candidate == reference)
+            .map(|(_, identity)| identity.clone())
+            .unwrap_or_else(|| {
+                format!(
+                    "external:{}:{}",
+                    reference.kind,
+                    serde_json::to_string(&reference.display_name).unwrap()
+                )
+            })
+    };
+
+    let mut facts = vec![
+        format!("schema:{}", envelope.schema_version),
+        format!("status:{:?}", envelope.status),
+        format!(
+            "root:{}",
+            envelope
+                .root
+                .as_ref()
+                .map(&identity)
+                .unwrap_or_else(|| "none".to_string())
+        ),
+    ];
+    for node in &envelope.nodes {
+        let node_identity = identity(&node.object_ref);
+        facts.push(format!(
+            "node:{node_identity}={}",
+            serde_json::to_string(&serde_json::json!({
+                "kind": node.object_ref.kind,
+                "name": node.object_ref.display_name,
+                "referenceKind": node.reference.kind,
+                "referenceName": node.reference.display_name,
+                "capabilityState": node.capability_state,
+                "capability": node.capability,
+                "facets": node.facets,
+                "facetVisibility": format!("{:?}", node.facet_visibility),
+            }))
+            .unwrap()
+        ));
+        for (id, property) in &node.properties {
+            facts.push(format!(
+                "property:{node_identity}:{id}={}",
+                serde_json::to_string(property).unwrap()
+            ));
         }
     }
     for relation in envelope.relation_index.iter() {
-        if relation.source.kind == SemanticObjectKind::SourceRoot {
-            continue;
-        }
-        facts.insert(format!(
-            "relation:{}:{:?}:{}:{}:{}:{}",
-            relation.role,
-            relation.kind,
-            relation.source.kind,
-            relation.source.display_name,
-            relation.target.kind,
-            relation.target.display_name
+        facts.push(format!(
+            "relation={}",
+            serde_json::to_string(&serde_json::json!({
+                "kind": relation.kind,
+                "role": relation.role,
+                "source": identity(&relation.source),
+                "target": identity(&relation.target),
+            }))
+            .unwrap()
         ));
     }
+    for diagnostic in &envelope.diagnostics {
+        facts.push(format!(
+            "diagnostic={}",
+            serde_json::to_string(diagnostic).unwrap()
+        ));
+    }
+    facts.sort();
     facts
 }
 
@@ -681,6 +1018,24 @@ fn node<'a>(envelope: &'a NavigationEnvelope, kind: SemanticObjectKind, name: &s
 
 fn assert_value(node: &NavigationNode, id: SemanticPropertyId, expected: PropertyValue) {
     assert_eq!(node.properties.get(&id).unwrap_or_else(|| panic!("missing property {id}")).value(), Some(&expected), "unexpected value for {id}");
+}
+
+fn unknown_property_evidence(values: &[&str]) -> PropertyValue {
+    PropertyValue::List(vec![PropertyValue::Structure(BTreeMap::from([
+        (
+            "category".to_string(),
+            PropertyValue::String("property".to_string()),
+        ),
+        (
+            "value".to_string(),
+            PropertyValue::List(
+                values
+                    .iter()
+                    .map(|value| PropertyValue::String((*value).to_string()))
+                    .collect(),
+            ),
+        ),
+    ]))])
 }
 
 fn assert_absent(node: &NavigationNode, id: SemanticPropertyId) {

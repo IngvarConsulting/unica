@@ -44,6 +44,7 @@ const NUMBERING: &[SemanticFacetMember] = &[
     SemanticFacetMember::Property(SemanticPropertyId::DOCUMENT_NUMBER_LENGTH),
     SemanticFacetMember::Property(SemanticPropertyId::DOCUMENT_NUMBER_PERIODICITY),
     SemanticFacetMember::Property(SemanticPropertyId::DOCUMENT_NUMBER_AUTO),
+    SemanticFacetMember::Property(SemanticPropertyId::CATALOG_CODE_SERIES),
 ];
 const POSTING: &[SemanticFacetMember] = &[
     SemanticFacetMember::Property(SemanticPropertyId::DOCUMENT_POSTING_MODE),
