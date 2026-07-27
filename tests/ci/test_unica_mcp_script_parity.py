@@ -4769,6 +4769,8 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                     descriptor_path.write_text(
                         "<MetaDataObject/>\n", encoding="utf-8"
                     )
+                elif example.skill == "meta-edit":
+                    prepare_meta_edit_skill_example(workspace, example, arguments)
             messages = [
                 dry_run_message_for_example(example, index + 1, workspace)
                 for index, example in enumerate(examples)
@@ -5605,6 +5607,98 @@ def dry_run_message_for_example(
     arguments["cwd"] = str(workspace)
     arguments["dryRun"] = True
     return message
+
+
+def prepare_meta_edit_skill_example(
+    workspace: Path,
+    example: SkillMcpExample,
+    arguments: dict[str, Any],
+) -> None:
+    """Create real metadata and definition fixtures for one documented example."""
+    raw_object_path = arguments["ObjectPath"]
+    if raw_object_path == "<path>":
+        raw_object_path = f"fixtures/meta-edit-{example.line}.xml"
+        arguments["ObjectPath"] = raw_object_path
+    object_path = workspace / raw_object_path
+    object_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not object_path.exists():
+        is_document = "Documents" in object_path.parts
+        source = FIXTURES_ROOT / (
+            BSP_META_DOCUMENT_FIXTURE if is_document else BSP_META_CATALOG_FIXTURE
+        )
+        xml = source.read_bytes().decode("utf-8-sig")
+        xml, replacements = re.subn(
+            r"(<Properties>\s*<Name>)[^<]+",
+            rf"\g<1>{object_path.stem}",
+            xml,
+            count=1,
+        )
+        if replacements != 1:
+            raise AssertionError(f"cannot rename metadata fixture for {object_path}")
+        object_path.write_bytes(xml.encode("utf-8"))
+
+    operation = arguments.get("Operation")
+    value = str(arguments.get("Value", ""))
+    if operation in {"add-owner", "set-owners"}:
+        self_reference = f"Catalog.{object_path.stem}"
+        owners = {item.strip() for item in value.split(";;")}
+        if self_reference in owners:
+            raise AssertionError(
+                f"metadata skill example makes {self_reference} its own owner"
+            )
+    if operation in {"remove-attribute", "modify-attribute"}:
+        attribute_name = value.split(";;", 1)[0].split(":", 1)[0].strip()
+        ensure_meta_edit_skill_attribute(object_path, attribute_name)
+
+    if arguments.get("DefinitionFile") == "<json>":
+        definition_path = workspace / "fixtures" / f"meta-edit-{example.line}.json"
+        definition_path.parent.mkdir(parents=True, exist_ok=True)
+        definition_path.write_text(
+            json.dumps(
+                {"modify": {"properties": {"Comment": "Skill preview"}}},
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        arguments["DefinitionFile"] = str(definition_path.relative_to(workspace))
+
+
+def ensure_meta_edit_skill_attribute(object_path: Path, attribute_name: str) -> None:
+    """Clone a valid attribute so remove/modify examples have a real target."""
+    xml = object_path.read_text(encoding="utf-8")
+    if f"<Name>{attribute_name}</Name>" in xml:
+        return
+    match = re.search(
+        r"(?ms)^\t\t\t<Attribute\b.*?^\t\t\t</Attribute>",
+        xml,
+    )
+    if match is None:
+        raise AssertionError(f"no reusable Attribute fixture in {object_path}")
+    attribute = match.group(0)
+    attribute = re.sub(
+        r"(<Name>)[^<]+(</Name>)",
+        rf"\g<1>{attribute_name}\g<2>",
+        attribute,
+        count=1,
+    )
+    digest = hashlib.sha256(attribute_name.encode("utf-8")).hexdigest()[:32]
+    fixture_uuid = (
+        f"{digest[:8]}-{digest[8:12]}-{digest[12:16]}-"
+        f"{digest[16:20]}-{digest[20:32]}"
+    )
+    attribute = re.sub(
+        r'uuid="[^"]+"',
+        f'uuid="{fixture_uuid}"',
+        attribute,
+        count=1,
+    )
+    root_close = re.search(r"(?m)^\t\t</ChildObjects>\s*$", xml)
+    if root_close is None:
+        raise AssertionError(f"no root ChildObjects closing tag in {object_path}")
+    xml = f"{xml[:root_close.start()]}{attribute}\n{xml[root_close.start():]}"
+    object_path.write_text(xml, encoding="utf-8")
 
 
 def script_args(arguments: dict[str, Any]) -> list[str]:

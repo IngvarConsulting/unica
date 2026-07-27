@@ -11,6 +11,7 @@ use crate::infrastructure::platform_xml_owner::{
     resolve_platform_xml_owners_with_provenance, root_version_literal, PlatformXmlOwnerKind,
     PlatformXmlOwnerProvenance,
 };
+use diffy::{apply, DiffOptions, Patch};
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -2628,7 +2629,7 @@ mod edit_tests {
     }
 
     #[test]
-    fn preview_meta_edit_validates_and_describes_inline_change_without_writing() {
+    fn preview_meta_edit_reports_projected_inline_diff_without_writing() {
         let context = temp_context("preview-inline-change");
         let object_path = context.cwd.join("Catalogs/Preview.xml");
         write_file(&object_path, &sample_catalog_xml());
@@ -2648,6 +2649,92 @@ mod edit_tests {
         let stdout = outcome.stdout.as_deref().unwrap_or_default();
         assert!(stdout.contains("Planned operation: modify-property: Comment=Previewed"));
         assert!(stdout.contains("Planned update:"));
+        assert!(stdout.contains("--- a/"), "{stdout}");
+        assert!(stdout.contains("+++ b/"), "{stdout}");
+        assert!(stdout.contains("-\t\t\t<Comment/>"), "{stdout}");
+        assert!(
+            stdout.contains("+\t\t\t<Comment>Previewed</Comment>"),
+            "{stdout}"
+        );
+        assert_eq!(fs::read(&object_path).unwrap(), before);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn preview_meta_edit_rejects_missing_object() {
+        let context = temp_context("preview-missing-object");
+        let object_path = context.cwd.join("Catalogs/Missing.xml");
+
+        let outcome = preview_meta_edit(
+            &meta_edit_args(&object_path, "modify-property", "Comment=Previewed"),
+            &context,
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(outcome.summary.starts_with("dry run:"), "{outcome:?}");
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| error.contains("Object file not found:")));
+        assert!(outcome.changes.is_empty());
+        assert!(outcome.artifacts.is_empty());
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn preview_meta_edit_reports_definition_file_diff_without_writing() {
+        let context = temp_context("preview-definition-file");
+        let object_path = context.cwd.join("Catalogs/Preview.xml");
+        let definition_path = context.cwd.join("meta-edit.json");
+        write_file(&object_path, &sample_catalog_xml());
+        write_file(
+            &definition_path,
+            &json!({"modify": {"properties": {"Comment": "Defined"}}}).to_string(),
+        );
+        let before = fs::read(&object_path).unwrap();
+
+        let outcome = preview_meta_edit(
+            &meta_edit_definition_args(&object_path, &definition_path),
+            &context,
+        );
+
+        assert!(outcome.ok, "{outcome:?}");
+        let stdout = outcome.stdout.as_deref().unwrap_or_default();
+        assert!(stdout.contains("--- a/"), "{stdout}");
+        assert!(stdout.contains("-\t\t\t<Comment/>"), "{stdout}");
+        assert!(
+            stdout.contains("+\t\t\t<Comment>Defined</Comment>"),
+            "{stdout}"
+        );
+        assert_eq!(fs::read(&object_path).unwrap(), before);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn preview_meta_edit_reports_no_file_changes_without_diff() {
+        let context = temp_context("preview-no-op");
+        let object_path = context.cwd.join("Catalogs/Preview.xml");
+        let xml = sample_catalog_xml().replace("<Comment/>", "<Comment>Unchanged</Comment>");
+        write_file(&object_path, &xml);
+        let before = fs::read(&object_path).unwrap();
+
+        let outcome = preview_meta_edit(
+            &meta_edit_args(&object_path, "modify-property", "Comment=Unchanged"),
+            &context,
+        );
+
+        assert!(outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.summary.contains("found no metadata changes"),
+            "{outcome:?}"
+        );
+        assert!(outcome.changes.is_empty());
+        let stdout = outcome.stdout.as_deref().unwrap_or_default();
+        assert!(stdout.contains("[INFO] No changes"), "{stdout}");
+        assert!(!stdout.contains("--- a/"), "{stdout}");
         assert_eq!(fs::read(&object_path).unwrap(), before);
 
         let _ = fs::remove_dir_all(&context.cwd);
@@ -16523,29 +16610,7 @@ pub(crate) fn preview_meta_edit(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    let outcome = edit_meta_with_mode(args, context, true);
-    let Some(error) = outcome.errors.first() else {
-        return outcome;
-    };
-    if !error.starts_with("Object file not found:") {
-        return outcome;
-    }
-
-    let object_path = string_arg(args, OBJECT_PATH).unwrap_or("<missing ObjectPath>");
-    let operation = string_arg(args, &["operation", "Operation"]).unwrap_or("definition file");
-    AdapterOutcome {
-        ok: true,
-        summary: "dry run: unica.meta.edit planned native metadata edit".to_string(),
-        changes: vec![format!("would update {object_path}")],
-        warnings: vec![format!("detailed validation unavailable: {error}")],
-        errors: Vec::new(),
-        artifacts: Vec::new(),
-        stdout: Some(format!(
-            "[INFO] Planned operation: {operation}\n[INFO] Planned update: {object_path}\n[WARN] {error}\n"
-        )),
-        stderr: None,
-        command: None,
-    }
+    edit_meta_with_mode(args, context, true)
 }
 
 /// Runs the shared metadata-edit workflow in either preview or apply mode.
@@ -16675,6 +16740,19 @@ fn edit_meta_with_mode(
             info_lines.push(format!("[INFO] Saved: {}", object_path.display()));
         } else if changed {
             info_lines.push(format!("[INFO] Planned update: {}", object_path.display()));
+            let diff_path = object_path
+                .strip_prefix(&context.cwd)
+                .unwrap_or(&object_path)
+                .display()
+                .to_string();
+            let before = String::from_utf8(original_bytes.clone())
+                .map_err(|err| format!("failed to preview {}: {err}", object_path.display()))?;
+            let after = String::from_utf8(serialized_bytes)
+                .map_err(|err| format!("failed to preview {}: {err}", object_path.display()))?;
+            info_lines.push(format!(
+                "\n=== projected diff ===\n{}",
+                meta_edit_unified_diff(&diff_path, &before, &after)?
+            ));
         } else {
             counts = MetaEditCounts::default();
             info_lines.push("[INFO] No changes".to_string());
@@ -16691,7 +16769,11 @@ fn edit_meta_with_mode(
         Ok((stdout, object_path, changed, warnings)) => AdapterOutcome {
             ok: true,
             summary: if dry_run {
-                "dry run: unica.meta.edit planned native metadata edit".to_string()
+                if changed {
+                    "dry run: unica.meta.edit planned native metadata edit".to_string()
+                } else {
+                    "dry run: unica.meta.edit found no metadata changes".to_string()
+                }
             } else {
                 "unica.meta.edit completed with native metadata editor".to_string()
             },
@@ -16713,7 +16795,11 @@ fn edit_meta_with_mode(
         },
         Err(error) => AdapterOutcome {
             ok: false,
-            summary: "unica.meta.edit failed in native metadata editor".to_string(),
+            summary: if dry_run {
+                "dry run: unica.meta.edit failed in native metadata editor".to_string()
+            } else {
+                "unica.meta.edit failed in native metadata editor".to_string()
+            },
             changes: Vec::new(),
             warnings: Vec::new(),
             errors: vec![error.clone()],
@@ -16723,6 +16809,25 @@ fn edit_meta_with_mode(
             command: None,
         },
     }
+}
+
+/// Renders and verifies an exact unified diff for the projected metadata bytes.
+fn meta_edit_unified_diff(path: &str, before: &str, after: &str) -> Result<String, String> {
+    let mut options = DiffOptions::new();
+    options
+        .set_original_filename(format!("a/{path}"))
+        .set_modified_filename(format!("b/{path}"));
+    let rendered = options.create_patch(before, after).to_string();
+    let reparsed = Patch::from_str(&rendered)
+        .map_err(|error| format!("generated meta-edit diff cannot be parsed: {error}"))?;
+    let rebuilt = apply(before, &reparsed)
+        .map_err(|error| format!("generated meta-edit diff cannot be applied: {error}"))?;
+    if rebuilt.as_bytes() != after.as_bytes() {
+        return Err(
+            "generated meta-edit diff does not reproduce the exact projected XML".to_string(),
+        );
+    }
+    Ok(rendered)
 }
 
 fn meta_edit_source_eol(text: &str) -> MetaEditEol {

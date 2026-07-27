@@ -253,7 +253,7 @@ Batch через `;;` во всех операциях. Подробный си�
     "name": "unica.meta.edit",
     "arguments": {
       "cwd": "<workspace>",
-      "ObjectPath": "src/Catalogs/Контрагенты/Контрагенты.xml",
+      "ObjectPath": "src/Catalogs/ДоговорыКонтрагентов/ДоговорыКонтрагентов.xml",
       "Operation": "set-owners",
       "Value": "Catalog.Контрагенты ;; Catalog.Организации",
       "dryRun": false
