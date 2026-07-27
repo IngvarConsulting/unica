@@ -6,6 +6,7 @@ use crate::domain::format_profile::{
     classify_root_version, ExportFormatVersion, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
 };
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::source_roots::normalize_path_identity;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -2195,9 +2196,8 @@ pub(crate) fn support_guard_violation(
     target_path: &Path,
     requirement: SupportGuardRequirement,
 ) -> Option<SupportGuardViolation> {
-    let target_path = target_path
-        .canonicalize()
-        .unwrap_or_else(|_| target_path.to_path_buf());
+    let target_path =
+        normalize_path_identity(target_path).unwrap_or_else(|_| target_path.to_path_buf());
     let config_dir = find_support_config_dir(&target_path)?;
     let bin_path = config_dir.join("Ext").join("ParentConfigurations.bin");
     let state = read_support_state(&bin_path)?;
