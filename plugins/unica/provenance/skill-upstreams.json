@@ -660,7 +660,7 @@
         {
           "skill": "meta-remove",
           "status": "ported-to-unica",
-          "notes": "Reviewed donor support-guard drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; Unica adapts it at the MCP application layer for this mutating tool using the shared ParentConfigurations.bin parser and .v8-project.json editingAllowedCheck deny|warn|off policy. Raw donor script wrapper path changes are not applicable because the prompt-visible skill routes through typed unica.*. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface.",
+          "notes": "Reviewed donor support-guard drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; Unica adapts it at the MCP application layer for this mutating tool using the shared ParentConfigurations.bin parser and .v8-project.json editingAllowedCheck deny|warn|off policy. Raw donor script wrapper path changes are not applicable because the prompt-visible skill routes through typed unica.*. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface. 2026-07-26 deliberate donor divergence: the donor -KeepFiles switch is retired from the Unica surface. The donor shipped it in 151ded9b as the only safety valve of a meta-remove that had no reference analysis; the reference check and -Force arrived later in 27bb08d1 and Unica carries both, so deregister-without-deleting no longer has a distinct role in the typed contract. Removed from the published MCP schema, the native operation, the packaged skill and the parity reference model; unica.meta.remove now rejects KeepFiles and keepFiles as unknown arguments.",
           "upstreamPaths": [
             ".claude/skills/meta-remove/**",
             "docs/meta-guide.md",
@@ -677,7 +677,7 @@
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ignored-with-reason",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; none of that donor churn requires adopting donor changes. Separately, Unica deliberately diverges from the donor by retiring the -KeepFiles switch, and that divergence does change the prompt-visible skill, the typed MCP contract, the native operation and the parity model; see the entry notes for the reasoning and the affected surfaces."
         },
         {
           "skill": "meta-validate",

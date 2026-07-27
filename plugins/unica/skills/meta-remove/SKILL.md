@@ -34,7 +34,6 @@ allowed-tools:
 | ConfigDir  | да           | Корневая директория выгрузки (где Configuration.xml) |
 | Object     | да           | Тип и имя объекта: `Catalog.Товары`, `Document.Заказ` и т.д. |
 | DryRun     | нет          | Только показать что будет удалено, без изменений |
-| KeepFiles  | нет          | Не удалять файлы, только дерегистрировать       |
 | Force      | нет          | Удалить несмотря на найденные ссылки            |
 
 ## MCP вызов
@@ -110,25 +109,6 @@ Catalog, Document, Enum, Constant, InformationRegister, AccumulationRegister, Ac
       "ConfigDir": "C:\\WS\\tasks\\cfsrc\\acc_8.3.24",
       "Object": "Catalog.Устаревший",
       "Force": true,
-      "dryRun": false
-    }
-  }
-}
-```
-
-### Только дерегистрировать, файлы оставить
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.meta.remove",
-    "arguments": {
-      "cwd": "<workspace>",
-      "ConfigDir": "C:\\WS\\tasks\\cfsrc\\acc_8.3.24",
-      "Object": "Report.Старый",
-      "KeepFiles": true,
       "dryRun": false
     }
   }

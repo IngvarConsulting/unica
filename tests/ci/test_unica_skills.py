@@ -335,7 +335,7 @@ SCENARIO_PRESERVING_MIN_MCP_CALLS = {
     "cfe-validate": 2,
     "meta-edit": 11,
     "meta-info": 14,
-    "meta-remove": 6,
+    "meta-remove": 5,
     "meta-validate": 2,
     "form-add": 6,
     "form-compile": 4,
@@ -445,7 +445,6 @@ SCENARIO_PRESERVING_TOKENS = {
         '"Object": "Catalog.Устаревший"',
         '"dryRun": true',
         '"Force": true',
-        '"KeepFiles": true',
         '"Object": "CommonModule.МойМодуль"',
     ],
     "form-add": [
@@ -531,6 +530,13 @@ SCENARIO_PRESERVING_TOKENS = {
         '"Offset": 150',
     ],
     "role-info": ['"Offset": 150'],
+}
+
+# Arguments the MCP contract used to publish and now rejects. The packaged skill
+# must not keep advertising them: the server would answer such a call with
+# "does not accept argument", so a leftover example is a broken instruction.
+SCENARIO_RETIRED_TOKENS = {
+    "meta-remove": ['"KeepFiles"', '"keepFiles"'],
 }
 
 
@@ -1595,6 +1601,8 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                     )
                 for token in SCENARIO_PRESERVING_TOKENS.get(skill, []):
                     self.assertIn(token, text)
+                for token in SCENARIO_RETIRED_TOKENS.get(skill, []):
+                    self.assertNotIn(token, text)
                 for block in mcp_blocks:
                     payload = json.loads(block)
                     params = payload["params"]

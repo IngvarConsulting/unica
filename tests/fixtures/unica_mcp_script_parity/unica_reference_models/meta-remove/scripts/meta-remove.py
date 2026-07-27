@@ -121,7 +121,6 @@ def main():
     parser.add_argument("-ConfigDir", required=True)
     parser.add_argument("-Object", required=True)
     parser.add_argument("-DryRun", action="store_true")
-    parser.add_argument("-KeepFiles", action="store_true")
     parser.add_argument("-Force", action="store_true")
     args = parser.parse_args()
 
@@ -452,27 +451,24 @@ def main():
     print()
     print("--- Files ---")
 
-    if not args.KeepFiles:
-        if has_dir and not args.DryRun:
-            shutil.rmtree(obj_dir)
-            print(f"[OK]    Deleted directory: {type_plural}/{obj_name}/")
-            actions += 1
-        elif has_dir:
-            print(f"[DRY]   Would delete directory: {type_plural}/{obj_name}/")
-            actions += 1
+    if has_dir and not args.DryRun:
+        shutil.rmtree(obj_dir)
+        print(f"[OK]    Deleted directory: {type_plural}/{obj_name}/")
+        actions += 1
+    elif has_dir:
+        print(f"[DRY]   Would delete directory: {type_plural}/{obj_name}/")
+        actions += 1
 
-        if has_xml and not args.DryRun:
-            os.remove(obj_xml)
-            print(f"[OK]    Deleted file: {type_plural}/{obj_name}.xml")
-            actions += 1
-        elif has_xml:
-            print(f"[DRY]   Would delete file: {type_plural}/{obj_name}.xml")
-            actions += 1
+    if has_xml and not args.DryRun:
+        os.remove(obj_xml)
+        print(f"[OK]    Deleted file: {type_plural}/{obj_name}.xml")
+        actions += 1
+    elif has_xml:
+        print(f"[DRY]   Would delete file: {type_plural}/{obj_name}.xml")
+        actions += 1
 
-        if not has_xml and not has_dir:
-            print("[OK]    No files to delete")
-    else:
-        print("[SKIP]  File deletion skipped (-KeepFiles)")
+    if not has_xml and not has_dir:
+        print("[OK]    No files to delete")
 
     # --- Summary ---
     print()
