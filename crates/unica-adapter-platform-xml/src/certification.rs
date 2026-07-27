@@ -281,6 +281,30 @@ fn support_inspection_rejects_a_target_outside_the_authorized_source_root() {
         })
         .unwrap();
     assert_eq!(evidence.source, SupportSourceState::Absent);
+
+    fs::create_dir_all(authorized_root.join("Ext")).unwrap();
+    fs::write(
+        authorized_root.join("Ext").join("ParentConfigurations.bin"),
+        b"<unreadable",
+    )
+    .unwrap();
+    let unrelated = registration
+        .support
+        .inspect(&SupportInspectionRequest {
+            source: SourceContext::new(
+                SourceLocation::new(
+                    root.clone(),
+                    authorized_root.clone(),
+                    authorized_root.join("Ext").join("MissingSupport.bin"),
+                ),
+                None,
+                SourceFamily::PlatformXml,
+                None,
+            ),
+            object: None,
+        })
+        .unwrap();
+    assert_eq!(unrelated.source, SupportSourceState::Absent);
     fs::remove_dir_all(root).unwrap();
 }
 

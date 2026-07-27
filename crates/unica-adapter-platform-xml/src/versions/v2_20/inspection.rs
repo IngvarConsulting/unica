@@ -53,13 +53,16 @@ pub(crate) fn inspect_support(
     request: &SupportInspectionRequest,
 ) -> Result<SupportEvidence, SourceAdapterError> {
     let root = authorized_root(&request.source)?;
-    let facts = match root.read_relative(
-        "Ext/ParentConfigurations.bin",
-        ArtifactReadLimit::SupportEvidence,
-    ) {
-        Ok(read) => support::read_support_facts_bytes(Some(read.bytes())),
-        Err(SafeRootError::Missing) => support::read_support_facts_bytes(None),
-        Err(_) => support::read_support_facts_bytes(Some(b"<unreadable")),
+    let target = root
+        .bind_target(request.source.location().target(), true)
+        .map_err(source_error)?;
+    let facts = if target.is_missing() {
+        support::read_support_facts_bytes(None)
+    } else {
+        match root.read_bound(&target, ArtifactReadLimit::SupportEvidence) {
+            Ok(read) => support::read_support_facts_bytes(Some(read.bytes())),
+            Err(_) => support::read_support_facts_bytes(Some(b"<unreadable")),
+        }
     };
     let object = request
         .object
