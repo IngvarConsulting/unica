@@ -1663,3 +1663,154 @@ Only the requested core contract and Task 5 scoped validation were run.
   preserved.
 - `TypeVariantKind` is format-neutral and payload-free. It does not weaken
   `TypeVariant` constructor validation or expose private/native details.
+
+## Fix Round 10
+
+Base: `61c4416cbf1276ec04d630cce9b5800518969c14`
+
+Implementation commit: `9a4f5e4d7fe688cdaa6a496ef486f445a224837b`
+
+The controller ledger entry recording the Round 9 review failure and Round 10
+start was preserved unchanged and is included with this report.
+
+### Findings closed
+
+1. `NumberQualifiers` option-shape coverage is now the exact finite set admitted
+   by the validated constructor: `digits` only, `allowedSign` only,
+   `digits+fractionDigits`, `digits+allowedSign`, and
+   `digits+fractionDigits+allowedSign`. `fractionDigits` without `digits` and the
+   all-`None` shape remain invalid by construction. The previously missing
+   `digits: Some`, `fraction_digits: None`, `allowed_sign: Some` case is present
+   in both the direct wire inventory and the wrapped `TypeQualifiers` static
+   specimen, including strict round-trip and per-branch mutation coverage.
+2. Cursor canonicalization no longer overwrites unchecked JSON. One shared test
+   contract first requires an actual serialized JSON string, nonempty value,
+   unpadded base64url alphabet, successful authentication under the deterministic
+   specimen key, and preservation of the opaque token through authenticated
+   decode/serialize. Only then does it replace unpredictable bytes with the
+   stable `opaque:cursor` oracle marker.
+3. The shared cursor contract is used for every current cursor occurrence:
+   `NavigationTarget`, nested `NavigationQuery`, both relation-page specimen
+   families, the full public-envelope relation page, and the standalone
+   `NavigationCursor` fact. The standalone fact is now always obtained from
+   `serde_json::to_value(public_navigation_cursor())`; no constant bypass remains.
+4. One focused regression test sends `null`, object, array, number, boolean,
+   empty string, padded base64, invalid base64url, a valid token authenticated
+   under another key, and a syntax-valid tampered token through the same
+   canonicalization contract. Every mutation is rejected before canonicalization.
+
+### Files changed
+
+Implementation/provenance commit:
+
+- `crates/unica-adapter-platform-xml/tests/legacy_parity.rs`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/public-navigation-wire-specimen.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/public-contract-variant-specimen.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/oracle-manifest.json`
+
+Report/ledger commit:
+
+- `.superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/task-5-report.md`
+- `.superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/progress.md`
+
+No adapter runtime, application, coder, or native-vocabulary boundary changed.
+
+### RED evidence
+
+Missing qualifier option combination:
+
+```text
+cargo test -p unica-adapter-platform-xml --test legacy_parity fix_round10_number_qualifier_option_combinations_are_finite_and_complete -- --exact
+
+assertion `left == right` failed
+left:  {"all", "digitsFraction", "digitsOnly", "signOnly"}
+right: {"all", "digitsAndSign", "digitsFraction", "digitsOnly", "signOnly"}
+test result: FAILED. 0 passed; 1 failed; 25 filtered out
+```
+
+Missing authenticated cursor canonicalization path:
+
+```text
+cargo test -p unica-adapter-platform-xml --test legacy_parity fix_round10_cursor_wire_contract_validates_before_canonicalization -- --exact
+
+error[E0425]: cannot find value `PUBLIC_NAVIGATION_CURSOR_SECRET`
+error[E0425]: cannot find function `authenticate_and_canonicalize_cursor_wire`
+could not compile `unica-adapter-platform-xml` (test "legacy_parity")
+```
+
+### GREEN evidence
+
+Focused Round 10 regressions:
+
+```text
+cargo test -p unica-adapter-platform-xml --test legacy_parity fix_round10_
+
+running 2 tests
+test fix_round10_cursor_wire_contract_validates_before_canonicalization ... ok
+test fix_round10_number_qualifier_option_combinations_are_finite_and_complete ... ok
+test result: ok. 2 passed; 0 failed; 25 filtered out
+```
+
+Oracle regeneration refreshed only generated legacy-derived artifacts and hashes;
+the two independently hand-authored public wire specimens remained authored
+inputs and were hash-recorded, not generated from serializer output:
+
+```text
+python3.12 crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/generate_oracle.py --repo-root . --write
+wrote 37 raw outputs, 174 enum alias executions, 21 oracle cases, and provenance
+```
+
+### Task 5 scoped validation
+
+Oracle fail-closed self-test:
+
+```text
+python3.12 crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/generate_oracle.py --repo-root . --self-test
+verified fail-closed parser and source-context negative suite
+```
+
+Oracle regeneration check and SHA-256 provenance verification:
+
+```text
+python3.12 crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/generate_oracle.py --repo-root . --check
+verified 37 raw outputs, 174 enum alias executions, oracle facts, and SHA-256 provenance
+```
+
+Core public JSON contract:
+
+```text
+cargo test -p unica-format-core --test public_json_contract
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+Full Task 5 exact parity/public-contract/coverage suite:
+
+```text
+cargo test -p unica-adapter-platform-xml --test legacy_parity
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+Unknown/unmapped boundary:
+
+```text
+cargo test -p unica-adapter-platform-xml --test unmapped_fact
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+Only the requested oracle, core public-wire, and Task 5 scoped Rust validation
+was run.
+
+### Parity and remaining gaps
+
+- No legacy-comparable or public request/response wire parity gap remains in the
+  selected Task 5 corpus.
+- The Platform XML 2.20 adapter still intentionally does not produce relation
+  pages, semantic actions, or operation bindings. Their complete public wire is
+  covered independently, while runtime absence remains asserted explicitly.
+- Form/template content internals remain intentionally opaque where no closed
+  semantic decomposition exists; backing availability and partial diagnostics
+  remain preserved.
+- Cursor contents remain intentionally nondeterministic and opaque. Static
+  specimens compare a marker only after the actual serializer and authenticated
+  cursor contract have succeeded, so the marker can no longer mask type,
+  encoding, or authentication regressions.
