@@ -100,7 +100,6 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "Format",
     "InterceptorType",
     "JsonPath",
-    "KeepFiles",
     "Kind",
     "Lang",
     "Language",
@@ -181,7 +180,6 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "format",
     "interceptorType",
     "jsonPath",
-    "keepFiles",
     "kind",
     "lang",
     "language",
@@ -1613,8 +1611,6 @@ fn property_schema(name: &str) -> Value {
             | "createIfMissing"
             | "IsFunction"
             | "isFunction"
-            | "KeepFiles"
-            | "keepFiles"
             | "allExtensions"
             | "checkUseModality"
             | "checkUseSynchronousCalls"
@@ -2018,10 +2014,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "jsonPath",
         "Path to the JSON DSL file, relative to `cwd`, for `unica.form.compile`, `unica.form.edit`, `unica.meta.compile`, `unica.mxl.compile` and `unica.role.compile`",
-    ),
-    (
-        "keepFiles",
-        "`unica.meta.remove` only: boolean that deregisters the object from `Configuration.xml` but leaves its files on disk (requires typing `KeepFiles` as boolean in `property_schema`, which currently declares it a string).",
     ),
     ("kind", "Declared string argument that no tool handler reads"),
     (
@@ -2589,8 +2581,6 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
             | "createIfMissing"
             | "IsFunction"
             | "isFunction"
-            | "KeepFiles"
-            | "keepFiles"
             | "allExtensions"
             | "checkUseModality"
             | "checkUseSynchronousCalls"
@@ -2953,27 +2943,30 @@ mod tests {
     }
 
     #[test]
-    fn meta_remove_keep_files_contract_is_boolean() {
+    fn meta_remove_does_not_publish_keep_files() {
         let remove = tools()
             .into_iter()
             .find(|tool| tool.name == "unica.meta.remove")
             .expect("unica.meta.remove must be registered");
         let schema = input_schema_for_tool(&remove);
 
-        assert_eq!(schema["properties"]["KeepFiles"]["type"], "boolean");
-        assert_eq!(schema["properties"]["keepFiles"]["type"], "boolean");
-        validate_tool_arguments(
-            remove,
-            json!({
-                "ConfigDir": "src",
-                "Object": "Catalog.Legacy",
-                "KeepFiles": true,
-            })
-            .as_object()
-            .expect("test arguments must be an object"),
-            false,
-        )
-        .expect("meta.remove must accept boolean KeepFiles");
+        assert!(schema["properties"]["KeepFiles"].is_null());
+        assert!(schema["properties"]["keepFiles"].is_null());
+        for spelling in ["KeepFiles", "keepFiles"] {
+            let error = validate_tool_arguments(
+                remove,
+                json!({
+                    "ConfigDir": "src",
+                    "Object": "Catalog.Legacy",
+                    spelling: true,
+                })
+                .as_object()
+                .expect("test arguments must be an object"),
+                false,
+            )
+            .expect_err("meta.remove must reject the retired keep-files flag");
+            assert!(error.contains(&format!("does not accept argument `{spelling}`")));
+        }
     }
 
     #[test]

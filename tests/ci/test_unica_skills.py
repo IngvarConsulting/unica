@@ -335,7 +335,7 @@ SCENARIO_PRESERVING_MIN_MCP_CALLS = {
     "cfe-validate": 2,
     "meta-edit": 11,
     "meta-info": 14,
-    "meta-remove": 6,
+    "meta-remove": 5,
     "meta-validate": 2,
     "form-add": 6,
     "form-compile": 4,
@@ -445,7 +445,6 @@ SCENARIO_PRESERVING_TOKENS = {
         '"Object": "Catalog.Устаревший"',
         '"dryRun": true',
         '"Force": true',
-        '"KeepFiles": true',
         '"Object": "CommonModule.МойМодуль"',
     ],
     "form-add": [

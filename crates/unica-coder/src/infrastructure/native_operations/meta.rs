@@ -9819,7 +9819,6 @@ pub(crate) fn remove_metadata_object(
             .map_err(meta_remove_stdout_error)?;
 
         let dry_run = bool_arg(args, &["DryRun"]);
-        let keep_files = bool_arg(args, &["KeepFiles", "keepFiles"]);
         let force = bool_arg(args, &["Force", "force"]);
 
         let type_dir = config_dir.join(type_plural);
@@ -9990,93 +9989,89 @@ pub(crate) fn remove_metadata_object(
         stdout.push('\n');
         stdout.push_str("--- Files ---\n");
         let mut removed_paths = Vec::new();
-        if !keep_files {
-            let mut type_collection_targets = Vec::new();
-            if has_xml {
-                type_collection_targets.push(obj_xml.as_path());
-            }
-            if has_dir {
-                type_collection_targets.push(obj_dir.as_path());
-            }
-            let remove_type_collection = !type_collection_targets.is_empty()
-                && transaction
-                    .remove_directory_if_only_direct_entries(
-                        &type_dir,
-                        type_collection_targets
-                            .iter()
-                            .map(|path| {
-                                path.file_name()
-                                    .expect("metadata collection target must have a file name")
-                                    .to_os_string()
-                            })
-                            .collect(),
-                    )
-                    .map_err(meta_remove_stdout_error)?;
+        let mut type_collection_targets = Vec::new();
+        if has_xml {
+            type_collection_targets.push(obj_xml.as_path());
+        }
+        if has_dir {
+            type_collection_targets.push(obj_dir.as_path());
+        }
+        let remove_type_collection = !type_collection_targets.is_empty()
+            && transaction
+                .remove_directory_if_only_direct_entries(
+                    &type_dir,
+                    type_collection_targets
+                        .iter()
+                        .map(|path| {
+                            path.file_name()
+                                .expect("metadata collection target must have a file name")
+                                .to_os_string()
+                        })
+                        .collect(),
+                )
+                .map_err(meta_remove_stdout_error)?;
 
-            if remove_type_collection {
-                removed_paths.push(type_dir.clone());
-                if !dry_run {
-                    changes.push(format!(
-                        "removed empty collection directory {}",
-                        type_dir.display()
-                    ));
-                }
-            } else {
-                if has_dir {
-                    transaction
-                        .remove_path(obj_dir.clone())
-                        .map_err(meta_remove_stdout_error)?;
-                    removed_paths.push(obj_dir.clone());
-                } else {
-                    transaction
-                        .guard_path_absent(obj_dir.clone())
-                        .map_err(meta_remove_stdout_error)?;
-                }
-                if has_xml {
-                    transaction
-                        .remove_path(obj_xml.clone())
-                        .map_err(meta_remove_stdout_error)?;
-                    removed_paths.push(obj_xml.clone());
-                } else {
-                    transaction
-                        .guard_path_absent(obj_xml.clone())
-                        .map_err(meta_remove_stdout_error)?;
-                }
-            }
-
-            if has_dir {
-                if dry_run {
-                    stdout.push_str(&format!(
-                        "[DRY]   Would delete directory: {type_plural}/{obj_name}/\n"
-                    ));
-                } else {
-                    stdout.push_str(&format!(
-                        "[OK]    Deleted directory: {type_plural}/{obj_name}/\n"
-                    ));
-                    changes.push(format!("removed directory {}", obj_dir.display()));
-                }
-                actions += 1;
-            }
-
-            if has_xml {
-                if dry_run {
-                    stdout.push_str(&format!(
-                        "[DRY]   Would delete file: {type_plural}/{obj_name}.xml\n"
-                    ));
-                } else {
-                    stdout.push_str(&format!(
-                        "[OK]    Deleted file: {type_plural}/{obj_name}.xml\n"
-                    ));
-                    changes.push(format!("removed file {}", obj_xml.display()));
-                }
-                actions += 1;
-            }
-
-            if !has_xml && !has_dir {
-                stdout.push_str("[OK]    No files to delete\n");
+        if remove_type_collection {
+            removed_paths.push(type_dir.clone());
+            if !dry_run {
+                changes.push(format!(
+                    "removed empty collection directory {}",
+                    type_dir.display()
+                ));
             }
         } else {
-            stdout.push_str("[SKIP]  File deletion skipped (-KeepFiles)\n");
+            if has_dir {
+                transaction
+                    .remove_path(obj_dir.clone())
+                    .map_err(meta_remove_stdout_error)?;
+                removed_paths.push(obj_dir.clone());
+            } else {
+                transaction
+                    .guard_path_absent(obj_dir.clone())
+                    .map_err(meta_remove_stdout_error)?;
+            }
+            if has_xml {
+                transaction
+                    .remove_path(obj_xml.clone())
+                    .map_err(meta_remove_stdout_error)?;
+                removed_paths.push(obj_xml.clone());
+            } else {
+                transaction
+                    .guard_path_absent(obj_xml.clone())
+                    .map_err(meta_remove_stdout_error)?;
+            }
+        }
+
+        if has_dir {
+            if dry_run {
+                stdout.push_str(&format!(
+                    "[DRY]   Would delete directory: {type_plural}/{obj_name}/\n"
+                ));
+            } else {
+                stdout.push_str(&format!(
+                    "[OK]    Deleted directory: {type_plural}/{obj_name}/\n"
+                ));
+                changes.push(format!("removed directory {}", obj_dir.display()));
+            }
+            actions += 1;
+        }
+
+        if has_xml {
+            if dry_run {
+                stdout.push_str(&format!(
+                    "[DRY]   Would delete file: {type_plural}/{obj_name}.xml\n"
+                ));
+            } else {
+                stdout.push_str(&format!(
+                    "[OK]    Deleted file: {type_plural}/{obj_name}.xml\n"
+                ));
+                changes.push(format!("removed file {}", obj_xml.display()));
+            }
+            actions += 1;
+        }
+
+        if !has_xml && !has_dir {
+            stdout.push_str("[OK]    No files to delete\n");
         }
 
         let warnings = if dry_run {
@@ -10160,7 +10155,6 @@ pub(crate) fn remove_metadata_object(
             let validation_removed_paths = removed_paths.clone();
             let validation_obj_xml = obj_xml.clone();
             let validation_obj_dir = obj_dir.clone();
-            let validate_pair_absent = !keep_files;
             transaction
                 .commit_with_post_validation(move || {
                     require_meta_configuration_owner_validation(
@@ -10177,10 +10171,7 @@ pub(crate) fn remove_metadata_object(
                         &validation_obj_name,
                         &validation_subsystem_paths,
                         &validation_removed_paths,
-                        validate_pair_absent.then_some((
-                            validation_obj_xml.as_path(),
-                            validation_obj_dir.as_path(),
-                        )),
+                        Some((validation_obj_xml.as_path(), validation_obj_dir.as_path())),
                     )
                 })
                 .map_err(meta_remove_stdout_error)?
