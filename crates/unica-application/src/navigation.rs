@@ -5,7 +5,7 @@ use unica_format_core::{
         normalize_navigation_selection, FacetSelection, NavigationCursor, NavigationEnvelope,
         NavigationFacetVisibility, NavigationNode, NavigationQuery, NavigationRelationPage,
         NavigationSelection, NavigationStatus, NavigationTarget, ObjectKey, ObjectRef,
-        PropertySelection, SemanticRelation,
+        PropertySelection, SemanticRelation, SemanticRelationId,
     },
     ports::{CaptureResult, FormatReadRequest, ProbeResult, SourceAdapterRegistration},
     source::{
@@ -398,7 +398,7 @@ fn validate_ready_envelope(
     binding: &SourceBinding,
     registration: &SourceAdapterRegistration,
 ) -> Result<(), SourceAdapterError> {
-    if envelope.status != NavigationStatus::Available {
+    if envelope.status == NavigationStatus::Unavailable {
         return Ok(());
     }
     let snapshot = envelope.snapshot.as_ref().ok_or_else(|| {
@@ -428,10 +428,11 @@ fn default_navigation_selection() -> NavigationSelection {
     NavigationSelection {
         properties: PropertySelection::All,
         facets: FacetSelection::Summary,
-        relations: vec![
-            unica_format_core::navigation::RelationSelection::new("children", None)
-                .expect("default relation selection"),
-        ],
+        relations: vec![unica_format_core::navigation::RelationSelection::new(
+            SemanticRelationId::CHILDREN,
+            None,
+        )
+        .expect("default relation selection")],
     }
 }
 
@@ -645,7 +646,7 @@ mod tests {
             Authorability, CapabilityState, IdentityStrength, NodeKind, PropertyCapability,
             PropertyProvenance, PropertyType, PropertyValue, PropertyValueState, RelationGroupRef,
             RelationKind, RelationRef, RelationRole, ResolutionState, SemanticProperty,
-            SemanticRelation, SourceAdapterDiagnostic,
+            SemanticPropertyId, SemanticRelation, SourceAdapterDiagnostic,
         },
         ports::{
             AdapterFormatProfile, CapturePort, CapturedSource, CapturedSourceSession,
@@ -898,10 +899,11 @@ mod tests {
         let mut item_node = node(item.clone());
         item_node
             .properties
-            .insert("name".to_string(), string_property("Items"));
-        item_node
-            .properties
-            .insert("synonym".to_string(), string_property("Items synonym"));
+            .insert(SemanticPropertyId::METADATA_NAME, string_property("Items"));
+        item_node.properties.insert(
+            SemanticPropertyId::METADATA_SYNONYM,
+            string_property("Items synonym"),
+        );
         let mut nodes = vec![item_node];
         let mut relations = vec![relation(
             &source_id,
@@ -922,9 +924,9 @@ mod tests {
             let mut attribute_node = node(attribute.clone());
             attribute_node
                 .properties
-                .insert("name".to_string(), string_property(&name));
+                .insert(SemanticPropertyId::METADATA_NAME, string_property(&name));
             attribute_node.properties.insert(
-                "synonym".to_string(),
+                SemanticPropertyId::METADATA_SYNONYM,
                 string_property(&format!("{name} synonym")),
             );
             nodes.push(attribute_node);
@@ -962,9 +964,7 @@ mod tests {
             source_id.clone(),
             ObjectKey::new(key).unwrap(),
             IdentityStrength::Persistent,
-            NodeKind::MetadataObject {
-                metadata_type: "Catalog".to_string(),
-            },
+            NodeKind::Catalog,
             name,
         )
     }
@@ -981,7 +981,7 @@ mod tests {
             value_type: PropertyType::String,
             value_state: PropertyValueState::Explicit,
             value: Some(PropertyValue::String(value.to_string())),
-            provenance: PropertyProvenance::Descriptor,
+            provenance: PropertyProvenance::Declared,
             capability: PropertyCapability::ReadOnly,
         }
     }
@@ -1058,9 +1058,11 @@ mod tests {
         kind: RelationKind,
         page_size: u16,
     ) -> NavigationSelection {
-        let mut relation =
-            unica_format_core::navigation::RelationSelection::new("attributes", Some(page_size))
-                .unwrap();
+        let mut relation = unica_format_core::navigation::RelationSelection::new(
+            SemanticRelationId::ATTRIBUTES,
+            Some(page_size),
+        )
+        .unwrap();
         relation.kind = kind;
         NavigationSelection {
             properties,
@@ -1099,6 +1101,21 @@ mod tests {
         assert_eq!(result.status, NavigationStatus::Available);
         assert_eq!(result.schema_version, "1");
         assert_eq!(result.root.as_ref().unwrap().display_name, "Items");
+    }
+
+    #[test]
+    fn partial_navigation_still_validates_snapshot_binding() {
+        let harness = Harness::new(1, "2.20");
+        {
+            let mut envelope = harness.port.envelope.lock().unwrap();
+            envelope.status = NavigationStatus::Partial;
+            envelope.snapshot.as_mut().unwrap().adapter_id = "wrong-adapter".to_string();
+        }
+
+        assert_unavailable(
+            &harness.inspect(path_command(None)),
+            "snapshot_inconsistent",
+        );
     }
 
     #[test]
@@ -1276,18 +1293,18 @@ mod tests {
         let mut second_envelope = fixture_envelope(2);
         second_envelope.nodes[0]
             .properties
-            .insert("name".to_string(), string_property("Other"));
+            .insert(SemanticPropertyId::METADATA_NAME, string_property("Other"));
         *harness.port.envelope.lock().unwrap() = second_envelope;
         let second = harness.first_page(1);
         assert_eq!(
-            second.nodes[0].properties["name"].value,
+            second.nodes[0].properties[&SemanticPropertyId::METADATA_NAME].value,
             Some(PropertyValue::String("Other".to_string()))
         );
 
         let continued = harness.inspect(cursor_command(first_cursor));
         assert_eq!(continued.root, first.root);
         assert_eq!(
-            continued.nodes[0].properties["name"].value,
+            continued.nodes[0].properties[&SemanticPropertyId::METADATA_NAME].value,
             Some(PropertyValue::String("Items".to_string()))
         );
         assert_unavailable(
@@ -1355,22 +1372,6 @@ mod tests {
     }
 
     #[test]
-    fn public_selection_limits_are_checked_before_normalization() {
-        let harness = Harness::new(1, "2.20");
-        let properties = (0..=unica_format_core::limits::MAX_NAVIGATION_PROPERTY_SELECTORS)
-            .map(|index| format!("property{index}"))
-            .collect::<Vec<_>>();
-        assert_unavailable(
-            &harness.inspect(path_command(Some(NavigationSelection {
-                properties: PropertySelection::Named(properties.into_iter().collect()),
-                facets: FacetSelection::Summary,
-                relations: Vec::new(),
-            }))),
-            "resource_limit",
-        );
-    }
-
-    #[test]
     fn cursor_is_bounded_before_strict_selection_decoding() {
         let harness = Harness::new(2, "2.20");
         assert_unavailable(
@@ -1412,7 +1413,7 @@ mod tests {
     fn cursor_resume_materializes_only_its_bound_group_and_keeps_full_selection() {
         let harness = Harness::new(3, "2.20");
         let first = harness.inspect(path_command(Some(selection(
-            PropertySelection::Named(BTreeSet::from(["name".to_string()])),
+            PropertySelection::Named(BTreeSet::from([SemanticPropertyId::METADATA_NAME])),
             FacetSelection::None,
             RelationKind::Contains,
             1,
@@ -1432,7 +1433,7 @@ mod tests {
     fn select_filters_properties_facets_and_relation_kind_at_runtime() {
         let harness = Harness::new(1, "2.20");
         let selected = harness.inspect(path_command(Some(selection(
-            PropertySelection::Named(BTreeSet::from(["name".to_string()])),
+            PropertySelection::Named(BTreeSet::from([SemanticPropertyId::METADATA_NAME])),
             FacetSelection::None,
             RelationKind::Contains,
             1,

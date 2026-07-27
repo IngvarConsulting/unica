@@ -133,7 +133,10 @@ use roxmltree::Node;
 
 use crate::domain::{
     identifiers::is_1c_identifier,
-    navigation::{PropertyValue, TypeSetValue, TypeVariant},
+    navigation::{
+        DateFractions, DateQualifiers, NumberQualifiers, NumberSign, PrimitiveTypeKind,
+        PropertyValue, StringLength, StringQualifiers, TypeQualifiers, TypeSetValue, TypeVariant,
+    },
     navigation_limits::MAX_NAVIGATION_TYPE_VARIANTS,
     source_adapters::{SourceAdapterError, SourceAdapterErrorKind},
 };
@@ -269,12 +272,13 @@ pub(crate) fn parse_type_description_2_20(
                 "type qualifiers require one primitive variant",
             ));
         }
-        let TypeVariant::Primitive { kind, .. } = &variants[primitive_indexes[0]] else {
-            unreachable!()
+        let kind = match &variants[primitive_indexes[0]] {
+            TypeVariant::Primitive { kind, .. } => *kind,
+            _ => unreachable!(),
         };
         if !qualifier_groups
             .iter()
-            .all(|group| group.is_compatible_with(kind))
+            .all(|group| group.is_compatible_with(&kind))
         {
             return Err(projection_error(
                 "type qualifier group is incompatible with primitive variant",
@@ -287,7 +291,44 @@ pub(crate) fn parse_type_description_2_20(
         else {
             unreachable!()
         };
-        *destination = qualifiers;
+        *destination = Some(match kind {
+            PrimitiveTypeKind::String => TypeQualifiers::String(StringQualifiers {
+                length: qualifier_integer(&qualifiers, "length")?,
+                allowed_length: qualifier_string(&qualifiers, "allowedLength")
+                    .map(|value| match value {
+                        "Fixed" => Ok(StringLength::Fixed),
+                        "Variable" => Ok(StringLength::Variable),
+                        _ => Err(projection_error("invalid string length qualifier")),
+                    })
+                    .transpose()?,
+            }),
+            PrimitiveTypeKind::Number => TypeQualifiers::Number(NumberQualifiers {
+                digits: qualifier_integer(&qualifiers, "digits")?,
+                fraction_digits: qualifier_integer(&qualifiers, "fractionDigits")?,
+                allowed_sign: qualifier_string(&qualifiers, "allowedSign")
+                    .map(|value| match value {
+                        "Any" => Ok(NumberSign::Any),
+                        "Nonnegative" => Ok(NumberSign::Nonnegative),
+                        _ => Err(projection_error("invalid number sign qualifier")),
+                    })
+                    .transpose()?,
+            }),
+            PrimitiveTypeKind::Date => TypeQualifiers::Date(DateQualifiers {
+                date_fractions: qualifier_string(&qualifiers, "dateFractions")
+                    .map(|value| match value {
+                        "Date" => Ok(DateFractions::Date),
+                        "DateTime" => Ok(DateFractions::DateTime),
+                        "Time" => Ok(DateFractions::Time),
+                        _ => Err(projection_error("invalid date fractions qualifier")),
+                    })
+                    .transpose()?,
+            }),
+            PrimitiveTypeKind::Boolean => {
+                return Err(projection_error(
+                    "boolean type cannot carry Platform XML qualifiers",
+                ))
+            }
+        });
     }
     variants.sort_by_key(type_variant_key);
     variants.dedup();
@@ -310,10 +351,12 @@ enum QualifierGroup {
 }
 
 impl QualifierGroup {
-    fn is_compatible_with(self, primitive_kind: &str) -> bool {
+    fn is_compatible_with(self, primitive_kind: &PrimitiveTypeKind) -> bool {
         matches!(
             (self, primitive_kind),
-            (Self::String, "String") | (Self::Number, "Number") | (Self::Date, "Date")
+            (Self::String, PrimitiveTypeKind::String)
+                | (Self::Number, PrimitiveTypeKind::Number)
+                | (Self::Date, PrimitiveTypeKind::Date)
         )
     }
 }
@@ -366,15 +409,15 @@ fn parse_qualifiers(
                     .map_err(|_| projection_error("invalid numeric type qualifier"))?,
             ),
             QualifierKind::AllowedLength if matches!(text.as_str(), "Fixed" | "Variable") => {
-                PropertyValue::EnumSymbol(text.to_string())
+                PropertyValue::String(text.to_string())
             }
             QualifierKind::AllowedSign if matches!(text.as_str(), "Any" | "Nonnegative") => {
-                PropertyValue::EnumSymbol(text.to_string())
+                PropertyValue::String(text.to_string())
             }
             QualifierKind::DateFractions
                 if matches!(text.as_str(), "Date" | "DateTime" | "Time") =>
             {
-                PropertyValue::EnumSymbol(text.to_string())
+                PropertyValue::String(text.to_string())
             }
             _ => return Err(projection_error("invalid Platform XML type qualifier")),
         };
@@ -393,18 +436,18 @@ fn parse_type_variant(value: &str, node: Node<'_, '_>) -> Result<TypeVariant, So
         .ok_or_else(|| projection_error("Platform XML type value has an undeclared namespace"))?;
     if namespace == XML_SCHEMA_NAMESPACE {
         let primitive = match local {
-            "string" => Some("String"),
-            "boolean" => Some("Boolean"),
-            "decimal" => Some("Number"),
-            "date" | "dateTime" => Some("Date"),
+            "string" => Some(PrimitiveTypeKind::String),
+            "boolean" => Some(PrimitiveTypeKind::Boolean),
+            "decimal" => Some(PrimitiveTypeKind::Number),
+            "date" | "dateTime" => Some(PrimitiveTypeKind::Date),
             _ => None,
         };
         let Some(kind) = primitive else {
             return Err(projection_error("unsupported XML Schema type variant"));
         };
         return Ok(TypeVariant::Primitive {
-            kind: kind.to_string(),
-            qualifiers: BTreeMap::new(),
+            kind,
+            qualifiers: None,
         });
     }
     if namespace != CURRENT_CONFIGURATION_NAMESPACE {
@@ -426,6 +469,11 @@ fn parse_type_variant(value: &str, node: Node<'_, '_>) -> Result<TypeVariant, So
         "EnumRef" => {
             return Ok(TypeVariant::Enumeration {
                 target: format!("Enum.{name}"),
+            })
+        }
+        "DefinedType" => {
+            return Ok(TypeVariant::DefinedType {
+                target: format!("DefinedType.{name}"),
             })
         }
         "ChartOfAccountsRef" => format!("ChartOfAccounts.{name}"),
@@ -464,11 +512,36 @@ fn lower_camel(value: &str) -> String {
         .unwrap_or_default()
 }
 
+fn qualifier_integer(
+    qualifiers: &BTreeMap<String, PropertyValue>,
+    name: &str,
+) -> Result<Option<u32>, SourceAdapterError> {
+    qualifiers
+        .get(name)
+        .map(|value| match value {
+            PropertyValue::Integer(value) => u32::try_from(*value)
+                .map_err(|_| projection_error("numeric type qualifier is out of range")),
+            _ => Err(projection_error("numeric type qualifier has invalid type")),
+        })
+        .transpose()
+}
+
+fn qualifier_string<'a>(
+    qualifiers: &'a BTreeMap<String, PropertyValue>,
+    name: &str,
+) -> Option<&'a str> {
+    qualifiers.get(name).and_then(|value| match value {
+        PropertyValue::String(value) => Some(value.as_str()),
+        _ => None,
+    })
+}
+
 fn type_variant_key(value: &TypeVariant) -> String {
     match value {
-        TypeVariant::Primitive { kind, .. } => format!("primitive:{kind}"),
+        TypeVariant::Primitive { kind, .. } => format!("primitive:{}", kind.as_str()),
         TypeVariant::Reference { target } => format!("reference:{target}"),
         TypeVariant::Enumeration { target } => format!("enumeration:{target}"),
+        TypeVariant::DefinedType { target } => format!("definedType:{target}"),
     }
 }
 

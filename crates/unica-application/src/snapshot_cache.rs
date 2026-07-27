@@ -389,19 +389,11 @@ fn observe_property_value_depth(
     depth: usize,
     stats: &mut NavigationValidationStats,
 ) -> Result<(), SourceAdapterError> {
-    use unica_format_core::navigation::{PropertyValue, TypeVariant};
+    use unica_format_core::navigation::PropertyValue;
 
     stats.observe(depth)?;
     match value {
-        PropertyValue::TypeSet(value) => {
-            for variant in &value.variants {
-                if let TypeVariant::Primitive { qualifiers, .. } = variant {
-                    for value in qualifiers.values() {
-                        observe_property_value_depth_child(value, limits, depth, stats)?;
-                    }
-                }
-            }
-        }
+        PropertyValue::TypeSet(_) => {}
         PropertyValue::List(values) => {
             for value in values {
                 observe_property_value_depth_child(value, limits, depth, stats)?;
@@ -454,7 +446,7 @@ fn validate_navigation_node(
     validate_action_profile(node.action_profile)?;
     validate_navigation_facet_visibility(node.facet_visibility)?;
     for (name, property) in &node.properties {
-        validate_semantic_string(name, limits.max_semantic_string_bytes)?;
+        validate_semantic_string(name.as_str(), limits.max_semantic_string_bytes)?;
         validate_semantic_property(property, limits)?;
     }
     for descriptor in &node.semantic_actions {
@@ -529,7 +521,7 @@ fn validate_navigation_selection(
         unica_format_core::navigation::PropertySelection::All => {}
         unica_format_core::navigation::PropertySelection::Named(names) => {
             for name in names {
-                validate_semantic_string(name, limit)?;
+                validate_semantic_string(name.as_str(), limit)?;
             }
         }
     }
@@ -636,26 +628,7 @@ fn validate_node_kind(
     kind: &unica_format_core::navigation::NodeKind,
     limit: usize,
 ) -> Result<(), SourceAdapterError> {
-    match kind {
-        unica_format_core::navigation::NodeKind::MetadataObject { metadata_type } => {
-            validate_semantic_string(metadata_type, limit)?;
-        }
-        unica_format_core::navigation::NodeKind::Template { template_type } => {
-            if let Some(template_type) = template_type {
-                validate_semantic_string(template_type, limit)?;
-            }
-        }
-        unica_format_core::navigation::NodeKind::SourceRoot
-        | unica_format_core::navigation::NodeKind::Document
-        | unica_format_core::navigation::NodeKind::Attribute
-        | unica_format_core::navigation::NodeKind::TabularSection
-        | unica_format_core::navigation::NodeKind::Command
-        | unica_format_core::navigation::NodeKind::Form
-        | unica_format_core::navigation::NodeKind::FormAttribute
-        | unica_format_core::navigation::NodeKind::FormCommand
-        | unica_format_core::navigation::NodeKind::FormElement => {}
-    }
-    Ok(())
+    validate_semantic_string(kind.as_str(), limit)
 }
 
 fn validate_capability_state(
@@ -829,18 +802,16 @@ fn validate_semantic_action_kind(
 
 fn validate_property_type(
     value_type: &unica_format_core::navigation::PropertyType,
-    limit: usize,
+    _limit: usize,
 ) -> Result<(), SourceAdapterError> {
     match value_type {
-        unica_format_core::navigation::PropertyType::Enum { enum_type } => {
-            validate_semantic_string(enum_type, limit)?;
-        }
         unica_format_core::navigation::PropertyType::Boolean
         | unica_format_core::navigation::PropertyType::Integer
         | unica_format_core::navigation::PropertyType::Decimal
         | unica_format_core::navigation::PropertyType::String
         | unica_format_core::navigation::PropertyType::LocalizedString
         | unica_format_core::navigation::PropertyType::Uuid
+        | unica_format_core::navigation::PropertyType::Enum
         | unica_format_core::navigation::PropertyType::Date
         | unica_format_core::navigation::PropertyType::TypeSet
         | unica_format_core::navigation::PropertyType::ObjectRef
@@ -870,15 +841,10 @@ fn validate_property_provenance(
     provenance: unica_format_core::navigation::PropertyProvenance,
 ) -> Result<(), SourceAdapterError> {
     match provenance {
-        unica_format_core::navigation::PropertyProvenance::ProjectorDefault { profile } => {
-            match profile {
-                unica_format_core::navigation::ProjectorProfile::PlatformXmlV1
-                | unica_format_core::navigation::ProjectorProfile::EdtV1 => {}
-            }
-        }
-        unica_format_core::navigation::PropertyProvenance::Descriptor
+        unica_format_core::navigation::PropertyProvenance::Declared
+        | unica_format_core::navigation::PropertyProvenance::Default
         | unica_format_core::navigation::PropertyProvenance::Inherited
-        | unica_format_core::navigation::PropertyProvenance::Computed
+        | unica_format_core::navigation::PropertyProvenance::Derived
         | unica_format_core::navigation::PropertyProvenance::Unknown => {}
     }
     Ok(())
@@ -890,6 +856,7 @@ fn validate_property_capability(
     match capability {
         unica_format_core::navigation::PropertyCapability::ReadOnly
         | unica_format_core::navigation::PropertyCapability::Authorable
+        | unica_format_core::navigation::PropertyCapability::Unavailable
         | unica_format_core::navigation::PropertyCapability::Unknown => {}
     }
     Ok(())
@@ -905,7 +872,6 @@ fn validate_property_value(
     match value {
         PropertyValue::Decimal(value)
         | PropertyValue::String(value)
-        | PropertyValue::EnumSymbol(value)
         | PropertyValue::Date(value) => {
             validate_semantic_string(value, limits.max_semantic_string_bytes)?;
         }
@@ -918,14 +884,10 @@ fn validate_property_value(
         PropertyValue::TypeSet(value) => {
             for variant in &value.variants {
                 match variant {
-                    TypeVariant::Primitive { kind, qualifiers } => {
-                        validate_semantic_string(kind, limits.max_semantic_string_bytes)?;
-                        for (name, value) in qualifiers {
-                            validate_semantic_string(name, limits.max_semantic_string_bytes)?;
-                            validate_property_value_child(value, limits, depth)?;
-                        }
-                    }
-                    TypeVariant::Reference { target } | TypeVariant::Enumeration { target } => {
+                    TypeVariant::Primitive { .. } => {}
+                    TypeVariant::Reference { target }
+                    | TypeVariant::Enumeration { target }
+                    | TypeVariant::DefinedType { target } => {
                         validate_semantic_string(target, limits.max_semantic_string_bytes)?;
                     }
                 }
@@ -948,7 +910,8 @@ fn validate_property_value(
         PropertyValue::Unknown { summary } => {
             validate_semantic_string(summary, limits.max_semantic_string_bytes)?;
         }
-        PropertyValue::Boolean(_)
+        PropertyValue::EnumSymbol(_)
+        | PropertyValue::Boolean(_)
         | PropertyValue::Integer(_)
         | PropertyValue::Uuid(_)
         | PropertyValue::Null => {}
@@ -1031,14 +994,7 @@ fn validate_relation_kind(
 fn validate_relation_role(
     role: unica_format_core::navigation::RelationRole,
 ) -> Result<(), SourceAdapterError> {
-    match role {
-        unica_format_core::navigation::RelationRole::Children
-        | unica_format_core::navigation::RelationRole::Attributes
-        | unica_format_core::navigation::RelationRole::TabularSections
-        | unica_format_core::navigation::RelationRole::Forms
-        | unica_format_core::navigation::RelationRole::Commands
-        | unica_format_core::navigation::RelationRole::Templates => {}
-    }
+    let _ = role.as_str();
     Ok(())
 }
 
@@ -1047,6 +1003,7 @@ fn validate_navigation_status(
 ) -> Result<(), SourceAdapterError> {
     match status {
         unica_format_core::navigation::NavigationStatus::Available
+        | unica_format_core::navigation::NavigationStatus::Partial
         | unica_format_core::navigation::NavigationStatus::Unavailable => {}
     }
     Ok(())
@@ -1354,10 +1311,7 @@ impl<'a> BindingValidator<'a> {
                 self.charge(types.variants.len())?;
                 for variant in &types.variants {
                     if let TypeVariant::Primitive { qualifiers, .. } = variant {
-                        self.charge(qualifiers.len())?;
-                        for value in qualifiers.values() {
-                            self.validate_property_value(value, depth + 1)?;
-                        }
+                        self.charge(usize::from(qualifiers.is_some()))?;
                     }
                 }
                 Ok(())
@@ -1377,7 +1331,7 @@ mod tests {
             NavigationRelationPage, NavigationStatus, NodeKind, ObjectKey, ObjectRef,
             OperationBinding, PropertyCapability, PropertyProvenance, PropertyType, PropertyValue,
             PropertyValueState, RelationGroupRef, RelationKind, RelationRole, ResolutionState,
-            SemanticAction, SemanticProperty, SourceAdapterDiagnostic,
+            SemanticAction, SemanticProperty, SemanticPropertyId, SourceAdapterDiagnostic,
         },
         source::{SnapshotConsistency, SourceRevision, SourceSnapshot},
     };
@@ -1394,9 +1348,7 @@ mod tests {
             source_id,
             ObjectKey::new("uuid:items").unwrap(),
             IdentityStrength::Persistent,
-            NodeKind::MetadataObject {
-                metadata_type: "Catalog".to_string(),
-            },
+            NodeKind::Catalog,
             "Items",
         );
         let mut node = NavigationNode::new(
@@ -1404,7 +1356,7 @@ mod tests {
             CapabilityState::new(ResolutionState::Resolved, Authorability::DerivedReadOnly),
         );
         node.properties
-            .insert("name".to_string(), string_property("Items"));
+            .insert(SemanticPropertyId::METADATA_NAME, string_property("Items"));
         (
             test_cache_binding(&snapshot),
             NavigationEnvelope {
@@ -1425,7 +1377,7 @@ mod tests {
             value_type: PropertyType::String,
             value_state: PropertyValueState::Explicit,
             value: Some(PropertyValue::String(value.to_string())),
-            provenance: PropertyProvenance::Descriptor,
+            provenance: PropertyProvenance::Declared,
             capability: PropertyCapability::ReadOnly,
         }
     }
@@ -1462,8 +1414,10 @@ mod tests {
         let mut node = navigation.nodes[0].clone();
         node.actions.clear();
         node.semantic_actions.clear();
-        node.properties
-            .insert("second".to_string(), string_property("value"));
+        node.properties.insert(
+            SemanticPropertyId::METADATA_COMMENT,
+            string_property("value"),
+        );
         navigation.nodes = (0..25_000).map(|_| node.clone()).collect();
         let cached = CachedNavigation::new(
             "ordinary-identity-graph".to_string(),
@@ -1479,7 +1433,7 @@ mod tests {
     fn cache_preflight_rejects_the_shared_identity_item_limit() {
         let (binding, mut navigation) = fixture();
         navigation.nodes[0].properties = BTreeMap::from([(
-            "wide".to_string(),
+            SemanticPropertyId::FIELD_FILL_VALUE,
             SemanticProperty {
                 value_type: PropertyType::List,
                 value_state: PropertyValueState::Explicit,
@@ -1488,7 +1442,7 @@ mod tests {
                     MAX_IDENTITY_BEARING_VALIDATION_ITEMS
                         + 1
                 ])),
-                provenance: PropertyProvenance::Descriptor,
+                provenance: PropertyProvenance::Declared,
                 capability: PropertyCapability::ReadOnly,
             },
         )]);
@@ -1638,22 +1592,6 @@ mod tests {
         });
         let error = CachedNavigation::new(
             "relation-page-depth".to_string(),
-            binding,
-            navigation,
-            DEFAULT_SNAPSHOT_CACHE_LIMITS,
-        )
-        .unwrap_err();
-        assert_eq!(error.kind, SourceAdapterErrorKind::ResourceLimit);
-    }
-
-    #[test]
-    fn oversized_object_ref_kind_payload_returns_resource_limit() {
-        let (binding, mut navigation) = fixture();
-        navigation.nodes[0].object_ref.kind = NodeKind::MetadataObject {
-            metadata_type: "x".repeat(SNAPSHOT_CACHE_MAX_SEMANTIC_STRING_BYTES + 1),
-        };
-        let error = CachedNavigation::new(
-            "object-kind".to_string(),
             binding,
             navigation,
             DEFAULT_SNAPSHOT_CACHE_LIMITS,

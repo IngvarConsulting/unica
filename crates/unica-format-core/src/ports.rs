@@ -285,7 +285,7 @@ pub struct SourceAdapterRegistration {
 /// };
 /// let command = FormatWriteCommand::SetProperty {
 ///     target: todo!(),
-///     property: SemanticPropertyId::NAME,
+///     property: SemanticPropertyId::METADATA_NAME,
 ///     value: serde_json::json!({"unsafe": true}),
 /// };
 /// ```

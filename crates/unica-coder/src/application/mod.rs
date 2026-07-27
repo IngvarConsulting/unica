@@ -89,14 +89,7 @@ mod meta_info_contract_tests {
         assert_eq!(
             schema["properties"]["select"]["properties"]["relations"]["items"]["properties"]
                 ["role"]["enum"],
-            json!([
-                "children",
-                "attributes",
-                "tabularSections",
-                "forms",
-                "commands",
-                "templates"
-            ])
+            serde_json::to_value(unica_format_core::semantic_ids::SemanticRelationId::ALL).unwrap()
         );
         assert_eq!(
             schema["properties"]["select"]["properties"]["relations"]["items"]["properties"]
@@ -120,7 +113,7 @@ mod meta_info_contract_tests {
             json!({"objectRef": {"sourceId": "workspace:main"}, "snapshotRevision": "sha256:one"}),
             json!({"objectRef": {"sourceId": "workspace:main", "objectKey": "uuid:one", "extra": true}, "snapshotRevision": "sha256:one"}),
             json!({"ObjectPath": "src/Catalogs/Items.xml", "select": {"relations": [{"role": "attributes", "offset": 0}]}}),
-            json!({"ObjectPath": "src/Catalogs/Items.xml", "select": {"relations": [{"role": "references"}]}}),
+            json!({"ObjectPath": "src/Catalogs/Items.xml", "select": {"relations": [{"role": "native.references"}]}}),
         ] {
             assert!(!validator.is_valid(&invalid), "schema accepted {invalid}");
         }
@@ -6946,7 +6939,7 @@ mod tests {
         let data = info.data.unwrap();
         assert_eq!(
             data["navigation"]["nodes"][0]["capabilityState"]["authorability"],
-            "authorable"
+            "unknown_read_only"
         );
 
         let _ = std::fs::remove_dir_all(root);

@@ -577,10 +577,7 @@ impl<'a> BindingValidator<'a> {
                 self.charge(types.variants.len())?;
                 for variant in &types.variants {
                     if let TypeVariant::Primitive { qualifiers, .. } = variant {
-                        self.charge(qualifiers.len())?;
-                        for value in qualifiers.values() {
-                            self.validate_property_value(value, depth + 1)?;
-                        }
+                        self.charge(usize::from(qualifiers.is_some()))?;
                     }
                 }
                 Ok(())
@@ -832,9 +829,7 @@ mod registry_tests {
             snapshot.source_id.clone(),
             ObjectKey::new("owner").unwrap(),
             IdentityStrength::Persistent,
-            NodeKind::MetadataObject {
-                metadata_type: "Document".to_string(),
-            },
+            NodeKind::Document,
             "Owner",
         );
         let relation = RelationGroupRef {
@@ -1149,8 +1144,14 @@ mod registry_tests {
         for index in 0..25_000 {
             let mut node = bound_node(bound_reference(&binding, &format!("ordinary-{index}")));
             node.properties = std::collections::BTreeMap::from([
-                ("first".to_string(), property.clone()),
-                ("second".to_string(), property.clone()),
+                (
+                    unica_format_core::semantic_ids::SemanticPropertyId::METADATA_NAME,
+                    property.clone(),
+                ),
+                (
+                    unica_format_core::semantic_ids::SemanticPropertyId::METADATA_COMMENT,
+                    property.clone(),
+                ),
             ]);
             nodes.push(node);
         }
@@ -1407,7 +1408,7 @@ mod registry_tests {
             }
             Some(BindingCase::NestedObjectRef) => {
                 envelope.nodes[0].properties.insert(
-                    "nested".to_string(),
+                    unica_format_core::semantic_ids::SemanticPropertyId::FIELD_FILL_VALUE,
                     structure_property(PropertyValue::Structure(std::collections::BTreeMap::from(
                         [(
                             "nested".to_string(),
@@ -1428,7 +1429,7 @@ mod registry_tests {
             }
             None => {
                 envelope.nodes[0].properties.insert(
-                    "ordinary".to_string(),
+                    unica_format_core::semantic_ids::SemanticPropertyId::METADATA_COMMENT,
                     structure_property(PropertyValue::Structure(std::collections::BTreeMap::from(
                         [
                             (
@@ -1519,7 +1520,7 @@ mod registry_tests {
             value_type: PropertyType::Structure,
             value_state: PropertyValueState::Explicit,
             value: Some(value),
-            provenance: PropertyProvenance::Descriptor,
+            provenance: PropertyProvenance::Declared,
             capability: PropertyCapability::ReadOnly,
         }
     }

@@ -11,6 +11,7 @@ use unica_format_core::{
         normalize_navigation_selection, FacetSelection, NavigationSelection, PropertySelection,
         RelationKind, RelationSelection,
     },
+    semantic_ids::{SemanticPropertyId, SemanticRelationId},
     source::{SourceAdapterError, SourceAdapterErrorKind},
 };
 
@@ -21,7 +22,7 @@ pub(crate) fn parse_navigation_selection(
         return Ok(NavigationSelection {
             properties: PropertySelection::All,
             facets: FacetSelection::Summary,
-            relations: vec![RelationSelection::new("children", None)?],
+            relations: vec![RelationSelection::new(SemanticRelationId::CHILDREN, None)?],
         });
     };
     preflight_navigation_selection(value)?;
@@ -80,7 +81,7 @@ pub(crate) fn parse_navigation_selection(
         Some(_) => return Err(decode_error("select.facets must be a string")),
     };
     let relations = match object.get("relations") {
-        None => vec![RelationSelection::new("children", None)?],
+        None => vec![RelationSelection::new(SemanticRelationId::CHILDREN, None)?],
         Some(Value::Array(relations)) => {
             let mut parsed = Vec::with_capacity(relations.len());
             for relation in relations {
@@ -116,6 +117,8 @@ pub(crate) fn parse_navigation_selection(
                     },
                     Some(_) => return Err(decode_error("select.relations kind is invalid")),
                 };
+                let role = SemanticRelationId::parse(role)
+                    .ok_or_else(|| decode_error("select.relations role is invalid"))?;
                 let mut selection = RelationSelection::new(role, page_size)
                     .map_err(|_| decode_error("select.relations role is invalid"))?;
                 selection.kind = kind;
@@ -146,7 +149,9 @@ fn parse_named_properties(
             .as_str()
             .filter(|name| !name.is_empty())
             .ok_or_else(|| decode_error("select.properties values must be non-empty strings"))?;
-        if !names.insert(name.to_string()) {
+        let id = SemanticPropertyId::parse(name)
+            .ok_or_else(|| decode_error("select.properties value is not registered"))?;
+        if !names.insert(id) {
             return Err(decode_error("select.properties values must be unique"));
         }
     }
@@ -397,11 +402,12 @@ mod tests {
             unica_format_core::navigation::normalized_selection_hash(&second).unwrap(),
         );
         for value in [
-            json!({"properties": ["", "name"]}),
-            json!({"properties": ["name", "name"]}),
+            json!({"properties": ["", "metadata.name"]}),
+            json!({"properties": ["metadata.name", "metadata.name"]}),
+            json!({"properties": ["native.name"]}),
             json!({"facets": 1}),
             json!({"relations": [{"role": "unknown"}]}),
-            json!({"relations": [{"role": "references"}]}),
+            json!({"relations": [{"role": "native.references"}]}),
             json!({"relations": [{"role": "attributes", "pageSize": "1"}]}),
             json!({"relations": [{"role": "attributes", "offset": 0}]}),
         ] {

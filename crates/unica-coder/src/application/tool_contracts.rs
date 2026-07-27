@@ -7,9 +7,10 @@ use uuid::Uuid;
 
 use crate::domain::navigation_limits::{
     MAX_NAVIGATION_CURSOR_STRING_BYTES, MAX_NAVIGATION_PROPERTY_SELECTORS,
-    MAX_NAVIGATION_RELATION_SELECTORS, MAX_NAVIGATION_SELECTOR_STRING_BYTES,
+    MAX_NAVIGATION_RELATION_SELECTORS,
 };
 use unica_format_core::limits::MAX_NAVIGATION_CURSOR_TOKEN_BYTES;
+use unica_format_core::semantic_ids::{SemanticPropertyId, SemanticRelationId};
 
 const COMMON_ARGS: &[&str] = &["cwd", "dryRun", "confirm"];
 const CODE_PATCH_ARGS: &[&str] = &[
@@ -638,11 +639,19 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
         ]);
     }
     if tool.name == "unica.meta.info" {
+        let property_ids = SemanticPropertyId::ALL
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>();
+        let relation_ids = SemanticRelationId::ALL
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>();
         let relation_selection = json!({
             "type": "object",
             "additionalProperties": false,
             "properties": {
-                "role": {"type": "string", "enum": ["children", "attributes", "tabularSections", "forms", "commands", "templates"]},
+                "role": {"type": "string", "enum": relation_ids},
                 "kind": {"type": "string", "enum": ["contains", "references"], "default": "contains"},
                 "pageSize": {"type": "integer", "minimum": 1, "maximum": 100}
             },
@@ -654,8 +663,8 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
             "properties": {
                 "properties": {"oneOf": [
                     {"type": "string", "enum": ["all"]},
-                    {"type": "array", "maxItems": MAX_NAVIGATION_PROPERTY_SELECTORS, "items": {"type": "string", "minLength": 1, "maxLength": MAX_NAVIGATION_SELECTOR_STRING_BYTES}, "uniqueItems": true},
-                    {"type": "object", "additionalProperties": false, "properties": {"named": {"type": "array", "minItems": 1, "maxItems": MAX_NAVIGATION_PROPERTY_SELECTORS, "items": {"type": "string", "minLength": 1, "maxLength": MAX_NAVIGATION_SELECTOR_STRING_BYTES}, "uniqueItems": true}}, "required": ["named"]}
+                    {"type": "array", "maxItems": MAX_NAVIGATION_PROPERTY_SELECTORS, "items": {"type": "string", "enum": property_ids.clone()}, "uniqueItems": true},
+                    {"type": "object", "additionalProperties": false, "properties": {"named": {"type": "array", "minItems": 1, "maxItems": MAX_NAVIGATION_PROPERTY_SELECTORS, "items": {"type": "string", "enum": property_ids}, "uniqueItems": true}}, "required": ["named"]}
                 ]},
                 "facets": {"type": "string", "enum": ["none", "summary", "full"]},
                 "relations": {"type": "array", "maxItems": MAX_NAVIGATION_RELATION_SELECTORS, "items": relation_selection}

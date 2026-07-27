@@ -39,10 +39,10 @@ fn source_context_carries_locations_without_a_host_workspace_type() {
 
 #[test]
 fn semantic_ids_and_ports_form_a_closed_compiler_contract() {
-    assert_eq!(SemanticPropertyId::NAME.as_str(), "name");
+    assert_eq!(SemanticPropertyId::METADATA_NAME.as_str(), "metadata.name");
     assert_eq!(SemanticRelationId::ATTRIBUTES.as_str(), "attributes");
-    assert_eq!(SemanticFacetId::SUMMARY.as_str(), "summary");
-    assert_eq!(SemanticObjectKind::DOCUMENT.as_str(), "document");
+    assert_eq!(SemanticFacetId::IDENTITY.as_str(), "identity");
+    assert_eq!(SemanticObjectKind::Document.as_str(), "document");
 
     fn assert_port<T: ?Sized + Send + Sync>() {}
     assert_port::<dyn ProbePort>();

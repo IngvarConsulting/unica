@@ -8,7 +8,7 @@ use unica_format_core::{
     navigation::{
         FacetSelection, IdentityStrength, NavigationCursor, NavigationQuery, NavigationSelection,
         NavigationStatus, NavigationTarget, NodeKind, ObjectKey, ObjectRef, PropertySelection,
-        RelationKey, RelationKind, RelationRole,
+        RelationGroupRef, RelationKind, RelationRole,
     },
     ports::{
         CaptureResult, FormatInspectionMode, FormatInspectionRequest, FormatReadRequest,
@@ -321,29 +321,31 @@ fn read_port_rejects_every_unsupported_navigation_target() {
     let (root, captured) = captured_fixture("unsupported-query-targets");
     let registration = PlatformXmlAdapterFactory::new().registration();
     let selection = full_selection();
+    let source_id = SourceId::new("workspace:main").unwrap();
     let object_ref = ObjectRef::new(
-        SourceId::new("workspace:main").unwrap(),
+        source_id.clone(),
         ObjectKey::new("document:Shipment").unwrap(),
         IdentityStrength::Persistent,
-        NodeKind::MetadataObject {
-            metadata_type: "Document".to_string(),
-        },
+        NodeKind::Document,
         "Shipment",
     );
-    let cursor = NavigationCursor {
-        schema_version: NavigationCursor::SCHEMA_VERSION,
-        source_id: SourceId::new("workspace:main").unwrap(),
-        snapshot_revision: SourceRevision::new("sha256:test").unwrap(),
-        target_identity: captured.binding().target_identity.clone(),
-        target: ObjectKey::new("document:Shipment").unwrap(),
-        relation: RelationKey::new("children").unwrap(),
-        relation_role: RelationRole::Children,
-        relation_kind: RelationKind::Contains,
-        selection: selection.clone(),
-        selection_hash: "sha256:test".to_string(),
-        auth_tag: "test".to_string(),
-        next_position: 1,
-    };
+    let group = RelationGroupRef::new(
+        source_id.clone(),
+        object_ref.clone(),
+        RelationRole::Children,
+        RelationKind::Contains,
+    )
+    .unwrap();
+    let cursor = NavigationCursor::issue(
+        b"certification-cursor",
+        source_id,
+        SourceRevision::new("sha256:test").unwrap(),
+        object_ref.object_key.clone(),
+        group,
+        selection.clone(),
+        1,
+    )
+    .unwrap();
     let targets = [
         NavigationTarget::ObjectPath("Documents/Other.xml".to_string()),
         NavigationTarget::ObjectRef {

@@ -13,18 +13,31 @@ use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
 };
 use sha2::{Digest, Sha256};
+#[cfg(test)]
 use uuid::Uuid;
 
 use crate::limits::{
     MAX_NAVIGATION_CURSOR_JSON_BYTES, MAX_NAVIGATION_CURSOR_STRING_BYTES,
     MAX_NAVIGATION_CURSOR_TOKEN_BYTES, MAX_NAVIGATION_NESTING_DEPTH,
     MAX_NAVIGATION_PROPERTY_SELECTORS, MAX_NAVIGATION_RELATION_SELECTORS,
-    MAX_NAVIGATION_SELECTOR_STRING_BYTES,
 };
 use crate::source::{
     SnapshotConsistency, SourceAccess, SourceAdapterError, SourceAdapterErrorKind, SourceId,
     SourceRevision, SourceSnapshot, TargetIdentity,
 };
+pub use crate::{
+    facets::SemanticFacets,
+    property::{PropertyCapability, PropertyProvenance, PropertyValueState, SemanticProperty},
+    semantic_ids::{SemanticObjectKind, SemanticPropertyId, SemanticRelationId},
+    value::{
+        DateFractions, DateQualifiers, NumberQualifiers, NumberSign, PrimitiveTypeKind,
+        PropertyType, PropertyValue, StringLength, StringQualifiers, TypeQualifiers, TypeSetValue,
+        TypeVariant,
+    },
+};
+
+pub type NodeKind = SemanticObjectKind;
+pub type RelationRole = SemanticRelationId;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ObjectKey(String);
@@ -150,37 +163,6 @@ impl PartialEq for ObjectRef {
 }
 
 impl Eq for ObjectRef {}
-
-/// Semantic class of a graph node. Source representation is intentionally not
-/// encoded here.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case", rename_all_fields = "camelCase")]
-pub enum NodeKind {
-    SourceRoot,
-    Document,
-    MetadataObject {
-        metadata_type: String,
-    },
-    Attribute,
-    TabularSection,
-    Command,
-    Form,
-    FormAttribute,
-    FormCommand,
-    FormElement,
-    Template {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        template_type: Option<String>,
-    },
-}
-
-impl NodeKind {
-    pub fn metadata_object(metadata_type: impl Into<String>) -> Self {
-        Self::MetadataObject {
-            metadata_type: metadata_type.into(),
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -320,35 +302,6 @@ impl CapabilityState {
 pub enum RelationKind {
     Contains,
     References,
-}
-
-/// Closed, versioned ownership roles assigned by a certified projector.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum RelationRole {
-    Children,
-    Attributes,
-    TabularSections,
-    Forms,
-    Commands,
-    Templates,
-}
-
-impl RelationRole {
-    pub fn parse(value: &str) -> Result<Self, SourceAdapterError> {
-        match value {
-            "children" => Ok(Self::Children),
-            "attributes" => Ok(Self::Attributes),
-            "tabularSections" => Ok(Self::TabularSections),
-            "forms" => Ok(Self::Forms),
-            "commands" => Ok(Self::Commands),
-            "templates" => Ok(Self::Templates),
-            _ => Err(SourceAdapterError::new(
-                SourceAdapterErrorKind::ProjectionAmbiguous,
-                "invalid relation role",
-            )),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -639,23 +592,23 @@ pub enum ActionProfile {
 pub fn action_profile_for(kind: &NodeKind) -> ActionProfile {
     match kind {
         NodeKind::Document => ActionProfile::DocumentMetadataObject,
-        NodeKind::MetadataObject { metadata_type } if metadata_type == "Document" => {
-            ActionProfile::DocumentMetadataObject
-        }
-        NodeKind::MetadataObject { .. } | NodeKind::SourceRoot => {
-            ActionProfile::GenericMetadataObject
-        }
         NodeKind::Form => ActionProfile::Form,
         NodeKind::FormElement => ActionProfile::FormElement,
         NodeKind::TabularSection => ActionProfile::TabularSection,
-        NodeKind::Template {
-            template_type: Some(template_type),
-        } if template_type == "SpreadsheetDocument" => ActionProfile::MxlTemplate,
-        NodeKind::Template { .. } => ActionProfile::UnmodeledTemplate,
+        NodeKind::SpreadsheetDocumentTemplate => ActionProfile::MxlTemplate,
+        NodeKind::Template => ActionProfile::UnmodeledTemplate,
         NodeKind::Attribute
+        | NodeKind::Dimension
+        | NodeKind::Resource
         | NodeKind::Command
         | NodeKind::FormAttribute
-        | NodeKind::FormCommand => ActionProfile::UnmodeledChild,
+        | NodeKind::FormCommand
+        | NodeKind::HttpServiceUrlTemplate
+        | NodeKind::HttpServiceMethod
+        | NodeKind::WebServiceOperation
+        | NodeKind::WebServiceParameter
+        | NodeKind::EnumerationValue => ActionProfile::UnmodeledChild,
+        _ => ActionProfile::GenericMetadataObject,
     }
 }
 
@@ -762,7 +715,8 @@ pub struct NavigationNode {
     pub reference: ObjectRef,
     pub capability_state: CapabilityState,
     pub capability: CapabilityVector,
-    pub properties: BTreeMap<String, SemanticProperty>,
+    pub properties: BTreeMap<SemanticPropertyId, SemanticProperty>,
+    pub facets: SemanticFacets,
     pub action_profile: ActionProfile,
     pub semantic_actions: Vec<SemanticActionDescriptor>,
     pub actions: Vec<SemanticAction>,
@@ -788,6 +742,7 @@ impl NavigationNode {
             capability_state,
             capability,
             properties: BTreeMap::new(),
+            facets: SemanticFacets::default(),
             action_profile,
             semantic_actions,
             actions: Vec::new(),
@@ -805,8 +760,8 @@ impl Serialize for NavigationNode {
         S: Serializer,
     {
         let fields = match self.facet_visibility {
-            NavigationFacetVisibility::Full => 8,
-            NavigationFacetVisibility::Summary => 5,
+            NavigationFacetVisibility::Full => 9,
+            NavigationFacetVisibility::Summary => 6,
             NavigationFacetVisibility::None => 3,
         };
         let mut state = serializer.serialize_struct("NavigationNode", fields)?;
@@ -815,6 +770,7 @@ impl Serialize for NavigationNode {
         state.serialize_field("properties", &self.properties)?;
         match self.facet_visibility {
             NavigationFacetVisibility::Full => {
+                state.serialize_field("facets", &self.facets)?;
                 state.serialize_field("capabilityState", &self.capability_state)?;
                 state.serialize_field("capability", &self.capability)?;
                 state.serialize_field("actionProfile", &self.action_profile)?;
@@ -822,6 +778,7 @@ impl Serialize for NavigationNode {
                 state.serialize_field("actions", &self.actions)?;
             }
             NavigationFacetVisibility::Summary => {
+                state.serialize_field("facets", &self.facets.summary())?;
                 state.serialize_field("capabilityState", &self.capability_state)?;
                 state.serialize_field("actionProfile", &self.action_profile)?;
             }
@@ -1013,6 +970,7 @@ impl Serialize for NavigationGraph {
 pub enum NavigationStatus {
     #[serde(rename = "ready")]
     Available,
+    Partial,
     Unavailable,
 }
 
@@ -1094,229 +1052,6 @@ impl NavigationEnvelope {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub enum PropertyType {
-    Boolean,
-    Integer,
-    Decimal,
-    String,
-    LocalizedString,
-    Uuid,
-    Enum { enum_type: String },
-    Date,
-    TypeSet,
-    ObjectRef,
-    List,
-    Structure,
-    Null,
-    Unknown,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TypeSetValue {
-    pub variants: Vec<TypeVariant>,
-}
-
-/// A 1C type description normalized for consumers.  XML type expressions are
-/// adapter-private evidence and never the canonical property value.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum TypeVariant {
-    Primitive {
-        kind: String,
-        qualifiers: BTreeMap<String, PropertyValue>,
-    },
-    Reference {
-        target: String,
-    },
-    Enumeration {
-        target: String,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PropertyValue {
-    Boolean(bool),
-    Integer(i64),
-    Decimal(String),
-    String(String),
-    LocalizedString(BTreeMap<String, String>),
-    Uuid(Uuid),
-    EnumSymbol(String),
-    Date(String),
-    TypeSet(TypeSetValue),
-    ObjectRef(ObjectRef),
-    List(Vec<PropertyValue>),
-    Structure(BTreeMap<String, PropertyValue>),
-    Null,
-    Unknown { summary: String },
-}
-
-impl Serialize for PropertyValue {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match self {
-            Self::Boolean(value) => serializer.serialize_bool(*value),
-            Self::Integer(value) => serializer.serialize_i64(*value),
-            Self::Decimal(value)
-            | Self::String(value)
-            | Self::EnumSymbol(value)
-            | Self::Date(value) => serializer.serialize_str(value),
-            Self::LocalizedString(value) => value.serialize(serializer),
-            Self::Uuid(value) => serializer.serialize_str(&value.to_string()),
-            Self::TypeSet(value) => value.serialize(serializer),
-            Self::ObjectRef(value) => value.serialize(serializer),
-            Self::List(value) => value.serialize(serializer),
-            Self::Structure(value) => value.serialize(serializer),
-            Self::Null => serializer.serialize_none(),
-            Self::Unknown { summary } => {
-                let mut map = BTreeMap::new();
-                map.insert("summary", summary);
-                map.serialize(serializer)
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum PropertyValueState {
-    Explicit,
-    Defaulted,
-    Inherited,
-    Computed,
-    Absent,
-    Unresolved,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProjectorProfile {
-    PlatformXmlV1,
-    EdtV1,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum PropertyProvenance {
-    Descriptor,
-    ProjectorDefault { profile: ProjectorProfile },
-    Inherited,
-    Computed,
-    Unknown,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum PropertyCapability {
-    ReadOnly,
-    Authorable,
-    Unknown,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SemanticProperty {
-    #[serde(rename = "type")]
-    pub value_type: PropertyType,
-    pub value_state: PropertyValueState,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub value: Option<PropertyValue>,
-    pub provenance: PropertyProvenance,
-    pub capability: PropertyCapability,
-}
-
-impl SemanticProperty {
-    pub fn explicit(
-        value_type: PropertyType,
-        value: PropertyValue,
-        provenance: PropertyProvenance,
-    ) -> Result<Self, SourceAdapterError> {
-        if !property_value_matches(&value_type, &value) {
-            return Err(SourceAdapterError::new(
-                SourceAdapterErrorKind::ProjectionAmbiguous,
-                "property type does not match its value",
-            ));
-        }
-        Ok(Self {
-            value_type,
-            value_state: PropertyValueState::Explicit,
-            value: Some(value),
-            provenance,
-            capability: PropertyCapability::Unknown,
-        })
-    }
-
-    pub fn absent(value_type: PropertyType, provenance: PropertyProvenance) -> Self {
-        Self {
-            value_type,
-            value_state: PropertyValueState::Absent,
-            value: None,
-            provenance,
-            capability: PropertyCapability::Unknown,
-        }
-    }
-
-    pub fn unresolved(value_type: PropertyType, provenance: PropertyProvenance) -> Self {
-        Self {
-            value_type,
-            value_state: PropertyValueState::Unresolved,
-            value: None,
-            provenance,
-            capability: PropertyCapability::Unknown,
-        }
-    }
-
-    pub fn defaulted(
-        value_type: PropertyType,
-        value: PropertyValue,
-        projector_profile: ProjectorProfile,
-    ) -> Result<Self, SourceAdapterError> {
-        if !property_value_matches(&value_type, &value) {
-            return Err(SourceAdapterError::new(
-                SourceAdapterErrorKind::ProjectionAmbiguous,
-                "defaulted property requires an exact projector profile and compatible value",
-            ));
-        }
-        Ok(Self {
-            value_type,
-            value_state: PropertyValueState::Defaulted,
-            value: Some(value),
-            provenance: PropertyProvenance::ProjectorDefault {
-                profile: projector_profile,
-            },
-            capability: PropertyCapability::Unknown,
-        })
-    }
-}
-
-fn property_value_matches(value_type: &PropertyType, value: &PropertyValue) -> bool {
-    matches!(
-        (value_type, value),
-        (PropertyType::Boolean, PropertyValue::Boolean(_))
-            | (PropertyType::Integer, PropertyValue::Integer(_))
-            | (PropertyType::Decimal, PropertyValue::Decimal(_))
-            | (PropertyType::String, PropertyValue::String(_))
-            | (
-                PropertyType::LocalizedString,
-                PropertyValue::LocalizedString(_)
-            )
-            | (PropertyType::Uuid, PropertyValue::Uuid(_))
-            | (PropertyType::Enum { .. }, PropertyValue::EnumSymbol(_))
-            | (PropertyType::Date, PropertyValue::Date(_))
-            | (PropertyType::TypeSet, PropertyValue::TypeSet(_))
-            | (PropertyType::ObjectRef, PropertyValue::ObjectRef(_))
-            | (PropertyType::List, PropertyValue::List(_))
-            | (PropertyType::Structure, PropertyValue::Structure(_))
-            | (PropertyType::Null, PropertyValue::Null)
-            | (PropertyType::Unknown, PropertyValue::Unknown { .. })
-    )
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub enum NavigationTarget {
     CapturedTarget(TargetIdentity),
     ObjectPath(String),
@@ -1346,7 +1081,7 @@ pub struct NavigationSelection {
 #[serde(rename_all = "camelCase")]
 pub enum PropertySelection {
     All,
-    Named(BTreeSet<String>),
+    Named(BTreeSet<SemanticPropertyId>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1366,8 +1101,10 @@ pub struct RelationSelection {
 }
 
 impl RelationSelection {
-    pub fn new(role: impl AsRef<str>, page_size: Option<u16>) -> Result<Self, SourceAdapterError> {
-        let role = RelationRole::parse(role.as_ref())?;
+    pub fn new(
+        role: SemanticRelationId,
+        page_size: Option<u16>,
+    ) -> Result<Self, SourceAdapterError> {
         let page_size = page_size.unwrap_or(25);
         if page_size == 0 || page_size > 100 {
             return Err(SourceAdapterError::new(
@@ -1400,11 +1137,6 @@ pub fn normalize_navigation_selection(
         return Err(resource_limit(
             "navigation selection has too many relation selectors",
         ));
-    }
-    if let PropertySelection::Named(names) = &selection.properties {
-        for name in names {
-            validate_selection_token(name)?;
-        }
     }
     for relation in &selection.relations {
         if relation.page_size == 0 || relation.page_size > 100 {
@@ -1589,7 +1321,7 @@ impl NavigationCursor {
                 ))
             }
         };
-        let relation_role = RelationRole::parse(parts.relation_role).map_err(|_| {
+        let relation_role = RelationRole::parse(parts.relation_role).ok_or_else(|| {
             SourceAdapterError::new(
                 SourceAdapterErrorKind::DecodeCorrupted,
                 "navigation cursor has invalid relationRole",
@@ -1987,10 +1719,10 @@ fn decode_cursor_selection(
                 let name = name.as_str().ok_or_else(|| {
                     decode_cursor_error("navigation cursor has invalid property selection")
                 })?;
-                validate_selection_token(name).map_err(|_| {
+                let id = SemanticPropertyId::parse(name).ok_or_else(|| {
                     decode_cursor_error("navigation cursor has invalid property selection")
                 })?;
-                if !unique.insert(name.to_string()) {
+                if !unique.insert(id) {
                     return Err(decode_cursor_error(
                         "navigation cursor has repeated property selection",
                     ));
@@ -2035,8 +1767,9 @@ fn decode_cursor_selection(
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| decode_cursor_error("navigation cursor has invalid relation role"))
             .and_then(|role| {
-                RelationRole::parse(role)
-                    .map_err(|_| decode_cursor_error("navigation cursor has invalid relation role"))
+                SemanticRelationId::parse(role).ok_or_else(|| {
+                    decode_cursor_error("navigation cursor has invalid relation role")
+                })
             })?;
         let page_size = relation
             .get("pageSize")
@@ -2160,14 +1893,7 @@ fn cursor_wire_parts(value: &serde_json::Value) -> Result<CursorWireParts<'_>, S
 }
 
 fn relation_role_token(role: RelationRole) -> &'static str {
-    match role {
-        RelationRole::Children => "children",
-        RelationRole::Attributes => "attributes",
-        RelationRole::TabularSections => "tabularSections",
-        RelationRole::Forms => "forms",
-        RelationRole::Commands => "commands",
-        RelationRole::Templates => "templates",
-    }
+    role.as_str()
 }
 
 fn relation_kind_token(kind: RelationKind) -> &'static str {
@@ -2200,19 +1926,6 @@ pub fn normalized_selection_hash(
     digest.update(b"unica.navigation.selection.v1\0");
     digest.update(canonical_json);
     Ok(format!("sha256:{:x}", digest.finalize()))
-}
-
-fn validate_selection_token(value: &str) -> Result<(), SourceAdapterError> {
-    if value.is_empty()
-        || value.len() > MAX_NAVIGATION_SELECTOR_STRING_BYTES
-        || value.chars().any(char::is_control)
-    {
-        return Err(SourceAdapterError::new(
-            SourceAdapterErrorKind::ProjectionAmbiguous,
-            "selection contains an invalid token",
-        ));
-    }
-    Ok(())
 }
 
 fn resource_limit(message: &str) -> SourceAdapterError {
@@ -2253,9 +1966,13 @@ mod tests {
     }
     fn selection() -> NavigationSelection {
         NavigationSelection {
-            properties: PropertySelection::Named(BTreeSet::from(["name".to_string()])),
+            properties: PropertySelection::Named(BTreeSet::from([
+                SemanticPropertyId::METADATA_NAME,
+            ])),
             facets: FacetSelection::Summary,
-            relations: vec![RelationSelection::new("attributes", Some(25)).unwrap()],
+            relations: vec![
+                RelationSelection::new(SemanticRelationId::ATTRIBUTES, Some(25)).unwrap(),
+            ],
         }
     }
 
@@ -2383,7 +2100,7 @@ mod tests {
         let property = SemanticProperty::explicit(
             PropertyType::Integer,
             PropertyValue::Integer(11),
-            PropertyProvenance::Descriptor,
+            PropertyProvenance::Declared,
         )
         .unwrap();
         let value = serde_json::to_value(property).unwrap();
@@ -2397,7 +2114,7 @@ mod tests {
         let error = SemanticProperty::explicit(
             PropertyType::Integer,
             PropertyValue::String("11".to_string()),
-            PropertyProvenance::Descriptor,
+            PropertyProvenance::Declared,
         )
         .unwrap_err();
         assert_eq!(error.kind, SourceAdapterErrorKind::ProjectionAmbiguous);
@@ -2406,12 +2123,12 @@ mod tests {
     #[test]
     fn relation_page_size_is_bounded() {
         assert_eq!(
-            RelationSelection::new("attributes", None)
+            RelationSelection::new(SemanticRelationId::ATTRIBUTES, None)
                 .unwrap()
                 .page_size,
             25
         );
-        assert!(RelationSelection::new("attributes", Some(101)).is_err());
+        assert!(RelationSelection::new(SemanticRelationId::ATTRIBUTES, Some(101)).is_err());
     }
 
     #[test]
@@ -2581,8 +2298,8 @@ mod tests {
         .unwrap();
         let raw = String::from_utf8(cursor_payload(&cursor).unwrap()).unwrap();
         let tampered = raw.replacen(
-            "\"named\":[\"name\"]",
-            "\"named\":[\"name\"],\"named\":[\"name\"]",
+            "\"named\":[\"metadata.name\"]",
+            "\"named\":[\"metadata.name\"],\"named\":[\"metadata.name\"]",
             1,
         );
         assert_ne!(tampered, raw);
@@ -2710,19 +2427,26 @@ mod tests {
     }
 
     #[test]
-    fn cursor_hash_is_injective_for_separator_containing_selection_values() {
+    fn cursor_hash_distinguishes_registered_property_selections() {
         let first = NavigationSelection {
-            properties: PropertySelection::Named(BTreeSet::from(["alpha,beta".to_string()])),
+            properties: PropertySelection::Named(BTreeSet::from([
+                SemanticPropertyId::METADATA_NAME,
+                SemanticPropertyId::DOCUMENT_NUMBER_LENGTH,
+            ])),
             facets: FacetSelection::Summary,
-            relations: vec![RelationSelection::new("attributes", Some(25)).unwrap()],
+            relations: vec![
+                RelationSelection::new(SemanticRelationId::ATTRIBUTES, Some(25)).unwrap(),
+            ],
         };
         let second = NavigationSelection {
             properties: PropertySelection::Named(BTreeSet::from([
-                "alpha".to_string(),
-                "beta".to_string(),
+                SemanticPropertyId::METADATA_NAME,
+                SemanticPropertyId::METADATA_SYNONYM,
             ])),
             facets: FacetSelection::Summary,
-            relations: vec![RelationSelection::new("attributes", Some(25)).unwrap()],
+            relations: vec![
+                RelationSelection::new(SemanticRelationId::ATTRIBUTES, Some(25)).unwrap(),
+            ],
         };
         assert_ne!(
             normalized_selection_hash(&first).unwrap(),
@@ -2873,18 +2597,11 @@ mod tests {
 
     #[test]
     fn defaulted_property_keeps_a_typed_exact_projector_profile() {
-        let property = SemanticProperty::defaulted(
-            PropertyType::Integer,
-            PropertyValue::Integer(11),
-            ProjectorProfile::PlatformXmlV1,
-        )
-        .unwrap();
+        let property =
+            SemanticProperty::defaulted(PropertyType::Integer, PropertyValue::Integer(11)).unwrap();
         let value = serde_json::to_value(property).unwrap();
         assert_eq!(value["valueState"], "defaulted");
-        assert_eq!(
-            value["provenance"]["projectorDefault"]["profile"],
-            "platform_xml_v1"
-        );
+        assert_eq!(value["provenance"], "default");
     }
 
     #[test]
