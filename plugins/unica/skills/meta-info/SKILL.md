@@ -35,7 +35,7 @@ The closed containment roles are `children`, `attributes`, `dimensions`, `resour
 Specialized navigation examples:
 
 ```json
-{"method":"tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","ObjectPath":"<register object>","select":{"properties":["metadata.name"],"relations":[{"role":"dimensions"},{"role":"resources"},{"role":"registerRecords"}]}}}}
+{"method":"tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","ObjectPath":"<register object>","select":{"properties":["metadata.name"],"relations":[{"role":"dimensions"},{"role":"resources"}]}}}}
 ```
 
 ```json
@@ -50,7 +50,19 @@ Specialized navigation examples:
 {"method":"tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","objectRef":{"sourceId":"<returned>","objectKey":"<returned URL template>"},"snapshotRevision":"<returned>","select":{"properties":["metadata.name"],"relations":[{"role":"methods"}]}}}}
 ```
 
-Inspect a returned method with typed properties such as `httpService.method.httpMethod`. For web services, select `operations`, expand a returned operation, then select `parameters`; parameter properties include `webService.parameter.direction`. Use `basedOn` for semantic base-object references and `registerRecords` for semantic register-record references. Unknown specialized children remain separate ordered `unknown` items with partial coverage and readable facts.
+```json
+{"method":"tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","ObjectPath":"<web service object>","select":{"relations":[{"role":"operations"}]}}}}
+```
+
+```json
+{"method":"tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","objectRef":{"sourceId":"<returned>","objectKey":"<returned operation>"},"snapshotRevision":"<returned>","select":{"relations":[{"role":"parameters"}]}}}}
+```
+
+```json
+{"method":"tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","ObjectPath":"<document object>","select":{"relations":[{"role":"basedOn"},{"role":"registerRecords"}]}}}}
+```
+
+Inspect a returned method with typed properties such as `httpService.method.httpMethod`. For web services, select `operations`, expand a returned operation, then select `parameters`; parameter properties include `webService.parameter.direction`. Select `basedOn` and `registerRecords` from a document owner only. Unknown specialized children remain separate ordered `unknown` items with partial coverage and readable facts.
 
 Resource bounds are part of this public contract: `select` accepts at most 256 property selectors and 64 relation selectors; every selector is at most 256 UTF-8 bytes; both `select` and a cursor are at most 128 KiB of JSON and nesting is limited to 64. Cursor fields are capped at 1 KiB. Oversized input is returned as structured `resource_limit`; malformed or unauthenticated cursors are `decode_corrupted`. The cursor is structurally bounded and authenticated before its selection is normalized.
 
@@ -105,7 +117,7 @@ Resource bounds are part of this public contract: `select` accepts at most 256 p
 Continue a returned page only with its cursor:
 
 ```json
-{"method": "tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","cursor":"<returned opaque cursor>"}}}
+{"method": "tools/call","params":{"name":"unica.meta.info","arguments":{"cwd":"<workspace>","cursor":"returned_opaque_cursor"}}}
 ```
 
 ```json
@@ -120,7 +132,15 @@ The only payload is `data.navigation`:
 schemaVersion, status, snapshot, root, nodes, relations, diagnostics
 ```
 
-`status` is `ready` or `unavailable`. A ready result has semantic `root` and `nodes`. A relation page has `relation`, typed child `items`, and optional `nextCursor`.
+Every status controls how the result is used:
+
+| Status | AI behavior |
+|---|---|
+| `ready` | Use the returned typed properties and relation pages. |
+| `partial` | Use readable facts, inspect neutral diagnostics and coverage, and state what remains uncaptured or unresolved. |
+| `unavailable` | Follow the neutral diagnostic, report that the requested facts are unavailable, and do not guess. |
+
+A ready or partial result has semantic `root` and readable `nodes`. A relation page has `relation`, typed child `items`, and optional `nextCursor`.
 
 Each node exposes its semantic object reference and typed properties. Facets control the remaining node fields: `none` omits all capability and action facets; `summary` exposes only `capabilityState` and `actionProfile`; `full` additionally exposes the detailed capability vector, actions, and semantic actions. Property values are typed values rather than rendered source-format text: inspect `type`, `valueState`, `value`, provenance, and capability. Type descriptions are structured type sets, not text expressions: preserve the upstream distinctions `Представление типа` and `Представление объекта` rather than flattening them into a rendered string. A returned property may present a value such as `"Name": "Товары"` or `"Name": "TestConnection"`; treat that as data, not as a target path. Capabilities state whether inspection or future mutation is modeled, blocked, or unavailable and include resolution, identity strength, snapshot consistency, coverage, format compatibility, source access, and support authorability.
 

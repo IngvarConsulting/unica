@@ -210,6 +210,144 @@ fn task6_unknown_specialized_children_remain_distinct_readable_partial_facts() {
     );
 }
 
+#[test]
+fn task6_fix1_no_uuid_children_are_unique_across_roles_and_within_one_role() {
+    let (first, second) = read_inline_twice(
+        "derived-child-identities",
+        "Metrics.xml",
+        &format!(
+            r#"<MetaDataObject xmlns="{MD}" version="2.20"><InformationRegister uuid="87000000-0000-0000-0000-000000000001"><Properties><Name>Metrics</Name></Properties><ChildObjects><Dimension><Properties><Name>Shared</Name></Properties></Dimension><Resource><Properties><Name>Shared</Name></Properties></Resource><Dimension><Properties><Name>Repeated</Name></Properties></Dimension><Dimension><Properties><Name>Repeated</Name></Properties></Dimension></ChildObjects></InformationRegister></MetaDataObject>"#
+        ),
+    );
+    let owner = node_named(&first, "Metrics");
+    let dimensions = relation_targets(&first, &owner.object_ref, SemanticRelationId::DIMENSIONS);
+    let resources = relation_targets(&first, &owner.object_ref, SemanticRelationId::RESOURCES);
+
+    assert_eq!(
+        dimensions
+            .iter()
+            .map(|target| target.display_name.as_str())
+            .collect::<Vec<_>>(),
+        ["Shared", "Repeated", "Repeated"]
+    );
+    assert_eq!(resources[0].display_name, "Shared");
+    assert_ne!(dimensions[0].object_key, resources[0].object_key);
+    assert_ne!(dimensions[1].object_key, dimensions[2].object_key);
+    assert_stable_nodes(&first, &second);
+}
+
+#[test]
+fn task6_fix1_loaded_forward_reference_resolves_only_to_the_real_node() {
+    let (envelope, _) = read_inline_twice(
+        "loaded-forward-reference",
+        "Configuration.xml",
+        &format!(
+            r#"<MetaDataObject xmlns="{MD}" xmlns:xr="{XR}" version="2.20"><Configuration uuid="88000000-0000-0000-0000-000000000001"><Properties><Name>Configuration</Name></Properties><ChildObjects><Document uuid="88000000-0000-0000-0000-000000000002"><Properties><Name>Invoice</Name><BasedOn><xr:Item>Document.Order</xr:Item></BasedOn></Properties></Document><Document uuid="88000000-0000-0000-0000-000000000003"><Properties><Name>Order</Name></Properties></Document></ChildObjects></Configuration></MetaDataObject>"#
+        ),
+    );
+    let invoice = node_named(&envelope, "Invoice");
+    let targets = relation_targets(
+        &envelope,
+        &invoice.object_ref,
+        SemanticRelationId::BASED_ON,
+    );
+    assert_eq!(targets.len(), 1);
+    assert_eq!(
+        targets[0].object_key.as_str(),
+        "uuid:88000000-0000-0000-0000-000000000003"
+    );
+    let target = envelope
+        .nodes
+        .iter()
+        .find(|node| node.object_ref == targets[0])
+        .expect("forward target must be the loaded node");
+    assert_eq!(target.capability.resolution, unica_format_core::navigation::ResolutionState::Resolved);
+    assert!(!envelope
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "referenceTargetUnresolved"));
+}
+
+#[test]
+fn task6_fix1_external_known_reference_is_an_unresolved_partial_stub_without_owner() {
+    let (envelope, _) = read_inline_twice(
+        "external-known-reference",
+        "Invoice.xml",
+        &format!(
+            r#"<MetaDataObject xmlns="{MD}" xmlns:xr="{XR}" version="2.20"><Document uuid="89000000-0000-0000-0000-000000000001"><Properties><Name>Invoice</Name><BasedOn><xr:Item>Document.Order</xr:Item></BasedOn></Properties></Document></MetaDataObject>"#
+        ),
+    );
+    assert_eq!(envelope.status, NavigationStatus::Partial);
+    let invoice = node_named(&envelope, "Invoice");
+    let target = relation_targets(
+        &envelope,
+        &invoice.object_ref,
+        SemanticRelationId::BASED_ON,
+    )
+    .pop()
+    .expect("external target");
+    let stub = envelope
+        .nodes
+        .iter()
+        .find(|node| node.object_ref == target)
+        .expect("external target must remain traversable");
+    assert_eq!(
+        stub.capability.resolution,
+        unica_format_core::navigation::ResolutionState::Unresolved
+    );
+    assert_ne!(
+        stub.capability.coverage,
+        unica_format_core::navigation::CoverageState::Complete
+    );
+    assert!(envelope
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "referenceTargetUnresolved"));
+    assert!(!envelope.relation_index.iter().any(|relation| {
+        relation.kind == RelationKind::Contains && relation.target == stub.object_ref
+    }));
+    assert!(stub
+        .actions
+        .iter()
+        .all(|action| action.owning_relation.is_none()));
+}
+
+#[test]
+fn task6_fix1_external_unknown_same_name_targets_do_not_merge_or_leak_native_identity() {
+    let (envelope, second) = read_inline_twice(
+        "external-unknown-collision",
+        "Invoice.xml",
+        &format!(
+            r#"<MetaDataObject xmlns="{MD}" xmlns:xr="{XR}" version="2.20"><Document uuid="8a000000-0000-0000-0000-000000000001"><Properties><Name>Invoice</Name><BasedOn><xr:Item>FutureAlpha.Shared</xr:Item><xr:Item>FutureBeta.Shared</xr:Item></BasedOn></Properties></Document></MetaDataObject>"#
+        ),
+    );
+    let invoice = node_named(&envelope, "Invoice");
+    let targets = relation_targets(
+        &envelope,
+        &invoice.object_ref,
+        SemanticRelationId::BASED_ON,
+    );
+    assert_eq!(targets.len(), 2);
+    assert_eq!(targets[0].display_name, "Shared");
+    assert_eq!(targets[1].display_name, "Shared");
+    assert_ne!(targets[0].object_key, targets[1].object_key);
+    for target in &targets {
+        let node = envelope
+            .nodes
+            .iter()
+            .find(|node| node.object_ref == *target)
+            .expect("unknown external target must have its own stub");
+        assert_eq!(
+            node.capability.resolution,
+            unica_format_core::navigation::ResolutionState::Unresolved
+        );
+    }
+    let public = serde_json::to_string(&envelope).unwrap();
+    assert!(!public.contains("FutureAlpha.Shared"));
+    assert!(!public.contains("FutureBeta.Shared"));
+    assert_stable_nodes(&envelope, &second);
+}
+
 fn assert_targets(
     envelope: &NavigationEnvelope,
     owner_name: &str,
@@ -231,6 +369,30 @@ fn assert_targets(
         .map(|relation| relation.target.display_name.as_str())
         .collect::<Vec<_>>();
     assert_eq!(actual, expected, "{owner_name}:{}", role.as_str());
+}
+
+fn node_named<'a>(
+    envelope: &'a NavigationEnvelope,
+    name: &str,
+) -> &'a unica_format_core::navigation::NavigationNode {
+    envelope
+        .nodes
+        .iter()
+        .find(|node| node.object_ref.display_name == name)
+        .unwrap_or_else(|| panic!("missing node {name}"))
+}
+
+fn relation_targets(
+    envelope: &NavigationEnvelope,
+    owner: &unica_format_core::navigation::ObjectRef,
+    role: SemanticRelationId,
+) -> Vec<unica_format_core::navigation::ObjectRef> {
+    envelope
+        .relation_index
+        .iter()
+        .filter(|relation| relation.source == *owner && relation.role == role)
+        .map(|relation| relation.target.clone())
+        .collect()
 }
 
 fn assert_stable_nodes(first: &NavigationEnvelope, second: &NavigationEnvelope) {

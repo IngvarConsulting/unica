@@ -10,6 +10,19 @@ use crate::domain::{
 
 use super::schema::MetadataClassRole;
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct NativeIdentityDiscriminator(String);
+
+impl NativeIdentityDiscriminator {
+    pub(crate) fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PlatformXmlNativeSnapshot {
     pub(crate) source: SourceSnapshot,
@@ -22,6 +35,7 @@ pub(crate) struct NativeMetadataNode {
     pub(crate) class: NativeMetadataClass,
     pub(crate) uuid: Option<Uuid>,
     pub(crate) name: String,
+    pub(crate) target_discriminator: NativeIdentityDiscriminator,
     pub(crate) occurrence: Option<u32>,
     pub(crate) state: NativeNodeState,
     pub(crate) properties: BTreeMap<String, NativeProperty>,
@@ -36,6 +50,7 @@ pub(crate) struct NativeMetadataNode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeMetadataChild {
     pub(crate) role: RelationRole,
+    pub(crate) identity_discriminator: NativeIdentityDiscriminator,
     pub(crate) node: NativeMetadataNode,
 }
 
@@ -139,6 +154,8 @@ pub(crate) struct NativeReferenceRelation {
 pub(crate) struct NativeSemanticReference {
     pub(crate) kind: SemanticObjectKind,
     pub(crate) name: String,
+    pub(crate) uuid: Option<Uuid>,
+    pub(crate) target_discriminator: NativeIdentityDiscriminator,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

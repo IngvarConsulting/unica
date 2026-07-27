@@ -22,8 +22,8 @@ use crate::domain::{
 
 use super::{
     native_model::{
-        NativeEvidenceState, NativeMetadataChild, NativeMetadataNode, NativeNodeBacking,
-        NativeNodeState, NativeProperty, NativePropertyValue, NativeScalarType,
+        NativeEvidenceState, NativeIdentityDiscriminator, NativeMetadataChild, NativeMetadataNode,
+        NativeNodeBacking, NativeNodeState, NativeProperty, NativePropertyValue, NativeScalarType,
         NativeSemanticReference, PlatformXmlNativeSnapshot,
     },
     schema::MetadataClassRole,
@@ -49,7 +49,12 @@ pub(crate) fn project(
 
     let mut graph = GraphBuilder::new(native, support);
     let root = graph.source_root()?;
-    graph.project_node(&native.root, Some(&root), RelationRole::Children)?;
+    graph.project_node(
+        &native.root,
+        Some(&root),
+        RelationRole::Children,
+        &native.root.target_discriminator,
+    )?;
     graph.project_references()?;
     graph.finish(root)
 }
@@ -58,7 +63,12 @@ struct PendingReference {
     owner: ObjectRef,
     target: NativeSemanticReference,
     role: RelationRole,
-    coverage: CoverageState,
+}
+
+#[derive(Debug, Clone)]
+struct ProjectedReferenceTarget {
+    object_ref: ObjectRef,
+    capability: CapabilityVector,
 }
 
 struct GraphBuilder<'a> {
@@ -73,6 +83,9 @@ struct GraphBuilder<'a> {
     output_properties: usize,
     output_identity_items: usize,
     pending_references: Vec<PendingReference>,
+    loaded_targets: BTreeMap<NativeIdentityDiscriminator, Option<ProjectedReferenceTarget>>,
+    loaded_uuids: BTreeMap<Uuid, ProjectedReferenceTarget>,
+    reference_stubs: BTreeMap<NativeIdentityDiscriminator, ProjectedReferenceTarget>,
     diagnostics: Vec<SourceAdapterDiagnostic>,
     partial: bool,
 }
@@ -91,6 +104,9 @@ impl<'a> GraphBuilder<'a> {
             output_properties: 0,
             output_identity_items: 0,
             pending_references: Vec::new(),
+            loaded_targets: BTreeMap::new(),
+            loaded_uuids: BTreeMap::new(),
+            reference_stubs: BTreeMap::new(),
             diagnostics: Vec::new(),
             partial: false,
         }
@@ -101,9 +117,11 @@ impl<'a> GraphBuilder<'a> {
         let (key, identity) = object_key(
             &self.native.source.source_id,
             None,
+            None,
             NodeKind::SourceRoot,
             None,
             "source",
+            None,
         )?;
         self.register_object_key(&key)?;
         let reference = ObjectRef::new(
@@ -148,6 +166,7 @@ impl<'a> GraphBuilder<'a> {
         native_node: &NativeMetadataNode,
         owner: Option<&ObjectRef>,
         owning_role: RelationRole,
+        identity_discriminator: &NativeIdentityDiscriminator,
     ) -> Result<ObjectRef, SourceAdapterError> {
         self.reserve_output_node()?;
         let kind = node_kind(native_node)?;
@@ -157,9 +176,11 @@ impl<'a> GraphBuilder<'a> {
         let (key, identity) = object_key(
             &self.native.source.source_id,
             owner.map(|value| &value.object_key),
+            Some(owning_role),
             kind.clone(),
             native_node.uuid,
             identity_name.as_deref().unwrap_or(&native_node.name),
+            Some(identity_discriminator),
         )?;
         self.register_object_key(&key)?;
         let reference = ObjectRef::new(
@@ -235,7 +256,7 @@ impl<'a> GraphBuilder<'a> {
             object_ref: reference.clone(),
             reference: reference.clone(),
             capability_state,
-            capability,
+            capability: capability.clone(),
             properties: property_projection.properties,
             facets: SemanticFacets::default(),
             action_profile: action_profile_for(&kind),
@@ -243,6 +264,14 @@ impl<'a> GraphBuilder<'a> {
             actions,
             facet_visibility: NavigationFacetVisibility::Full,
         });
+        self.register_loaded_target(
+            &native_node.target_discriminator,
+            native_node.uuid,
+            ProjectedReferenceTarget {
+                object_ref: reference.clone(),
+                capability: capability.clone(),
+            },
+        )?;
 
         for relation in &native_node.references {
             for target in &relation.targets {
@@ -250,7 +279,6 @@ impl<'a> GraphBuilder<'a> {
                     owner: reference.clone(),
                     target: target.clone(),
                     role: relation.role,
-                    coverage,
                 });
             }
         }
@@ -265,7 +293,12 @@ impl<'a> GraphBuilder<'a> {
         child: &NativeMetadataChild,
         owner: &ObjectRef,
     ) -> Result<ObjectRef, SourceAdapterError> {
-        self.project_node(&child.node, Some(owner), child.role)
+        self.project_node(
+            &child.node,
+            Some(owner),
+            child.role,
+            &child.identity_discriminator,
+        )
     }
 
     fn add_contains(
@@ -326,17 +359,16 @@ impl<'a> GraphBuilder<'a> {
         owner: &ObjectRef,
         native_target: &NativeSemanticReference,
         role: RelationRole,
-        coverage: CoverageState,
     ) -> Result<RelationRef, SourceAdapterError> {
         self.reserve_output_relation()?;
         self.reserve_identity_item()?;
-        let target = self.ensure_reference_node(native_target, coverage)?;
+        let target = self.ensure_reference_node(native_target)?;
         let relation_key = relation_key(
             &self.native.source.source_id,
             &owner.object_key,
             RelationKind::References,
             role,
-            &target.object_key,
+            &target.object_ref.object_key,
         )?;
         if !self.relation_keys.insert(relation_key.as_str().to_string()) {
             return Err(SourceAdapterError::new(
@@ -362,15 +394,15 @@ impl<'a> GraphBuilder<'a> {
             kind: RelationKind::References,
             role,
             source: owner.clone(),
-            target,
+            target: target.object_ref,
             capability: CapabilityVector {
-                resolution: ResolutionState::Resolved,
+                resolution: target.capability.resolution,
                 identity: IdentityStrength::Derived,
-                consistency: self.native.source.consistency.clone(),
-                coverage,
-                format: FormatCompatibility::Compatible,
-                source_access: SourceAccess::ReadOnly,
-                authorability: Authorability::DerivedReadOnly,
+                consistency: target.capability.consistency,
+                coverage: target.capability.coverage,
+                format: target.capability.format,
+                source_access: target.capability.source_access,
+                authorability: target.capability.authorability,
             },
         });
         Ok(relation_ref)
@@ -379,12 +411,7 @@ impl<'a> GraphBuilder<'a> {
     fn project_references(&mut self) -> Result<(), SourceAdapterError> {
         let pending = std::mem::take(&mut self.pending_references);
         for reference in pending {
-            self.add_reference(
-                &reference.owner,
-                &reference.target,
-                reference.role,
-                reference.coverage,
-            )?;
+            self.add_reference(&reference.owner, &reference.target, reference.role)?;
         }
         Ok(())
     }
@@ -392,22 +419,34 @@ impl<'a> GraphBuilder<'a> {
     fn ensure_reference_node(
         &mut self,
         native_target: &NativeSemanticReference,
-        coverage: CoverageState,
-    ) -> Result<ObjectRef, SourceAdapterError> {
-        if let Some(existing) = self.nodes.iter().find(|node| {
-            node.object_ref.kind == native_target.kind
-                && node.object_ref.display_name == native_target.name
-        }) {
-            return Ok(existing.object_ref.clone());
+    ) -> Result<ProjectedReferenceTarget, SourceAdapterError> {
+        if let Some(uuid) = native_target.uuid {
+            if let Some(existing) = self.loaded_uuids.get(&uuid) {
+                return Ok(existing.clone());
+            }
+        }
+        if let Some(Some(existing)) = self
+            .loaded_targets
+            .get(&native_target.target_discriminator)
+        {
+            return Ok(existing.clone());
+        }
+        if let Some(existing) = self
+            .reference_stubs
+            .get(&native_target.target_discriminator)
+        {
+            return Ok(existing.clone());
         }
 
         self.reserve_output_node()?;
         let (key, identity) = object_key(
             &self.native.source.source_id,
             None,
-            native_target.kind,
             None,
+            native_target.kind,
+            native_target.uuid,
             &native_target.name,
+            Some(&native_target.target_discriminator),
         )?;
         self.register_object_key(&key)?;
         reserve(
@@ -423,8 +462,8 @@ impl<'a> GraphBuilder<'a> {
             native_target.name.clone(),
         );
         let capability_state = CapabilityState::new(
-            ResolutionState::Resolved,
-            Authorability::DerivedReadOnly,
+            ResolutionState::Unresolved,
+            Authorability::UnknownReadOnly,
         );
         let properties = BTreeMap::from([(
             SemanticPropertyId::METADATA_NAME,
@@ -434,31 +473,68 @@ impl<'a> GraphBuilder<'a> {
             )?
             .with_capability(PropertyCapability::ReadOnly)?,
         )]);
+        let capability = CapabilityVector {
+            resolution: ResolutionState::Unresolved,
+            identity: reference.identity_strength.clone(),
+            consistency: self.native.source.consistency.clone(),
+            coverage: CoverageState::Partial,
+            format: FormatCompatibility::Compatible,
+            source_access: SourceAccess::ReadOnly,
+            authorability: Authorability::UnknownReadOnly,
+        };
         self.nodes.push(NavigationNode {
             object_ref: reference.clone(),
             reference: reference.clone(),
             capability_state,
-            capability: CapabilityVector {
-                resolution: ResolutionState::Resolved,
-                identity: reference.identity_strength.clone(),
-                consistency: self.native.source.consistency.clone(),
-                coverage,
-                format: FormatCompatibility::Compatible,
-                source_access: SourceAccess::ReadOnly,
-                authorability: Authorability::DerivedReadOnly,
-            },
+            capability: capability.clone(),
             properties,
             facets: SemanticFacets::default(),
             action_profile: action_profile_for(&native_target.kind),
             semantic_actions: Vec::new(),
-            actions: vec![modeled_action(
-                SemanticActionKind::Inspect,
-                reference.clone(),
-                None,
-            )],
+            actions: Vec::new(),
             facet_visibility: NavigationFacetVisibility::Full,
         });
-        Ok(reference)
+        let projected = ProjectedReferenceTarget {
+            object_ref: reference.clone(),
+            capability,
+        };
+        self.reference_stubs.insert(
+            native_target.target_discriminator.clone(),
+            projected.clone(),
+        );
+        self.partial = true;
+        self.diagnostics.push(SourceAdapterDiagnostic {
+            code: "referenceTargetUnresolved".to_string(),
+            message: "a referenced object is not present in the captured semantic graph"
+                .to_string(),
+            details: Some(serde_json::json!({"objectRef": reference})),
+        });
+        Ok(projected)
+    }
+
+    fn register_loaded_target(
+        &mut self,
+        discriminator: &NativeIdentityDiscriminator,
+        uuid: Option<Uuid>,
+        target: ProjectedReferenceTarget,
+    ) -> Result<(), SourceAdapterError> {
+        match self.loaded_targets.entry(discriminator.clone()) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(Some(target.clone()));
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                entry.insert(None);
+            }
+        }
+        if let Some(uuid) = uuid {
+            if self.loaded_uuids.insert(uuid, target).is_some() {
+                return Err(SourceAdapterError::new(
+                    SourceAdapterErrorKind::IdentityCollision,
+                    "duplicate stable object identity in captured semantic graph",
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn register_object_key(&mut self, key: &ObjectKey) -> Result<(), SourceAdapterError> {
@@ -909,9 +985,11 @@ impl<'a> GraphBuilder<'a> {
 fn object_key(
     source_id: &SourceId,
     owner: Option<&ObjectKey>,
+    owning_role: Option<RelationRole>,
     kind: NodeKind,
     native_uuid: Option<Uuid>,
     validated_name: &str,
+    native_discriminator: Option<&NativeIdentityDiscriminator>,
 ) -> Result<(ObjectKey, IdentityStrength), SourceAdapterError> {
     validate_name(validated_name)?;
     if let Some(uuid) = native_uuid {
@@ -923,8 +1001,12 @@ fn object_key(
     let digest = digest_parts(&[
         source_id.as_str(),
         owner.map(ObjectKey::as_str).unwrap_or(""),
+        owning_role.map(RelationRole::as_str).unwrap_or(""),
         &canonical_kind(&kind),
         validated_name,
+        native_discriminator
+            .map(NativeIdentityDiscriminator::as_str)
+            .unwrap_or(""),
     ]);
     Ok((
         ObjectKey::new(format!("derived:sha256:{digest}"))?,
@@ -1928,6 +2010,9 @@ mod tests {
         let mut root = document_fixture();
         root.children = vec![NativeMetadataChild {
             role: RelationRole::Forms,
+            identity_discriminator: NativeIdentityDiscriminator::new(
+                "fixture-form-child".to_string(),
+            ),
             node: form,
         }];
 
@@ -2184,21 +2269,38 @@ mod tests {
         properties: BTreeMap<String, NativeProperty>,
         children: Vec<NativeMetadataNode>,
     ) -> NativeMetadataNode {
+        let target_discriminator =
+            NativeIdentityDiscriminator::new(format!("fixture-target:{class}:{name}"));
         NativeMetadataNode {
             class: NativeMetadataClass {
-                canonical_name: class,
+                canonical_name: class.to_string(),
                 role,
+                kind: semantic_map::metadata_class_profile(class)
+                    .expect("fixture class is registered")
+                    .kind,
             },
             uuid: uuid.map(|value| value.parse().unwrap()),
             name: name.to_string(),
+            target_discriminator,
+            occurrence: None,
             state: NativeNodeState::ResolvedInline,
             properties,
             references: Vec::new(),
             children: children
                 .into_iter()
-                .map(|node| NativeMetadataChild {
-                    role: fixture_child_role(&node),
-                    node,
+                .map(|node| {
+                    let role = fixture_child_role(&node);
+                    let identity_discriminator = NativeIdentityDiscriminator::new(format!(
+                        "fixture-child:{}:{}:{}",
+                        role.as_str(),
+                        node.class.canonical_name,
+                        node.name
+                    ));
+                    NativeMetadataChild {
+                        role,
+                        identity_discriminator,
+                        node,
+                    }
                 })
                 .collect(),
             unmapped_facts: 0,

@@ -836,7 +836,10 @@ mod tests {
 
     impl Harness {
         fn new(attribute_count: usize, format: &str) -> Self {
-            let envelope = fixture_envelope(attribute_count);
+            Self::with_envelope(fixture_envelope(attribute_count), format)
+        }
+
+        fn with_envelope(envelope: NavigationEnvelope, format: &str) -> Self {
             let port = Arc::new(FakePort {
                 envelope: Mutex::new(envelope),
                 format: FormatVersion::parse(format).unwrap(),
@@ -1027,23 +1030,45 @@ mod tests {
         role: RelationRole,
         index: usize,
     ) -> SemanticRelation {
+        relation_with_kind(
+            source_id,
+            source,
+            target,
+            role,
+            RelationKind::Contains,
+            index,
+        )
+    }
+
+    fn relation_with_kind(
+        source_id: &SourceId,
+        source: &ObjectRef,
+        target: &ObjectRef,
+        role: RelationRole,
+        kind: RelationKind,
+        index: usize,
+    ) -> SemanticRelation {
         let group_ref = RelationGroupRef::new(
             source_id.clone(),
             source.clone(),
             role,
-            RelationKind::Contains,
+            kind,
         )
         .unwrap();
+        let kind_label = match kind {
+            RelationKind::Contains => "contains",
+            RelationKind::References => "references",
+        };
         SemanticRelation {
             relation_ref: RelationRef::new(
                 source_id.clone(),
-                format!("contains:{index}"),
-                RelationKind::Contains,
+                format!("{kind_label}:{index}"),
+                kind,
             )
             .unwrap(),
             group_ref,
             identity_strength: IdentityStrength::Persistent,
-            kind: RelationKind::Contains,
+            kind,
             role,
             source: source.clone(),
             target: target.clone(),
@@ -1105,6 +1130,21 @@ mod tests {
         }
     }
 
+    fn role_selection(
+        role: RelationRole,
+        facets: FacetSelection,
+        page_size: u16,
+    ) -> NavigationSelection {
+        NavigationSelection {
+            properties: PropertySelection::All,
+            facets,
+            relations: vec![
+                unica_format_core::navigation::RelationSelection::new(role, Some(page_size))
+                    .unwrap(),
+            ],
+        }
+    }
+
     fn object_command(
         navigation: &NavigationEnvelope,
         key: ObjectKey,
@@ -1116,6 +1156,131 @@ mod tests {
                 snapshot_revision: navigation.snapshot.as_ref().unwrap().revision.clone(),
             },
             selection: None,
+        }
+    }
+
+    fn object_selection_command(
+        navigation: &NavigationEnvelope,
+        key: ObjectKey,
+        selection: NavigationSelection,
+    ) -> MetadataNavigationCommand {
+        let mut command = object_command(navigation, key);
+        command.selection = Some(selection);
+        command
+    }
+
+    fn task6_relation_envelope() -> NavigationEnvelope {
+        let source_id = SourceId::new("workspace:main").unwrap();
+        let revision = SourceRevision::new("sha256:task6-relations").unwrap();
+        let root = object_ref(&source_id, "uuid:task6-root", "Task6Root");
+        let mut root_node = node(root.clone());
+        root_node.properties.insert(
+            SemanticPropertyId::METADATA_NAME,
+            string_property(SemanticPropertyId::METADATA_NAME, "Task6Root"),
+        );
+        let mut nodes = vec![root_node];
+        let mut relations = Vec::new();
+        let roles = [
+            SemanticRelationId::DIMENSIONS,
+            SemanticRelationId::RESOURCES,
+            SemanticRelationId::ENUM_VALUES,
+            SemanticRelationId::URL_TEMPLATES,
+            SemanticRelationId::METHODS,
+            SemanticRelationId::OPERATIONS,
+            SemanticRelationId::PARAMETERS,
+            SemanticRelationId::BASED_ON,
+            SemanticRelationId::REGISTER_RECORDS,
+        ];
+        let mut relation_index = 0usize;
+        for role in roles {
+            let owner = object_ref(
+                &source_id,
+                &format!("uuid:owner-{}", role.as_str()),
+                &format!("Owner-{}", role.as_str()),
+            );
+            let mut owner_node = node(owner.clone());
+            owner_node.properties.insert(
+                SemanticPropertyId::METADATA_NAME,
+                string_property(
+                    SemanticPropertyId::METADATA_NAME,
+                    &format!("Owner-{}", role.as_str()),
+                ),
+            );
+            nodes.push(owner_node);
+            for item_index in 0..2 {
+                let shared_cross_role = item_index == 0
+                    && matches!(
+                        role,
+                        SemanticRelationId::DIMENSIONS | SemanticRelationId::RESOURCES
+                    );
+                let name = if shared_cross_role {
+                    "Shared".to_string()
+                } else {
+                    format!("{}-{item_index}", role.as_str())
+                };
+                let target = ObjectRef::new(
+                    source_id.clone(),
+                    ObjectKey::new(format!(
+                        "derived:task6:{}:{item_index}",
+                        role.as_str()
+                    ))
+                    .unwrap(),
+                    IdentityStrength::Derived,
+                    NodeKind::Catalog,
+                    name.clone(),
+                );
+                let mut target_node = node(target.clone());
+                target_node.properties.insert(
+                    SemanticPropertyId::METADATA_NAME,
+                    string_property(SemanticPropertyId::METADATA_NAME, &name),
+                );
+                if role == SemanticRelationId::REGISTER_RECORDS {
+                    target_node.capability_state = CapabilityState::new(
+                        ResolutionState::Unresolved,
+                        Authorability::UnknownReadOnly,
+                    );
+                    target_node.capability.resolution = ResolutionState::Unresolved;
+                    target_node.capability.coverage =
+                        unica_format_core::navigation::CoverageState::Partial;
+                    target_node.capability.authorability = Authorability::UnknownReadOnly;
+                }
+                let kind = if role.is_reference_role() {
+                    RelationKind::References
+                } else {
+                    RelationKind::Contains
+                };
+                let mut edge = relation_with_kind(
+                    &source_id,
+                    &owner,
+                    &target,
+                    role,
+                    kind,
+                    relation_index,
+                );
+                edge.capability = target_node.capability.clone();
+                relations.push(edge);
+                nodes.push(target_node);
+                relation_index += 1;
+            }
+        }
+        NavigationEnvelope {
+            schema_version: "1".to_string(),
+            status: NavigationStatus::Partial,
+            snapshot: Some(SourceSnapshot {
+                source_id,
+                revision,
+                consistency: SnapshotConsistency::Consistent,
+                adapter_id: "fake-erased-adapter".to_string(),
+            }),
+            root: Some(root),
+            nodes,
+            relations: Vec::new(),
+            diagnostics: vec![SourceAdapterDiagnostic {
+                code: "referenceTargetUnresolved".to_string(),
+                message: "a semantic reference target is outside the captured graph".to_string(),
+                details: None,
+            }],
+            relation_index: Arc::new(relations),
         }
     }
 
@@ -1568,6 +1733,107 @@ mod tests {
         assert_eq!(
             second.relations[0].items[0].facet_visibility,
             NavigationFacetVisibility::None
+        );
+    }
+
+    #[test]
+    fn task6_fix1_materializes_every_specialized_role_with_stable_opaque_pages() {
+        let harness = Harness::with_envelope(task6_relation_envelope(), "2.20");
+        let bootstrap = harness.inspect(path_command(None));
+        let roles = [
+            SemanticRelationId::DIMENSIONS,
+            SemanticRelationId::RESOURCES,
+            SemanticRelationId::ENUM_VALUES,
+            SemanticRelationId::URL_TEMPLATES,
+            SemanticRelationId::METHODS,
+            SemanticRelationId::OPERATIONS,
+            SemanticRelationId::PARAMETERS,
+            SemanticRelationId::BASED_ON,
+            SemanticRelationId::REGISTER_RECORDS,
+        ];
+        let mut first_items = std::collections::BTreeMap::new();
+        let mut authenticated_cursor = None;
+
+        for role in roles {
+            let owner_key =
+                ObjectKey::new(format!("uuid:owner-{}", role.as_str())).unwrap();
+            let first = harness.inspect(object_selection_command(
+                &bootstrap,
+                owner_key,
+                role_selection(role, FacetSelection::Full, 1),
+            ));
+            assert_eq!(first.status, NavigationStatus::Partial);
+            assert_eq!(first.relations.len(), 1);
+            let page = &first.relations[0];
+            assert_eq!(page.relation.role, role);
+            assert_eq!(
+                page.relation.kind,
+                if role.is_reference_role() {
+                    RelationKind::References
+                } else {
+                    RelationKind::Contains
+                }
+            );
+            assert_eq!(page.items.len(), 1);
+            assert_eq!(
+                page.items[0].facet_visibility,
+                NavigationFacetVisibility::Full
+            );
+            let cursor = page.next_cursor.clone().expect("second page cursor");
+            let token = cursor_token(&cursor);
+            assert!(!token.contains(role.as_str()));
+            assert!(!token.contains(page.items[0].object_ref.object_key.as_str()));
+
+            let second = harness.inspect(cursor_command(cursor.clone()));
+            assert_eq!(second.relations.len(), 1);
+            assert_eq!(second.relations[0].relation, page.relation);
+            assert_ne!(
+                second.relations[0].items[0].object_ref,
+                page.items[0].object_ref
+            );
+            first_items.insert(role, page.items[0].object_ref.clone());
+            authenticated_cursor = Some(cursor);
+        }
+
+        assert_eq!(
+            first_items[&SemanticRelationId::DIMENSIONS].display_name,
+            "Shared"
+        );
+        assert_eq!(
+            first_items[&SemanticRelationId::RESOURCES].display_name,
+            "Shared"
+        );
+        assert_ne!(
+            first_items[&SemanticRelationId::DIMENSIONS].object_key,
+            first_items[&SemanticRelationId::RESOURCES].object_key
+        );
+        assert_eq!(
+            first_items[&SemanticRelationId::BASED_ON].kind,
+            NodeKind::Catalog
+        );
+        let stub = &first_items[&SemanticRelationId::REGISTER_RECORDS];
+        let stub_page = harness.inspect(object_selection_command(
+            &bootstrap,
+            ObjectKey::new("uuid:owner-registerRecords").unwrap(),
+            role_selection(
+                SemanticRelationId::REGISTER_RECORDS,
+                FacetSelection::Full,
+                1,
+            ),
+        ));
+        assert_eq!(stub_page.relations[0].items[0].object_ref, *stub);
+        assert_eq!(
+            stub_page.relations[0].items[0].capability.resolution,
+            ResolutionState::Unresolved
+        );
+
+        let forged = tamper_cursor_token(authenticated_cursor.as_ref().unwrap());
+        assert_unavailable(
+            &harness.inspect(MetadataNavigationCommand {
+                target: MetadataNavigationTarget::Cursor(opaque_cursor(forged)),
+                selection: None,
+            }),
+            "decode_corrupted",
         );
     }
 

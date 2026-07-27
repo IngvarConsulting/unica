@@ -2804,25 +2804,97 @@ mod tests {
     #[test]
     fn task6_meta_info_skill_teaches_specialized_semantic_navigation() {
         let skill = include_str!("../../../../plugins/unica/skills/meta-info/SKILL.md");
-        for semantic in [
-            "dimensions",
-            "resources",
-            "enumValues",
-            "urlTemplates",
-            "methods",
-            "operations",
-            "parameters",
-            "basedOn",
-            "registerRecords",
-            "metadata.name",
-            "httpService.method.httpMethod",
-            "webService.parameter.direction",
+        let schema = input_schema_for_tool(
+            &tools()
+                .into_iter()
+                .find(|tool| tool.name == "unica.meta.info")
+                .unwrap(),
+        );
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let examples = skill
+            .split("```json")
+            .skip(1)
+            .map(|block| block.split("```").next().unwrap().trim())
+            .map(|raw| serde_json::from_str::<Value>(raw).expect("skill JSON example"))
+            .collect::<Vec<_>>();
+        assert!(!examples.is_empty());
+        for example in &examples {
+            assert_eq!(example["method"], "tools/call");
+            assert_eq!(example["params"]["name"], "unica.meta.info");
+            let arguments = example["params"]["arguments"]
+                .as_object()
+                .expect("tool arguments");
+            assert!(
+                validator.is_valid(&Value::Object(arguments.clone())),
+                "skill example violates MCP schema: {example}"
+            );
+        }
+
+        let specialized = examples
+            .iter()
+            .filter(|example| {
+                example["params"]["arguments"]["ObjectPath"]
+                    .as_str()
+                    .is_some_and(|path| path.starts_with('<'))
+                    || example["params"]["arguments"]["objectRef"]["objectKey"]
+                        .as_str()
+                        .is_some_and(|key| key.starts_with("<returned"))
+            })
+            .collect::<Vec<_>>();
+        let query_for = |role: &str| {
+            specialized
+                .iter()
+                .find(|example| {
+                    example["params"]["arguments"]["select"]["relations"]
+                        .as_array()
+                        .is_some_and(|relations| {
+                            relations.iter().any(|relation| relation["role"] == role)
+                        })
+                })
+                .copied()
+                .unwrap_or_else(|| panic!("missing semantic query for {role}"))
+        };
+        for (role, owner) in [
+            ("dimensions", "<register object>"),
+            ("resources", "<register object>"),
+            ("enumValues", "<enumeration object>"),
+            ("urlTemplates", "<HTTP service object>"),
+            ("operations", "<web service object>"),
+            ("basedOn", "<document object>"),
+            ("registerRecords", "<document object>"),
         ] {
-            assert!(skill.contains(semantic), "missing semantic example {semantic}");
+            assert_eq!(
+                query_for(role)["params"]["arguments"]["ObjectPath"],
+                owner,
+                "wrong owner for {role}"
+            );
         }
-        for native in ["MetaDataObject", "Platform XML 2.19"] {
-            assert!(!skill.contains(native), "skill leaked native vocabulary {native}");
-        }
+        assert!(query_for("methods")["params"]["arguments"]["objectRef"]["objectKey"]
+            .as_str()
+            .unwrap()
+            .contains("URL template"));
+        assert!(query_for("parameters")["params"]["arguments"]["objectRef"]["objectKey"]
+            .as_str()
+            .unwrap()
+            .contains("operation"));
+
+        let status_rows = skill
+            .lines()
+            .filter_map(|line| {
+                let cells = line.split('|').map(str::trim).collect::<Vec<_>>();
+                let status = cells.get(1)?.trim_matches('`');
+                matches!(status, "ready" | "partial" | "unavailable")
+                    .then(|| (status, cells.get(2).copied().unwrap_or_default()))
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            status_rows.keys().copied().collect::<Vec<_>>(),
+            ["partial", "ready", "unavailable"]
+        );
+        assert!(status_rows["partial"].contains("coverage"));
+        assert!(status_rows["partial"].contains("diagnostic"));
+        assert!(status_rows["unavailable"].contains("diagnostic"));
+        assert!(!skill.contains("MetaDataObject"));
     }
 
     #[test]

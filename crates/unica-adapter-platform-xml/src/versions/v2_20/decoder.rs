@@ -23,11 +23,11 @@ use crate::{
 use super::{
     native_model::{
         NativeContentEvidence, NativeDescriptorEvidence, NativeEvidenceState, NativeForm,
-        NativeMetadataChild, NativeMetadataClass, NativeMetadataNode, NativeMxlRootKind,
-        NativeNodeBacking, NativeNodeState, NativeProperty, NativePropertyProvenance,
-        NativePropertyValue, NativeReferenceRelation, NativeRegistrationEvidence,
-        NativeScalarAnnotationIssue, NativeScalarType, NativeSemanticReference, NativeTemplate,
-        PlatformXmlNativeSnapshot,
+        NativeIdentityDiscriminator, NativeMetadataChild, NativeMetadataClass, NativeMetadataNode,
+        NativeMxlRootKind, NativeNodeBacking, NativeNodeState, NativeProperty,
+        NativePropertyProvenance, NativePropertyValue, NativeReferenceRelation,
+        NativeRegistrationEvidence, NativeScalarAnnotationIssue, NativeScalarType,
+        NativeSemanticReference, NativeTemplate, PlatformXmlNativeSnapshot,
     },
     probe::PlatformXmlProbe,
     provider::PlatformXmlProvider,
@@ -221,6 +221,7 @@ fn decode_inline_node(
     let properties = decode_properties_for_profile(properties_node, profile, context)?;
     let uuid = parse_optional_uuid(node)?;
     context.register_uuid(uuid)?;
+    let target_discriminator = native_target_discriminator(node.tag_name().name(), &name);
     let mut children = decode_children(provider, node, profile, base_key, source_xml, context)?;
     let mut complete = properties.complete
         && children.complete
@@ -233,6 +234,7 @@ fn decode_inline_node(
         class: native_class(profile),
         uuid,
         name,
+        target_discriminator,
         occurrence: None,
         state: NativeNodeState::ResolvedInline,
             properties: properties.properties,
@@ -274,7 +276,7 @@ fn decode_children(
             unmapped_facts: 0,
         });
     };
-    let mut identities = BTreeSet::new();
+    let mut occurrences = BTreeMap::<(String, String, String), u32>::new();
     let mut nodes = Vec::new();
     let mut complete = true;
     let mut unmapped_facts = 0usize;
@@ -344,20 +346,30 @@ fn decode_children(
             );
             decoded.node.unmapped_facts += 1;
         }
-        let identity = (
+        let occurrence_key = (
+            role.as_str().to_string(),
             child.tag_name().name().to_string(),
             decoded.node.name.clone(),
         );
-        if profile.role != MetadataClassRole::Unknown && !identities.insert(identity) {
-            return Err(error(
-                SourceAdapterErrorKind::IdentityCollision,
-                "Platform XML owner has duplicate child identities of the same class",
-            ));
-        }
+        let occurrence = occurrences.entry(occurrence_key).or_default();
+        *occurrence = occurrence.checked_add(1).ok_or_else(|| {
+            error(
+                SourceAdapterErrorKind::ResourceLimit,
+                "too many same-identity Platform XML child occurrences",
+            )
+        })?;
+        let identity_discriminator = child_identity_discriminator(
+            base_key,
+            role,
+            child.tag_name().name(),
+            &decoded.node,
+            *occurrence,
+        );
         complete &= decoded.complete
             && !semantic_map::child_mapping_is_partial(owner_profile, profile);
         nodes.push(NativeMetadataChild {
             role,
+            identity_discriminator,
             node: decoded.node,
         });
     }
@@ -375,11 +387,14 @@ fn decode_unresolved_registration(
 ) -> Result<DecodedNode, SourceAdapterError> {
     let registration = registration(node)?;
     context.register_uuid(registration.uuid)?;
+    let target_discriminator =
+        native_target_discriminator(node.tag_name().name(), &registration.name);
     Ok(DecodedNode {
         node: NativeMetadataNode {
             class: native_class(profile),
             uuid: registration.uuid,
             name: registration.name.clone(),
+            target_discriminator,
             occurrence: None,
             state: NativeNodeState::UnresolvedRegistration {
                 registration: registration.clone(),
@@ -458,11 +473,14 @@ fn decode_backed_registration(
             let effective_uuid = reconcile_registered_uuid(registration.uuid, descriptor.uuid)?;
             context.register_uuid(effective_uuid)?;
             let state = registration_state(&registration, complete);
+            let target_discriminator =
+                native_target_discriminator(node.tag_name().name(), &registration.name);
             Ok(DecodedNode {
                 node: NativeMetadataNode {
                     class: native_class(profile),
                     uuid: effective_uuid,
                     name: registration.name.clone(),
+                    target_discriminator,
                     occurrence: None,
                     state,
                     properties: properties.properties,
@@ -578,11 +596,14 @@ fn decode_backed_registration(
             let effective_uuid = reconcile_registered_uuid(registration.uuid, descriptor.uuid)?;
             context.register_uuid(effective_uuid)?;
             let state = registration_state(&registration, complete);
+            let target_discriminator =
+                native_target_discriminator(node.tag_name().name(), &registration.name);
             Ok(DecodedNode {
                 node: NativeMetadataNode {
                     class: native_class(profile),
                     uuid: effective_uuid,
                     name: registration.name.clone(),
+                    target_discriminator,
                     occurrence: None,
                     state,
                     properties: properties.properties,
@@ -945,6 +966,8 @@ fn decode_reference_targets(property: Node<'_, '_>) -> (Vec<NativeSemanticRefere
         targets.push(NativeSemanticReference {
             kind,
             name: name.to_string(),
+            uuid: None,
+            target_discriminator: native_target_discriminator(native_class, name),
         });
     }
     (targets, unmapped)
@@ -1440,13 +1463,17 @@ fn decode_rights(
         audit_rights_attributes(object, &[], &mut object_unknown);
         audit_rights_children(object, &["name", "right"], &mut object_unknown);
         let raw_target = rights_scalar_checked(object, "name", false, &mut object_unknown);
-        let (target_kind, target_name, target_complete) = match raw_target {
+        let (target_kind, target_name, target_discriminator, target_complete) = match raw_target {
             Some(raw_target) => decode_rights_target(&raw_target),
             None => {
                 object_unknown.record_marker();
                 (
                     SemanticObjectKind::Unknown,
                     format!("unknown-target-{}", object_ordinal + 1),
+                    native_target_discriminator(
+                        "unknown-rights-target",
+                        &format!("unknown-target-{}", object_ordinal + 1),
+                    ),
                     false,
                 )
             }
@@ -1487,9 +1514,9 @@ fn decode_rights(
             if permission_unknown.facts > 0 {
                 complete = false;
             }
-            let mut permission_properties = synthetic_name_property(&format!(
-                "{target_name}:{permission_name}:{ordinal}"
-            ));
+            let permission_identity_name =
+                format!("{target_name}:{permission_name}:{ordinal}");
+            let mut permission_properties = synthetic_name_property(&permission_identity_name);
             permission_properties.insert(
                 "@permissionName".to_string(),
                 native_property(
@@ -1527,6 +1554,11 @@ fn decode_rights(
                     class: native_class(permission_profile),
                     uuid: None,
                     name: format!("{target_name}:{ordinal}"),
+                    target_discriminator: private_discriminator(&[
+                        "rights-permission",
+                        target_discriminator.as_str(),
+                        &ordinal.to_string(),
+                    ]),
                     occurrence: None,
                     state: NativeNodeState::ResolvedInline,
                     properties: permission_properties,
@@ -1535,6 +1567,8 @@ fn decode_rights(
                         targets: vec![NativeSemanticReference {
                             kind: target_kind,
                             name: target_name.clone(),
+                            uuid: None,
+                            target_discriminator: target_discriminator.clone(),
                         }],
                     }],
                     children: Vec::new(),
@@ -1546,6 +1580,12 @@ fn decode_rights(
             })?;
             children.push(NativeMetadataChild {
                 role: permission_role,
+                identity_discriminator: private_discriminator(&[
+                    "rights-permission-child",
+                    permission_role.as_str(),
+                    target_discriminator.as_str(),
+                    &ordinal.to_string(),
+                ]),
                 node: permission_node,
             });
         }
@@ -1588,7 +1628,11 @@ fn decode_rights(
             Ok(NativeMetadataNode {
                 class: native_class(template_profile),
                 uuid: None,
-                name,
+                name: name.clone(),
+                target_discriminator: private_discriminator(&[
+                    "rights-restriction-template",
+                    &name,
+                ]),
                 occurrence: None,
                 state: NativeNodeState::ResolvedInline,
                 properties: template_properties,
@@ -1600,6 +1644,11 @@ fn decode_rights(
         })?;
         children.push(NativeMetadataChild {
             role: template_role,
+            identity_discriminator: private_discriminator(&[
+                "rights-restriction-template-child",
+                template_role.as_str(),
+                &name,
+            ]),
             node: template_node,
         });
     }
@@ -1799,7 +1848,14 @@ fn parse_boolean(value: &str) -> Option<bool> {
     }
 }
 
-fn decode_rights_target(value: &str) -> (SemanticObjectKind, String, bool) {
+fn decode_rights_target(
+    value: &str,
+) -> (
+    SemanticObjectKind,
+    String,
+    NativeIdentityDiscriminator,
+    bool,
+) {
     let Some((native_class, name)) = value.split_once('.') else {
         let name = if is_1c_identifier(value) {
             value.to_string()
@@ -1808,7 +1864,8 @@ fn decode_rights_target(value: &str) -> (SemanticObjectKind, String, bool) {
         };
         return (
             SemanticObjectKind::Unknown,
-            name,
+            name.clone(),
+            native_target_discriminator("unknown-reference", value),
             false,
         );
     };
@@ -1820,12 +1877,23 @@ fn decode_rights_target(value: &str) -> (SemanticObjectKind, String, bool) {
         return (
             SemanticObjectKind::Unknown,
             readable_name.to_string(),
+            native_target_discriminator("unknown-reference", value),
             false,
         );
     }
     match semantic_map::reference_kind(native_class) {
-        Some(kind) => (kind, name.to_string(), true),
-        None => (SemanticObjectKind::Unknown, name.to_string(), false),
+        Some(kind) => (
+            kind,
+            name.to_string(),
+            native_target_discriminator(native_class, name),
+            true,
+        ),
+        None => (
+            SemanticObjectKind::Unknown,
+            name.to_string(),
+            native_target_discriminator(native_class, name),
+            false,
+        ),
     }
 }
 
@@ -1945,6 +2013,52 @@ fn content_evidence(
 
 fn digest(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
+}
+
+fn private_discriminator(parts: &[&str]) -> NativeIdentityDiscriminator {
+    let mut digest = Sha256::new();
+    for part in parts {
+        digest.update((part.len() as u64).to_be_bytes());
+        digest.update(part.as_bytes());
+    }
+    NativeIdentityDiscriminator::new(format!("{:x}", digest.finalize()))
+}
+
+fn native_target_discriminator(
+    native_class: &str,
+    qualified_name: &str,
+) -> NativeIdentityDiscriminator {
+    private_discriminator(&["target", native_class, qualified_name])
+}
+
+fn child_identity_discriminator(
+    owner_key: &str,
+    role: RelationRole,
+    native_class: &str,
+    child: &NativeMetadataNode,
+    occurrence: u32,
+) -> NativeIdentityDiscriminator {
+    if let Some(uuid) = child.uuid {
+        return private_discriminator(&["child", "uuid", &uuid.to_string()]);
+    }
+
+    let stable_backing = match &child.backing {
+        NativeNodeBacking::Form(form) => Some(form.descriptor.relative_key.as_str()),
+        NativeNodeBacking::Template(template) => Some(template.descriptor.relative_key.as_str()),
+        NativeNodeBacking::None | NativeNodeBacking::Rights(_) => None,
+    };
+    if let Some(path) = stable_backing {
+        return private_discriminator(&["child", "path", path]);
+    }
+
+    private_discriminator(&[
+        "child-occurrence",
+        owner_key,
+        role.as_str(),
+        native_class,
+        &child.name,
+        &occurrence.to_string(),
+    ])
 }
 
 struct DecodedNode {

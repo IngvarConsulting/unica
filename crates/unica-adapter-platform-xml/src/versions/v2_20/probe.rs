@@ -270,7 +270,8 @@ mod tests {
     use super::PlatformXmlProbe;
     use crate::{
         domain::source_adapters::{FormatVersion, SourceAdapterErrorKind, SourceFamily},
-        versions::v2_20::{schema::METADATA_CLASS_PROFILES, ProbeOutcome, SourceInput},
+        factory::PlatformXmlAdapterFactory,
+        versions::v2_20::{ProbeOutcome, SourceInput},
     };
 
     static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
@@ -467,18 +468,18 @@ mod tests {
 
     #[test]
     fn every_shared_supported_class_has_a_minimal_probe_descriptor() {
-        for profile in METADATA_CLASS_PROFILES {
+        for class in PlatformXmlAdapterFactory::profile().legacy_metadata_classes {
             let outcome = probe_fixture(
-                &format!(r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{}/></MetaDataObject>"#, profile.class_name),
+                &format!(r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{class}/></MetaDataObject>"#),
                 Some("main"),
             )
             .unwrap();
             let ProbeOutcome::Match(descriptor) = outcome else {
-                panic!("expected {} match", profile.class_name)
+                panic!("expected {class} match")
             };
             assert!(descriptor
                 .detected_features
-                .contains(&format!("metadata-class:{}", profile.class_name)));
+                .contains(&format!("metadata-class:{class}")));
         }
     }
 

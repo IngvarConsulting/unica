@@ -61,6 +61,28 @@ impl PlatformXmlAdapterFactory {
 
 struct PlatformXmlAdapter;
 
+#[cfg(test)]
+mod profile_contract_tests {
+    use super::PlatformXmlAdapterFactory;
+
+    const PLATFORM_LINE: &str = PlatformXmlAdapterFactory::platform_line();
+    const EXPORT_FORMAT: &str = PlatformXmlAdapterFactory::export_format();
+
+    #[test]
+    fn version_identity_accessors_remain_const_usable() {
+        assert_eq!(PLATFORM_LINE, "8.3.27");
+        assert_eq!(EXPORT_FORMAT, "2.20");
+    }
+
+    #[test]
+    fn metadata_classes_come_from_the_authoritative_runtime_registry() {
+        assert_eq!(
+            PlatformXmlAdapterFactory::profile().legacy_metadata_classes,
+            crate::versions::v2_20::metadata_classes()
+        );
+    }
+}
+
 impl CapturePort for PlatformXmlAdapter {
     fn capture(&self, source: &SourceContext) -> Result<CaptureResult, SourceAdapterError> {
         v2_20::capture(source)
