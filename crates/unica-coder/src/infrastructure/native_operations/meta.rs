@@ -5243,15 +5243,15 @@ mod edit_tests {
 
         assert_eq!(
             zero.data["validation"]["reports"][0]["errorTruncation"],
-            "truncated"
+            json!({"state": "truncated", "omitted": 2})
         );
         assert_eq!(
             one.data["validation"]["reports"][0]["errorTruncation"],
-            "truncated"
+            json!({"state": "truncated", "omitted": 1})
         );
         assert_eq!(
             many.data["validation"]["reports"][0]["errorTruncation"],
-            "complete"
+            json!({"state": "complete"})
         );
         assert_eq!(
             zero.data["validation"]["reports"][0]["findings"]

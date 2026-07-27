@@ -1628,11 +1628,32 @@ pub enum ValidationStatus {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(tag = "state", rename_all = "camelCase", deny_unknown_fields)]
 pub enum ValidationErrorTruncation {
     #[default]
     Complete,
-    Truncated,
+    Truncated {
+        omitted: std::num::NonZeroU16,
+    },
+}
+
+impl ValidationErrorTruncation {
+    pub fn truncated(omitted: u16) -> Result<Self, OperationalContractError> {
+        let omitted = std::num::NonZeroU16::new(omitted)
+            .ok_or(OperationalContractError::InvalidStateCombination)?;
+        Ok(Self::Truncated { omitted })
+    }
+
+    pub const fn is_truncated(self) -> bool {
+        matches!(self, Self::Truncated { .. })
+    }
+
+    pub const fn omitted_errors(self) -> u16 {
+        match self {
+            Self::Complete => 0,
+            Self::Truncated { omitted } => omitted.get(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1683,6 +1704,8 @@ impl ValidationReport {
         coverage: ValidationCoverage,
         error_truncation: ValidationErrorTruncation,
     ) -> Result<Self, OperationalContractError> {
+        findings.sort();
+        findings.dedup();
         let coverage_findings = findings
             .iter()
             .filter(|finding| {
@@ -1708,7 +1731,7 @@ impl ValidationReport {
         {
             return Err(OperationalContractError::InvalidStateCombination);
         }
-        let status = if error_truncation == ValidationErrorTruncation::Truncated
+        let status = if error_truncation.is_truncated()
             || findings
                 .iter()
                 .any(|finding| finding.severity == ValidationFindingSeverity::Error)

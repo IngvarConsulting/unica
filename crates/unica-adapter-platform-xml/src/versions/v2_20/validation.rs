@@ -65,11 +65,15 @@ fn validate_one_with_provider(
     let subject = match PlatformOperationSession::validation_subject(provider) {
         Ok(subject) => subject,
         Err(_) => {
-            return report(
-                SemanticArtifactId::new("artifact:unavailable").expect("constant semantic id"),
-                1,
-                vec![error(ValidationFindingCode::SourceUnreadable)],
-            )
+            return finalize_validation_report(
+                ValidationDraft::new(
+                    SemanticArtifactId::new("artifact:unavailable").expect("constant semantic id"),
+                    1,
+                    vec![error(ValidationFindingCode::SourceUnreadable)],
+                    ValidationCoverage::Complete,
+                ),
+                options.max_errors(),
+            );
         }
     };
     let subject_id = subject.id().clone();
@@ -80,11 +84,15 @@ fn validate_one_with_provider(
     let (_, document) = match xml::parse_bounded_xml_document(bytes) {
         Ok(document) => document,
         Err(_) => {
-            return report(
-                subject_id,
-                checks,
-                vec![error(ValidationFindingCode::SourceMalformed)],
-            )
+            return finalize_validation_report(
+                ValidationDraft::new(
+                    subject_id,
+                    checks,
+                    vec![error(ValidationFindingCode::SourceMalformed)],
+                    ValidationCoverage::Complete,
+                ),
+                options.max_errors(),
+            );
         }
     };
     let root = document.root_element();
@@ -241,85 +249,81 @@ fn validate_one_with_provider(
         }
     }
 
-    let (findings, error_truncation) = limit_error_findings(findings, options.max_errors());
-    report_with_coverage_and_truncation(
-        subject_id,
-        checks.max(1),
-        findings,
-        coverage,
-        error_truncation,
+    finalize_validation_report(
+        ValidationDraft::new(subject_id, checks.max(1), findings, coverage),
+        options.max_errors(),
     )
 }
 
-fn report(
-    subject: SemanticArtifactId,
-    checks: u16,
-    findings: Vec<ValidationFinding>,
-) -> Result<ValidationReport, SourceAdapterError> {
-    report_with_coverage(subject, checks, findings, ValidationCoverage::Complete)
-}
-
-fn report_with_coverage(
+struct ValidationDraft {
     subject: SemanticArtifactId,
     checks: u16,
     findings: Vec<ValidationFinding>,
     coverage: ValidationCoverage,
-) -> Result<ValidationReport, SourceAdapterError> {
-    report_with_coverage_and_truncation(
-        subject,
-        checks,
-        findings,
-        coverage,
-        ValidationErrorTruncation::Complete,
-    )
 }
 
-fn report_with_coverage_and_truncation(
-    subject: SemanticArtifactId,
-    checks: u16,
-    findings: Vec<ValidationFinding>,
-    coverage: ValidationCoverage,
-    error_truncation: ValidationErrorTruncation,
-) -> Result<ValidationReport, SourceAdapterError> {
-    ValidationReport::new_with_coverage_and_truncation(
-        subject,
-        checks.max(findings.len() as u16),
-        findings,
-        coverage,
-        error_truncation,
-    )
-    .map_err(contract_error)
+impl ValidationDraft {
+    fn new(
+        subject: SemanticArtifactId,
+        checks: u16,
+        findings: Vec<ValidationFinding>,
+        coverage: ValidationCoverage,
+    ) -> Self {
+        Self {
+            subject,
+            checks,
+            findings,
+            coverage,
+        }
+    }
 }
 
-fn limit_error_findings(
-    findings: Vec<ValidationFinding>,
+fn finalize_validation_report(
+    draft: ValidationDraft,
     max_errors: u16,
-) -> (Vec<ValidationFinding>, ValidationErrorTruncation) {
+) -> Result<ValidationReport, SourceAdapterError> {
+    let mut findings = draft.findings;
+    findings.sort();
+    findings.dedup();
     let mut retained = Vec::with_capacity(findings.len());
     let mut retained_errors = 0u16;
-    let mut truncated = false;
+    let mut omitted_errors = 0usize;
     for finding in findings {
-        let truncatable_error = finding.severity() == ValidationFindingSeverity::Error
-            && finding.code() != ValidationFindingCode::SourceUnreadable;
-        if truncatable_error {
-            if retained_errors < max_errors {
-                retained_errors += 1;
-                retained.push(finding);
-            } else {
-                truncated = true;
-            }
+        let mandatory = matches!(
+            finding.code(),
+            ValidationFindingCode::SourceUnreadable
+                | ValidationFindingCode::RegistrarCoverageNotEvaluated
+                | ValidationFindingCode::RegistrarCoveragePartial
+        );
+        let truncatable_error =
+            finding.severity() == ValidationFindingSeverity::Error && !mandatory;
+        if truncatable_error && retained_errors >= max_errors {
+            omitted_errors += 1;
         } else {
+            if truncatable_error {
+                retained_errors += 1;
+            }
             retained.push(finding);
         }
     }
-    (
+    let error_truncation = if omitted_errors == 0 {
+        ValidationErrorTruncation::Complete
+    } else {
+        ValidationErrorTruncation::truncated(u16::try_from(omitted_errors).map_err(|_| {
+            super::operations::source_unavailable(
+                "validation finding limit could not be represented",
+            )
+        })?)
+        .map_err(contract_error)?
+    };
+    ValidationReport::new_with_coverage_and_truncation(
+        draft.subject,
+        draft.checks.max(retained.len() as u16),
         retained,
-        if truncated {
-            ValidationErrorTruncation::Truncated
-        } else {
-            ValidationErrorTruncation::Complete
-        },
+        draft.coverage,
+        error_truncation,
     )
+    .map_err(contract_error)
 }
 
 const fn error(code: ValidationFindingCode) -> ValidationFinding {
@@ -328,6 +332,104 @@ const fn error(code: ValidationFindingCode) -> ValidationFinding {
 
 const fn warning(code: ValidationFindingCode) -> ValidationFinding {
     ValidationFinding::new(ValidationFindingSeverity::Warning, code)
+}
+
+#[cfg(test)]
+mod fix_round8_tests {
+    use super::*;
+    use unica_format_core::ports::{ValidationErrorTruncation, ValidationStatus};
+
+    fn subject() -> SemanticArtifactId {
+        SemanticArtifactId::new("object:target").unwrap()
+    }
+
+    fn finalize(
+        max_errors: u16,
+        coverage: ValidationCoverage,
+        findings: Vec<ValidationFinding>,
+    ) -> ValidationReport {
+        finalize_validation_report(
+            ValidationDraft::new(subject(), 8, findings, coverage),
+            max_errors,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn every_validation_exit_class_uses_the_same_limiter() {
+        for (code, mandatory) in [
+            (ValidationFindingCode::SourceMalformed, false),
+            (ValidationFindingCode::SemanticValueInvalid, false),
+            (ValidationFindingCode::SourceUnreadable, true),
+        ] {
+            for limit in [0, 1, 8] {
+                let report = finalize(limit, ValidationCoverage::Complete, vec![error(code)]);
+                assert_eq!(report.status(), ValidationStatus::Invalid);
+                let retained = report
+                    .findings()
+                    .iter()
+                    .filter(|finding| finding.code() == code)
+                    .count();
+                assert_eq!(retained, usize::from(mandatory || limit > 0));
+                assert_eq!(
+                    report.error_truncation().omitted_errors(),
+                    u16::from(!mandatory && limit == 0)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn partial_coverage_evidence_survives_zero_one_and_many_error_limits() {
+        for limit in [0, 1, 8] {
+            let report = finalize(
+                limit,
+                ValidationCoverage::Partial,
+                vec![
+                    error(ValidationFindingCode::SemanticValueInvalid),
+                    error(ValidationFindingCode::NameMissing),
+                    warning(ValidationFindingCode::RegistrarCoverageNotEvaluated),
+                ],
+            );
+            assert_eq!(report.coverage(), ValidationCoverage::Partial);
+            assert_eq!(report.status(), ValidationStatus::Invalid);
+            assert_eq!(
+                report
+                    .findings()
+                    .iter()
+                    .filter(|finding| {
+                        finding.code() == ValidationFindingCode::RegistrarCoverageNotEvaluated
+                    })
+                    .count(),
+                1
+            );
+            assert_eq!(
+                report.error_truncation().omitted_errors(),
+                match limit {
+                    0 => 2,
+                    1 => 1,
+                    _ => 0,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn finalizer_deduplicates_before_counting_omitted_errors() {
+        let report = finalize(
+            0,
+            ValidationCoverage::Complete,
+            vec![
+                error(ValidationFindingCode::SourceMalformed),
+                error(ValidationFindingCode::SourceMalformed),
+            ],
+        );
+
+        assert_eq!(
+            report.error_truncation(),
+            ValidationErrorTruncation::truncated(1).unwrap()
+        );
+    }
 }
 
 fn append_command_presentation_findings(

@@ -32,16 +32,13 @@ fn omitted_errors_preserve_invalid_partial_status_and_mandatory_coverage() {
             ValidationFindingCode::RegistrarCoverageNotEvaluated,
         )],
         ValidationCoverage::Partial,
-        ValidationErrorTruncation::Truncated,
+        ValidationErrorTruncation::truncated(2).unwrap(),
     )
     .unwrap();
 
     assert_eq!(report.status(), ValidationStatus::Invalid);
     assert_eq!(report.coverage(), ValidationCoverage::Partial);
-    assert_eq!(
-        report.error_truncation(),
-        ValidationErrorTruncation::Truncated
-    );
+    assert_eq!(report.error_truncation().omitted_errors(), 2);
     assert_eq!(report.findings().len(), 1);
     assert_eq!(
         report.findings()[0].code(),
@@ -49,7 +46,7 @@ fn omitted_errors_preserve_invalid_partial_status_and_mandatory_coverage() {
     );
     assert_eq!(
         serde_json::to_value(&report).unwrap()["errorTruncation"],
-        "truncated"
+        json!({"state": "truncated", "omitted": 2})
     );
 }
 
@@ -93,7 +90,7 @@ fn serde_rejects_status_truncation_and_coverage_contradictions() {
             "coverage": "complete",
             "checks": 1,
             "findings": [],
-            "errorTruncation": "truncated"
+            "errorTruncation": {"state": "truncated", "omitted": 1}
         }),
         json!({
             "subject": "object:target",
@@ -104,7 +101,7 @@ fn serde_rejects_status_truncation_and_coverage_contradictions() {
                 "severity": "warning",
                 "code": "registrarCoverageNotEvaluated"
             }],
-            "errorTruncation": "truncated"
+            "errorTruncation": {"state": "truncated", "omitted": 1}
         }),
         json!({
             "subject": "object:target",
@@ -115,7 +112,15 @@ fn serde_rejects_status_truncation_and_coverage_contradictions() {
                 "severity": "error",
                 "code": "semanticValueInvalid"
             }],
-            "errorTruncation": "complete"
+            "errorTruncation": {"state": "complete"}
+        }),
+        json!({
+            "subject": "object:target",
+            "status": "invalid",
+            "coverage": "complete",
+            "checks": 1,
+            "findings": [],
+            "errorTruncation": {"state": "truncated", "omitted": 0}
         }),
     ];
 
@@ -131,7 +136,7 @@ fn serde_rejects_status_truncation_and_coverage_contradictions() {
 fn complete_and_truncated_reports_round_trip_through_the_closed_wire_contract() {
     for truncation in [
         ValidationErrorTruncation::Complete,
-        ValidationErrorTruncation::Truncated,
+        ValidationErrorTruncation::truncated(3).unwrap(),
     ] {
         let findings = if truncation == ValidationErrorTruncation::Complete {
             vec![error(ValidationFindingCode::SemanticValueInvalid)]

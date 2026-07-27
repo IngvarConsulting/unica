@@ -924,16 +924,26 @@ impl<'ast> Visit<'ast> for FactVisitor {
     }
 
     fn visit_expr_if(&mut self, node: &'ast syn::ExprIf) {
-        self.visit_expr(&node.cond);
         self.receiver_scopes.push(BTreeMap::new());
-        if let Expr::Let(binding) = node.cond.as_ref() {
-            self.bind_pattern(&binding.pat, ReceiverProvenance::External, BTreeSet::new());
-        }
+        self.visit_expr(&node.cond);
         self.visit_block(&node.then_branch);
         self.receiver_scopes.pop();
         if let Some((_, otherwise)) = &node.else_branch {
             self.visit_expr(otherwise);
         }
+    }
+
+    fn visit_expr_while(&mut self, node: &'ast syn::ExprWhile) {
+        self.receiver_scopes.push(BTreeMap::new());
+        self.visit_expr(&node.cond);
+        self.visit_block(&node.body);
+        self.receiver_scopes.pop();
+    }
+
+    fn visit_expr_let(&mut self, node: &'ast syn::ExprLet) {
+        self.visit_pat(&node.pat);
+        self.visit_expr(&node.expr);
+        self.bind_pattern(&node.pat, ReceiverProvenance::External, BTreeSet::new());
     }
 
     fn visit_expr_call(&mut self, node: &'ast ExprCall) {
@@ -1633,10 +1643,11 @@ fn collect_use(module: &str, item_use: &ItemUse, imports: &mut Imports) {
             }
             UseTree::Name(name) => {
                 if name.ident == "self" {
-                    if let Some(alias) = prefix.last() {
-                        imports
-                            .aliases
-                            .insert(alias.to_string(), absolutize_use(module, prefix));
+                    if let Some(alias) = prefix.last().cloned() {
+                        let target = absolutize_use(module, prefix);
+                        if target.as_slice() != [alias.clone()] {
+                            imports.aliases.insert(alias, target);
+                        }
                     }
                 } else {
                     let mut path = prefix;
@@ -1648,10 +1659,14 @@ fn collect_use(module: &str, item_use: &ItemUse, imports: &mut Imports) {
             }
             UseTree::Rename(rename) => {
                 let mut path = prefix;
-                path.push(rename.ident.to_string());
-                imports
-                    .aliases
-                    .insert(rename.rename.to_string(), absolutize_use(module, path));
+                if rename.ident != "self" {
+                    path.push(rename.ident.to_string());
+                }
+                let alias = rename.rename.to_string();
+                let target = absolutize_use(module, path);
+                if target.as_slice() != [alias.clone()] {
+                    imports.aliases.insert(alias, target);
+                }
             }
             UseTree::Group(group) => {
                 for item in &group.items {
@@ -2542,4 +2557,278 @@ fn unresolved_local_call_fails_closed() {
             .any(|violation| violation.contains("unresolved local call missing_local_helper")),
         "{violations:?}"
     );
+}
+
+#[test]
+fn every_pattern_binding_form_shadows_neutral_port_provenance() {
+    let cases = [
+        (
+            "if-let",
+            r#"
+                use unica_format_core::ports::ValidationContextPort;
+                struct Local;
+                trait HiddenBoundary {
+                    fn inspect(&self) {
+                        let _ = std::path::Path::new(".").join("Configuration.xml");
+                    }
+                }
+                pub fn run(port: &dyn ValidationContextPort, next: Option<Local>) {
+                    if let Some(port) = next { port.inspect(); }
+                }
+            "#,
+        ),
+        (
+            "while-let",
+            r#"
+                use unica_format_core::ports::ValidationContextPort;
+                struct Local;
+                trait HiddenBoundary {
+                    fn inspect(&self) {
+                        let _ = std::path::Path::new(".").join("Rights.xml");
+                    }
+                }
+                pub fn run(port: &dyn ValidationContextPort, mut next: Option<Local>) {
+                    while let Some(port) = next.take() {
+                        port.inspect();
+                    }
+                }
+            "#,
+        ),
+        (
+            "let-else-destructure",
+            r#"
+                use unica_format_core::ports::ValidationContextPort;
+                struct Local;
+                trait HiddenBoundary {
+                    fn inspect(&self) {
+                        let _ = std::path::Path::new(".").join("Form.xml");
+                    }
+                }
+                pub fn run(port: &dyn ValidationContextPort, next: Option<(Local,)>) {
+                    let Some((port,)) = next else { return };
+                    port.inspect();
+                }
+            "#,
+        ),
+        (
+            "for-destructure",
+            r#"
+                use unica_format_core::ports::ValidationContextPort;
+                struct Local;
+                trait HiddenBoundary {
+                    fn inspect(&self) {
+                        let _ = std::path::Path::new(".").join("Template.xml");
+                    }
+                }
+                pub fn run(port: &dyn ValidationContextPort, values: Vec<(Local,)>) {
+                    for (port,) in values { port.inspect(); }
+                }
+            "#,
+        ),
+        (
+            "match-arm-and-guard",
+            r#"
+                use unica_format_core::ports::ValidationContextPort;
+                struct Local;
+                trait HiddenBoundary {
+                    fn inspect(&self) {
+                        let _ = std::path::Path::new(".").join("ParentConfigurations.bin");
+                    }
+                }
+                pub fn run(port: &dyn ValidationContextPort, next: Option<Local>) {
+                    match next {
+                        Some(port) if { port.inspect(); true } => {}
+                        _ => {}
+                    }
+                }
+            "#,
+        ),
+        (
+            "move-closure-destructure",
+            r#"
+                use unica_format_core::ports::ValidationContextPort;
+                struct Local;
+                trait HiddenBoundary {
+                    fn inspect(&self) {
+                        let _ = std::path::Path::new(".").join("Configuration.xml");
+                    }
+                }
+                pub fn run(port: &dyn ValidationContextPort) {
+                    let _closure = move |(port,): (Local,)| port.inspect();
+                }
+            "#,
+        ),
+        (
+            "async-move-local-destructure",
+            r#"
+                use unica_format_core::ports::ValidationContextPort;
+                struct Local;
+                trait HiddenBoundary {
+                    fn inspect(&self) {
+                        let _ = std::path::Path::new(".").join("Rights.xml");
+                    }
+                }
+                pub fn run(port: &dyn ValidationContextPort) {
+                    let _future = async move {
+                        let (port,) = (Local,);
+                        port.inspect();
+                    };
+                }
+            "#,
+        ),
+        (
+            "nested-block-destructure",
+            r#"
+                use unica_format_core::ports::ValidationContextPort;
+                struct Local;
+                trait HiddenBoundary {
+                    fn inspect(&self) {
+                        let _ = std::path::Path::new(".").join("Form.xml");
+                    }
+                }
+                pub fn run(port: &dyn ValidationContextPort) {
+                    {
+                        let [port] = [Local];
+                        { port.inspect(); }
+                    }
+                }
+            "#,
+        ),
+    ];
+
+    for (label, source) in cases {
+        let graph = fixture_graph(label, &[("entry.rs", source)]);
+        let violations = graph.violations_from(&["crate::entry::run"]);
+        assert!(
+            !violations.is_empty(),
+            "{label} inherited approval from an outer neutral-port binding"
+        );
+    }
+}
+
+#[test]
+fn grouped_self_and_glob_imports_retain_exact_external_provenance() {
+    let cases = [
+        (
+            "grouped-self-rename",
+            r#"
+                use unica_format_core::{self as contract};
+                trait HiddenBoundary {
+                    fn inspect(&self) {
+                        let _ = std::path::Path::new(".").join("Configuration.xml");
+                    }
+                }
+                pub fn run(port: &dyn contract::ports::ValidationContextPort) {
+                    port.inspect();
+                }
+            "#,
+        ),
+        (
+            "grouped-self-and-glob",
+            r#"
+                use unica_format_core::{self, ports::*};
+                trait HiddenBoundary {
+                    fn inspect(&self) {
+                        let _ = std::path::Path::new(".").join("Rights.xml");
+                    }
+                }
+                pub fn run(
+                    first: &dyn unica_format_core::ports::ValidationContextPort,
+                    second: &dyn ValidationContextPort,
+                ) {
+                    first.inspect();
+                    second.inspect();
+                }
+            "#,
+        ),
+        (
+            "nested-group-self-and-glob",
+            r#"
+                use unica_format_core::{
+                    self as contract,
+                    ports::{self as contracts, *},
+                };
+                trait HiddenBoundary {
+                    fn inspect(&self) {
+                        let _ = std::path::Path::new(".").join("Form.xml");
+                    }
+                }
+                pub fn run(
+                    first: &dyn contract::ports::ValidationContextPort,
+                    second: &dyn contracts::ValidationContextPort,
+                    third: &dyn ValidationContextPort,
+                ) {
+                    first.inspect();
+                    second.inspect();
+                    third.inspect();
+                }
+            "#,
+        ),
+    ];
+
+    for (label, source) in cases {
+        let graph = fixture_graph(label, &[("entry.rs", source)]);
+        let violations = graph.violations_from(&["crate::entry::run"]);
+        assert!(
+            violations.is_empty(),
+            "{label} lost external provenance: {violations:?}"
+        );
+    }
+}
+
+#[test]
+fn grouped_self_imports_from_local_namespaces_never_spoof_external_provenance() {
+    let cases = [
+        (
+            "local-grouped-self-rename",
+            r#"
+                mod local {
+                    pub mod ports {
+                        pub trait ValidationContextPort { fn inspect(&self); }
+                    }
+                }
+                use local::{self as contract};
+                trait HiddenBoundary {
+                    fn inspect(&self) {
+                        let _ = std::path::Path::new(".").join("Template.xml");
+                    }
+                }
+                pub fn run(port: &dyn contract::ports::ValidationContextPort) {
+                    port.inspect();
+                }
+            "#,
+        ),
+        (
+            "local-core-grouped-self-glob",
+            r#"
+                mod unica_format_core {
+                    pub mod ports {
+                        pub trait ValidationContextPort { fn inspect(&self); }
+                    }
+                }
+                use unica_format_core::{self as contract, ports::*};
+                trait HiddenBoundary {
+                    fn inspect(&self) {
+                        let _ = std::path::Path::new(".").join("ParentConfigurations.bin");
+                    }
+                }
+                pub fn run(
+                    first: &dyn contract::ports::ValidationContextPort,
+                    second: &dyn ValidationContextPort,
+                ) {
+                    first.inspect();
+                    second.inspect();
+                }
+            "#,
+        ),
+    ];
+
+    for (label, source) in cases {
+        let graph = fixture_graph(label, &[("entry.rs", source)]);
+        let violations = graph.violations_from(&["crate::entry::run"]);
+        assert!(
+            !violations.is_empty(),
+            "{label} was accepted as an external dependency"
+        );
+    }
 }

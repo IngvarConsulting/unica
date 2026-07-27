@@ -307,26 +307,131 @@ fn task7_operational_validation_uses_private_registry_value_constraints() {
     )
     .unwrap();
     let factory = PlatformXmlAdapterFactory::new();
-    let session = factory.capture_validation_source(
-        &source(&root, &object, SourceFamily::PlatformXml),
-        OwnerResolutionMode::Existing,
-    );
-    let result = factory
-        .operational_registration()
-        .validation()
-        .validate(
-            &OperationalValidationRequest::new(
-                vec![session],
-                ValidationOptions::new(true, 30).unwrap(),
+    for limit in [0, 1, 30] {
+        let session = factory.capture_validation_source(
+            &source(&root, &object, SourceFamily::PlatformXml),
+            OwnerResolutionMode::Existing,
+        );
+        let result = factory
+            .operational_registration()
+            .validation()
+            .validate(
+                &OperationalValidationRequest::new(
+                    vec![session],
+                    ValidationOptions::new(true, limit).unwrap(),
+                )
+                .unwrap(),
             )
-            .unwrap(),
-        )
-        .unwrap();
+            .unwrap();
+        let report = &result.reports()[0];
+        assert_eq!(
+            report.status(),
+            unica_format_core::ports::ValidationStatus::Invalid
+        );
+        assert_eq!(
+            report
+                .findings()
+                .iter()
+                .filter(|finding| finding.code() == ValidationFindingCode::SemanticValueInvalid)
+                .count(),
+            usize::from(limit > 0)
+        );
+        assert_eq!(
+            report.error_truncation().omitted_errors(),
+            u16::from(limit == 0)
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
+}
 
-    assert!(result.reports()[0]
-        .findings()
-        .iter()
-        .any(|finding| finding.code() == ValidationFindingCode::SemanticValueInvalid));
+#[test]
+fn task7_operational_validation_finalizes_malformed_outcomes_at_every_error_limit() {
+    let root = temp_root("validation-malformed-limits");
+    fs::create_dir_all(&root).unwrap();
+    let object = root.join("Broken.xml");
+    fs::write(&object, "<MetaDataObject").unwrap();
+    let factory = PlatformXmlAdapterFactory::new();
+
+    for limit in [0, 1, 30] {
+        let session = factory.capture_validation_source(
+            &source(&root, &object, SourceFamily::PlatformXml),
+            OwnerResolutionMode::Existing,
+        );
+        let result = factory
+            .operational_registration()
+            .validation()
+            .validate(
+                &OperationalValidationRequest::new(
+                    vec![session],
+                    ValidationOptions::new(true, limit).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let report = &result.reports()[0];
+        assert_eq!(
+            report.status(),
+            unica_format_core::ports::ValidationStatus::Invalid
+        );
+        assert_eq!(
+            report
+                .findings()
+                .iter()
+                .filter(|finding| finding.code() == ValidationFindingCode::SourceMalformed)
+                .count(),
+            usize::from(limit > 0)
+        );
+        assert_eq!(
+            report.error_truncation().omitted_errors(),
+            u16::from(limit == 0)
+        );
+    }
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn task7_operational_validation_never_truncates_source_unreadable_evidence() {
+    let root = temp_root("validation-unreadable-limits");
+    fs::create_dir_all(&root).unwrap();
+    let object = root.join("Vanished.xml");
+    fs::write(&object, "<MetaDataObject/>").unwrap();
+    let factory = PlatformXmlAdapterFactory::new();
+
+    for limit in [0, 1, 30] {
+        fs::write(&object, "<MetaDataObject/>").unwrap();
+        let session = factory.capture_validation_source(
+            &source(&root, &object, SourceFamily::PlatformXml),
+            OwnerResolutionMode::Existing,
+        );
+        fs::remove_file(&object).unwrap();
+        let result = factory
+            .operational_registration()
+            .validation()
+            .validate(
+                &OperationalValidationRequest::new(
+                    vec![session],
+                    ValidationOptions::new(true, limit).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let report = &result.reports()[0];
+        assert_eq!(
+            report.status(),
+            unica_format_core::ports::ValidationStatus::Invalid
+        );
+        assert_eq!(
+            report
+                .findings()
+                .iter()
+                .filter(|finding| finding.code() == ValidationFindingCode::SourceUnreadable)
+                .count(),
+            1
+        );
+        assert_eq!(report.error_truncation().omitted_errors(), 0);
+    }
+
     fs::remove_dir_all(root).unwrap();
 }
 
