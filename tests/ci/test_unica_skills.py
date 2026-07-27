@@ -532,6 +532,13 @@ SCENARIO_PRESERVING_TOKENS = {
     "role-info": ['"Offset": 150'],
 }
 
+# Arguments the MCP contract used to publish and now rejects. The packaged skill
+# must not keep advertising them: the server would answer such a call with
+# "does not accept argument", so a leftover example is a broken instruction.
+SCENARIO_RETIRED_TOKENS = {
+    "meta-remove": ['"KeepFiles"', '"keepFiles"'],
+}
+
 
 def markdown_routing_units(text: str) -> list[str]:
     units = []
@@ -1594,6 +1601,8 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                     )
                 for token in SCENARIO_PRESERVING_TOKENS.get(skill, []):
                     self.assertIn(token, text)
+                for token in SCENARIO_RETIRED_TOKENS.get(skill, []):
+                    self.assertNotIn(token, text)
                 for block in mcp_blocks:
                     payload = json.loads(block)
                     params = payload["params"]

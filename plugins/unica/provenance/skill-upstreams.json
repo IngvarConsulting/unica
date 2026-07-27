@@ -677,7 +677,7 @@
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ignored-with-reason",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; none of that donor churn requires adopting donor changes. Separately, Unica deliberately diverges from the donor by retiring the -KeepFiles switch, and that divergence does change the prompt-visible skill, the typed MCP contract, the native operation and the parity model; see the entry notes for the reasoning and the affected surfaces."
         },
         {
           "skill": "meta-validate",
