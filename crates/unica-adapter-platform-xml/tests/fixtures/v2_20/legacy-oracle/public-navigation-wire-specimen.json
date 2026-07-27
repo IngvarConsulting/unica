@@ -200,6 +200,7 @@
       ["signOnly", {"allowedSign": "any"}],
       ["digitsOnly", {"digits": 8}],
       ["digitsFraction", {"digits": 8, "fractionDigits": 2}],
+      ["digitsAndSign", {"allowedSign": "nonnegative", "digits": 8}],
       ["all", {
         "allowedSign": "nonnegative",
         "digits": 15,

@@ -22,7 +22,8 @@ use unica_format_core::{
         FormatCompatibility, IdentityStrength, NavigationCursor, NavigationEnvelope,
         NavigationFacetVisibility, NavigationNode, NavigationQuery, NavigationRelationPage,
         NavigationSelection, NavigationStatus, NavigationTarget, ObjectKey, ObjectRef,
-        OperationBinding, PropertyCapability, PropertyProvenance, PropertySelection,
+        OpaqueNavigationCursor, OperationBinding, PropertyCapability, PropertyProvenance,
+        PropertySelection,
         PropertyValueState, RelationGroupRef, RelationKey, RelationKind, RelationRef,
         RelationSelection, ResolutionState, SemanticAction, SemanticActionDescriptor,
         SemanticActionKind, SemanticFacets, SemanticProperty, SemanticRelation,
@@ -43,6 +44,43 @@ use unica_format_core::{
 };
 
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+
+const FULL_PUBLIC_CONTRACT_CURSOR_SECRET: &[u8] = b"full-public-contract-cursor-secret";
+const PUBLIC_VARIANT_CURSOR_SECRET: &[u8] = b"public-variant-cursor-secret";
+const PUBLIC_NAVIGATION_CURSOR_SECRET: &[u8] = b"public-navigation-wire-secret";
+
+fn authenticate_and_canonicalize_cursor_wire(
+    wire: &mut Value,
+    secret: &[u8],
+) -> Result<NavigationCursor, String> {
+    let token = wire
+        .as_str()
+        .ok_or_else(|| "navigation cursor wire value must be a JSON string".to_string())?;
+    if token.is_empty() {
+        return Err("navigation cursor wire value must be nonempty".to_string());
+    }
+    if token.contains('=') {
+        return Err("navigation cursor wire value must use unpadded base64url".to_string());
+    }
+    if !token
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Err(
+            "navigation cursor wire value contains a non-base64url character".to_string(),
+        );
+    }
+    let authenticated = OpaqueNavigationCursor::from_token(token)
+        .authenticate(secret)
+        .map_err(|error| format!("navigation cursor authentication failed: {error:?}"))?;
+    let round_trip = serde_json::to_value(&authenticated)
+        .map_err(|error| format!("authenticated navigation cursor cannot serialize: {error}"))?;
+    if round_trip.as_str() != Some(token) {
+        return Err("authenticated navigation cursor did not preserve its opaque token".to_string());
+    }
+    *wire = json!("opaque:cursor");
+    Ok(authenticated)
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -3544,7 +3582,7 @@ fn full_public_contract_specimen_facts() -> Vec<Value> {
         facet_visibility: NavigationFacetVisibility::Full,
     };
     let cursor = NavigationCursor::issue(
-        b"full-public-contract-cursor-secret",
+        FULL_PUBLIC_CONTRACT_CURSOR_SECRET,
         source_id.clone(),
         revision.clone(),
         owner_ref.object_key.clone(),
@@ -3595,7 +3633,11 @@ fn full_public_contract_specimen_facts() -> Vec<Value> {
         relation_index: std::sync::Arc::new(vec![relation.clone()]),
     };
     let mut envelope_value = serde_json::to_value(envelope).unwrap();
-    envelope_value["relations"][0]["nextCursor"] = json!("opaque:cursor");
+    authenticate_and_canonicalize_cursor_wire(
+        &mut envelope_value["relations"][0]["nextCursor"],
+        FULL_PUBLIC_CONTRACT_CURSOR_SECRET,
+    )
+    .unwrap();
     let mut facts = vec![
         json!({"case": "fullPublicContract", "kind": "envelope", "value": envelope_value}),
         json!({
@@ -4425,6 +4467,17 @@ fn type_qualifier_specimens() -> Vec<(&'static str, TypeQualifiers)> {
             ),
         ),
         (
+            "numberDigitsAndSign",
+            TypeQualifiers::Number(
+                NumberQualifiers::new(
+                    Some(8),
+                    None,
+                    Some(NumberSign::Nonnegative),
+                )
+                .unwrap(),
+            ),
+        ),
+        (
             "numberAny",
             TypeQualifiers::Number(
                 NumberQualifiers::new(Some(10), Some(0), Some(NumberSign::Any)).unwrap(),
@@ -4838,7 +4891,7 @@ fn push_relation_page_shape_variants(facts: &mut Vec<Value>) {
     );
 
     let cursor = NavigationCursor::issue(
-        b"public-variant-cursor-secret",
+        PUBLIC_VARIANT_CURSOR_SECRET,
         variant_source_id(),
         SourceRevision::new("revision:public-variants").unwrap(),
         ObjectKey::new("uuid:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap(),
@@ -4861,7 +4914,11 @@ fn push_relation_page_shape_variants(facts: &mut Vec<Value>) {
         next_cursor: Some(cursor),
     };
     let mut wire = serde_json::to_value(with_cursor).unwrap();
-    wire["nextCursor"] = json!("opaque:cursor");
+    authenticate_and_canonicalize_cursor_wire(
+        &mut wire["nextCursor"],
+        PUBLIC_VARIANT_CURSOR_SECRET,
+    )
+    .unwrap();
     facts.push(variant_fact(
         "relationPageOptionShape",
         "withCursor",
@@ -5142,7 +5199,7 @@ fn complete_navigation_selection() -> NavigationSelection {
 
 fn public_navigation_cursor() -> NavigationCursor {
     NavigationCursor::issue(
-        b"public-navigation-wire-secret",
+        PUBLIC_NAVIGATION_CURSOR_SECRET,
         variant_source_id(),
         SourceRevision::new("revision:public-variants").unwrap(),
         ObjectKey::new("uuid:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap(),
@@ -5183,7 +5240,11 @@ fn navigation_target_wire(target: &NavigationTarget) -> Value {
     };
     let mut wire = serde_json::to_value(target).unwrap();
     if variant == "cursor" {
-        wire["cursor"] = json!("opaque:cursor");
+        authenticate_and_canonicalize_cursor_wire(
+            &mut wire["cursor"],
+            PUBLIC_NAVIGATION_CURSOR_SECRET,
+        )
+        .unwrap();
     }
     wire
 }
@@ -5275,15 +5336,25 @@ fn push_navigation_request_variants(facts: &mut Vec<Value>) {
         };
         let mut wire = serde_json::to_value(query).unwrap();
         if variant == "cursor" {
-            wire["target"]["cursor"] = json!("opaque:cursor");
+            authenticate_and_canonicalize_cursor_wire(
+                &mut wire["target"]["cursor"],
+                PUBLIC_NAVIGATION_CURSOR_SECRET,
+            )
+            .unwrap();
         }
         facts.push(variant_fact("navigationQuery", variant, wire));
     }
 
+    let mut cursor_wire = serde_json::to_value(public_navigation_cursor()).unwrap();
+    authenticate_and_canonicalize_cursor_wire(
+        &mut cursor_wire,
+        PUBLIC_NAVIGATION_CURSOR_SECRET,
+    )
+    .unwrap();
     facts.push(variant_fact(
         "navigationCursor",
         "opaque",
-        json!("opaque:cursor"),
+        cursor_wire,
     ));
 }
 
@@ -5422,7 +5493,11 @@ fn push_navigation_response_variants(facts: &mut Vec<Value>) {
         next_cursor: Some(public_navigation_cursor()),
     };
     let mut with_cursor_wire = serde_json::to_value(with_cursor).unwrap();
-    with_cursor_wire["nextCursor"] = json!("opaque:cursor");
+    authenticate_and_canonicalize_cursor_wire(
+        &mut with_cursor_wire["nextCursor"],
+        PUBLIC_NAVIGATION_CURSOR_SECRET,
+    )
+    .unwrap();
     facts.push(variant_fact(
         "relationPageCursorOption",
         "some",
@@ -5533,6 +5608,15 @@ fn push_navigation_response_variants(facts: &mut Vec<Value>) {
             NumberQualifiers::new(Some(8), Some(2), None).unwrap(),
         ),
         (
+            "digitsAndSign",
+            NumberQualifiers::new(
+                Some(8),
+                None,
+                Some(NumberSign::Nonnegative),
+            )
+            .unwrap(),
+        ),
+        (
             "all",
             NumberQualifiers::new(
                 Some(15),
@@ -5552,4 +5636,118 @@ fn public_navigation_wire_facts() -> Vec<Value> {
     push_navigation_response_variants(&mut facts);
     facts.sort_by_key(canonical_json);
     facts
+}
+
+#[test]
+fn fix_round10_number_qualifier_option_combinations_are_finite_and_complete() {
+    let navigation_specimen: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/v2_20/legacy-oracle/public-navigation-wire-specimen.json"
+    ))
+    .expect("public navigation wire specimen must be valid JSON");
+    let option_cases = navigation_specimen
+        .pointer("/families/numberQualifierOptionShape")
+        .and_then(serde_json::Value::as_array)
+        .expect("number qualifier option-shape family must be an array");
+    let actual_names = option_cases
+        .iter()
+        .map(|case| {
+            case.as_array()
+                .and_then(|case| case.first())
+                .and_then(serde_json::Value::as_str)
+                .expect("number qualifier case must have a string name")
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let expected_names = [
+        "signOnly",
+        "digitsOnly",
+        "digitsFraction",
+        "digitsAndSign",
+        "all",
+    ]
+    .into_iter()
+    .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(actual_names, expected_names);
+    assert!(option_cases.iter().any(|case| {
+        case == &serde_json::json!([
+            "digitsAndSign",
+            {"allowedSign": "nonnegative", "digits": 8}
+        ])
+    }));
+
+    let variant_specimen: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/v2_20/legacy-oracle/public-contract-variant-specimen.json"
+    ))
+    .expect("public contract variant specimen must be valid JSON");
+    let type_qualifier_cases = variant_specimen
+        .pointer("/families/typeQualifiers")
+        .and_then(serde_json::Value::as_array)
+        .expect("type qualifier family must be an array");
+    assert!(type_qualifier_cases.iter().any(|case| {
+        case == &serde_json::json!([
+            "numberDigitsAndSign",
+            {"number": {"allowedSign": "nonnegative", "digits": 8}}
+        ])
+    }));
+}
+
+#[test]
+fn fix_round10_cursor_wire_contract_validates_before_canonicalization() {
+    let actual_wire = serde_json::to_value(public_navigation_cursor())
+        .expect("navigation cursor must serialize");
+    let actual_token = actual_wire
+        .as_str()
+        .expect("navigation cursor wire value must be a JSON string");
+    assert!(!actual_token.is_empty());
+    assert!(!actual_token.contains('='));
+    assert!(actual_token
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'));
+
+    let mut canonical = actual_wire.clone();
+    authenticate_and_canonicalize_cursor_wire(
+        &mut canonical,
+        PUBLIC_NAVIGATION_CURSOR_SECRET,
+    )
+    .expect("issued cursor must satisfy the public wire contract");
+    assert_eq!(canonical, serde_json::json!("opaque:cursor"));
+
+    let unauthenticated_cursor = NavigationCursor::issue(
+        b"different-public-navigation-wire-secret",
+        variant_source_id(),
+        SourceRevision::new("revision:public-variants").unwrap(),
+        ObjectKey::new("uuid:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap(),
+        variant_relation_group(),
+        complete_navigation_selection(),
+        1,
+    )
+    .expect("cursor under a different key must be issuable");
+    let unauthenticated = serde_json::to_value(unauthenticated_cursor)
+        .expect("cursor issued under a different key must still serialize");
+
+    let mut tampered_token = actual_token.to_string();
+    let last = tampered_token.pop().expect("issued token must be nonempty");
+    tampered_token.push(if last == 'A' { 'B' } else { 'A' });
+
+    let invalid_wires = [
+        ("null", serde_json::Value::Null),
+        ("object", serde_json::json!({"token": actual_token})),
+        ("array", serde_json::json!([actual_token])),
+        ("number", serde_json::json!(1)),
+        ("boolean", serde_json::json!(true)),
+        ("empty", serde_json::json!("")),
+        ("padded", serde_json::json!("YWJj=")),
+        ("invalidBase64Url", serde_json::json!("not+base64url")),
+        ("unauthenticated", unauthenticated),
+        ("tampered", serde_json::json!(tampered_token)),
+    ];
+    for (case, mut wire) in invalid_wires {
+        assert!(
+            authenticate_and_canonicalize_cursor_wire(
+                &mut wire,
+                PUBLIC_NAVIGATION_CURSOR_SECRET,
+            )
+            .is_err(),
+            "{case} cursor wire must fail the shared contract path"
+        );
+    }
 }

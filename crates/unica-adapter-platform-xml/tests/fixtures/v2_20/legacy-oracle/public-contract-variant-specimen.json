@@ -535,6 +535,9 @@
       ["numberDigitsFraction", {
         "number": {"digits": 8, "fractionDigits": 2}
       }],
+      ["numberDigitsAndSign", {
+        "number": {"allowedSign": "nonnegative", "digits": 8}
+      }],
       ["numberAny", {
         "number": {"allowedSign": "any", "digits": 10, "fractionDigits": 0}
       }],
