@@ -1121,3 +1121,190 @@ The generator invokes only frozen legacy scripts plus independent extraction/bui
 - Form/template internals remain intentionally opaque where no closed semantic decomposition exists; explicit backing availability/opaque state and truthful partial coverage are required.
 - Unknown native phrases/aliases remain readable partial where the adapter can preserve neutral evidence. Unknown legacy support phrases fail the independent oracle parser closed rather than being assigned a fabricated state.
 - No known legacy-comparable parity gap remains in the selected corpus. No Task 4 invariant, opaque cursor behavior, or non-Task-5 surface was changed.
+
+## Fix Round 7
+
+Base: `de4d9410e575b98f184ea6cb09f4cd0c2527b9cf`
+
+Implementation commit:
+`f863ed6f2d9f8431ff3f754659fe0b795624f357`
+
+The controller's Round 6 failure/Round 7 start entry in `progress.md` was
+preserved and committed with the implementation.
+
+### Root-cause fixes and decisions
+
+1. Spreadsheet-document template ownership is no longer inferred. The legacy
+   source/output identifies the object as generic `Template`; only the
+   `TemplateType` value maps to semantic `template.type=spreadsheetDocument`.
+   The extractor preserves that native owner and property context, coverage
+   applies the enum to generic `template`, and the projector no longer rewrites
+   the node kind from the property value. The real positive fixture and a
+   value-mutation negative test prove owner identity is invariant.
+2. Every source-derived enum tuple is now exercised rather than sampled.
+   `enum-alias-executions.json` contains 174 executions covering every alias,
+   exact source property, applicable owner, and semantic value across all 62
+   extracted source contexts. Each execution mutates a context-valid input,
+   runs the tracked legacy script, retains/classifies every output line, and is
+   independently decoded by the runtime test. Exact multiset validation rejects
+   omissions, duplicates, wrong contexts, and raw-output hash mutations.
+3. Rights runtime parity now executes every supported target profile.
+   `MultiTargetReader` contains all 45 prefixes derived exactly from the closed
+   supported top-level object registry and the independent target crosswalk.
+   Each target has its own identity, permission, condition expression, and
+   restriction template. Legacy and adapter assertions compare all 45 targets
+   and their per-target facts rather than checking representative strings.
+4. Public schema proof is nonempty and recursively complete.
+   `full-public-contract-specimen.json` is a static, independently hand-reviewed
+   public `NavigationEnvelope` specimen, not adapter-captured output. It
+   contains a nonempty `NavigationRelationPage`, relation evidence and
+   capabilities, recursive item facets, opaque cursor, all semantic action
+   descriptor kinds/policies, non-null operation bindings, every action
+   atomicity/status/blocking variant, property provenance/state/type/value,
+   capabilities, identities, status, diagnostics, and facet membership.
+   Production schema traversal rejects added, removed, renamed, ignored, or
+   changed nested fields. Mutations cover all fields previously left
+   untraversed.
+5. Platform XML runtime support claims remain truthful. This adapter currently
+   exposes relation discovery in `relation_index` but does not project relation
+   pages, semantic actions, or operation bindings. Tests assert those exact
+   intentional absences and prove requesting relation selection fails with
+   format-neutral `CapabilityBlocked`; unsupported variants are covered by the
+   standalone complete public-contract specimen rather than fabricated in
+   adapter output.
+6. Provenance was extended to the alias-execution inventory, renamed generic
+   template fixture, all-target Rights fixture/raw output, full public-contract
+   specimen, extraction/build/generation tools, and all regenerated oracle
+   artifacts. The generator self-test rejects a changed execution digest, and
+   `--check` recomputes every byte and SHA-256 from legacy scripts and
+   independent extraction only.
+
+### Files
+
+Production 2.20 adapter:
+
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/coverage.json`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/projector.rs`
+
+Independent oracle, fixtures, and generated evidence:
+
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/README.md`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/crosswalk.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-alias-executions.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/EnumContextSpreadsheetDocument.xml`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-source-contexts.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/full-public-contract-specimen.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/inputs.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/legacy-semantic-oracle.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/new-only-contract.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/oracle-manifest.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/role-info/multi-target-reader.all.txt`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/build_new_only_contract.py`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/extract_enum_contexts.py`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/generate_oracle.py`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights/MultiTargetReader/Ext/Rights.xml`
+
+Tests and SDD:
+
+- `crates/unica-adapter-platform-xml/tests/legacy_parity.rs`
+- `.superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/progress.md`
+- `.superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/task-5-report.md`
+
+The former misleading
+`enum-context-inputs/SpreadsheetDocumentTemplate.xml` path was renamed to the
+generic-template descriptor path above.
+
+### RED evidence
+
+Initial focused command:
+
+```bash
+cargo test -p unica-adapter-platform-xml --test legacy_parity fix_round7_ -- --nocapture
+```
+
+Initial result: `FAILED`, 1 passed and 4 failed.
+
+- The source artifact still reported `spreadsheetDocumentTemplate` instead of
+  generic `template`.
+- No full nonempty public-contract specimen existed.
+- No exhaustive legacy/runtime enum-alias execution artifact existed.
+- The Rights fixture exercised only 6 of 45 supported target profiles.
+
+After those fixes, the first complete scoped parity run reported 21 passed and
+2 failed. Both failures were stale Round 6 assertions: one read representative
+`ownerEvidence` instead of the new exhaustive `observedAliasEvidence`, and one
+expected six historical Rights names instead of the authoritative generated
+45-target names. The assertions were corrected to exact authoritative sets;
+runtime facts were not weakened or filtered.
+
+### GREEN evidence and Task 5 scoped validation
+
+Focused Round 7 proof:
+
+```text
+cargo test -p unica-adapter-platform-xml --test legacy_parity fix_round7_ -- --nocapture
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 18 filtered out
+```
+
+Oracle self-test:
+
+```text
+python3.12 .../generate_oracle.py --repo-root . --self-test
+verified fail-closed parser and source-context negative suite
+```
+
+Oracle regeneration used for committed artifacts:
+
+```text
+python3.12 .../generate_oracle.py --repo-root . --write
+wrote 37 raw outputs, 174 enum alias executions, 21 oracle cases, and provenance
+```
+
+Immutable oracle/provenance check:
+
+```text
+python3.12 .../generate_oracle.py --repo-root . --check
+verified 37 raw outputs, 174 enum alias executions, oracle facts, and SHA-256 provenance
+```
+
+Exact legacy parity, exhaustive runtime coverage, public-schema, and mutation
+suite:
+
+```text
+cargo test -p unica-adapter-platform-xml --test legacy_parity
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+Unknown/unmapped boundary:
+
+```text
+cargo test -p unica-adapter-platform-xml --test unmapped_fact
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+Only Task 5 scoped validation was run.
+
+### Exact coverage and remaining gaps
+
+- Source enum authority: 62 source/AST contexts and 174 exact
+  alias/property/owner/value executions, including real generic `Template` plus
+  `template.type=spreadsheetDocument`.
+- Rights authority: all 45 supported target prefixes, each independently
+  emitted by legacy, parsed, decoded, and checked with target-specific
+  permission, condition, and restriction-template facts.
+- Legacy oracle: 21 exact cases and 37 frozen raw outputs, regenerated solely
+  through tracked legacy scripts and independent Python extraction.
+- Adapter-only/public schema: exact generated adapter contract plus one static
+  schema-complete nonempty specimen covering relation pages, descriptors,
+  bindings, nested capabilities/provenance, cursors, facets, and all action
+  variants.
+- No known legacy-comparable parity gap remains in the selected Task 5 corpus.
+- Intentional adapter-only absence: Platform XML 2.20 does not currently
+  produce paged relations, semantic actions, or operation bindings. This is
+  asserted explicitly and does not discard legacy useful information; the
+  public variants remain schema-guarded by the standalone specimen.
+- Existing intentional opaque form/template content handling remains unchanged:
+  backing availability and opaque state are retained with truthful partial
+  coverage where semantic decomposition is unavailable.
+- No core/application/coder module learned XML vocabulary, and no Task 4 closed
+  contract or opaque cursor invariant was changed.
