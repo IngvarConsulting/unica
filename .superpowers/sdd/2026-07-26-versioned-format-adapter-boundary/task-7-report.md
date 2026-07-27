@@ -886,3 +886,207 @@ child\(properties, "Recorders"\)|child\(properties, "Registrars"\)' \
 - Full workspace validation was intentionally not run.
 - No scoped Task 7 test, affected Task 5/6 parity test, native compile check,
   Windows cross-target check, formatting check, or diff check remains failing.
+
+## Fix Round 6
+
+Base: `423fda322f5ffad6c0b9412dab197529f2109d54`
+
+Implementation commits:
+
+- `03a1b6000a18678b798b4b8c2f2d623ab4a6e519`
+  (`fix(task7): preserve validation completeness and graph provenance`)
+- `c9e11d40a92cee9df8e5f6fc0c4c20b984469b96`
+  (`fix(task7): close reachability inference gaps`)
+
+Tree hashes:
+
+- base: `2420c986f2a8966dedd145808a95a97da69df52c`
+- validation/contracts implementation:
+  `08b62437319df745e0f3ba46df2eaf61d73ab02b`
+- final implementation: `286bd05de8c77ce3ef1d6effb94bda17fa7cefd3`
+
+The controller-owned `progress.md` remained modified, unstaged, and untouched.
+Neither implementation commit was amended.
+
+### RED
+
+- The new core contract test failed to compile with `E0599` because
+  `ValidationStatus::Partial` and closed registrar-coverage diagnostic codes
+  did not exist. The old public shape could serialize a report with partial
+  coverage as `valid`.
+- The first AI-facing coder test failed to compile with `E0425` because
+  `meta.validate` had no typed-data path capable of carrying validation status,
+  coverage, reports, and unavailable diagnostics through the command gateway.
+- Initial architecture negatives proved four bypasses: non-path impl self types
+  were skipped, a local port-name suffix was accepted, a spoofed port trait was
+  accepted, and a receiver call with no candidate silently terminated.
+- A stronger post-implementation negative then proved that
+  `make().hidden_native_reader()` could still terminate when the local helper's
+  return provenance was unknown. Its first run reported zero violations.
+- Production-positive graph execution exposed receiver-provenance loss through
+  constants, glob-imported helper returns, branch expressions, match payloads,
+  ranges, and chained standard-library methods. These were graph-model defects,
+  not reasons to allowlist method names.
+- The migrated scalar decoder initially duplicated element text by collecting
+  both an element's aggregate `text()` and its text child. A real registrar
+  fixture therefore produced a false semantic-value finding. Restricting the
+  decoder to text nodes restored the approved value semantics.
+- One parallel coder validation run had 19/20 passing and lost the expected
+  command-presentation warning. The case passed alone and on rerun. Root cause
+  was a test fixture directory keyed only by a shared label plus wall-clock
+  nanoseconds; an atomic process-local sequence now makes those directories
+  collision-free.
+
+### Responsibility closure map
+
+| Concern | Final owner and invariant |
+| --- | --- |
+| Validation decision | `unica-format-core` exposes the closed `Valid`, `Partial`, and `Invalid` report states. Coverage is closed and cannot contradict status or findings. |
+| Operational unavailability | The host public command result uses a separate closed `Unavailable` state with unavailable coverage and a neutral diagnostic; it cannot be represented as valid. |
+| Partial registrar coverage | The private 2.20 adapter emits a neutral warning for the semantic registrar-coverage area when reverse coverage is `NotEvaluated` or `Partial`. No path or native vocabulary is exposed. |
+| Invalid precedence | Error findings make the result `Invalid` without erasing partial coverage evidence. Complete-valid, partial, invalid, and unavailable remain distinguishable. |
+| Constructor and wire invariants | `ValidationReport` construction derives status from closed findings and coverage. Custom deserialization reconstructs and compares the state, rejecting contradictory status, coverage, severity, and registrar combinations. |
+| Single/batch command mapping | `meta.validate` maps every core report into one typed public result. Batch aggregation uses the same status/coverage rules and preserves each subject report exactly. |
+| Arbitrary impl owners | The architecture graph canonicalizes every `syn::Type`, including references, generic/wrapped paths, tuples, arrays, slices, pointers, trait impls, and nested combinations. No `ItemImpl` is skipped because its self type is not `Type::Path`. |
+| Method reachability | Receiver calls enqueue every same-name inherent, trait-impl, and default-trait method. `Self`, UFCS, lexical aliases/globs, nested modules, closures, async blocks, branches, destructuring, and helper returns are tracked. Unknown local/no-candidate receivers fail closed. |
+| Neutral port termination | A call terminates only when imports resolve the receiver's trait to an approved trait declaration in `unica_format_core` or the approved `unica_application` port contract and the method belongs to that trait. Names and suffixes are irrelevant. |
+| Chained value provenance | Same-name host method bodies are traversed before a chained result is treated as opaque. This avoids borrowing an unrelated method's return type while retaining reachability of every possible local implementation. |
+| Test isolation | Parallel `meta.validate` fixtures use a monotonic process-local suffix in addition to time, so one case cannot overwrite or delete another case's authorized source. |
+
+### Public validation contract
+
+- Complete, error-free reports serialize with `status: "valid"` and
+  `coverage: "complete"`.
+- Target-local register reports whose reverse registrar relation was not
+  evaluated serialize with `status: "partial"` and `coverage: "partial"`,
+  plus `registrarCoverageNotEvaluated`.
+- Reports containing errors serialize with `status: "invalid"`; partial
+  coverage remains explicit when applicable.
+- Source capture/read failures serialize with `status: "unavailable"` and
+  `coverage: "unavailable"`, never `valid`.
+- Single-object and one-item batch responses contain identical typed report
+  state.
+- Recursive public JSON tests reject POSIX paths, Windows paths,
+  `Configuration.xml`, namespaces, native tags, and native keys in all four
+  outcomes.
+
+### Architecture adversarial coverage
+
+- Negative fixtures cover `impl Trait for &Boundary`, generic wrappers,
+  tuples, arrays, slices, `Self::helper`, block-local alias and glob imports,
+  inherent methods, trait impl methods, default trait methods, nested
+  multi-layer and async helper chains, unknown receivers, and no-candidate
+  receivers.
+- Spoof fixtures cover local `HostPort`, same-name shadow traits, alias
+  spoofing, and re-export spoofing.
+- Positive fixtures import actual neutral port traits by exact path, including
+  aliases and globs. Explicit neutral trait-object calls terminate without
+  suppressing same-named local methods reachable elsewhere.
+- No production Task 7 root reaches a host XML reader, parser crate, native
+  layout helper, or native wire literal.
+
+### GREEN validation
+
+```text
+cargo test -p unica-format-core \
+  --test public_json_contract \
+  --test task7_fix_round2_contracts \
+  --test task7_fix_round3_evidence \
+  --test task7_operational_ports \
+  --test task7_fix_round6_validation
+  27 passed; 0 failed; 0 ignored
+
+cargo test -p unica-application \
+  --test task7_fix_round2_policy \
+  --test task7_operational_policy
+  7 passed; 0 failed; 0 ignored
+
+cargo test -p unica-adapter-platform-xml \
+  versions::v2_20::operations::fix_round3_tests:: --lib
+  5 passed; 0 failed; 0 ignored
+
+cargo test -p unica-adapter-platform-xml \
+  --test legacy_parity \
+  --test specialized_relations \
+  --test task7_fix_round1_architecture \
+  --test task7_fix_round2_architecture \
+  --test task7_fix_round2_lazy_source \
+  --test task7_fix_round3_architecture \
+  --test task7_fix_round3_lazy_revision \
+  --test task7_operational_ports \
+  --test unmapped_fact
+  83 passed; 0 failed; 0 ignored
+  legacy_parity: all 26 passed
+  task7_fix_round3_architecture: 19 passed
+  task7_fix_round3_lazy_revision: 4 passed
+
+cargo test -p unica-coder meta_validation_ --lib
+  3 passed; 0 failed; 0 ignored
+cargo test -p unica-coder validate_meta_ --lib
+  20 passed; 0 failed; 0 ignored
+cargo test -p unica-coder \
+  meta_validate_typed_gateway_exposes_closed_validation_json --lib
+  1 passed; 0 failed; 0 ignored
+
+Scoped total: 146 passed; 0 failed; 0 ignored
+
+cargo check -p unica-format-core -p unica-application -p unica-coder \
+  -p unica-adapter-platform-xml --tests
+  passed; unica-coder emitted 21 existing dead-code warnings
+
+cargo check -p unica-adapter-platform-xml \
+  --target x86_64-pc-windows-msvc --lib --tests
+  passed
+
+cargo fmt --all -- --check
+  passed
+git diff --check
+  passed
+```
+
+### Files
+
+- `Cargo.lock`
+- `crates/unica-adapter-platform-xml/Cargo.toml`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/operations.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/validation.rs`
+- `crates/unica-adapter-platform-xml/tests/task7_fix_round3_architecture.rs`
+- `crates/unica-coder/src/infrastructure/native_operations/meta.rs`
+- `crates/unica-coder/src/infrastructure/native_operations/typed_result.rs`
+- `crates/unica-format-core/src/ports.rs`
+- `crates/unica-format-core/tests/task7_fix_round6_validation.rs`
+- `crates/unica-format-core/tests/task7_operational_ports.rs`
+- `.superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/task-7-report.md`
+
+### Remaining host-native paths and Task 8 justification
+
+- Task 7 policy roots are mechanically GREEN: `evaluate_format_guard`,
+  `evaluate_support_guard`, and `validate_meta` cannot reach host XML parsing,
+  native layout joins, or native wire matching.
+- `native_operations/common.rs` retains command/composition source-location
+  setup and writer helpers only. No moved guard or validation read traverses
+  those helpers.
+- `native_operations/meta.rs`, `form.rs`, `template.rs`, `help.rs`, `role.rs`,
+  `subsystem.rs`, `interface.rs`, `cf.rs`, `cfe.rs`, `mxl.rs`, `dcs.rs`, and
+  `support.rs` retain native serialization, mutation topology, destination
+  paths, and command-specific writer behavior. These are the existing writer
+  implementations and move in Task 8; moving them in Task 7 would violate the
+  approved sequencing.
+- `Configuration.xml` joins that remain in host code are writer
+  source/destination-location paths outside all moved read/guard/validation
+  call paths. Architecture tests traverse callers rather than allowlisting
+  helper names.
+- Native strings in tests are fixtures and recursive leakage denylist probes,
+  not application policy or public output.
+
+### Residual risks and non-gates
+
+- The architecture test is a conservative Rust AST/module call graph rather
+  than rustc type inference. It compensates by traversing every same-name local
+  method and failing closed on unresolved local/unknown calls; only
+  provenance-resolved neutral trait methods terminate.
+- Windows code cross-compiles, but Windows filesystem behavior was not
+  runtime-executed on this macOS host.
+- Full workspace validation was intentionally not run.
+- No scoped Task 7 test, affected Task 5/6 parity test, host compile check,
+  Windows cross-target check, formatting check, or diff check remains failing.
