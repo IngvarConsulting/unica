@@ -1174,10 +1174,11 @@ preserved and committed with the implementation.
    adapter output.
 6. Provenance was extended to the alias-execution inventory, renamed generic
    template fixture, all-target Rights fixture/raw output, full public-contract
-   specimen, extraction/build/generation tools, and all regenerated oracle
-   artifacts. The generator self-test rejects a changed execution digest, and
-   `--check` recomputes every byte and SHA-256 from legacy scripts and
-   independent extraction only.
+   specimen, extraction/build/generation tools, and generated oracle artifacts.
+   The generator self-test rejects a changed execution digest. `--check`
+   recomputes and byte-compares legacy-derived/extracted/generated artifacts;
+   the independently hand-authored public specimen is not regenerated and is
+   instead verified by its SHA-256 manifest entry.
 
 ### Files
 
@@ -1308,3 +1309,168 @@ Only Task 5 scoped validation was run.
   coverage where semantic decomposition is unavailable.
 - No core/application/coder module learned XML vocabulary, and no Task 4 closed
   contract or opaque cursor invariant was changed.
+
+## Fix Round 8
+
+Base: `4997a5bca2bc9b1d8e15846435d5868247d940e2`
+
+Implementation commit:
+`1c6b32ac94ce81616ba692a82e5fff2e8864d756`
+
+The controller's Round 7 failure/Round 8 start entry in `progress.md` was
+preserved and committed with the implementation.
+
+### Root-cause fix and design
+
+Round 7 proved recursive field traversal with one structurally complete
+specimen, but that proof was not variant-complete. A field could retain its
+name while a closed enum/union variant was added, removed, or serialized
+incorrectly without invalidating the specimen.
+
+Fix Round 8 adds
+`public-contract-variant-specimen.json`, an independently hand-authored static
+oracle with 35 exact variant families and 265 literal wire cases:
+
+- all 66 `SemanticObjectKind` variants;
+- persistent, derived, and snapshot-only object identities;
+- every resolution, format compatibility, coverage, snapshot consistency,
+  source access, authorability/support, property capability, property state,
+  and provenance variant, including all unknown/incompatible/unavailable
+  states;
+- every capability block reason and six complete capability-vector profiles
+  spanning all component states;
+- every relation kind, action availability, atomicity, action kind, execution
+  policy, action profile, navigation status, and node facet-visibility branch;
+- all 15 `PropertyType` and all 15 `PropertyValue` variants, including nested
+  list/structure recursion, empty reference, null, unknown, snapshot-only
+  object reference, localized strings, dates, decimal, UUID, enum, and type
+  set;
+- all primitive, string-length, number-sign, date-fraction, and type-qualifier
+  variants;
+- 23 type-variant wires covering every primitive, qualifier combination,
+  reference/object/record-set/manager/key/enumeration/defined-type target, and
+  ordinal unknown;
+- both semantic facet-member variants;
+- absent/present valid/present invalid operation bindings, absent/present
+  semantic-action option shapes, and relation pages with and without opaque
+  cursors.
+
+Every public Rust enum in this reachable graph is listed through a
+wildcard-free `match`. Adding a new variant therefore makes the test fail to
+compile until both the typed inventory and static specimen are updated.
+Data-bearing public unions (`PropertyValue`, `TypeVariant`, and
+`TypeQualifiers`) are deserialized strictly from the hand-authored JSON and
+serialized back to exact equality. The expected JSON is never produced by the
+serializer under test.
+
+The Round 7 full-envelope specimen remains the complete public-field/schema
+guard. Round 8 adds exact visibility-branch field sets and typed optional-shape
+cases, so every serializer branch is traversed without replacing the existing
+recursive field validation.
+
+For each of the 35 families, mutation tests feed missing, extra, renamed, and
+payload-changed variants through the same `compare_fact_multisets` comparator
+used by the real public-contract test. Every mutation must return a structured
+diff.
+
+### Provenance wording correction
+
+`generate_oracle.py --write` regenerates legacy raw outputs, source extraction,
+enum executions, semantic oracles, generated contracts, and the provenance
+manifest. It does not write either hand-authored public-contract specimen.
+
+`generate_oracle.py --check` recomputes and byte-compares those generated
+legacy-derived/extracted artifacts. It reads each static specimen only to
+recompute its manifest SHA-256 and fails if the checked-in hash no longer
+matches. README and the earlier Round 7 report wording now state this
+distinction explicitly.
+
+### Files
+
+- `.superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/progress.md`
+- `.superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/task-5-report.md`
+- `crates/unica-adapter-platform-xml/tests/legacy_parity.rs`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/public-contract-variant-specimen.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/generate_oracle.py`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/oracle-manifest.json`
+- `crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/README.md`
+
+No production adapter, core, application, or coder file changed in this round.
+
+### RED evidence
+
+Initial focused command:
+
+```bash
+cargo test -p unica-adapter-platform-xml --test legacy_parity fix_round8_ -- --nocapture
+```
+
+Initial result:
+
+```text
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 23 filtered out
+```
+
+The test failed at the intended boundary because
+`public-contract-variant-specimen.json` did not exist. This demonstrated that
+the Round 7 structural specimen supplied no closed-variant oracle.
+
+### GREEN evidence and Task 5 scoped validation
+
+Focused variant proof:
+
+```text
+cargo test -p unica-adapter-platform-xml --test legacy_parity fix_round8_ -- --nocapture
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out
+```
+
+Oracle regeneration for generated artifacts and manifest:
+
+```text
+python3.12 .../generate_oracle.py --repo-root . --write
+wrote 37 raw outputs, 174 enum alias executions, 21 oracle cases, and provenance
+```
+
+Oracle fail-closed self-test:
+
+```text
+python3.12 .../generate_oracle.py --repo-root . --self-test
+verified fail-closed parser and source-context negative suite
+```
+
+Generated-artifact comparison and static hash verification:
+
+```text
+python3.12 .../generate_oracle.py --repo-root . --check
+verified 37 raw outputs, 174 enum alias executions, oracle facts, and SHA-256 provenance
+```
+
+Full exact parity/public-contract/coverage suite:
+
+```text
+cargo test -p unica-adapter-platform-xml --test legacy_parity
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+Unknown/unmapped boundary:
+
+```text
+cargo test -p unica-adapter-platform-xml --test unmapped_fact
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+Only Task 5 scoped validation was run.
+
+### Remaining gaps and concerns
+
+- No known legacy-comparable or public closed-variant parity gap remains in the
+  selected Task 5 corpus.
+- Platform XML 2.20 still intentionally does not produce relation pages,
+  semantic actions, or operation bindings. Their complete public variants are
+  independently static-contract tested, while runtime absence and
+  `CapabilityBlocked` relation selection remain explicit.
+- Form/template internals remain intentionally opaque when no closed semantic
+  decomposition exists; backing availability, opaque state, truthful partial
+  status, and diagnostics remain preserved.
+- No XML/native/version vocabulary crossed the 2.20 adapter boundary, and no
+  Task 4 closed contract or opaque cursor behavior changed.
