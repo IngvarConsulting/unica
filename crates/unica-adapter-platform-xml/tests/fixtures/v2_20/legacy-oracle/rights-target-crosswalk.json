@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "prefixes": {
+    "AccountingRegister": "accountingRegister",
+    "AccumulationRegister": "accumulationRegister",
+    "BusinessProcess": "businessProcess",
+    "Catalog": "catalog",
+    "ChartOfAccounts": "chartOfAccounts",
+    "ChartOfCalculationTypes": "chartOfCalculationTypes",
+    "ChartOfCharacteristicTypes": "chartOfCharacteristicTypes",
+    "CommonModule": "commonModule",
+    "Constant": "constant",
+    "DataProcessor": "dataProcessor",
+    "DefinedType": "definedType",
+    "Document": "document",
+    "DocumentJournal": "documentJournal",
+    "Enum": "enumeration",
+    "EventSubscription": "eventSubscription",
+    "ExchangePlan": "exchangePlan",
+    "HTTPService": "httpService",
+    "InformationRegister": "informationRegister",
+    "Report": "report",
+    "ScheduledJob": "scheduledJob",
+    "Task": "task",
+    "WebService": "webService"
+  }
+}

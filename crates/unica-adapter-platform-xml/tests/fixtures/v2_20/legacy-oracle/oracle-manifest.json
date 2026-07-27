@@ -1,9 +1,19 @@
 {
   "entries": [
     {
+      "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-source-contexts.json",
+      "role": "enumSourceContexts",
+      "sha256": "68e6ac4c6e96c1b9ba000f7824b145de9fc22a9519670f544132b8e90bb2e4ad"
+    },
+    {
+      "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/extract_enum_contexts.py",
+      "role": "enumSourceExtractor",
+      "sha256": "2cd605d47aad1c1fa9310b4d9f40d4d2c4082871fe894b1e7ed00c0fb49d5943"
+    },
+    {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/crosswalk.json",
       "role": "independentCrosswalk",
-      "sha256": "15cb99a0ae550a6bc9eb1b6a1477903ecaebfe83f1adfb7f82baf1d9da0afff5"
+      "sha256": "a04c20b4cf5dcfedf4238ffb2663ee6102fd061dec022692ab6850a9de13c08f"
     },
     {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport.xml",
@@ -49,6 +59,16 @@
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_template/CommonLayout/Ext/Template.bin",
       "role": "legacyInputFixture",
       "sha256": "92ff509ea80669d7fea9f051e38cbdf28a7c01d0e6335458dbd9e5f351e71843"
+    },
+    {
+      "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights/MultiTargetReader.xml",
+      "role": "legacyInputFixture",
+      "sha256": "d6403e691a86bd04d24e8ee892fe840279e502d7b96bd9501225ff7778dd9139"
+    },
+    {
+      "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights/MultiTargetReader/Ext/Rights.xml",
+      "role": "legacyInputFixture",
+      "sha256": "968e600c12f4d354a7198ba3db55154f9dbaf68d0b91a770ca9ebe7a3b599f6e"
     },
     {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights/SalesReader.xml",
@@ -126,6 +146,11 @@
       "sha256": "363b8cf1dde3bfe7f6a7a60a4678f5a78fcb7946daac303fc6e07b6227162d4d"
     },
     {
+      "path": "tests/fixtures/unica_mcp_script_parity/unica_reference_models/meta-compile/scripts/meta-compile.py",
+      "role": "legacyReferenceSource",
+      "sha256": "008f704e93b903f36989de8809a7c77fa50c5ecda261122654411de989806e8d"
+    },
+    {
       "path": "tests/fixtures/unica_mcp_script_parity/unica_reference_models/meta-edit/scripts/meta-edit.py",
       "role": "legacyReferenceSource",
       "sha256": "47477920d99b396161fbf8727634c5a401baec5a4ba21c28b3a44c6b2bf188b6"
@@ -153,17 +178,92 @@
     {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/legacy-semantic-oracle.json",
       "role": "legacySemanticOracle",
-      "sha256": "491fa96082f9aa111eca3fdc0139e860d8e833e72a6788e698de6b5cbc7d16ec"
+      "sha256": "ae929b7bd5278082ecc9d759f756e400c8fb1ee09589eb2b34ef4d75a39ead16"
+    },
+    {
+      "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/new-only-contract.json",
+      "role": "newOnlyContract",
+      "sha256": "c79011febdf0334a796c4367a81c3da07e6b79384997e3e035f312fc0ea89323"
+    },
+    {
+      "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport.xml",
+      "role": "newOnlyContractInput",
+      "sha256": "d0afcd6398c3b8abb5c1d9a5eb779913ec0b5c94763b6ec7b47ebfef24f5b166"
+    },
+    {
+      "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport/Forms/MainForm.xml",
+      "role": "newOnlyContractInput",
+      "sha256": "f19d49183f34c7069108c3dfddb9fb156b394d166760797a8331def3c616ec2d"
+    },
+    {
+      "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport/Forms/MainForm/Ext/Form.xml",
+      "role": "newOnlyContractInput",
+      "sha256": "546396ffc13767a84c304d4f399e2387d764f0f9b96134d1aa35dd065c6f83d1"
+    },
+    {
+      "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport/Templates/MainSchema.xml",
+      "role": "newOnlyContractInput",
+      "sha256": "c60c7491bba75d74eb8af9aeed16e8ddc19c7230dd67f264adf4991fe7b2d6d5"
+    },
+    {
+      "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport/Templates/MainSchema/Ext/Template.xml",
+      "role": "newOnlyContractInput",
+      "sha256": "27349852e43a6b669e7628dcc224ff1359d322151f118dd36a3c1f8832138c9b"
+    },
+    {
+      "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_form/CommonDashboard.xml",
+      "role": "newOnlyContractInput",
+      "sha256": "1809faf030857d12a356505c9d2e0e93af322a30e805de7aa5b8d88b85392962"
+    },
+    {
+      "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_form/CommonDashboard/Ext/Form.xml",
+      "role": "newOnlyContractInput",
+      "sha256": "546396ffc13767a84c304d4f399e2387d764f0f9b96134d1aa35dd065c6f83d1"
+    },
+    {
+      "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_template/CommonLayout.xml",
+      "role": "newOnlyContractInput",
+      "sha256": "74072c5a0742a04d492671695dc521d3fe99a0e3400cc2ffa7a83fa3d618f4d1"
+    },
+    {
+      "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_template/CommonLayout/Ext/Template.bin",
+      "role": "newOnlyContractInput",
+      "sha256": "92ff509ea80669d7fea9f051e38cbdf28a7c01d0e6335458dbd9e5f351e71843"
+    },
+    {
+      "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/contract/ContractCatalog.xml",
+      "role": "newOnlyContractInput",
+      "sha256": "9b10caa96ac031b5e3ceff83dcd5240963d45548ac22ee7629692a8df2559723"
+    },
+    {
+      "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights/SalesReader.xml",
+      "role": "newOnlyContractInput",
+      "sha256": "554991e782cdeb7bcede636910a698a4fbba2b9ac29007f98681656bd6a7732e"
+    },
+    {
+      "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights/SalesReader/Ext/Rights.xml",
+      "role": "newOnlyContractInput",
+      "sha256": "2cf57b8d552cc743af6f4cc20226f6c4f79f3a18c89558d98c56a5e8320d068a"
+    },
+    {
+      "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/unknowns/UnknownCases.xml",
+      "role": "newOnlyContractInput",
+      "sha256": "57b6ecbcc73458ae192d068e291ea42fd9566780b7711b7f648cfb040292f794"
+    },
+    {
+      "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/unknowns/UnknownCases/Ext/Future.bin",
+      "role": "newOnlyContractInput",
+      "sha256": "13baa419b97d8100f2e068e5949ac92c92261227124ee17fc56dfeebb8209331"
     },
     {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/generate_oracle.py",
       "role": "oracleGenerator",
-      "sha256": "a30123eb047a809112930ceba351ddb59d09e1f0c54edfeda664126308f63f27"
+      "sha256": "f12d3d80e5db3c03d9a7090ac99818bb80da773e1eefb1699ff434cf1a68d3f4"
     },
     {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/inputs.json",
       "role": "oracleInputs",
-      "sha256": "ff30c905d7118f2660f3558a5b9b17b9c139c64adacb5195e386c587fa98c876"
+      "sha256": "5bbf33aa8b46a7a8ded584c42ecfdb1d32b8c852921afa9218d690b20ff8d781"
     },
     {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/all-types.full.txt",
@@ -236,9 +336,19 @@
       "sha256": "8857d949d5bdadd9b7cc9a9cdcb633fad65e7606704e6385a18069895dc49af4"
     },
     {
+      "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/role-info/multi-target-reader.all.txt",
+      "role": "rawLegacyOutput",
+      "sha256": "e0dab0e657e566692a62acc6d095e0200f0f9df0680c3db6ea49b5406446a867"
+    },
+    {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/role-info/sales-reader.all.txt",
       "role": "rawLegacyOutput",
       "sha256": "34d9458f1897d61220a73a55650cbc35944070140ea4b167bdb47e3161dfbca7"
+    },
+    {
+      "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/rights-target-crosswalk.json",
+      "role": "rightsTargetCrosswalk",
+      "sha256": "f224c2e8ca0509acfc791c872a6185065744639550efea22e02bedead486f293"
     }
   ],
   "hashAlgorithm": "SHA-256",

@@ -1,0 +1,32 @@
+﻿=== Role: MultiTargetReader --- "Читатель разных объектов" ===
+Поддержка: не на поддержке
+
+Properties: setForNewObjects=false, setForAttributesByDefault=false, independentRightsOfChildObjects=true
+
+Allowed rights:
+
+  Catalog (1):
+    Products: Read
+
+  Document (1):
+    SalesOrder: Posting
+
+  InformationRegister (1):
+    Prices: Read [RLS]
+
+  CommonModule (1):
+    Integration: View
+
+  Report (1):
+    Sales: Use
+
+Denied rights:
+
+  Report (1):
+    Sales: -Update
+
+RLS: 1 restrictions
+Templates: PositivePrice
+
+---
+Total: 5 allowed, 1 denied

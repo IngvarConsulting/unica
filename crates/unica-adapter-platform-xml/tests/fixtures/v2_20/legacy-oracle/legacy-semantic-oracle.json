@@ -105,6 +105,93 @@
       ],
       "id": "allTypes",
       "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/types/AllTypes.xml",
+      "lineClassifications": [
+        {
+          "classification": "useful:object-header",
+          "line": "=== Определяемый тип: AllTypes ===",
+          "lineNumber": 1
+        },
+        {
+          "classification": "useful:support",
+          "line": "Поддержка: не на поддержке",
+          "lineNumber": 2
+        },
+        {
+          "classification": "structural:type-section",
+          "line": "Типы (14):",
+          "lineNumber": 3
+        },
+        {
+          "classification": "useful:type-row",
+          "line": "  Строка(40)",
+          "lineNumber": 4
+        },
+        {
+          "classification": "useful:type-row",
+          "line": "  Число(15,3)",
+          "lineNumber": 5
+        },
+        {
+          "classification": "useful:type-row",
+          "line": "  ДатаВремя",
+          "lineNumber": 6
+        },
+        {
+          "classification": "useful:type-row",
+          "line": "  УникальныйИдентификатор",
+          "lineNumber": 7
+        },
+        {
+          "classification": "useful:type-row",
+          "line": "  ХранилищеЗначения",
+          "lineNumber": 8
+        },
+        {
+          "classification": "useful:type-row",
+          "line": "  Null",
+          "lineNumber": 9
+        },
+        {
+          "classification": "useful:type-row",
+          "line": "  v8:ValueTable",
+          "lineNumber": 10
+        },
+        {
+          "classification": "useful:type-row",
+          "line": "  СправочникСсылка.Products",
+          "lineNumber": 11
+        },
+        {
+          "classification": "useful:type-row",
+          "line": "  DocumentObject.Order",
+          "lineNumber": 12
+        },
+        {
+          "classification": "useful:type-row",
+          "line": "  InformationRegisterRecordSet.Prices",
+          "lineNumber": 13
+        },
+        {
+          "classification": "useful:type-row",
+          "line": "  InformationRegisterManager.Prices",
+          "lineNumber": 14
+        },
+        {
+          "classification": "useful:type-row",
+          "line": "  InformationRegisterRecordKey.Prices",
+          "lineNumber": 15
+        },
+        {
+          "classification": "useful:type-row",
+          "line": "  ПеречислениеСсылка.Status",
+          "lineNumber": 16
+        },
+        {
+          "classification": "useful:type-row",
+          "line": "  ОпределяемыйТип.Identifier",
+          "lineNumber": 17
+        }
+      ],
       "profile": "meta-full",
       "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/all-types.full.txt",
       "rootKind": "definedType",
@@ -802,6 +889,103 @@
       ],
       "id": "catalogCurrencies",
       "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+      "lineClassifications": [
+        {
+          "classification": "useful:object-header",
+          "line": "=== Справочник: Валюты ===",
+          "lineNumber": 1
+        },
+        {
+          "classification": "useful:support",
+          "line": "Поддержка: не на поддержке",
+          "lineNumber": 2
+        },
+        {
+          "classification": "useful:presentation",
+          "line": "Представление типа: Валюта",
+          "lineNumber": 3
+        },
+        {
+          "classification": "useful:presentation",
+          "line": "Представление объекта: Валюта",
+          "lineNumber": 4
+        },
+        {
+          "classification": "useful:catalog-summary",
+          "line": "Код(3) | Наименование(10)",
+          "lineNumber": 5
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 6
+        },
+        {
+          "classification": "structural:field-section",
+          "line": "Реквизиты (7):",
+          "lineNumber": 7
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  ОсновнаяВалюта           СправочникСсылка.Валюты  [обязательный, индекс]",
+          "lineNumber": 8
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  СпособУстановкиКурса     ПеречислениеСсылка.СпособыУстановкиКурсаВалюты  [обязательный]",
+          "lineNumber": 9
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  ЗагружаетсяИзИнтернета   Булево",
+          "lineNumber": 10
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  НаименованиеПолное       Строка(50)  [обязательный]",
+          "lineNumber": 11
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  Наценка                  Число(10,2)",
+          "lineNumber": 12
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  ПараметрыПрописи         Строка(200)",
+          "lineNumber": 13
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  ФормулаРасчетаКурса      Строка(100)  [обязательный]",
+          "lineNumber": 14
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 15
+        },
+        {
+          "classification": "useful:tabular-section",
+          "line": "ТЧ Представления (2 колонки):",
+          "lineNumber": 16
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  КодЯзыка           Строка(10)  [индекс]",
+          "lineNumber": 17
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  ПараметрыПрописи   Строка(200)",
+          "lineNumber": 18
+        },
+        {
+          "classification": "useful:child-list",
+          "line": "Формы: ФормаСписка, ФормаЭлемента, ПараметрыПрописиВалюты_en, ПараметрыПрописиВалютыНаДругихЯзыках",
+          "lineNumber": 19
+        }
+      ],
       "profile": "meta-full",
       "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt",
       "rootKind": "catalog",
@@ -882,6 +1066,38 @@
       ],
       "id": "catalogCurrenciesMainCurrency",
       "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+      "lineClassifications": [
+        {
+          "classification": "useful:drilldown-header",
+          "line": "Реквизит: ОсновнаяВалюта",
+          "lineNumber": 1
+        },
+        {
+          "classification": "useful:drilldown-property",
+          "line": "  Тип: СправочникСсылка.Валюты",
+          "lineNumber": 2
+        },
+        {
+          "classification": "useful:drilldown-property",
+          "line": "  Обязательный: да",
+          "lineNumber": 3
+        },
+        {
+          "classification": "useful:drilldown-property",
+          "line": "  Индексирование: Индекс",
+          "lineNumber": 4
+        },
+        {
+          "classification": "useful:drilldown-property",
+          "line": "  Значение заполнения: Пустая ссылка",
+          "lineNumber": 5
+        },
+        {
+          "classification": "useful:drilldown-property",
+          "line": "  Синоним: Основная валюта",
+          "lineNumber": 6
+        }
+      ],
       "parentCase": "catalogCurrencies",
       "profile": "meta-drilldown",
       "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt",
@@ -914,6 +1130,18 @@
       ],
       "id": "commonForm",
       "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_form/CommonDashboard.xml",
+      "lineClassifications": [
+        {
+          "classification": "useful:object-header",
+          "line": "=== CommonForm: CommonDashboard ===",
+          "lineNumber": 1
+        },
+        {
+          "classification": "useful:support",
+          "line": "Поддержка: не на поддержке",
+          "lineNumber": 2
+        }
+      ],
       "profile": "meta-full",
       "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/common-form.full.txt",
       "rootKind": "commonForm",
@@ -987,6 +1215,23 @@
       ],
       "id": "commonModuleGoogleTranslator",
       "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/CommonModules/GoogleПереводчик.xml",
+      "lineClassifications": [
+        {
+          "classification": "useful:object-header",
+          "line": "=== Общий модуль: GoogleПереводчик — \"Google переводчик\" ===",
+          "lineNumber": 1
+        },
+        {
+          "classification": "useful:support",
+          "line": "Поддержка: не на поддержке",
+          "lineNumber": 2
+        },
+        {
+          "classification": "useful:module-summary",
+          "line": "Сервер | Обычный клиент | Внешнее соединение",
+          "lineNumber": 3
+        }
+      ],
       "profile": "meta-full",
       "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/common-module-google-translator.full.txt",
       "rootKind": "commonModule",
@@ -1018,6 +1263,18 @@
       ],
       "id": "commonTemplate",
       "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_template/CommonLayout.xml",
+      "lineClassifications": [
+        {
+          "classification": "useful:object-header",
+          "line": "=== CommonTemplate: CommonLayout ===",
+          "lineNumber": 1
+        },
+        {
+          "classification": "useful:support",
+          "line": "Поддержка: не на поддержке",
+          "lineNumber": 2
+        }
+      ],
       "profile": "meta-full",
       "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/common-template.full.txt",
       "rootKind": "commonTemplate",
@@ -2514,6 +2771,188 @@
       ],
       "id": "documentDestructionAct",
       "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+      "lineClassifications": [
+        {
+          "classification": "useful:object-header",
+          "line": "=== Документ: АктОбУничтоженииПерсональныхДанных — \"Акт об уничтожении персональных данных\" ===",
+          "lineNumber": 1
+        },
+        {
+          "classification": "useful:support",
+          "line": "Поддержка: не на поддержке",
+          "lineNumber": 2
+        },
+        {
+          "classification": "useful:presentation",
+          "line": "Представление типа: Акт об уничтожении персональных данных",
+          "lineNumber": 3
+        },
+        {
+          "classification": "useful:presentation",
+          "line": "Представление списка: Акты об уничтожении персональных данных",
+          "lineNumber": 4
+        },
+        {
+          "classification": "useful:document-summary",
+          "line": "Номер: Строка(11), по году, авто | Проведение: да",
+          "lineNumber": 5
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 6
+        },
+        {
+          "classification": "structural:field-section",
+          "line": "Реквизиты (13):",
+          "lineNumber": 7
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  Организация                              ОпределяемыйТип.Организация  [обязательный]",
+          "lineNumber": 8
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  ОтветственныйЗаОбработкуПерсональныхДанных СправочникСсылка.Пользователи",
+          "lineNumber": 9
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  Ответственный                            СправочникСсылка.Пользователи",
+          "lineNumber": 10
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  Субъект                                  ОпределяемыйТип.СубъектПерсональныхДанных  [обязательный]",
+          "lineNumber": 11
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  НаименованиеОрганизации                  Строка(0)",
+          "lineNumber": 12
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  ЮридическийАдресОрганизации              Строка(150)",
+          "lineNumber": 13
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  ФИООтветственногоЗаОбработкуПДн          Строка(150)",
+          "lineNumber": 14
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  НаименованиеИнформационнойСистемы        Строка(0)",
+          "lineNumber": 15
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  ДатаУничтожения                          Дата  [обязательный]",
+          "lineNumber": 16
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  СпособУничтожения                        Строка(0)",
+          "lineNumber": 17
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  ПричинаУничтожения                       Строка(0)",
+          "lineNumber": 18
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  Комментарий                              Строка(0)",
+          "lineNumber": 19
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  ФИОСубъекта                              Строка(150)",
+          "lineNumber": 20
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 21
+        },
+        {
+          "classification": "useful:tabular-section",
+          "line": "ТЧ КатегорииДанных (3 колонки):",
+          "lineNumber": 22
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  Субъект      ОпределяемыйТип.СубъектПерсональныхДанных  [обязательный]",
+          "lineNumber": 23
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  ИмяОбъекта   Строка(0)",
+          "lineNumber": 24
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  Категория    Строка(0)",
+          "lineNumber": 25
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 26
+        },
+        {
+          "classification": "useful:tabular-section",
+          "line": "ТЧ ДополнительныеРеквизиты (3 колонки):",
+          "lineNumber": 27
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  Свойство          ПВХСсылка.ДополнительныеРеквизитыИСведения",
+          "lineNumber": 28
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  Значение          Характеристика.ДополнительныеРеквизитыИСведения",
+          "lineNumber": 29
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  ТекстоваяСтрока   Строка(0)",
+          "lineNumber": 30
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 31
+        },
+        {
+          "classification": "useful:tabular-section",
+          "line": "ТЧ ОбъектыСУничтожаемымиДанными (2 колонки):",
+          "lineNumber": 32
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  ИмяОбъекта           Строка(0)",
+          "lineNumber": 33
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  КоличествоОбъектов   Число(10,0)",
+          "lineNumber": 34
+        },
+        {
+          "classification": "useful:child-list",
+          "line": "Формы: ФормаДокумента, ФормаСписка",
+          "lineNumber": 35
+        },
+        {
+          "classification": "useful:child-list",
+          "line": "Макеты: ПФ_MXL_АктОбУничтоженииПерсональныхДанных, ПФ_MXL_ВыгрузкаИзЖурнала, ДанныеПечати",
+          "lineNumber": 36
+        }
+      ],
       "profile": "meta-full",
       "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt",
       "rootKind": "document",
@@ -2693,6 +3132,58 @@
       ],
       "id": "enumerationAccountingIssueImportance",
       "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Enums/ВажностьПроблемыУчета.xml",
+      "lineClassifications": [
+        {
+          "classification": "useful:object-header",
+          "line": "=== Перечисление: ВажностьПроблемыУчета — \"Важность проблемы учета\" ===",
+          "lineNumber": 1
+        },
+        {
+          "classification": "useful:support",
+          "line": "Поддержка: не на поддержке",
+          "lineNumber": 2
+        },
+        {
+          "classification": "useful:presentation",
+          "line": "Представление типа: Важность проблемы учета",
+          "lineNumber": 3
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 4
+        },
+        {
+          "classification": "structural:enumeration-section",
+          "line": "Значения (5):",
+          "lineNumber": 5
+        },
+        {
+          "classification": "useful:enumeration-row",
+          "line": "  Ошибка             ",
+          "lineNumber": 6
+        },
+        {
+          "classification": "useful:enumeration-row",
+          "line": "  Предупреждение     ",
+          "lineNumber": 7
+        },
+        {
+          "classification": "useful:enumeration-row",
+          "line": "  ВажнаяИнформация   \"Важная информация\"",
+          "lineNumber": 8
+        },
+        {
+          "classification": "useful:enumeration-row",
+          "line": "  Информация         ",
+          "lineNumber": 9
+        },
+        {
+          "classification": "useful:enumeration-row",
+          "line": "  ПолезныйСовет      \"Полезный совет\"",
+          "lineNumber": 10
+        }
+      ],
       "profile": "meta-full",
       "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/enumeration-accounting-issue-importance.full.txt",
       "rootKind": "enumeration",
@@ -2777,6 +3268,53 @@
       ],
       "id": "eventSources",
       "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/types/EventSources.xml",
+      "lineClassifications": [
+        {
+          "classification": "useful:object-header",
+          "line": "=== Подписка на событие: EventSources ===",
+          "lineNumber": 1
+        },
+        {
+          "classification": "useful:support",
+          "line": "Поддержка: не на поддержке",
+          "lineNumber": 2
+        },
+        {
+          "classification": "useful:event",
+          "line": "Событие: ПередЗаписью",
+          "lineNumber": 3
+        },
+        {
+          "classification": "useful:handler",
+          "line": "Обработчик: Events.BeforeWrite",
+          "lineNumber": 4
+        },
+        {
+          "classification": "structural:type-section",
+          "line": "Источники (4):",
+          "lineNumber": 5
+        },
+        {
+          "classification": "useful:type-row",
+          "line": "  СправочникОбъект.Products",
+          "lineNumber": 6
+        },
+        {
+          "classification": "useful:type-row",
+          "line": "  ДокументОбъект.Order",
+          "lineNumber": 7
+        },
+        {
+          "classification": "useful:type-row",
+          "line": "  БизнесПроцессОбъект.Approval",
+          "lineNumber": 8
+        },
+        {
+          "classification": "useful:type-row",
+          "line": "  ЗадачаОбъект.Review",
+          "lineNumber": 9
+        }
+      ],
       "profile": "meta-full",
       "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/event-sources.full.txt",
       "rootKind": "eventSubscription",
@@ -3013,6 +3551,48 @@
       ],
       "id": "informationRegisterAdministrativeHierarchy",
       "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/InformationRegisters/АдминистративнаяИерархия.xml",
+      "lineClassifications": [
+        {
+          "classification": "useful:object-header",
+          "line": "=== Регистр сведений: АдминистративнаяИерархия — \"Административная иерархия\" ===",
+          "lineNumber": 1
+        },
+        {
+          "classification": "useful:support",
+          "line": "Поддержка: не на поддержке",
+          "lineNumber": 2
+        },
+        {
+          "classification": "useful:register-summary",
+          "line": "Периодичность: Непериодический | Запись: независимая",
+          "lineNumber": 3
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 4
+        },
+        {
+          "classification": "structural:field-section",
+          "line": "Измерения (3):",
+          "lineNumber": 5
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  Идентификатор               УникальныйИдентификатор",
+          "lineNumber": 6
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  РодительскийИдентификатор   УникальныйИдентификатор  [индекс]",
+          "lineNumber": 7
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  КодСубъектаРФ               Число(2,0)  [индекс]",
+          "lineNumber": 8
+        }
+      ],
       "profile": "meta-full",
       "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/information-register-administrative-hierarchy.full.txt",
       "rootKind": "informationRegister",
@@ -3044,6 +3624,18 @@
       ],
       "id": "languageRussian",
       "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Languages/Русский.xml",
+      "lineClassifications": [
+        {
+          "classification": "useful:object-header",
+          "line": "=== Language: Русский ===",
+          "lineNumber": 1
+        },
+        {
+          "classification": "useful:support",
+          "line": "Поддержка: не на поддержке",
+          "lineNumber": 2
+        }
+      ],
       "profile": "meta-full",
       "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/language-russian.full.txt",
       "rootKind": "language",
@@ -3115,6 +3707,28 @@
       ],
       "id": "ownedArtifacts",
       "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport.xml",
+      "lineClassifications": [
+        {
+          "classification": "useful:object-header",
+          "line": "=== Отчёт: ArtifactReport ===",
+          "lineNumber": 1
+        },
+        {
+          "classification": "useful:support",
+          "line": "Поддержка: не на поддержке",
+          "lineNumber": 2
+        },
+        {
+          "classification": "useful:child-list",
+          "line": "Формы: MainForm",
+          "lineNumber": 3
+        },
+        {
+          "classification": "useful:child-list",
+          "line": "Макеты: MainSchema",
+          "lineNumber": 4
+        }
+      ],
       "profile": "meta-full",
       "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/owned-artifacts.full.txt",
       "rootKind": "report",
@@ -3188,6 +3802,28 @@
       ],
       "id": "reportObjectVersionAnalysis",
       "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Reports/АнализВерсийОбъектов.xml",
+      "lineClassifications": [
+        {
+          "classification": "useful:object-header",
+          "line": "=== Отчёт: АнализВерсийОбъектов — \"Анализ версий объектов\" ===",
+          "lineNumber": 1
+        },
+        {
+          "classification": "useful:support",
+          "line": "Поддержка: не на поддержке",
+          "lineNumber": 2
+        },
+        {
+          "classification": "useful:main-schema",
+          "line": "Основная СКД: ОсновнаяСхемаКомпоновкиДанных",
+          "lineNumber": 3
+        },
+        {
+          "classification": "useful:child-list",
+          "line": "Макеты: ОсновнаяСхемаКомпоновкиДанных",
+          "lineNumber": 4
+        }
+      ],
       "profile": "meta-full",
       "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/report-object-version-analysis.full.txt",
       "rootKind": "report",
@@ -3646,10 +4282,762 @@
       ],
       "id": "rights",
       "input": "tests/fixtures/unica_mcp_script_parity/role-info/SalesReader/Ext/Rights.xml",
+      "lineClassifications": [
+        {
+          "classification": "useful:role-header",
+          "line": "=== Role: SalesReader --- \"Читатель продаж\" ===",
+          "lineNumber": 1
+        },
+        {
+          "classification": "useful:support",
+          "line": "Поддержка: не на поддержке",
+          "lineNumber": 2
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 3
+        },
+        {
+          "classification": "useful:role-properties",
+          "line": "Properties: setForNewObjects=false, setForAttributesByDefault=true, independentRightsOfChildObjects=false",
+          "lineNumber": 4
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 5
+        },
+        {
+          "classification": "structural:allowed-section",
+          "line": "Allowed rights:",
+          "lineNumber": 6
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 7
+        },
+        {
+          "classification": "structural:right-group:Catalog",
+          "line": "  Catalog (1):",
+          "lineNumber": 8
+        },
+        {
+          "classification": "useful:right-target:Catalog",
+          "line": "    Products: Read, View [RLS]",
+          "lineNumber": 9
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 10
+        },
+        {
+          "classification": "structural:right-group:Document",
+          "line": "  Document (1):",
+          "lineNumber": 11
+        },
+        {
+          "classification": "useful:right-target:Document",
+          "line": "    SalesOrder: Read, Posting",
+          "lineNumber": 12
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 13
+        },
+        {
+          "classification": "structural:denied-section",
+          "line": "Denied rights:",
+          "lineNumber": 14
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 15
+        },
+        {
+          "classification": "structural:right-group:Catalog",
+          "line": "  Catalog (1):",
+          "lineNumber": 16
+        },
+        {
+          "classification": "useful:right-target:Catalog",
+          "line": "    Products: -Update",
+          "lineNumber": 17
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 18
+        },
+        {
+          "classification": "structural:right-group:Document",
+          "line": "  Document (1):",
+          "lineNumber": 19
+        },
+        {
+          "classification": "useful:right-target:Document",
+          "line": "    SalesOrder: -Deletion",
+          "lineNumber": 20
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 21
+        },
+        {
+          "classification": "useful:restriction-count",
+          "line": "RLS: 1 restrictions",
+          "lineNumber": 22
+        },
+        {
+          "classification": "useful:restriction-templates",
+          "line": "Templates: OnlyOwn",
+          "lineNumber": 23
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 24
+        },
+        {
+          "classification": "structural:totals-delimiter",
+          "line": "---",
+          "lineNumber": 25
+        },
+        {
+          "classification": "useful:right-totals",
+          "line": "Total: 4 allowed, 2 denied",
+          "lineNumber": 26
+        }
+      ],
       "profile": "role-info",
       "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/role-info/sales-reader.all.txt",
       "rootKind": "role",
       "rootName": "SalesReader",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights"
+    },
+    {
+      "adapterInput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights/MultiTargetReader.xml",
+      "facts": [
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/catalog:Products:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commonModule:Integration:View#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "View"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/document:SalesOrder:Posting#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Posting"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/informationRegister:Prices:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/report:Sales:Update#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Update"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/report:Sales:Use#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Use"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/PositivePrice#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "PositivePrice"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/informationRegister/Prices",
+          "value": {
+            "kind": "informationRegister",
+            "name": "Prices"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "kind": "role",
+            "name": "MultiTargetReader"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.allowed.count",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "type": "integer",
+            "value": 5
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.attributes.defaultAllowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.childObjects.independent",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.denied.count",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "type": "integer",
+            "value": 1
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.newObjects.defaultAllowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/catalog:Products:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commonModule:Integration:View#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/document:SalesOrder:Posting#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/informationRegister:Prices:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/report:Sales:Update#1",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/report:Sales:Use#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/catalog:Products:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commonModule:Integration:View#1",
+          "value": {
+            "type": "string",
+            "value": "View"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/document:SalesOrder:Posting#1",
+          "value": {
+            "type": "string",
+            "value": "Posting"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/informationRegister:Prices:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/report:Sales:Update#1",
+          "value": {
+            "type": "string",
+            "value": "Update"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/report:Sales:Use#1",
+          "value": {
+            "type": "string",
+            "value": "Use"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.count",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "type": "integer",
+            "value": 1
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/informationRegister/Prices",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/PositivePrice#1",
+          "value": {
+            "type": "string",
+            "value": "PositivePrice"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "metadata.synonym",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "type": "localizedString",
+            "value": {
+              "ru": "Читатель разных объектов"
+            }
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.active",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/catalog:Products:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/commonModule:Integration:View#1",
+            "targetKind": "accessPermission",
+            "targetName": "View"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/document:SalesOrder:Posting#1",
+            "targetKind": "accessPermission",
+            "targetName": "Posting"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/informationRegister:Prices:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/report:Sales:Update#1",
+            "targetKind": "accessPermission",
+            "targetName": "Update"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/report:Sales:Use#1",
+            "targetKind": "accessPermission",
+            "targetName": "Use"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/catalog:Products:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/catalog/Products",
+            "targetKind": "catalog",
+            "targetName": "Products"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commonModule:Integration:View#1",
+          "value": {
+            "target": "rightsMultiTarget/external/commonModule/Integration",
+            "targetKind": "commonModule",
+            "targetName": "Integration"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/document:SalesOrder:Posting#1",
+          "value": {
+            "target": "rightsMultiTarget/external/document/SalesOrder",
+            "targetKind": "document",
+            "targetName": "SalesOrder"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/informationRegister:Prices:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/informationRegister/Prices",
+            "targetKind": "informationRegister",
+            "targetName": "Prices"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/report:Sales:Update#1",
+          "value": {
+            "target": "rightsMultiTarget/external/report/Sales",
+            "targetKind": "report",
+            "targetName": "Sales"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/report:Sales:Use#1",
+          "value": {
+            "target": "rightsMultiTarget/external/report/Sales",
+            "targetKind": "report",
+            "targetName": "Sales"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/PositivePrice#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "PositivePrice"
+          }
+        }
+      ],
+      "id": "rightsMultiTarget",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights/MultiTargetReader/Ext/Rights.xml",
+      "lineClassifications": [
+        {
+          "classification": "useful:role-header",
+          "line": "=== Role: MultiTargetReader --- \"Читатель разных объектов\" ===",
+          "lineNumber": 1
+        },
+        {
+          "classification": "useful:support",
+          "line": "Поддержка: не на поддержке",
+          "lineNumber": 2
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 3
+        },
+        {
+          "classification": "useful:role-properties",
+          "line": "Properties: setForNewObjects=false, setForAttributesByDefault=false, independentRightsOfChildObjects=true",
+          "lineNumber": 4
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 5
+        },
+        {
+          "classification": "structural:allowed-section",
+          "line": "Allowed rights:",
+          "lineNumber": 6
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 7
+        },
+        {
+          "classification": "structural:right-group:Catalog",
+          "line": "  Catalog (1):",
+          "lineNumber": 8
+        },
+        {
+          "classification": "useful:right-target:Catalog",
+          "line": "    Products: Read",
+          "lineNumber": 9
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 10
+        },
+        {
+          "classification": "structural:right-group:Document",
+          "line": "  Document (1):",
+          "lineNumber": 11
+        },
+        {
+          "classification": "useful:right-target:Document",
+          "line": "    SalesOrder: Posting",
+          "lineNumber": 12
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 13
+        },
+        {
+          "classification": "structural:right-group:InformationRegister",
+          "line": "  InformationRegister (1):",
+          "lineNumber": 14
+        },
+        {
+          "classification": "useful:right-target:InformationRegister",
+          "line": "    Prices: Read [RLS]",
+          "lineNumber": 15
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 16
+        },
+        {
+          "classification": "structural:right-group:CommonModule",
+          "line": "  CommonModule (1):",
+          "lineNumber": 17
+        },
+        {
+          "classification": "useful:right-target:CommonModule",
+          "line": "    Integration: View",
+          "lineNumber": 18
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 19
+        },
+        {
+          "classification": "structural:right-group:Report",
+          "line": "  Report (1):",
+          "lineNumber": 20
+        },
+        {
+          "classification": "useful:right-target:Report",
+          "line": "    Sales: Use",
+          "lineNumber": 21
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 22
+        },
+        {
+          "classification": "structural:denied-section",
+          "line": "Denied rights:",
+          "lineNumber": 23
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 24
+        },
+        {
+          "classification": "structural:right-group:Report",
+          "line": "  Report (1):",
+          "lineNumber": 25
+        },
+        {
+          "classification": "useful:right-target:Report",
+          "line": "    Sales: -Update",
+          "lineNumber": 26
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 27
+        },
+        {
+          "classification": "useful:restriction-count",
+          "line": "RLS: 1 restrictions",
+          "lineNumber": 28
+        },
+        {
+          "classification": "useful:restriction-templates",
+          "line": "Templates: PositivePrice",
+          "lineNumber": 29
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 30
+        },
+        {
+          "classification": "structural:totals-delimiter",
+          "line": "---",
+          "lineNumber": 31
+        },
+        {
+          "classification": "useful:right-totals",
+          "line": "Total: 5 allowed, 1 denied",
+          "lineNumber": 32
+        }
+      ],
+      "profile": "role-info",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/role-info/multi-target-reader.all.txt",
+      "rootKind": "role",
+      "rootName": "MultiTargetReader",
       "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights"
     },
     {
@@ -3761,6 +5149,43 @@
       ],
       "id": "unknownCases",
       "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/unknowns/UnknownCases.xml",
+      "lineClassifications": [
+        {
+          "classification": "useful:object-header",
+          "line": "=== Документ: UnknownCases ===",
+          "lineNumber": 1
+        },
+        {
+          "classification": "useful:support",
+          "line": "Поддержка: не на поддержке",
+          "lineNumber": 2
+        },
+        {
+          "classification": "useful:presentation",
+          "line": "Представление типа: UnknownCases",
+          "lineNumber": 3
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 4
+        },
+        {
+          "classification": "structural:field-section",
+          "line": "Реквизиты (1):",
+          "lineNumber": 5
+        },
+        {
+          "classification": "useful:field-row",
+          "line": "  MysteryType   FutureRecord.Target | AnotherFuture.Other",
+          "lineNumber": 6
+        },
+        {
+          "classification": "useful:based-on",
+          "line": "Ввод на основании: Target",
+          "lineNumber": 7
+        }
+      ],
       "profile": "meta-full",
       "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/unknown-cases.full.txt",
       "rootKind": "document",

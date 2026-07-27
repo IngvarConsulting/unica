@@ -1,0 +1,1036 @@
+{
+  "contexts": [
+    {
+      "nativeAliases": [
+        "Managed",
+        "Ordinary"
+      ],
+      "nativeProperty": "FormType",
+      "objectKinds": [
+        "commonForm",
+        "form"
+      ],
+      "sourceFact": "legacyDescriptors:FormType",
+      "sourceKey": "FormType",
+      "sourceLocation": {
+        "fixtures": [
+          "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport/Forms/MainForm.xml",
+          "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_form/CommonDashboard.xml"
+        ]
+      }
+    },
+    {
+      "nativeAliases": [
+        "BinaryData",
+        "DataCompositionSchema",
+        "HTMLDocument",
+        "SpreadsheetDocument",
+        "TextDocument"
+      ],
+      "nativeProperty": "TemplateType",
+      "objectKinds": [
+        "commonTemplate",
+        "spreadsheetDocumentTemplate",
+        "template"
+      ],
+      "sourceFact": "legacyDescriptors:TemplateType",
+      "sourceKey": "TemplateType",
+      "sourceLocation": {
+        "fixtures": [
+          "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport/Templates/MainSchema.xml",
+          "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_template/CommonLayout.xml"
+        ]
+      }
+    },
+    {
+      "nativeAliases": [
+        "Automatic",
+        "Managed"
+      ],
+      "nativeProperty": "DataLockControlMode",
+      "objectKinds": [
+        "accountingRegister"
+      ],
+      "sourceFact": "metaCompile:emit_accounting_register_properties:DataLockControlMode",
+      "sourceKey": "DataLockControlMode",
+      "sourceLocation": {
+        "function": "emit_accounting_register_properties",
+        "line": 1880
+      }
+    },
+    {
+      "nativeAliases": [
+        "DontUse",
+        "Use"
+      ],
+      "nativeProperty": "FullTextSearch",
+      "objectKinds": [
+        "accountingRegister"
+      ],
+      "sourceFact": "metaCompile:emit_accounting_register_properties:FullTextSearch",
+      "sourceKey": "FullTextSearch",
+      "sourceLocation": {
+        "function": "emit_accounting_register_properties",
+        "line": 1880
+      }
+    },
+    {
+      "nativeAliases": [
+        "Automatic",
+        "Managed"
+      ],
+      "nativeProperty": "DataLockControlMode",
+      "objectKinds": [
+        "accumulationRegister"
+      ],
+      "sourceFact": "metaCompile:emit_accumulation_register_properties:DataLockControlMode",
+      "sourceKey": "DataLockControlMode",
+      "sourceLocation": {
+        "function": "emit_accumulation_register_properties",
+        "line": 1413
+      }
+    },
+    {
+      "nativeAliases": [
+        "DontUse",
+        "Use"
+      ],
+      "nativeProperty": "FullTextSearch",
+      "objectKinds": [
+        "accumulationRegister"
+      ],
+      "sourceFact": "metaCompile:emit_accumulation_register_properties:FullTextSearch",
+      "sourceKey": "FullTextSearch",
+      "sourceLocation": {
+        "function": "emit_accumulation_register_properties",
+        "line": 1413
+      }
+    },
+    {
+      "nativeAliases": [
+        "Balance",
+        "Balances",
+        "Turnovers"
+      ],
+      "nativeProperty": "RegisterType",
+      "objectKinds": [
+        "accumulationRegister"
+      ],
+      "sourceFact": "metaCompile:emit_accumulation_register_properties:RegisterType",
+      "sourceKey": "RegisterType",
+      "sourceLocation": {
+        "function": "emit_accumulation_register_properties",
+        "line": 1413
+      }
+    },
+    {
+      "nativeAliases": [
+        "Automatic",
+        "Managed"
+      ],
+      "nativeProperty": "DataLockControlMode",
+      "objectKinds": [
+        "businessProcess"
+      ],
+      "sourceFact": "metaCompile:emit_business_process_properties:DataLockControlMode",
+      "sourceKey": "DataLockControlMode",
+      "sourceLocation": {
+        "function": "emit_business_process_properties",
+        "line": 2013
+      }
+    },
+    {
+      "nativeAliases": [
+        "BothWays",
+        "InDialog",
+        "InList"
+      ],
+      "nativeProperty": "EditType",
+      "objectKinds": [
+        "businessProcess"
+      ],
+      "sourceFact": "metaCompile:emit_business_process_properties:EditType",
+      "sourceKey": "EditType",
+      "sourceLocation": {
+        "function": "emit_business_process_properties",
+        "line": 2013
+      }
+    },
+    {
+      "nativeAliases": [
+        "DontUse",
+        "Use"
+      ],
+      "nativeProperty": "FullTextSearch",
+      "objectKinds": [
+        "businessProcess"
+      ],
+      "sourceFact": "metaCompile:emit_business_process_properties:FullTextSearch",
+      "sourceKey": "FullTextSearch",
+      "sourceLocation": {
+        "function": "emit_business_process_properties",
+        "line": 2013
+      }
+    },
+    {
+      "nativeAliases": [
+        "Fixed",
+        "Variable"
+      ],
+      "nativeProperty": "NumberAllowedLength",
+      "objectKinds": [
+        "businessProcess"
+      ],
+      "sourceFact": "metaCompile:emit_business_process_properties:NumberAllowedLength",
+      "sourceKey": "NumberAllowedLength",
+      "sourceLocation": {
+        "function": "emit_business_process_properties",
+        "line": 2013
+      }
+    },
+    {
+      "nativeAliases": [
+        "Number",
+        "String"
+      ],
+      "nativeProperty": "NumberType",
+      "objectKinds": [
+        "businessProcess"
+      ],
+      "sourceFact": "metaCompile:emit_business_process_properties:NumberType",
+      "sourceKey": "NumberType",
+      "sourceLocation": {
+        "function": "emit_business_process_properties",
+        "line": 2013
+      }
+    },
+    {
+      "nativeAliases": [
+        "Automatic",
+        "Managed"
+      ],
+      "nativeProperty": "DataLockControlMode",
+      "objectKinds": [
+        "calculationRegister"
+      ],
+      "sourceFact": "metaCompile:emit_calculation_register_properties:DataLockControlMode",
+      "sourceKey": "DataLockControlMode",
+      "sourceLocation": {
+        "function": "emit_calculation_register_properties",
+        "line": 1969
+      }
+    },
+    {
+      "nativeAliases": [
+        "DontUse",
+        "Use"
+      ],
+      "nativeProperty": "FullTextSearch",
+      "objectKinds": [
+        "calculationRegister"
+      ],
+      "sourceFact": "metaCompile:emit_calculation_register_properties:FullTextSearch",
+      "sourceKey": "FullTextSearch",
+      "sourceLocation": {
+        "function": "emit_calculation_register_properties",
+        "line": 1969
+      }
+    },
+    {
+      "nativeAliases": [
+        "Day",
+        "Month",
+        "Quarter",
+        "Year"
+      ],
+      "nativeProperty": "Periodicity",
+      "objectKinds": [
+        "calculationRegister"
+      ],
+      "sourceFact": "metaCompile:emit_calculation_register_properties:Periodicity",
+      "sourceKey": "CalculationRegisterPeriodicity",
+      "sourceLocation": {
+        "function": "emit_calculation_register_properties",
+        "line": 1969
+      }
+    },
+    {
+      "nativeAliases": [
+        "BothWays",
+        "FromForm",
+        "QuickChoice"
+      ],
+      "nativeProperty": "ChoiceMode",
+      "objectKinds": [
+        "catalog"
+      ],
+      "sourceFact": "metaCompile:emit_catalog_properties:ChoiceMode",
+      "sourceKey": "ChoiceMode",
+      "sourceLocation": {
+        "function": "emit_catalog_properties",
+        "line": 1147
+      }
+    },
+    {
+      "nativeAliases": [
+        "Fixed",
+        "Variable"
+      ],
+      "nativeProperty": "CodeAllowedLength",
+      "objectKinds": [
+        "catalog"
+      ],
+      "sourceFact": "metaCompile:emit_catalog_properties:CodeAllowedLength",
+      "sourceKey": "CodeAllowedLength",
+      "sourceLocation": {
+        "function": "emit_catalog_properties",
+        "line": 1147
+      }
+    },
+    {
+      "nativeAliases": [
+        "WholeCatalog",
+        "WithinOwnerSubordination",
+        "WithinSubordination"
+      ],
+      "nativeProperty": "CodeSeries",
+      "objectKinds": [
+        "catalog"
+      ],
+      "sourceFact": "metaCompile:emit_catalog_properties:CodeSeries",
+      "sourceKey": "CatalogCodeSeries",
+      "sourceLocation": {
+        "function": "emit_catalog_properties",
+        "line": 1147
+      }
+    },
+    {
+      "nativeAliases": [
+        "Number",
+        "String"
+      ],
+      "nativeProperty": "CodeType",
+      "objectKinds": [
+        "catalog"
+      ],
+      "sourceFact": "metaCompile:emit_catalog_properties:CodeType",
+      "sourceKey": "CodeType",
+      "sourceLocation": {
+        "function": "emit_catalog_properties",
+        "line": 1147
+      }
+    },
+    {
+      "nativeAliases": [
+        "Automatic",
+        "Managed"
+      ],
+      "nativeProperty": "DataLockControlMode",
+      "objectKinds": [
+        "catalog"
+      ],
+      "sourceFact": "metaCompile:emit_catalog_properties:DataLockControlMode",
+      "sourceKey": "DataLockControlMode",
+      "sourceLocation": {
+        "function": "emit_catalog_properties",
+        "line": 1147
+      }
+    },
+    {
+      "nativeAliases": [
+        "AsCode",
+        "AsDescription"
+      ],
+      "nativeProperty": "DefaultPresentation",
+      "objectKinds": [
+        "catalog"
+      ],
+      "sourceFact": "metaCompile:emit_catalog_properties:DefaultPresentation",
+      "sourceKey": "DefaultPresentation",
+      "sourceLocation": {
+        "function": "emit_catalog_properties",
+        "line": 1147
+      }
+    },
+    {
+      "nativeAliases": [
+        "DontUse",
+        "Use"
+      ],
+      "nativeProperty": "FullTextSearch",
+      "objectKinds": [
+        "catalog"
+      ],
+      "sourceFact": "metaCompile:emit_catalog_properties:FullTextSearch",
+      "sourceKey": "FullTextSearch",
+      "sourceLocation": {
+        "function": "emit_catalog_properties",
+        "line": 1147
+      }
+    },
+    {
+      "nativeAliases": [
+        "HierarchyFoldersAndItems",
+        "HierarchyOfItems"
+      ],
+      "nativeProperty": "HierarchyType",
+      "objectKinds": [
+        "catalog"
+      ],
+      "sourceFact": "metaCompile:emit_catalog_properties:HierarchyType",
+      "sourceKey": "HierarchyType",
+      "sourceLocation": {
+        "function": "emit_catalog_properties",
+        "line": 1147
+      }
+    },
+    {
+      "nativeAliases": [
+        "ToFolders",
+        "ToFoldersAndItems",
+        "ToItems"
+      ],
+      "nativeProperty": "SubordinationUse",
+      "objectKinds": [
+        "catalog"
+      ],
+      "sourceFact": "metaCompile:emit_catalog_properties:SubordinationUse",
+      "sourceKey": "SubordinationUse",
+      "sourceLocation": {
+        "function": "emit_catalog_properties",
+        "line": 1147
+      }
+    },
+    {
+      "nativeAliases": [
+        "Automatic",
+        "Managed"
+      ],
+      "nativeProperty": "DataLockControlMode",
+      "objectKinds": [
+        "chartOfAccounts"
+      ],
+      "sourceFact": "metaCompile:emit_chart_of_accounts_properties:DataLockControlMode",
+      "sourceKey": "DataLockControlMode",
+      "sourceLocation": {
+        "function": "emit_chart_of_accounts_properties",
+        "line": 1804
+      }
+    },
+    {
+      "nativeAliases": [
+        "DontUse",
+        "Use"
+      ],
+      "nativeProperty": "FullTextSearch",
+      "objectKinds": [
+        "chartOfAccounts"
+      ],
+      "sourceFact": "metaCompile:emit_chart_of_accounts_properties:FullTextSearch",
+      "sourceKey": "FullTextSearch",
+      "sourceLocation": {
+        "function": "emit_chart_of_accounts_properties",
+        "line": 1804
+      }
+    },
+    {
+      "nativeAliases": [
+        "Fixed",
+        "Variable"
+      ],
+      "nativeProperty": "CodeAllowedLength",
+      "objectKinds": [
+        "chartOfCalculationTypes"
+      ],
+      "sourceFact": "metaCompile:emit_chart_of_calculation_types_properties:CodeAllowedLength",
+      "sourceKey": "CodeAllowedLength",
+      "sourceLocation": {
+        "function": "emit_chart_of_calculation_types_properties",
+        "line": 1907
+      }
+    },
+    {
+      "nativeAliases": [
+        "Number",
+        "String"
+      ],
+      "nativeProperty": "CodeType",
+      "objectKinds": [
+        "chartOfCalculationTypes"
+      ],
+      "sourceFact": "metaCompile:emit_chart_of_calculation_types_properties:CodeType",
+      "sourceKey": "CodeType",
+      "sourceLocation": {
+        "function": "emit_chart_of_calculation_types_properties",
+        "line": 1907
+      }
+    },
+    {
+      "nativeAliases": [
+        "Automatic",
+        "Managed"
+      ],
+      "nativeProperty": "DataLockControlMode",
+      "objectKinds": [
+        "chartOfCalculationTypes"
+      ],
+      "sourceFact": "metaCompile:emit_chart_of_calculation_types_properties:DataLockControlMode",
+      "sourceKey": "DataLockControlMode",
+      "sourceLocation": {
+        "function": "emit_chart_of_calculation_types_properties",
+        "line": 1907
+      }
+    },
+    {
+      "nativeAliases": [
+        "DontUse",
+        "OnActionPeriod"
+      ],
+      "nativeProperty": "DependenceOnCalculationTypes",
+      "objectKinds": [
+        "chartOfCalculationTypes"
+      ],
+      "sourceFact": "metaCompile:emit_chart_of_calculation_types_properties:DependenceOnCalculationTypes",
+      "sourceKey": "DependenceOnCalculationTypes",
+      "sourceLocation": {
+        "function": "emit_chart_of_calculation_types_properties",
+        "line": 1907
+      }
+    },
+    {
+      "nativeAliases": [
+        "DontUse",
+        "Use"
+      ],
+      "nativeProperty": "FullTextSearch",
+      "objectKinds": [
+        "chartOfCalculationTypes"
+      ],
+      "sourceFact": "metaCompile:emit_chart_of_calculation_types_properties:FullTextSearch",
+      "sourceKey": "FullTextSearch",
+      "sourceLocation": {
+        "function": "emit_chart_of_calculation_types_properties",
+        "line": 1907
+      }
+    },
+    {
+      "nativeAliases": [
+        "Fixed",
+        "Variable"
+      ],
+      "nativeProperty": "CodeAllowedLength",
+      "objectKinds": [
+        "chartOfCharacteristicTypes"
+      ],
+      "sourceFact": "metaCompile:emit_chart_of_characteristic_types_properties:CodeAllowedLength",
+      "sourceKey": "CodeAllowedLength",
+      "sourceLocation": {
+        "function": "emit_chart_of_characteristic_types_properties",
+        "line": 1675
+      }
+    },
+    {
+      "nativeAliases": [
+        "Automatic",
+        "Managed"
+      ],
+      "nativeProperty": "DataLockControlMode",
+      "objectKinds": [
+        "chartOfCharacteristicTypes"
+      ],
+      "sourceFact": "metaCompile:emit_chart_of_characteristic_types_properties:DataLockControlMode",
+      "sourceKey": "DataLockControlMode",
+      "sourceLocation": {
+        "function": "emit_chart_of_characteristic_types_properties",
+        "line": 1675
+      }
+    },
+    {
+      "nativeAliases": [
+        "DontUse",
+        "Use"
+      ],
+      "nativeProperty": "FullTextSearch",
+      "objectKinds": [
+        "chartOfCharacteristicTypes"
+      ],
+      "sourceFact": "metaCompile:emit_chart_of_characteristic_types_properties:FullTextSearch",
+      "sourceKey": "FullTextSearch",
+      "sourceLocation": {
+        "function": "emit_chart_of_characteristic_types_properties",
+        "line": 1675
+      }
+    },
+    {
+      "nativeAliases": [
+        "DontUse",
+        "DuringRequest",
+        "DuringSession"
+      ],
+      "nativeProperty": "ReturnValuesReuse",
+      "objectKinds": [
+        "commonModule"
+      ],
+      "sourceFact": "metaCompile:emit_common_module_properties:ReturnValuesReuse",
+      "sourceKey": "ReturnValuesReuse",
+      "sourceLocation": {
+        "function": "emit_common_module_properties",
+        "line": 1467
+      }
+    },
+    {
+      "nativeAliases": [
+        "Automatic",
+        "Managed"
+      ],
+      "nativeProperty": "DataLockControlMode",
+      "objectKinds": [
+        "constant"
+      ],
+      "sourceFact": "metaCompile:emit_constant_properties:DataLockControlMode",
+      "sourceKey": "DataLockControlMode",
+      "sourceLocation": {
+        "function": "emit_constant_properties",
+        "line": 1339
+      }
+    },
+    {
+      "nativeAliases": [
+        "Automatic",
+        "Managed"
+      ],
+      "nativeProperty": "DataLockControlMode",
+      "objectKinds": [
+        "document"
+      ],
+      "sourceFact": "metaCompile:emit_document_properties:DataLockControlMode",
+      "sourceKey": "DataLockControlMode",
+      "sourceLocation": {
+        "function": "emit_document_properties",
+        "line": 1233
+      }
+    },
+    {
+      "nativeAliases": [
+        "DontUse",
+        "Use"
+      ],
+      "nativeProperty": "FullTextSearch",
+      "objectKinds": [
+        "document"
+      ],
+      "sourceFact": "metaCompile:emit_document_properties:FullTextSearch",
+      "sourceKey": "FullTextSearch",
+      "sourceLocation": {
+        "function": "emit_document_properties",
+        "line": 1233
+      }
+    },
+    {
+      "nativeAliases": [
+        "Fixed",
+        "Variable"
+      ],
+      "nativeProperty": "NumberAllowedLength",
+      "objectKinds": [
+        "document"
+      ],
+      "sourceFact": "metaCompile:emit_document_properties:NumberAllowedLength",
+      "sourceKey": "NumberAllowedLength",
+      "sourceLocation": {
+        "function": "emit_document_properties",
+        "line": 1233
+      }
+    },
+    {
+      "nativeAliases": [
+        "Day",
+        "Month",
+        "Nonperiodical",
+        "Quarter",
+        "Year"
+      ],
+      "nativeProperty": "NumberPeriodicity",
+      "objectKinds": [
+        "document"
+      ],
+      "sourceFact": "metaCompile:emit_document_properties:NumberPeriodicity",
+      "sourceKey": "DocumentNumberPeriodicity",
+      "sourceLocation": {
+        "function": "emit_document_properties",
+        "line": 1233
+      }
+    },
+    {
+      "nativeAliases": [
+        "Number",
+        "String"
+      ],
+      "nativeProperty": "NumberType",
+      "objectKinds": [
+        "document"
+      ],
+      "sourceFact": "metaCompile:emit_document_properties:NumberType",
+      "sourceKey": "NumberType",
+      "sourceLocation": {
+        "function": "emit_document_properties",
+        "line": 1233
+      }
+    },
+    {
+      "nativeAliases": [
+        "Allow",
+        "Deny"
+      ],
+      "nativeProperty": "Posting",
+      "objectKinds": [
+        "document"
+      ],
+      "sourceFact": "metaCompile:emit_document_properties:Posting",
+      "sourceKey": "Posting",
+      "sourceLocation": {
+        "function": "emit_document_properties",
+        "line": 1233
+      }
+    },
+    {
+      "nativeAliases": [
+        "Allow",
+        "Deny"
+      ],
+      "nativeProperty": "RealTimePosting",
+      "objectKinds": [
+        "document"
+      ],
+      "sourceFact": "metaCompile:emit_document_properties:RealTimePosting",
+      "sourceKey": "RealTimePosting",
+      "sourceLocation": {
+        "function": "emit_document_properties",
+        "line": 1233
+      }
+    },
+    {
+      "nativeAliases": [
+        "AutoDelete",
+        "AutoDeleteOff",
+        "AutoDeleteOnUnpost"
+      ],
+      "nativeProperty": "RegisterRecordsDeletion",
+      "objectKinds": [
+        "document"
+      ],
+      "sourceFact": "metaCompile:emit_document_properties:RegisterRecordsDeletion",
+      "sourceKey": "RegisterRecordsDeletion",
+      "sourceLocation": {
+        "function": "emit_document_properties",
+        "line": 1233
+      }
+    },
+    {
+      "nativeAliases": [
+        "WriteAll",
+        "WriteModified",
+        "WriteSelected"
+      ],
+      "nativeProperty": "RegisterRecordsWritingOnPost",
+      "objectKinds": [
+        "document"
+      ],
+      "sourceFact": "metaCompile:emit_document_properties:RegisterRecordsWritingOnPost",
+      "sourceKey": "RegisterRecordsWritingOnPost",
+      "sourceLocation": {
+        "function": "emit_document_properties",
+        "line": 1233
+      }
+    },
+    {
+      "nativeAliases": [
+        "Fixed",
+        "Variable"
+      ],
+      "nativeProperty": "CodeAllowedLength",
+      "objectKinds": [
+        "exchangePlan"
+      ],
+      "sourceFact": "metaCompile:emit_exchange_plan_properties:CodeAllowedLength",
+      "sourceKey": "CodeAllowedLength",
+      "sourceLocation": {
+        "function": "emit_exchange_plan_properties",
+        "line": 1622
+      }
+    },
+    {
+      "nativeAliases": [
+        "Automatic",
+        "Managed"
+      ],
+      "nativeProperty": "DataLockControlMode",
+      "objectKinds": [
+        "exchangePlan"
+      ],
+      "sourceFact": "metaCompile:emit_exchange_plan_properties:DataLockControlMode",
+      "sourceKey": "DataLockControlMode",
+      "sourceLocation": {
+        "function": "emit_exchange_plan_properties",
+        "line": 1622
+      }
+    },
+    {
+      "nativeAliases": [
+        "DontUse",
+        "Use"
+      ],
+      "nativeProperty": "FullTextSearch",
+      "objectKinds": [
+        "exchangePlan"
+      ],
+      "sourceFact": "metaCompile:emit_exchange_plan_properties:FullTextSearch",
+      "sourceKey": "FullTextSearch",
+      "sourceLocation": {
+        "function": "emit_exchange_plan_properties",
+        "line": 1622
+      }
+    },
+    {
+      "nativeAliases": [
+        "AutoUse",
+        "DontUse"
+      ],
+      "nativeProperty": "ReuseSessions",
+      "objectKinds": [
+        "httpService"
+      ],
+      "sourceFact": "metaCompile:emit_http_service_properties:ReuseSessions",
+      "sourceKey": "ReuseSessions",
+      "sourceLocation": {
+        "function": "emit_http_service_properties",
+        "line": 2135
+      }
+    },
+    {
+      "nativeAliases": [
+        "Automatic",
+        "Managed"
+      ],
+      "nativeProperty": "DataLockControlMode",
+      "objectKinds": [
+        "informationRegister"
+      ],
+      "sourceFact": "metaCompile:emit_information_register_properties:DataLockControlMode",
+      "sourceKey": "DataLockControlMode",
+      "sourceLocation": {
+        "function": "emit_information_register_properties",
+        "line": 1375
+      }
+    },
+    {
+      "nativeAliases": [
+        "DontUse",
+        "Use"
+      ],
+      "nativeProperty": "FullTextSearch",
+      "objectKinds": [
+        "informationRegister"
+      ],
+      "sourceFact": "metaCompile:emit_information_register_properties:FullTextSearch",
+      "sourceKey": "FullTextSearch",
+      "sourceLocation": {
+        "function": "emit_information_register_properties",
+        "line": 1375
+      }
+    },
+    {
+      "nativeAliases": [
+        "Day",
+        "Month",
+        "Nonperiodical",
+        "Quarter",
+        "RecorderPosition",
+        "Second",
+        "Year"
+      ],
+      "nativeProperty": "InformationRegisterPeriodicity",
+      "objectKinds": [
+        "informationRegister"
+      ],
+      "sourceFact": "metaCompile:emit_information_register_properties:InformationRegisterPeriodicity",
+      "sourceKey": "InformationRegisterPeriodicity",
+      "sourceLocation": {
+        "function": "emit_information_register_properties",
+        "line": 1375
+      }
+    },
+    {
+      "nativeAliases": [
+        "Independent",
+        "RecorderSubordinate"
+      ],
+      "nativeProperty": "WriteMode",
+      "objectKinds": [
+        "informationRegister"
+      ],
+      "sourceFact": "metaCompile:emit_information_register_properties:WriteMode",
+      "sourceKey": "WriteMode",
+      "sourceLocation": {
+        "function": "emit_information_register_properties",
+        "line": 1375
+      }
+    },
+    {
+      "nativeAliases": [
+        "Automatic",
+        "Managed"
+      ],
+      "nativeProperty": "DataLockControlMode",
+      "objectKinds": [
+        "task"
+      ],
+      "sourceFact": "metaCompile:emit_task_properties:DataLockControlMode",
+      "sourceKey": "DataLockControlMode",
+      "sourceLocation": {
+        "function": "emit_task_properties",
+        "line": 2068
+      }
+    },
+    {
+      "nativeAliases": [
+        "DontUse",
+        "Use"
+      ],
+      "nativeProperty": "FullTextSearch",
+      "objectKinds": [
+        "task"
+      ],
+      "sourceFact": "metaCompile:emit_task_properties:FullTextSearch",
+      "sourceKey": "FullTextSearch",
+      "sourceLocation": {
+        "function": "emit_task_properties",
+        "line": 2068
+      }
+    },
+    {
+      "nativeAliases": [
+        "Fixed",
+        "Variable"
+      ],
+      "nativeProperty": "NumberAllowedLength",
+      "objectKinds": [
+        "task"
+      ],
+      "sourceFact": "metaCompile:emit_task_properties:NumberAllowedLength",
+      "sourceKey": "NumberAllowedLength",
+      "sourceLocation": {
+        "function": "emit_task_properties",
+        "line": 2068
+      }
+    },
+    {
+      "nativeAliases": [
+        "Number",
+        "String"
+      ],
+      "nativeProperty": "NumberType",
+      "objectKinds": [
+        "task"
+      ],
+      "sourceFact": "metaCompile:emit_task_properties:NumberType",
+      "sourceKey": "NumberType",
+      "sourceLocation": {
+        "function": "emit_task_properties",
+        "line": 2068
+      }
+    },
+    {
+      "nativeAliases": [
+        "AutoUse",
+        "DontUse"
+      ],
+      "nativeProperty": "ReuseSessions",
+      "objectKinds": [
+        "webService"
+      ],
+      "sourceFact": "metaCompile:emit_web_service_properties:ReuseSessions",
+      "sourceKey": "ReuseSessions",
+      "sourceLocation": {
+        "function": "emit_web_service_properties",
+        "line": 2147
+      }
+    },
+    {
+      "nativeAliases": [
+        "DontCheck",
+        "ShowError",
+        "ShowWarning"
+      ],
+      "nativeProperty": "FillChecking",
+      "objectKinds": [
+        "attribute",
+        "dimension",
+        "resource"
+      ],
+      "sourceFact": "metaInfo:format_flags:FillChecking",
+      "sourceKey": "FillChecking",
+      "sourceLocation": {
+        "function": "format_flags",
+        "line": 423
+      }
+    },
+    {
+      "nativeAliases": [
+        "DontIndex",
+        "Index",
+        "IndexWithAdditionalOrder"
+      ],
+      "nativeProperty": "Indexing",
+      "objectKinds": [
+        "attribute",
+        "dimension",
+        "resource"
+      ],
+      "sourceFact": "metaInfo:format_flags:Indexing",
+      "sourceKey": "Indexing",
+      "sourceLocation": {
+        "function": "format_flags",
+        "line": 423
+      }
+    },
+    {
+      "nativeAliases": [
+        "ForFolder",
+        "ForFolderAndItem",
+        "ForItem"
+      ],
+      "nativeProperty": "Use",
+      "objectKinds": [
+        "attribute",
+        "dimension",
+        "resource"
+      ],
+      "sourceFact": "metaInfo:format_flags:Use",
+      "sourceKey": "Use",
+      "sourceLocation": {
+        "function": "format_flags",
+        "line": 423
+      }
+    },
+    {
+      "nativeAliases": [
+        "In",
+        "InOut",
+        "Out"
+      ],
+      "nativeProperty": "TransferDirection",
+      "objectKinds": [
+        "webServiceParameter"
+      ],
+      "sourceFact": "metaInfo:get_ws_operations:TransferDirection",
+      "sourceKey": "TransferDirection",
+      "sourceLocation": {
+        "function": "get_ws_operations",
+        "line": 557
+      }
+    }
+  ],
+  "provenance": "legacy-source-ast-and-native-descriptor-fixtures",
+  "schemaVersion": 1
+}

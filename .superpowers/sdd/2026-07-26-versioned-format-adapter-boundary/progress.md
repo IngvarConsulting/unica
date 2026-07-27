@@ -59,3 +59,5 @@ Task 5: fix round 3 started (base 9f872bf5).
 Task 5: fix round 3 implementation complete at 3fb22fc7; scoped validation green (legacy_parity 14/14, unmapped_fact 8/8); exact frozen legacy-output oracle and full report recorded.
 Task 5: fix round 3 review failed — committed exact oracle was populated from adapter output; enum inventory still duplicates the manifest instead of deriving from legacy reference table; mutation tests bypass the real oracle comparator.
 Task 5: fix round 4 started (base 39cdb8e5).
+Task 5: fix round 4 review failed — oracle parsers ignore unmatched useful lines; enum contexts remain hand-authored; rights oracle handles only Catalog/Document prefixes; new-only exact contract covers only four facts.
+Task 5: fix round 5 started (base 6140c370).

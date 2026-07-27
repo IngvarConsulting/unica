@@ -16,10 +16,15 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
+from extract_enum_contexts import extract as extract_native_enum_contexts
+
 
 ORACLE_DIR = Path(__file__).resolve().parents[1]
 INPUTS_PATH = ORACLE_DIR / "inputs.json"
 CROSSWALK_PATH = ORACLE_DIR / "crosswalk.json"
+RIGHTS_TARGET_CROSSWALK_PATH = ORACLE_DIR / "rights-target-crosswalk.json"
+ENUM_CONTEXTS_PATH = ORACLE_DIR / "enum-source-contexts.json"
+NEW_ONLY_CONTRACT_PATH = ORACLE_DIR / "new-only-contract.json"
 ORACLE_PATH = ORACLE_DIR / "legacy-semantic-oracle.json"
 MANIFEST_PATH = ORACLE_DIR / "oracle-manifest.json"
 
@@ -169,66 +174,37 @@ def source_tree(repo_root: Path, path: str) -> ast.AST:
 
 
 def extract_enum_coverage(
-    repo_root: Path,
-    inputs: dict[str, Any],
     crosswalk: dict[str, Any],
+    source_contexts: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    sources = inputs["referenceSources"]
-    validate_tree = source_tree(repo_root, sources["metaValidate"])
-    meta_info_tree = source_tree(repo_root, sources["metaInfo"])
-    template_tree = source_tree(repo_root, sources["templateAdd"])
-    valid_values = literal_assignment(validate_tree, "valid_property_values")
-    template_map = literal_assignment(template_tree, "TYPE_MAP")
-
-    info_constants = {
-        node.value
-        for node in ast.walk(meta_info_tree)
-        if isinstance(node, ast.Constant) and isinstance(node.value, str)
-    }
-    field_use_aliases = {
-        value for value in info_constants if re.fullmatch(r"For(?:Item|Folder|FolderAndItem)", value)
-    }
-    register_display_aliases: set[str] = set()
-    for node in ast.walk(meta_info_tree):
-        if not isinstance(node, ast.Dict):
-            continue
-        try:
-            value = ast.literal_eval(node)
-        except (ValueError, TypeError):
-            continue
-        if isinstance(value, dict) and {"остатки", "обороты"}.intersection(value.values()):
-            register_display_aliases.update(
-                key for key in value if isinstance(key, str)
-            )
-
-    form_type_aliases: set[str] = set()
-    for source_name in ("formAdd", "metaEdit"):
-        text = (repo_root / sources[source_name]).read_text(encoding="utf-8-sig")
-        form_type_aliases.update(re.findall(r"<FormType>([^<]+)</FormType>", text))
-
-    template_type_aliases = {
-        value["TemplateType"]
-        for value in template_map.values()
-        if isinstance(value, dict) and isinstance(value.get("TemplateType"), str)
-    }
-    extractor_values = {
-        "fieldUseAliases": field_use_aliases,
-        "registerDisplayAliases": register_display_aliases,
-        "formTypeAliases": form_type_aliases,
-        "templateTypeAliases": template_type_aliases,
-    }
-
+    by_source_fact: dict[str, dict[str, Any]] = {}
+    for context in source_contexts:
+        source_fact = context["sourceFact"]
+        if source_fact in by_source_fact:
+            raise ValueError(f"duplicate extracted source enum fact {source_fact}")
+        by_source_fact[source_fact] = context
     coverage: list[dict[str, Any]] = []
     for domain_name, domain in crosswalk["enumDomains"].items():
+        forbidden = {"nativeProperty", "objectKinds", "sourceKeys", "extractors"}
+        supplied = forbidden.intersection(domain)
+        if supplied:
+            raise ValueError(
+                f"enum domain {domain_name} attempts to override source context: "
+                f"{sorted(supplied)}"
+            )
+        source_facts = domain.get("sourceFacts")
+        if not isinstance(source_facts, list) or not source_facts:
+            raise ValueError(f"enum domain {domain_name} has no source facts")
         observed: set[str] = set()
-        for source_key in domain.get("sourceKeys", []):
-            if source_key not in valid_values:
+        contexts = []
+        for source_fact in source_facts:
+            context = by_source_fact.get(source_fact)
+            if context is None:
                 raise ValueError(
-                    f"enum domain {domain_name} references absent legacy table key {source_key}"
+                    f"enum domain {domain_name} references absent source fact {source_fact}"
                 )
-            observed.update(valid_values[source_key])
-        for extractor in domain.get("extractors", []):
-            observed.update(extractor_values[extractor])
+            contexts.append(context)
+            observed.update(context["nativeAliases"])
         mapped = set(domain["semanticByAlias"])
         if observed != mapped:
             missing = sorted(observed - mapped)
@@ -237,20 +213,370 @@ def extract_enum_coverage(
                 f"enum crosswalk drift for {domain_name}: missing={missing}, extra={extra}"
             )
         for alias in sorted(observed):
-            for object_kind in domain["objectKinds"]:
-                coverage.append(
-                    {
-                        "nativeAlias": alias,
-                        "nativeProperty": domain["nativeProperty"],
-                        "objectKind": object_kind,
-                        "semantic": domain["semanticByAlias"][alias],
-                        "semanticProperty": domain["semanticProperty"],
-                    }
+            matching_contexts = [
+                context for context in contexts if alias in context["nativeAliases"]
+            ]
+            if not matching_contexts:
+                raise ValueError(
+                    f"enum alias {domain_name}.{alias} has no extracted source context"
                 )
+            for context in matching_contexts:
+                for object_kind in context["objectKinds"]:
+                    coverage.append(
+                        {
+                            "nativeAlias": alias,
+                            "nativeProperty": context["nativeProperty"],
+                            "objectKind": object_kind,
+                            "semantic": domain["semanticByAlias"][alias],
+                            "semanticProperty": domain["semanticProperty"],
+                        }
+                    )
     unique = {canonical(item): item for item in coverage}
     if len(unique) != len(coverage):
         raise ValueError("legacy enum extraction produced duplicate applicability")
     return [unique[key] for key in sorted(unique)]
+
+
+class LineLedger:
+    """Require an explicit, unique classification for every output line."""
+
+    def __init__(self, case_id: str, lines: list[str]) -> None:
+        self.case_id = case_id
+        self.lines = lines
+        self.classifications: dict[int, str] = {}
+
+    def consume(self, line_number: int, classification: str) -> None:
+        if line_number in self.classifications:
+            previous = self.classifications[line_number]
+            raise ValueError(
+                f"{self.case_id}:{line_number}: duplicate consumption "
+                f"({previous}, {classification})"
+            )
+        self.classifications[line_number] = classification
+
+    def finish(self) -> None:
+        missing = [
+            (number, line)
+            for number, line in enumerate(self.lines, 1)
+            if line.strip() and number not in self.classifications
+        ]
+        if missing:
+            number, line = missing[0]
+            raise ValueError(
+                f"{self.case_id}:{number}: unmatched legacy output line {line!r}"
+            )
+
+
+SUPPORT_VALUES = {
+    "не на поддержке",
+    "снято с поддержки (правки свободны)",
+    "конфигурация read-only (возможность изменения выключена) — правки невозможны без включения",
+    "на замке — прямая правка сломает обновления; дорабатывай через cfe-* либо включи редактирование объекта",
+    "редактируется с сохранением поддержки",
+}
+
+
+def validate_meta_output_lines(
+    case: dict[str, Any],
+    lines: list[str],
+    crosswalk: dict[str, Any],
+) -> list[dict[str, Any]]:
+    ledger = LineLedger(case["id"], lines)
+    if not lines:
+        raise ValueError(f"legacy output for {case['id']} is empty")
+    drill = re.fullmatch(r"(Реквизит|Измерение|Ресурс): ([^:]+)", lines[0])
+    if drill:
+        ledger.consume(1, "useful:drilldown-header")
+        seen_drilldown_fields = set()
+        for number, line in enumerate(lines[1:], 2):
+            if not line.strip():
+                ledger.consume(number, "structural:blank")
+                continue
+            if not line.startswith("  ") or line.startswith("   "):
+                raise ValueError(
+                    f"{case['id']}:{number}: malformed drill-down indentation"
+                )
+            stripped = line.strip()
+            patterns = [
+                r"Тип: .+",
+                r"Обязательный: (?:да|нет)",
+                r"Индексирование: (?:нет|Индекс|Индекс с доп\. упорядочиванием)",
+                r"Значение заполнения: .+",
+                r"Синоним: .+",
+                r"Использование: (?:для папок|для папок и элементов)",
+                r"Многострочный: (?:да|нет)",
+                r"Ведущее: (?:да|нет)",
+                r"Основной отбор: (?:да|нет)",
+            ]
+            matches = sum(re.fullmatch(pattern, stripped) is not None for pattern in patterns)
+            if matches != 1:
+                raise ValueError(
+                    f"{case['id']}:{number}: unrepresentable drill-down line {line!r}"
+                )
+            field_name = stripped.split(":", 1)[0]
+            if field_name in seen_drilldown_fields:
+                raise ValueError(
+                    f"{case['id']}:{number}: duplicate drill-down field {field_name!r}"
+                )
+            seen_drilldown_fields.add(field_name)
+            if stripped.startswith("Тип:"):
+                parse_type(stripped.split(":", 1)[1].strip(), crosswalk)
+            ledger.consume(number, "useful:drilldown-property")
+        ledger.finish()
+        return [
+            {"line": line, "lineNumber": number, "classification": classification}
+            for number, classification in sorted(ledger.classifications.items())
+            for line in [lines[number - 1]]
+        ]
+
+    parse_header(lines[0], crosswalk)
+    ledger.consume(1, "useful:object-header")
+    section: str | None = None
+    section_expected: int | None = None
+    section_seen = 0
+    section_line = 0
+    seen_singletons = set()
+
+    def close_section(next_line: int) -> None:
+        nonlocal section, section_expected, section_seen, section_line
+        if section is not None and section_expected != section_seen:
+            raise ValueError(
+                f"{case['id']}:{next_line}: section declared at line {section_line} "
+                f"contains {section_seen} rows, expected {section_expected}"
+            )
+        section = None
+        section_expected = None
+        section_seen = 0
+        section_line = 0
+
+    def singleton(key: str, line_number: int) -> None:
+        if key in seen_singletons:
+            raise ValueError(
+                f"{case['id']}:{line_number}: duplicate legacy field {key!r}"
+            )
+        seen_singletons.add(key)
+
+    for number, line in enumerate(lines[1:], 2):
+        stripped = line.strip()
+        if not stripped:
+            close_section(number)
+            ledger.consume(number, "structural:blank")
+            continue
+        if line[:1].isspace():
+            if not line.startswith("  ") or line.startswith("   "):
+                raise ValueError(
+                    f"{case['id']}:{number}: malformed section indentation"
+                )
+            if section in {"attribute", "dimension", "resource"}:
+                match = re.fullmatch(r"(\S+)\s+(.+?)(?:\s{2,}(\[.*\]))?", stripped)
+                if match is None:
+                    raise ValueError(
+                        f"{case['id']}:{number}: malformed field row {line!r}"
+                    )
+                parse_type(match.group(2), crosswalk)
+                flags = match.group(3)
+                if flags:
+                    if not flags.startswith("[") or not flags.endswith("]"):
+                        raise ValueError(
+                            f"{case['id']}:{number}: malformed field flags"
+                        )
+                    allowed_flags = {
+                        "обязательный",
+                        "индекс",
+                        "индекс+доп",
+                        "многострочный",
+                        "для папок",
+                        "для папок и элементов",
+                        "ведущее",
+                    }
+                    observed_flags = {
+                        value.strip()
+                        for value in flags[1:-1].split(",")
+                        if value.strip()
+                    }
+                    if not observed_flags or not observed_flags <= allowed_flags:
+                        raise ValueError(
+                            f"{case['id']}:{number}: unknown field flags "
+                            f"{sorted(observed_flags - allowed_flags)}"
+                        )
+                section_seen += 1
+                if section_seen > (section_expected or 0):
+                    raise ValueError(
+                        f"{case['id']}:{number}: section has more rows than declared"
+                    )
+                ledger.consume(number, "useful:field-row")
+                continue
+            if section == "enumerationValue":
+                if re.fullmatch(r'(\S+)(?:\s+"([^"]+)")?\s*', stripped) is None:
+                    raise ValueError(
+                        f"{case['id']}:{number}: malformed enumeration row {line!r}"
+                    )
+                section_seen += 1
+                if section_seen > (section_expected or 0):
+                    raise ValueError(
+                        f"{case['id']}:{number}: enumeration has more rows than declared"
+                    )
+                ledger.consume(number, "useful:enumeration-row")
+                continue
+            if section == "typeList":
+                parse_type(stripped, crosswalk)
+                section_seen += 1
+                if section_seen > (section_expected or 0):
+                    raise ValueError(
+                        f"{case['id']}:{number}: type section has more rows than declared"
+                    )
+                ledger.consume(number, "useful:type-row")
+                continue
+            raise ValueError(
+                f"{case['id']}:{number}: indented line outside a declared section"
+            )
+
+        close_section(number)
+        support = re.fullmatch(r"Поддержка: (.+)", stripped)
+        if support:
+            if support.group(1) not in SUPPORT_VALUES:
+                raise ValueError(
+                    f"{case['id']}:{number}: unknown support value {support.group(1)!r}"
+                )
+            singleton("support", number)
+            ledger.consume(number, "useful:support")
+            continue
+        presentation = re.fullmatch(
+            r"(?:Представление типа|Представление объекта|"
+            r"Расширенное представление объекта|Представление списка|"
+            r"Расширенное представление списка): .+",
+            stripped,
+        )
+        if presentation:
+            singleton(stripped.split(":", 1)[0], number)
+            ledger.consume(number, "useful:presentation")
+            continue
+        if re.fullmatch(r"Код\(\d+\)(?: \| Наименование\(\d+\))?", stripped) or re.fullmatch(
+            r"Наименование\(\d+\)", stripped
+        ):
+            singleton("catalog-summary", number)
+            ledger.consume(number, "useful:catalog-summary")
+            continue
+        if stripped.startswith("Номер:"):
+            if re.fullmatch(
+                r"Номер: (?:Строка|Число)\(\d+\), по "
+                r"(?:дню|месяцу|кварталу|году|непериодический), "
+                r"(?:авто|не авто) \| Проведение: (?:да|нет)",
+                stripped,
+            ) is None:
+                raise ValueError(
+                    f"{case['id']}:{number}: unrepresentable document summary"
+                )
+            singleton("document-summary", number)
+            ledger.consume(number, "useful:document-summary")
+            continue
+        module_parts = stripped.split(" | ")
+        module_values = {
+            "Сервер",
+            "Обычный клиент",
+            "Управляемый клиент",
+            "Клиент управляемое",
+            "Внешнее соединение",
+            "Вызов сервера",
+            "Глобальный",
+            "Привилегированный",
+        }
+        if any(part in module_values for part in module_parts) or any(
+            part.startswith("Повторное использование:") for part in module_parts
+        ):
+            for part in module_parts:
+                if part in module_values:
+                    continue
+                if re.fullmatch(
+                    r"Повторное использование: (?:на время вызова|на время сеанса|нет)",
+                    part,
+                ):
+                    continue
+                raise ValueError(
+                    f"{case['id']}:{number}: unknown module summary value {part!r}"
+                )
+            singleton("module-summary", number)
+            ledger.consume(number, "useful:module-summary")
+            continue
+        if re.fullmatch(
+            r"Периодичность: (?:Непериодический|Секунда|День|Месяц|"
+            r"Квартал|Год|Позиция регистратора)"
+            r"(?: \| Запись: (?:независимая|подчинение регистратору))?",
+            stripped,
+        ):
+            singleton("register-summary", number)
+            ledger.consume(number, "useful:register-summary")
+            continue
+        for prefix, classification in (
+            ("Основная СКД:", "useful:main-schema"),
+            ("Событие:", "useful:event"),
+            ("Обработчик:", "useful:handler"),
+        ):
+            if stripped.startswith(prefix) and stripped.removeprefix(prefix).strip():
+                singleton(prefix, number)
+                ledger.consume(number, classification)
+                break
+        else:
+            match = re.fullmatch(r"(Реквизиты|Измерения|Ресурсы) \((\d+)\):", stripped)
+            if match:
+                section = {
+                    "Реквизиты": "attribute",
+                    "Измерения": "dimension",
+                    "Ресурсы": "resource",
+                }[match.group(1)]
+                section_expected = int(match.group(2))
+                section_seen = 0
+                section_line = number
+                ledger.consume(number, "structural:field-section")
+                continue
+            tabular = re.fullmatch(
+                r"ТЧ .+ \((\d+) колон(?:ка|ки|ок)\):", stripped
+            )
+            if tabular:
+                section = "attribute"
+                section_expected = int(tabular.group(1))
+                section_seen = 0
+                section_line = number
+                ledger.consume(number, "useful:tabular-section")
+                continue
+            enumeration = re.fullmatch(r"Значения \((\d+)\):", stripped)
+            if enumeration:
+                section = "enumerationValue"
+                section_expected = int(enumeration.group(1))
+                section_seen = 0
+                section_line = number
+                ledger.consume(number, "structural:enumeration-section")
+                continue
+            types = re.fullmatch(r"(?:Типы|Источники) \((\d+)\):", stripped)
+            if types:
+                section = "typeList"
+                section_expected = int(types.group(1))
+                section_seen = 0
+                section_line = number
+                ledger.consume(number, "structural:type-section")
+                continue
+            children = re.fullmatch(
+                r"(Формы|Макеты|Команды): [^,]+(?:, [^,]+)*", stripped
+            )
+            if children:
+                singleton(children.group(1), number)
+                ledger.consume(number, "useful:child-list")
+                continue
+            if re.fullmatch(r"Ввод на основании: [^,]+(?:, [^,]+)*", stripped):
+                ledger.consume(number, "useful:based-on")
+                continue
+            raise ValueError(
+                f"{case['id']}:{number}: unmatched legacy meta-info line {line!r}"
+            )
+            continue
+        continue
+    close_section(len(lines) + 1)
+    ledger.finish()
+    return [
+        {"line": line, "lineNumber": number, "classification": classification}
+        for number, classification in sorted(ledger.classifications.items())
+        for line in [lines[number - 1]]
+    ]
 
 
 def parse_type(raw: str, crosswalk: dict[str, Any]) -> list[dict[str, Any]]:
@@ -394,6 +720,7 @@ def parse_meta_output(
     lines = raw.decode("utf-8-sig").splitlines()
     if not lines:
         raise ValueError(f"legacy output for {case['id']} is empty")
+    classifications = validate_meta_output_lines(case, lines, crosswalk)
     drill_header = re.fullmatch(r"(Реквизит|Измерение|Ресурс): (.+)", lines[0])
     if drill_header is not None:
         kind = {
@@ -487,6 +814,7 @@ def parse_meta_output(
             "rootKind": None,
             "rootName": None,
             "facts": builder.finish(),
+            "lineClassifications": classifications,
         }
     root_kind, root_name, root_synonym = parse_header(lines[0], crosswalk)
     builder = FactBuilder(case["id"])
@@ -596,14 +924,36 @@ def parse_meta_output(
             "Сервер": "module.server",
             "Обычный клиент": "module.clientOrdinaryApplication",
             "Управляемый клиент": "module.clientManagedApplication",
+            "Клиент управляемое": "module.clientManagedApplication",
             "Внешнее соединение": "module.externalConnection",
             "Вызов сервера": "module.serverCall",
             "Глобальный": "module.global",
+            "Привилегированный": "module.privileged",
         }
-        if " | " in stripped and any(part in module_contexts for part in stripped.split(" | ")):
+        if any(
+            part in module_contexts or part.startswith("Повторное использование:")
+            for part in stripped.split(" | ")
+        ):
             for part in stripped.split(" | "):
                 if part in module_contexts:
                     builder.prop(root, module_contexts[part], bool_value(True))
+                elif part.startswith("Повторное использование:"):
+                    reuse = part.split(":", 1)[1].strip()
+                    builder.prop(
+                        root,
+                        "module.returnValuesReuse",
+                        enum_value(
+                            {
+                                "нет": "dontUse",
+                                "на время вызова": "duringRequest",
+                                "на время сеанса": "duringSession",
+                            }[reuse]
+                        ),
+                    )
+                else:
+                    raise ValueError(
+                        f"{case['id']}: unreviewed module summary value {part!r}"
+                    )
             continue
 
         if stripped.startswith("Периодичность:"):
@@ -669,7 +1019,7 @@ def parse_meta_output(
             }[match.group(1)]
             section_parent = root
             continue
-        match = re.fullmatch(r"ТЧ (.+?) \(\d+ колонки\):", stripped)
+        match = re.fullmatch(r"ТЧ (.+?) \(\d+ колон(?:ка|ки|ок)\):", stripped)
         if match:
             section_parent = add_child(builder, root, "tabularSection", match.group(1))
             current_section = "attribute"
@@ -767,6 +1117,10 @@ def parse_meta_output(
                     "field.mainFilter",
                     bool_value(stripped.endswith("да")),
                 )
+            else:
+                raise ValueError(
+                    f"{case['id']}: unreviewed drill-down property {line!r}"
+                )
             continue
 
         if current_section in {"attribute", "dimension", "resource"} and line.startswith("  "):
@@ -816,6 +1170,9 @@ def parse_meta_output(
                 target = f"{case['id']}/external/unknown/{name}"
                 builder.relation(root, "basedOn", target, "unknown", name)
             continue
+        raise ValueError(
+            f"{case['id']}: unmatched legacy meta-info line {line!r}"
+        )
 
     if type_list:
         if type_list_property is None:
@@ -831,65 +1188,266 @@ def parse_meta_output(
         "rootKind": root_kind,
         "rootName": root_name,
         "facts": builder.finish(),
+        "lineClassifications": classifications,
     }
 
 
-def parse_role_output(case: dict[str, Any], raw: bytes, crosswalk: dict[str, Any]) -> dict[str, Any]:
+def parse_role_output(
+    case: dict[str, Any],
+    raw: bytes,
+    crosswalk: dict[str, Any],
+    target_crosswalk: dict[str, str],
+) -> dict[str, Any]:
     lines = raw.decode("utf-8-sig").splitlines()
+    if not lines:
+        raise ValueError(f"legacy role output for {case['id']} is empty")
+    ledger = LineLedger(case["id"], lines)
     root_kind, root_name, root_synonym = parse_header(lines[0], crosswalk)
+    ledger.consume(1, "useful:role-header")
     builder = FactBuilder(case["id"])
     root = builder.root(root_kind, root_name)
     if root_synonym:
         builder.prop(root, "metadata.synonym", localized_value(root_synonym))
 
     mode: str | None = None
-    target_kind: str | None = None
     restricted_targets: set[str] = set()
     permission_counts: Counter[tuple[str, str, str]] = Counter()
+    observed_totals = Counter()
     allowed_total = denied_total = None
+    saw_properties = False
+    saw_separator = False
+    saw_allowed_section = False
+    index = 1
 
-    for line in lines[1:]:
+    def add_target_line(
+        line_number: int,
+        line: str,
+        target_prefix: str,
+        target_kind: str,
+        permission_mode: str,
+    ) -> None:
+        if not line.startswith("    ") or line.startswith("     "):
+            raise ValueError(
+                f"{case['id']}:{line_number}: malformed right target indentation"
+            )
+        match = re.fullmatch(r"    ([^:]+): (.+)", line)
+        if match is None:
+            raise ValueError(
+                f"{case['id']}:{line_number}: malformed right target line {line!r}"
+            )
+        target_name, rights_raw = match.groups()
+        if "." in target_name:
+            raise ValueError(
+                f"{case['id']}:{line_number}: target line repeats or changes its group prefix"
+            )
+        target_identity = f"{case['id']}/external/{target_kind}/{target_name}"
+        parsed_permissions = []
+        for raw_permission in rights_raw.split(","):
+            item = raw_permission.strip()
+            restricted = item.endswith(" [RLS]")
+            item = item.removesuffix(" [RLS]")
+            if permission_mode == "denied":
+                if not item.startswith("-"):
+                    raise ValueError(
+                        f"{case['id']}:{line_number}: denied right lacks '-' marker"
+                    )
+                item = item.removeprefix("-")
+            elif item.startswith("-"):
+                raise ValueError(
+                    f"{case['id']}:{line_number}: allowed right has '-' marker"
+                )
+            if not re.fullmatch(r"[^,\s][^,]*", item):
+                raise ValueError(
+                    f"{case['id']}:{line_number}: malformed right name {item!r}"
+                )
+            parsed_permissions.append((item, restricted))
+        if not parsed_permissions:
+            raise ValueError(f"{case['id']}:{line_number}: right target has no rights")
+        ledger.consume(line_number, f"useful:right-target:{target_prefix}")
+
+        if any(restricted for _, restricted in parsed_permissions):
+            if target_identity not in restricted_targets:
+                builder.facts.append(node_fact(target_identity, target_kind, target_name))
+                builder.prop(
+                    target_identity,
+                    "access.restriction.present",
+                    bool_value(True),
+                )
+                restricted_targets.add(target_identity)
+        for permission_name, _ in parsed_permissions:
+            allowed = permission_mode == "allowed"
+            observed_totals[permission_mode] += 1
+            key = (target_kind, target_name, permission_name)
+            permission_counts[key] += 1
+            permission = (
+                f"{case['id']}/accessPermission/"
+                f"{target_kind}:{target_name}:{permission_name}"
+                f"#{permission_counts[key]}"
+            )
+            builder.facts.append(
+                node_fact(permission, "accessPermission", permission_name)
+            )
+            builder.prop(
+                permission,
+                "access.permission.name",
+                string_value(permission_name),
+            )
+            builder.prop(
+                permission,
+                "access.permission.allowed",
+                bool_value(allowed),
+            )
+            builder.relation(
+                root,
+                "accessPermissions",
+                permission,
+                "accessPermission",
+                permission_name,
+            )
+            builder.relation(
+                permission,
+                "accessTarget",
+                target_identity,
+                target_kind,
+                target_name,
+            )
+
+    while index < len(lines):
+        line_number = index + 1
+        line = lines[index]
         stripped = line.strip()
         if not stripped:
+            ledger.consume(line_number, "structural:blank")
+            index += 1
             continue
-        if stripped.startswith("Поддержка:"):
-            builder.prop(root, "support.active", bool_value(False))
-            continue
-        if stripped.startswith("Properties:"):
-            values = dict(
-                item.split("=", 1)
-                for item in stripped.split(":", 1)[1].strip().split(", ")
+        support = re.fullmatch(r"Поддержка: (.+)", stripped)
+        if support:
+            if support.group(1) not in SUPPORT_VALUES:
+                raise ValueError(
+                    f"{case['id']}:{line_number}: unknown support value {support.group(1)!r}"
+                )
+            builder.prop(
+                root,
+                "support.active",
+                bool_value(support.group(1) != "не на поддержке"),
             )
-            for native, semantic in (
-                ("setForNewObjects", "access.newObjects.defaultAllowed"),
-                ("setForAttributesByDefault", "access.attributes.defaultAllowed"),
+            ledger.consume(line_number, "useful:support")
+            index += 1
+            continue
+        properties = re.fullmatch(
+            r"Properties: setForNewObjects=(true|false), "
+            r"setForAttributesByDefault=(true|false), "
+            r"independentRightsOfChildObjects=(true|false)",
+            stripped,
+        )
+        if properties:
+            if saw_properties:
+                raise ValueError(
+                    f"{case['id']}:{line_number}: duplicate role Properties line"
+                )
+            saw_properties = True
+            for semantic, value in zip(
                 (
-                    "independentRightsOfChildObjects",
+                    "access.newObjects.defaultAllowed",
+                    "access.attributes.defaultAllowed",
                     "access.childObjects.independent",
                 ),
+                properties.groups(),
             ):
-                builder.prop(root, semantic, bool_value(values[native] == "true"))
+                builder.prop(root, semantic, bool_value(value == "true"))
+            ledger.consume(line_number, "useful:role-properties")
+            index += 1
             continue
         if stripped == "Allowed rights:":
+            if saw_allowed_section:
+                raise ValueError(
+                    f"{case['id']}:{line_number}: duplicate Allowed rights section"
+                )
+            saw_allowed_section = True
             mode = "allowed"
+            ledger.consume(line_number, "structural:allowed-section")
+            index += 1
             continue
         if stripped == "Denied rights:":
             mode = "denied"
+            ledger.consume(line_number, "structural:denied-section")
+            index += 1
             continue
-        match = re.fullmatch(r"(Catalog|Document) \(\d+\):", stripped)
-        if match:
-            target_kind = {"Catalog": "catalog", "Document": "document"}[
-                match.group(1)
-            ]
+        if stripped == "(no allowed rights)":
+            mode = None
+            saw_allowed_section = True
+            ledger.consume(line_number, "useful:no-allowed-rights")
+            index += 1
             continue
-        if stripped.startswith("RLS:"):
-            count = int(re.search(r"\d+", stripped).group())
-            builder.prop(root, "access.restriction.count", int_value(count))
+        denied_summary = re.fullmatch(
+            r"Denied: (\d+) rights \(use -ShowDenied to list\)", stripped
+        )
+        if denied_summary:
+            denied_total = int(denied_summary.group(1))
+            mode = None
+            ledger.consume(line_number, "useful:denied-summary")
+            index += 1
             continue
-        if stripped.startswith("Templates:"):
-            for name in [
-                value.strip() for value in stripped.split(":", 1)[1].split(",")
-            ]:
+        group = re.fullmatch(r"([A-Za-z][A-Za-z0-9]*) \((\d+)\):", stripped)
+        if group:
+            if line != f"  {stripped}":
+                raise ValueError(
+                    f"{case['id']}:{line_number}: malformed right group indentation"
+                )
+            if mode not in {"allowed", "denied"}:
+                raise ValueError(
+                    f"{case['id']}:{line_number}: right group outside a rights section"
+                )
+            target_prefix, target_count_raw = group.groups()
+            target_kind = target_crosswalk.get(target_prefix)
+            if target_kind is None:
+                raise ValueError(
+                    f"{case['id']}:{line_number}: unhandled right target prefix "
+                    f"{target_prefix!r}"
+                )
+            target_count = int(target_count_raw)
+            if target_count <= 0:
+                raise ValueError(
+                    f"{case['id']}:{line_number}: empty right target group"
+                )
+            ledger.consume(line_number, f"structural:right-group:{target_prefix}")
+            index += 1
+            for _ in range(target_count):
+                if index >= len(lines):
+                    raise ValueError(
+                        f"{case['id']}:{line_number}: truncated right target group"
+                    )
+                add_target_line(
+                    index + 1,
+                    lines[index],
+                    target_prefix,
+                    target_kind,
+                    mode,
+                )
+                index += 1
+            if index < len(lines) and lines[index].startswith("    "):
+                raise ValueError(
+                    f"{case['id']}:{index + 1}: group contains more targets than declared"
+                )
+            continue
+        if line[:1].isspace():
+            raise ValueError(
+                f"{case['id']}:{line_number}: right target appears without a local group"
+            )
+        rls = re.fullmatch(r"RLS: (\d+) restrictions", stripped)
+        if rls:
+            builder.prop(
+                root,
+                "access.restriction.count",
+                int_value(int(rls.group(1))),
+            )
+            ledger.consume(line_number, "useful:restriction-count")
+            mode = None
+            index += 1
+            continue
+        templates = re.fullmatch(r"Templates: ([^,]+(?:, [^,]+)*)", stripped)
+        if templates:
+            for name in templates.group(1).split(", "):
                 template = add_child(
                     builder,
                     root,
@@ -902,71 +1460,57 @@ def parse_role_output(case: dict[str, Any], raw: bytes, crosswalk: dict[str, Any
                     "access.restrictionTemplate.name",
                     string_value(name),
                 )
+            ledger.consume(line_number, "useful:restriction-templates")
+            mode = None
+            index += 1
             continue
-        match = re.fullmatch(r"Total: (\d+) allowed, (\d+) denied", stripped)
-        if match:
-            allowed_total, denied_total = map(int, match.groups())
+        if stripped == "---":
+            if saw_separator:
+                raise ValueError(
+                    f"{case['id']}:{line_number}: duplicate totals delimiter"
+                )
+            saw_separator = True
+            ledger.consume(line_number, "structural:totals-delimiter")
+            mode = None
+            index += 1
+            continue
+        total = re.fullmatch(r"Total: (\d+) allowed, (\d+) denied", stripped)
+        if total:
+            if not saw_separator:
+                raise ValueError(
+                    f"{case['id']}:{line_number}: totals precede delimiter"
+                )
+            allowed_total, parsed_denied = map(int, total.groups())
+            if denied_total is not None and denied_total != parsed_denied:
+                raise ValueError(
+                    f"{case['id']}:{line_number}: denied summary disagrees with totals"
+                )
+            denied_total = parsed_denied
             builder.prop(root, "access.allowed.count", int_value(allowed_total))
             builder.prop(root, "access.denied.count", int_value(denied_total))
+            ledger.consume(line_number, "useful:right-totals")
+            index += 1
             continue
-        match = re.fullmatch(r"([^:]+): (.+)", stripped)
-        if mode in {"allowed", "denied"} and target_kind and match:
-            target_name, rights_raw = match.groups()
-            has_restriction = rights_raw.endswith(" [RLS]")
-            rights_raw = rights_raw.removesuffix(" [RLS]")
-            target_identity = (
-                f"{case['id']}/external/{target_kind}/{target_name}"
-            )
-            if has_restriction and target_identity not in restricted_targets:
-                builder.facts.append(
-                    node_fact(target_identity, target_kind, target_name)
-                )
-                builder.prop(
-                    target_identity,
-                    "access.restriction.present",
-                    bool_value(True),
-                )
-                restricted_targets.add(target_identity)
-            for permission_raw in [value.strip() for value in rights_raw.split(",")]:
-                allowed = mode == "allowed"
-                permission_name = permission_raw.removeprefix("-")
-                key = (target_kind, target_name, permission_name)
-                permission_counts[key] += 1
-                permission = (
-                    f"{case['id']}/accessPermission/"
-                    f"{target_kind}:{target_name}:{permission_name}"
-                    f"#{permission_counts[key]}"
-                )
-                builder.facts.append(
-                    node_fact(permission, "accessPermission", permission_name)
-                )
-                builder.prop(
-                    permission,
-                    "access.permission.name",
-                    string_value(permission_name),
-                )
-                builder.prop(
-                    permission,
-                    "access.permission.allowed",
-                    bool_value(allowed),
-                )
-                builder.relation(
-                    root,
-                    "accessPermissions",
-                    permission,
-                    "accessPermission",
-                    permission_name,
-                )
-                builder.relation(
-                    permission,
-                    "accessTarget",
-                    target_identity,
-                    target_kind,
-                    target_name,
-                )
-            continue
+        raise ValueError(
+            f"{case['id']}:{line_number}: unmatched legacy role-info line {line!r}"
+        )
+
+    ledger.finish()
+    if not saw_properties or not saw_allowed_section:
+        raise ValueError(f"legacy role output for {case['id']} is structurally incomplete")
     if allowed_total is None or denied_total is None:
         raise ValueError("legacy role output has no totals")
+    if observed_totals["allowed"] != allowed_total:
+        raise ValueError(
+            f"legacy role allowed total mismatch: parsed={observed_totals['allowed']} "
+            f"declared={allowed_total}"
+        )
+    if "-ShowDenied" in case.get("arguments", []):
+        if observed_totals["denied"] != denied_total:
+            raise ValueError(
+                f"legacy role denied total mismatch: parsed={observed_totals['denied']} "
+                f"declared={denied_total}"
+            )
     return {
         "id": case["id"],
         "profile": case["profile"],
@@ -977,6 +1521,14 @@ def parse_role_output(case: dict[str, Any], raw: bytes, crosswalk: dict[str, Any
         "rootKind": root_kind,
         "rootName": root_name,
         "facts": builder.finish(),
+        "lineClassifications": [
+            {
+                "line": lines[number - 1],
+                "lineNumber": number,
+                "classification": classification,
+            }
+            for number, classification in sorted(ledger.classifications.items())
+        ],
     }
 
 
@@ -1018,6 +1570,7 @@ def provenance_entries(
     repo_root: Path,
     inputs: dict[str, Any],
     raw_outputs: dict[str, bytes],
+    enum_contexts_data: bytes,
     oracle_data: bytes,
 ) -> list[dict[str, str]]:
     entries: dict[tuple[str, str], dict[str, str]] = {}
@@ -1032,10 +1585,15 @@ def provenance_entries(
         }
 
     add("oracleGenerator", Path(__file__).resolve())
+    add("enumSourceExtractor", Path(__file__).resolve().with_name("extract_enum_contexts.py"))
     add("oracleInputs", INPUTS_PATH)
     add("independentCrosswalk", CROSSWALK_PATH)
+    add("rightsTargetCrosswalk", RIGHTS_TARGET_CROSSWALK_PATH)
+    add("newOnlyContract", NEW_ONLY_CONTRACT_PATH)
     for path in inputs["referenceSources"].values():
         add("legacyReferenceSource", repo_root / path)
+    for path in inputs.get("contractInputs", []):
+        add("newOnlyContractInput", repo_root / path)
     for case in inputs["cases"]:
         add("legacyInputFixture", repo_root / case["input"])
         if case.get("adapterInput") and case["adapterInput"] != case["input"]:
@@ -1047,15 +1605,29 @@ def provenance_entries(
             repo_root / case["rawOutput"],
             raw_outputs[case["id"]],
         )
+    add("enumSourceContexts", ENUM_CONTEXTS_PATH, enum_contexts_data)
     add("legacySemanticOracle", ORACLE_PATH, oracle_data)
     return [entries[key] for key in sorted(entries)]
 
 
-def build(repo_root: Path) -> tuple[dict[str, bytes], bytes, bytes]:
+def build(repo_root: Path) -> tuple[dict[str, bytes], bytes, bytes, bytes]:
     inputs = read_json(INPUTS_PATH)
     crosswalk = read_json(CROSSWALK_PATH)
-    if inputs.get("schemaVersion") != 1 or crosswalk.get("schemaVersion") != 1:
+    target_crosswalk = read_json(RIGHTS_TARGET_CROSSWALK_PATH)
+    if (
+        inputs.get("schemaVersion") != 1
+        or crosswalk.get("schemaVersion") != 1
+        or target_crosswalk.get("schemaVersion") != 1
+    ):
         raise ValueError("legacy oracle source schema is unsupported")
+    source_contexts = extract_native_enum_contexts(repo_root, inputs)
+    enum_contexts_data = json_bytes(
+        {
+            "schemaVersion": 1,
+            "provenance": "legacy-source-ast-and-native-descriptor-fixtures",
+            "contexts": source_contexts,
+        }
+    )
 
     raw_outputs: dict[str, bytes] = {}
     cases: list[dict[str, Any]] = []
@@ -1065,14 +1637,21 @@ def build(repo_root: Path) -> tuple[dict[str, bytes], bytes, bytes]:
         if case["tool"] == "metaInfo":
             cases.append(parse_meta_output(case, raw, crosswalk))
         elif case["tool"] == "roleInfo":
-            cases.append(parse_role_output(case, raw, crosswalk))
+            cases.append(
+                parse_role_output(
+                    case,
+                    raw,
+                    crosswalk,
+                    target_crosswalk["prefixes"],
+                )
+            )
         else:
             raise ValueError(f"unreviewed legacy tool {case['tool']}")
 
     oracle = {
         "schemaVersion": 1,
         "provenance": "legacy-tools-plus-independent-crosswalk",
-        "enumCoverage": extract_enum_coverage(repo_root, inputs, crosswalk),
+        "enumCoverage": extract_enum_coverage(crosswalk, source_contexts),
         "cases": sorted(cases, key=lambda case: case["id"]),
     }
     by_id = {case["id"]: case for case in oracle["cases"]}
@@ -1090,14 +1669,21 @@ def build(repo_root: Path) -> tuple[dict[str, bytes], bytes, bytes]:
             "python3.12 crates/unica-adapter-platform-xml/tests/fixtures/"
             "v2_20/legacy-oracle/tools/generate_oracle.py --repo-root . --write"
         ),
-        "entries": provenance_entries(repo_root, inputs, raw_outputs, oracle_data),
+        "entries": provenance_entries(
+            repo_root,
+            inputs,
+            raw_outputs,
+            enum_contexts_data,
+            oracle_data,
+        ),
     }
-    return raw_outputs, oracle_data, json_bytes(manifest)
+    return raw_outputs, enum_contexts_data, oracle_data, json_bytes(manifest)
 
 
 def write_outputs(
     repo_root: Path,
     raw_outputs: dict[str, bytes],
+    enum_contexts_data: bytes,
     oracle_data: bytes,
     manifest_data: bytes,
 ) -> None:
@@ -1106,6 +1692,7 @@ def write_outputs(
     for case_id, data in raw_outputs.items():
         paths[case_id].parent.mkdir(parents=True, exist_ok=True)
         paths[case_id].write_bytes(data)
+    ENUM_CONTEXTS_PATH.write_bytes(enum_contexts_data)
     ORACLE_PATH.write_bytes(oracle_data)
     MANIFEST_PATH.write_bytes(manifest_data)
 
@@ -1113,6 +1700,7 @@ def write_outputs(
 def check_outputs(
     repo_root: Path,
     raw_outputs: dict[str, bytes],
+    enum_contexts_data: bytes,
     oracle_data: bytes,
     manifest_data: bytes,
 ) -> None:
@@ -1123,6 +1711,7 @@ def check_outputs(
         if not path.exists() or path.read_bytes() != raw_outputs[case["id"]]:
             failures.append(f"raw legacy output drifted: {case['rawOutput']}")
     for path, expected, label in (
+        (ENUM_CONTEXTS_PATH, enum_contexts_data, "enum source contexts"),
         (ORACLE_PATH, oracle_data, "legacy semantic oracle"),
         (MANIFEST_PATH, manifest_data, "oracle provenance manifest"),
     ):
@@ -1132,23 +1721,187 @@ def check_outputs(
         raise RuntimeError("\n".join(failures))
 
 
+def run_self_tests(repo_root: Path) -> None:
+    crosswalk = read_json(CROSSWALK_PATH)
+    target_crosswalk = read_json(RIGHTS_TARGET_CROSSWALK_PATH)["prefixes"]
+    meta_case = {
+        "id": "selfTestMeta",
+        "profile": "meta-full",
+        "input": "self-test.xml",
+        "sourceRoot": ".",
+        "rawOutput": "self-test.txt",
+    }
+    valid_meta = (
+        "=== Language: SelfTest ===\n"
+        "Поддержка: не на поддержке\n"
+    ).encode()
+    parse_meta_output(meta_case, valid_meta, crosswalk)
+
+    role_case = {
+        "id": "selfTestRole",
+        "profile": "role-info",
+        "input": "self-test/Rights.xml",
+        "adapterInput": "self-test.xml",
+        "sourceRoot": ".",
+        "rawOutput": "self-test-role.txt",
+        "arguments": ["-ShowDenied"],
+    }
+    valid_role = (
+        "=== Role: SelfTest ===\n"
+        "Поддержка: не на поддержке\n"
+        "\n"
+        "Properties: setForNewObjects=false, "
+        "setForAttributesByDefault=false, "
+        "independentRightsOfChildObjects=false\n"
+        "\n"
+        "Allowed rights:\n"
+        "\n"
+        "  Catalog (1):\n"
+        "    Products: Read\n"
+        "\n"
+        "---\n"
+        "Total: 1 allowed, 0 denied\n"
+    ).encode()
+    parse_role_output(role_case, valid_role, crosswalk, target_crosswalk)
+
+    def expect_failure(label: str, callback: Any) -> None:
+        try:
+            callback()
+        except (ValueError, RuntimeError):
+            return
+        raise AssertionError(f"negative oracle self-test unexpectedly passed: {label}")
+
+    for label, line in (
+        ("new property", "Future property: useful-value"),
+        ("new section", "Future section (1):"),
+        ("malformed indentation", "   Future"),
+        ("unknown support value", "Поддержка: future-mode"),
+    ):
+        prefix = (
+            "=== Language: SelfTest ===\n"
+            if label == "unknown support value"
+            else valid_meta.decode()
+        )
+        expect_failure(
+            f"meta {label}",
+            lambda payload=(prefix + line + "\n").encode(): parse_meta_output(
+                meta_case, payload, crosswalk
+            ),
+        )
+    for label, payload in {
+        "declared section row count": (
+            valid_meta.decode() + "Реквизиты (1):\n"
+        ),
+        "duplicate singleton field": (
+            valid_meta.decode() + "Поддержка: не на поддержке\n"
+        ),
+        "unknown field flag": (
+            valid_meta.decode()
+            + "Реквизиты (1):\n"
+            + "  Field   Строка(10)  [future-flag]\n"
+        ),
+    }.items():
+        expect_failure(
+            f"meta {label}",
+            lambda payload=payload.encode(): parse_meta_output(
+                meta_case, payload, crosswalk
+            ),
+        )
+
+    role_mutations = {
+        "new role property": valid_role.decode().replace(
+            "Allowed rights:", "FutureRoleProperty: useful\nAllowed rights:"
+        ),
+        "new right line": valid_role.decode().replace(
+            "    Products: Read\n",
+            "    Products: Read\n    Services: Read\n",
+        ),
+        "unknown right heading": valid_role.decode().replace(
+            "Allowed rights:", "Future rights:"
+        ),
+        "target without group": valid_role.decode().replace(
+            "  Catalog (1):\n", ""
+        ),
+        "unhandled target prefix": valid_role.decode().replace(
+            "Catalog (1)", "FutureObject (1)"
+        ),
+        "duplicate role properties": valid_role.decode().replace(
+            "Allowed rights:",
+            "Properties: setForNewObjects=false, "
+            "setForAttributesByDefault=false, "
+            "independentRightsOfChildObjects=false\nAllowed rights:",
+        ),
+    }
+    for label, payload in role_mutations.items():
+        expect_failure(
+            label,
+            lambda payload=payload.encode(): parse_role_output(
+                role_case,
+                payload,
+                crosswalk,
+                target_crosswalk,
+            ),
+        )
+
+    ledger = LineLedger("duplicateConsumption", ["useful"])
+    ledger.consume(1, "useful:first")
+    expect_failure(
+        "duplicate line consumption",
+        lambda: ledger.consume(1, "useful:second"),
+    )
+
+    inputs = read_json(INPUTS_PATH)
+    contexts = extract_native_enum_contexts(repo_root, inputs)
+    extract_enum_coverage(crosswalk, contexts)
+    context_override = json.loads(json.dumps(crosswalk))
+    first_domain = next(iter(context_override["enumDomains"].values()))
+    first_domain["nativeProperty"] = "CoordinatedWrongProperty"
+    first_domain["objectKinds"] = ["document"]
+    expect_failure(
+        "crosswalk and coverage coordinated context override",
+        lambda: extract_enum_coverage(context_override, contexts),
+    )
+    duplicate_contexts = contexts + [dict(contexts[0])]
+    expect_failure(
+        "ambiguous duplicate source context",
+        lambda: extract_enum_coverage(crosswalk, duplicate_contexts),
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--repo-root", type=Path, required=True)
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--write", action="store_true")
     mode.add_argument("--check", action="store_true")
+    mode.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     repo_root = args.repo_root.resolve()
-    raw_outputs, oracle_data, manifest_data = build(repo_root)
+    if args.self_test:
+        run_self_tests(repo_root)
+        print("verified fail-closed parser and source-context negative suite")
+        return 0
+    raw_outputs, enum_contexts_data, oracle_data, manifest_data = build(repo_root)
     if args.write:
-        write_outputs(repo_root, raw_outputs, oracle_data, manifest_data)
+        write_outputs(
+            repo_root,
+            raw_outputs,
+            enum_contexts_data,
+            oracle_data,
+            manifest_data,
+        )
         print(
             f"wrote {len(raw_outputs)} raw outputs, "
             f"{len(json.loads(oracle_data)['cases'])} oracle cases, and provenance"
         )
     else:
-        check_outputs(repo_root, raw_outputs, oracle_data, manifest_data)
+        check_outputs(
+            repo_root,
+            raw_outputs,
+            enum_contexts_data,
+            oracle_data,
+            manifest_data,
+        )
         print(
             f"verified {len(raw_outputs)} raw outputs, oracle facts, and SHA-256 provenance"
         )

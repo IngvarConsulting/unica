@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Rights xmlns="http://v8.1c.ru/8.2/roles"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:type="Rights"
+        version="2.20"
+        setForNewObjects="false"
+        setForAttributesByDefault="false"
+        independentRightsOfChildObjects="true">
+  <object>
+    <name>Catalog.Products</name>
+    <right><name>Read</name><value>true</value></right>
+  </object>
+  <object>
+    <name>Document.SalesOrder</name>
+    <right><name>Posting</name><value>true</value></right>
+  </object>
+  <object>
+    <name>InformationRegister.Prices</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Price &gt; 0</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>CommonModule.Integration</name>
+    <right><name>View</name><value>true</value></right>
+  </object>
+  <object>
+    <name>Report.Sales</name>
+    <right><name>Use</name><value>true</value></right>
+    <right><name>Update</name><value>false</value></right>
+  </object>
+  <restrictionTemplate>
+    <name>PositivePrice(&amp;Minimum)</name>
+    <condition>Price &gt; &amp;Minimum</condition>
+  </restrictionTemplate>
+</Rights>

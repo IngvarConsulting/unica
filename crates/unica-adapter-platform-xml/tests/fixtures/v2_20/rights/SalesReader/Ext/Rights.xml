@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Rights xmlns="http://v8.1c.ru/8.2/roles"
+        xmlns:xs="http://www.w3.org/2001/XMLSchema"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:type="Rights"
+        version="2.17"
+        setForNewObjects="false"
+        setForAttributesByDefault="true"
+        independentRightsOfChildObjects="false">
+    <object>
+        <name>Catalog.Products</name>
+        <right>
+            <name>Read</name>
+            <value>true</value>
+        </right>
+        <right>
+            <name>View</name>
+            <value>true</value>
+            <restrictionByCondition>
+                <condition>Products.Owner = &amp;CurrentUser</condition>
+            </restrictionByCondition>
+        </right>
+        <right>
+            <name>Update</name>
+            <value>false</value>
+        </right>
+    </object>
+    <object>
+        <name>Document.SalesOrder</name>
+        <right>
+            <name>Read</name>
+            <value>true</value>
+        </right>
+        <right>
+            <name>Posting</name>
+            <value>true</value>
+        </right>
+        <right>
+            <name>Deletion</name>
+            <value>false</value>
+        </right>
+    </object>
+    <restrictionTemplate>
+        <name>OnlyOwn(&amp;CurrentUser)</name>
+        <condition>Owner = &amp;CurrentUser</condition>
+    </restrictionTemplate>
+</Rights>

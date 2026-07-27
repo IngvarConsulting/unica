@@ -1,0 +1,21 @@
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+  <Catalog uuid="70000000-0000-0000-0000-000000000001">
+    <Properties>
+      <Name>ContractCatalog</Name>
+      <Hierarchical>false</Hierarchical>
+      <HierarchyType>HierarchyFoldersAndItems</HierarchyType>
+      <LimitLevelCount>false</LimitLevelCount>
+      <LevelCount>2</LevelCount>
+      <CodeSeries>WholeCatalog</CodeSeries>
+    </Properties>
+    <ChildObjects>
+      <Attribute uuid="70000000-0000-0000-0000-000000000002">
+        <Properties>
+          <Name>EmptyOwner</Name>
+          <Type><v8:Type>cfg:CatalogRef.ContractCatalog</v8:Type></Type>
+          <FillValue xsi:type="xr:DesignTimeRef">Catalog.ContractCatalog.EmptyRef</FillValue>
+        </Properties>
+      </Attribute>
+    </ChildObjects>
+  </Catalog>
+</MetaDataObject>

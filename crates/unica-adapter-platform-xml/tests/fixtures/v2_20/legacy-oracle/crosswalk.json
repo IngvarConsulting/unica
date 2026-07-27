@@ -1,279 +1,317 @@
 {
-  "schemaVersion": 1,
-  "headerKinds": {
-    "Справочник": "catalog",
-    "Общий модуль": "commonModule",
-    "Документ": "document",
-    "Перечисление": "enumeration",
-    "Регистр сведений": "informationRegister",
-    "Отчёт": "report",
-    "Определяемый тип": "definedType",
-    "Подписка на событие": "eventSubscription",
-    "Language": "language",
-    "CommonForm": "commonForm",
-    "CommonTemplate": "commonTemplate",
-    "Role": "role"
-  },
-  "typeTargets": {
-    "СправочникСсылка": ["reference", "catalog"],
-    "ПВХСсылка": ["reference", "chartOfCharacteristicTypes"],
-    "Характеристика": ["reference", "chartOfCharacteristicTypes"],
-    "ПеречислениеСсылка": ["enumeration", "enumeration"],
-    "ОпределяемыйТип": ["definedType", "definedType"],
-    "DocumentObject": ["object", "document"],
-    "ДокументОбъект": ["object", "document"],
-    "СправочникОбъект": ["object", "catalog"],
-    "БизнесПроцессОбъект": ["object", "businessProcess"],
-    "ЗадачаОбъект": ["object", "task"],
-    "InformationRegisterRecordSet": ["recordSet", "informationRegister"],
-    "InformationRegisterManager": ["manager", "informationRegister"],
-    "InformationRegisterRecordKey": ["key", "informationRegister"]
-  },
-  "valueMappings": {
-    "subscriptionEvent": {
-      "BeforeWrite": "ПередЗаписью",
-      "OnWrite": "ПриЗаписи",
-      "AfterWrite": "ПослеЗаписи",
-      "BeforeDelete": "ПередУдалением",
-      "Posting": "ОбработкаПроведения",
-      "UndoPosting": "ОбработкаУдаленияПроведения",
-      "OnReadAtServer": "ПриЧтенииНаСервере",
-      "FillCheckProcessing": "ОбработкаПроверкиЗаполнения"
-    }
-  },
   "enumDomains": {
-    "numberType": {
-      "sourceKeys": ["NumberType"],
-      "nativeProperty": "NumberType",
-      "semanticProperty": "document.number.type",
-      "objectKinds": ["document"],
-      "semanticByAlias": {
-        "String": "string",
-        "Number": "number"
-      }
-    },
-    "documentNumberPeriodicity": {
-      "sourceKeys": ["DocumentNumberPeriodicity"],
-      "nativeProperty": "NumberPeriodicity",
-      "semanticProperty": "document.number.periodicity",
-      "objectKinds": ["document"],
+    "calculationRegisterPeriodicity": {
       "semanticByAlias": {
         "Day": "day",
         "Month": "month",
-        "Nonperiodical": "nonperiodical",
         "Quarter": "quarter",
         "Year": "year"
-      }
-    },
-    "posting": {
-      "sourceKeys": ["Posting"],
-      "nativeProperty": "Posting",
-      "semanticProperty": "document.posting.mode",
-      "objectKinds": ["document"],
-      "semanticByAlias": {
-        "Allow": "allow",
-        "Deny": "deny"
-      }
-    },
-    "realTimePosting": {
-      "sourceKeys": ["RealTimePosting"],
-      "nativeProperty": "RealTimePosting",
-      "semanticProperty": "document.realTimePosting.mode",
-      "objectKinds": ["document"],
-      "semanticByAlias": {
-        "Allow": "allow",
-        "Deny": "deny"
-      }
-    },
-    "registerRecordsDeletion": {
-      "sourceKeys": ["RegisterRecordsDeletion"],
-      "nativeProperty": "RegisterRecordsDeletion",
-      "semanticProperty": "document.registerRecordsDeletion.mode",
-      "objectKinds": ["document"],
-      "semanticByAlias": {
-        "AutoDelete": "deleteAutomatic",
-        "AutoDeleteOnUnpost": "deleteOnReversal",
-        "AutoDeleteOff": "deleteDisabled"
-      }
-    },
-    "registerRecordsWriting": {
-      "sourceKeys": ["RegisterRecordsWritingOnPost"],
-      "nativeProperty": "RegisterRecordsWritingOnPost",
-      "semanticProperty": "document.registerRecordsWritingOnPost.mode",
-      "objectKinds": ["document"],
-      "semanticByAlias": {
-        "WriteModified": "writeModified",
-        "WriteSelected": "writeSelected",
-        "WriteAll": "writeAll"
-      }
-    },
-    "catalogHierarchyType": {
-      "sourceKeys": ["HierarchyType"],
-      "nativeProperty": "HierarchyType",
-      "semanticProperty": "catalog.hierarchy.type",
-      "objectKinds": ["catalog"],
-      "semanticByAlias": {
-        "HierarchyFoldersAndItems": "hierarchyOfGroupsAndItems",
-        "HierarchyOfItems": "hierarchyOfItems"
-      }
+      },
+      "semanticProperty": "register.periodicity",
+      "sourceFacts": [
+        "metaCompile:emit_calculation_register_properties:Periodicity"
+      ]
     },
     "catalogCodeSeries": {
-      "sourceKeys": ["CatalogCodeSeries"],
-      "nativeProperty": "CodeSeries",
-      "semanticProperty": "catalog.code.series",
-      "objectKinds": ["catalog"],
       "semanticByAlias": {
         "WholeCatalog": "wholeCollection",
         "WithinOwnerSubordination": "withinOwnerScope",
         "WithinSubordination": "withinParentScope"
-      }
+      },
+      "semanticProperty": "catalog.code.series",
+      "sourceFacts": [
+        "metaCompile:emit_catalog_properties:CodeSeries"
+      ]
     },
-    "informationRegisterPeriodicity": {
-      "sourceKeys": ["InformationRegisterPeriodicity"],
-      "nativeProperty": "InformationRegisterPeriodicity",
-      "semanticProperty": "register.periodicity",
-      "objectKinds": ["informationRegister"],
+    "catalogHierarchyType": {
       "semanticByAlias": {
+        "HierarchyFoldersAndItems": "hierarchyOfGroupsAndItems",
+        "HierarchyOfItems": "hierarchyOfItems"
+      },
+      "semanticProperty": "catalog.hierarchy.type",
+      "sourceFacts": [
+        "metaCompile:emit_catalog_properties:HierarchyType"
+      ]
+    },
+    "documentNumberPeriodicity": {
+      "semanticByAlias": {
+        "Day": "day",
+        "Month": "month",
         "Nonperiodical": "nonperiodical",
-        "Second": "second",
-        "Day": "day",
-        "Month": "month",
-        "Quarter": "quarter",
-        "Year": "year",
-        "RecorderPosition": "recorderPosition"
-      }
-    },
-    "calculationRegisterPeriodicity": {
-      "sourceKeys": ["CalculationRegisterPeriodicity"],
-      "nativeProperty": "Periodicity",
-      "semanticProperty": "register.periodicity",
-      "objectKinds": ["calculationRegister"],
-      "semanticByAlias": {
-        "Day": "day",
-        "Month": "month",
         "Quarter": "quarter",
         "Year": "year"
-      }
-    },
-    "registerWriteMode": {
-      "sourceKeys": ["WriteMode"],
-      "nativeProperty": "WriteMode",
-      "semanticProperty": "register.writeMode",
-      "objectKinds": ["informationRegister"],
-      "semanticByAlias": {
-        "Independent": "independent",
-        "RecorderSubordinate": "recorderSubordinate"
-      }
-    },
-    "registerType": {
-      "sourceKeys": ["RegisterType"],
-      "extractors": ["registerDisplayAliases"],
-      "nativeProperty": "RegisterType",
-      "semanticProperty": "register.type",
-      "objectKinds": ["accumulationRegister"],
-      "semanticByAlias": {
-        "Balance": "balance",
-        "Balances": "balance",
-        "Turnovers": "turnovers"
-      }
-    },
-    "returnValuesReuse": {
-      "sourceKeys": ["ReturnValuesReuse"],
-      "nativeProperty": "ReturnValuesReuse",
-      "semanticProperty": "module.returnValuesReuse",
-      "objectKinds": ["commonModule"],
-      "semanticByAlias": {
-        "DontUse": "dontUse",
-        "DuringRequest": "duringRequest",
-        "DuringSession": "duringSession"
-      }
-    },
-    "httpReuseSessions": {
-      "sourceKeys": ["ReuseSessions"],
-      "nativeProperty": "ReuseSessions",
-      "semanticProperty": "httpService.reuseSessions",
-      "objectKinds": ["httpService"],
-      "semanticByAlias": {
-        "DontUse": "dontUse",
-        "AutoUse": "use"
-      }
-    },
-    "webReuseSessions": {
-      "sourceKeys": ["ReuseSessions"],
-      "nativeProperty": "ReuseSessions",
-      "semanticProperty": "webService.reuseSessions",
-      "objectKinds": ["webService"],
-      "semanticByAlias": {
-        "DontUse": "dontUse",
-        "AutoUse": "use"
-      }
+      },
+      "semanticProperty": "document.number.periodicity",
+      "sourceFacts": [
+        "metaCompile:emit_document_properties:NumberPeriodicity"
+      ]
     },
     "fieldFillChecking": {
-      "sourceKeys": ["FillChecking"],
-      "nativeProperty": "FillChecking",
-      "semanticProperty": "field.fillChecking",
-      "objectKinds": ["attribute", "dimension", "resource"],
       "semanticByAlias": {
         "DontCheck": "dontCheck",
         "ShowError": "showError",
         "ShowWarning": "showWarning"
-      }
+      },
+      "semanticProperty": "field.fillChecking",
+      "sourceFacts": [
+        "metaInfo:format_flags:FillChecking"
+      ]
     },
     "fieldIndexing": {
-      "sourceKeys": ["Indexing"],
-      "nativeProperty": "Indexing",
-      "semanticProperty": "field.indexing",
-      "objectKinds": ["attribute", "dimension", "resource"],
       "semanticByAlias": {
         "DontIndex": "dontIndex",
         "Index": "index",
         "IndexWithAdditionalOrder": "indexWithAdditionalOrder"
-      }
+      },
+      "semanticProperty": "field.indexing",
+      "sourceFacts": [
+        "metaInfo:format_flags:Indexing"
+      ]
     },
     "fieldUse": {
-      "extractors": ["fieldUseAliases"],
-      "nativeProperty": "Use",
-      "semanticProperty": "field.use",
-      "objectKinds": ["attribute", "dimension", "resource"],
       "semanticByAlias": {
-        "ForItem": "forItem",
         "ForFolder": "groupOnly",
-        "ForFolderAndItem": "groupsAndItems"
-      }
+        "ForFolderAndItem": "groupsAndItems",
+        "ForItem": "forItem"
+      },
+      "semanticProperty": "field.use",
+      "sourceFacts": [
+        "metaInfo:format_flags:Use"
+      ]
+    },
+    "formType": {
+      "semanticByAlias": {
+        "Managed": "managed",
+        "Ordinary": "ordinary"
+      },
+      "semanticProperty": "form.type",
+      "sourceFacts": [
+        "legacyDescriptors:FormType"
+      ]
+    },
+    "httpReuseSessions": {
+      "semanticByAlias": {
+        "AutoUse": "use",
+        "DontUse": "dontUse"
+      },
+      "semanticProperty": "httpService.reuseSessions",
+      "sourceFacts": [
+        "metaCompile:emit_http_service_properties:ReuseSessions"
+      ]
+    },
+    "informationRegisterPeriodicity": {
+      "semanticByAlias": {
+        "Day": "day",
+        "Month": "month",
+        "Nonperiodical": "nonperiodical",
+        "Quarter": "quarter",
+        "RecorderPosition": "recorderPosition",
+        "Second": "second",
+        "Year": "year"
+      },
+      "semanticProperty": "register.periodicity",
+      "sourceFacts": [
+        "metaCompile:emit_information_register_properties:InformationRegisterPeriodicity"
+      ]
+    },
+    "numberType": {
+      "semanticByAlias": {
+        "Number": "number",
+        "String": "string"
+      },
+      "semanticProperty": "document.number.type",
+      "sourceFacts": [
+        "metaCompile:emit_document_properties:NumberType"
+      ]
+    },
+    "posting": {
+      "semanticByAlias": {
+        "Allow": "allow",
+        "Deny": "deny"
+      },
+      "semanticProperty": "document.posting.mode",
+      "sourceFacts": [
+        "metaCompile:emit_document_properties:Posting"
+      ]
+    },
+    "realTimePosting": {
+      "semanticByAlias": {
+        "Allow": "allow",
+        "Deny": "deny"
+      },
+      "semanticProperty": "document.realTimePosting.mode",
+      "sourceFacts": [
+        "metaCompile:emit_document_properties:RealTimePosting"
+      ]
+    },
+    "registerRecordsDeletion": {
+      "semanticByAlias": {
+        "AutoDelete": "deleteAutomatic",
+        "AutoDeleteOff": "deleteDisabled",
+        "AutoDeleteOnUnpost": "deleteOnReversal"
+      },
+      "semanticProperty": "document.registerRecordsDeletion.mode",
+      "sourceFacts": [
+        "metaCompile:emit_document_properties:RegisterRecordsDeletion"
+      ]
+    },
+    "registerRecordsWriting": {
+      "semanticByAlias": {
+        "WriteAll": "writeAll",
+        "WriteModified": "writeModified",
+        "WriteSelected": "writeSelected"
+      },
+      "semanticProperty": "document.registerRecordsWritingOnPost.mode",
+      "sourceFacts": [
+        "metaCompile:emit_document_properties:RegisterRecordsWritingOnPost"
+      ]
+    },
+    "registerType": {
+      "semanticByAlias": {
+        "Balance": "balance",
+        "Balances": "balance",
+        "Turnovers": "turnovers"
+      },
+      "semanticProperty": "register.type",
+      "sourceFacts": [
+        "metaCompile:emit_accumulation_register_properties:RegisterType"
+      ]
+    },
+    "registerWriteMode": {
+      "semanticByAlias": {
+        "Independent": "independent",
+        "RecorderSubordinate": "recorderSubordinate"
+      },
+      "semanticProperty": "register.writeMode",
+      "sourceFacts": [
+        "metaCompile:emit_information_register_properties:WriteMode"
+      ]
+    },
+    "returnValuesReuse": {
+      "semanticByAlias": {
+        "DontUse": "dontUse",
+        "DuringRequest": "duringRequest",
+        "DuringSession": "duringSession"
+      },
+      "semanticProperty": "module.returnValuesReuse",
+      "sourceFacts": [
+        "metaCompile:emit_common_module_properties:ReturnValuesReuse"
+      ]
+    },
+    "templateType": {
+      "semanticByAlias": {
+        "BinaryData": "binaryData",
+        "DataCompositionSchema": "dataCompositionSchema",
+        "HTMLDocument": "htmlDocument",
+        "SpreadsheetDocument": "spreadsheetDocument",
+        "TextDocument": "textDocument"
+      },
+      "semanticProperty": "template.type",
+      "sourceFacts": [
+        "legacyDescriptors:TemplateType"
+      ]
     },
     "transferDirection": {
-      "sourceKeys": ["TransferDirection"],
-      "nativeProperty": "TransferDirection",
-      "semanticProperty": "webService.parameter.direction",
-      "objectKinds": ["webServiceParameter"],
       "semanticByAlias": {
         "In": "in",
         "InOut": "inOut",
         "Out": "out"
-      }
+      },
+      "semanticProperty": "webService.parameter.direction",
+      "sourceFacts": [
+        "metaInfo:get_ws_operations:TransferDirection"
+      ]
     },
-    "formType": {
-      "extractors": ["formTypeAliases"],
-      "nativeProperty": "FormType",
-      "semanticProperty": "form.type",
-      "objectKinds": ["form", "commonForm"],
+    "webReuseSessions": {
       "semanticByAlias": {
-        "Managed": "managed",
-        "Ordinary": "ordinary"
-      }
-    },
-    "templateType": {
-      "extractors": ["templateTypeAliases"],
-      "nativeProperty": "TemplateType",
-      "semanticProperty": "template.type",
-      "objectKinds": ["template", "spreadsheetDocumentTemplate", "commonTemplate"],
-      "semanticByAlias": {
-        "DataCompositionSchema": "dataCompositionSchema",
-        "SpreadsheetDocument": "spreadsheetDocument",
-        "BinaryData": "binaryData",
-        "TextDocument": "textDocument",
-        "HTMLDocument": "htmlDocument"
-      }
+        "AutoUse": "use",
+        "DontUse": "dontUse"
+      },
+      "semanticProperty": "webService.reuseSessions",
+      "sourceFacts": [
+        "metaCompile:emit_web_service_properties:ReuseSessions"
+      ]
+    }
+  },
+  "headerKinds": {
+    "CommonForm": "commonForm",
+    "CommonTemplate": "commonTemplate",
+    "Language": "language",
+    "Role": "role",
+    "Документ": "document",
+    "Общий модуль": "commonModule",
+    "Определяемый тип": "definedType",
+    "Отчёт": "report",
+    "Перечисление": "enumeration",
+    "Подписка на событие": "eventSubscription",
+    "Регистр сведений": "informationRegister",
+    "Справочник": "catalog"
+  },
+  "schemaVersion": 1,
+  "typeTargets": {
+    "DocumentObject": [
+      "object",
+      "document"
+    ],
+    "InformationRegisterManager": [
+      "manager",
+      "informationRegister"
+    ],
+    "InformationRegisterRecordKey": [
+      "key",
+      "informationRegister"
+    ],
+    "InformationRegisterRecordSet": [
+      "recordSet",
+      "informationRegister"
+    ],
+    "БизнесПроцессОбъект": [
+      "object",
+      "businessProcess"
+    ],
+    "ДокументОбъект": [
+      "object",
+      "document"
+    ],
+    "ЗадачаОбъект": [
+      "object",
+      "task"
+    ],
+    "ОпределяемыйТип": [
+      "definedType",
+      "definedType"
+    ],
+    "ПВХСсылка": [
+      "reference",
+      "chartOfCharacteristicTypes"
+    ],
+    "ПеречислениеСсылка": [
+      "enumeration",
+      "enumeration"
+    ],
+    "СправочникОбъект": [
+      "object",
+      "catalog"
+    ],
+    "СправочникСсылка": [
+      "reference",
+      "catalog"
+    ],
+    "Характеристика": [
+      "reference",
+      "chartOfCharacteristicTypes"
+    ]
+  },
+  "valueMappings": {
+    "subscriptionEvent": {
+      "AfterWrite": "ПослеЗаписи",
+      "BeforeDelete": "ПередУдалением",
+      "BeforeWrite": "ПередЗаписью",
+      "FillCheckProcessing": "ОбработкаПроверкиЗаполнения",
+      "OnReadAtServer": "ПриЧтенииНаСервере",
+      "OnWrite": "ПриЗаписи",
+      "Posting": "ОбработкаПроведения",
+      "UndoPosting": "ОбработкаУдаленияПроведения"
     }
   }
 }
