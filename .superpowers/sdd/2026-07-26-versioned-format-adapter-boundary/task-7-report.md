@@ -1090,3 +1090,198 @@ git diff --check
 - Full workspace validation was intentionally not run.
 - No scoped Task 7 test, affected Task 5/6 parity test, host compile check,
   Windows cross-target check, formatting check, or diff check remains failing.
+
+## Fix Round 7
+
+Base: `b6c7aaa1606303ac33e83b30237f2369a6bf5a88`
+
+Implementation commit:
+`fc06bd91fea7238663deb32486f3d22f3134ad25`
+(`fix(task7): preserve validation evidence and provenance`)
+
+Tree hashes:
+
+- base: `343cd1f7397d50226a9af13cc7e121b943d7ee02`
+- implementation: `0a68c566e99322cc0a2d73298d7d5e48ff690141`
+
+The controller-owned `progress.md` remained modified, unstaged, and untouched.
+The implementation commit was not amended.
+
+### RED
+
+- The new core test failed with `E0432` because
+  `ValidationErrorTruncation` did not exist and with `E0599` because
+  `ValidationOptions::max_errors` and
+  `ValidationReport::new_with_coverage_and_truncation` did not exist.
+- The coder tests failed with `E0432`/`E0425` because there was no closed batch
+  aggregate or report normalizer. The old loop imperatively overwrote status
+  and coverage according to input order.
+- The architecture suite ran 22 tests with 19 passing and three intentional
+  RED groups failing: parameter shadowing inherited approval by name, a local
+  module named `unica_format_core` was accepted as external, and a real
+  multi-hop external alias chain was not resolved.
+- The first integration fixture made the object's semantic name empty and
+  therefore correctly produced `Unavailable` through failed owner resolution.
+  The fixture was corrected to use a duplicate child identity as its second
+  local error, preserving an available validation context.
+- After dependency-backed resolution was introduced, the positive alias tests
+  exposed that workspace dependency keys were parsed as
+  `unica_format_core.workspace`. Parsing the package key before the Cargo
+  dotted subkey fixed the root without adding a name allowlist.
+
+### Responsibility closure map
+
+| Concern | Final owner and invariant |
+| --- | --- |
+| Error limit contract | `unica-format-core::ValidationOptions` names `max_errors`, accepts `0..=1000`, and no longer describes a generic finding limit. |
+| Truncation evidence | `ValidationReport` carries closed `ValidationErrorTruncation::{Complete, Truncated}`. `Truncated` necessarily derives `Invalid`, including when zero error findings are retained. |
+| Mandatory completeness evidence | Adapter validation limits only truncatable error findings. Registrar coverage warnings and `SourceUnreadable` remain present regardless of `maxErrors`. |
+| Partial plus errors | Partial coverage retains exactly one neutral registrar coverage finding. Retained or omitted errors produce `Invalid` while coverage remains `Partial`; truncation never changes the result to `Unavailable`. |
+| Finding order | The core constructor canonicalizes mandatory coverage evidence first, source-unreadable evidence second, retained errors third, and warnings last, with closed code ordering inside each class. |
+| Wire validation | Existing constructors default to complete error evidence. The explicit constructor and custom Serde reject status, coverage, severity, and truncation contradictions. |
+| Batch algebra | The host uses the five legal lattice elements `Valid`, `Partial`, `InvalidComplete`, `InvalidPartial`, and `Unavailable`. Join is commutative and associative; `Unavailable` is top, then invalid status while partial coverage is preserved, then partial, then valid. |
+| Batch normalization | Reports are canonically ordered before rendering. Diagnostics are sorted and deduplicated by semantic subject plus closed finding, so input permutations are structurally identical without losing per-item identity. |
+| Lexical binding identity | Architecture analysis maps each parameter, local, closure, loop, match, and conditional binding to a scope-local binding ID. Neutral methods attach only to the typed parameter's ID; any shadow creates a new unapproved ID. |
+| External trait provenance | Approved neutral traits must resolve recursively to actual normal dependencies declared by `unica-coder/Cargo.toml`. Local namespaces take precedence over extern-prelude names. |
+| Alias safety | Import aliases and globs resolve recursively with cycle detection. Any local module/re-export hop, unresolved root, local crate-name spoof, or alias cycle is unapproved. |
+
+### Validation truncation and batch coverage
+
+- `maxErrors=0` retains no truncatable errors, retains the mandatory partial
+  coverage finding, serializes `errorTruncation: "truncated"`, and remains
+  `status: "invalid", coverage: "partial"`.
+- `maxErrors=1` retains one of two deterministic local errors, retains the
+  coverage finding, and reports truncated errors.
+- A larger limit retains both errors and reports complete error evidence.
+- Complete, partial, invalid-complete, invalid-partial, and unavailable lattice
+  elements are checked across every pair and triple for commutativity and
+  associativity.
+- Every permutation of all five lattice elements folds to the same
+  `Unavailable` result. Invalid-complete joined with partial yields
+  invalid-partial.
+- Reordered batches, including duplicate reports, produce equal normalized
+  structures. Duplicate diagnostics for the same semantic subject are removed;
+  the same diagnostic on different subjects remains distinct.
+
+### Architecture adversarial coverage
+
+- Parameter and nested-scope shadowing cannot inherit a neutral port
+  exemption.
+- A local module named `unica_format_core`, one-hop and two-hop local aliases,
+  local glob/re-export facades, and an alias cycle all remain reachable and
+  expose their hidden native logic.
+- Existing local `HostPort`, shadow-trait, alias, and re-export spoof fixtures
+  remain rejected.
+- Direct actual external traits, external aliases, external globs, and a
+  three-hop actual dependency alias chain terminate only at methods declared
+  by the resolved approved trait.
+- The production Task 7 roots remain unable to reach host XML readers, parser
+  crates, native layout helpers, or native wire literals.
+
+### GREEN validation
+
+```text
+cargo test -p unica-format-core \
+  --test public_json_contract \
+  --test task7_fix_round2_contracts \
+  --test task7_fix_round3_evidence \
+  --test task7_operational_ports \
+  --test task7_fix_round6_validation \
+  --test task7_fix_round7_validation
+  32 passed; 0 failed; 0 ignored
+
+cargo test -p unica-application \
+  --test task7_fix_round2_policy \
+  --test task7_operational_policy
+  7 passed; 0 failed; 0 ignored
+
+cargo test -p unica-adapter-platform-xml \
+  versions::v2_20::operations::fix_round3_tests:: --lib
+  5 passed; 0 failed; 0 ignored
+
+cargo test -p unica-adapter-platform-xml \
+  --test legacy_parity \
+  --test specialized_relations \
+  --test task7_fix_round1_architecture \
+  --test task7_fix_round2_architecture \
+  --test task7_fix_round2_lazy_source \
+  --test task7_fix_round3_architecture \
+  --test task7_fix_round3_lazy_revision \
+  --test task7_operational_ports \
+  --test unmapped_fact
+  86 passed; 0 failed; 0 ignored
+  legacy_parity: all 26 passed
+  task7_fix_round3_architecture: 22 passed
+  task7_fix_round3_lazy_revision: 4 passed
+
+cargo test -p unica-coder meta_validation_ --lib
+  3 passed; 0 failed; 0 ignored
+cargo test -p unica-coder validate_meta_ --lib
+  20 passed; 0 failed; 0 ignored
+cargo test -p unica-coder \
+  max_errors_limits_only_errors_and_preserves_partial_coverage --lib
+  1 passed; 0 failed; 0 ignored
+cargo test -p unica-coder \
+  validation_batch_lattice_is_commutative_associative_and_permutation_stable \
+  --lib
+  1 passed; 0 failed; 0 ignored
+cargo test -p unica-coder \
+  normalized_batch_is_order_stable_and_dedupes_diagnostics_by_subject --lib
+  1 passed; 0 failed; 0 ignored
+cargo test -p unica-coder \
+  meta_validate_typed_gateway_exposes_closed_validation_json --lib
+  1 passed; 0 failed; 0 ignored
+
+Scoped total: 157 passed; 0 failed; 0 ignored
+
+cargo check -p unica-format-core -p unica-application -p unica-coder \
+  -p unica-adapter-platform-xml --tests
+  passed; unica-coder emitted 21 existing dead-code warnings
+
+cargo check -p unica-adapter-platform-xml \
+  --target x86_64-pc-windows-msvc --lib --tests
+  passed
+
+cargo fmt --all -- --check
+  passed
+git diff --check
+  passed
+```
+
+### Files
+
+- `crates/unica-format-core/src/ports.rs`
+- `crates/unica-format-core/tests/task7_fix_round7_validation.rs`
+- `crates/unica-adapter-platform-xml/src/versions/v2_20/validation.rs`
+- `crates/unica-adapter-platform-xml/tests/task7_fix_round3_architecture.rs`
+- `crates/unica-coder/src/infrastructure/native_operations/meta.rs`
+- `.superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/task-7-report.md`
+
+### Remaining host-native paths and Task 8 justification
+
+- Task 7 policy roots remain mechanically GREEN: `evaluate_format_guard`,
+  `evaluate_support_guard`, and `validate_meta` cannot reach host XML parsing,
+  native layout joins, or native wire matching.
+- `native_operations/common.rs` retains command/composition source-location
+  setup and writer helpers only. No moved guard or validation read traverses
+  those helpers.
+- `native_operations/meta.rs`, `form.rs`, `template.rs`, `help.rs`, `role.rs`,
+  `subsystem.rs`, `interface.rs`, `cf.rs`, `cfe.rs`, `mxl.rs`, `dcs.rs`, and
+  `support.rs` retain native serialization, mutation topology, destination
+  paths, and command-specific writer behavior. These are Task 8 writer
+  responsibilities.
+- Remaining `Configuration.xml` joins are writer source/destination-location
+  paths outside all moved read/guard/validation call paths.
+- Native strings in tests are fixtures and recursive leakage probes, not
+  application policy or public output.
+
+### Residual risks and non-gates
+
+- The architecture test remains a conservative AST/module graph rather than
+  rustc type inference. It fails closed on unresolved local/unknown calls and
+  now derives approved extern roots from the host manifest rather than names.
+- Windows code cross-compiles, but Windows filesystem behavior was not
+  runtime-executed on this macOS host.
+- Full workspace validation was intentionally not run.
+- No scoped Task 7 test, affected Task 5/6 parity test, host compile check,
+  Windows cross-target check, formatting check, or diff check remains failing.
