@@ -4,8 +4,9 @@ use sha2::{Digest, Sha256};
 use unica_format_core::{
     ports::{
         OperationalEvidenceRevision, OperationalValidationResult, SemanticArtifactId,
-        ValidationCoverage, ValidationFinding, ValidationFindingCode, ValidationFindingSeverity,
-        ValidationIssueKind, ValidationOptions, ValidationRelationCoverage, ValidationReport,
+        ValidationCoverage, ValidationErrorTruncation, ValidationFinding, ValidationFindingCode,
+        ValidationFindingSeverity, ValidationIssueKind, ValidationOptions,
+        ValidationRelationCoverage, ValidationReport,
     },
     source::{SourceAdapterError, SourceAdapterErrorKind},
 };
@@ -240,8 +241,14 @@ fn validate_one_with_provider(
         }
     }
 
-    findings.truncate(usize::from(options.max_findings()));
-    report_with_coverage(subject_id, checks.max(1), findings, coverage)
+    let (findings, error_truncation) = limit_error_findings(findings, options.max_errors());
+    report_with_coverage_and_truncation(
+        subject_id,
+        checks.max(1),
+        findings,
+        coverage,
+        error_truncation,
+    )
 }
 
 fn report(
@@ -258,13 +265,61 @@ fn report_with_coverage(
     findings: Vec<ValidationFinding>,
     coverage: ValidationCoverage,
 ) -> Result<ValidationReport, SourceAdapterError> {
-    ValidationReport::new_with_coverage(
+    report_with_coverage_and_truncation(
+        subject,
+        checks,
+        findings,
+        coverage,
+        ValidationErrorTruncation::Complete,
+    )
+}
+
+fn report_with_coverage_and_truncation(
+    subject: SemanticArtifactId,
+    checks: u16,
+    findings: Vec<ValidationFinding>,
+    coverage: ValidationCoverage,
+    error_truncation: ValidationErrorTruncation,
+) -> Result<ValidationReport, SourceAdapterError> {
+    ValidationReport::new_with_coverage_and_truncation(
         subject,
         checks.max(findings.len() as u16),
         findings,
         coverage,
+        error_truncation,
     )
     .map_err(contract_error)
+}
+
+fn limit_error_findings(
+    findings: Vec<ValidationFinding>,
+    max_errors: u16,
+) -> (Vec<ValidationFinding>, ValidationErrorTruncation) {
+    let mut retained = Vec::with_capacity(findings.len());
+    let mut retained_errors = 0u16;
+    let mut truncated = false;
+    for finding in findings {
+        let truncatable_error = finding.severity() == ValidationFindingSeverity::Error
+            && finding.code() != ValidationFindingCode::SourceUnreadable;
+        if truncatable_error {
+            if retained_errors < max_errors {
+                retained_errors += 1;
+                retained.push(finding);
+            } else {
+                truncated = true;
+            }
+        } else {
+            retained.push(finding);
+        }
+    }
+    (
+        retained,
+        if truncated {
+            ValidationErrorTruncation::Truncated
+        } else {
+            ValidationErrorTruncation::Complete
+        },
+    )
 }
 
 const fn error(code: ValidationFindingCode) -> ValidationFinding {

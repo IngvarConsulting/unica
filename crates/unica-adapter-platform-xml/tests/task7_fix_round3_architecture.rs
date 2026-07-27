@@ -70,12 +70,17 @@ struct CallGraph {
     methods_by_name: BTreeMap<String, Vec<MethodTarget>>,
     associated_methods: BTreeMap<String, BTreeSet<String>>,
     local_types: BTreeSet<String>,
+    local_namespaces: BTreeSet<String>,
+    external_crates: BTreeSet<String>,
     return_provenance: BTreeMap<String, ReceiverProvenance>,
 }
 
 impl CallGraph {
     fn from_sources(sources: impl IntoIterator<Item = (String, String)>) -> Self {
-        let mut graph = Self::default();
+        let mut graph = Self {
+            external_crates: host_dependency_roots(),
+            ..Self::default()
+        };
         let parsed = sources
             .into_iter()
             .map(|(module, source)| {
@@ -84,6 +89,9 @@ impl CallGraph {
                 (module, file)
             })
             .collect::<Vec<_>>();
+        graph
+            .local_namespaces
+            .extend(parsed.iter().map(|(module, _)| module.clone()));
         for (module, file) in &parsed {
             graph.index_local_types(module, &file.items);
         }
@@ -115,6 +123,11 @@ impl CallGraph {
                 if item_mod.attrs.iter().any(is_cfg_test) {
                     continue;
                 }
+                graph_local_namespace(
+                    &mut self.local_namespaces,
+                    module,
+                    &item_mod.ident.to_string(),
+                );
                 if let Some((_, nested)) = &item_mod.content {
                     self.index_local_types(&format!("{module}::{}", item_mod.ident), nested);
                 }
@@ -322,10 +335,11 @@ impl CallGraph {
             module,
             imports.clone(),
             owner.clone(),
-            neutral_port_receivers(module, imports, signature),
-            receiver_parameters(module, imports, signature),
+            signature,
             self.return_provenance.clone(),
             self.local_types.clone(),
+            self.local_namespaces.clone(),
+            self.external_crates.clone(),
         );
         visitor.visit_block(block);
         self.functions.insert(
@@ -564,11 +578,20 @@ struct FactVisitor {
     module_imports: Imports,
     scopes: Vec<Imports>,
     owner: Option<Vec<String>>,
-    neutral_receivers: BTreeMap<String, BTreeSet<String>>,
-    receiver_scopes: Vec<BTreeMap<String, ReceiverProvenance>>,
+    receiver_scopes: Vec<BTreeMap<String, u64>>,
+    receiver_bindings: BTreeMap<u64, ReceiverBinding>,
+    next_binding_id: u64,
     return_provenance: BTreeMap<String, ReceiverProvenance>,
     local_types: BTreeSet<String>,
+    local_namespaces: BTreeSet<String>,
+    external_crates: BTreeSet<String>,
     facts: FunctionFacts,
+}
+
+#[derive(Debug, Clone)]
+struct ReceiverBinding {
+    provenance: ReceiverProvenance,
+    approved_methods: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -595,22 +618,28 @@ impl FactVisitor {
         module: &str,
         module_imports: Imports,
         owner: Option<Vec<String>>,
-        neutral_receivers: BTreeMap<String, BTreeSet<String>>,
-        receiver_parameters: BTreeMap<String, ReceiverProvenance>,
+        signature: &Signature,
         return_provenance: BTreeMap<String, ReceiverProvenance>,
         local_types: BTreeSet<String>,
+        local_namespaces: BTreeSet<String>,
+        external_crates: BTreeSet<String>,
     ) -> Self {
-        Self {
+        let mut visitor = Self {
             module: module.to_string(),
             module_imports,
             scopes: Vec::new(),
             owner,
-            neutral_receivers,
-            receiver_scopes: vec![receiver_parameters],
+            receiver_scopes: vec![BTreeMap::new()],
+            receiver_bindings: BTreeMap::new(),
+            next_binding_id: 0,
             return_provenance,
             local_types,
+            local_namespaces,
+            external_crates,
             facts: FunctionFacts::default(),
-        }
+        };
+        visitor.bind_signature(signature);
+        visitor
     }
 
     fn effective_imports(&self) -> Imports {
@@ -622,11 +651,78 @@ impl FactVisitor {
     }
 
     fn receiver_provenance(&self, name: &str) -> ReceiverProvenance {
-        self.receiver_scopes
+        self.receiver_binding(name)
+            .map(|binding| binding.provenance)
+            .unwrap_or(ReceiverProvenance::Unknown)
+    }
+
+    fn receiver_binding(&self, name: &str) -> Option<&ReceiverBinding> {
+        let binding_id = self
+            .receiver_scopes
             .iter()
             .rev()
-            .find_map(|scope| scope.get(name).copied())
-            .unwrap_or(ReceiverProvenance::Unknown)
+            .find_map(|scope| scope.get(name))?;
+        self.receiver_bindings.get(binding_id)
+    }
+
+    fn bind_name(
+        &mut self,
+        name: String,
+        provenance: ReceiverProvenance,
+        approved_methods: BTreeSet<String>,
+    ) {
+        let binding_id = self.next_binding_id;
+        self.next_binding_id += 1;
+        self.receiver_bindings.insert(
+            binding_id,
+            ReceiverBinding {
+                provenance,
+                approved_methods,
+            },
+        );
+        self.receiver_scopes
+            .last_mut()
+            .expect("receiver scope exists")
+            .insert(name, binding_id);
+    }
+
+    fn bind_pattern(
+        &mut self,
+        pattern: &Pat,
+        provenance: ReceiverProvenance,
+        approved_methods: BTreeSet<String>,
+    ) {
+        let mut names = Vec::new();
+        pattern_idents(pattern, &mut names);
+        for name in names {
+            self.bind_name(name, provenance, approved_methods.clone());
+        }
+    }
+
+    fn bind_signature(&mut self, signature: &Signature) {
+        for input in &signature.inputs {
+            match input {
+                FnArg::Receiver(_) => {
+                    self.bind_name(
+                        "self".to_string(),
+                        ReceiverProvenance::Local,
+                        BTreeSet::new(),
+                    );
+                }
+                FnArg::Typed(argument) => {
+                    let provenance =
+                        type_provenance(&self.module, &self.module_imports, &argument.ty);
+                    let approved_methods = approved_neutral_port_methods(
+                        &self.module,
+                        &self.module_imports,
+                        &argument.ty,
+                        &self.external_crates,
+                        &self.local_namespaces,
+                    );
+                    self.bind_pattern(&argument.pat, provenance, approved_methods);
+                }
+            }
+        }
     }
 
     fn expression_provenance(&self, expression: &Expr) -> ReceiverProvenance {
@@ -782,22 +878,19 @@ impl<'ast> Visit<'ast> for FactVisitor {
                 .map(|init| self.expression_provenance(&init.expr))
                 .unwrap_or(ReceiverProvenance::Unknown),
         };
-        if let Some(scope) = self.receiver_scopes.last_mut() {
-            bind_pattern(&node.pat, provenance, scope);
-        }
+        self.bind_pattern(&node.pat, provenance, BTreeSet::new());
     }
 
     fn visit_expr_closure(&mut self, node: &'ast syn::ExprClosure) {
-        let mut scope = BTreeMap::new();
+        self.receiver_scopes.push(BTreeMap::new());
         for input in &node.inputs {
             let provenance = if let Pat::Type(pattern) = input {
                 type_provenance(&self.module, &self.effective_imports(), &pattern.ty)
             } else {
                 ReceiverProvenance::External
             };
-            bind_pattern(input, provenance, &mut scope);
+            self.bind_pattern(input, provenance, BTreeSet::new());
         }
-        self.receiver_scopes.push(scope);
         self.visit_expr(&node.body);
         self.receiver_scopes.pop();
     }
@@ -808,9 +901,8 @@ impl<'ast> Visit<'ast> for FactVisitor {
             ReceiverProvenance::Unknown => ReceiverProvenance::External,
             provenance => provenance,
         };
-        let mut scope = BTreeMap::new();
-        bind_pattern(&node.pat, provenance, &mut scope);
-        self.receiver_scopes.push(scope);
+        self.receiver_scopes.push(BTreeMap::new());
+        self.bind_pattern(&node.pat, provenance, BTreeSet::new());
         self.visit_block(&node.body);
         self.receiver_scopes.pop();
     }
@@ -818,12 +910,11 @@ impl<'ast> Visit<'ast> for FactVisitor {
     fn visit_expr_match(&mut self, node: &'ast syn::ExprMatch) {
         self.visit_expr(&node.expr);
         for arm in &node.arms {
-            let mut scope = BTreeMap::new();
+            self.receiver_scopes.push(BTreeMap::new());
             // A destructured payload does not inherit the scrutinee enum's
             // implementation owner. Local method bodies remain reachable through
             // conservative same-name method edges.
-            bind_pattern(&arm.pat, ReceiverProvenance::External, &mut scope);
-            self.receiver_scopes.push(scope);
+            self.bind_pattern(&arm.pat, ReceiverProvenance::External, BTreeSet::new());
             if let Some((_, guard)) = &arm.guard {
                 self.visit_expr(guard);
             }
@@ -834,11 +925,10 @@ impl<'ast> Visit<'ast> for FactVisitor {
 
     fn visit_expr_if(&mut self, node: &'ast syn::ExprIf) {
         self.visit_expr(&node.cond);
-        let mut scope = BTreeMap::new();
+        self.receiver_scopes.push(BTreeMap::new());
         if let Expr::Let(binding) = node.cond.as_ref() {
-            bind_pattern(&binding.pat, ReceiverProvenance::External, &mut scope);
+            self.bind_pattern(&binding.pat, ReceiverProvenance::External, BTreeSet::new());
         }
-        self.receiver_scopes.push(scope);
         self.visit_block(&node.then_branch);
         self.receiver_scopes.pop();
         if let Some((_, otherwise)) = &node.else_branch {
@@ -892,8 +982,8 @@ impl<'ast> Visit<'ast> for FactVisitor {
         let receiver = receiver_ident(node.receiver.as_ref());
         let approved_neutral_port = receiver
             .as_ref()
-            .and_then(|receiver| self.neutral_receivers.get(receiver))
-            .is_some_and(|methods| methods.contains(&method));
+            .and_then(|receiver| self.receiver_binding(receiver))
+            .is_some_and(|binding| binding.approved_methods.contains(&method));
         let fail_if_unresolved =
             self.expression_provenance(node.receiver.as_ref()) != ReceiverProvenance::External;
         self.facts.calls.push(CallFact::Method {
@@ -1076,44 +1166,40 @@ fn receiver_ident(receiver: &Expr) -> Option<String> {
         .map(|segment| segment.ident.to_string())
 }
 
-fn bind_pattern(
-    pattern: &Pat,
-    provenance: ReceiverProvenance,
-    scope: &mut BTreeMap<String, ReceiverProvenance>,
-) {
+fn pattern_idents(pattern: &Pat, names: &mut Vec<String>) {
     match pattern {
         Pat::Ident(pattern) => {
-            scope.insert(pattern.ident.to_string(), provenance);
+            names.push(pattern.ident.to_string());
             if let Some((_, subpattern)) = &pattern.subpat {
-                bind_pattern(subpattern, provenance, scope);
+                pattern_idents(subpattern, names);
             }
         }
-        Pat::Type(pattern) => bind_pattern(&pattern.pat, provenance, scope),
-        Pat::Reference(pattern) => bind_pattern(&pattern.pat, provenance, scope),
-        Pat::Paren(pattern) => bind_pattern(&pattern.pat, provenance, scope),
+        Pat::Type(pattern) => pattern_idents(&pattern.pat, names),
+        Pat::Reference(pattern) => pattern_idents(&pattern.pat, names),
+        Pat::Paren(pattern) => pattern_idents(&pattern.pat, names),
         Pat::Tuple(pattern) => {
             for element in &pattern.elems {
-                bind_pattern(element, provenance, scope);
+                pattern_idents(element, names);
             }
         }
         Pat::TupleStruct(pattern) => {
             for element in &pattern.elems {
-                bind_pattern(element, provenance, scope);
+                pattern_idents(element, names);
             }
         }
         Pat::Struct(pattern) => {
             for field in &pattern.fields {
-                bind_pattern(&field.pat, provenance, scope);
+                pattern_idents(&field.pat, names);
             }
         }
         Pat::Slice(pattern) => {
             for element in &pattern.elems {
-                bind_pattern(element, provenance, scope);
+                pattern_idents(element, names);
             }
         }
         Pat::Or(pattern) => {
             for case in &pattern.cases {
-                bind_pattern(case, provenance, scope);
+                pattern_idents(case, names);
             }
         }
         _ => {}
@@ -1154,52 +1240,6 @@ fn pattern_binds_ident(pattern: &Pat, name: &str) -> bool {
             .any(|case| pattern_binds_ident(case, name)),
         _ => false,
     }
-}
-
-fn neutral_port_receivers(
-    module: &str,
-    imports: &Imports,
-    signature: &Signature,
-) -> BTreeMap<String, BTreeSet<String>> {
-    signature
-        .inputs
-        .iter()
-        .filter_map(|input| {
-            let FnArg::Typed(argument) = input else {
-                return None;
-            };
-            let Pat::Ident(pattern) = argument.pat.as_ref() else {
-                return None;
-            };
-            let methods = approved_neutral_port_methods(module, imports, &argument.ty);
-            (!methods.is_empty()).then(|| (pattern.ident.to_string(), methods))
-        })
-        .collect()
-}
-
-fn receiver_parameters(
-    module: &str,
-    imports: &Imports,
-    signature: &Signature,
-) -> BTreeMap<String, ReceiverProvenance> {
-    let mut parameters = BTreeMap::new();
-    for input in &signature.inputs {
-        match input {
-            FnArg::Receiver(_) => {
-                parameters.insert("self".to_string(), ReceiverProvenance::Local);
-            }
-            FnArg::Typed(argument) => {
-                let Pat::Ident(pattern) = argument.pat.as_ref() else {
-                    continue;
-                };
-                parameters.insert(
-                    pattern.ident.to_string(),
-                    type_provenance(module, imports, &argument.ty),
-                );
-            }
-        }
-    }
-    parameters
 }
 
 fn signature_return_provenance(
@@ -1305,7 +1345,13 @@ fn is_prelude_type(name: &str) -> bool {
     )
 }
 
-fn approved_neutral_port_methods(module: &str, imports: &Imports, ty: &Type) -> BTreeSet<String> {
+fn approved_neutral_port_methods(
+    module: &str,
+    imports: &Imports,
+    ty: &Type,
+    external_crates: &BTreeSet<String>,
+    local_namespaces: &BTreeSet<String>,
+) -> BTreeSet<String> {
     let ty = match ty {
         Type::Reference(reference) => reference.elem.as_ref(),
         Type::Paren(paren) => paren.elem.as_ref(),
@@ -1320,7 +1366,13 @@ fn approved_neutral_port_methods(module: &str, imports: &Imports, ty: &Type) -> 
         let TypeParamBound::Trait(bound) = bound else {
             continue;
         };
-        for candidate in resolve_trait_candidates(module, imports, &bound.path) {
+        for candidate in resolve_trait_candidates(
+            module,
+            imports,
+            &bound.path,
+            external_crates,
+            local_namespaces,
+        ) {
             if let Some(approved) = approved_neutral_trait(&candidate.join("::")) {
                 methods.extend(approved.iter().map(|method| (*method).to_string()));
             }
@@ -1329,33 +1381,90 @@ fn approved_neutral_port_methods(module: &str, imports: &Imports, ty: &Type) -> 
     methods
 }
 
-fn resolve_trait_candidates(module: &str, imports: &Imports, path: &syn::Path) -> Vec<Vec<String>> {
+fn resolve_trait_candidates(
+    module: &str,
+    imports: &Imports,
+    path: &syn::Path,
+    external_crates: &BTreeSet<String>,
+    local_namespaces: &BTreeSet<String>,
+) -> Vec<Vec<String>> {
     let path = path_segments(path);
-    match path.as_slice() {
-        [first, ..] if matches!(first.as_str(), "crate" | "self" | "super") => {
-            vec![absolutize_path(module, path)]
+    let mut candidates = Vec::new();
+    if let Some(resolved) = resolve_external_path(
+        module,
+        imports,
+        path.clone(),
+        external_crates,
+        local_namespaces,
+        &mut BTreeSet::new(),
+    ) {
+        candidates.push(resolved);
+    }
+    for glob in &imports.globs {
+        let mut candidate = glob.clone();
+        candidate.extend(path.iter().cloned());
+        if let Some(resolved) = resolve_external_path(
+            module,
+            imports,
+            candidate,
+            external_crates,
+            local_namespaces,
+            &mut BTreeSet::new(),
+        ) {
+            candidates.push(resolved);
         }
-        [first, rest @ ..] if imports.aliases.contains_key(first) => {
-            let mut resolved = imports.aliases[first].clone();
-            resolved.extend(rest.iter().cloned());
-            vec![resolved]
+    }
+    candidates.sort();
+    candidates.dedup();
+    candidates
+}
+
+fn resolve_external_path(
+    module: &str,
+    imports: &Imports,
+    path: Vec<String>,
+    external_crates: &BTreeSet<String>,
+    local_namespaces: &BTreeSet<String>,
+    visiting: &mut BTreeSet<String>,
+) -> Option<Vec<String>> {
+    let first = path.first()?.clone();
+    if matches!(first.as_str(), "crate" | "self" | "super" | "Self") {
+        return None;
+    }
+    if let Some(alias) = imports.aliases.get(&first) {
+        if !visiting.insert(first.clone()) {
+            return None;
         }
-        [first, ..] if is_external_crate_root(first) => vec![path],
-        _ => {
-            let mut candidates = imports
-                .globs
-                .iter()
-                .map(|glob| {
-                    let mut candidate = glob.clone();
-                    candidate.extend(path.iter().cloned());
-                    candidate
-                })
-                .collect::<Vec<_>>();
-            let mut local = module_segments(module);
-            local.extend(path);
-            candidates.push(local);
-            candidates
+        let mut resolved = resolve_external_path(
+            module,
+            imports,
+            alias.clone(),
+            external_crates,
+            local_namespaces,
+            visiting,
+        )?;
+        visiting.remove(&first);
+        resolved.extend(path.into_iter().skip(1));
+        return Some(resolved);
+    }
+    if local_namespace_visible(module, &first, local_namespaces) {
+        return None;
+    }
+    external_crates.contains(&first).then_some(path)
+}
+
+fn local_namespace_visible(module: &str, name: &str, local_namespaces: &BTreeSet<String>) -> bool {
+    let mut scope = module_segments(module);
+    loop {
+        let mut candidate = scope.clone();
+        candidate.push(name.to_string());
+        if local_namespaces.contains(&candidate.join("::")) {
+            return true;
         }
+        if scope.len() <= 1 {
+            return false;
+        }
+        scope.pop();
     }
 }
 
@@ -1392,6 +1501,34 @@ fn approved_neutral_trait(path: &str) -> Option<&'static [&'static str]> {
 
 fn module_segments(module: &str) -> Vec<String> {
     module.split("::").map(str::to_string).collect()
+}
+
+fn graph_local_namespace(namespaces: &mut BTreeSet<String>, module: &str, name: &str) {
+    let mut path = module_segments(module);
+    path.push(name.to_string());
+    namespaces.insert(path.join("::"));
+}
+
+fn host_dependency_roots() -> BTreeSet<String> {
+    let manifest = include_str!("../../unica-coder/Cargo.toml");
+    let mut dependencies = BTreeSet::new();
+    let mut in_dependencies = false;
+    for line in manifest.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_dependencies = line == "[dependencies]";
+            continue;
+        }
+        if in_dependencies {
+            if let Some((name, _)) = line.split_once('=') {
+                let name = name.trim().split('.').next().unwrap_or_default();
+                if !name.is_empty() {
+                    dependencies.insert(name.replace('-', "_"));
+                }
+            }
+        }
+    }
+    dependencies
 }
 
 fn is_local_path(path: &[String]) -> bool {
@@ -2212,6 +2349,182 @@ fn exact_neutral_port_alias_and_glob_imports_are_approved_by_provenance() {
     assert!(
         graph.violations_from(&["crate::entry::run"]).is_empty(),
         "exact neutral port imports must terminate at their declared methods"
+    );
+}
+
+#[test]
+fn neutral_port_approval_is_bound_to_the_original_lexical_binding() {
+    let cases = [
+        (
+            "parameter-shadow",
+            r#"
+                use unica_format_core::ports::ValidationContextPort;
+                struct Local;
+                trait HiddenBoundary {
+                    fn inspect(&self) {
+                        let _ = std::path::Path::new(".").join("Configuration.xml");
+                    }
+                }
+                pub fn run(port: &dyn ValidationContextPort) {
+                    let port = Local;
+                    port.inspect();
+                }
+            "#,
+        ),
+        (
+            "nested-parameter-shadow",
+            r#"
+                use unica_format_core::ports::ValidationContextPort;
+                struct Local;
+                trait HiddenBoundary {
+                    fn inspect(&self) {
+                        let _ = std::path::Path::new(".").join("Rights.xml");
+                    }
+                }
+                pub fn run(port: &dyn ValidationContextPort) {
+                    port.inspect();
+                    {
+                        let port = Local;
+                        port.inspect();
+                    }
+                    port.inspect();
+                }
+            "#,
+        ),
+    ];
+
+    for (label, source) in cases {
+        let graph = fixture_graph(label, &[("entry.rs", source)]);
+        let violations = graph.violations_from(&["crate::entry::run"]);
+        assert!(
+            !violations.is_empty(),
+            "{label} inherited approval from a shadowed parameter"
+        );
+    }
+}
+
+#[test]
+fn dependency_root_and_alias_spoofs_never_gain_neutral_port_provenance() {
+    let cases = [
+        (
+            "local-core-module",
+            r#"
+                mod unica_format_core {
+                    pub mod ports {
+                        pub trait ValidationContextPort { fn inspect(&self); }
+                    }
+                }
+                use unica_format_core::ports::ValidationContextPort;
+                trait HiddenBoundary {
+                    fn inspect(&self) {
+                        let _ = std::path::Path::new(".").join("Configuration.xml");
+                    }
+                }
+                pub fn run(port: &dyn ValidationContextPort) { port.inspect(); }
+            "#,
+        ),
+        (
+            "one-hop-root-alias",
+            r#"
+                mod local {
+                    pub mod ports {
+                        pub trait ValidationContextPort { fn inspect(&self); }
+                    }
+                }
+                use local as unica_format_core;
+                use unica_format_core::ports::ValidationContextPort;
+                trait HiddenBoundary {
+                    fn inspect(&self) {
+                        let _ = std::path::Path::new(".").join("Rights.xml");
+                    }
+                }
+                pub fn run(port: &dyn ValidationContextPort) { port.inspect(); }
+            "#,
+        ),
+        (
+            "two-hop-root-alias",
+            r#"
+                mod local {
+                    pub mod ports {
+                        pub trait ValidationContextPort { fn inspect(&self); }
+                    }
+                }
+                use local as first;
+                use first as unica_format_core;
+                use unica_format_core::ports::ValidationContextPort;
+                trait HiddenBoundary {
+                    fn inspect(&self) {
+                        let _ = std::path::Path::new(".").join("Form.xml");
+                    }
+                }
+                pub fn run(port: &dyn ValidationContextPort) { port.inspect(); }
+            "#,
+        ),
+        (
+            "glob-reexport-spoof",
+            r#"
+                mod local {
+                    pub trait ValidationContextPort { fn inspect(&self); }
+                }
+                mod facade { pub use crate::entry::local::*; }
+                use facade::*;
+                trait HiddenBoundary {
+                    fn inspect(&self) {
+                        let _ = std::path::Path::new(".").join("Template.xml");
+                    }
+                }
+                pub fn run(port: &dyn ValidationContextPort) { port.inspect(); }
+            "#,
+        ),
+        (
+            "alias-cycle",
+            r#"
+                use unica_format_core as core_alias;
+                use core_alias as unica_format_core;
+                use unica_format_core::ports::ValidationContextPort;
+                trait HiddenBoundary {
+                    fn inspect(&self) {
+                        let _ = std::path::Path::new(".").join("ParentConfigurations.bin");
+                    }
+                }
+                pub fn run(port: &dyn ValidationContextPort) { port.inspect(); }
+            "#,
+        ),
+    ];
+
+    for (label, source) in cases {
+        let graph = fixture_graph(label, &[("entry.rs", source)]);
+        let violations = graph.violations_from(&["crate::entry::run"]);
+        assert!(
+            !violations.is_empty(),
+            "{label} was accepted as an actual external dependency"
+        );
+    }
+}
+
+#[test]
+fn actual_external_neutral_port_alias_chains_resolve_to_the_dependency() {
+    let graph = fixture_graph(
+        "external-port-alias-chain",
+        &[(
+            "entry.rs",
+            r#"
+                use unica_format_core as format_contract;
+                use format_contract::ports as operational_contract;
+                use operational_contract::ValidationContextPort as ContextPort;
+                trait HiddenBoundary {
+                    fn inspect(&self) {
+                        let _ = std::path::Path::new(".").join("Configuration.xml");
+                    }
+                }
+                pub fn run(port: &dyn ContextPort) { port.inspect(); }
+            "#,
+        )],
+    );
+
+    assert!(
+        graph.violations_from(&["crate::entry::run"]).is_empty(),
+        "an actual dependency alias chain must retain exact trait provenance"
     );
 }
 

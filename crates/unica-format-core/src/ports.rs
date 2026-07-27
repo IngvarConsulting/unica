@@ -1536,14 +1536,14 @@ pub trait ValidationContextPort: Send + Sync {
     ) -> Result<ValidationContextResult, SourceAdapterError>;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ValidationFindingSeverity {
     Warning,
     Error,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ValidationFindingCode {
     SourceUnreadable,
@@ -1566,7 +1566,7 @@ pub enum ValidationFindingCode {
     UnsupportedCombination,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ValidationFinding {
     severity: ValidationFindingSeverity,
@@ -1627,6 +1627,14 @@ pub enum ValidationStatus {
     Invalid,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ValidationErrorTruncation {
+    #[default]
+    Complete,
+    Truncated,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ValidationReport {
@@ -1635,6 +1643,7 @@ pub struct ValidationReport {
     coverage: ValidationCoverage,
     checks: u16,
     findings: Vec<ValidationFinding>,
+    error_truncation: ValidationErrorTruncation,
 }
 
 impl ValidationReport {
@@ -1643,7 +1652,13 @@ impl ValidationReport {
         checks: u16,
         findings: Vec<ValidationFinding>,
     ) -> Result<Self, OperationalContractError> {
-        Self::new_with_coverage(subject, checks, findings, ValidationCoverage::Complete)
+        Self::new_with_coverage_and_truncation(
+            subject,
+            checks,
+            findings,
+            ValidationCoverage::Complete,
+            ValidationErrorTruncation::Complete,
+        )
     }
 
     pub fn new_with_coverage(
@@ -1651,6 +1666,22 @@ impl ValidationReport {
         checks: u16,
         findings: Vec<ValidationFinding>,
         coverage: ValidationCoverage,
+    ) -> Result<Self, OperationalContractError> {
+        Self::new_with_coverage_and_truncation(
+            subject,
+            checks,
+            findings,
+            coverage,
+            ValidationErrorTruncation::Complete,
+        )
+    }
+
+    pub fn new_with_coverage_and_truncation(
+        subject: SemanticArtifactId,
+        checks: u16,
+        mut findings: Vec<ValidationFinding>,
+        coverage: ValidationCoverage,
+        error_truncation: ValidationErrorTruncation,
     ) -> Result<Self, OperationalContractError> {
         let coverage_findings = findings
             .iter()
@@ -1677,9 +1708,10 @@ impl ValidationReport {
         {
             return Err(OperationalContractError::InvalidStateCombination);
         }
-        let status = if findings
-            .iter()
-            .any(|finding| finding.severity == ValidationFindingSeverity::Error)
+        let status = if error_truncation == ValidationErrorTruncation::Truncated
+            || findings
+                .iter()
+                .any(|finding| finding.severity == ValidationFindingSeverity::Error)
         {
             ValidationStatus::Invalid
         } else if coverage == ValidationCoverage::Partial {
@@ -1687,12 +1719,29 @@ impl ValidationReport {
         } else {
             ValidationStatus::Valid
         };
+        findings.sort_by_key(|finding| {
+            let category = if matches!(
+                finding.code,
+                ValidationFindingCode::RegistrarCoverageNotEvaluated
+                    | ValidationFindingCode::RegistrarCoveragePartial
+            ) {
+                0
+            } else if finding.code == ValidationFindingCode::SourceUnreadable {
+                1
+            } else if finding.severity == ValidationFindingSeverity::Error {
+                2
+            } else {
+                3
+            };
+            (category, finding.code)
+        });
         Ok(Self {
             subject,
             status,
             coverage,
             checks,
             findings,
+            error_truncation,
         })
     }
 
@@ -1715,6 +1764,10 @@ impl ValidationReport {
     pub fn findings(&self) -> &[ValidationFinding] {
         &self.findings
     }
+
+    pub const fn error_truncation(&self) -> ValidationErrorTruncation {
+        self.error_truncation
+    }
 }
 
 impl<'de> Deserialize<'de> for ValidationReport {
@@ -1730,12 +1783,19 @@ impl<'de> Deserialize<'de> for ValidationReport {
             coverage: ValidationCoverage,
             checks: u16,
             findings: Vec<ValidationFinding>,
+            #[serde(default)]
+            error_truncation: ValidationErrorTruncation,
         }
 
         let wire = Wire::deserialize(deserializer)?;
-        let report =
-            Self::new_with_coverage(wire.subject, wire.checks, wire.findings, wire.coverage)
-                .map_err(D::Error::custom)?;
+        let report = Self::new_with_coverage_and_truncation(
+            wire.subject,
+            wire.checks,
+            wire.findings,
+            wire.coverage,
+            wire.error_truncation,
+        )
+        .map_err(D::Error::custom)?;
         if report.status != wire.status {
             return Err(D::Error::custom(
                 OperationalContractError::InvalidStateCombination,
@@ -1748,17 +1808,17 @@ impl<'de> Deserialize<'de> for ValidationReport {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ValidationOptions {
     detailed: bool,
-    max_findings: u16,
+    max_errors: u16,
 }
 
 impl ValidationOptions {
-    pub fn new(detailed: bool, max_findings: u16) -> Result<Self, OperationalContractError> {
-        if max_findings == 0 || max_findings > 1_000 {
+    pub fn new(detailed: bool, max_errors: u16) -> Result<Self, OperationalContractError> {
+        if max_errors > 1_000 {
             return Err(OperationalContractError::InvalidSemanticValue);
         }
         Ok(Self {
             detailed,
-            max_findings,
+            max_errors,
         })
     }
 
@@ -1766,8 +1826,8 @@ impl ValidationOptions {
         self.detailed
     }
 
-    pub const fn max_findings(self) -> u16 {
-        self.max_findings
+    pub const fn max_errors(self) -> u16 {
+        self.max_errors
     }
 }
 

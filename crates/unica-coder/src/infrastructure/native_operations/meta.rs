@@ -5182,6 +5182,221 @@ mod edit_tests {
     }
 
     #[test]
+    fn max_errors_limits_only_errors_and_preserves_partial_coverage() {
+        let context = temp_context("max-errors-partial");
+        let src = write_owner(
+            &context.cwd.join("src"),
+            "InformationRegister",
+            "SampleStock",
+            &["Russian"],
+        );
+        write_file(
+            &src.join("Languages/Russian.xml"),
+            &sample_language_named("Russian", "ru"),
+        );
+        let register = src.join("InformationRegisters/SampleStock.xml");
+        let mut xml = sample_register_xml("InformationRegister").replace(
+            "<Comment/>",
+            "<Comment/><WriteMode>RecorderSubordinate</WriteMode>",
+        );
+        xml = xml.replacen("uuid=\"", "uuid=\"invalid-", 1);
+        let with_duplicate_children = xml.replace(
+            "<ChildObjects/>",
+            "<ChildObjects><Dimension>Duplicate</Dimension>\
+             <Dimension>Duplicate</Dimension></ChildObjects>",
+        );
+        assert_ne!(with_duplicate_children, xml);
+        xml = with_duplicate_children;
+        write_file(&register, &xml);
+
+        let invoke = |max_errors: usize| {
+            let mut args = meta_validate_args(&register);
+            args.insert("maxErrors".to_string(), json!(max_errors));
+            validate_meta_with_data(&args, &context)
+        };
+        let zero = invoke(0);
+        let one = invoke(1);
+        let many = invoke(8);
+
+        for invocation in [&zero, &one, &many] {
+            assert!(!invocation.adapter.ok, "{:?}", invocation.adapter);
+            assert_eq!(invocation.data["validation"]["status"], "invalid");
+            assert_eq!(invocation.data["validation"]["coverage"], "partial");
+            assert_ne!(invocation.data["validation"]["status"], "unavailable");
+            let findings = invocation.data["validation"]["reports"][0]["findings"]
+                .as_array()
+                .unwrap();
+            assert_eq!(
+                findings
+                    .iter()
+                    .filter(|finding| {
+                        matches!(
+                            finding["code"].as_str(),
+                            Some("registrarCoverageNotEvaluated" | "registrarCoveragePartial")
+                        )
+                    })
+                    .count(),
+                1,
+                "{findings:?}"
+            );
+        }
+
+        assert_eq!(
+            zero.data["validation"]["reports"][0]["errorTruncation"],
+            "truncated"
+        );
+        assert_eq!(
+            one.data["validation"]["reports"][0]["errorTruncation"],
+            "truncated"
+        );
+        assert_eq!(
+            many.data["validation"]["reports"][0]["errorTruncation"],
+            "complete"
+        );
+        assert_eq!(
+            zero.data["validation"]["reports"][0]["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|finding| finding["severity"] == "error")
+                .count(),
+            0
+        );
+        assert_eq!(
+            one.data["validation"]["reports"][0]["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|finding| finding["severity"] == "error")
+                .count(),
+            1
+        );
+        assert_eq!(
+            many.data["validation"]["reports"][0]["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|finding| finding["severity"] == "error")
+                .count(),
+            2
+        );
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn validation_batch_lattice_is_commutative_associative_and_permutation_stable() {
+        use MetaValidationAggregate::{
+            InvalidComplete, InvalidPartial, Partial, Unavailable, Valid,
+        };
+
+        for left in MetaValidationAggregate::ALL {
+            for right in MetaValidationAggregate::ALL {
+                assert_eq!(left.join(right), right.join(left), "{left:?}, {right:?}");
+                for third in MetaValidationAggregate::ALL {
+                    assert_eq!(
+                        left.join(right).join(third),
+                        left.join(right.join(third)),
+                        "{left:?}, {right:?}, {third:?}"
+                    );
+                }
+            }
+        }
+        assert_eq!(Valid.join(Partial), Partial);
+        assert_eq!(InvalidComplete.join(Partial), InvalidPartial);
+        assert_eq!(InvalidPartial.join(Valid), InvalidPartial);
+        assert_eq!(Unavailable.join(InvalidPartial), Unavailable);
+
+        fn permutations(
+            prefix: &mut Vec<MetaValidationAggregate>,
+            remaining: &mut Vec<MetaValidationAggregate>,
+            output: &mut Vec<Vec<MetaValidationAggregate>>,
+        ) {
+            if remaining.is_empty() {
+                output.push(prefix.clone());
+                return;
+            }
+            for index in 0..remaining.len() {
+                let value = remaining.remove(index);
+                prefix.push(value);
+                permutations(prefix, remaining, output);
+                prefix.pop();
+                remaining.insert(index, value);
+            }
+        }
+
+        let mut all = Vec::new();
+        permutations(
+            &mut Vec::new(),
+            &mut MetaValidationAggregate::ALL.to_vec(),
+            &mut all,
+        );
+        for order in all {
+            assert_eq!(
+                order.into_iter().fold(
+                    MetaValidationAggregate::Valid,
+                    MetaValidationAggregate::join
+                ),
+                MetaValidationAggregate::Unavailable
+            );
+        }
+    }
+
+    #[test]
+    fn normalized_batch_is_order_stable_and_dedupes_diagnostics_by_subject() {
+        use unica_format_core::ports::{
+            SemanticArtifactId, ValidationCoverage, ValidationFinding, ValidationFindingCode,
+            ValidationFindingSeverity, ValidationReport,
+        };
+
+        let invalid = |subject: &str| {
+            ValidationReport::new(
+                SemanticArtifactId::new(subject).unwrap(),
+                1,
+                vec![ValidationFinding::new(
+                    ValidationFindingSeverity::Error,
+                    ValidationFindingCode::SemanticValueInvalid,
+                )],
+            )
+            .unwrap()
+        };
+        let partial = ValidationReport::new_with_coverage(
+            SemanticArtifactId::new("object:c").unwrap(),
+            1,
+            vec![ValidationFinding::new(
+                ValidationFindingSeverity::Warning,
+                ValidationFindingCode::RegistrarCoverageNotEvaluated,
+            )],
+            ValidationCoverage::Partial,
+        )
+        .unwrap();
+        let a = invalid("object:a");
+        let b = invalid("object:b");
+
+        let left =
+            normalize_validation_reports(vec![partial.clone(), b.clone(), a.clone(), a.clone()]);
+        let right = normalize_validation_reports(vec![a.clone(), partial, a, b]);
+
+        assert_eq!(left, right);
+        assert_eq!(left.aggregate, MetaValidationAggregate::InvalidPartial);
+        assert_eq!(
+            left.reports
+                .iter()
+                .map(|report| report.subject().as_str())
+                .collect::<Vec<_>>(),
+            vec!["object:a", "object:a", "object:b", "object:c"]
+        );
+        assert_eq!(left.diagnostics.len(), 3);
+        assert_eq!(
+            left.diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.subject.as_ref().unwrap().as_str())
+                .collect::<Vec<_>>(),
+            vec!["object:a", "object:b", "object:c"]
+        );
+    }
+
+    #[test]
     fn validate_meta_accepts_registered_extension_owner() {
         let context = temp_context("extension-owner");
         write_file(
@@ -5641,9 +5856,9 @@ pub(crate) struct MetaInfoWsOperation {
 
 pub(crate) struct MetaValidationRun {
     pub(crate) ok: bool,
-    status: MetaValidationCommandStatus,
-    coverage: MetaValidationCommandCoverage,
+    aggregate: MetaValidationAggregate,
     reports: Vec<unica_format_core::ports::ValidationReport>,
+    diagnostics: Vec<MetaValidationPublicDiagnostic>,
     pub(crate) stdout: String,
     pub(crate) artifacts: Vec<String>,
     pub(crate) warnings: Vec<String>,
@@ -5678,13 +5893,153 @@ enum MetaValidationCommandCoverage {
     Unavailable,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MetaValidationAggregate {
+    Valid,
+    Partial,
+    InvalidComplete,
+    InvalidPartial,
+    Unavailable,
+}
+
+impl MetaValidationAggregate {
+    #[cfg(test)]
+    const ALL: [Self; 5] = [
+        Self::Valid,
+        Self::Partial,
+        Self::InvalidComplete,
+        Self::InvalidPartial,
+        Self::Unavailable,
+    ];
+
+    const fn status(self) -> MetaValidationCommandStatus {
+        match self {
+            Self::Valid => MetaValidationCommandStatus::Valid,
+            Self::Partial => MetaValidationCommandStatus::Partial,
+            Self::InvalidComplete | Self::InvalidPartial => MetaValidationCommandStatus::Invalid,
+            Self::Unavailable => MetaValidationCommandStatus::Unavailable,
+        }
+    }
+
+    const fn coverage(self) -> MetaValidationCommandCoverage {
+        match self {
+            Self::Valid | Self::InvalidComplete => MetaValidationCommandCoverage::Complete,
+            Self::Partial | Self::InvalidPartial => MetaValidationCommandCoverage::Partial,
+            Self::Unavailable => MetaValidationCommandCoverage::Unavailable,
+        }
+    }
+
+    const fn join(self, other: Self) -> Self {
+        if matches!(self, Self::Unavailable) || matches!(other, Self::Unavailable) {
+            return Self::Unavailable;
+        }
+        let invalid = matches!(self, Self::InvalidComplete | Self::InvalidPartial)
+            || matches!(other, Self::InvalidComplete | Self::InvalidPartial);
+        let partial = matches!(self, Self::Partial | Self::InvalidPartial)
+            || matches!(other, Self::Partial | Self::InvalidPartial);
+        match (invalid, partial) {
+            (true, true) => Self::InvalidPartial,
+            (true, false) => Self::InvalidComplete,
+            (false, true) => Self::Partial,
+            (false, false) => Self::Valid,
+        }
+    }
+
+    fn from_report(report: &unica_format_core::ports::ValidationReport) -> Self {
+        if report.findings().iter().any(|finding| {
+            finding.code() == unica_format_core::ports::ValidationFindingCode::SourceUnreadable
+        }) {
+            return Self::Unavailable;
+        }
+        match (report.status(), report.coverage()) {
+            (
+                unica_format_core::ports::ValidationStatus::Valid,
+                unica_format_core::ports::ValidationCoverage::Complete,
+            ) => Self::Valid,
+            (
+                unica_format_core::ports::ValidationStatus::Partial,
+                unica_format_core::ports::ValidationCoverage::Partial,
+            ) => Self::Partial,
+            (
+                unica_format_core::ports::ValidationStatus::Invalid,
+                unica_format_core::ports::ValidationCoverage::Complete,
+            ) => Self::InvalidComplete,
+            (
+                unica_format_core::ports::ValidationStatus::Invalid,
+                unica_format_core::ports::ValidationCoverage::Partial,
+            ) => Self::InvalidPartial,
+            _ => Self::Unavailable,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MetaValidationPublicDiagnostic {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subject: Option<unica_format_core::ports::SemanticArtifactId>,
+    #[serde(flatten)]
+    finding: unica_format_core::ports::ValidationFinding,
+}
+
+impl MetaValidationPublicDiagnostic {
+    fn global(finding: unica_format_core::ports::ValidationFinding) -> Self {
+        Self {
+            subject: None,
+            finding,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NormalizedValidationBatch {
+    aggregate: MetaValidationAggregate,
+    reports: Vec<unica_format_core::ports::ValidationReport>,
+    diagnostics: Vec<MetaValidationPublicDiagnostic>,
+}
+
+fn normalize_validation_reports(
+    mut reports: Vec<unica_format_core::ports::ValidationReport>,
+) -> NormalizedValidationBatch {
+    reports.sort_by_cached_key(|report| {
+        serde_json::to_string(report).expect("validated report is serializable")
+    });
+    let aggregate = reports
+        .iter()
+        .map(MetaValidationAggregate::from_report)
+        .fold(
+            MetaValidationAggregate::Valid,
+            MetaValidationAggregate::join,
+        );
+    let mut diagnostics = reports
+        .iter()
+        .flat_map(|report| {
+            report
+                .findings()
+                .iter()
+                .copied()
+                .map(|finding| MetaValidationPublicDiagnostic {
+                    subject: Some(report.subject().clone()),
+                    finding,
+                })
+        })
+        .collect::<Vec<_>>();
+    diagnostics.sort();
+    diagnostics.dedup();
+    NormalizedValidationBatch {
+        aggregate,
+        reports,
+        diagnostics,
+    }
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct MetaValidationPublicResult {
     status: MetaValidationCommandStatus,
     coverage: MetaValidationCommandCoverage,
     reports: Vec<unica_format_core::ports::ValidationReport>,
-    diagnostics: Vec<unica_format_core::ports::ValidationFinding>,
+    diagnostics: Vec<MetaValidationPublicDiagnostic>,
 }
 
 pub(crate) struct MetaValidationInvocation {
@@ -5731,12 +6086,11 @@ pub(crate) fn validate_meta_with_data(
     match run {
         Ok(run) => {
             let data = meta_validation_public_data(
-                run.status,
-                run.coverage,
+                run.aggregate,
                 run.reports.clone(),
-                Vec::new(),
+                run.diagnostics.clone(),
             );
-            let summary = match run.status {
+            let summary = match run.aggregate.status() {
                 MetaValidationCommandStatus::Valid => "unica.meta.validate completed",
                 MetaValidationCommandStatus::Partial => {
                     "unica.meta.validate completed with partial semantic coverage"
@@ -5782,10 +6136,9 @@ pub(crate) fn validate_meta_with_data(
                     command: None,
                 },
                 data: meta_validation_public_data(
-                    MetaValidationCommandStatus::Unavailable,
-                    MetaValidationCommandCoverage::Unavailable,
+                    MetaValidationAggregate::Unavailable,
                     Vec::new(),
-                    vec![diagnostic],
+                    vec![MetaValidationPublicDiagnostic::global(diagnostic)],
                 ),
             }
         }
@@ -5793,15 +6146,14 @@ pub(crate) fn validate_meta_with_data(
 }
 
 fn meta_validation_public_data(
-    status: MetaValidationCommandStatus,
-    coverage: MetaValidationCommandCoverage,
+    aggregate: MetaValidationAggregate,
     reports: Vec<unica_format_core::ports::ValidationReport>,
-    diagnostics: Vec<unica_format_core::ports::ValidationFinding>,
+    diagnostics: Vec<MetaValidationPublicDiagnostic>,
 ) -> Value {
     serde_json::json!({
         "validation": MetaValidationPublicResult {
-            status,
-            coverage,
+            status: aggregate.status(),
+            coverage: aggregate.coverage(),
             reports,
             diagnostics,
         }
@@ -5813,7 +6165,6 @@ pub(crate) fn meta_validation_options(args: &Map<String, Value>) -> MetaValidati
         detailed: bool_arg(args, &["detailed", "Detailed"]),
         max_errors: int_arg(args, &["maxErrors", "MaxErrors"])
             .and_then(|value| usize::try_from(value).ok())
-            .filter(|value| *value > 0)
             .unwrap_or(30)
             .min(1_000),
     }
@@ -5857,13 +6208,12 @@ fn run_meta_validation(
         unica_application::OperationalPolicyService::validate(registration.validation(), &request)
             .map_err(|_| "validation adapter operation failed".to_string())?;
 
+    let normalized = normalize_validation_reports(result.reports().to_vec());
     let mut stdout = Vec::new();
     let mut artifacts = Vec::new();
     let mut warnings = Vec::new();
     let mut errors = Vec::new();
-    let mut status = MetaValidationCommandStatus::Valid;
-    let mut coverage = MetaValidationCommandCoverage::Complete;
-    for report in result.reports() {
+    for report in &normalized.reports {
         let subject = report.subject().as_str().to_string();
         artifacts.push(subject.clone());
         stdout.push(format!("--- {subject} ---"));
@@ -5882,38 +6232,21 @@ fn run_meta_validation(
             };
             stdout.push(format!("[{severity}] {code}"));
         }
-        if report.coverage() == unica_format_core::ports::ValidationCoverage::Partial {
-            coverage = MetaValidationCommandCoverage::Partial;
-        }
-        match report.status() {
-            unica_format_core::ports::ValidationStatus::Valid => {}
-            unica_format_core::ports::ValidationStatus::Partial => {
-                if status == MetaValidationCommandStatus::Valid {
-                    status = MetaValidationCommandStatus::Partial;
-                }
-            }
-            unica_format_core::ports::ValidationStatus::Invalid => {
-                status = MetaValidationCommandStatus::Invalid;
-            }
-        }
-        if report.findings().iter().any(|finding| {
-            finding.code() == unica_format_core::ports::ValidationFindingCode::SourceUnreadable
-        }) {
-            status = MetaValidationCommandStatus::Unavailable;
-            coverage = MetaValidationCommandCoverage::Unavailable;
-        }
     }
     stdout.push(format!("validated: {}", artifacts.len()));
-    stdout.push(format!("result: {}", status.as_str()));
+    stdout.push(format!(
+        "result: {}",
+        normalized.aggregate.status().as_str()
+    ));
     let ok = matches!(
-        status,
+        normalized.aggregate.status(),
         MetaValidationCommandStatus::Valid | MetaValidationCommandStatus::Partial
     );
     Ok(MetaValidationRun {
         ok,
-        status,
-        coverage,
-        reports: result.reports().to_vec(),
+        aggregate: normalized.aggregate,
+        reports: normalized.reports,
+        diagnostics: normalized.diagnostics,
         stdout: format!("{}\n", stdout.join("\n")),
         artifacts,
         warnings,
