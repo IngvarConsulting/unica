@@ -10,19 +10,47 @@
         "commonForm",
         "form"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
-          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_form/CommonDashboard.xml",
-          "nativeOwner": "CommonForm",
-          "nativeValue": "Managed",
-          "objectKind": "commonForm",
-          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/common-form.full.txt"
-        },
-        {
+          "case": "ownedArtifacts",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport/Forms/MainForm.xml",
           "nativeOwner": "Form",
           "nativeValue": "Managed",
           "objectKind": "form",
+          "ownerName": "MainForm",
+          "ownerUuid": "20000000-0000-0000-0000-000000000002",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/owned-artifacts.full.txt"
+        },
+        {
+          "case": "commonForm",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_form/CommonDashboard.xml",
+          "nativeOwner": "CommonForm",
+          "nativeValue": "Managed",
+          "objectKind": "commonForm",
+          "ownerName": "CommonDashboard",
+          "ownerUuid": "30000000-0000-0000-0000-000000000001",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/common-form.full.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "commonForm",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_form/CommonDashboard.xml",
+          "nativeOwner": "CommonForm",
+          "nativeValue": "Managed",
+          "objectKind": "commonForm",
+          "ownerName": "CommonDashboard",
+          "ownerUuid": "30000000-0000-0000-0000-000000000001",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/common-form.full.txt"
+        },
+        {
+          "case": "ownedArtifacts",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport/Forms/MainForm.xml",
+          "nativeOwner": "Form",
+          "nativeValue": "Managed",
+          "objectKind": "form",
+          "ownerName": "MainForm",
+          "ownerUuid": "20000000-0000-0000-0000-000000000002",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/owned-artifacts.full.txt"
         }
       ],
@@ -46,29 +74,59 @@
       "nativeProperty": "TemplateType",
       "objectKinds": [
         "commonTemplate",
-        "spreadsheetDocumentTemplate",
         "template"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
-          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_template/CommonLayout.xml",
-          "nativeOwner": "CommonTemplate",
-          "nativeValue": "BinaryData",
-          "objectKind": "commonTemplate",
-          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/common-template.full.txt"
-        },
-        {
-          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/SpreadsheetDocumentTemplate.xml",
-          "nativeOwner": "Template",
-          "nativeValue": "SpreadsheetDocument",
-          "objectKind": "spreadsheetDocumentTemplate",
-          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/SpreadsheetDocumentTemplate.txt"
-        },
-        {
+          "case": "ownedArtifacts",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport/Templates/MainSchema.xml",
           "nativeOwner": "Template",
           "nativeValue": "DataCompositionSchema",
           "objectKind": "template",
+          "ownerName": "MainSchema",
+          "ownerUuid": "20000000-0000-0000-0000-000000000003",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/owned-artifacts.full.txt"
+        },
+        {
+          "case": "commonTemplate",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_template/CommonLayout.xml",
+          "nativeOwner": "CommonTemplate",
+          "nativeValue": "BinaryData",
+          "objectKind": "commonTemplate",
+          "ownerName": "CommonLayout",
+          "ownerUuid": "40000000-0000-0000-0000-000000000001",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/common-template.full.txt"
+        },
+        {
+          "case": "enumContextSpreadsheetDocumentTemplate",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/EnumContextSpreadsheetDocument.xml",
+          "nativeOwner": "Template",
+          "nativeValue": "SpreadsheetDocument",
+          "objectKind": "template",
+          "ownerName": "EnumContextSpreadsheetDocument",
+          "ownerUuid": "61000000-0000-0000-0000-000000000017",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/SpreadsheetDocumentTemplate.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "commonTemplate",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_template/CommonLayout.xml",
+          "nativeOwner": "CommonTemplate",
+          "nativeValue": "BinaryData",
+          "objectKind": "commonTemplate",
+          "ownerName": "CommonLayout",
+          "ownerUuid": "40000000-0000-0000-0000-000000000001",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/common-template.full.txt"
+        },
+        {
+          "case": "ownedArtifacts",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport/Templates/MainSchema.xml",
+          "nativeOwner": "Template",
+          "nativeValue": "DataCompositionSchema",
+          "objectKind": "template",
+          "ownerName": "MainSchema",
+          "ownerUuid": "20000000-0000-0000-0000-000000000003",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/owned-artifacts.full.txt"
         }
       ],
@@ -78,7 +136,7 @@
         "fixtures": [
           "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport/Templates/MainSchema.xml",
           "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_template/CommonLayout.xml",
-          "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/SpreadsheetDocumentTemplate.xml"
+          "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/EnumContextSpreadsheetDocument.xml"
         ]
       }
     },
@@ -91,12 +149,27 @@
       "objectKinds": [
         "accountingRegister"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextAccountingRegister",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/AccountingRegister.xml",
           "nativeOwner": "AccountingRegister",
           "nativeValue": "Automatic",
           "objectKind": "accountingRegister",
+          "ownerName": "EnumContextAccountingRegister",
+          "ownerUuid": "61000000-0000-0000-0000-000000000001",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/AccountingRegister.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextAccountingRegister",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/AccountingRegister.xml",
+          "nativeOwner": "AccountingRegister",
+          "nativeValue": "Automatic",
+          "objectKind": "accountingRegister",
+          "ownerName": "EnumContextAccountingRegister",
+          "ownerUuid": "61000000-0000-0000-0000-000000000001",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/AccountingRegister.txt"
         }
       ],
@@ -116,12 +189,27 @@
       "objectKinds": [
         "accountingRegister"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextAccountingRegister",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/AccountingRegister.xml",
           "nativeOwner": "AccountingRegister",
           "nativeValue": "Use",
           "objectKind": "accountingRegister",
+          "ownerName": "EnumContextAccountingRegister",
+          "ownerUuid": "61000000-0000-0000-0000-000000000001",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/AccountingRegister.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextAccountingRegister",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/AccountingRegister.xml",
+          "nativeOwner": "AccountingRegister",
+          "nativeValue": "Use",
+          "objectKind": "accountingRegister",
+          "ownerName": "EnumContextAccountingRegister",
+          "ownerUuid": "61000000-0000-0000-0000-000000000001",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/AccountingRegister.txt"
         }
       ],
@@ -141,12 +229,27 @@
       "objectKinds": [
         "accumulationRegister"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextAccumulationRegister",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/AccumulationRegister.xml",
           "nativeOwner": "AccumulationRegister",
           "nativeValue": "Automatic",
           "objectKind": "accumulationRegister",
+          "ownerName": "EnumContextAccumulationRegister",
+          "ownerUuid": "61000000-0000-0000-0000-000000000002",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/AccumulationRegister.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextAccumulationRegister",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/AccumulationRegister.xml",
+          "nativeOwner": "AccumulationRegister",
+          "nativeValue": "Automatic",
+          "objectKind": "accumulationRegister",
+          "ownerName": "EnumContextAccumulationRegister",
+          "ownerUuid": "61000000-0000-0000-0000-000000000002",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/AccumulationRegister.txt"
         }
       ],
@@ -166,12 +269,27 @@
       "objectKinds": [
         "accumulationRegister"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextAccumulationRegister",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/AccumulationRegister.xml",
           "nativeOwner": "AccumulationRegister",
           "nativeValue": "Use",
           "objectKind": "accumulationRegister",
+          "ownerName": "EnumContextAccumulationRegister",
+          "ownerUuid": "61000000-0000-0000-0000-000000000002",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/AccumulationRegister.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextAccumulationRegister",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/AccumulationRegister.xml",
+          "nativeOwner": "AccumulationRegister",
+          "nativeValue": "Use",
+          "objectKind": "accumulationRegister",
+          "ownerName": "EnumContextAccumulationRegister",
+          "ownerUuid": "61000000-0000-0000-0000-000000000002",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/AccumulationRegister.txt"
         }
       ],
@@ -192,12 +310,27 @@
       "objectKinds": [
         "accumulationRegister"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextAccumulationRegister",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/AccumulationRegister.xml",
           "nativeOwner": "AccumulationRegister",
           "nativeValue": "Balance",
           "objectKind": "accumulationRegister",
+          "ownerName": "EnumContextAccumulationRegister",
+          "ownerUuid": "61000000-0000-0000-0000-000000000002",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/AccumulationRegister.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextAccumulationRegister",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/AccumulationRegister.xml",
+          "nativeOwner": "AccumulationRegister",
+          "nativeValue": "Balance",
+          "objectKind": "accumulationRegister",
+          "ownerName": "EnumContextAccumulationRegister",
+          "ownerUuid": "61000000-0000-0000-0000-000000000002",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/AccumulationRegister.txt"
         }
       ],
@@ -217,12 +350,27 @@
       "objectKinds": [
         "businessProcess"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextBusinessProcess",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/BusinessProcess.xml",
           "nativeOwner": "BusinessProcess",
           "nativeValue": "Automatic",
           "objectKind": "businessProcess",
+          "ownerName": "EnumContextBusinessProcess",
+          "ownerUuid": "61000000-0000-0000-0000-000000000003",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/BusinessProcess.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextBusinessProcess",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/BusinessProcess.xml",
+          "nativeOwner": "BusinessProcess",
+          "nativeValue": "Automatic",
+          "objectKind": "businessProcess",
+          "ownerName": "EnumContextBusinessProcess",
+          "ownerUuid": "61000000-0000-0000-0000-000000000003",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/BusinessProcess.txt"
         }
       ],
@@ -243,12 +391,27 @@
       "objectKinds": [
         "businessProcess"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextBusinessProcess",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/BusinessProcess.xml",
           "nativeOwner": "BusinessProcess",
           "nativeValue": "BothWays",
           "objectKind": "businessProcess",
+          "ownerName": "EnumContextBusinessProcess",
+          "ownerUuid": "61000000-0000-0000-0000-000000000003",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/BusinessProcess.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextBusinessProcess",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/BusinessProcess.xml",
+          "nativeOwner": "BusinessProcess",
+          "nativeValue": "BothWays",
+          "objectKind": "businessProcess",
+          "ownerName": "EnumContextBusinessProcess",
+          "ownerUuid": "61000000-0000-0000-0000-000000000003",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/BusinessProcess.txt"
         }
       ],
@@ -268,12 +431,27 @@
       "objectKinds": [
         "businessProcess"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextBusinessProcess",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/BusinessProcess.xml",
           "nativeOwner": "BusinessProcess",
           "nativeValue": "Use",
           "objectKind": "businessProcess",
+          "ownerName": "EnumContextBusinessProcess",
+          "ownerUuid": "61000000-0000-0000-0000-000000000003",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/BusinessProcess.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextBusinessProcess",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/BusinessProcess.xml",
+          "nativeOwner": "BusinessProcess",
+          "nativeValue": "Use",
+          "objectKind": "businessProcess",
+          "ownerName": "EnumContextBusinessProcess",
+          "ownerUuid": "61000000-0000-0000-0000-000000000003",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/BusinessProcess.txt"
         }
       ],
@@ -293,12 +471,27 @@
       "objectKinds": [
         "businessProcess"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextBusinessProcess",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/BusinessProcess.xml",
           "nativeOwner": "BusinessProcess",
           "nativeValue": "Fixed",
           "objectKind": "businessProcess",
+          "ownerName": "EnumContextBusinessProcess",
+          "ownerUuid": "61000000-0000-0000-0000-000000000003",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/BusinessProcess.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextBusinessProcess",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/BusinessProcess.xml",
+          "nativeOwner": "BusinessProcess",
+          "nativeValue": "Fixed",
+          "objectKind": "businessProcess",
+          "ownerName": "EnumContextBusinessProcess",
+          "ownerUuid": "61000000-0000-0000-0000-000000000003",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/BusinessProcess.txt"
         }
       ],
@@ -318,12 +511,27 @@
       "objectKinds": [
         "businessProcess"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextBusinessProcess",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/BusinessProcess.xml",
           "nativeOwner": "BusinessProcess",
           "nativeValue": "String",
           "objectKind": "businessProcess",
+          "ownerName": "EnumContextBusinessProcess",
+          "ownerUuid": "61000000-0000-0000-0000-000000000003",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/BusinessProcess.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextBusinessProcess",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/BusinessProcess.xml",
+          "nativeOwner": "BusinessProcess",
+          "nativeValue": "String",
+          "objectKind": "businessProcess",
+          "ownerName": "EnumContextBusinessProcess",
+          "ownerUuid": "61000000-0000-0000-0000-000000000003",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/BusinessProcess.txt"
         }
       ],
@@ -343,12 +551,27 @@
       "objectKinds": [
         "calculationRegister"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextCalculationRegister",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/CalculationRegister.xml",
           "nativeOwner": "CalculationRegister",
           "nativeValue": "Automatic",
           "objectKind": "calculationRegister",
+          "ownerName": "EnumContextCalculationRegister",
+          "ownerUuid": "61000000-0000-0000-0000-000000000004",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/CalculationRegister.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextCalculationRegister",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/CalculationRegister.xml",
+          "nativeOwner": "CalculationRegister",
+          "nativeValue": "Automatic",
+          "objectKind": "calculationRegister",
+          "ownerName": "EnumContextCalculationRegister",
+          "ownerUuid": "61000000-0000-0000-0000-000000000004",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/CalculationRegister.txt"
         }
       ],
@@ -368,12 +591,27 @@
       "objectKinds": [
         "calculationRegister"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextCalculationRegister",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/CalculationRegister.xml",
           "nativeOwner": "CalculationRegister",
           "nativeValue": "Use",
           "objectKind": "calculationRegister",
+          "ownerName": "EnumContextCalculationRegister",
+          "ownerUuid": "61000000-0000-0000-0000-000000000004",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/CalculationRegister.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextCalculationRegister",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/CalculationRegister.xml",
+          "nativeOwner": "CalculationRegister",
+          "nativeValue": "Use",
+          "objectKind": "calculationRegister",
+          "ownerName": "EnumContextCalculationRegister",
+          "ownerUuid": "61000000-0000-0000-0000-000000000004",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/CalculationRegister.txt"
         }
       ],
@@ -395,12 +633,27 @@
       "objectKinds": [
         "calculationRegister"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextCalculationRegister",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/CalculationRegister.xml",
           "nativeOwner": "CalculationRegister",
           "nativeValue": "Day",
           "objectKind": "calculationRegister",
+          "ownerName": "EnumContextCalculationRegister",
+          "ownerUuid": "61000000-0000-0000-0000-000000000004",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/CalculationRegister.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextCalculationRegister",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/CalculationRegister.xml",
+          "nativeOwner": "CalculationRegister",
+          "nativeValue": "Day",
+          "objectKind": "calculationRegister",
+          "ownerName": "EnumContextCalculationRegister",
+          "ownerUuid": "61000000-0000-0000-0000-000000000004",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/CalculationRegister.txt"
         }
       ],
@@ -421,12 +674,47 @@
       "objectKinds": [
         "catalog"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextCatalog",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Catalog.xml",
           "nativeOwner": "Catalog",
           "nativeValue": "BothWays",
           "objectKind": "catalog",
+          "ownerName": "EnumContextCatalog",
+          "ownerUuid": "61000000-0000-0000-0000-000000000005",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Catalog.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "BothWays",
+          "objectKind": "catalog",
+          "ownerName": "Валюты",
+          "ownerUuid": "1d6b8425-360c-4ab1-9bab-cc9a3b590bb2",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "BothWays",
+          "objectKind": "catalog",
+          "ownerName": "Валюты",
+          "ownerUuid": "1d6b8425-360c-4ab1-9bab-cc9a3b590bb2",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextCatalog",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Catalog.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "BothWays",
+          "objectKind": "catalog",
+          "ownerName": "EnumContextCatalog",
+          "ownerUuid": "61000000-0000-0000-0000-000000000005",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Catalog.txt"
         }
       ],
@@ -446,12 +734,47 @@
       "objectKinds": [
         "catalog"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextCatalog",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Catalog.xml",
           "nativeOwner": "Catalog",
           "nativeValue": "Fixed",
           "objectKind": "catalog",
+          "ownerName": "EnumContextCatalog",
+          "ownerUuid": "61000000-0000-0000-0000-000000000005",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Catalog.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "Variable",
+          "objectKind": "catalog",
+          "ownerName": "Валюты",
+          "ownerUuid": "1d6b8425-360c-4ab1-9bab-cc9a3b590bb2",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "Variable",
+          "objectKind": "catalog",
+          "ownerName": "Валюты",
+          "ownerUuid": "1d6b8425-360c-4ab1-9bab-cc9a3b590bb2",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextCatalog",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Catalog.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "Fixed",
+          "objectKind": "catalog",
+          "ownerName": "EnumContextCatalog",
+          "ownerUuid": "61000000-0000-0000-0000-000000000005",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Catalog.txt"
         }
       ],
@@ -472,12 +795,47 @@
       "objectKinds": [
         "catalog"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextCatalog",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Catalog.xml",
           "nativeOwner": "Catalog",
           "nativeValue": "WholeCatalog",
           "objectKind": "catalog",
+          "ownerName": "EnumContextCatalog",
+          "ownerUuid": "61000000-0000-0000-0000-000000000005",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Catalog.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "WholeCatalog",
+          "objectKind": "catalog",
+          "ownerName": "Валюты",
+          "ownerUuid": "1d6b8425-360c-4ab1-9bab-cc9a3b590bb2",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "WholeCatalog",
+          "objectKind": "catalog",
+          "ownerName": "Валюты",
+          "ownerUuid": "1d6b8425-360c-4ab1-9bab-cc9a3b590bb2",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextCatalog",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Catalog.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "WholeCatalog",
+          "objectKind": "catalog",
+          "ownerName": "EnumContextCatalog",
+          "ownerUuid": "61000000-0000-0000-0000-000000000005",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Catalog.txt"
         }
       ],
@@ -497,12 +855,47 @@
       "objectKinds": [
         "catalog"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextCatalog",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Catalog.xml",
           "nativeOwner": "Catalog",
           "nativeValue": "String",
           "objectKind": "catalog",
+          "ownerName": "EnumContextCatalog",
+          "ownerUuid": "61000000-0000-0000-0000-000000000005",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Catalog.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "String",
+          "objectKind": "catalog",
+          "ownerName": "Валюты",
+          "ownerUuid": "1d6b8425-360c-4ab1-9bab-cc9a3b590bb2",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "String",
+          "objectKind": "catalog",
+          "ownerName": "Валюты",
+          "ownerUuid": "1d6b8425-360c-4ab1-9bab-cc9a3b590bb2",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextCatalog",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Catalog.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "String",
+          "objectKind": "catalog",
+          "ownerName": "EnumContextCatalog",
+          "ownerUuid": "61000000-0000-0000-0000-000000000005",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Catalog.txt"
         }
       ],
@@ -522,12 +915,47 @@
       "objectKinds": [
         "catalog"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextCatalog",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Catalog.xml",
           "nativeOwner": "Catalog",
           "nativeValue": "Automatic",
           "objectKind": "catalog",
+          "ownerName": "EnumContextCatalog",
+          "ownerUuid": "61000000-0000-0000-0000-000000000005",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Catalog.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "Managed",
+          "objectKind": "catalog",
+          "ownerName": "Валюты",
+          "ownerUuid": "1d6b8425-360c-4ab1-9bab-cc9a3b590bb2",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "Managed",
+          "objectKind": "catalog",
+          "ownerName": "Валюты",
+          "ownerUuid": "1d6b8425-360c-4ab1-9bab-cc9a3b590bb2",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextCatalog",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Catalog.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "Automatic",
+          "objectKind": "catalog",
+          "ownerName": "EnumContextCatalog",
+          "ownerUuid": "61000000-0000-0000-0000-000000000005",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Catalog.txt"
         }
       ],
@@ -547,12 +975,47 @@
       "objectKinds": [
         "catalog"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextCatalog",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Catalog.xml",
           "nativeOwner": "Catalog",
           "nativeValue": "AsDescription",
           "objectKind": "catalog",
+          "ownerName": "EnumContextCatalog",
+          "ownerUuid": "61000000-0000-0000-0000-000000000005",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Catalog.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "AsDescription",
+          "objectKind": "catalog",
+          "ownerName": "Валюты",
+          "ownerUuid": "1d6b8425-360c-4ab1-9bab-cc9a3b590bb2",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "AsDescription",
+          "objectKind": "catalog",
+          "ownerName": "Валюты",
+          "ownerUuid": "1d6b8425-360c-4ab1-9bab-cc9a3b590bb2",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextCatalog",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Catalog.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "AsDescription",
+          "objectKind": "catalog",
+          "ownerName": "EnumContextCatalog",
+          "ownerUuid": "61000000-0000-0000-0000-000000000005",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Catalog.txt"
         }
       ],
@@ -572,12 +1035,47 @@
       "objectKinds": [
         "catalog"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextCatalog",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Catalog.xml",
           "nativeOwner": "Catalog",
           "nativeValue": "Use",
           "objectKind": "catalog",
+          "ownerName": "EnumContextCatalog",
+          "ownerUuid": "61000000-0000-0000-0000-000000000005",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Catalog.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "Use",
+          "objectKind": "catalog",
+          "ownerName": "Валюты",
+          "ownerUuid": "1d6b8425-360c-4ab1-9bab-cc9a3b590bb2",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "Use",
+          "objectKind": "catalog",
+          "ownerName": "Валюты",
+          "ownerUuid": "1d6b8425-360c-4ab1-9bab-cc9a3b590bb2",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextCatalog",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Catalog.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "Use",
+          "objectKind": "catalog",
+          "ownerName": "EnumContextCatalog",
+          "ownerUuid": "61000000-0000-0000-0000-000000000005",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Catalog.txt"
         }
       ],
@@ -597,12 +1095,47 @@
       "objectKinds": [
         "catalog"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextCatalog",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Catalog.xml",
           "nativeOwner": "Catalog",
           "nativeValue": "HierarchyOfItems",
           "objectKind": "catalog",
+          "ownerName": "EnumContextCatalog",
+          "ownerUuid": "61000000-0000-0000-0000-000000000005",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Catalog.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "HierarchyFoldersAndItems",
+          "objectKind": "catalog",
+          "ownerName": "Валюты",
+          "ownerUuid": "1d6b8425-360c-4ab1-9bab-cc9a3b590bb2",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "HierarchyFoldersAndItems",
+          "objectKind": "catalog",
+          "ownerName": "Валюты",
+          "ownerUuid": "1d6b8425-360c-4ab1-9bab-cc9a3b590bb2",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextCatalog",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Catalog.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "HierarchyOfItems",
+          "objectKind": "catalog",
+          "ownerName": "EnumContextCatalog",
+          "ownerUuid": "61000000-0000-0000-0000-000000000005",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Catalog.txt"
         }
       ],
@@ -623,12 +1156,47 @@
       "objectKinds": [
         "catalog"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextCatalog",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Catalog.xml",
           "nativeOwner": "Catalog",
           "nativeValue": "ToItems",
           "objectKind": "catalog",
+          "ownerName": "EnumContextCatalog",
+          "ownerUuid": "61000000-0000-0000-0000-000000000005",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Catalog.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "ToItems",
+          "objectKind": "catalog",
+          "ownerName": "Валюты",
+          "ownerUuid": "1d6b8425-360c-4ab1-9bab-cc9a3b590bb2",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "ToItems",
+          "objectKind": "catalog",
+          "ownerName": "Валюты",
+          "ownerUuid": "1d6b8425-360c-4ab1-9bab-cc9a3b590bb2",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextCatalog",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Catalog.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "ToItems",
+          "objectKind": "catalog",
+          "ownerName": "EnumContextCatalog",
+          "ownerUuid": "61000000-0000-0000-0000-000000000005",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Catalog.txt"
         }
       ],
@@ -648,12 +1216,27 @@
       "objectKinds": [
         "chartOfAccounts"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextChartOfAccounts",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfAccounts.xml",
           "nativeOwner": "ChartOfAccounts",
           "nativeValue": "Automatic",
           "objectKind": "chartOfAccounts",
+          "ownerName": "EnumContextChartOfAccounts",
+          "ownerUuid": "61000000-0000-0000-0000-000000000006",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfAccounts.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextChartOfAccounts",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfAccounts.xml",
+          "nativeOwner": "ChartOfAccounts",
+          "nativeValue": "Automatic",
+          "objectKind": "chartOfAccounts",
+          "ownerName": "EnumContextChartOfAccounts",
+          "ownerUuid": "61000000-0000-0000-0000-000000000006",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfAccounts.txt"
         }
       ],
@@ -673,12 +1256,27 @@
       "objectKinds": [
         "chartOfAccounts"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextChartOfAccounts",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfAccounts.xml",
           "nativeOwner": "ChartOfAccounts",
           "nativeValue": "Use",
           "objectKind": "chartOfAccounts",
+          "ownerName": "EnumContextChartOfAccounts",
+          "ownerUuid": "61000000-0000-0000-0000-000000000006",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfAccounts.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextChartOfAccounts",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfAccounts.xml",
+          "nativeOwner": "ChartOfAccounts",
+          "nativeValue": "Use",
+          "objectKind": "chartOfAccounts",
+          "ownerName": "EnumContextChartOfAccounts",
+          "ownerUuid": "61000000-0000-0000-0000-000000000006",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfAccounts.txt"
         }
       ],
@@ -698,12 +1296,27 @@
       "objectKinds": [
         "chartOfCalculationTypes"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextChartOfCalculationTypes",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfCalculationTypes.xml",
           "nativeOwner": "ChartOfCalculationTypes",
           "nativeValue": "Fixed",
           "objectKind": "chartOfCalculationTypes",
+          "ownerName": "EnumContextChartOfCalculationTypes",
+          "ownerUuid": "61000000-0000-0000-0000-000000000007",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfCalculationTypes.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextChartOfCalculationTypes",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfCalculationTypes.xml",
+          "nativeOwner": "ChartOfCalculationTypes",
+          "nativeValue": "Fixed",
+          "objectKind": "chartOfCalculationTypes",
+          "ownerName": "EnumContextChartOfCalculationTypes",
+          "ownerUuid": "61000000-0000-0000-0000-000000000007",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfCalculationTypes.txt"
         }
       ],
@@ -723,12 +1336,27 @@
       "objectKinds": [
         "chartOfCalculationTypes"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextChartOfCalculationTypes",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfCalculationTypes.xml",
           "nativeOwner": "ChartOfCalculationTypes",
           "nativeValue": "String",
           "objectKind": "chartOfCalculationTypes",
+          "ownerName": "EnumContextChartOfCalculationTypes",
+          "ownerUuid": "61000000-0000-0000-0000-000000000007",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfCalculationTypes.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextChartOfCalculationTypes",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfCalculationTypes.xml",
+          "nativeOwner": "ChartOfCalculationTypes",
+          "nativeValue": "String",
+          "objectKind": "chartOfCalculationTypes",
+          "ownerName": "EnumContextChartOfCalculationTypes",
+          "ownerUuid": "61000000-0000-0000-0000-000000000007",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfCalculationTypes.txt"
         }
       ],
@@ -748,12 +1376,27 @@
       "objectKinds": [
         "chartOfCalculationTypes"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextChartOfCalculationTypes",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfCalculationTypes.xml",
           "nativeOwner": "ChartOfCalculationTypes",
           "nativeValue": "Automatic",
           "objectKind": "chartOfCalculationTypes",
+          "ownerName": "EnumContextChartOfCalculationTypes",
+          "ownerUuid": "61000000-0000-0000-0000-000000000007",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfCalculationTypes.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextChartOfCalculationTypes",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfCalculationTypes.xml",
+          "nativeOwner": "ChartOfCalculationTypes",
+          "nativeValue": "Automatic",
+          "objectKind": "chartOfCalculationTypes",
+          "ownerName": "EnumContextChartOfCalculationTypes",
+          "ownerUuid": "61000000-0000-0000-0000-000000000007",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfCalculationTypes.txt"
         }
       ],
@@ -773,12 +1416,27 @@
       "objectKinds": [
         "chartOfCalculationTypes"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextChartOfCalculationTypes",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfCalculationTypes.xml",
           "nativeOwner": "ChartOfCalculationTypes",
           "nativeValue": "DontUse",
           "objectKind": "chartOfCalculationTypes",
+          "ownerName": "EnumContextChartOfCalculationTypes",
+          "ownerUuid": "61000000-0000-0000-0000-000000000007",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfCalculationTypes.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextChartOfCalculationTypes",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfCalculationTypes.xml",
+          "nativeOwner": "ChartOfCalculationTypes",
+          "nativeValue": "DontUse",
+          "objectKind": "chartOfCalculationTypes",
+          "ownerName": "EnumContextChartOfCalculationTypes",
+          "ownerUuid": "61000000-0000-0000-0000-000000000007",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfCalculationTypes.txt"
         }
       ],
@@ -798,12 +1456,27 @@
       "objectKinds": [
         "chartOfCalculationTypes"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextChartOfCalculationTypes",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfCalculationTypes.xml",
           "nativeOwner": "ChartOfCalculationTypes",
           "nativeValue": "Use",
           "objectKind": "chartOfCalculationTypes",
+          "ownerName": "EnumContextChartOfCalculationTypes",
+          "ownerUuid": "61000000-0000-0000-0000-000000000007",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfCalculationTypes.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextChartOfCalculationTypes",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfCalculationTypes.xml",
+          "nativeOwner": "ChartOfCalculationTypes",
+          "nativeValue": "Use",
+          "objectKind": "chartOfCalculationTypes",
+          "ownerName": "EnumContextChartOfCalculationTypes",
+          "ownerUuid": "61000000-0000-0000-0000-000000000007",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfCalculationTypes.txt"
         }
       ],
@@ -823,12 +1496,27 @@
       "objectKinds": [
         "chartOfCharacteristicTypes"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextChartOfCharacteristicTypes",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfCharacteristicTypes.xml",
           "nativeOwner": "ChartOfCharacteristicTypes",
           "nativeValue": "Fixed",
           "objectKind": "chartOfCharacteristicTypes",
+          "ownerName": "EnumContextChartOfCharacteristicTypes",
+          "ownerUuid": "61000000-0000-0000-0000-000000000008",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfCharacteristicTypes.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextChartOfCharacteristicTypes",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfCharacteristicTypes.xml",
+          "nativeOwner": "ChartOfCharacteristicTypes",
+          "nativeValue": "Fixed",
+          "objectKind": "chartOfCharacteristicTypes",
+          "ownerName": "EnumContextChartOfCharacteristicTypes",
+          "ownerUuid": "61000000-0000-0000-0000-000000000008",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfCharacteristicTypes.txt"
         }
       ],
@@ -848,12 +1536,27 @@
       "objectKinds": [
         "chartOfCharacteristicTypes"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextChartOfCharacteristicTypes",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfCharacteristicTypes.xml",
           "nativeOwner": "ChartOfCharacteristicTypes",
           "nativeValue": "Automatic",
           "objectKind": "chartOfCharacteristicTypes",
+          "ownerName": "EnumContextChartOfCharacteristicTypes",
+          "ownerUuid": "61000000-0000-0000-0000-000000000008",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfCharacteristicTypes.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextChartOfCharacteristicTypes",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfCharacteristicTypes.xml",
+          "nativeOwner": "ChartOfCharacteristicTypes",
+          "nativeValue": "Automatic",
+          "objectKind": "chartOfCharacteristicTypes",
+          "ownerName": "EnumContextChartOfCharacteristicTypes",
+          "ownerUuid": "61000000-0000-0000-0000-000000000008",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfCharacteristicTypes.txt"
         }
       ],
@@ -873,12 +1576,27 @@
       "objectKinds": [
         "chartOfCharacteristicTypes"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextChartOfCharacteristicTypes",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfCharacteristicTypes.xml",
           "nativeOwner": "ChartOfCharacteristicTypes",
           "nativeValue": "Use",
           "objectKind": "chartOfCharacteristicTypes",
+          "ownerName": "EnumContextChartOfCharacteristicTypes",
+          "ownerUuid": "61000000-0000-0000-0000-000000000008",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfCharacteristicTypes.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextChartOfCharacteristicTypes",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfCharacteristicTypes.xml",
+          "nativeOwner": "ChartOfCharacteristicTypes",
+          "nativeValue": "Use",
+          "objectKind": "chartOfCharacteristicTypes",
+          "ownerName": "EnumContextChartOfCharacteristicTypes",
+          "ownerUuid": "61000000-0000-0000-0000-000000000008",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfCharacteristicTypes.txt"
         }
       ],
@@ -899,12 +1617,27 @@
       "objectKinds": [
         "commonModule"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "commonModuleGoogleTranslator",
           "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/CommonModules/GoogleПереводчик.xml",
           "nativeOwner": "CommonModule",
           "nativeValue": "DontUse",
           "objectKind": "commonModule",
+          "ownerName": "GoogleПереводчик",
+          "ownerUuid": "ac847dc9-e222-45cf-af4a-6fa863c919a8",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/common-module-google-translator.full.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "commonModuleGoogleTranslator",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/CommonModules/GoogleПереводчик.xml",
+          "nativeOwner": "CommonModule",
+          "nativeValue": "DontUse",
+          "objectKind": "commonModule",
+          "ownerName": "GoogleПереводчик",
+          "ownerUuid": "ac847dc9-e222-45cf-af4a-6fa863c919a8",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/common-module-google-translator.full.txt"
         }
       ],
@@ -924,12 +1657,27 @@
       "objectKinds": [
         "constant"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextConstant",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Constant.xml",
           "nativeOwner": "Constant",
           "nativeValue": "Automatic",
           "objectKind": "constant",
+          "ownerName": "EnumContextConstant",
+          "ownerUuid": "61000000-0000-0000-0000-000000000009",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Constant.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextConstant",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Constant.xml",
+          "nativeOwner": "Constant",
+          "nativeValue": "Automatic",
+          "objectKind": "constant",
+          "ownerName": "EnumContextConstant",
+          "ownerUuid": "61000000-0000-0000-0000-000000000009",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Constant.txt"
         }
       ],
@@ -949,12 +1697,37 @@
       "objectKinds": [
         "document"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextDocument",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Document.xml",
           "nativeOwner": "Document",
           "nativeValue": "Automatic",
           "objectKind": "document",
+          "ownerName": "EnumContextDocument",
+          "ownerUuid": "61000000-0000-0000-0000-000000000010",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Document.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Document",
+          "nativeValue": "Managed",
+          "objectKind": "document",
+          "ownerName": "АктОбУничтоженииПерсональныхДанных",
+          "ownerUuid": "cb8ab5b6-876f-4aae-952f-2284bf0f539d",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextDocument",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Document.xml",
+          "nativeOwner": "Document",
+          "nativeValue": "Automatic",
+          "objectKind": "document",
+          "ownerName": "EnumContextDocument",
+          "ownerUuid": "61000000-0000-0000-0000-000000000010",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Document.txt"
         }
       ],
@@ -974,12 +1747,37 @@
       "objectKinds": [
         "document"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextDocument",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Document.xml",
           "nativeOwner": "Document",
           "nativeValue": "Use",
           "objectKind": "document",
+          "ownerName": "EnumContextDocument",
+          "ownerUuid": "61000000-0000-0000-0000-000000000010",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Document.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Document",
+          "nativeValue": "Use",
+          "objectKind": "document",
+          "ownerName": "АктОбУничтоженииПерсональныхДанных",
+          "ownerUuid": "cb8ab5b6-876f-4aae-952f-2284bf0f539d",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextDocument",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Document.xml",
+          "nativeOwner": "Document",
+          "nativeValue": "Use",
+          "objectKind": "document",
+          "ownerName": "EnumContextDocument",
+          "ownerUuid": "61000000-0000-0000-0000-000000000010",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Document.txt"
         }
       ],
@@ -999,12 +1797,37 @@
       "objectKinds": [
         "document"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextDocument",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Document.xml",
           "nativeOwner": "Document",
           "nativeValue": "Fixed",
           "objectKind": "document",
+          "ownerName": "EnumContextDocument",
+          "ownerUuid": "61000000-0000-0000-0000-000000000010",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Document.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Document",
+          "nativeValue": "Variable",
+          "objectKind": "document",
+          "ownerName": "АктОбУничтоженииПерсональныхДанных",
+          "ownerUuid": "cb8ab5b6-876f-4aae-952f-2284bf0f539d",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextDocument",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Document.xml",
+          "nativeOwner": "Document",
+          "nativeValue": "Fixed",
+          "objectKind": "document",
+          "ownerName": "EnumContextDocument",
+          "ownerUuid": "61000000-0000-0000-0000-000000000010",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Document.txt"
         }
       ],
@@ -1027,12 +1850,37 @@
       "objectKinds": [
         "document"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextDocument",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Document.xml",
           "nativeOwner": "Document",
           "nativeValue": "Year",
           "objectKind": "document",
+          "ownerName": "EnumContextDocument",
+          "ownerUuid": "61000000-0000-0000-0000-000000000010",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Document.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Document",
+          "nativeValue": "Year",
+          "objectKind": "document",
+          "ownerName": "АктОбУничтоженииПерсональныхДанных",
+          "ownerUuid": "cb8ab5b6-876f-4aae-952f-2284bf0f539d",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextDocument",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Document.xml",
+          "nativeOwner": "Document",
+          "nativeValue": "Year",
+          "objectKind": "document",
+          "ownerName": "EnumContextDocument",
+          "ownerUuid": "61000000-0000-0000-0000-000000000010",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Document.txt"
         }
       ],
@@ -1052,12 +1900,37 @@
       "objectKinds": [
         "document"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextDocument",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Document.xml",
           "nativeOwner": "Document",
           "nativeValue": "String",
           "objectKind": "document",
+          "ownerName": "EnumContextDocument",
+          "ownerUuid": "61000000-0000-0000-0000-000000000010",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Document.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Document",
+          "nativeValue": "String",
+          "objectKind": "document",
+          "ownerName": "АктОбУничтоженииПерсональныхДанных",
+          "ownerUuid": "cb8ab5b6-876f-4aae-952f-2284bf0f539d",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextDocument",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Document.xml",
+          "nativeOwner": "Document",
+          "nativeValue": "String",
+          "objectKind": "document",
+          "ownerName": "EnumContextDocument",
+          "ownerUuid": "61000000-0000-0000-0000-000000000010",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Document.txt"
         }
       ],
@@ -1077,12 +1950,37 @@
       "objectKinds": [
         "document"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextDocument",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Document.xml",
           "nativeOwner": "Document",
           "nativeValue": "Allow",
           "objectKind": "document",
+          "ownerName": "EnumContextDocument",
+          "ownerUuid": "61000000-0000-0000-0000-000000000010",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Document.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Document",
+          "nativeValue": "Allow",
+          "objectKind": "document",
+          "ownerName": "АктОбУничтоженииПерсональныхДанных",
+          "ownerUuid": "cb8ab5b6-876f-4aae-952f-2284bf0f539d",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextDocument",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Document.xml",
+          "nativeOwner": "Document",
+          "nativeValue": "Allow",
+          "objectKind": "document",
+          "ownerName": "EnumContextDocument",
+          "ownerUuid": "61000000-0000-0000-0000-000000000010",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Document.txt"
         }
       ],
@@ -1102,12 +2000,37 @@
       "objectKinds": [
         "document"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextDocument",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Document.xml",
           "nativeOwner": "Document",
           "nativeValue": "Allow",
           "objectKind": "document",
+          "ownerName": "EnumContextDocument",
+          "ownerUuid": "61000000-0000-0000-0000-000000000010",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Document.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Document",
+          "nativeValue": "Deny",
+          "objectKind": "document",
+          "ownerName": "АктОбУничтоженииПерсональныхДанных",
+          "ownerUuid": "cb8ab5b6-876f-4aae-952f-2284bf0f539d",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextDocument",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Document.xml",
+          "nativeOwner": "Document",
+          "nativeValue": "Allow",
+          "objectKind": "document",
+          "ownerName": "EnumContextDocument",
+          "ownerUuid": "61000000-0000-0000-0000-000000000010",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Document.txt"
         }
       ],
@@ -1128,12 +2051,37 @@
       "objectKinds": [
         "document"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextDocument",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Document.xml",
           "nativeOwner": "Document",
           "nativeValue": "AutoDelete",
           "objectKind": "document",
+          "ownerName": "EnumContextDocument",
+          "ownerUuid": "61000000-0000-0000-0000-000000000010",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Document.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Document",
+          "nativeValue": "AutoDeleteOnUnpost",
+          "objectKind": "document",
+          "ownerName": "АктОбУничтоженииПерсональныхДанных",
+          "ownerUuid": "cb8ab5b6-876f-4aae-952f-2284bf0f539d",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextDocument",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Document.xml",
+          "nativeOwner": "Document",
+          "nativeValue": "AutoDelete",
+          "objectKind": "document",
+          "ownerName": "EnumContextDocument",
+          "ownerUuid": "61000000-0000-0000-0000-000000000010",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Document.txt"
         }
       ],
@@ -1154,12 +2102,37 @@
       "objectKinds": [
         "document"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextDocument",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Document.xml",
           "nativeOwner": "Document",
           "nativeValue": "WriteAll",
           "objectKind": "document",
+          "ownerName": "EnumContextDocument",
+          "ownerUuid": "61000000-0000-0000-0000-000000000010",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Document.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Document",
+          "nativeValue": "WriteSelected",
+          "objectKind": "document",
+          "ownerName": "АктОбУничтоженииПерсональныхДанных",
+          "ownerUuid": "cb8ab5b6-876f-4aae-952f-2284bf0f539d",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextDocument",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Document.xml",
+          "nativeOwner": "Document",
+          "nativeValue": "WriteAll",
+          "objectKind": "document",
+          "ownerName": "EnumContextDocument",
+          "ownerUuid": "61000000-0000-0000-0000-000000000010",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Document.txt"
         }
       ],
@@ -1179,12 +2152,27 @@
       "objectKinds": [
         "exchangePlan"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextExchangePlan",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ExchangePlan.xml",
           "nativeOwner": "ExchangePlan",
           "nativeValue": "Fixed",
           "objectKind": "exchangePlan",
+          "ownerName": "EnumContextExchangePlan",
+          "ownerUuid": "61000000-0000-0000-0000-000000000011",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ExchangePlan.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextExchangePlan",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ExchangePlan.xml",
+          "nativeOwner": "ExchangePlan",
+          "nativeValue": "Fixed",
+          "objectKind": "exchangePlan",
+          "ownerName": "EnumContextExchangePlan",
+          "ownerUuid": "61000000-0000-0000-0000-000000000011",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ExchangePlan.txt"
         }
       ],
@@ -1204,12 +2192,27 @@
       "objectKinds": [
         "exchangePlan"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextExchangePlan",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ExchangePlan.xml",
           "nativeOwner": "ExchangePlan",
           "nativeValue": "Automatic",
           "objectKind": "exchangePlan",
+          "ownerName": "EnumContextExchangePlan",
+          "ownerUuid": "61000000-0000-0000-0000-000000000011",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ExchangePlan.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextExchangePlan",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ExchangePlan.xml",
+          "nativeOwner": "ExchangePlan",
+          "nativeValue": "Automatic",
+          "objectKind": "exchangePlan",
+          "ownerName": "EnumContextExchangePlan",
+          "ownerUuid": "61000000-0000-0000-0000-000000000011",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ExchangePlan.txt"
         }
       ],
@@ -1229,12 +2232,27 @@
       "objectKinds": [
         "exchangePlan"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextExchangePlan",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ExchangePlan.xml",
           "nativeOwner": "ExchangePlan",
           "nativeValue": "Use",
           "objectKind": "exchangePlan",
+          "ownerName": "EnumContextExchangePlan",
+          "ownerUuid": "61000000-0000-0000-0000-000000000011",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ExchangePlan.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextExchangePlan",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ExchangePlan.xml",
+          "nativeOwner": "ExchangePlan",
+          "nativeValue": "Use",
+          "objectKind": "exchangePlan",
+          "ownerName": "EnumContextExchangePlan",
+          "ownerUuid": "61000000-0000-0000-0000-000000000011",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ExchangePlan.txt"
         }
       ],
@@ -1254,12 +2272,27 @@
       "objectKinds": [
         "httpService"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextHTTPService",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/HTTPService.xml",
           "nativeOwner": "HTTPService",
           "nativeValue": "AutoUse",
           "objectKind": "httpService",
+          "ownerName": "EnumContextHTTPService",
+          "ownerUuid": "61000000-0000-0000-0000-000000000016",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/HTTPService.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextHTTPService",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/HTTPService.xml",
+          "nativeOwner": "HTTPService",
+          "nativeValue": "AutoUse",
+          "objectKind": "httpService",
+          "ownerName": "EnumContextHTTPService",
+          "ownerUuid": "61000000-0000-0000-0000-000000000016",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/HTTPService.txt"
         }
       ],
@@ -1279,12 +2312,37 @@
       "objectKinds": [
         "informationRegister"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextFieldOwners",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
           "nativeOwner": "InformationRegister",
           "nativeValue": "Automatic",
           "objectKind": "informationRegister",
+          "ownerName": "EnumContextFieldOwners",
+          "ownerUuid": "61000000-0000-0000-0000-000000000012",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
+        },
+        {
+          "case": "informationRegisterAdministrativeHierarchy",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/InformationRegisters/АдминистративнаяИерархия.xml",
+          "nativeOwner": "InformationRegister",
+          "nativeValue": "Managed",
+          "objectKind": "informationRegister",
+          "ownerName": "АдминистративнаяИерархия",
+          "ownerUuid": "ab4dbaff-cee6-47b3-9d69-13ac5c906f95",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/information-register-administrative-hierarchy.full.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextFieldOwners",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
+          "nativeOwner": "InformationRegister",
+          "nativeValue": "Automatic",
+          "objectKind": "informationRegister",
+          "ownerName": "EnumContextFieldOwners",
+          "ownerUuid": "61000000-0000-0000-0000-000000000012",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
         }
       ],
@@ -1304,12 +2362,37 @@
       "objectKinds": [
         "informationRegister"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextFieldOwners",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
           "nativeOwner": "InformationRegister",
           "nativeValue": "Use",
           "objectKind": "informationRegister",
+          "ownerName": "EnumContextFieldOwners",
+          "ownerUuid": "61000000-0000-0000-0000-000000000012",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
+        },
+        {
+          "case": "informationRegisterAdministrativeHierarchy",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/InformationRegisters/АдминистративнаяИерархия.xml",
+          "nativeOwner": "InformationRegister",
+          "nativeValue": "DontUse",
+          "objectKind": "informationRegister",
+          "ownerName": "АдминистративнаяИерархия",
+          "ownerUuid": "ab4dbaff-cee6-47b3-9d69-13ac5c906f95",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/information-register-administrative-hierarchy.full.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextFieldOwners",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
+          "nativeOwner": "InformationRegister",
+          "nativeValue": "Use",
+          "objectKind": "informationRegister",
+          "ownerName": "EnumContextFieldOwners",
+          "ownerUuid": "61000000-0000-0000-0000-000000000012",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
         }
       ],
@@ -1334,12 +2417,37 @@
       "objectKinds": [
         "informationRegister"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextFieldOwners",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
           "nativeOwner": "InformationRegister",
           "nativeValue": "Day",
           "objectKind": "informationRegister",
+          "ownerName": "EnumContextFieldOwners",
+          "ownerUuid": "61000000-0000-0000-0000-000000000012",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
+        },
+        {
+          "case": "informationRegisterAdministrativeHierarchy",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/InformationRegisters/АдминистративнаяИерархия.xml",
+          "nativeOwner": "InformationRegister",
+          "nativeValue": "Nonperiodical",
+          "objectKind": "informationRegister",
+          "ownerName": "АдминистративнаяИерархия",
+          "ownerUuid": "ab4dbaff-cee6-47b3-9d69-13ac5c906f95",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/information-register-administrative-hierarchy.full.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextFieldOwners",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
+          "nativeOwner": "InformationRegister",
+          "nativeValue": "Day",
+          "objectKind": "informationRegister",
+          "ownerName": "EnumContextFieldOwners",
+          "ownerUuid": "61000000-0000-0000-0000-000000000012",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
         }
       ],
@@ -1359,12 +2467,37 @@
       "objectKinds": [
         "informationRegister"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextFieldOwners",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
           "nativeOwner": "InformationRegister",
           "nativeValue": "Independent",
           "objectKind": "informationRegister",
+          "ownerName": "EnumContextFieldOwners",
+          "ownerUuid": "61000000-0000-0000-0000-000000000012",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
+        },
+        {
+          "case": "informationRegisterAdministrativeHierarchy",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/InformationRegisters/АдминистративнаяИерархия.xml",
+          "nativeOwner": "InformationRegister",
+          "nativeValue": "Independent",
+          "objectKind": "informationRegister",
+          "ownerName": "АдминистративнаяИерархия",
+          "ownerUuid": "ab4dbaff-cee6-47b3-9d69-13ac5c906f95",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/information-register-administrative-hierarchy.full.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextFieldOwners",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
+          "nativeOwner": "InformationRegister",
+          "nativeValue": "Independent",
+          "objectKind": "informationRegister",
+          "ownerName": "EnumContextFieldOwners",
+          "ownerUuid": "61000000-0000-0000-0000-000000000012",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
         }
       ],
@@ -1384,12 +2517,27 @@
       "objectKinds": [
         "task"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextTask",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Task.xml",
           "nativeOwner": "Task",
           "nativeValue": "Automatic",
           "objectKind": "task",
+          "ownerName": "EnumContextTask",
+          "ownerUuid": "61000000-0000-0000-0000-000000000018",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Task.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextTask",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Task.xml",
+          "nativeOwner": "Task",
+          "nativeValue": "Automatic",
+          "objectKind": "task",
+          "ownerName": "EnumContextTask",
+          "ownerUuid": "61000000-0000-0000-0000-000000000018",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Task.txt"
         }
       ],
@@ -1409,12 +2557,27 @@
       "objectKinds": [
         "task"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextTask",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Task.xml",
           "nativeOwner": "Task",
           "nativeValue": "Use",
           "objectKind": "task",
+          "ownerName": "EnumContextTask",
+          "ownerUuid": "61000000-0000-0000-0000-000000000018",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Task.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextTask",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Task.xml",
+          "nativeOwner": "Task",
+          "nativeValue": "Use",
+          "objectKind": "task",
+          "ownerName": "EnumContextTask",
+          "ownerUuid": "61000000-0000-0000-0000-000000000018",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Task.txt"
         }
       ],
@@ -1434,12 +2597,27 @@
       "objectKinds": [
         "task"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextTask",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Task.xml",
           "nativeOwner": "Task",
           "nativeValue": "Fixed",
           "objectKind": "task",
+          "ownerName": "EnumContextTask",
+          "ownerUuid": "61000000-0000-0000-0000-000000000018",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Task.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextTask",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Task.xml",
+          "nativeOwner": "Task",
+          "nativeValue": "Fixed",
+          "objectKind": "task",
+          "ownerName": "EnumContextTask",
+          "ownerUuid": "61000000-0000-0000-0000-000000000018",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Task.txt"
         }
       ],
@@ -1459,12 +2637,27 @@
       "objectKinds": [
         "task"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextTask",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Task.xml",
           "nativeOwner": "Task",
           "nativeValue": "String",
           "objectKind": "task",
+          "ownerName": "EnumContextTask",
+          "ownerUuid": "61000000-0000-0000-0000-000000000018",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Task.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextTask",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Task.xml",
+          "nativeOwner": "Task",
+          "nativeValue": "String",
+          "objectKind": "task",
+          "ownerName": "EnumContextTask",
+          "ownerUuid": "61000000-0000-0000-0000-000000000018",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Task.txt"
         }
       ],
@@ -1484,12 +2677,27 @@
       "objectKinds": [
         "webService"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextWebService",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/WebService.xml",
           "nativeOwner": "WebService",
           "nativeValue": "AutoUse",
           "objectKind": "webService",
+          "ownerName": "EnumContextWebService",
+          "ownerUuid": "61000000-0000-0000-0000-000000000019",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/WebService.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextWebService",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/WebService.xml",
+          "nativeOwner": "WebService",
+          "nativeValue": "AutoUse",
+          "objectKind": "webService",
+          "ownerName": "EnumContextWebService",
+          "ownerUuid": "61000000-0000-0000-0000-000000000019",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/WebService.txt"
         }
       ],
@@ -1512,26 +2720,487 @@
         "dimension",
         "resource"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextFieldOwners",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
           "nativeOwner": "Attribute",
           "nativeValue": "DontCheck",
           "objectKind": "attribute",
+          "ownerName": "ContextAttribute",
+          "ownerUuid": "61000000-0000-0000-0000-000000000013",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
         },
         {
+          "case": "enumContextFieldOwners",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
           "nativeOwner": "Dimension",
           "nativeValue": "DontCheck",
           "objectKind": "dimension",
+          "ownerName": "ContextDimension",
+          "ownerUuid": "61000000-0000-0000-0000-000000000014",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
         },
         {
+          "case": "enumContextFieldOwners",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
           "nativeOwner": "Resource",
           "nativeValue": "DontCheck",
           "objectKind": "resource",
+          "ownerName": "ContextResource",
+          "ownerUuid": "61000000-0000-0000-0000-000000000015",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontCheck",
+          "objectKind": "attribute",
+          "ownerName": "ЗагружаетсяИзИнтернета",
+          "ownerUuid": "9f67d228-79aa-44e6-8dc7-fae4fbdfef2a",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontCheck",
+          "objectKind": "attribute",
+          "ownerName": "ЗагружаетсяИзИнтернета",
+          "ownerUuid": "9f67d228-79aa-44e6-8dc7-fae4fbdfef2a",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontCheck",
+          "objectKind": "attribute",
+          "ownerName": "КодЯзыка",
+          "ownerUuid": "b233d29c-3979-4ef6-b7f0-89ca88f65e82",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontCheck",
+          "objectKind": "attribute",
+          "ownerName": "КодЯзыка",
+          "ownerUuid": "b233d29c-3979-4ef6-b7f0-89ca88f65e82",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "ShowError",
+          "objectKind": "attribute",
+          "ownerName": "НаименованиеПолное",
+          "ownerUuid": "231d3950-f363-4e63-83cd-8ddb81507c27",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "ShowError",
+          "objectKind": "attribute",
+          "ownerName": "НаименованиеПолное",
+          "ownerUuid": "231d3950-f363-4e63-83cd-8ddb81507c27",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontCheck",
+          "objectKind": "attribute",
+          "ownerName": "Наценка",
+          "ownerUuid": "87429f11-bf95-4013-bf13-da904570f88d",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontCheck",
+          "objectKind": "attribute",
+          "ownerName": "Наценка",
+          "ownerUuid": "87429f11-bf95-4013-bf13-da904570f88d",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "ShowError",
+          "objectKind": "attribute",
+          "ownerName": "ОсновнаяВалюта",
+          "ownerUuid": "6173cab2-e0f5-40c1-8e74-4f41fc8bd68f",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "ShowError",
+          "objectKind": "attribute",
+          "ownerName": "ОсновнаяВалюта",
+          "ownerUuid": "6173cab2-e0f5-40c1-8e74-4f41fc8bd68f",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontCheck",
+          "objectKind": "attribute",
+          "ownerName": "ПараметрыПрописи",
+          "ownerUuid": "feb41347-62db-41cf-ace0-d8b9de361af3",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontCheck",
+          "objectKind": "attribute",
+          "ownerName": "ПараметрыПрописи",
+          "ownerUuid": "684ca876-644e-43f5-b96a-1561fb5b1935",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontCheck",
+          "objectKind": "attribute",
+          "ownerName": "ПараметрыПрописи",
+          "ownerUuid": "feb41347-62db-41cf-ace0-d8b9de361af3",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontCheck",
+          "objectKind": "attribute",
+          "ownerName": "ПараметрыПрописи",
+          "ownerUuid": "684ca876-644e-43f5-b96a-1561fb5b1935",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "ShowError",
+          "objectKind": "attribute",
+          "ownerName": "СпособУстановкиКурса",
+          "ownerUuid": "dbdf3ae7-a0af-44b9-8e3d-c402d98cda03",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "ShowError",
+          "objectKind": "attribute",
+          "ownerName": "СпособУстановкиКурса",
+          "ownerUuid": "dbdf3ae7-a0af-44b9-8e3d-c402d98cda03",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "ShowError",
+          "objectKind": "attribute",
+          "ownerName": "ФормулаРасчетаКурса",
+          "ownerUuid": "5a088468-4065-4e0c-9b84-1162de8d3fdd",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "ShowError",
+          "objectKind": "attribute",
+          "ownerName": "ФормулаРасчетаКурса",
+          "ownerUuid": "5a088468-4065-4e0c-9b84-1162de8d3fdd",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "ShowError",
+          "objectKind": "attribute",
+          "ownerName": "ДатаУничтожения",
+          "ownerUuid": "7e67f946-a80f-428e-a0eb-22c1a58b6fcf",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontCheck",
+          "objectKind": "attribute",
+          "ownerName": "Значение",
+          "ownerUuid": "12b82221-3a4e-4d65-b1eb-001cc22725a7",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontCheck",
+          "objectKind": "attribute",
+          "ownerName": "ИмяОбъекта",
+          "ownerUuid": "de31505e-3190-4b8c-81e9-8e2c2c7a1809",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontCheck",
+          "objectKind": "attribute",
+          "ownerName": "ИмяОбъекта",
+          "ownerUuid": "a587b305-efbf-43be-bf2e-95c4a33e9f3b",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontCheck",
+          "objectKind": "attribute",
+          "ownerName": "Категория",
+          "ownerUuid": "a07f12e8-f62c-4325-b0f4-df68b4b13e45",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontCheck",
+          "objectKind": "attribute",
+          "ownerName": "КоличествоОбъектов",
+          "ownerUuid": "ba156cdc-ac78-4827-9598-f0bb7cc7569c",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontCheck",
+          "objectKind": "attribute",
+          "ownerName": "Комментарий",
+          "ownerUuid": "970421ca-4cb5-41f1-8e83-91ea4481ba9a",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontCheck",
+          "objectKind": "attribute",
+          "ownerName": "НаименованиеИнформационнойСистемы",
+          "ownerUuid": "31f12f68-e5f7-4078-aca4-ebe32699fd6c",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontCheck",
+          "objectKind": "attribute",
+          "ownerName": "НаименованиеОрганизации",
+          "ownerUuid": "4a6fde33-6a58-4827-bdf9-b5e28e8cff6b",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "ShowError",
+          "objectKind": "attribute",
+          "ownerName": "Организация",
+          "ownerUuid": "c9281eef-2e73-4b0f-ab72-7b4f6f10d787",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontCheck",
+          "objectKind": "attribute",
+          "ownerName": "Ответственный",
+          "ownerUuid": "cf8c78d6-e1e0-4953-9928-b8d333e2c1ca",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontCheck",
+          "objectKind": "attribute",
+          "ownerName": "ОтветственныйЗаОбработкуПерсональныхДанных",
+          "ownerUuid": "1e7effa9-3d8c-4d6c-bad2-98a3fd57ff33",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontCheck",
+          "objectKind": "attribute",
+          "ownerName": "ПричинаУничтожения",
+          "ownerUuid": "0f3e12fd-d60c-4323-8010-3f2951012d36",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontCheck",
+          "objectKind": "attribute",
+          "ownerName": "Свойство",
+          "ownerUuid": "d8d61ffe-518a-4f06-ba47-238c0973a01a",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontCheck",
+          "objectKind": "attribute",
+          "ownerName": "СпособУничтожения",
+          "ownerUuid": "040cd37a-d272-4a87-b125-25d2cb8a2f9e",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "ShowError",
+          "objectKind": "attribute",
+          "ownerName": "Субъект",
+          "ownerUuid": "eb7aed6a-718d-4439-bea6-e7ede4987e3d",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "ShowError",
+          "objectKind": "attribute",
+          "ownerName": "Субъект",
+          "ownerUuid": "6d7b4670-9c33-41da-afca-bf1e01447623",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontCheck",
+          "objectKind": "attribute",
+          "ownerName": "ТекстоваяСтрока",
+          "ownerUuid": "b301cd92-809f-4b0e-966b-8ab95e85ecb3",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontCheck",
+          "objectKind": "attribute",
+          "ownerName": "ФИООтветственногоЗаОбработкуПДн",
+          "ownerUuid": "4c353b16-e6b6-4bd2-9d22-ce50a6281402",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontCheck",
+          "objectKind": "attribute",
+          "ownerName": "ФИОСубъекта",
+          "ownerUuid": "51ab4435-d8a2-4f54-b2ff-9465b0a4eef3",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontCheck",
+          "objectKind": "attribute",
+          "ownerName": "ЮридическийАдресОрганизации",
+          "ownerUuid": "e2eadc5b-1b78-4ae4-8a55-a42402bb458b",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "informationRegisterAdministrativeHierarchy",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/InformationRegisters/АдминистративнаяИерархия.xml",
+          "nativeOwner": "Dimension",
+          "nativeValue": "DontCheck",
+          "objectKind": "dimension",
+          "ownerName": "Идентификатор",
+          "ownerUuid": "82d5ed02-654f-4b86-b995-baf64a147a12",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/information-register-administrative-hierarchy.full.txt"
+        },
+        {
+          "case": "informationRegisterAdministrativeHierarchy",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/InformationRegisters/АдминистративнаяИерархия.xml",
+          "nativeOwner": "Dimension",
+          "nativeValue": "DontCheck",
+          "objectKind": "dimension",
+          "ownerName": "КодСубъектаРФ",
+          "ownerUuid": "7652c0d3-1b6e-4e0d-96d0-7bbdff808ce9",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/information-register-administrative-hierarchy.full.txt"
+        },
+        {
+          "case": "informationRegisterAdministrativeHierarchy",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/InformationRegisters/АдминистративнаяИерархия.xml",
+          "nativeOwner": "Dimension",
+          "nativeValue": "DontCheck",
+          "objectKind": "dimension",
+          "ownerName": "РодительскийИдентификатор",
+          "ownerUuid": "ba96177b-d10c-4ad2-9851-dea312eeafd2",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/information-register-administrative-hierarchy.full.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextFieldOwners",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontCheck",
+          "objectKind": "attribute",
+          "ownerName": "ContextAttribute",
+          "ownerUuid": "61000000-0000-0000-0000-000000000013",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
+        },
+        {
+          "case": "enumContextFieldOwners",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
+          "nativeOwner": "Dimension",
+          "nativeValue": "DontCheck",
+          "objectKind": "dimension",
+          "ownerName": "ContextDimension",
+          "ownerUuid": "61000000-0000-0000-0000-000000000014",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
+        },
+        {
+          "case": "enumContextFieldOwners",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
+          "nativeOwner": "Resource",
+          "nativeValue": "DontCheck",
+          "objectKind": "resource",
+          "ownerName": "ContextResource",
+          "ownerUuid": "61000000-0000-0000-0000-000000000015",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
         }
       ],
@@ -1554,26 +3223,487 @@
         "dimension",
         "resource"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextFieldOwners",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
           "nativeOwner": "Attribute",
           "nativeValue": "DontIndex",
           "objectKind": "attribute",
+          "ownerName": "ContextAttribute",
+          "ownerUuid": "61000000-0000-0000-0000-000000000013",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
         },
         {
+          "case": "enumContextFieldOwners",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
           "nativeOwner": "Dimension",
           "nativeValue": "DontIndex",
           "objectKind": "dimension",
+          "ownerName": "ContextDimension",
+          "ownerUuid": "61000000-0000-0000-0000-000000000014",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
         },
         {
+          "case": "enumContextFieldOwners",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
           "nativeOwner": "Resource",
           "nativeValue": "DontIndex",
           "objectKind": "resource",
+          "ownerName": "ContextResource",
+          "ownerUuid": "61000000-0000-0000-0000-000000000015",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "ЗагружаетсяИзИнтернета",
+          "ownerUuid": "9f67d228-79aa-44e6-8dc7-fae4fbdfef2a",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "ЗагружаетсяИзИнтернета",
+          "ownerUuid": "9f67d228-79aa-44e6-8dc7-fae4fbdfef2a",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "Index",
+          "objectKind": "attribute",
+          "ownerName": "КодЯзыка",
+          "ownerUuid": "b233d29c-3979-4ef6-b7f0-89ca88f65e82",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "Index",
+          "objectKind": "attribute",
+          "ownerName": "КодЯзыка",
+          "ownerUuid": "b233d29c-3979-4ef6-b7f0-89ca88f65e82",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "НаименованиеПолное",
+          "ownerUuid": "231d3950-f363-4e63-83cd-8ddb81507c27",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "НаименованиеПолное",
+          "ownerUuid": "231d3950-f363-4e63-83cd-8ddb81507c27",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "Наценка",
+          "ownerUuid": "87429f11-bf95-4013-bf13-da904570f88d",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "Наценка",
+          "ownerUuid": "87429f11-bf95-4013-bf13-da904570f88d",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "Index",
+          "objectKind": "attribute",
+          "ownerName": "ОсновнаяВалюта",
+          "ownerUuid": "6173cab2-e0f5-40c1-8e74-4f41fc8bd68f",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "Index",
+          "objectKind": "attribute",
+          "ownerName": "ОсновнаяВалюта",
+          "ownerUuid": "6173cab2-e0f5-40c1-8e74-4f41fc8bd68f",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "ПараметрыПрописи",
+          "ownerUuid": "feb41347-62db-41cf-ace0-d8b9de361af3",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "ПараметрыПрописи",
+          "ownerUuid": "684ca876-644e-43f5-b96a-1561fb5b1935",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "ПараметрыПрописи",
+          "ownerUuid": "feb41347-62db-41cf-ace0-d8b9de361af3",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "ПараметрыПрописи",
+          "ownerUuid": "684ca876-644e-43f5-b96a-1561fb5b1935",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "СпособУстановкиКурса",
+          "ownerUuid": "dbdf3ae7-a0af-44b9-8e3d-c402d98cda03",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "СпособУстановкиКурса",
+          "ownerUuid": "dbdf3ae7-a0af-44b9-8e3d-c402d98cda03",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "ФормулаРасчетаКурса",
+          "ownerUuid": "5a088468-4065-4e0c-9b84-1162de8d3fdd",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "ФормулаРасчетаКурса",
+          "ownerUuid": "5a088468-4065-4e0c-9b84-1162de8d3fdd",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "ДатаУничтожения",
+          "ownerUuid": "7e67f946-a80f-428e-a0eb-22c1a58b6fcf",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "Значение",
+          "ownerUuid": "12b82221-3a4e-4d65-b1eb-001cc22725a7",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "ИмяОбъекта",
+          "ownerUuid": "de31505e-3190-4b8c-81e9-8e2c2c7a1809",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "ИмяОбъекта",
+          "ownerUuid": "a587b305-efbf-43be-bf2e-95c4a33e9f3b",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "Категория",
+          "ownerUuid": "a07f12e8-f62c-4325-b0f4-df68b4b13e45",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "КоличествоОбъектов",
+          "ownerUuid": "ba156cdc-ac78-4827-9598-f0bb7cc7569c",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "Комментарий",
+          "ownerUuid": "970421ca-4cb5-41f1-8e83-91ea4481ba9a",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "НаименованиеИнформационнойСистемы",
+          "ownerUuid": "31f12f68-e5f7-4078-aca4-ebe32699fd6c",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "НаименованиеОрганизации",
+          "ownerUuid": "4a6fde33-6a58-4827-bdf9-b5e28e8cff6b",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "Организация",
+          "ownerUuid": "c9281eef-2e73-4b0f-ab72-7b4f6f10d787",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "Ответственный",
+          "ownerUuid": "cf8c78d6-e1e0-4953-9928-b8d333e2c1ca",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "ОтветственныйЗаОбработкуПерсональныхДанных",
+          "ownerUuid": "1e7effa9-3d8c-4d6c-bad2-98a3fd57ff33",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "ПричинаУничтожения",
+          "ownerUuid": "0f3e12fd-d60c-4323-8010-3f2951012d36",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "Свойство",
+          "ownerUuid": "d8d61ffe-518a-4f06-ba47-238c0973a01a",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "СпособУничтожения",
+          "ownerUuid": "040cd37a-d272-4a87-b125-25d2cb8a2f9e",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "Субъект",
+          "ownerUuid": "eb7aed6a-718d-4439-bea6-e7ede4987e3d",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "Субъект",
+          "ownerUuid": "6d7b4670-9c33-41da-afca-bf1e01447623",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "ТекстоваяСтрока",
+          "ownerUuid": "b301cd92-809f-4b0e-966b-8ab95e85ecb3",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "ФИООтветственногоЗаОбработкуПДн",
+          "ownerUuid": "4c353b16-e6b6-4bd2-9d22-ce50a6281402",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "ФИОСубъекта",
+          "ownerUuid": "51ab4435-d8a2-4f54-b2ff-9465b0a4eef3",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "documentDestructionAct",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "ЮридическийАдресОрганизации",
+          "ownerUuid": "e2eadc5b-1b78-4ae4-8a55-a42402bb458b",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/document-destruction-act.full.txt"
+        },
+        {
+          "case": "informationRegisterAdministrativeHierarchy",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/InformationRegisters/АдминистративнаяИерархия.xml",
+          "nativeOwner": "Dimension",
+          "nativeValue": "DontIndex",
+          "objectKind": "dimension",
+          "ownerName": "Идентификатор",
+          "ownerUuid": "82d5ed02-654f-4b86-b995-baf64a147a12",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/information-register-administrative-hierarchy.full.txt"
+        },
+        {
+          "case": "informationRegisterAdministrativeHierarchy",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/InformationRegisters/АдминистративнаяИерархия.xml",
+          "nativeOwner": "Dimension",
+          "nativeValue": "Index",
+          "objectKind": "dimension",
+          "ownerName": "КодСубъектаРФ",
+          "ownerUuid": "7652c0d3-1b6e-4e0d-96d0-7bbdff808ce9",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/information-register-administrative-hierarchy.full.txt"
+        },
+        {
+          "case": "informationRegisterAdministrativeHierarchy",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/InformationRegisters/АдминистративнаяИерархия.xml",
+          "nativeOwner": "Dimension",
+          "nativeValue": "Index",
+          "objectKind": "dimension",
+          "ownerName": "РодительскийИдентификатор",
+          "ownerUuid": "ba96177b-d10c-4ad2-9851-dea312eeafd2",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/information-register-administrative-hierarchy.full.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextFieldOwners",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "ownerName": "ContextAttribute",
+          "ownerUuid": "61000000-0000-0000-0000-000000000013",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
+        },
+        {
+          "case": "enumContextFieldOwners",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
+          "nativeOwner": "Dimension",
+          "nativeValue": "DontIndex",
+          "objectKind": "dimension",
+          "ownerName": "ContextDimension",
+          "ownerUuid": "61000000-0000-0000-0000-000000000014",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
+        },
+        {
+          "case": "enumContextFieldOwners",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
+          "nativeOwner": "Resource",
+          "nativeValue": "DontIndex",
+          "objectKind": "resource",
+          "ownerName": "ContextResource",
+          "ownerUuid": "61000000-0000-0000-0000-000000000015",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
         }
       ],
@@ -1596,26 +3726,207 @@
         "dimension",
         "resource"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextFieldOwners",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
           "nativeOwner": "Attribute",
           "nativeValue": "ForItem",
           "objectKind": "attribute",
+          "ownerName": "ContextAttribute",
+          "ownerUuid": "61000000-0000-0000-0000-000000000013",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
         },
         {
+          "case": "enumContextFieldOwners",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
           "nativeOwner": "Dimension",
           "nativeValue": "ForItem",
           "objectKind": "dimension",
+          "ownerName": "ContextDimension",
+          "ownerUuid": "61000000-0000-0000-0000-000000000014",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
         },
         {
+          "case": "enumContextFieldOwners",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
           "nativeOwner": "Resource",
           "nativeValue": "ForItem",
           "objectKind": "resource",
+          "ownerName": "ContextResource",
+          "ownerUuid": "61000000-0000-0000-0000-000000000015",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "ForItem",
+          "objectKind": "attribute",
+          "ownerName": "ЗагружаетсяИзИнтернета",
+          "ownerUuid": "9f67d228-79aa-44e6-8dc7-fae4fbdfef2a",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "ForItem",
+          "objectKind": "attribute",
+          "ownerName": "ЗагружаетсяИзИнтернета",
+          "ownerUuid": "9f67d228-79aa-44e6-8dc7-fae4fbdfef2a",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "ForItem",
+          "objectKind": "attribute",
+          "ownerName": "НаименованиеПолное",
+          "ownerUuid": "231d3950-f363-4e63-83cd-8ddb81507c27",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "ForItem",
+          "objectKind": "attribute",
+          "ownerName": "НаименованиеПолное",
+          "ownerUuid": "231d3950-f363-4e63-83cd-8ddb81507c27",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "ForItem",
+          "objectKind": "attribute",
+          "ownerName": "Наценка",
+          "ownerUuid": "87429f11-bf95-4013-bf13-da904570f88d",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "ForItem",
+          "objectKind": "attribute",
+          "ownerName": "Наценка",
+          "ownerUuid": "87429f11-bf95-4013-bf13-da904570f88d",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "ForItem",
+          "objectKind": "attribute",
+          "ownerName": "ОсновнаяВалюта",
+          "ownerUuid": "6173cab2-e0f5-40c1-8e74-4f41fc8bd68f",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "ForItem",
+          "objectKind": "attribute",
+          "ownerName": "ОсновнаяВалюта",
+          "ownerUuid": "6173cab2-e0f5-40c1-8e74-4f41fc8bd68f",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "ForItem",
+          "objectKind": "attribute",
+          "ownerName": "ПараметрыПрописи",
+          "ownerUuid": "feb41347-62db-41cf-ace0-d8b9de361af3",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "ForItem",
+          "objectKind": "attribute",
+          "ownerName": "ПараметрыПрописи",
+          "ownerUuid": "feb41347-62db-41cf-ace0-d8b9de361af3",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "ForItem",
+          "objectKind": "attribute",
+          "ownerName": "СпособУстановкиКурса",
+          "ownerUuid": "dbdf3ae7-a0af-44b9-8e3d-c402d98cda03",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "ForItem",
+          "objectKind": "attribute",
+          "ownerName": "СпособУстановкиКурса",
+          "ownerUuid": "dbdf3ae7-a0af-44b9-8e3d-c402d98cda03",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        },
+        {
+          "case": "catalogCurrencies",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "ForItem",
+          "objectKind": "attribute",
+          "ownerName": "ФормулаРасчетаКурса",
+          "ownerUuid": "5a088468-4065-4e0c-9b84-1162de8d3fdd",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.full.txt"
+        },
+        {
+          "case": "catalogCurrenciesMainCurrency",
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/Catalogs/Валюты.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "ForItem",
+          "objectKind": "attribute",
+          "ownerName": "ФормулаРасчетаКурса",
+          "ownerUuid": "5a088468-4065-4e0c-9b84-1162de8d3fdd",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/catalog-currencies.main-currency.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextFieldOwners",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "ForItem",
+          "objectKind": "attribute",
+          "ownerName": "ContextAttribute",
+          "ownerUuid": "61000000-0000-0000-0000-000000000013",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
+        },
+        {
+          "case": "enumContextFieldOwners",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
+          "nativeOwner": "Dimension",
+          "nativeValue": "ForItem",
+          "objectKind": "dimension",
+          "ownerName": "ContextDimension",
+          "ownerUuid": "61000000-0000-0000-0000-000000000014",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
+        },
+        {
+          "case": "enumContextFieldOwners",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
+          "nativeOwner": "Resource",
+          "nativeValue": "ForItem",
+          "objectKind": "resource",
+          "ownerName": "ContextResource",
+          "ownerUuid": "61000000-0000-0000-0000-000000000015",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
         }
       ],
@@ -1636,12 +3947,27 @@
       "objectKinds": [
         "webServiceParameter"
       ],
-      "ownerEvidence": [
+      "observedAliasEvidence": [
         {
+          "case": "enumContextWebService",
           "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/WebService.xml",
           "nativeOwner": "Parameter",
           "nativeValue": "In",
           "objectKind": "webServiceParameter",
+          "ownerName": "ContextParameter",
+          "ownerUuid": "61000000-0000-0000-0000-000000000021",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/WebService.txt"
+        }
+      ],
+      "ownerEvidence": [
+        {
+          "case": "enumContextWebService",
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/WebService.xml",
+          "nativeOwner": "Parameter",
+          "nativeValue": "In",
+          "objectKind": "webServiceParameter",
+          "ownerName": "ContextParameter",
+          "ownerUuid": "61000000-0000-0000-0000-000000000021",
           "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/WebService.txt"
         }
       ],

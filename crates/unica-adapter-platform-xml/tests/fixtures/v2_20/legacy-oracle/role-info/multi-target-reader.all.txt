@@ -5,31 +5,143 @@ Properties: setForNewObjects=false, setForAttributesByDefault=false, independent
 
 Allowed rights:
 
-  Catalog (1):
-    Products: Read [RLS]
+  AccountingRegister (1):
+    AccountingRegisterTarget: Read [RLS]
 
-  Document (1):
-    SalesOrder: Posting [RLS]
+  AccumulationRegister (1):
+    AccumulationRegisterTarget: Read [RLS]
 
-  InformationRegister (1):
-    Prices: Read [RLS]
+  Bot (1):
+    BotTarget: Read [RLS]
 
-  CommonModule (1):
-    Integration: View [RLS]
-
-  Report (1):
-    Sales: Use [RLS]
+  BusinessProcess (1):
+    BusinessProcessTarget: Read [RLS]
 
   CalculationRegister (1):
-    Payroll: Read [RLS]
+    CalculationRegisterTarget: Read [RLS]
 
-Denied rights:
+  Catalog (1):
+    CatalogTarget: Read [RLS]
+
+  ChartOfAccounts (1):
+    ChartOfAccountsTarget: Read [RLS]
+
+  ChartOfCalculationTypes (1):
+    ChartOfCalculationTypesTarget: Read [RLS]
+
+  ChartOfCharacteristicTypes (1):
+    ChartOfCharacteristicTypesTarget: Read [RLS]
+
+  CommandGroup (1):
+    CommandGroupTarget: Read [RLS]
+
+  CommonAttribute (1):
+    CommonAttributeTarget: Read [RLS]
+
+  CommonCommand (1):
+    CommonCommandTarget: Read [RLS]
+
+  CommonForm (1):
+    CommonFormTarget: Read [RLS]
+
+  CommonModule (1):
+    CommonModuleTarget: Read [RLS]
+
+  CommonPicture (1):
+    CommonPictureTarget: Read [RLS]
+
+  CommonTemplate (1):
+    CommonTemplateTarget: Read [RLS]
+
+  Constant (1):
+    ConstantTarget: Read [RLS]
+
+  DataProcessor (1):
+    DataProcessorTarget: Read [RLS]
+
+  DefinedType (1):
+    DefinedTypeTarget: Read [RLS]
+
+  Document (1):
+    DocumentTarget: Read [RLS]
+
+  DocumentJournal (1):
+    DocumentJournalTarget: Read [RLS]
+
+  DocumentNumerator (1):
+    DocumentNumeratorTarget: Read [RLS]
+
+  Enum (1):
+    EnumTarget: Read [RLS]
+
+  EventSubscription (1):
+    EventSubscriptionTarget: Read [RLS]
+
+  ExchangePlan (1):
+    ExchangePlanTarget: Read [RLS]
+
+  FilterCriterion (1):
+    FilterCriterionTarget: Read [RLS]
+
+  FunctionalOption (1):
+    FunctionalOptionTarget: Read [RLS]
+
+  FunctionalOptionsParameter (1):
+    FunctionalOptionsParameterTarget: Read [RLS]
+
+  HTTPService (1):
+    HTTPServiceTarget: Read [RLS]
+
+  InformationRegister (1):
+    InformationRegisterTarget: Read [RLS]
+
+  IntegrationService (1):
+    IntegrationServiceTarget: Read [RLS]
+
+  Language (1):
+    LanguageTarget: Read [RLS]
 
   Report (1):
-    Sales: -Update
+    ReportTarget: Read [RLS]
 
-RLS: 6 restrictions
-Templates: ProductAccess, PositiveAmount, PositivePrice, IntegrationAccess, SalesAccess, PayrollPeriod
+  Role (1):
+    RoleTarget: Read [RLS]
+
+  ScheduledJob (1):
+    ScheduledJobTarget: Read [RLS]
+
+  Sequence (1):
+    SequenceTarget: Read [RLS]
+
+  SessionParameter (1):
+    SessionParameterTarget: Read [RLS]
+
+  SettingsStorage (1):
+    SettingsStorageTarget: Read [RLS]
+
+  Style (1):
+    StyleTarget: Read [RLS]
+
+  StyleItem (1):
+    StyleItemTarget: Read [RLS]
+
+  Subsystem (1):
+    SubsystemTarget: Read [RLS]
+
+  Task (1):
+    TaskTarget: Read [RLS]
+
+  WSReference (1):
+    WSReferenceTarget: Read [RLS]
+
+  WebService (1):
+    WebServiceTarget: Read [RLS]
+
+  XDTOPackage (1):
+    XDTOPackageTarget: Read [RLS]
+
+RLS: 45 restrictions
+Templates: AccountingRegisterTemplate, AccumulationRegisterTemplate, BotTemplate, BusinessProcessTemplate, CalculationRegisterTemplate, CatalogTemplate, ChartOfAccountsTemplate, ChartOfCalculationTypesTemplate, ChartOfCharacteristicTypesTemplate, CommandGroupTemplate, CommonAttributeTemplate, CommonCommandTemplate, CommonFormTemplate, CommonModuleTemplate, CommonPictureTemplate, CommonTemplateTemplate, ConstantTemplate, DataProcessorTemplate, DefinedTypeTemplate, DocumentTemplate, DocumentJournalTemplate, DocumentNumeratorTemplate, EnumTemplate, EventSubscriptionTemplate, ExchangePlanTemplate, FilterCriterionTemplate, FunctionalOptionTemplate, FunctionalOptionsParameterTemplate, HTTPServiceTemplate, InformationRegisterTemplate, IntegrationServiceTemplate, LanguageTemplate, ReportTemplate, RoleTemplate, ScheduledJobTemplate, SequenceTemplate, SessionParameterTemplate, SettingsStorageTemplate, StyleTemplate, StyleItemTemplate, SubsystemTemplate, TaskTemplate, WSReferenceTemplate, WebServiceTemplate, XDTOPackageTemplate
 
 ---
-Total: 6 allowed, 1 denied
+Total: 45 allowed, 0 denied

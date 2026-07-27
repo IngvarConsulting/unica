@@ -103,6 +103,14 @@ PUBLIC_SCHEMA = {
         "required": ["code", "message"],
         "optional": ["details"],
     },
+    "NavigationRelationPage": {
+        "required": ["relation", "items"],
+        "optional": ["nextCursor"],
+    },
+    "SemanticActionDescriptor": {
+        "required": ["action", "executionPolicy"],
+        "optional": [],
+    },
     "SemanticAction": {
         "required": [
             "kind",
@@ -113,6 +121,10 @@ PUBLIC_SCHEMA = {
             "operationBinding",
             "atomicity",
         ],
+        "optional": [],
+    },
+    "OperationBinding": {
+        "required": ["tool", "schemaVersion"],
         "optional": [],
     },
 }

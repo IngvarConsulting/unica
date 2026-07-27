@@ -25,8 +25,10 @@ INPUTS_PATH = ORACLE_DIR / "inputs.json"
 CROSSWALK_PATH = ORACLE_DIR / "crosswalk.json"
 RIGHTS_TARGET_CROSSWALK_PATH = ORACLE_DIR / "rights-target-crosswalk.json"
 ENUM_CONTEXTS_PATH = ORACLE_DIR / "enum-source-contexts.json"
+ENUM_ALIAS_EXECUTIONS_PATH = ORACLE_DIR / "enum-alias-executions.json"
 NEW_ONLY_CONTRACT_PATH = ORACLE_DIR / "new-only-contract.json"
 NEW_ONLY_CONTRACT_SOURCE_PATH = ORACLE_DIR / "new-only-contract-source.json"
+FULL_PUBLIC_CONTRACT_SPECIMEN_PATH = ORACLE_DIR / "full-public-contract-specimen.json"
 ORACLE_PATH = ORACLE_DIR / "legacy-semantic-oracle.json"
 MANIFEST_PATH = ORACLE_DIR / "oracle-manifest.json"
 
@@ -259,6 +261,269 @@ def extract_enum_coverage(
     if len(unique) != len(coverage):
         raise ValueError("legacy enum extraction produced duplicate applicability")
     return [unique[key] for key in sorted(unique)]
+
+
+def validate_enum_alias_executions(
+    executions: dict[str, Any],
+    enum_coverage: list[dict[str, Any]],
+) -> None:
+    if executions.get("schemaVersion") != 1:
+        raise ValueError("enum alias execution schema is unsupported")
+    rows = executions.get("executions")
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("enum alias execution inventory is empty")
+    fields = (
+        "nativeAlias",
+        "nativeProperty",
+        "objectKind",
+        "semantic",
+        "semanticProperty",
+    )
+    expected = Counter(tuple(fact[field] for field in fields) for fact in enum_coverage)
+    actual = Counter(tuple(row.get(field) for field in fields) for row in rows)
+    if actual != expected:
+        raise ValueError(
+            "enum alias execution inventory is not exact: "
+            f"missing={sorted((expected - actual).elements())}, "
+            f"extra={sorted((actual - expected).elements())}"
+        )
+    for row in rows:
+        raw = row.get("rawLegacyOutput")
+        raw_hex = row.get("rawOutputHex")
+        digest = row.get("rawOutputSha256")
+        if (
+            not isinstance(row.get("inputXml"), str)
+            or not row["inputXml"]
+            or not isinstance(raw, str)
+            or not raw
+            or not isinstance(raw_hex, str)
+            or bytes.fromhex(raw_hex).decode("utf-8-sig") != raw
+            or digest != sha256(bytes.fromhex(raw_hex))
+            or not isinstance(row.get("legacyFacts"), list)
+            or not isinstance(row.get("lineClassifications"), list)
+        ):
+            raise ValueError("enum alias execution has incomplete legacy evidence")
+
+
+def classify_enum_alias_output(
+    context: dict[str, Any],
+    native_alias: str,
+    baseline: bytes,
+    actual: bytes,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    baseline_lines = baseline.decode("utf-8-sig").splitlines()
+    actual_lines = actual.decode("utf-8-sig").splitlines()
+    ledger = LineLedger(
+        f"{context['sourceFact']}:{native_alias}",
+        actual_lines,
+    )
+    facts: list[dict[str, Any]] = []
+    for line_number, line in enumerate(actual_lines, 1):
+        expected = (
+            baseline_lines[line_number - 1]
+            if line_number <= len(baseline_lines)
+            else None
+        )
+        if not line.strip():
+            ledger.consume(line_number, "structural:blank")
+            continue
+        classification = (
+            f"useful:source-baseline:{context['sourceFact']}:{line_number}"
+            if expected is not None and line == expected
+            else (
+                f"useful:enum-output:{context['nativeProperty']}:"
+                f"{native_alias}:{line_number}"
+            )
+        )
+        ledger.consume(line_number, classification)
+        facts.append(
+            {
+                "kind": "legacyOutputLine",
+                "lineNumber": line_number,
+                "classification": classification,
+                "value": line,
+            }
+        )
+    ledger.finish()
+    return (
+        facts,
+        [
+            {
+                "line": actual_lines[number - 1],
+                "lineNumber": number,
+                "classification": classification,
+            }
+            for number, classification in sorted(ledger.classifications.items())
+        ],
+    )
+
+
+def build_enum_alias_executions(
+    repo_root: Path,
+    inputs: dict[str, Any],
+    crosswalk: dict[str, Any],
+    source_contexts: list[dict[str, Any]],
+    enum_coverage: list[dict[str, Any]],
+    raw_outputs: dict[str, bytes],
+) -> dict[str, Any]:
+    all_cases = {
+        case["id"]: case
+        for case in [*inputs["cases"], *inputs.get("contextCases", [])]
+    }
+    domains_by_source: dict[str, dict[str, Any]] = {}
+    for domain in crosswalk["enumDomains"].values():
+        for source_fact in domain["sourceFacts"]:
+            if source_fact in domains_by_source:
+                raise ValueError(
+                    f"enum execution source fact is shared: {source_fact}"
+                )
+            domains_by_source[source_fact] = domain
+
+    executions: list[dict[str, Any]] = []
+    with tempfile.TemporaryDirectory(prefix="unica-enum-alias-oracle-") as temp:
+        temp_root = Path(temp)
+        ordinal = 0
+        for context in sorted(source_contexts, key=lambda item: item["sourceFact"]):
+            domain = domains_by_source[context["sourceFact"]]
+            evidence_by_owner = {
+                evidence["objectKind"]: evidence
+                for evidence in context["ownerEvidence"]
+            }
+            if set(evidence_by_owner) != set(context["objectKinds"]):
+                raise ValueError(
+                    f"enum execution owner evidence is not exact for "
+                    f"{context['sourceFact']}"
+                )
+            for object_kind in context["objectKinds"]:
+                evidence = evidence_by_owner[object_kind]
+                source_case = all_cases[evidence["case"]]
+                source_path = repo_root / evidence["input"]
+                for native_alias in context["nativeAliases"]:
+                    semantic = domain["semanticByAlias"].get(native_alias)
+                    if semantic is None:
+                        raise ValueError(
+                            f"enum execution alias {native_alias!r} has no semantic "
+                            f"mapping for {context['sourceFact']}"
+                        )
+                    document = ET.parse(source_path)
+                    candidates: list[ET.Element] = []
+                    for node in document.getroot().iter():
+                        if node.tag.rsplit("}", 1)[-1] != evidence["nativeOwner"]:
+                            continue
+                        if evidence["ownerUuid"] and (
+                            node.attrib.get("uuid") != evidence["ownerUuid"]
+                        ):
+                            continue
+                        properties = next(
+                            (
+                                child
+                                for child in node
+                                if child.tag.rsplit("}", 1)[-1] == "Properties"
+                            ),
+                            None,
+                        )
+                        if properties is None:
+                            continue
+                        owner_name = next(
+                            (
+                                child.text.strip()
+                                for child in properties
+                                if child.tag.rsplit("}", 1)[-1] == "Name"
+                                and child.text
+                                and child.text.strip()
+                            ),
+                            "",
+                        )
+                        if (
+                            not evidence["ownerUuid"]
+                            and owner_name != evidence["ownerName"]
+                        ):
+                            continue
+                        candidates.extend(
+                            child
+                            for child in properties
+                            if child.tag.rsplit("}", 1)[-1]
+                            == context["nativeProperty"]
+                        )
+                    if len(candidates) != 1:
+                        raise ValueError(
+                            f"enum execution property owner is ambiguous for "
+                            f"{context['sourceFact']} owner={object_kind}: "
+                            f"{len(candidates)} matches"
+                        )
+                    candidates[0].text = native_alias
+                    document_root = document.getroot()
+                    document_root.attrib.setdefault("version", "2.20")
+                    root_class = document_root.tag.rsplit("}", 1)[-1]
+                    descriptor = (
+                        next(
+                            child
+                            for child in document_root
+                            if child.tag.rsplit("}", 1)[-1] != "Properties"
+                        )
+                        if root_class == "MetaDataObject"
+                        else document_root
+                    )
+                    descriptor_properties = next(
+                        child
+                        for child in descriptor
+                        if child.tag.rsplit("}", 1)[-1] == "Properties"
+                    )
+                    descriptor_name = next(
+                        child.text.strip()
+                        for child in descriptor_properties
+                        if child.tag.rsplit("}", 1)[-1] == "Name"
+                        and child.text
+                        and child.text.strip()
+                    )
+                    ordinal += 1
+                    target = temp_root / f"enum-alias-{ordinal:04d}.xml"
+                    document.write(target, encoding="utf-8", xml_declaration=True)
+                    execution_case = dict(source_case)
+                    execution_case["id"] = f"enumAlias{ordinal:04d}"
+                    execution_case["input"] = str(target)
+                    execution_case["adapterInput"] = str(target)
+                    execution_case["sourceRoot"] = str(temp_root)
+                    execution_case["rawOutput"] = str(
+                        temp_root / f"enum-alias-{ordinal:04d}.txt"
+                    )
+                    raw = run_legacy_case(repo_root, inputs, execution_case)
+                    legacy_facts, line_classifications = classify_enum_alias_output(
+                        context,
+                        native_alias,
+                        raw_outputs[evidence["case"]],
+                        raw,
+                    )
+                    raw_text = raw.decode("utf-8-sig")
+                    executions.append(
+                        {
+                            "sourceFact": context["sourceFact"],
+                            "nativeAlias": native_alias,
+                            "nativeProperty": context["nativeProperty"],
+                            "objectKind": object_kind,
+                            "semantic": semantic,
+                            "semanticProperty": domain["semanticProperty"],
+                            "nativeOwner": evidence["nativeOwner"],
+                            "ownerName": evidence["ownerName"],
+                            "ownerUuid": evidence["ownerUuid"],
+                            "inputFileName": f"{descriptor_name}.xml",
+                            "inputXml": target.read_text(encoding="utf-8"),
+                            "rawLegacyOutput": raw_text,
+                            "rawOutputHex": raw.hex(),
+                            "rawOutputSha256": sha256(raw),
+                            "legacyFacts": legacy_facts,
+                            "lineClassifications": line_classifications,
+                        }
+                    )
+    result = {
+        "schemaVersion": 1,
+        "provenance": (
+            "legacy-source-contexts-plus-mutated-native-inputs-and-real-legacy-runs"
+        ),
+        "executions": sorted(executions, key=canonical),
+    }
+    validate_enum_alias_executions(result, enum_coverage)
+    return result
 
 
 class LineLedger:
@@ -1606,6 +1871,7 @@ def provenance_entries(
     inputs: dict[str, Any],
     raw_outputs: dict[str, bytes],
     enum_contexts_data: bytes,
+    enum_alias_executions_data: bytes,
     oracle_data: bytes,
     new_only_contract_data: bytes,
 ) -> list[dict[str, str]]:
@@ -1629,6 +1895,7 @@ def provenance_entries(
     add("oracleInputs", INPUTS_PATH)
     add("independentCrosswalk", CROSSWALK_PATH)
     add("rightsTargetCrosswalk", RIGHTS_TARGET_CROSSWALK_PATH)
+    add("fullPublicContractSpecimen", FULL_PUBLIC_CONTRACT_SPECIMEN_PATH)
     add("newOnlyContractSource", NEW_ONLY_CONTRACT_SOURCE_PATH)
     add("newOnlyContract", NEW_ONLY_CONTRACT_PATH, new_only_contract_data)
     for path in inputs["referenceSources"].values():
@@ -1647,13 +1914,18 @@ def provenance_entries(
             raw_outputs[case["id"]],
         )
     add("enumSourceContexts", ENUM_CONTEXTS_PATH, enum_contexts_data)
+    add(
+        "enumAliasExecutions",
+        ENUM_ALIAS_EXECUTIONS_PATH,
+        enum_alias_executions_data,
+    )
     add("legacySemanticOracle", ORACLE_PATH, oracle_data)
     return [entries[key] for key in sorted(entries)]
 
 
 def build(
     repo_root: Path,
-) -> tuple[dict[str, bytes], bytes, bytes, bytes, bytes]:
+) -> tuple[dict[str, bytes], bytes, bytes, bytes, bytes, bytes]:
     inputs = read_json(INPUTS_PATH)
     crosswalk = read_json(CROSSWALK_PATH)
     target_crosswalk = read_json(RIGHTS_TARGET_CROSSWALK_PATH)
@@ -1694,10 +1966,21 @@ def build(
         else:
             raise ValueError(f"unreviewed legacy tool {case['tool']}")
 
+    enum_coverage = extract_enum_coverage(crosswalk, source_contexts)
+    enum_alias_executions_data = json_bytes(
+        build_enum_alias_executions(
+            repo_root,
+            inputs,
+            crosswalk,
+            source_contexts,
+            enum_coverage,
+            raw_outputs,
+        )
+    )
     oracle = {
         "schemaVersion": 1,
         "provenance": "legacy-tools-plus-independent-crosswalk",
-        "enumCoverage": extract_enum_coverage(crosswalk, source_contexts),
+        "enumCoverage": enum_coverage,
         "cases": sorted(cases, key=lambda case: case["id"]),
     }
     by_id = {case["id"]: case for case in oracle["cases"]}
@@ -1727,6 +2010,7 @@ def build(
             inputs,
             raw_outputs,
             enum_contexts_data,
+            enum_alias_executions_data,
             oracle_data,
             new_only_contract_data,
         ),
@@ -1734,6 +2018,7 @@ def build(
     return (
         raw_outputs,
         enum_contexts_data,
+        enum_alias_executions_data,
         oracle_data,
         new_only_contract_data,
         json_bytes(manifest),
@@ -1744,6 +2029,7 @@ def write_outputs(
     repo_root: Path,
     raw_outputs: dict[str, bytes],
     enum_contexts_data: bytes,
+    enum_alias_executions_data: bytes,
     oracle_data: bytes,
     new_only_contract_data: bytes,
     manifest_data: bytes,
@@ -1757,6 +2043,7 @@ def write_outputs(
         paths[case_id].parent.mkdir(parents=True, exist_ok=True)
         paths[case_id].write_bytes(data)
     ENUM_CONTEXTS_PATH.write_bytes(enum_contexts_data)
+    ENUM_ALIAS_EXECUTIONS_PATH.write_bytes(enum_alias_executions_data)
     ORACLE_PATH.write_bytes(oracle_data)
     NEW_ONLY_CONTRACT_PATH.write_bytes(new_only_contract_data)
     MANIFEST_PATH.write_bytes(manifest_data)
@@ -1766,6 +2053,7 @@ def check_outputs(
     repo_root: Path,
     raw_outputs: dict[str, bytes],
     enum_contexts_data: bytes,
+    enum_alias_executions_data: bytes,
     oracle_data: bytes,
     new_only_contract_data: bytes,
     manifest_data: bytes,
@@ -1778,6 +2066,11 @@ def check_outputs(
             failures.append(f"raw legacy output drifted: {case['rawOutput']}")
     for path, expected, label in (
         (ENUM_CONTEXTS_PATH, enum_contexts_data, "enum source contexts"),
+        (
+            ENUM_ALIAS_EXECUTIONS_PATH,
+            enum_alias_executions_data,
+            "enum alias executions",
+        ),
         (ORACLE_PATH, oracle_data, "legacy semantic oracle"),
         (NEW_ONLY_CONTRACT_PATH, new_only_contract_data, "new-only exact contract"),
         (MANIFEST_PATH, manifest_data, "oracle provenance manifest"),
@@ -1924,7 +2217,55 @@ def run_self_tests(repo_root: Path) -> None:
         for case in all_cases
     }
     contexts = extract_native_enum_contexts(repo_root, inputs, raw_outputs)
-    extract_enum_coverage(crosswalk, contexts)
+    enum_coverage = extract_enum_coverage(crosswalk, contexts)
+    executions = build_enum_alias_executions(
+        repo_root,
+        inputs,
+        crosswalk,
+        contexts,
+        enum_coverage,
+        raw_outputs,
+    )
+    validate_enum_alias_executions(executions, enum_coverage)
+    missing_execution = json.loads(json.dumps(executions))
+    missing_execution["executions"].pop()
+    expect_failure(
+        "enum alias execution omission",
+        lambda: validate_enum_alias_executions(missing_execution, enum_coverage),
+    )
+    duplicate_execution = json.loads(json.dumps(executions))
+    duplicate_execution["executions"].append(
+        dict(duplicate_execution["executions"][0])
+    )
+    expect_failure(
+        "enum alias execution duplication",
+        lambda: validate_enum_alias_executions(duplicate_execution, enum_coverage),
+    )
+    changed_execution_output = json.loads(json.dumps(executions))
+    changed_execution_output["executions"][0]["rawOutputSha256"] = "0" * 64
+    expect_failure(
+        "enum alias execution output mutation",
+        lambda: validate_enum_alias_executions(
+            changed_execution_output,
+            enum_coverage,
+        ),
+    )
+    inferred_template_owner = json.loads(json.dumps(executions))
+    template_row = next(
+        row
+        for row in inferred_template_owner["executions"]
+        if row["nativeProperty"] == "TemplateType"
+        and row["nativeAlias"] == "SpreadsheetDocument"
+        and row["objectKind"] == "template"
+    )
+    template_row["objectKind"] = "spreadsheetDocumentTemplate"
+    expect_failure(
+        "TemplateType-derived owner rewrite",
+        lambda: validate_enum_alias_executions(
+            inferred_template_owner,
+            enum_coverage,
+        ),
+    )
     context_override = json.loads(json.dumps(crosswalk))
     first_domain = next(iter(context_override["enumDomains"].values()))
     first_domain["nativeProperty"] = "CoordinatedWrongProperty"
@@ -1962,6 +2303,7 @@ def main() -> int:
     (
         raw_outputs,
         enum_contexts_data,
+        enum_alias_executions_data,
         oracle_data,
         new_only_contract_data,
         manifest_data,
@@ -1971,12 +2313,14 @@ def main() -> int:
             repo_root,
             raw_outputs,
             enum_contexts_data,
+            enum_alias_executions_data,
             oracle_data,
             new_only_contract_data,
             manifest_data,
         )
         print(
             f"wrote {len(raw_outputs)} raw outputs, "
+            f"{len(json.loads(enum_alias_executions_data)['executions'])} enum alias executions, "
             f"{len(json.loads(oracle_data)['cases'])} oracle cases, and provenance"
         )
     else:
@@ -1984,12 +2328,15 @@ def main() -> int:
             repo_root,
             raw_outputs,
             enum_contexts_data,
+            enum_alias_executions_data,
             oracle_data,
             new_only_contract_data,
             manifest_data,
         )
         print(
-            f"verified {len(raw_outputs)} raw outputs, oracle facts, and SHA-256 provenance"
+            f"verified {len(raw_outputs)} raw outputs, "
+            f"{len(json.loads(enum_alias_executions_data)['executions'])} enum alias executions, "
+            "oracle facts, and SHA-256 provenance"
         )
     return 0
 

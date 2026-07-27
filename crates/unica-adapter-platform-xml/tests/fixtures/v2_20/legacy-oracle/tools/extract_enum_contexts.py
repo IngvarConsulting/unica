@@ -139,12 +139,6 @@ def _fixture_observations(
                     if native_class == descriptor_owner
                     else descriptor_owner_id + native_class
                 )
-                if (
-                    native_class == "Template"
-                    and values.get("TemplateType") == "SpreadsheetDocument"
-                ):
-                    object_kind = "spreadsheetDocumentTemplate"
-                    contextual_object_kind = object_kind
                 for native_property, value in values.items():
                     observations.append(
                         {
@@ -152,6 +146,8 @@ def _fixture_observations(
                             "input": relative,
                             "rawOutput": case["rawOutput"],
                             "nativeClass": native_class,
+                            "ownerName": values.get("Name", ""),
+                            "ownerUuid": node.attrib.get("uuid", ""),
                             "objectKind": object_kind,
                             "contextualObjectKind": contextual_object_kind,
                             "nativeProperty": native_property,
@@ -193,14 +189,57 @@ def _attach_owner_evidence(
             )[0]
             evidence.append(
                 {
+                    "case": selected["case"],
                     "objectKind": object_kind,
                     "nativeOwner": selected["nativeClass"],
+                    "ownerName": selected["ownerName"],
+                    "ownerUuid": selected["ownerUuid"],
                     "nativeValue": selected["nativeValue"],
                     "input": selected["input"],
                     "rawOutput": selected["rawOutput"],
                 }
             )
         context["ownerEvidence"] = evidence
+        context["observedAliasEvidence"] = [
+            {
+                "case": observation["case"],
+                "objectKind": next(
+                    kind
+                    for kind in context["objectKinds"]
+                    if kind
+                    in {
+                        observation["objectKind"],
+                        observation["contextualObjectKind"],
+                    }
+                ),
+                "nativeOwner": observation["nativeClass"],
+                "ownerName": observation["ownerName"],
+                "ownerUuid": observation["ownerUuid"],
+                "nativeValue": observation["nativeValue"],
+                "input": observation["input"],
+                "rawOutput": observation["rawOutput"],
+            }
+            for observation in sorted(
+                observations,
+                key=lambda item: (
+                    item["input"],
+                    item["nativeClass"],
+                    item["ownerName"],
+                    item["nativeProperty"],
+                    item["nativeValue"],
+                ),
+            )
+            if observation["nativeProperty"] == context["nativeProperty"]
+            and observation["nativeValue"] in context["nativeAliases"]
+            and any(
+                kind
+                in {
+                    observation["objectKind"],
+                    observation["contextualObjectKind"],
+                }
+                for kind in context["objectKinds"]
+            )
+        ]
 
 
 def _joined_string_tag_and_names(node: ast.AST) -> tuple[str, set[str]] | None:

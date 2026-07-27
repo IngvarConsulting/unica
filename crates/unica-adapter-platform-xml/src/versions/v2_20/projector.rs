@@ -881,33 +881,7 @@ fn validate_name(name: &str) -> Result<(), SourceAdapterError> {
 }
 
 fn node_kind(node: &NativeMetadataNode) -> Result<NodeKind, SourceAdapterError> {
-    let mut kind = node.class.kind;
-    if kind == NodeKind::Template
-        && template_type(node).as_deref() == Some("SpreadsheetDocument")
-    {
-        kind = NodeKind::SpreadsheetDocumentTemplate;
-    }
-    Ok(kind)
-}
-
-fn template_type(node: &NativeMetadataNode) -> Option<String> {
-    let NativeNodeBacking::Template(template) = &node.backing else {
-        return None;
-    };
-    match (
-        &template.descriptor.state,
-        &template.canonical_content.state,
-        &template.descriptor_type,
-        template.mxl_root_kind,
-    ) {
-        (
-            NativeEvidenceState::Validated,
-            NativeEvidenceState::Validated,
-            NativePropertyValue::Scalar(value),
-            Some(_),
-        ) if value == "SpreadsheetDocument" => Some(value.clone()),
-        _ => None,
-    }
+    Ok(node.class.kind)
 }
 
 fn node_resolution(node: &NativeMetadataNode) -> ResolutionState {

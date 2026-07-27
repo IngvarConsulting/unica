@@ -63,3 +63,5 @@ Task 5: fix round 4 review failed — oracle parsers ignore unmatched useful lin
 Task 5: fix round 5 started (base 6140c370).
 Task 5: fix round 5 review failed — enum owner/context authority still permits omitted domains; CalculationRegister rights and MultiTarget conditions absent; exact contract omits capability/provenance fields; removed-from-support is misclassified active.
 Task 5: fix round 6 started (base 1a2071d3).
+Task 5: fix round 6 review failed — spreadsheet template owner is still inferred from TemplateType alias rather than legacy object identity; schema guard never exercises nonempty operation binding, semantic actions, or relation pages.
+Task 5: fix round 7 started (base de4d9410).

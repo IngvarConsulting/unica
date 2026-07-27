@@ -66,3 +66,30 @@ python3.12 crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/
 python3.12 crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/generate_oracle.py --repo-root . --check
 python3.12 crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/generate_oracle.py --repo-root . --self-test
 ```
+
+## Fix Round 7 evidence boundaries
+
+Legacy output keeps spreadsheet-document templates under the generic
+`Template` owner. `SpreadsheetDocument` is evidence for `template.type` only;
+neither extraction nor the semantic adapter may derive a different owner from
+that value.
+
+`enum-alias-executions.json` records 174 independently generated executions:
+every source-extracted native enum alias is inserted into a context-valid
+fixture, run through the tracked legacy script, classified line by line, and
+then decoded by the adapter test. `MultiTargetReader` similarly contains one
+independently decoded rights target for every one of the 45 supported prefixes.
+Both inventories are exact and fail on omissions, duplicates, context changes,
+or raw-output hash drift.
+
+`full-public-contract-specimen.json` is a static, hand-reviewed specimen of the
+complete public JSON shape. It covers nonempty relation pages, recursive item
+facets, opaque cursors, semantic action descriptors, operation bindings, and
+all closed action variants. It is not generated from adapter output. The
+Platform XML adapter intentionally produces none of those relation-page or
+action/binding variants; focused tests assert that absence and the blocked
+relation-selection behavior separately.
+
+The provenance manifest hashes the execution inventory, all 45-target rights
+inputs and outputs, the static public-contract specimen, extraction/generation
+code, legacy scripts, and every resulting oracle artifact.

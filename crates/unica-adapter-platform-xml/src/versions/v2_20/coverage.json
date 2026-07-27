@@ -451,13 +451,6 @@
       "source": "derived"
     },
     {
-      "nativeClass": "@spreadsheetTemplate",
-      "kind": "spreadsheetDocumentTemplate",
-      "role": "template",
-      "childVocabulary": "none",
-      "source": "derived"
-    },
-    {
       "nativeClass": "*",
       "kind": "unknown",
       "role": "unknown",
@@ -1444,7 +1437,6 @@
     {
       "objectKinds": [
         "template",
-        "spreadsheetDocumentTemplate",
         "commonTemplate"
       ],
       "nativeNames": [
@@ -1914,7 +1906,6 @@
       ],
       "objectKinds": [
         "commonTemplate",
-        "spreadsheetDocumentTemplate",
         "template"
       ]
     },
@@ -1952,7 +1943,6 @@
       ],
       "objectKinds": [
         "commonTemplate",
-        "spreadsheetDocumentTemplate",
         "template"
       ]
     },
@@ -2281,7 +2271,6 @@
       ],
       "objectKinds": [
         "commonTemplate",
-        "spreadsheetDocumentTemplate",
         "template"
       ]
     },
@@ -2645,7 +2634,6 @@
       ],
       "objectKinds": [
         "commonTemplate",
-        "spreadsheetDocumentTemplate",
         "template"
       ]
     },
@@ -2697,7 +2685,6 @@
       ],
       "objectKinds": [
         "commonTemplate",
-        "spreadsheetDocumentTemplate",
         "template"
       ]
     },
@@ -3297,7 +3284,6 @@
     {
       "objectKinds": [
         "template",
-        "spreadsheetDocumentTemplate",
         "commonTemplate"
       ],
       "kind": "template",
@@ -3312,7 +3298,6 @@
         "form",
         "commonForm",
         "template",
-        "spreadsheetDocumentTemplate",
         "commonTemplate"
       ],
       "reason": "opaqueContent"

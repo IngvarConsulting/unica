@@ -4556,7 +4556,7 @@
         {
           "kind": "node",
           "state": "present",
-          "subject": "rightsMultiTarget/accessPermission/calculationRegister:Payroll:Read#1",
+          "subject": "rightsMultiTarget/accessPermission/accountingRegister:AccountingRegisterTarget:Read#1",
           "value": {
             "kind": "accessPermission",
             "name": "Read"
@@ -4565,7 +4565,7 @@
         {
           "kind": "node",
           "state": "present",
-          "subject": "rightsMultiTarget/accessPermission/catalog:Products:Read#1",
+          "subject": "rightsMultiTarget/accessPermission/accumulationRegister:AccumulationRegisterTarget:Read#1",
           "value": {
             "kind": "accessPermission",
             "name": "Read"
@@ -4574,25 +4574,7 @@
         {
           "kind": "node",
           "state": "present",
-          "subject": "rightsMultiTarget/accessPermission/commonModule:Integration:View#1",
-          "value": {
-            "kind": "accessPermission",
-            "name": "View"
-          }
-        },
-        {
-          "kind": "node",
-          "state": "present",
-          "subject": "rightsMultiTarget/accessPermission/document:SalesOrder:Posting#1",
-          "value": {
-            "kind": "accessPermission",
-            "name": "Posting"
-          }
-        },
-        {
-          "kind": "node",
-          "state": "present",
-          "subject": "rightsMultiTarget/accessPermission/informationRegister:Prices:Read#1",
+          "subject": "rightsMultiTarget/accessPermission/bot:BotTarget:Read#1",
           "value": {
             "kind": "accessPermission",
             "name": "Read"
@@ -4601,127 +4583,1189 @@
         {
           "kind": "node",
           "state": "present",
-          "subject": "rightsMultiTarget/accessPermission/report:Sales:Update#1",
+          "subject": "rightsMultiTarget/accessPermission/businessProcess:BusinessProcessTarget:Read#1",
           "value": {
             "kind": "accessPermission",
-            "name": "Update"
+            "name": "Read"
           }
         },
         {
           "kind": "node",
           "state": "present",
-          "subject": "rightsMultiTarget/accessPermission/report:Sales:Use#1",
+          "subject": "rightsMultiTarget/accessPermission/calculationRegister:CalculationRegisterTarget:Read#1",
           "value": {
             "kind": "accessPermission",
-            "name": "Use"
+            "name": "Read"
           }
         },
         {
           "kind": "node",
           "state": "present",
-          "subject": "rightsMultiTarget/accessRestrictionTemplate/IntegrationAccess#1",
+          "subject": "rightsMultiTarget/accessPermission/catalog:CatalogTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/chartOfAccounts:ChartOfAccountsTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/chartOfCalculationTypes:ChartOfCalculationTypesTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/chartOfCharacteristicTypes:ChartOfCharacteristicTypesTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commandGroup:CommandGroupTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commonAttribute:CommonAttributeTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commonCommand:CommonCommandTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commonForm:CommonFormTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commonModule:CommonModuleTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commonPicture:CommonPictureTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commonTemplate:CommonTemplateTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/constant:ConstantTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/dataProcessor:DataProcessorTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/definedType:DefinedTypeTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/document:DocumentTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/documentJournal:DocumentJournalTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/documentNumerator:DocumentNumeratorTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/enumeration:EnumTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/eventSubscription:EventSubscriptionTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/exchangePlan:ExchangePlanTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/filterCriterion:FilterCriterionTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/functionalOption:FunctionalOptionTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/functionalOptionsParameter:FunctionalOptionsParameterTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/httpService:HTTPServiceTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/informationRegister:InformationRegisterTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/integrationService:IntegrationServiceTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/language:LanguageTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/report:ReportTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/role:RoleTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/scheduledJob:ScheduledJobTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/sequence:SequenceTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/sessionParameter:SessionParameterTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/settingsStorage:SettingsStorageTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/style:StyleTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/styleItem:StyleItemTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/subsystem:SubsystemTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/task:TaskTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/webService:WebServiceTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/webServiceReference:WSReferenceTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/xdtoPackage:XDTOPackageTarget:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/AccountingRegisterTemplate#1",
           "value": {
             "kind": "accessRestrictionTemplate",
-            "name": "IntegrationAccess"
+            "name": "AccountingRegisterTemplate"
           }
         },
         {
           "kind": "node",
           "state": "present",
-          "subject": "rightsMultiTarget/accessRestrictionTemplate/PayrollPeriod#1",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/AccumulationRegisterTemplate#1",
           "value": {
             "kind": "accessRestrictionTemplate",
-            "name": "PayrollPeriod"
+            "name": "AccumulationRegisterTemplate"
           }
         },
         {
           "kind": "node",
           "state": "present",
-          "subject": "rightsMultiTarget/accessRestrictionTemplate/PositiveAmount#1",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/BotTemplate#1",
           "value": {
             "kind": "accessRestrictionTemplate",
-            "name": "PositiveAmount"
+            "name": "BotTemplate"
           }
         },
         {
           "kind": "node",
           "state": "present",
-          "subject": "rightsMultiTarget/accessRestrictionTemplate/PositivePrice#1",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/BusinessProcessTemplate#1",
           "value": {
             "kind": "accessRestrictionTemplate",
-            "name": "PositivePrice"
+            "name": "BusinessProcessTemplate"
           }
         },
         {
           "kind": "node",
           "state": "present",
-          "subject": "rightsMultiTarget/accessRestrictionTemplate/ProductAccess#1",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/CalculationRegisterTemplate#1",
           "value": {
             "kind": "accessRestrictionTemplate",
-            "name": "ProductAccess"
+            "name": "CalculationRegisterTemplate"
           }
         },
         {
           "kind": "node",
           "state": "present",
-          "subject": "rightsMultiTarget/accessRestrictionTemplate/SalesAccess#1",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/CatalogTemplate#1",
           "value": {
             "kind": "accessRestrictionTemplate",
-            "name": "SalesAccess"
+            "name": "CatalogTemplate"
           }
         },
         {
           "kind": "node",
           "state": "present",
-          "subject": "rightsMultiTarget/external/calculationRegister/Payroll",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/ChartOfAccountsTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "ChartOfAccountsTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/ChartOfCalculationTypesTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "ChartOfCalculationTypesTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/ChartOfCharacteristicTypesTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "ChartOfCharacteristicTypesTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/CommandGroupTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "CommandGroupTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/CommonAttributeTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "CommonAttributeTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/CommonCommandTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "CommonCommandTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/CommonFormTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "CommonFormTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/CommonModuleTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "CommonModuleTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/CommonPictureTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "CommonPictureTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/CommonTemplateTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "CommonTemplateTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/ConstantTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "ConstantTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/DataProcessorTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "DataProcessorTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/DefinedTypeTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "DefinedTypeTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/DocumentJournalTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "DocumentJournalTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/DocumentNumeratorTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "DocumentNumeratorTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/DocumentTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "DocumentTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/EnumTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "EnumTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/EventSubscriptionTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "EventSubscriptionTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/ExchangePlanTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "ExchangePlanTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/FilterCriterionTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "FilterCriterionTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/FunctionalOptionTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "FunctionalOptionTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/FunctionalOptionsParameterTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "FunctionalOptionsParameterTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/HTTPServiceTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "HTTPServiceTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/InformationRegisterTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "InformationRegisterTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/IntegrationServiceTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "IntegrationServiceTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/LanguageTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "LanguageTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/ReportTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "ReportTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/RoleTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "RoleTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/ScheduledJobTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "ScheduledJobTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/SequenceTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "SequenceTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/SessionParameterTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "SessionParameterTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/SettingsStorageTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "SettingsStorageTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/StyleItemTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "StyleItemTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/StyleTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "StyleTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/SubsystemTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "SubsystemTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/TaskTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "TaskTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/WSReferenceTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "WSReferenceTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/WebServiceTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "WebServiceTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/XDTOPackageTemplate#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "XDTOPackageTemplate"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/accountingRegister/AccountingRegisterTarget",
+          "value": {
+            "kind": "accountingRegister",
+            "name": "AccountingRegisterTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/accumulationRegister/AccumulationRegisterTarget",
+          "value": {
+            "kind": "accumulationRegister",
+            "name": "AccumulationRegisterTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/bot/BotTarget",
+          "value": {
+            "kind": "bot",
+            "name": "BotTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/businessProcess/BusinessProcessTarget",
+          "value": {
+            "kind": "businessProcess",
+            "name": "BusinessProcessTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/calculationRegister/CalculationRegisterTarget",
           "value": {
             "kind": "calculationRegister",
-            "name": "Payroll"
+            "name": "CalculationRegisterTarget"
           }
         },
         {
           "kind": "node",
           "state": "present",
-          "subject": "rightsMultiTarget/external/catalog/Products",
+          "subject": "rightsMultiTarget/external/catalog/CatalogTarget",
           "value": {
             "kind": "catalog",
-            "name": "Products"
+            "name": "CatalogTarget"
           }
         },
         {
           "kind": "node",
           "state": "present",
-          "subject": "rightsMultiTarget/external/commonModule/Integration",
+          "subject": "rightsMultiTarget/external/chartOfAccounts/ChartOfAccountsTarget",
+          "value": {
+            "kind": "chartOfAccounts",
+            "name": "ChartOfAccountsTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/chartOfCalculationTypes/ChartOfCalculationTypesTarget",
+          "value": {
+            "kind": "chartOfCalculationTypes",
+            "name": "ChartOfCalculationTypesTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/chartOfCharacteristicTypes/ChartOfCharacteristicTypesTarget",
+          "value": {
+            "kind": "chartOfCharacteristicTypes",
+            "name": "ChartOfCharacteristicTypesTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/commandGroup/CommandGroupTarget",
+          "value": {
+            "kind": "commandGroup",
+            "name": "CommandGroupTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/commonAttribute/CommonAttributeTarget",
+          "value": {
+            "kind": "commonAttribute",
+            "name": "CommonAttributeTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/commonCommand/CommonCommandTarget",
+          "value": {
+            "kind": "commonCommand",
+            "name": "CommonCommandTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/commonForm/CommonFormTarget",
+          "value": {
+            "kind": "commonForm",
+            "name": "CommonFormTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/commonModule/CommonModuleTarget",
           "value": {
             "kind": "commonModule",
-            "name": "Integration"
+            "name": "CommonModuleTarget"
           }
         },
         {
           "kind": "node",
           "state": "present",
-          "subject": "rightsMultiTarget/external/document/SalesOrder",
+          "subject": "rightsMultiTarget/external/commonPicture/CommonPictureTarget",
+          "value": {
+            "kind": "commonPicture",
+            "name": "CommonPictureTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/commonTemplate/CommonTemplateTarget",
+          "value": {
+            "kind": "commonTemplate",
+            "name": "CommonTemplateTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/constant/ConstantTarget",
+          "value": {
+            "kind": "constant",
+            "name": "ConstantTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/dataProcessor/DataProcessorTarget",
+          "value": {
+            "kind": "dataProcessor",
+            "name": "DataProcessorTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/definedType/DefinedTypeTarget",
+          "value": {
+            "kind": "definedType",
+            "name": "DefinedTypeTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/document/DocumentTarget",
           "value": {
             "kind": "document",
-            "name": "SalesOrder"
+            "name": "DocumentTarget"
           }
         },
         {
           "kind": "node",
           "state": "present",
-          "subject": "rightsMultiTarget/external/informationRegister/Prices",
+          "subject": "rightsMultiTarget/external/documentJournal/DocumentJournalTarget",
+          "value": {
+            "kind": "documentJournal",
+            "name": "DocumentJournalTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/documentNumerator/DocumentNumeratorTarget",
+          "value": {
+            "kind": "documentNumerator",
+            "name": "DocumentNumeratorTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/enumeration/EnumTarget",
+          "value": {
+            "kind": "enumeration",
+            "name": "EnumTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/eventSubscription/EventSubscriptionTarget",
+          "value": {
+            "kind": "eventSubscription",
+            "name": "EventSubscriptionTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/exchangePlan/ExchangePlanTarget",
+          "value": {
+            "kind": "exchangePlan",
+            "name": "ExchangePlanTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/filterCriterion/FilterCriterionTarget",
+          "value": {
+            "kind": "filterCriterion",
+            "name": "FilterCriterionTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/functionalOption/FunctionalOptionTarget",
+          "value": {
+            "kind": "functionalOption",
+            "name": "FunctionalOptionTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/functionalOptionsParameter/FunctionalOptionsParameterTarget",
+          "value": {
+            "kind": "functionalOptionsParameter",
+            "name": "FunctionalOptionsParameterTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/httpService/HTTPServiceTarget",
+          "value": {
+            "kind": "httpService",
+            "name": "HTTPServiceTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/informationRegister/InformationRegisterTarget",
           "value": {
             "kind": "informationRegister",
-            "name": "Prices"
+            "name": "InformationRegisterTarget"
           }
         },
         {
           "kind": "node",
           "state": "present",
-          "subject": "rightsMultiTarget/external/report/Sales",
+          "subject": "rightsMultiTarget/external/integrationService/IntegrationServiceTarget",
+          "value": {
+            "kind": "integrationService",
+            "name": "IntegrationServiceTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/language/LanguageTarget",
+          "value": {
+            "kind": "language",
+            "name": "LanguageTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/report/ReportTarget",
           "value": {
             "kind": "report",
-            "name": "Sales"
+            "name": "ReportTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/role/RoleTarget",
+          "value": {
+            "kind": "role",
+            "name": "RoleTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/scheduledJob/ScheduledJobTarget",
+          "value": {
+            "kind": "scheduledJob",
+            "name": "ScheduledJobTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/sequence/SequenceTarget",
+          "value": {
+            "kind": "sequence",
+            "name": "SequenceTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/sessionParameter/SessionParameterTarget",
+          "value": {
+            "kind": "sessionParameter",
+            "name": "SessionParameterTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/settingsStorage/SettingsStorageTarget",
+          "value": {
+            "kind": "settingsStorage",
+            "name": "SettingsStorageTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/style/StyleTarget",
+          "value": {
+            "kind": "style",
+            "name": "StyleTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/styleItem/StyleItemTarget",
+          "value": {
+            "kind": "styleItem",
+            "name": "StyleItemTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/subsystem/SubsystemTarget",
+          "value": {
+            "kind": "subsystem",
+            "name": "SubsystemTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/task/TaskTarget",
+          "value": {
+            "kind": "task",
+            "name": "TaskTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/webService/WebServiceTarget",
+          "value": {
+            "kind": "webService",
+            "name": "WebServiceTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/webServiceReference/WSReferenceTarget",
+          "value": {
+            "kind": "webServiceReference",
+            "name": "WSReferenceTarget"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/xdtoPackage/XDTOPackageTarget",
+          "value": {
+            "kind": "xdtoPackage",
+            "name": "XDTOPackageTarget"
           }
         },
         {
@@ -4740,7 +5784,7 @@
           "subject": "rightsMultiTarget/root",
           "value": {
             "type": "integer",
-            "value": 6
+            "value": 45
           }
         },
         {
@@ -4770,7 +5814,7 @@
           "subject": "rightsMultiTarget/root",
           "value": {
             "type": "integer",
-            "value": 1
+            "value": 0
           }
         },
         {
@@ -4787,7 +5831,7 @@
           "kind": "property",
           "predicate": "access.permission.allowed",
           "state": "present",
-          "subject": "rightsMultiTarget/accessPermission/calculationRegister:Payroll:Read#1",
+          "subject": "rightsMultiTarget/accessPermission/accountingRegister:AccountingRegisterTarget:Read#1",
           "value": {
             "type": "boolean",
             "value": true
@@ -4797,7 +5841,7 @@
           "kind": "property",
           "predicate": "access.permission.allowed",
           "state": "present",
-          "subject": "rightsMultiTarget/accessPermission/catalog:Products:Read#1",
+          "subject": "rightsMultiTarget/accessPermission/accumulationRegister:AccumulationRegisterTarget:Read#1",
           "value": {
             "type": "boolean",
             "value": true
@@ -4807,7 +5851,7 @@
           "kind": "property",
           "predicate": "access.permission.allowed",
           "state": "present",
-          "subject": "rightsMultiTarget/accessPermission/commonModule:Integration:View#1",
+          "subject": "rightsMultiTarget/accessPermission/bot:BotTarget:Read#1",
           "value": {
             "type": "boolean",
             "value": true
@@ -4817,7 +5861,7 @@
           "kind": "property",
           "predicate": "access.permission.allowed",
           "state": "present",
-          "subject": "rightsMultiTarget/accessPermission/document:SalesOrder:Posting#1",
+          "subject": "rightsMultiTarget/accessPermission/businessProcess:BusinessProcessTarget:Read#1",
           "value": {
             "type": "boolean",
             "value": true
@@ -4827,7 +5871,7 @@
           "kind": "property",
           "predicate": "access.permission.allowed",
           "state": "present",
-          "subject": "rightsMultiTarget/accessPermission/informationRegister:Prices:Read#1",
+          "subject": "rightsMultiTarget/accessPermission/calculationRegister:CalculationRegisterTarget:Read#1",
           "value": {
             "type": "boolean",
             "value": true
@@ -4837,17 +5881,397 @@
           "kind": "property",
           "predicate": "access.permission.allowed",
           "state": "present",
-          "subject": "rightsMultiTarget/accessPermission/report:Sales:Update#1",
+          "subject": "rightsMultiTarget/accessPermission/catalog:CatalogTarget:Read#1",
           "value": {
             "type": "boolean",
-            "value": false
+            "value": true
           }
         },
         {
           "kind": "property",
           "predicate": "access.permission.allowed",
           "state": "present",
-          "subject": "rightsMultiTarget/accessPermission/report:Sales:Use#1",
+          "subject": "rightsMultiTarget/accessPermission/chartOfAccounts:ChartOfAccountsTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/chartOfCalculationTypes:ChartOfCalculationTypesTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/chartOfCharacteristicTypes:ChartOfCharacteristicTypesTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commandGroup:CommandGroupTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commonAttribute:CommonAttributeTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commonCommand:CommonCommandTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commonForm:CommonFormTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commonModule:CommonModuleTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commonPicture:CommonPictureTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commonTemplate:CommonTemplateTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/constant:ConstantTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/dataProcessor:DataProcessorTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/definedType:DefinedTypeTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/document:DocumentTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/documentJournal:DocumentJournalTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/documentNumerator:DocumentNumeratorTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/enumeration:EnumTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/eventSubscription:EventSubscriptionTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/exchangePlan:ExchangePlanTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/filterCriterion:FilterCriterionTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/functionalOption:FunctionalOptionTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/functionalOptionsParameter:FunctionalOptionsParameterTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/httpService:HTTPServiceTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/informationRegister:InformationRegisterTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/integrationService:IntegrationServiceTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/language:LanguageTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/report:ReportTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/role:RoleTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/scheduledJob:ScheduledJobTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/sequence:SequenceTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/sessionParameter:SessionParameterTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/settingsStorage:SettingsStorageTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/style:StyleTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/styleItem:StyleItemTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/subsystem:SubsystemTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/task:TaskTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/webService:WebServiceTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/webServiceReference:WSReferenceTarget:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/xdtoPackage:XDTOPackageTarget:Read#1",
           "value": {
             "type": "boolean",
             "value": true
@@ -4857,7 +6281,7 @@
           "kind": "property",
           "predicate": "access.permission.name",
           "state": "present",
-          "subject": "rightsMultiTarget/accessPermission/calculationRegister:Payroll:Read#1",
+          "subject": "rightsMultiTarget/accessPermission/accountingRegister:AccountingRegisterTarget:Read#1",
           "value": {
             "type": "string",
             "value": "Read"
@@ -4867,7 +6291,7 @@
           "kind": "property",
           "predicate": "access.permission.name",
           "state": "present",
-          "subject": "rightsMultiTarget/accessPermission/catalog:Products:Read#1",
+          "subject": "rightsMultiTarget/accessPermission/accumulationRegister:AccumulationRegisterTarget:Read#1",
           "value": {
             "type": "string",
             "value": "Read"
@@ -4877,27 +6301,7 @@
           "kind": "property",
           "predicate": "access.permission.name",
           "state": "present",
-          "subject": "rightsMultiTarget/accessPermission/commonModule:Integration:View#1",
-          "value": {
-            "type": "string",
-            "value": "View"
-          }
-        },
-        {
-          "kind": "property",
-          "predicate": "access.permission.name",
-          "state": "present",
-          "subject": "rightsMultiTarget/accessPermission/document:SalesOrder:Posting#1",
-          "value": {
-            "type": "string",
-            "value": "Posting"
-          }
-        },
-        {
-          "kind": "property",
-          "predicate": "access.permission.name",
-          "state": "present",
-          "subject": "rightsMultiTarget/accessPermission/informationRegister:Prices:Read#1",
+          "subject": "rightsMultiTarget/accessPermission/bot:BotTarget:Read#1",
           "value": {
             "type": "string",
             "value": "Read"
@@ -4907,20 +6311,420 @@
           "kind": "property",
           "predicate": "access.permission.name",
           "state": "present",
-          "subject": "rightsMultiTarget/accessPermission/report:Sales:Update#1",
+          "subject": "rightsMultiTarget/accessPermission/businessProcess:BusinessProcessTarget:Read#1",
           "value": {
             "type": "string",
-            "value": "Update"
+            "value": "Read"
           }
         },
         {
           "kind": "property",
           "predicate": "access.permission.name",
           "state": "present",
-          "subject": "rightsMultiTarget/accessPermission/report:Sales:Use#1",
+          "subject": "rightsMultiTarget/accessPermission/calculationRegister:CalculationRegisterTarget:Read#1",
           "value": {
             "type": "string",
-            "value": "Use"
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/catalog:CatalogTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/chartOfAccounts:ChartOfAccountsTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/chartOfCalculationTypes:ChartOfCalculationTypesTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/chartOfCharacteristicTypes:ChartOfCharacteristicTypesTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commandGroup:CommandGroupTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commonAttribute:CommonAttributeTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commonCommand:CommonCommandTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commonForm:CommonFormTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commonModule:CommonModuleTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commonPicture:CommonPictureTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commonTemplate:CommonTemplateTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/constant:ConstantTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/dataProcessor:DataProcessorTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/definedType:DefinedTypeTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/document:DocumentTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/documentJournal:DocumentJournalTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/documentNumerator:DocumentNumeratorTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/enumeration:EnumTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/eventSubscription:EventSubscriptionTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/exchangePlan:ExchangePlanTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/filterCriterion:FilterCriterionTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/functionalOption:FunctionalOptionTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/functionalOptionsParameter:FunctionalOptionsParameterTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/httpService:HTTPServiceTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/informationRegister:InformationRegisterTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/integrationService:IntegrationServiceTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/language:LanguageTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/report:ReportTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/role:RoleTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/scheduledJob:ScheduledJobTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/sequence:SequenceTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/sessionParameter:SessionParameterTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/settingsStorage:SettingsStorageTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/style:StyleTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/styleItem:StyleItemTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/subsystem:SubsystemTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/task:TaskTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/webService:WebServiceTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/webServiceReference:WSReferenceTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/xdtoPackage:XDTOPackageTarget:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
           }
         },
         {
@@ -4930,14 +6734,14 @@
           "subject": "rightsMultiTarget/root",
           "value": {
             "type": "integer",
-            "value": 6
+            "value": 45
           }
         },
         {
           "kind": "property",
           "predicate": "access.restriction.present",
           "state": "present",
-          "subject": "rightsMultiTarget/external/calculationRegister/Payroll",
+          "subject": "rightsMultiTarget/external/accountingRegister/AccountingRegisterTarget",
           "value": {
             "type": "boolean",
             "value": true
@@ -4947,7 +6751,7 @@
           "kind": "property",
           "predicate": "access.restriction.present",
           "state": "present",
-          "subject": "rightsMultiTarget/external/catalog/Products",
+          "subject": "rightsMultiTarget/external/accumulationRegister/AccumulationRegisterTarget",
           "value": {
             "type": "boolean",
             "value": true
@@ -4957,7 +6761,7 @@
           "kind": "property",
           "predicate": "access.restriction.present",
           "state": "present",
-          "subject": "rightsMultiTarget/external/commonModule/Integration",
+          "subject": "rightsMultiTarget/external/bot/BotTarget",
           "value": {
             "type": "boolean",
             "value": true
@@ -4967,7 +6771,7 @@
           "kind": "property",
           "predicate": "access.restriction.present",
           "state": "present",
-          "subject": "rightsMultiTarget/external/document/SalesOrder",
+          "subject": "rightsMultiTarget/external/businessProcess/BusinessProcessTarget",
           "value": {
             "type": "boolean",
             "value": true
@@ -4977,7 +6781,7 @@
           "kind": "property",
           "predicate": "access.restriction.present",
           "state": "present",
-          "subject": "rightsMultiTarget/external/informationRegister/Prices",
+          "subject": "rightsMultiTarget/external/calculationRegister/CalculationRegisterTarget",
           "value": {
             "type": "boolean",
             "value": true
@@ -4987,7 +6791,397 @@
           "kind": "property",
           "predicate": "access.restriction.present",
           "state": "present",
-          "subject": "rightsMultiTarget/external/report/Sales",
+          "subject": "rightsMultiTarget/external/catalog/CatalogTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/chartOfAccounts/ChartOfAccountsTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/chartOfCalculationTypes/ChartOfCalculationTypesTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/chartOfCharacteristicTypes/ChartOfCharacteristicTypesTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/commandGroup/CommandGroupTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/commonAttribute/CommonAttributeTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/commonCommand/CommonCommandTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/commonForm/CommonFormTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/commonModule/CommonModuleTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/commonPicture/CommonPictureTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/commonTemplate/CommonTemplateTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/constant/ConstantTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/dataProcessor/DataProcessorTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/definedType/DefinedTypeTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/document/DocumentTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/documentJournal/DocumentJournalTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/documentNumerator/DocumentNumeratorTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/enumeration/EnumTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/eventSubscription/EventSubscriptionTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/exchangePlan/ExchangePlanTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/filterCriterion/FilterCriterionTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/functionalOption/FunctionalOptionTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/functionalOptionsParameter/FunctionalOptionsParameterTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/httpService/HTTPServiceTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/informationRegister/InformationRegisterTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/integrationService/IntegrationServiceTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/language/LanguageTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/report/ReportTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/role/RoleTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/scheduledJob/ScheduledJobTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/sequence/SequenceTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/sessionParameter/SessionParameterTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/settingsStorage/SettingsStorageTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/style/StyleTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/styleItem/StyleItemTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/subsystem/SubsystemTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/task/TaskTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/webService/WebServiceTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/webServiceReference/WSReferenceTarget",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/xdtoPackage/XDTOPackageTarget",
           "value": {
             "type": "boolean",
             "value": true
@@ -4997,60 +7191,450 @@
           "kind": "property",
           "predicate": "access.restrictionTemplate.name",
           "state": "present",
-          "subject": "rightsMultiTarget/accessRestrictionTemplate/IntegrationAccess#1",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/AccountingRegisterTemplate#1",
           "value": {
             "type": "string",
-            "value": "IntegrationAccess"
+            "value": "AccountingRegisterTemplate"
           }
         },
         {
           "kind": "property",
           "predicate": "access.restrictionTemplate.name",
           "state": "present",
-          "subject": "rightsMultiTarget/accessRestrictionTemplate/PayrollPeriod#1",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/AccumulationRegisterTemplate#1",
           "value": {
             "type": "string",
-            "value": "PayrollPeriod"
+            "value": "AccumulationRegisterTemplate"
           }
         },
         {
           "kind": "property",
           "predicate": "access.restrictionTemplate.name",
           "state": "present",
-          "subject": "rightsMultiTarget/accessRestrictionTemplate/PositiveAmount#1",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/BotTemplate#1",
           "value": {
             "type": "string",
-            "value": "PositiveAmount"
+            "value": "BotTemplate"
           }
         },
         {
           "kind": "property",
           "predicate": "access.restrictionTemplate.name",
           "state": "present",
-          "subject": "rightsMultiTarget/accessRestrictionTemplate/PositivePrice#1",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/BusinessProcessTemplate#1",
           "value": {
             "type": "string",
-            "value": "PositivePrice"
+            "value": "BusinessProcessTemplate"
           }
         },
         {
           "kind": "property",
           "predicate": "access.restrictionTemplate.name",
           "state": "present",
-          "subject": "rightsMultiTarget/accessRestrictionTemplate/ProductAccess#1",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/CalculationRegisterTemplate#1",
           "value": {
             "type": "string",
-            "value": "ProductAccess"
+            "value": "CalculationRegisterTemplate"
           }
         },
         {
           "kind": "property",
           "predicate": "access.restrictionTemplate.name",
           "state": "present",
-          "subject": "rightsMultiTarget/accessRestrictionTemplate/SalesAccess#1",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/CatalogTemplate#1",
           "value": {
             "type": "string",
-            "value": "SalesAccess"
+            "value": "CatalogTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/ChartOfAccountsTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "ChartOfAccountsTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/ChartOfCalculationTypesTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "ChartOfCalculationTypesTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/ChartOfCharacteristicTypesTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "ChartOfCharacteristicTypesTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/CommandGroupTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "CommandGroupTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/CommonAttributeTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "CommonAttributeTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/CommonCommandTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "CommonCommandTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/CommonFormTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "CommonFormTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/CommonModuleTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "CommonModuleTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/CommonPictureTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "CommonPictureTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/CommonTemplateTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "CommonTemplateTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/ConstantTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "ConstantTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/DataProcessorTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "DataProcessorTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/DefinedTypeTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "DefinedTypeTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/DocumentJournalTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "DocumentJournalTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/DocumentNumeratorTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "DocumentNumeratorTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/DocumentTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "DocumentTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/EnumTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "EnumTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/EventSubscriptionTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "EventSubscriptionTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/ExchangePlanTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "ExchangePlanTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/FilterCriterionTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "FilterCriterionTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/FunctionalOptionTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "FunctionalOptionTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/FunctionalOptionsParameterTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "FunctionalOptionsParameterTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/HTTPServiceTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "HTTPServiceTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/InformationRegisterTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "InformationRegisterTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/IntegrationServiceTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "IntegrationServiceTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/LanguageTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "LanguageTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/ReportTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "ReportTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/RoleTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "RoleTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/ScheduledJobTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "ScheduledJobTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/SequenceTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "SequenceTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/SessionParameterTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "SessionParameterTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/SettingsStorageTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "SettingsStorageTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/StyleItemTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "StyleItemTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/StyleTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "StyleTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/SubsystemTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "SubsystemTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/TaskTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "TaskTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/WSReferenceTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "WSReferenceTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/WebServiceTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "WebServiceTemplate"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/XDTOPackageTemplate#1",
+          "value": {
+            "type": "string",
+            "value": "XDTOPackageTemplate"
           }
         },
         {
@@ -5091,7 +7675,7 @@
           "state": "present",
           "subject": "rightsMultiTarget/root",
           "value": {
-            "target": "rightsMultiTarget/accessPermission/calculationRegister:Payroll:Read#1",
+            "target": "rightsMultiTarget/accessPermission/accountingRegister:AccountingRegisterTarget:Read#1",
             "targetKind": "accessPermission",
             "targetName": "Read"
           }
@@ -5102,7 +7686,7 @@
           "state": "present",
           "subject": "rightsMultiTarget/root",
           "value": {
-            "target": "rightsMultiTarget/accessPermission/catalog:Products:Read#1",
+            "target": "rightsMultiTarget/accessPermission/accumulationRegister:AccumulationRegisterTarget:Read#1",
             "targetKind": "accessPermission",
             "targetName": "Read"
           }
@@ -5113,29 +7697,7 @@
           "state": "present",
           "subject": "rightsMultiTarget/root",
           "value": {
-            "target": "rightsMultiTarget/accessPermission/commonModule:Integration:View#1",
-            "targetKind": "accessPermission",
-            "targetName": "View"
-          }
-        },
-        {
-          "kind": "relation",
-          "predicate": "accessPermissions",
-          "state": "present",
-          "subject": "rightsMultiTarget/root",
-          "value": {
-            "target": "rightsMultiTarget/accessPermission/document:SalesOrder:Posting#1",
-            "targetKind": "accessPermission",
-            "targetName": "Posting"
-          }
-        },
-        {
-          "kind": "relation",
-          "predicate": "accessPermissions",
-          "state": "present",
-          "subject": "rightsMultiTarget/root",
-          "value": {
-            "target": "rightsMultiTarget/accessPermission/informationRegister:Prices:Read#1",
+            "target": "rightsMultiTarget/accessPermission/bot:BotTarget:Read#1",
             "targetKind": "accessPermission",
             "targetName": "Read"
           }
@@ -5146,9 +7708,9 @@
           "state": "present",
           "subject": "rightsMultiTarget/root",
           "value": {
-            "target": "rightsMultiTarget/accessPermission/report:Sales:Update#1",
+            "target": "rightsMultiTarget/accessPermission/businessProcess:BusinessProcessTarget:Read#1",
             "targetKind": "accessPermission",
-            "targetName": "Update"
+            "targetName": "Read"
           }
         },
         {
@@ -5157,86 +7719,944 @@
           "state": "present",
           "subject": "rightsMultiTarget/root",
           "value": {
-            "target": "rightsMultiTarget/accessPermission/report:Sales:Use#1",
+            "target": "rightsMultiTarget/accessPermission/calculationRegister:CalculationRegisterTarget:Read#1",
             "targetKind": "accessPermission",
-            "targetName": "Use"
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/catalog:CatalogTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/chartOfAccounts:ChartOfAccountsTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/chartOfCalculationTypes:ChartOfCalculationTypesTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/chartOfCharacteristicTypes:ChartOfCharacteristicTypesTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/commandGroup:CommandGroupTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/commonAttribute:CommonAttributeTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/commonCommand:CommonCommandTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/commonForm:CommonFormTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/commonModule:CommonModuleTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/commonPicture:CommonPictureTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/commonTemplate:CommonTemplateTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/constant:ConstantTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/dataProcessor:DataProcessorTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/definedType:DefinedTypeTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/document:DocumentTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/documentJournal:DocumentJournalTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/documentNumerator:DocumentNumeratorTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/enumeration:EnumTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/eventSubscription:EventSubscriptionTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/exchangePlan:ExchangePlanTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/filterCriterion:FilterCriterionTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/functionalOption:FunctionalOptionTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/functionalOptionsParameter:FunctionalOptionsParameterTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/httpService:HTTPServiceTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/informationRegister:InformationRegisterTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/integrationService:IntegrationServiceTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/language:LanguageTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/report:ReportTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/role:RoleTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/scheduledJob:ScheduledJobTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/sequence:SequenceTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/sessionParameter:SessionParameterTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/settingsStorage:SettingsStorageTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/style:StyleTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/styleItem:StyleItemTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/subsystem:SubsystemTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/task:TaskTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/webService:WebServiceTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/webServiceReference:WSReferenceTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/xdtoPackage:XDTOPackageTarget:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
           }
         },
         {
           "kind": "relation",
           "predicate": "accessTarget",
           "state": "present",
-          "subject": "rightsMultiTarget/accessPermission/calculationRegister:Payroll:Read#1",
+          "subject": "rightsMultiTarget/accessPermission/accountingRegister:AccountingRegisterTarget:Read#1",
           "value": {
-            "target": "rightsMultiTarget/external/calculationRegister/Payroll",
+            "target": "rightsMultiTarget/external/accountingRegister/AccountingRegisterTarget",
+            "targetKind": "accountingRegister",
+            "targetName": "AccountingRegisterTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/accumulationRegister:AccumulationRegisterTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/accumulationRegister/AccumulationRegisterTarget",
+            "targetKind": "accumulationRegister",
+            "targetName": "AccumulationRegisterTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/bot:BotTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/bot/BotTarget",
+            "targetKind": "bot",
+            "targetName": "BotTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/businessProcess:BusinessProcessTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/businessProcess/BusinessProcessTarget",
+            "targetKind": "businessProcess",
+            "targetName": "BusinessProcessTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/calculationRegister:CalculationRegisterTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/calculationRegister/CalculationRegisterTarget",
             "targetKind": "calculationRegister",
-            "targetName": "Payroll"
+            "targetName": "CalculationRegisterTarget"
           }
         },
         {
           "kind": "relation",
           "predicate": "accessTarget",
           "state": "present",
-          "subject": "rightsMultiTarget/accessPermission/catalog:Products:Read#1",
+          "subject": "rightsMultiTarget/accessPermission/catalog:CatalogTarget:Read#1",
           "value": {
-            "target": "rightsMultiTarget/external/catalog/Products",
+            "target": "rightsMultiTarget/external/catalog/CatalogTarget",
             "targetKind": "catalog",
-            "targetName": "Products"
+            "targetName": "CatalogTarget"
           }
         },
         {
           "kind": "relation",
           "predicate": "accessTarget",
           "state": "present",
-          "subject": "rightsMultiTarget/accessPermission/commonModule:Integration:View#1",
+          "subject": "rightsMultiTarget/accessPermission/chartOfAccounts:ChartOfAccountsTarget:Read#1",
           "value": {
-            "target": "rightsMultiTarget/external/commonModule/Integration",
+            "target": "rightsMultiTarget/external/chartOfAccounts/ChartOfAccountsTarget",
+            "targetKind": "chartOfAccounts",
+            "targetName": "ChartOfAccountsTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/chartOfCalculationTypes:ChartOfCalculationTypesTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/chartOfCalculationTypes/ChartOfCalculationTypesTarget",
+            "targetKind": "chartOfCalculationTypes",
+            "targetName": "ChartOfCalculationTypesTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/chartOfCharacteristicTypes:ChartOfCharacteristicTypesTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/chartOfCharacteristicTypes/ChartOfCharacteristicTypesTarget",
+            "targetKind": "chartOfCharacteristicTypes",
+            "targetName": "ChartOfCharacteristicTypesTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commandGroup:CommandGroupTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/commandGroup/CommandGroupTarget",
+            "targetKind": "commandGroup",
+            "targetName": "CommandGroupTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commonAttribute:CommonAttributeTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/commonAttribute/CommonAttributeTarget",
+            "targetKind": "commonAttribute",
+            "targetName": "CommonAttributeTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commonCommand:CommonCommandTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/commonCommand/CommonCommandTarget",
+            "targetKind": "commonCommand",
+            "targetName": "CommonCommandTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commonForm:CommonFormTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/commonForm/CommonFormTarget",
+            "targetKind": "commonForm",
+            "targetName": "CommonFormTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commonModule:CommonModuleTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/commonModule/CommonModuleTarget",
             "targetKind": "commonModule",
-            "targetName": "Integration"
+            "targetName": "CommonModuleTarget"
           }
         },
         {
           "kind": "relation",
           "predicate": "accessTarget",
           "state": "present",
-          "subject": "rightsMultiTarget/accessPermission/document:SalesOrder:Posting#1",
+          "subject": "rightsMultiTarget/accessPermission/commonPicture:CommonPictureTarget:Read#1",
           "value": {
-            "target": "rightsMultiTarget/external/document/SalesOrder",
+            "target": "rightsMultiTarget/external/commonPicture/CommonPictureTarget",
+            "targetKind": "commonPicture",
+            "targetName": "CommonPictureTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/commonTemplate:CommonTemplateTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/commonTemplate/CommonTemplateTarget",
+            "targetKind": "commonTemplate",
+            "targetName": "CommonTemplateTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/constant:ConstantTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/constant/ConstantTarget",
+            "targetKind": "constant",
+            "targetName": "ConstantTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/dataProcessor:DataProcessorTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/dataProcessor/DataProcessorTarget",
+            "targetKind": "dataProcessor",
+            "targetName": "DataProcessorTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/definedType:DefinedTypeTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/definedType/DefinedTypeTarget",
+            "targetKind": "definedType",
+            "targetName": "DefinedTypeTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/document:DocumentTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/document/DocumentTarget",
             "targetKind": "document",
-            "targetName": "SalesOrder"
+            "targetName": "DocumentTarget"
           }
         },
         {
           "kind": "relation",
           "predicate": "accessTarget",
           "state": "present",
-          "subject": "rightsMultiTarget/accessPermission/informationRegister:Prices:Read#1",
+          "subject": "rightsMultiTarget/accessPermission/documentJournal:DocumentJournalTarget:Read#1",
           "value": {
-            "target": "rightsMultiTarget/external/informationRegister/Prices",
+            "target": "rightsMultiTarget/external/documentJournal/DocumentJournalTarget",
+            "targetKind": "documentJournal",
+            "targetName": "DocumentJournalTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/documentNumerator:DocumentNumeratorTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/documentNumerator/DocumentNumeratorTarget",
+            "targetKind": "documentNumerator",
+            "targetName": "DocumentNumeratorTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/enumeration:EnumTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/enumeration/EnumTarget",
+            "targetKind": "enumeration",
+            "targetName": "EnumTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/eventSubscription:EventSubscriptionTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/eventSubscription/EventSubscriptionTarget",
+            "targetKind": "eventSubscription",
+            "targetName": "EventSubscriptionTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/exchangePlan:ExchangePlanTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/exchangePlan/ExchangePlanTarget",
+            "targetKind": "exchangePlan",
+            "targetName": "ExchangePlanTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/filterCriterion:FilterCriterionTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/filterCriterion/FilterCriterionTarget",
+            "targetKind": "filterCriterion",
+            "targetName": "FilterCriterionTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/functionalOption:FunctionalOptionTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/functionalOption/FunctionalOptionTarget",
+            "targetKind": "functionalOption",
+            "targetName": "FunctionalOptionTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/functionalOptionsParameter:FunctionalOptionsParameterTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/functionalOptionsParameter/FunctionalOptionsParameterTarget",
+            "targetKind": "functionalOptionsParameter",
+            "targetName": "FunctionalOptionsParameterTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/httpService:HTTPServiceTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/httpService/HTTPServiceTarget",
+            "targetKind": "httpService",
+            "targetName": "HTTPServiceTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/informationRegister:InformationRegisterTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/informationRegister/InformationRegisterTarget",
             "targetKind": "informationRegister",
-            "targetName": "Prices"
+            "targetName": "InformationRegisterTarget"
           }
         },
         {
           "kind": "relation",
           "predicate": "accessTarget",
           "state": "present",
-          "subject": "rightsMultiTarget/accessPermission/report:Sales:Update#1",
+          "subject": "rightsMultiTarget/accessPermission/integrationService:IntegrationServiceTarget:Read#1",
           "value": {
-            "target": "rightsMultiTarget/external/report/Sales",
-            "targetKind": "report",
-            "targetName": "Sales"
+            "target": "rightsMultiTarget/external/integrationService/IntegrationServiceTarget",
+            "targetKind": "integrationService",
+            "targetName": "IntegrationServiceTarget"
           }
         },
         {
           "kind": "relation",
           "predicate": "accessTarget",
           "state": "present",
-          "subject": "rightsMultiTarget/accessPermission/report:Sales:Use#1",
+          "subject": "rightsMultiTarget/accessPermission/language:LanguageTarget:Read#1",
           "value": {
-            "target": "rightsMultiTarget/external/report/Sales",
+            "target": "rightsMultiTarget/external/language/LanguageTarget",
+            "targetKind": "language",
+            "targetName": "LanguageTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/report:ReportTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/report/ReportTarget",
             "targetKind": "report",
-            "targetName": "Sales"
+            "targetName": "ReportTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/role:RoleTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/role/RoleTarget",
+            "targetKind": "role",
+            "targetName": "RoleTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/scheduledJob:ScheduledJobTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/scheduledJob/ScheduledJobTarget",
+            "targetKind": "scheduledJob",
+            "targetName": "ScheduledJobTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/sequence:SequenceTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/sequence/SequenceTarget",
+            "targetKind": "sequence",
+            "targetName": "SequenceTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/sessionParameter:SessionParameterTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/sessionParameter/SessionParameterTarget",
+            "targetKind": "sessionParameter",
+            "targetName": "SessionParameterTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/settingsStorage:SettingsStorageTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/settingsStorage/SettingsStorageTarget",
+            "targetKind": "settingsStorage",
+            "targetName": "SettingsStorageTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/style:StyleTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/style/StyleTarget",
+            "targetKind": "style",
+            "targetName": "StyleTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/styleItem:StyleItemTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/styleItem/StyleItemTarget",
+            "targetKind": "styleItem",
+            "targetName": "StyleItemTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/subsystem:SubsystemTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/subsystem/SubsystemTarget",
+            "targetKind": "subsystem",
+            "targetName": "SubsystemTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/task:TaskTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/task/TaskTarget",
+            "targetKind": "task",
+            "targetName": "TaskTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/webService:WebServiceTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/webService/WebServiceTarget",
+            "targetKind": "webService",
+            "targetName": "WebServiceTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/webServiceReference:WSReferenceTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/webServiceReference/WSReferenceTarget",
+            "targetKind": "webServiceReference",
+            "targetName": "WSReferenceTarget"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/xdtoPackage:XDTOPackageTarget:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/xdtoPackage/XDTOPackageTarget",
+            "targetKind": "xdtoPackage",
+            "targetName": "XDTOPackageTarget"
           }
         },
         {
@@ -5245,9 +8665,9 @@
           "state": "present",
           "subject": "rightsMultiTarget/root",
           "value": {
-            "target": "rightsMultiTarget/accessRestrictionTemplate/IntegrationAccess#1",
+            "target": "rightsMultiTarget/accessRestrictionTemplate/AccountingRegisterTemplate#1",
             "targetKind": "accessRestrictionTemplate",
-            "targetName": "IntegrationAccess"
+            "targetName": "AccountingRegisterTemplate"
           }
         },
         {
@@ -5256,9 +8676,9 @@
           "state": "present",
           "subject": "rightsMultiTarget/root",
           "value": {
-            "target": "rightsMultiTarget/accessRestrictionTemplate/PayrollPeriod#1",
+            "target": "rightsMultiTarget/accessRestrictionTemplate/AccumulationRegisterTemplate#1",
             "targetKind": "accessRestrictionTemplate",
-            "targetName": "PayrollPeriod"
+            "targetName": "AccumulationRegisterTemplate"
           }
         },
         {
@@ -5267,9 +8687,9 @@
           "state": "present",
           "subject": "rightsMultiTarget/root",
           "value": {
-            "target": "rightsMultiTarget/accessRestrictionTemplate/PositiveAmount#1",
+            "target": "rightsMultiTarget/accessRestrictionTemplate/BotTemplate#1",
             "targetKind": "accessRestrictionTemplate",
-            "targetName": "PositiveAmount"
+            "targetName": "BotTemplate"
           }
         },
         {
@@ -5278,9 +8698,9 @@
           "state": "present",
           "subject": "rightsMultiTarget/root",
           "value": {
-            "target": "rightsMultiTarget/accessRestrictionTemplate/PositivePrice#1",
+            "target": "rightsMultiTarget/accessRestrictionTemplate/BusinessProcessTemplate#1",
             "targetKind": "accessRestrictionTemplate",
-            "targetName": "PositivePrice"
+            "targetName": "BusinessProcessTemplate"
           }
         },
         {
@@ -5289,9 +8709,9 @@
           "state": "present",
           "subject": "rightsMultiTarget/root",
           "value": {
-            "target": "rightsMultiTarget/accessRestrictionTemplate/ProductAccess#1",
+            "target": "rightsMultiTarget/accessRestrictionTemplate/CalculationRegisterTemplate#1",
             "targetKind": "accessRestrictionTemplate",
-            "targetName": "ProductAccess"
+            "targetName": "CalculationRegisterTemplate"
           }
         },
         {
@@ -5300,9 +8720,438 @@
           "state": "present",
           "subject": "rightsMultiTarget/root",
           "value": {
-            "target": "rightsMultiTarget/accessRestrictionTemplate/SalesAccess#1",
+            "target": "rightsMultiTarget/accessRestrictionTemplate/CatalogTemplate#1",
             "targetKind": "accessRestrictionTemplate",
-            "targetName": "SalesAccess"
+            "targetName": "CatalogTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/ChartOfAccountsTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "ChartOfAccountsTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/ChartOfCalculationTypesTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "ChartOfCalculationTypesTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/ChartOfCharacteristicTypesTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "ChartOfCharacteristicTypesTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/CommandGroupTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "CommandGroupTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/CommonAttributeTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "CommonAttributeTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/CommonCommandTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "CommonCommandTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/CommonFormTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "CommonFormTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/CommonModuleTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "CommonModuleTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/CommonPictureTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "CommonPictureTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/CommonTemplateTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "CommonTemplateTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/ConstantTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "ConstantTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/DataProcessorTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "DataProcessorTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/DefinedTypeTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "DefinedTypeTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/DocumentJournalTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "DocumentJournalTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/DocumentNumeratorTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "DocumentNumeratorTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/DocumentTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "DocumentTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/EnumTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "EnumTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/EventSubscriptionTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "EventSubscriptionTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/ExchangePlanTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "ExchangePlanTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/FilterCriterionTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "FilterCriterionTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/FunctionalOptionTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "FunctionalOptionTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/FunctionalOptionsParameterTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "FunctionalOptionsParameterTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/HTTPServiceTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "HTTPServiceTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/InformationRegisterTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "InformationRegisterTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/IntegrationServiceTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "IntegrationServiceTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/LanguageTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "LanguageTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/ReportTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "ReportTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/RoleTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "RoleTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/ScheduledJobTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "ScheduledJobTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/SequenceTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "SequenceTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/SessionParameterTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "SessionParameterTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/SettingsStorageTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "SettingsStorageTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/StyleItemTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "StyleItemTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/StyleTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "StyleTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/SubsystemTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "SubsystemTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/TaskTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "TaskTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/WSReferenceTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "WSReferenceTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/WebServiceTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "WebServiceTemplate"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/XDTOPackageTemplate#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "XDTOPackageTemplate"
           }
         }
       ],
@@ -5345,13 +9194,13 @@
           "lineNumber": 7
         },
         {
-          "classification": "structural:right-group:Catalog",
-          "line": "  Catalog (1):",
+          "classification": "structural:right-group:AccountingRegister",
+          "line": "  AccountingRegister (1):",
           "lineNumber": 8
         },
         {
-          "classification": "useful:right-target:Catalog",
-          "line": "    Products: Read [RLS]",
+          "classification": "useful:right-target:AccountingRegister",
+          "line": "    AccountingRegisterTarget: Read [RLS]",
           "lineNumber": 9
         },
         {
@@ -5360,13 +9209,13 @@
           "lineNumber": 10
         },
         {
-          "classification": "structural:right-group:Document",
-          "line": "  Document (1):",
+          "classification": "structural:right-group:AccumulationRegister",
+          "line": "  AccumulationRegister (1):",
           "lineNumber": 11
         },
         {
-          "classification": "useful:right-target:Document",
-          "line": "    SalesOrder: Posting [RLS]",
+          "classification": "useful:right-target:AccumulationRegister",
+          "line": "    AccumulationRegisterTarget: Read [RLS]",
           "lineNumber": 12
         },
         {
@@ -5375,13 +9224,13 @@
           "lineNumber": 13
         },
         {
-          "classification": "structural:right-group:InformationRegister",
-          "line": "  InformationRegister (1):",
+          "classification": "structural:right-group:Bot",
+          "line": "  Bot (1):",
           "lineNumber": 14
         },
         {
-          "classification": "useful:right-target:InformationRegister",
-          "line": "    Prices: Read [RLS]",
+          "classification": "useful:right-target:Bot",
+          "line": "    BotTarget: Read [RLS]",
           "lineNumber": 15
         },
         {
@@ -5390,13 +9239,13 @@
           "lineNumber": 16
         },
         {
-          "classification": "structural:right-group:CommonModule",
-          "line": "  CommonModule (1):",
+          "classification": "structural:right-group:BusinessProcess",
+          "line": "  BusinessProcess (1):",
           "lineNumber": 17
         },
         {
-          "classification": "useful:right-target:CommonModule",
-          "line": "    Integration: View [RLS]",
+          "classification": "useful:right-target:BusinessProcess",
+          "line": "    BusinessProcessTarget: Read [RLS]",
           "lineNumber": 18
         },
         {
@@ -5405,13 +9254,13 @@
           "lineNumber": 19
         },
         {
-          "classification": "structural:right-group:Report",
-          "line": "  Report (1):",
+          "classification": "structural:right-group:CalculationRegister",
+          "line": "  CalculationRegister (1):",
           "lineNumber": 20
         },
         {
-          "classification": "useful:right-target:Report",
-          "line": "    Sales: Use [RLS]",
+          "classification": "useful:right-target:CalculationRegister",
+          "line": "    CalculationRegisterTarget: Read [RLS]",
           "lineNumber": 21
         },
         {
@@ -5420,13 +9269,13 @@
           "lineNumber": 22
         },
         {
-          "classification": "structural:right-group:CalculationRegister",
-          "line": "  CalculationRegister (1):",
+          "classification": "structural:right-group:Catalog",
+          "line": "  Catalog (1):",
           "lineNumber": 23
         },
         {
-          "classification": "useful:right-target:CalculationRegister",
-          "line": "    Payroll: Read [RLS]",
+          "classification": "useful:right-target:Catalog",
+          "line": "    CatalogTarget: Read [RLS]",
           "lineNumber": 24
         },
         {
@@ -5435,54 +9284,614 @@
           "lineNumber": 25
         },
         {
-          "classification": "structural:denied-section",
-          "line": "Denied rights:",
+          "classification": "structural:right-group:ChartOfAccounts",
+          "line": "  ChartOfAccounts (1):",
           "lineNumber": 26
+        },
+        {
+          "classification": "useful:right-target:ChartOfAccounts",
+          "line": "    ChartOfAccountsTarget: Read [RLS]",
+          "lineNumber": 27
         },
         {
           "classification": "structural:blank",
           "line": "",
-          "lineNumber": 27
+          "lineNumber": 28
+        },
+        {
+          "classification": "structural:right-group:ChartOfCalculationTypes",
+          "line": "  ChartOfCalculationTypes (1):",
+          "lineNumber": 29
+        },
+        {
+          "classification": "useful:right-target:ChartOfCalculationTypes",
+          "line": "    ChartOfCalculationTypesTarget: Read [RLS]",
+          "lineNumber": 30
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 31
+        },
+        {
+          "classification": "structural:right-group:ChartOfCharacteristicTypes",
+          "line": "  ChartOfCharacteristicTypes (1):",
+          "lineNumber": 32
+        },
+        {
+          "classification": "useful:right-target:ChartOfCharacteristicTypes",
+          "line": "    ChartOfCharacteristicTypesTarget: Read [RLS]",
+          "lineNumber": 33
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 34
+        },
+        {
+          "classification": "structural:right-group:CommandGroup",
+          "line": "  CommandGroup (1):",
+          "lineNumber": 35
+        },
+        {
+          "classification": "useful:right-target:CommandGroup",
+          "line": "    CommandGroupTarget: Read [RLS]",
+          "lineNumber": 36
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 37
+        },
+        {
+          "classification": "structural:right-group:CommonAttribute",
+          "line": "  CommonAttribute (1):",
+          "lineNumber": 38
+        },
+        {
+          "classification": "useful:right-target:CommonAttribute",
+          "line": "    CommonAttributeTarget: Read [RLS]",
+          "lineNumber": 39
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 40
+        },
+        {
+          "classification": "structural:right-group:CommonCommand",
+          "line": "  CommonCommand (1):",
+          "lineNumber": 41
+        },
+        {
+          "classification": "useful:right-target:CommonCommand",
+          "line": "    CommonCommandTarget: Read [RLS]",
+          "lineNumber": 42
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 43
+        },
+        {
+          "classification": "structural:right-group:CommonForm",
+          "line": "  CommonForm (1):",
+          "lineNumber": 44
+        },
+        {
+          "classification": "useful:right-target:CommonForm",
+          "line": "    CommonFormTarget: Read [RLS]",
+          "lineNumber": 45
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 46
+        },
+        {
+          "classification": "structural:right-group:CommonModule",
+          "line": "  CommonModule (1):",
+          "lineNumber": 47
+        },
+        {
+          "classification": "useful:right-target:CommonModule",
+          "line": "    CommonModuleTarget: Read [RLS]",
+          "lineNumber": 48
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 49
+        },
+        {
+          "classification": "structural:right-group:CommonPicture",
+          "line": "  CommonPicture (1):",
+          "lineNumber": 50
+        },
+        {
+          "classification": "useful:right-target:CommonPicture",
+          "line": "    CommonPictureTarget: Read [RLS]",
+          "lineNumber": 51
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 52
+        },
+        {
+          "classification": "structural:right-group:CommonTemplate",
+          "line": "  CommonTemplate (1):",
+          "lineNumber": 53
+        },
+        {
+          "classification": "useful:right-target:CommonTemplate",
+          "line": "    CommonTemplateTarget: Read [RLS]",
+          "lineNumber": 54
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 55
+        },
+        {
+          "classification": "structural:right-group:Constant",
+          "line": "  Constant (1):",
+          "lineNumber": 56
+        },
+        {
+          "classification": "useful:right-target:Constant",
+          "line": "    ConstantTarget: Read [RLS]",
+          "lineNumber": 57
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 58
+        },
+        {
+          "classification": "structural:right-group:DataProcessor",
+          "line": "  DataProcessor (1):",
+          "lineNumber": 59
+        },
+        {
+          "classification": "useful:right-target:DataProcessor",
+          "line": "    DataProcessorTarget: Read [RLS]",
+          "lineNumber": 60
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 61
+        },
+        {
+          "classification": "structural:right-group:DefinedType",
+          "line": "  DefinedType (1):",
+          "lineNumber": 62
+        },
+        {
+          "classification": "useful:right-target:DefinedType",
+          "line": "    DefinedTypeTarget: Read [RLS]",
+          "lineNumber": 63
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 64
+        },
+        {
+          "classification": "structural:right-group:Document",
+          "line": "  Document (1):",
+          "lineNumber": 65
+        },
+        {
+          "classification": "useful:right-target:Document",
+          "line": "    DocumentTarget: Read [RLS]",
+          "lineNumber": 66
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 67
+        },
+        {
+          "classification": "structural:right-group:DocumentJournal",
+          "line": "  DocumentJournal (1):",
+          "lineNumber": 68
+        },
+        {
+          "classification": "useful:right-target:DocumentJournal",
+          "line": "    DocumentJournalTarget: Read [RLS]",
+          "lineNumber": 69
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 70
+        },
+        {
+          "classification": "structural:right-group:DocumentNumerator",
+          "line": "  DocumentNumerator (1):",
+          "lineNumber": 71
+        },
+        {
+          "classification": "useful:right-target:DocumentNumerator",
+          "line": "    DocumentNumeratorTarget: Read [RLS]",
+          "lineNumber": 72
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 73
+        },
+        {
+          "classification": "structural:right-group:Enum",
+          "line": "  Enum (1):",
+          "lineNumber": 74
+        },
+        {
+          "classification": "useful:right-target:Enum",
+          "line": "    EnumTarget: Read [RLS]",
+          "lineNumber": 75
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 76
+        },
+        {
+          "classification": "structural:right-group:EventSubscription",
+          "line": "  EventSubscription (1):",
+          "lineNumber": 77
+        },
+        {
+          "classification": "useful:right-target:EventSubscription",
+          "line": "    EventSubscriptionTarget: Read [RLS]",
+          "lineNumber": 78
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 79
+        },
+        {
+          "classification": "structural:right-group:ExchangePlan",
+          "line": "  ExchangePlan (1):",
+          "lineNumber": 80
+        },
+        {
+          "classification": "useful:right-target:ExchangePlan",
+          "line": "    ExchangePlanTarget: Read [RLS]",
+          "lineNumber": 81
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 82
+        },
+        {
+          "classification": "structural:right-group:FilterCriterion",
+          "line": "  FilterCriterion (1):",
+          "lineNumber": 83
+        },
+        {
+          "classification": "useful:right-target:FilterCriterion",
+          "line": "    FilterCriterionTarget: Read [RLS]",
+          "lineNumber": 84
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 85
+        },
+        {
+          "classification": "structural:right-group:FunctionalOption",
+          "line": "  FunctionalOption (1):",
+          "lineNumber": 86
+        },
+        {
+          "classification": "useful:right-target:FunctionalOption",
+          "line": "    FunctionalOptionTarget: Read [RLS]",
+          "lineNumber": 87
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 88
+        },
+        {
+          "classification": "structural:right-group:FunctionalOptionsParameter",
+          "line": "  FunctionalOptionsParameter (1):",
+          "lineNumber": 89
+        },
+        {
+          "classification": "useful:right-target:FunctionalOptionsParameter",
+          "line": "    FunctionalOptionsParameterTarget: Read [RLS]",
+          "lineNumber": 90
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 91
+        },
+        {
+          "classification": "structural:right-group:HTTPService",
+          "line": "  HTTPService (1):",
+          "lineNumber": 92
+        },
+        {
+          "classification": "useful:right-target:HTTPService",
+          "line": "    HTTPServiceTarget: Read [RLS]",
+          "lineNumber": 93
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 94
+        },
+        {
+          "classification": "structural:right-group:InformationRegister",
+          "line": "  InformationRegister (1):",
+          "lineNumber": 95
+        },
+        {
+          "classification": "useful:right-target:InformationRegister",
+          "line": "    InformationRegisterTarget: Read [RLS]",
+          "lineNumber": 96
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 97
+        },
+        {
+          "classification": "structural:right-group:IntegrationService",
+          "line": "  IntegrationService (1):",
+          "lineNumber": 98
+        },
+        {
+          "classification": "useful:right-target:IntegrationService",
+          "line": "    IntegrationServiceTarget: Read [RLS]",
+          "lineNumber": 99
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 100
+        },
+        {
+          "classification": "structural:right-group:Language",
+          "line": "  Language (1):",
+          "lineNumber": 101
+        },
+        {
+          "classification": "useful:right-target:Language",
+          "line": "    LanguageTarget: Read [RLS]",
+          "lineNumber": 102
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 103
         },
         {
           "classification": "structural:right-group:Report",
           "line": "  Report (1):",
-          "lineNumber": 28
+          "lineNumber": 104
         },
         {
           "classification": "useful:right-target:Report",
-          "line": "    Sales: -Update",
-          "lineNumber": 29
+          "line": "    ReportTarget: Read [RLS]",
+          "lineNumber": 105
         },
         {
           "classification": "structural:blank",
           "line": "",
-          "lineNumber": 30
+          "lineNumber": 106
+        },
+        {
+          "classification": "structural:right-group:Role",
+          "line": "  Role (1):",
+          "lineNumber": 107
+        },
+        {
+          "classification": "useful:right-target:Role",
+          "line": "    RoleTarget: Read [RLS]",
+          "lineNumber": 108
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 109
+        },
+        {
+          "classification": "structural:right-group:ScheduledJob",
+          "line": "  ScheduledJob (1):",
+          "lineNumber": 110
+        },
+        {
+          "classification": "useful:right-target:ScheduledJob",
+          "line": "    ScheduledJobTarget: Read [RLS]",
+          "lineNumber": 111
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 112
+        },
+        {
+          "classification": "structural:right-group:Sequence",
+          "line": "  Sequence (1):",
+          "lineNumber": 113
+        },
+        {
+          "classification": "useful:right-target:Sequence",
+          "line": "    SequenceTarget: Read [RLS]",
+          "lineNumber": 114
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 115
+        },
+        {
+          "classification": "structural:right-group:SessionParameter",
+          "line": "  SessionParameter (1):",
+          "lineNumber": 116
+        },
+        {
+          "classification": "useful:right-target:SessionParameter",
+          "line": "    SessionParameterTarget: Read [RLS]",
+          "lineNumber": 117
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 118
+        },
+        {
+          "classification": "structural:right-group:SettingsStorage",
+          "line": "  SettingsStorage (1):",
+          "lineNumber": 119
+        },
+        {
+          "classification": "useful:right-target:SettingsStorage",
+          "line": "    SettingsStorageTarget: Read [RLS]",
+          "lineNumber": 120
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 121
+        },
+        {
+          "classification": "structural:right-group:Style",
+          "line": "  Style (1):",
+          "lineNumber": 122
+        },
+        {
+          "classification": "useful:right-target:Style",
+          "line": "    StyleTarget: Read [RLS]",
+          "lineNumber": 123
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 124
+        },
+        {
+          "classification": "structural:right-group:StyleItem",
+          "line": "  StyleItem (1):",
+          "lineNumber": 125
+        },
+        {
+          "classification": "useful:right-target:StyleItem",
+          "line": "    StyleItemTarget: Read [RLS]",
+          "lineNumber": 126
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 127
+        },
+        {
+          "classification": "structural:right-group:Subsystem",
+          "line": "  Subsystem (1):",
+          "lineNumber": 128
+        },
+        {
+          "classification": "useful:right-target:Subsystem",
+          "line": "    SubsystemTarget: Read [RLS]",
+          "lineNumber": 129
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 130
+        },
+        {
+          "classification": "structural:right-group:Task",
+          "line": "  Task (1):",
+          "lineNumber": 131
+        },
+        {
+          "classification": "useful:right-target:Task",
+          "line": "    TaskTarget: Read [RLS]",
+          "lineNumber": 132
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 133
+        },
+        {
+          "classification": "structural:right-group:WSReference",
+          "line": "  WSReference (1):",
+          "lineNumber": 134
+        },
+        {
+          "classification": "useful:right-target:WSReference",
+          "line": "    WSReferenceTarget: Read [RLS]",
+          "lineNumber": 135
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 136
+        },
+        {
+          "classification": "structural:right-group:WebService",
+          "line": "  WebService (1):",
+          "lineNumber": 137
+        },
+        {
+          "classification": "useful:right-target:WebService",
+          "line": "    WebServiceTarget: Read [RLS]",
+          "lineNumber": 138
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 139
+        },
+        {
+          "classification": "structural:right-group:XDTOPackage",
+          "line": "  XDTOPackage (1):",
+          "lineNumber": 140
+        },
+        {
+          "classification": "useful:right-target:XDTOPackage",
+          "line": "    XDTOPackageTarget: Read [RLS]",
+          "lineNumber": 141
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 142
         },
         {
           "classification": "useful:restriction-count",
-          "line": "RLS: 6 restrictions",
-          "lineNumber": 31
+          "line": "RLS: 45 restrictions",
+          "lineNumber": 143
         },
         {
           "classification": "useful:restriction-templates",
-          "line": "Templates: ProductAccess, PositiveAmount, PositivePrice, IntegrationAccess, SalesAccess, PayrollPeriod",
-          "lineNumber": 32
+          "line": "Templates: AccountingRegisterTemplate, AccumulationRegisterTemplate, BotTemplate, BusinessProcessTemplate, CalculationRegisterTemplate, CatalogTemplate, ChartOfAccountsTemplate, ChartOfCalculationTypesTemplate, ChartOfCharacteristicTypesTemplate, CommandGroupTemplate, CommonAttributeTemplate, CommonCommandTemplate, CommonFormTemplate, CommonModuleTemplate, CommonPictureTemplate, CommonTemplateTemplate, ConstantTemplate, DataProcessorTemplate, DefinedTypeTemplate, DocumentTemplate, DocumentJournalTemplate, DocumentNumeratorTemplate, EnumTemplate, EventSubscriptionTemplate, ExchangePlanTemplate, FilterCriterionTemplate, FunctionalOptionTemplate, FunctionalOptionsParameterTemplate, HTTPServiceTemplate, InformationRegisterTemplate, IntegrationServiceTemplate, LanguageTemplate, ReportTemplate, RoleTemplate, ScheduledJobTemplate, SequenceTemplate, SessionParameterTemplate, SettingsStorageTemplate, StyleTemplate, StyleItemTemplate, SubsystemTemplate, TaskTemplate, WSReferenceTemplate, WebServiceTemplate, XDTOPackageTemplate",
+          "lineNumber": 144
         },
         {
           "classification": "structural:blank",
           "line": "",
-          "lineNumber": 33
+          "lineNumber": 145
         },
         {
           "classification": "structural:totals-delimiter",
           "line": "---",
-          "lineNumber": 34
+          "lineNumber": 146
         },
         {
           "classification": "useful:right-totals",
-          "line": "Total: 6 allowed, 1 denied",
-          "lineNumber": 35
+          "line": "Total: 45 allowed, 0 denied",
+          "lineNumber": 147
         }
       ],
       "profile": "role-info",
@@ -6098,13 +10507,6 @@
     {
       "nativeAlias": "BinaryData",
       "nativeProperty": "TemplateType",
-      "objectKind": "spreadsheetDocumentTemplate",
-      "semantic": "binaryData",
-      "semanticProperty": "template.type"
-    },
-    {
-      "nativeAlias": "BinaryData",
-      "nativeProperty": "TemplateType",
       "objectKind": "template",
       "semantic": "binaryData",
       "semanticProperty": "template.type"
@@ -6127,13 +10529,6 @@
       "nativeAlias": "DataCompositionSchema",
       "nativeProperty": "TemplateType",
       "objectKind": "commonTemplate",
-      "semantic": "dataCompositionSchema",
-      "semanticProperty": "template.type"
-    },
-    {
-      "nativeAlias": "DataCompositionSchema",
-      "nativeProperty": "TemplateType",
-      "objectKind": "spreadsheetDocumentTemplate",
       "semantic": "dataCompositionSchema",
       "semanticProperty": "template.type"
     },
@@ -6470,13 +10865,6 @@
       "nativeAlias": "HTMLDocument",
       "nativeProperty": "TemplateType",
       "objectKind": "commonTemplate",
-      "semantic": "htmlDocument",
-      "semanticProperty": "template.type"
-    },
-    {
-      "nativeAlias": "HTMLDocument",
-      "nativeProperty": "TemplateType",
-      "objectKind": "spreadsheetDocumentTemplate",
       "semantic": "htmlDocument",
       "semanticProperty": "template.type"
     },
@@ -6882,13 +11270,6 @@
     {
       "nativeAlias": "SpreadsheetDocument",
       "nativeProperty": "TemplateType",
-      "objectKind": "spreadsheetDocumentTemplate",
-      "semantic": "spreadsheetDocument",
-      "semanticProperty": "template.type"
-    },
-    {
-      "nativeAlias": "SpreadsheetDocument",
-      "nativeProperty": "TemplateType",
       "objectKind": "template",
       "semantic": "spreadsheetDocument",
       "semanticProperty": "template.type"
@@ -6932,13 +11313,6 @@
       "nativeAlias": "TextDocument",
       "nativeProperty": "TemplateType",
       "objectKind": "commonTemplate",
-      "semantic": "textDocument",
-      "semanticProperty": "template.type"
-    },
-    {
-      "nativeAlias": "TextDocument",
-      "nativeProperty": "TemplateType",
-      "objectKind": "spreadsheetDocumentTemplate",
       "semantic": "textDocument",
       "semanticProperty": "template.type"
     },

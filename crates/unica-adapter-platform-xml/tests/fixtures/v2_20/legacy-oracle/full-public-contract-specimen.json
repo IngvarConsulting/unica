@@ -1,0 +1,411 @@
+{
+  "schemaVersion": 1,
+  "provenance": "independently-hand-reviewed-closed-public-contract",
+  "publicSchema": {
+    "NavigationEnvelope": {
+      "required": ["schemaVersion", "status", "snapshot", "root", "nodes", "relations", "diagnostics"],
+      "optional": []
+    },
+    "NavigationNode": {
+      "required": ["objectRef", "reference", "properties", "facets", "capabilityState", "capability", "actionProfile", "semanticActions", "actions"],
+      "optional": []
+    },
+    "SemanticProperty": {
+      "required": ["type", "valueState", "provenance", "capability"],
+      "optional": ["value"]
+    },
+    "CapabilityState": {
+      "required": ["resolutionState", "authorability"],
+      "optional": []
+    },
+    "CapabilityVector": {
+      "required": ["resolution", "identity", "consistency", "coverage", "format", "sourceAccess", "authorability"],
+      "optional": []
+    },
+    "SemanticRelation": {
+      "required": ["relationRef", "groupRef", "identityStrength", "kind", "role", "source", "target", "capability"],
+      "optional": []
+    },
+    "RelationRef": {
+      "required": ["sourceId", "relationKey", "kind"],
+      "optional": []
+    },
+    "RelationGroupRef": {
+      "required": ["sourceId", "groupKey", "owner", "role", "kind"],
+      "optional": []
+    },
+    "ObjectRef": {
+      "required": ["sourceId", "objectKey", "identityStrength", "kind", "displayName"],
+      "optional": []
+    },
+    "SourceSnapshot": {
+      "required": ["sourceId", "revision", "consistency", "adapterId"],
+      "optional": []
+    },
+    "SourceAdapterDiagnostic": {
+      "required": ["code", "message"],
+      "optional": ["details"]
+    },
+    "NavigationRelationPage": {
+      "required": ["relation", "items"],
+      "optional": ["nextCursor"]
+    },
+    "SemanticActionDescriptor": {
+      "required": ["action", "executionPolicy"],
+      "optional": []
+    },
+    "SemanticAction": {
+      "required": ["kind", "target", "owningRelation", "availability", "blockingReasons", "operationBinding", "atomicity"],
+      "optional": []
+    },
+    "OperationBinding": {
+      "required": ["tool", "schemaVersion"],
+      "optional": []
+    }
+  },
+  "facts": [
+    {
+      "case": "fullPublicContract",
+      "kind": "envelope",
+      "value": {
+        "schemaVersion": "1",
+        "status": "ready",
+        "snapshot": {
+          "sourceId": "source:full-public-contract",
+          "revision": "revision:full-public-contract",
+          "consistency": "consistent",
+          "adapterId": "public-contract-specimen"
+        },
+        "root": {
+          "sourceId": "source:full-public-contract",
+          "objectKey": "uuid:11111111-1111-1111-1111-111111111111",
+          "identityStrength": "persistent",
+          "kind": "document",
+          "displayName": "FullContractOwner"
+        },
+        "nodes": [
+          {
+            "objectRef": {
+              "sourceId": "source:full-public-contract",
+              "objectKey": "uuid:11111111-1111-1111-1111-111111111111",
+              "identityStrength": "persistent",
+              "kind": "document",
+              "displayName": "FullContractOwner"
+            },
+            "reference": {
+              "sourceId": "source:full-public-contract",
+              "objectKey": "uuid:11111111-1111-1111-1111-111111111111",
+              "identityStrength": "persistent",
+              "kind": "document",
+              "displayName": "FullContractOwner"
+            },
+            "properties": {
+              "metadata.name": {
+                "type": "string",
+                "valueState": "explicit",
+                "value": {"type": "string", "value": "FullContractOwner"},
+                "provenance": "declared",
+                "capability": "authorable"
+              },
+              "metadata.synonym": {
+                "type": "localizedString",
+                "valueState": "unresolved",
+                "provenance": "unknown",
+                "capability": "unknown"
+              },
+              "metadata.comment": {
+                "type": "string",
+                "valueState": "defaulted",
+                "value": {"type": "string", "value": "default comment"},
+                "provenance": "default",
+                "capability": "readOnly"
+              },
+              "metadata.code": {
+                "type": "string",
+                "valueState": "absent",
+                "provenance": "declared",
+                "capability": "unavailable"
+              },
+              "metadata.description": {
+                "type": "string",
+                "valueState": "inherited",
+                "value": {"type": "string", "value": "inherited description"},
+                "provenance": "inherited",
+                "capability": "readOnly"
+              },
+              "support.authorability": {
+                "type": "string",
+                "valueState": "computed",
+                "value": {"type": "string", "value": "authorable"},
+                "provenance": "derived",
+                "capability": "readOnly"
+              }
+            },
+            "facets": {
+              "identity": ["metadata.name", "metadata.synonym", "metadata.comment", "metadata.code", "metadata.description"],
+              "support": ["support.authorability"],
+              "fields": ["attributes"]
+            },
+            "capabilityState": {
+              "resolutionState": "resolved",
+              "authorability": "authorable"
+            },
+            "capability": {
+              "resolution": "resolved",
+              "identity": "persistent",
+              "consistency": "consistent",
+              "coverage": "complete",
+              "format": "compatible",
+              "sourceAccess": "readWrite",
+              "authorability": "authorable"
+            },
+            "actionProfile": "document_metadata_object",
+            "semanticActions": [
+              {"action": "inspect", "executionPolicy": "read_only"},
+              {"action": "edit_properties", "executionPolicy": "atomic_node_mutation"},
+              {"action": "clone", "executionPolicy": "atomic_relation_mutation"},
+              {"action": "remove", "executionPolicy": "atomic_node_mutation"},
+              {"action": "add_attribute", "executionPolicy": "atomic_node_mutation"},
+              {"action": "add_tabular_section", "executionPolicy": "atomic_node_mutation"},
+              {"action": "add_form", "executionPolicy": "atomic_node_mutation"},
+              {"action": "add_mxl", "executionPolicy": "atomic_node_mutation"},
+              {"action": "add_command", "executionPolicy": "atomic_node_mutation"},
+              {"action": "add_form_attribute", "executionPolicy": "atomic_node_mutation"},
+              {"action": "add_form_command", "executionPolicy": "atomic_node_mutation"},
+              {"action": "add_form_element", "executionPolicy": "atomic_node_mutation"},
+              {"action": "move", "executionPolicy": "atomic_relation_mutation"},
+              {"action": "bind_data", "executionPolicy": "atomic_relation_mutation"},
+              {"action": "rebind_data", "executionPolicy": "atomic_relation_mutation"},
+              {"action": "unbind_data", "executionPolicy": "atomic_relation_mutation"},
+              {"action": "bind_command", "executionPolicy": "atomic_relation_mutation"},
+              {"action": "rebind_command", "executionPolicy": "atomic_relation_mutation"},
+              {"action": "unbind_command", "executionPolicy": "atomic_relation_mutation"},
+              {"action": "create_handler", "executionPolicy": "atomic_node_mutation"},
+              {"action": "edit_mxl", "executionPolicy": "atomic_node_mutation"}
+            ],
+            "actions": [
+              {
+                "kind": "inspect",
+                "target": {
+                  "sourceId": "source:full-public-contract",
+                  "objectKey": "uuid:11111111-1111-1111-1111-111111111111",
+                  "identityStrength": "persistent",
+                  "kind": "document",
+                  "displayName": "FullContractOwner"
+                },
+                "owningRelation": null,
+                "availability": "modeled",
+                "blockingReasons": ["resolutionUnresolved"],
+                "operationBinding": null,
+                "atomicity": "read_only"
+              },
+              {
+                "kind": "edit_properties",
+                "target": {
+                  "sourceId": "source:full-public-contract",
+                  "objectKey": "uuid:11111111-1111-1111-1111-111111111111",
+                  "identityStrength": "persistent",
+                  "kind": "document",
+                  "displayName": "FullContractOwner"
+                },
+                "owningRelation": null,
+                "availability": "executable",
+                "blockingReasons": [],
+                "operationBinding": {
+                  "tool": "unica.meta.edit",
+                  "schemaVersion": "1"
+                },
+                "atomicity": "single_file_atomic_replace"
+              },
+              {
+                "kind": "clone",
+                "target": null,
+                "owningRelation": {
+                  "sourceId": "source:full-public-contract",
+                  "relationKey": "relation:full-public-contract",
+                  "kind": "contains"
+                },
+                "availability": "blocked",
+                "blockingReasons": [
+                  "resolutionUnresolved",
+                  "identitySnapshotOnly",
+                  "snapshotInconsistent",
+                  "coverageIncomplete",
+                  "formatIncompatible",
+                  "sourceReadOnly",
+                  "notAuthorable",
+                  "owningRelationMissing",
+                  "operationBindingInvalid"
+                ],
+                "operationBinding": null,
+                "atomicity": "aggregate_swap_with_recovery"
+              },
+              {
+                "kind": "move",
+                "target": {
+                  "sourceId": "source:full-public-contract",
+                  "objectKey": "uuid:22222222-2222-2222-2222-222222222222",
+                  "identityStrength": "derived",
+                  "kind": "attribute",
+                  "displayName": "FullContractChild"
+                },
+                "owningRelation": {
+                  "sourceId": "source:full-public-contract",
+                  "relationKey": "relation:full-public-contract",
+                  "kind": "contains"
+                },
+                "availability": "modeled",
+                "blockingReasons": [],
+                "operationBinding": null,
+                "atomicity": "backend_transaction"
+              }
+            ]
+          }
+        ],
+        "relations": [
+          {
+            "relation": {
+              "sourceId": "source:full-public-contract",
+              "groupKey": "group:full-public-contract",
+              "owner": {
+                "sourceId": "source:full-public-contract",
+                "objectKey": "uuid:11111111-1111-1111-1111-111111111111",
+                "identityStrength": "persistent",
+                "kind": "document",
+                "displayName": "FullContractOwner"
+              },
+              "role": "attributes",
+              "kind": "contains"
+            },
+            "items": [
+              {
+                "objectRef": {
+                  "sourceId": "source:full-public-contract",
+                  "objectKey": "uuid:22222222-2222-2222-2222-222222222222",
+                  "identityStrength": "derived",
+                  "kind": "attribute",
+                  "displayName": "FullContractChild"
+                },
+                "reference": {
+                  "sourceId": "source:full-public-contract",
+                  "objectKey": "uuid:22222222-2222-2222-2222-222222222222",
+                  "identityStrength": "derived",
+                  "kind": "attribute",
+                  "displayName": "FullContractChild"
+                },
+                "properties": {
+                  "metadata.name": {
+                    "type": "string",
+                    "valueState": "explicit",
+                    "value": {"type": "string", "value": "FullContractChild"},
+                    "provenance": "declared",
+                    "capability": "readOnly"
+                  }
+                },
+                "facets": {
+                  "identity": ["metadata.name"]
+                },
+                "capabilityState": {
+                  "resolutionState": "unresolved",
+                  "authorability": "derived_read_only"
+                },
+                "capability": {
+                  "resolution": "unresolved",
+                  "identity": "derived",
+                  "consistency": "changed",
+                  "coverage": "partial",
+                  "format": "unknown",
+                  "sourceAccess": "readOnly",
+                  "authorability": "derived_read_only"
+                },
+                "actionProfile": "unmodeled_child",
+                "semanticActions": [
+                  {"action": "inspect", "executionPolicy": "read_only"}
+                ],
+                "actions": [
+                  {
+                    "kind": "inspect",
+                    "target": {
+                      "sourceId": "source:full-public-contract",
+                      "objectKey": "uuid:22222222-2222-2222-2222-222222222222",
+                      "identityStrength": "derived",
+                      "kind": "attribute",
+                      "displayName": "FullContractChild"
+                    },
+                    "owningRelation": {
+                      "sourceId": "source:full-public-contract",
+                      "relationKey": "relation:full-public-contract",
+                      "kind": "contains"
+                    },
+                    "availability": "modeled",
+                    "blockingReasons": [],
+                    "operationBinding": null,
+                    "atomicity": "read_only"
+                  }
+                ]
+              }
+            ],
+            "nextCursor": "opaque:cursor"
+          }
+        ],
+        "diagnostics": [
+          {
+            "code": "specimenDiagnostic",
+            "message": "full public contract specimen",
+            "details": {"category": "contract", "ordinal": 1}
+          }
+        ]
+      }
+    },
+    {
+      "case": "fullPublicContract",
+      "kind": "semanticRelation",
+      "value": {
+        "relationRef": {
+          "sourceId": "source:full-public-contract",
+          "relationKey": "relation:full-public-contract",
+          "kind": "contains"
+        },
+        "groupRef": {
+          "sourceId": "source:full-public-contract",
+          "groupKey": "group:full-public-contract",
+          "owner": {
+            "sourceId": "source:full-public-contract",
+            "objectKey": "uuid:11111111-1111-1111-1111-111111111111",
+            "identityStrength": "persistent",
+            "kind": "document",
+            "displayName": "FullContractOwner"
+          },
+          "role": "attributes",
+          "kind": "contains"
+        },
+        "identityStrength": "persistent",
+        "kind": "contains",
+        "role": "attributes",
+        "source": {
+          "sourceId": "source:full-public-contract",
+          "objectKey": "uuid:11111111-1111-1111-1111-111111111111",
+          "identityStrength": "persistent",
+          "kind": "document",
+          "displayName": "FullContractOwner"
+        },
+        "target": {
+          "sourceId": "source:full-public-contract",
+          "objectKey": "uuid:22222222-2222-2222-2222-222222222222",
+          "identityStrength": "derived",
+          "kind": "attribute",
+          "displayName": "FullContractChild"
+        },
+        "capability": {
+          "resolution": "resolved",
+          "identity": "persistent",
+          "consistency": "consistent",
+          "coverage": "complete",
+          "format": "compatible",
+          "sourceAccess": "readWrite",
+          "authorability": "authorable"
+        }
+      }
+    }
+  ]
+}

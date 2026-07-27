@@ -496,7 +496,7 @@
       "id": "enumContextSpreadsheetDocumentTemplate",
       "tool": "metaInfo",
       "profile": "enum-context-evidence",
-      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/SpreadsheetDocumentTemplate.xml",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/EnumContextSpreadsheetDocument.xml",
       "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs",
       "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/SpreadsheetDocumentTemplate.txt",
       "arguments": [

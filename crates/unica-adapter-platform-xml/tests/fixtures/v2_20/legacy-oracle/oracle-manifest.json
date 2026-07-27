@@ -1,19 +1,29 @@
 {
   "entries": [
     {
+      "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-alias-executions.json",
+      "role": "enumAliasExecutions",
+      "sha256": "cf73b999fa036e0ce9dd65a36926528acda7aa4e915436f1b78ff0bd111f5bf5"
+    },
+    {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-source-contexts.json",
       "role": "enumSourceContexts",
-      "sha256": "d9d6fde75bc425cec35380859eccf1546e9a625c6c3ae91d32dca30419511d90"
+      "sha256": "575d1c4c85401cb229b9b5277b9c054b61dd3989bb09f7eb3fceeaee1fc37a35"
     },
     {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/extract_enum_contexts.py",
       "role": "enumSourceExtractor",
-      "sha256": "bead85b1c0be4a9484dd9f242061d3b7b3f444dff957d0a6451725f0c3698cff"
+      "sha256": "ba279e433990b43891f5e2f05f419056c281d06e357a852b0895c2b3b916e7ce"
+    },
+    {
+      "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/full-public-contract-specimen.json",
+      "role": "fullPublicContractSpecimen",
+      "sha256": "205f526223498f2a10ad4e0da2be8a85cfe09a66b826769f4cb5c7fece0e361a"
     },
     {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/crosswalk.json",
       "role": "independentCrosswalk",
-      "sha256": "c2258a259cab25f6a1c549dc1324b0cf1531c1fe9acb523f3fb0b21605dd7c34"
+      "sha256": "32b10d13018ef0a901a9dde6d8bf40668d6962474fe35f0537268c17404573e5"
     },
     {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport.xml",
@@ -111,6 +121,11 @@
       "sha256": "5fdd26b6f6a2e28c02ab0bfc7216ff989991e54469ea66ae776bdbb26c0431b8"
     },
     {
+      "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/EnumContextSpreadsheetDocument.xml",
+      "role": "legacyInputFixture",
+      "sha256": "2e2c3b356e00882b3b1171d172c3d3fbc62bdbe730c05e52dbd4978f8ced9c8c"
+    },
+    {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ExchangePlan.xml",
       "role": "legacyInputFixture",
       "sha256": "abf383bcd5cc5f5b5c3ffcbc8379734c1a977c3e7d346b210930f3fdf15f89d9"
@@ -124,11 +139,6 @@
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/HTTPService.xml",
       "role": "legacyInputFixture",
       "sha256": "804c3d4e6ba405beee3f67cbbbeb66348667ad1b576d5c1fd7a8cdb5e3333df2"
-    },
-    {
-      "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/SpreadsheetDocumentTemplate.xml",
-      "role": "legacyInputFixture",
-      "sha256": "2e2c3b356e00882b3b1171d172c3d3fbc62bdbe730c05e52dbd4978f8ced9c8c"
     },
     {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Task.xml",
@@ -148,7 +158,7 @@
     {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights/MultiTargetReader/Ext/Rights.xml",
       "role": "legacyInputFixture",
-      "sha256": "9fa4be1c970118f5bed1cc893eb9ae41f17281033d6b7f0c3332dd48dbeab826"
+      "sha256": "0736dd89968850861cbfc11163189a424ade53fe629187d3e12e3d714014455c"
     },
     {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights/SalesReader.xml",
@@ -328,17 +338,17 @@
     {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/legacy-semantic-oracle.json",
       "role": "legacySemanticOracle",
-      "sha256": "98db9ed28af3757445a112c0ca11f4b85ec7cd62cef5193797d8e1689a06a768"
+      "sha256": "75feda9cab247618c221c35777046681033d1883c3814b21cdb42dc420d1dcbd"
     },
     {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/new-only-contract.json",
       "role": "newOnlyContract",
-      "sha256": "f25e22b22a4f4861e5a78cbcd19f56ce1bf9052777bdc1f9bd8f4009ddd4f85d"
+      "sha256": "e6df51d05e2bd35acb17a5d2ffa69a512aeab20cec69cc9b6b75d8ed20a834ce"
     },
     {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/build_new_only_contract.py",
       "role": "newOnlyContractBuilder",
-      "sha256": "8de5a5cf8249326e23e272bfb9c297df8fa2d0f54637616b0017c5bc2a2333aa"
+      "sha256": "fc7fb79da4163d45e7c809eb9e835b7f1a8afdcedec559728151a9457af727d5"
     },
     {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport.xml",
@@ -398,7 +408,7 @@
     {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights/MultiTargetReader/Ext/Rights.xml",
       "role": "newOnlyContractInput",
-      "sha256": "9fa4be1c970118f5bed1cc893eb9ae41f17281033d6b7f0c3332dd48dbeab826"
+      "sha256": "0736dd89968850861cbfc11163189a424ade53fe629187d3e12e3d714014455c"
     },
     {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights/SalesReader.xml",
@@ -498,12 +508,12 @@
     {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/tools/generate_oracle.py",
       "role": "oracleGenerator",
-      "sha256": "7ae1c1228e6b99e630d344ff5f93a0333ef43e8bb0664bb5c9fc10309bd62064"
+      "sha256": "4958b7e80982435ae77b4a106e142637adee536186a34c03f0c78ffa0236d066"
     },
     {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/inputs.json",
       "role": "oracleInputs",
-      "sha256": "a21bf857fc44df5caff46de309ab57df78a9b17dc975f83e90113ff57a2059d8"
+      "sha256": "5cf726fceaa63f8bbff1af2fe7b361314b56154708c5f46f184c31bab0c8f6c0"
     },
     {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/AccountingRegister.txt",
@@ -683,7 +693,7 @@
     {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/role-info/multi-target-reader.all.txt",
       "role": "rawLegacyOutput",
-      "sha256": "a934a11fb040653bb4ce4e3b4f55babaca801575d48ca7decc140b4261a566c9"
+      "sha256": "9982507ff8eff3dd5266e6faa4d4d42d579185d9f3d69dea2cfa70981a5fbd4e"
     },
     {
       "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/role-info/sales-reader.all.txt",

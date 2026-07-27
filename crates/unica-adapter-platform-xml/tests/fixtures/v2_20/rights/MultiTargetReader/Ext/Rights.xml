@@ -7,70 +7,498 @@
         setForAttributesByDefault="false"
         independentRightsOfChildObjects="true">
   <object>
-    <name>Catalog.Products</name>
+    <name>AccountingRegister.AccountingRegisterTarget</name>
     <right>
       <name>Read</name><value>true</value>
-      <restrictionByCondition><condition>ProductActive = TRUE</condition></restrictionByCondition>
+      <restrictionByCondition><condition>Condition_01 = TRUE</condition></restrictionByCondition>
     </right>
   </object>
   <object>
-    <name>Document.SalesOrder</name>
-    <right>
-      <name>Posting</name><value>true</value>
-      <restrictionByCondition><condition>Amount &gt; 0</condition></restrictionByCondition>
-    </right>
-  </object>
-  <object>
-    <name>InformationRegister.Prices</name>
+    <name>AccumulationRegister.AccumulationRegisterTarget</name>
     <right>
       <name>Read</name><value>true</value>
-      <restrictionByCondition><condition>Price &gt; 0</condition></restrictionByCondition>
+      <restrictionByCondition><condition>Condition_02 = TRUE</condition></restrictionByCondition>
     </right>
   </object>
   <object>
-    <name>CommonModule.Integration</name>
-    <right>
-      <name>View</name><value>true</value>
-      <restrictionByCondition><condition>IntegrationEnabled = TRUE</condition></restrictionByCondition>
-    </right>
-  </object>
-  <object>
-    <name>Report.Sales</name>
-    <right>
-      <name>Use</name><value>true</value>
-      <restrictionByCondition><condition>SalesVisible = TRUE</condition></restrictionByCondition>
-    </right>
-    <right><name>Update</name><value>false</value></right>
-  </object>
-  <object>
-    <name>CalculationRegister.Payroll</name>
+    <name>Bot.BotTarget</name>
     <right>
       <name>Read</name><value>true</value>
-      <restrictionByCondition><condition>Period &gt;= &amp;StartDate</condition></restrictionByCondition>
+      <restrictionByCondition><condition>Condition_03 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>BusinessProcess.BusinessProcessTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_04 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>CalculationRegister.CalculationRegisterTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_05 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>Catalog.CatalogTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_06 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>ChartOfAccounts.ChartOfAccountsTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_07 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>ChartOfCalculationTypes.ChartOfCalculationTypesTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_08 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>ChartOfCharacteristicTypes.ChartOfCharacteristicTypesTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_09 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>CommandGroup.CommandGroupTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_10 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>CommonAttribute.CommonAttributeTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_11 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>CommonCommand.CommonCommandTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_12 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>CommonForm.CommonFormTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_13 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>CommonModule.CommonModuleTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_14 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>CommonPicture.CommonPictureTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_15 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>CommonTemplate.CommonTemplateTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_16 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>Constant.ConstantTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_17 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>DataProcessor.DataProcessorTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_18 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>DefinedType.DefinedTypeTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_19 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>Document.DocumentTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_20 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>DocumentJournal.DocumentJournalTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_21 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>DocumentNumerator.DocumentNumeratorTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_22 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>Enum.EnumTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_23 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>EventSubscription.EventSubscriptionTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_24 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>ExchangePlan.ExchangePlanTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_25 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>FilterCriterion.FilterCriterionTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_26 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>FunctionalOption.FunctionalOptionTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_27 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>FunctionalOptionsParameter.FunctionalOptionsParameterTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_28 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>HTTPService.HTTPServiceTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_29 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>InformationRegister.InformationRegisterTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_30 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>IntegrationService.IntegrationServiceTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_31 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>Language.LanguageTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_32 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>Report.ReportTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_33 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>Role.RoleTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_34 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>ScheduledJob.ScheduledJobTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_35 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>Sequence.SequenceTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_36 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>SessionParameter.SessionParameterTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_37 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>SettingsStorage.SettingsStorageTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_38 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>Style.StyleTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_39 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>StyleItem.StyleItemTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_40 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>Subsystem.SubsystemTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_41 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>Task.TaskTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_42 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>WSReference.WSReferenceTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_43 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>WebService.WebServiceTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_44 = TRUE</condition></restrictionByCondition>
+    </right>
+  </object>
+  <object>
+    <name>XDTOPackage.XDTOPackageTarget</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Condition_45 = TRUE</condition></restrictionByCondition>
     </right>
   </object>
   <restrictionTemplate>
-    <name>ProductAccess(&amp;User)</name>
-    <condition>ProductOwner = &amp;User</condition>
+    <name>AccountingRegisterTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_01 = &amp;Subject</condition>
   </restrictionTemplate>
   <restrictionTemplate>
-    <name>PositiveAmount(&amp;Minimum)</name>
-    <condition>Amount &gt; &amp;Minimum</condition>
+    <name>AccumulationRegisterTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_02 = &amp;Subject</condition>
   </restrictionTemplate>
   <restrictionTemplate>
-    <name>PositivePrice(&amp;Minimum)</name>
-    <condition>Price &gt; &amp;Minimum</condition>
+    <name>BotTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_03 = &amp;Subject</condition>
   </restrictionTemplate>
   <restrictionTemplate>
-    <name>IntegrationAccess(&amp;User)</name>
-    <condition>IntegrationOwner = &amp;User</condition>
+    <name>BusinessProcessTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_04 = &amp;Subject</condition>
   </restrictionTemplate>
   <restrictionTemplate>
-    <name>SalesAccess(&amp;User)</name>
-    <condition>SalesOwner = &amp;User</condition>
+    <name>CalculationRegisterTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_05 = &amp;Subject</condition>
   </restrictionTemplate>
   <restrictionTemplate>
-    <name>PayrollPeriod(&amp;StartDate)</name>
-    <condition>Period &gt;= &amp;StartDate</condition>
+    <name>CatalogTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_06 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>ChartOfAccountsTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_07 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>ChartOfCalculationTypesTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_08 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>ChartOfCharacteristicTypesTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_09 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>CommandGroupTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_10 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>CommonAttributeTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_11 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>CommonCommandTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_12 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>CommonFormTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_13 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>CommonModuleTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_14 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>CommonPictureTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_15 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>CommonTemplateTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_16 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>ConstantTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_17 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>DataProcessorTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_18 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>DefinedTypeTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_19 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>DocumentTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_20 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>DocumentJournalTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_21 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>DocumentNumeratorTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_22 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>EnumTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_23 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>EventSubscriptionTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_24 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>ExchangePlanTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_25 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>FilterCriterionTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_26 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>FunctionalOptionTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_27 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>FunctionalOptionsParameterTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_28 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>HTTPServiceTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_29 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>InformationRegisterTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_30 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>IntegrationServiceTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_31 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>LanguageTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_32 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>ReportTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_33 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>RoleTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_34 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>ScheduledJobTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_35 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>SequenceTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_36 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>SessionParameterTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_37 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>SettingsStorageTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_38 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>StyleTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_39 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>StyleItemTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_40 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>SubsystemTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_41 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>TaskTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_42 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>WSReferenceTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_43 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>WebServiceTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_44 = &amp;Subject</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>XDTOPackageTemplate(&amp;Subject)</name>
+    <condition>TemplateCondition_45 = &amp;Subject</condition>
   </restrictionTemplate>
 </Rights>

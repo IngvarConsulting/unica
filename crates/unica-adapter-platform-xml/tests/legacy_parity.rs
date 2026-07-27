@@ -16,13 +16,24 @@ use sha2::{Digest, Sha256};
 use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
 use unica_format_core::{
     navigation::{
-        FacetSelection, NavigationEnvelope, NavigationNode, NavigationQuery,
-        NavigationSelection, NavigationStatus, NavigationTarget, ObjectRef, PropertySelection,
-        PropertyValueState,
+        ActionAvailability, ActionExecutionPolicy, ActionProfile, Atomicity, Authorability,
+        CapabilityBlockReason, CapabilityState, CapabilityVector, CoverageState, FacetSelection,
+        FormatCompatibility, IdentityStrength, NavigationCursor, NavigationEnvelope,
+        NavigationFacetVisibility, NavigationNode, NavigationQuery, NavigationRelationPage,
+        NavigationSelection, NavigationStatus, NavigationTarget, ObjectKey, ObjectRef,
+        OperationBinding, PropertyCapability, PropertySelection, PropertyValueState,
+        RelationGroupRef, RelationKey, RelationKind, RelationRef, RelationSelection,
+        ResolutionState, SemanticAction, SemanticActionDescriptor, SemanticActionKind,
+        SemanticFacets, SemanticProperty, SemanticRelation,
     },
     ports::{CaptureResult, FormatReadRequest},
-    semantic_ids::{SemanticEnumValue, SemanticObjectKind, SemanticPropertyId},
-    source::{SourceContext, SourceFamily, SourceLocation},
+    semantic_ids::{
+        SemanticEnumValue, SemanticObjectKind, SemanticPropertyId, SemanticRelationId,
+    },
+    source::{
+        SnapshotConsistency, SourceAccess, SourceAdapterErrorKind, SourceContext, SourceFamily,
+        SourceId, SourceLocation, SourceRevision, SourceSnapshot,
+    },
     value::{PrimitiveTypeKind, PropertyType, PropertyValue},
 };
 
@@ -104,6 +115,8 @@ fn legacy_oracle_regenerates_and_hashes_every_declared_source_without_adapter_de
     for required in [
         "oracleGenerator",
         "enumSourceExtractor",
+        "enumAliasExecutions",
+        "fullPublicContractSpecimen",
         "newOnlyContractBuilder",
         "newOnlyContractSource",
         "enumSourceContexts",
@@ -293,17 +306,17 @@ fn fix_round6_every_source_enum_context_is_consumed_once_and_fixture_observed() 
                     .contains(&json!("SpreadsheetDocument"))
         })
         .unwrap();
-    assert!(spreadsheet["ownerEvidence"]
+    assert!(spreadsheet["observedAliasEvidence"]
         .as_array()
         .unwrap()
         .iter()
         .any(|item| {
-            item["objectKind"] == "spreadsheetDocumentTemplate"
+            item["objectKind"] == "template"
                 && item["nativeOwner"] == "Template"
                 && item["nativeValue"] == "SpreadsheetDocument"
                 && item["input"]
                     .as_str()
-                    .is_some_and(|path| path.ends_with("SpreadsheetDocumentTemplate.xml"))
+                    .is_some_and(|path| path.ends_with("EnumContextSpreadsheetDocument.xml"))
         }));
 
     let mut removed_crosswalk = crosswalk.clone();
@@ -342,6 +355,10 @@ fn fix_round6_every_source_enum_context_is_consumed_once_and_fixture_observed() 
 fn multi_target_role_oracle_keeps_each_source_group_identity_and_restriction() {
     let oracle = oracle();
     let case = oracle_case(&oracle, "rightsMultiTarget");
+    let target_crosswalk: Value = serde_json::from_slice(
+        &fs::read(oracle_root().join("rights-target-crosswalk.json")).unwrap(),
+    )
+    .unwrap();
     let targets = case
         .facts
         .iter()
@@ -349,30 +366,34 @@ fn multi_target_role_oracle_keeps_each_source_group_identity_and_restriction() {
         .map(|fact| {
             (
                 fact["value"]["targetKind"].as_str().unwrap(),
-                fact["value"]["targetName"].as_str().unwrap(),
+                fact["value"]["targetName"].as_str().unwrap().to_string(),
             )
         })
         .collect::<BTreeSet<_>>();
-    assert_eq!(
-        targets,
-        BTreeSet::from([
-            ("calculationRegister", "Payroll"),
-            ("catalog", "Products"),
-            ("commonModule", "Integration"),
-            ("document", "SalesOrder"),
-            ("informationRegister", "Prices"),
-            ("report", "Sales"),
-        ])
-    );
+    let expected = target_crosswalk["prefixes"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(prefix, kind)| {
+            (
+                kind.as_str().unwrap(),
+                format!("{prefix}Target"),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(targets, expected);
     assert!(case.facts.iter().any(|fact| {
         fact["kind"] == "property"
             && fact["predicate"] == "access.restriction.present"
-            && fact["subject"].as_str().unwrap().contains("informationRegister/Prices")
+            && fact["subject"]
+                .as_str()
+                .unwrap()
+                .contains("calculationRegister/CalculationRegisterTarget")
     }));
     assert!(case.facts.iter().any(|fact| {
         fact["kind"] == "node"
             && fact["value"]["kind"] == "accessRestrictionTemplate"
-            && fact["value"]["name"] == "PositivePrice"
+            && fact["value"]["name"] == "CalculationRegisterTemplate"
     }));
 }
 
@@ -410,6 +431,10 @@ fn fix_round6_rights_target_crosswalk_equals_runtime_supported_top_level_registr
         actual, expected,
         "rights target syntax must cover exactly the runtime-accepted native top-level registry"
     );
+    let expected_targets = actual
+        .iter()
+        .map(|(prefix, kind)| (kind.clone(), format!("{prefix}Target")))
+        .collect::<BTreeSet<_>>();
 
     let oracle = oracle();
     let case = oracle_case(&oracle, "rightsMultiTarget");
@@ -419,20 +444,13 @@ fn fix_round6_rights_target_crosswalk_equals_runtime_supported_top_level_registr
         .filter(|fact| fact["kind"] == "relation" && fact["predicate"] == "accessTarget")
         .map(|fact| {
             (
-                fact["value"]["targetKind"].as_str().unwrap(),
-                fact["value"]["targetName"].as_str().unwrap(),
+                fact["value"]["targetKind"].as_str().unwrap().to_string(),
+                fact["value"]["targetName"].as_str().unwrap().to_string(),
             )
         })
         .collect::<BTreeSet<_>>();
-    assert!(targets.contains(&("calculationRegister", "Payroll")));
-    for (kind, name) in [
-        ("catalog", "Products"),
-        ("commonModule", "Integration"),
-        ("document", "SalesOrder"),
-        ("informationRegister", "Prices"),
-        ("report", "Sales"),
-        ("calculationRegister", "Payroll"),
-    ] {
+    assert_eq!(targets, expected_targets);
+    for (kind, name) in &expected_targets {
         let target = format!("{}/external/{kind}/{name}", case.id);
         assert!(case.facts.iter().any(|fact| {
             fact["kind"] == "property"
@@ -449,7 +467,7 @@ fn fix_round6_rights_target_crosswalk_equals_runtime_supported_top_level_registr
                     && fact["value"]["kind"] == "accessRestrictionTemplate"
             })
             .count(),
-        6
+        expected_targets.len()
     );
     let projected = read_path(
         &repo_root()
@@ -2388,6 +2406,399 @@ fn fix_round6_support_states_are_lossless_and_removed_is_inactive() {
     );
 }
 
+#[test]
+fn fix_round7_template_type_never_rewrites_the_legacy_template_owner() {
+    let contexts: Value = serde_json::from_slice(
+        &fs::read(oracle_root().join("enum-source-contexts.json")).unwrap(),
+    )
+    .unwrap();
+    let context = contexts["contexts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|context| context["nativeProperty"] == "TemplateType")
+        .expect("legacy TemplateType context");
+    assert_eq!(
+        context["objectKinds"],
+        json!(["commonTemplate", "template"]),
+        "TemplateType values must not create inferred owner kinds"
+    );
+    assert!(context["observedAliasEvidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|evidence| {
+            evidence["nativeOwner"] == "Template"
+                && evidence["objectKind"] == "template"
+                && evidence["nativeValue"] == "SpreadsheetDocument"
+        }));
+    let raw = fs::read_to_string(
+        oracle_root().join("enum-context-output/SpreadsheetDocumentTemplate.txt"),
+    )
+    .unwrap();
+    assert!(raw
+        .trim_start_matches('\u{feff}')
+        .starts_with("=== Template: EnumContextSpreadsheetDocument ==="));
+
+    let spreadsheet = read_tracked(
+        "legacy-oracle/enum-context-inputs/EnumContextSpreadsheetDocument.xml",
+    );
+    let template = node(
+        &spreadsheet,
+        SemanticObjectKind::Template,
+        "EnumContextSpreadsheetDocument",
+    );
+    assert_value(
+        template,
+        SemanticPropertyId::TEMPLATE_TYPE,
+        PropertyValue::EnumSymbol(SemanticEnumValue::SPREADSHEET_DOCUMENT),
+    );
+    assert!(!spreadsheet.nodes.iter().any(|node| {
+        node.object_ref.kind == SemanticObjectKind::SpreadsheetDocumentTemplate
+    }));
+
+    let binary = read_inline(
+        "generic-template-binary",
+        "GenericTemplate.xml",
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Template uuid="61000000-0000-0000-0000-000000000099"><Properties><Name>GenericTemplate</Name><TemplateType>BinaryData</TemplateType></Properties></Template></MetaDataObject>"#,
+    );
+    assert_value(
+        node(&binary, SemanticObjectKind::Template, "GenericTemplate"),
+        SemanticPropertyId::TEMPLATE_TYPE,
+        PropertyValue::EnumSymbol(SemanticEnumValue::BINARY_DATA),
+    );
+}
+
+#[test]
+fn fix_round7_full_public_contract_specimen_covers_every_nested_shape() {
+    let specimen_path = oracle_root().join("full-public-contract-specimen.json");
+    let specimen: Value = serde_json::from_slice(
+        &fs::read(&specimen_path).expect("independent full public contract specimen"),
+    )
+    .unwrap();
+    assert_eq!(specimen["schemaVersion"], 1);
+    assert_eq!(
+        specimen["provenance"],
+        "independently-hand-reviewed-closed-public-contract"
+    );
+    let schema = specimen["publicSchema"].as_object().unwrap();
+    for nested in [
+        "NavigationRelationPage",
+        "SemanticActionDescriptor",
+        "OperationBinding",
+    ] {
+        assert!(schema.contains_key(nested), "missing nested schema {nested}");
+    }
+    let facts = specimen["facts"].as_array().unwrap();
+    let actual = full_public_contract_specimen_facts();
+    validate_contract_public_schema(schema, &actual).unwrap();
+    compare_fact_multisets(facts, &actual)
+        .unwrap_or_else(|diff| panic!("full public contract specimen drifted:\n{diff}"));
+    let envelope = &facts
+        .iter()
+        .find(|fact| fact["kind"] == "envelope")
+        .expect("full specimen envelope")["value"];
+    assert!(!envelope["relations"].as_array().unwrap().is_empty());
+    assert!(!envelope["relations"][0]["items"][0]["facets"]
+        .as_object()
+        .unwrap()
+        .is_empty());
+    assert!(envelope["relations"][0]["nextCursor"]
+        .as_str()
+        .is_some_and(|cursor| !cursor.is_empty()));
+    assert!(!envelope["nodes"][0]["semanticActions"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert!(envelope["nodes"][0]["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|action| action["operationBinding"].is_object()));
+
+    let envelope_index = actual
+        .iter()
+        .position(|fact| fact["kind"] == "envelope")
+        .unwrap();
+    for path in [
+        &["relations", "0", "relation", "sourceId"][..],
+        &["relations", "0", "relation", "groupKey"][..],
+        &["relations", "0", "relation", "owner", "objectKey"][..],
+        &["relations", "0", "relation", "role"][..],
+        &["relations", "0", "relation", "kind"][..],
+        &["relations", "0", "items", "0", "facets", "identity", "0"][..],
+        &["relations", "0", "nextCursor"][..],
+        &["nodes", "0", "semanticActions", "0", "action"][..],
+        &["nodes", "0", "semanticActions", "0", "executionPolicy"][..],
+        &["nodes", "0", "actions", "0", "blockingReasons", "0"][..],
+        &["nodes", "0", "actions", "1", "operationBinding", "tool"][..],
+        &["nodes", "0", "actions", "1", "operationBinding", "schemaVersion"][..],
+    ] {
+        let mut changed = actual.clone();
+        mutate_json_path(
+            &mut changed[envelope_index]["value"],
+            path,
+            json!("must-fail"),
+        );
+        assert_comparator_rejects(
+            facts,
+            &changed,
+            &format!("changed full public field {}", path.join(".")),
+        );
+    }
+
+    let mut missing_descriptor_field = actual.clone();
+    missing_descriptor_field[envelope_index]["value"]["nodes"][0]["semanticActions"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("executionPolicy");
+    assert!(validate_contract_public_schema(schema, &missing_descriptor_field).is_err());
+
+    let mut extra_binding_field = actual.clone();
+    extra_binding_field[envelope_index]["value"]["nodes"][0]["actions"][1]
+        ["operationBinding"]["futureField"] = json!("must-fail");
+    assert!(validate_contract_public_schema(schema, &extra_binding_field).is_err());
+
+    for field in ["relation", "items"] {
+        let mut missing = actual.clone();
+        missing[envelope_index]["value"]["relations"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert!(
+            validate_contract_public_schema(schema, &missing).is_err(),
+            "relation page accepted missing {field}"
+        );
+    }
+    for (object_path, fields) in [
+        (
+            &["nodes", "0", "semanticActions", "0"][..],
+            &["action", "executionPolicy"][..],
+        ),
+        (
+            &["nodes", "0", "actions", "1", "operationBinding"][..],
+            &["tool", "schemaVersion"][..],
+        ),
+    ] {
+        for field in fields {
+            let mut missing = actual.clone();
+            let mut object = &mut missing[envelope_index]["value"];
+            for segment in object_path {
+                object = if let Ok(index) = segment.parse::<usize>() {
+                    &mut object.as_array_mut().unwrap()[index]
+                } else {
+                    &mut object.as_object_mut().unwrap()[*segment]
+                };
+            }
+            object.as_object_mut().unwrap().remove(*field);
+            assert!(
+                validate_contract_public_schema(schema, &missing).is_err(),
+                "{} accepted missing {field}",
+                object_path.join(".")
+            );
+        }
+    }
+    let mut removed_cursor = actual.clone();
+    removed_cursor[envelope_index]["value"]["relations"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("nextCursor");
+    assert_comparator_rejects(
+        facts,
+        &removed_cursor,
+        "relation page missing optional nonempty cursor specimen",
+    );
+}
+
+#[test]
+fn fix_round7_every_source_enum_alias_is_executed_by_legacy_and_adapter() {
+    let executions: Value = serde_json::from_slice(
+        &fs::read(oracle_root().join("enum-alias-executions.json"))
+            .expect("frozen legacy enum-alias executions"),
+    )
+    .unwrap();
+    assert_eq!(executions["schemaVersion"], 1);
+    let rows = executions["executions"].as_array().unwrap();
+    let expected = oracle().enum_coverage;
+    let actual = rows
+        .iter()
+        .map(|row| {
+            json!({
+                "nativeAlias": row["nativeAlias"],
+                "nativeProperty": row["nativeProperty"],
+                "objectKind": row["objectKind"],
+                "semantic": row["semantic"],
+                "semanticProperty": row["semanticProperty"],
+            })
+        })
+        .collect::<Vec<_>>();
+    compare_fact_multisets(&expected, &actual)
+        .unwrap_or_else(|diff| panic!("enum alias execution inventory drifted:\n{diff}"));
+    assert!(rows.iter().all(|row| {
+        row["inputXml"].as_str().is_some_and(|value| !value.is_empty())
+            && row["rawLegacyOutput"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+            && row["rawOutputSha256"]
+                .as_str()
+                .is_some_and(|value| value.len() == 64)
+    }));
+    for (index, row) in rows.iter().enumerate() {
+        let envelope = read_inline(
+            &format!("enum-alias-{index:04}"),
+            row["inputFileName"].as_str().unwrap(),
+            row["inputXml"].as_str().unwrap(),
+        );
+        let owner_kind =
+            SemanticObjectKind::parse(row["objectKind"].as_str().unwrap()).unwrap();
+        let owner = node(&envelope, owner_kind, row["ownerName"].as_str().unwrap());
+        let property =
+            SemanticPropertyId::parse(row["semanticProperty"].as_str().unwrap()).unwrap();
+        let semantic = SemanticEnumValue::parse(row["semantic"].as_str().unwrap()).unwrap();
+        assert_value(
+            owner,
+            property,
+            PropertyValue::EnumSymbol(semantic),
+        );
+    }
+}
+
+#[test]
+fn fix_round7_multitarget_executes_every_supported_rights_prefix() {
+    let target_crosswalk: Value = serde_json::from_slice(
+        &fs::read(oracle_root().join("rights-target-crosswalk.json")).unwrap(),
+    )
+    .unwrap();
+    let expected = target_crosswalk["prefixes"]
+        .as_object()
+        .unwrap()
+        .values()
+        .map(|kind| kind.as_str().unwrap())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(expected.len(), 45);
+
+    let legacy = oracle();
+    let case = oracle_case(&legacy, "rightsMultiTarget");
+    let legacy_targets = case
+        .facts
+        .iter()
+        .filter(|fact| fact["kind"] == "relation" && fact["predicate"] == "accessTarget")
+        .map(|fact| fact["value"]["targetKind"].as_str().unwrap())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(legacy_targets, expected);
+    assert_eq!(
+        case.facts
+            .iter()
+            .filter(|fact| {
+                fact["kind"] == "relation" && fact["predicate"] == "accessTarget"
+            })
+            .count(),
+        45
+    );
+
+    let envelope = read_oracle_case(case);
+    let runtime_relations = envelope
+        .relation_index
+        .iter()
+        .filter(|relation| relation.role.as_str() == "accessTarget")
+        .collect::<Vec<_>>();
+    let runtime_targets = envelope
+        .relation_index
+        .iter()
+        .filter(|relation| relation.role.as_str() == "accessTarget")
+        .map(|relation| relation.target.kind.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(runtime_targets, expected);
+    assert_eq!(runtime_relations.len(), 45);
+    for (prefix, kind) in target_crosswalk["prefixes"].as_object().unwrap() {
+        let target_name = format!("{prefix}Target");
+        let relation = runtime_relations
+            .iter()
+            .find(|relation| {
+                relation.target.kind.as_str() == kind.as_str().unwrap()
+                    && relation.target.display_name == target_name
+            })
+            .unwrap_or_else(|| panic!("missing independently decoded target {prefix}"));
+        let permission = envelope
+            .nodes
+            .iter()
+            .find(|node| node.object_ref == relation.source)
+            .expect("right target relation source permission");
+        assert!(permission
+            .properties
+            .contains_key(&SemanticPropertyId::ACCESS_RESTRICTION_CONDITIONS));
+    }
+    assert_eq!(
+        envelope
+            .nodes
+            .iter()
+            .filter(|node| node.object_ref.kind == SemanticObjectKind::AccessRestrictionTemplate)
+            .count(),
+        45
+    );
+    assert_eq!(
+        envelope
+            .nodes
+            .iter()
+            .filter(|node| node.object_ref.kind == SemanticObjectKind::AccessPermission)
+            .filter(|node| node
+                .properties
+                .contains_key(&SemanticPropertyId::ACCESS_RESTRICTION_CONDITIONS))
+            .count(),
+        45
+    );
+}
+
+#[test]
+fn fix_round7_adapter_intentionally_exposes_no_projected_pages_or_bindings() {
+    let envelope = read_tracked("contract/ContractCatalog.xml");
+    assert!(!envelope.relation_index.is_empty());
+    assert!(envelope.relations.is_empty());
+    assert!(envelope
+        .nodes
+        .iter()
+        .all(|node| node.semantic_actions.is_empty()));
+    assert!(envelope.nodes.iter().flat_map(|node| &node.actions).all(|action| {
+        action.operation_binding.is_none()
+    }));
+
+    let target = tracked_root().join("contract/ContractCatalog.xml");
+    let source_root = target.parent().unwrap();
+    let source = SourceContext::new(
+        SourceLocation::new(repo_root(), source_root.to_path_buf(), target),
+        Some("main".to_string()),
+        SourceFamily::PlatformXml,
+        None,
+    );
+    let registration = PlatformXmlAdapterFactory::new().registration();
+    let CaptureResult::Captured(captured) = registration.capture.capture(&source).unwrap() else {
+        panic!("contract fixture must be captured")
+    };
+    let error = registration
+        .read
+        .read(&FormatReadRequest {
+            captured: captured.clone(),
+            query: NavigationQuery {
+                target: NavigationTarget::CapturedTarget(
+                    captured.binding().target_identity.clone(),
+                ),
+                select: NavigationSelection {
+                    properties: PropertySelection::All,
+                    facets: FacetSelection::Full,
+                    relations: vec![
+                        RelationSelection::new(
+                            SemanticRelationId::ATTRIBUTES,
+                            Some(1),
+                        )
+                        .unwrap(),
+                    ],
+                },
+            },
+        })
+        .unwrap_err();
+    assert_eq!(error.kind, SourceAdapterErrorKind::CapabilityBlocked);
+}
+
 fn mutate_json_path(value: &mut Value, path: &[&str], replacement: Value) {
     let Some((head, tail)) = path.split_first() else {
         *value = replacement;
@@ -2462,6 +2873,36 @@ fn validate_contract_public_schema(
         validate_keys(schema, "CapabilityVector", value)
     }
 
+    fn validate_node(
+        schema: &serde_json::Map<String, Value>,
+        node: &Value,
+    ) -> Result<(), String> {
+        validate_keys(schema, "NavigationNode", node)?;
+        validate_object_ref(schema, &node["objectRef"])?;
+        validate_object_ref(schema, &node["reference"])?;
+        validate_keys(schema, "CapabilityState", &node["capabilityState"])?;
+        validate_capability(schema, &node["capability"])?;
+        for property in node["properties"].as_object().unwrap().values() {
+            validate_keys(schema, "SemanticProperty", property)?;
+        }
+        for descriptor in node["semanticActions"].as_array().unwrap() {
+            validate_keys(schema, "SemanticActionDescriptor", descriptor)?;
+        }
+        for action in node["actions"].as_array().unwrap() {
+            validate_keys(schema, "SemanticAction", action)?;
+            if !action["target"].is_null() {
+                validate_object_ref(schema, &action["target"])?;
+            }
+            if !action["owningRelation"].is_null() {
+                validate_keys(schema, "RelationRef", &action["owningRelation"])?;
+            }
+            if !action["operationBinding"].is_null() {
+                validate_keys(schema, "OperationBinding", &action["operationBinding"])?;
+            }
+        }
+        Ok(())
+    }
+
     for fact in facts {
         match fact["kind"].as_str() {
             Some("envelope") => {
@@ -2474,25 +2915,24 @@ fn validate_contract_public_schema(
                     validate_object_ref(schema, &envelope["root"])?;
                 }
                 for node in envelope["nodes"].as_array().unwrap() {
-                    validate_keys(schema, "NavigationNode", node)?;
-                    validate_object_ref(schema, &node["objectRef"])?;
-                    validate_object_ref(schema, &node["reference"])?;
-                    validate_keys(schema, "CapabilityState", &node["capabilityState"])?;
-                    validate_capability(schema, &node["capability"])?;
-                    for property in node["properties"].as_object().unwrap().values() {
-                        validate_keys(schema, "SemanticProperty", property)?;
+                    validate_node(schema, node)?;
+                }
+                for page in envelope["relations"].as_array().unwrap() {
+                    validate_keys(schema, "NavigationRelationPage", page)?;
+                    validate_keys(schema, "RelationGroupRef", &page["relation"])?;
+                    validate_object_ref(schema, &page["relation"]["owner"])?;
+                    for item in page["items"].as_array().unwrap() {
+                        validate_node(schema, item)?;
                     }
-                    for action in node["actions"].as_array().unwrap() {
-                        validate_keys(schema, "SemanticAction", action)?;
-                        if !action["target"].is_null() {
-                            validate_object_ref(schema, &action["target"])?;
-                        }
-                        if !action["owningRelation"].is_null() {
-                            validate_keys(
-                                schema,
-                                "RelationRef",
-                                &action["owningRelation"],
-                            )?;
+                    if let Some(cursor) = page.get("nextCursor") {
+                        if !cursor
+                            .as_str()
+                            .is_some_and(|value| !value.is_empty())
+                        {
+                            return Err(
+                                "NavigationRelationPage nextCursor is not opaque text"
+                                    .to_string(),
+                            );
                         }
                     }
                 }
@@ -2515,6 +2955,363 @@ fn validate_contract_public_schema(
         }
     }
     Ok(())
+}
+
+fn full_public_contract_specimen_facts() -> Vec<Value> {
+    let source_id = SourceId::new("source:full-public-contract").unwrap();
+    let revision = SourceRevision::new("revision:full-public-contract").unwrap();
+    let owner_ref = ObjectRef::new(
+        source_id.clone(),
+        ObjectKey::new("uuid:11111111-1111-1111-1111-111111111111").unwrap(),
+        IdentityStrength::Persistent,
+        SemanticObjectKind::Document,
+        "FullContractOwner",
+    );
+    let child_ref = ObjectRef::new(
+        source_id.clone(),
+        ObjectKey::new("uuid:22222222-2222-2222-2222-222222222222").unwrap(),
+        IdentityStrength::Derived,
+        SemanticObjectKind::Attribute,
+        "FullContractChild",
+    );
+    let relation_ref = RelationRef {
+        source_id: source_id.clone(),
+        relation_key: RelationKey::new("relation:full-public-contract").unwrap(),
+        kind: RelationKind::Contains,
+    };
+    let group_ref = RelationGroupRef {
+        source_id: source_id.clone(),
+        group_key: RelationKey::new("group:full-public-contract").unwrap(),
+        owner: owner_ref.clone(),
+        role: SemanticRelationId::ATTRIBUTES,
+        kind: RelationKind::Contains,
+    };
+    let capability = CapabilityVector {
+        resolution: ResolutionState::Resolved,
+        identity: IdentityStrength::Persistent,
+        consistency: SnapshotConsistency::Consistent,
+        coverage: CoverageState::Complete,
+        format: FormatCompatibility::Compatible,
+        source_access: SourceAccess::ReadWrite,
+        authorability: Authorability::Authorable,
+    };
+    let descriptor_specs = [
+        (SemanticActionKind::Inspect, ActionExecutionPolicy::ReadOnly),
+        (
+            SemanticActionKind::EditProperties,
+            ActionExecutionPolicy::AtomicNodeMutation,
+        ),
+        (
+            SemanticActionKind::Clone,
+            ActionExecutionPolicy::AtomicRelationMutation,
+        ),
+        (
+            SemanticActionKind::Remove,
+            ActionExecutionPolicy::AtomicNodeMutation,
+        ),
+        (
+            SemanticActionKind::AddAttribute,
+            ActionExecutionPolicy::AtomicNodeMutation,
+        ),
+        (
+            SemanticActionKind::AddTabularSection,
+            ActionExecutionPolicy::AtomicNodeMutation,
+        ),
+        (
+            SemanticActionKind::AddForm,
+            ActionExecutionPolicy::AtomicNodeMutation,
+        ),
+        (
+            SemanticActionKind::AddMxl,
+            ActionExecutionPolicy::AtomicNodeMutation,
+        ),
+        (
+            SemanticActionKind::AddCommand,
+            ActionExecutionPolicy::AtomicNodeMutation,
+        ),
+        (
+            SemanticActionKind::AddFormAttribute,
+            ActionExecutionPolicy::AtomicNodeMutation,
+        ),
+        (
+            SemanticActionKind::AddFormCommand,
+            ActionExecutionPolicy::AtomicNodeMutation,
+        ),
+        (
+            SemanticActionKind::AddFormElement,
+            ActionExecutionPolicy::AtomicNodeMutation,
+        ),
+        (
+            SemanticActionKind::Move,
+            ActionExecutionPolicy::AtomicRelationMutation,
+        ),
+        (
+            SemanticActionKind::BindData,
+            ActionExecutionPolicy::AtomicRelationMutation,
+        ),
+        (
+            SemanticActionKind::RebindData,
+            ActionExecutionPolicy::AtomicRelationMutation,
+        ),
+        (
+            SemanticActionKind::UnbindData,
+            ActionExecutionPolicy::AtomicRelationMutation,
+        ),
+        (
+            SemanticActionKind::BindCommand,
+            ActionExecutionPolicy::AtomicRelationMutation,
+        ),
+        (
+            SemanticActionKind::RebindCommand,
+            ActionExecutionPolicy::AtomicRelationMutation,
+        ),
+        (
+            SemanticActionKind::UnbindCommand,
+            ActionExecutionPolicy::AtomicRelationMutation,
+        ),
+        (
+            SemanticActionKind::CreateHandler,
+            ActionExecutionPolicy::AtomicNodeMutation,
+        ),
+        (
+            SemanticActionKind::EditMxl,
+            ActionExecutionPolicy::AtomicNodeMutation,
+        ),
+    ];
+    let semantic_actions = descriptor_specs
+        .into_iter()
+        .map(|(action, execution_policy)| SemanticActionDescriptor {
+            action,
+            execution_policy,
+        })
+        .collect::<Vec<_>>();
+    let actions = vec![
+        SemanticAction {
+            kind: SemanticActionKind::Inspect,
+            target: Some(owner_ref.clone()),
+            owning_relation: None,
+            availability: ActionAvailability::Modeled,
+            blocking_reasons: vec![CapabilityBlockReason::ResolutionUnresolved],
+            operation_binding: None,
+            atomicity: Atomicity::ReadOnly,
+        },
+        SemanticAction {
+            kind: SemanticActionKind::EditProperties,
+            target: Some(owner_ref.clone()),
+            owning_relation: None,
+            availability: ActionAvailability::Executable,
+            blocking_reasons: Vec::new(),
+            operation_binding: Some(OperationBinding {
+                tool: "unica.meta.edit".to_string(),
+                schema_version: "1".to_string(),
+            }),
+            atomicity: Atomicity::SingleFileAtomicReplace,
+        },
+        SemanticAction {
+            kind: SemanticActionKind::Clone,
+            target: None,
+            owning_relation: Some(relation_ref.clone()),
+            availability: ActionAvailability::Blocked,
+            blocking_reasons: vec![
+                CapabilityBlockReason::ResolutionUnresolved,
+                CapabilityBlockReason::IdentitySnapshotOnly,
+                CapabilityBlockReason::SnapshotInconsistent,
+                CapabilityBlockReason::CoverageIncomplete,
+                CapabilityBlockReason::FormatIncompatible,
+                CapabilityBlockReason::SourceReadOnly,
+                CapabilityBlockReason::NotAuthorable,
+                CapabilityBlockReason::OwningRelationMissing,
+                CapabilityBlockReason::OperationBindingInvalid,
+            ],
+            operation_binding: None,
+            atomicity: Atomicity::AggregateSwapWithRecovery,
+        },
+        SemanticAction {
+            kind: SemanticActionKind::Move,
+            target: Some(child_ref.clone()),
+            owning_relation: Some(relation_ref.clone()),
+            availability: ActionAvailability::Modeled,
+            blocking_reasons: Vec::new(),
+            operation_binding: None,
+            atomicity: Atomicity::BackendTransaction,
+        },
+    ];
+    let mut owner_properties = BTreeMap::new();
+    owner_properties.insert(
+        SemanticPropertyId::METADATA_NAME,
+        SemanticProperty::explicit(
+            SemanticPropertyId::METADATA_NAME,
+            PropertyValue::String("FullContractOwner".to_string()),
+        )
+        .unwrap()
+        .with_capability(PropertyCapability::Authorable)
+        .unwrap(),
+    );
+    owner_properties.insert(
+        SemanticPropertyId::METADATA_COMMENT,
+        SemanticProperty::defaulted(
+            SemanticPropertyId::METADATA_COMMENT,
+            PropertyValue::String("default comment".to_string()),
+        )
+        .unwrap()
+        .with_capability(PropertyCapability::ReadOnly)
+        .unwrap(),
+    );
+    owner_properties.insert(
+        SemanticPropertyId::METADATA_DESCRIPTION,
+        SemanticProperty::inherited(
+            SemanticPropertyId::METADATA_DESCRIPTION,
+            PropertyValue::String("inherited description".to_string()),
+        )
+        .unwrap()
+        .with_capability(PropertyCapability::ReadOnly)
+        .unwrap(),
+    );
+    owner_properties.insert(
+        SemanticPropertyId::SUPPORT_AUTHORABILITY,
+        SemanticProperty::computed(
+            SemanticPropertyId::SUPPORT_AUTHORABILITY,
+            PropertyValue::String("authorable".to_string()),
+        )
+        .unwrap()
+        .with_capability(PropertyCapability::ReadOnly)
+        .unwrap(),
+    );
+    owner_properties.insert(
+        SemanticPropertyId::METADATA_CODE,
+        SemanticProperty::absent(SemanticPropertyId::METADATA_CODE),
+    );
+    owner_properties.insert(
+        SemanticPropertyId::METADATA_SYNONYM,
+        SemanticProperty::unresolved(SemanticPropertyId::METADATA_SYNONYM),
+    );
+    let owner_facets = SemanticFacets::for_available(
+        owner_properties.keys().copied(),
+        [SemanticRelationId::ATTRIBUTES],
+    );
+    let owner = NavigationNode {
+        object_ref: owner_ref.clone(),
+        reference: owner_ref.clone(),
+        capability_state: CapabilityState::resolved_authorable(),
+        capability: capability.clone(),
+        properties: owner_properties,
+        facets: owner_facets,
+        action_profile: ActionProfile::DocumentMetadataObject,
+        semantic_actions,
+        actions,
+        facet_visibility: NavigationFacetVisibility::Full,
+    };
+    let mut child_properties = BTreeMap::new();
+    child_properties.insert(
+        SemanticPropertyId::METADATA_NAME,
+        SemanticProperty::explicit(
+            SemanticPropertyId::METADATA_NAME,
+            PropertyValue::String("FullContractChild".to_string()),
+        )
+        .unwrap()
+        .with_capability(PropertyCapability::ReadOnly)
+        .unwrap(),
+    );
+    let child = NavigationNode {
+        object_ref: child_ref.clone(),
+        reference: child_ref.clone(),
+        capability_state: CapabilityState::new(
+            ResolutionState::Unresolved,
+            Authorability::DerivedReadOnly,
+        ),
+        capability: CapabilityVector {
+            resolution: ResolutionState::Unresolved,
+            identity: IdentityStrength::Derived,
+            consistency: SnapshotConsistency::Changed,
+            coverage: CoverageState::Partial,
+            format: FormatCompatibility::Unknown,
+            source_access: SourceAccess::ReadOnly,
+            authorability: Authorability::DerivedReadOnly,
+        },
+        facets: SemanticFacets::for_available(
+            child_properties.keys().copied(),
+            std::iter::empty(),
+        ),
+        properties: child_properties,
+        action_profile: ActionProfile::UnmodeledChild,
+        semantic_actions: vec![SemanticActionDescriptor {
+            action: SemanticActionKind::Inspect,
+            execution_policy: ActionExecutionPolicy::ReadOnly,
+        }],
+        actions: vec![SemanticAction {
+            kind: SemanticActionKind::Inspect,
+            target: Some(child_ref.clone()),
+            owning_relation: Some(relation_ref.clone()),
+            availability: ActionAvailability::Modeled,
+            blocking_reasons: Vec::new(),
+            operation_binding: None,
+            atomicity: Atomicity::ReadOnly,
+        }],
+        facet_visibility: NavigationFacetVisibility::Full,
+    };
+    let cursor = NavigationCursor::issue(
+        b"full-public-contract-cursor-secret",
+        source_id.clone(),
+        revision.clone(),
+        owner_ref.object_key.clone(),
+        group_ref.clone(),
+        NavigationSelection {
+            properties: PropertySelection::All,
+            facets: FacetSelection::Full,
+            relations: vec![RelationSelection {
+                kind: RelationKind::Contains,
+                role: SemanticRelationId::ATTRIBUTES,
+                page_size: 1,
+            }],
+        },
+        1,
+    )
+    .unwrap();
+    let relation = SemanticRelation {
+        relation_ref,
+        group_ref: group_ref.clone(),
+        identity_strength: IdentityStrength::Persistent,
+        kind: RelationKind::Contains,
+        role: SemanticRelationId::ATTRIBUTES,
+        source: owner_ref.clone(),
+        target: child_ref,
+        capability,
+    };
+    let envelope = NavigationEnvelope {
+        schema_version: "1".to_string(),
+        status: NavigationStatus::Available,
+        snapshot: Some(SourceSnapshot {
+            source_id,
+            revision,
+            consistency: SnapshotConsistency::Consistent,
+            adapter_id: "public-contract-specimen".to_string(),
+        }),
+        root: Some(owner_ref),
+        nodes: vec![owner],
+        relations: vec![NavigationRelationPage {
+            relation: group_ref,
+            items: vec![child],
+            next_cursor: Some(cursor),
+        }],
+        diagnostics: vec![unica_format_core::navigation::SourceAdapterDiagnostic {
+            code: "specimenDiagnostic".to_string(),
+            message: "full public contract specimen".to_string(),
+            details: Some(json!({"category": "contract", "ordinal": 1})),
+        }],
+        relation_index: std::sync::Arc::new(vec![relation.clone()]),
+    };
+    let mut envelope_value = serde_json::to_value(envelope).unwrap();
+    envelope_value["relations"][0]["nextCursor"] = json!("opaque:cursor");
+    let mut facts = vec![
+        json!({"case": "fullPublicContract", "kind": "envelope", "value": envelope_value}),
+        json!({
+            "case": "fullPublicContract",
+            "kind": "semanticRelation",
+            "value": serde_json::to_value(relation).unwrap(),
+        }),
+    ];
+    facts.sort_by_key(canonical_json);
+    facts
 }
 
 fn adapter_only_contract_facts(case_id: &str, envelope: &NavigationEnvelope) -> Vec<Value> {
