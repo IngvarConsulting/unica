@@ -174,11 +174,15 @@ validation, exact-preimage publication, hashes, ranges, and MCP data remain
 unchanged.
 
 The insertion-site scanner continues to determine the local line ending from
-the selected method or anchor. That observation becomes `Option<LineEnding>`
-and is passed to `resolve_line_ending(EolPolicy::Preserve, ...)`.
+the selected method or anchor. For a source with no line endings, `code.patch`
+explicitly resolves `EolPolicy::Lf` to preserve v1 compatibility. Every other
+supported profile passes the `Option<LineEnding>` observation to
+`resolve_line_ending(EolPolicy::Preserve, ...)`; the shared preserve policy
+therefore remains fail-closed when no context exists.
 
 Existing behavior remains:
 
+- no-EOL input receives LF inserted text and separators;
 - LF input receives LF inserted text;
 - CRLF input receives CRLF inserted text;
 - mixed input uses the selected local context rather than a global majority;
@@ -231,6 +235,7 @@ Focused `text_snapshot` unit tests cover:
 Existing `code.patch` tests remain green. Additional integration-focused unit
 tests prove:
 
+- no-EOL preview, apply, and repeat apply use LF and remain idempotent;
 - LF, CRLF, and mixed-local insertion still choose the same bytes;
 - BOM and untouched suffix remain exact;
 - repeat apply remains a no-op;
