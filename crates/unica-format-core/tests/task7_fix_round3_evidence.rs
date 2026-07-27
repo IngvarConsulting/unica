@@ -22,7 +22,7 @@ fn every_read_derived_operational_result_carries_opaque_evidence() {
 
     let summary = SupportSummary::new(SupportState::Absent, None, 0, [0; 3]).unwrap();
     let authorability = AuthorabilityResult::allowed(summary, revision.clone()).unwrap();
-    assert_eq!(authorability.evidence_revision(), &revision);
+    assert_eq!(authorability.evidence_revision(), Some(&revision));
 
     let context = ValidationContext::new(
         ValidationOwnerKind::Aggregate,
@@ -59,7 +59,16 @@ fn every_read_derived_operational_result_carries_opaque_evidence() {
         revision.clone(),
     )
     .unwrap();
-    assert_eq!(denied.evidence_revision(), &revision);
+    assert_eq!(denied.evidence_revision(), Some(&revision));
+
+    let unreadable = AuthorabilityResult::source_unreadable();
+    assert!(!unreadable.is_allowed());
+    assert_eq!(
+        unreadable.authorability(),
+        Authorability::UnknownSupportState
+    );
+    assert_eq!(unreadable.summary().state(), SupportState::Unreadable);
+    assert!(unreadable.evidence_revision().is_none());
 }
 
 #[test]
@@ -92,7 +101,7 @@ fn evidence_wire_value_is_fixed_width_lower_hex_and_never_free_form() {
 }
 
 #[test]
-fn authorability_wire_requires_and_preserves_evidence_revision() {
+fn authorability_wire_requires_verified_evidence_and_closes_unreadable_denial() {
     let result = AuthorabilityResult::allowed(
         SupportSummary::new(SupportState::Absent, None, 0, [0; 3]).unwrap(),
         evidence(0x11),
@@ -107,7 +116,7 @@ fn authorability_wire_requires_and_preserves_evidence_revision() {
         serde_json::from_value::<AuthorabilityResult>(wire)
             .unwrap()
             .evidence_revision(),
-        &evidence(0x11)
+        Some(&evidence(0x11))
     );
 
     assert!(serde_json::from_value::<AuthorabilityResult>(json!({
@@ -121,4 +130,31 @@ fn authorability_wire_requires_and_preserves_evidence_revision() {
         }
     }))
     .is_err());
+
+    let unreadable = AuthorabilityResult::source_unreadable();
+    let unreadable_wire = serde_json::to_value(&unreadable).unwrap();
+    assert_eq!(unreadable_wire["evidenceRevision"], json!(null));
+    let round_trip =
+        serde_json::from_value::<AuthorabilityResult>(unreadable_wire.clone()).unwrap();
+    assert_eq!(round_trip, unreadable);
+    assert!(round_trip.evidence_revision().is_none());
+
+    let verified_denial = AuthorabilityResult::denied(
+        Authorability::SupportLocked,
+        SupportSummary::new(SupportState::Locked, Some(false), 1, [1, 0, 0]).unwrap(),
+        FormatDiagnostic::new(
+            FormatDiagnosticCode::SupportLocked,
+            FormatDiagnosticDetail::Support(SupportState::Locked),
+        )
+        .unwrap(),
+        evidence(0x22),
+    )
+    .unwrap();
+    let mut invalid_unverified = serde_json::to_value(verified_denial).unwrap();
+    invalid_unverified["evidenceRevision"] = json!(null);
+    assert!(serde_json::from_value::<AuthorabilityResult>(invalid_unverified).is_err());
+
+    let mut invalid_unreadable = unreadable_wire;
+    invalid_unreadable["summary"]["state"] = json!("absent");
+    assert!(serde_json::from_value::<AuthorabilityResult>(invalid_unreadable).is_err());
 }

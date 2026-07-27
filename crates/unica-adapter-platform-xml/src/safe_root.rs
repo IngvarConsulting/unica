@@ -62,7 +62,7 @@ pub(crate) enum SafeRootError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FileIdentity {
     device: u64,
-    file: u64,
+    file: u128,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -518,6 +518,9 @@ impl SafeSourceRoot {
         &self,
         operation: &'static [u8],
     ) -> Result<OperationalEvidenceRevision, SafeRootError> {
+        if run_evidence_finalization_failure() {
+            return Err(SafeRootError::Unreadable);
+        }
         self.verify_root()?;
         let mut sealed = self.sealed.lock().map_err(|_| SafeRootError::Unreadable)?;
         if *sealed {
@@ -866,7 +869,7 @@ fn file_identity(file: &File) -> Result<FileIdentity, SafeRootError> {
     let metadata = file.metadata().map_err(map_io)?;
     Ok(FileIdentity {
         device: metadata.dev(),
-        file: metadata.ino(),
+        file: u128::from(metadata.ino()),
     })
 }
 
@@ -1217,6 +1220,31 @@ thread_local! {
         std::cell::RefCell::new(None);
     static ARTIFACT_OPEN_LOG: std::cell::RefCell<Option<Vec<PathBuf>>> =
         const { std::cell::RefCell::new(None) };
+    static EVIDENCE_FINALIZATION_FAILURE: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn run_evidence_finalization_failure() -> bool {
+    EVIDENCE_FINALIZATION_FAILURE.with(|slot| slot.replace(false))
+}
+
+#[cfg(not(test))]
+const fn run_evidence_finalization_failure() -> bool {
+    false
+}
+
+#[cfg(test)]
+pub(crate) fn with_evidence_finalization_failure<T>(action: impl FnOnce() -> T) -> T {
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            EVIDENCE_FINALIZATION_FAILURE.with(|slot| slot.set(self.0));
+        }
+    }
+    let previous = EVIDENCE_FINALIZATION_FAILURE.with(|slot| slot.replace(true));
+    let _reset = Reset(previous);
+    action()
 }
 
 #[cfg(test)]

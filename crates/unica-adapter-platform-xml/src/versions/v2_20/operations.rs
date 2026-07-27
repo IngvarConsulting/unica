@@ -4,7 +4,6 @@ use std::{
 };
 
 use roxmltree::Node;
-use sha2::{Digest, Sha256};
 use unica_format_core::{
     navigation::Authorability,
     ports::{
@@ -266,17 +265,6 @@ impl PlatformOperationSession {
     pub(super) fn validation_provider(&self) -> Result<LazyPlatformSource, SafeRootError> {
         self.operation_provider()
             .map_err(|_| SafeRootError::Unauthorized)
-    }
-
-    pub(super) fn failure_evidence(&self, operation: &'static [u8]) -> OperationalEvidenceRevision {
-        let mut digest = Sha256::new();
-        digest.update(b"unica:platform-xml:failed-operation:v1\0");
-        digest.update(operation);
-        digest.update([match self.failure {
-            Some(CaptureFailure::WrongFamily) => 1,
-            Some(CaptureFailure::UnauthorizedOrUnreadable) | None => 2,
-        }]);
-        OperationalEvidenceRevision::from_digest(digest.finalize().into())
     }
 
     pub(super) fn validation_subject(
@@ -671,39 +659,18 @@ impl CompatibilityDecision {
     }
 }
 
-pub(crate) fn compatibility(session: &PlatformOperationSession) -> CompatibilityResult {
+pub(crate) fn compatibility(
+    session: &PlatformOperationSession,
+) -> Result<CompatibilityResult, SourceAdapterError> {
     let provider = match session.operation_provider() {
         Ok(provider) => provider,
-        Err(CaptureFailure::WrongFamily) => {
-            return incompatible(
-                CompatibilityIssueKind::Malformed,
-                FormatDiagnosticCode::SourceFamilyIncompatible,
-                "The selected source belongs to another source family.",
-            )
-            .into_result(session.failure_evidence(b"compatibility"))
-        }
-        Err(CaptureFailure::UnauthorizedOrUnreadable) => {
-            return incompatible(
-                CompatibilityIssueKind::Malformed,
-                FormatDiagnosticCode::SourceMalformed,
-                "The selected source could not be authorized and captured.",
-            )
-            .into_result(session.failure_evidence(b"compatibility"))
-        }
+        Err(_) => return Err(source_unavailable("compatibility source is unavailable")),
     };
     let decision = compatibility_with_provider(session, &provider);
-    let evidence_revision = match provider.finalize_evidence(b"compatibility") {
-        Ok(evidence_revision) => evidence_revision,
-        Err(_) => {
-            return incompatible(
-                CompatibilityIssueKind::Malformed,
-                FormatDiagnosticCode::SourceMalformed,
-                "Compatibility evidence could not be finalized.",
-            )
-            .into_result(session.failure_evidence(b"compatibility"))
-        }
-    };
-    decision.into_result(evidence_revision)
+    let evidence_revision = provider
+        .finalize_evidence(b"compatibility")
+        .map_err(|_| source_unavailable("compatibility evidence could not be finalized"))?;
+    Ok(decision.into_result(evidence_revision))
 }
 
 fn compatibility_with_provider(
@@ -896,34 +863,8 @@ fn validation_compatibility_keys(
                 }
             }
         }
-        if let Some(reference) = &target.registrar_reference {
-            for (_, document_name) in configuration
-                .registrations
-                .iter()
-                .filter(|(native_type, _)| native_type == "Document")
-            {
-                let Some(item) = read_semantic_descriptor(provider, "Document", document_name)?
-                else {
-                    continue;
-                };
-                keys.push(item.key.clone());
-                if item
-                    .references
-                    .as_ref()
-                    .is_some_and(|references| references.contains(reference))
-                {
-                    break;
-                }
-            }
-        }
     }
-    if let Some(references) = &target.references {
-        for (native_type, name) in references {
-            if let Some(item) = read_semantic_descriptor(provider, native_type, name)? {
-                keys.push(item.key);
-            }
-        }
-    }
+    keys.extend(resolve_target_dependencies(provider, &target)?.keys);
     if let Some(Ok((module, _))) = &target.method_reference {
         if let Some(item) = read_semantic_descriptor(provider, "CommonModule", module)? {
             keys.push(item.key.clone());
@@ -953,10 +894,10 @@ fn incompatible(
 pub(crate) fn authorability(
     session: &PlatformOperationSession,
     requirement: AuthorabilityRequirement,
-) -> AuthorabilityResult {
+) -> Result<AuthorabilityResult, SourceAdapterError> {
     let provider = match session.operation_provider() {
         Ok(provider) => provider,
-        Err(_) => return unreadable_authorability(session.failure_evidence(b"authorability")),
+        Err(_) => return Ok(AuthorabilityResult::source_unreadable()),
     };
     enum Decision {
         Allowed(SupportSummary),
@@ -1030,9 +971,9 @@ pub(crate) fn authorability(
     })();
     let evidence = match provider.finalize_evidence(b"authorability") {
         Ok(evidence) => evidence,
-        Err(_) => session.failure_evidence(b"authorability"),
+        Err(_) => return Ok(AuthorabilityResult::source_unreadable()),
     };
-    match decision {
+    Ok(match decision {
         Decision::Allowed(summary) => AuthorabilityResult::allowed(summary, evidence.clone())
             .unwrap_or_else(|_| unreadable_authorability(evidence)),
         Decision::Denied(authorability, summary, diagnostic) => {
@@ -1040,7 +981,7 @@ pub(crate) fn authorability(
                 .unwrap_or_else(|_| unreadable_authorability(evidence))
         }
         Decision::Unreadable => unreadable_authorability(evidence),
-    }
+    })
 }
 
 fn unreadable_authorability(evidence: OperationalEvidenceRevision) -> AuthorabilityResult {
@@ -1074,25 +1015,21 @@ fn support_state(rule: support::EffectiveSupportRule) -> SupportState {
     }
 }
 
-pub(crate) fn validation(session: &PlatformOperationSession) -> ValidationContextResult {
+pub(crate) fn validation(
+    session: &PlatformOperationSession,
+) -> Result<ValidationContextResult, SourceAdapterError> {
     let provider = match session.validation_provider() {
         Ok(provider) => provider,
-        Err(_) => {
-            return invalid_validation(
-                ValidationIssueKind::SourceUnreadable,
-                session.failure_evidence(b"validation-context"),
-            )
-        }
+        Err(_) => return Err(source_unavailable("validation source is unavailable")),
     };
     let result = validation_context_for_provider(session, &provider);
-    let evidence = match provider.finalize_evidence(b"validation-context") {
-        Ok(evidence) => evidence,
-        Err(_) => session.failure_evidence(b"validation-context"),
-    };
-    match result {
+    let evidence = provider
+        .finalize_evidence(b"validation-context")
+        .map_err(|_| source_unavailable("validation evidence could not be finalized"))?;
+    Ok(match result {
         Ok(context) => ValidationContextResult::valid(context, evidence),
         Err(issue) => invalid_validation(issue, evidence),
-    }
+    })
 }
 
 pub(super) fn validation_context_for_provider(
@@ -1108,14 +1045,14 @@ pub(super) fn validation_context_for_provider(
     ) {
         let method_reference_status = method_reference_status(provider, &target)
             .map_err(|_| ValidationIssueKind::SourceUnreadable)?;
-        let references_present = references_present(provider, &target)
+        let dependencies = resolve_target_dependencies(provider, &target)
             .map_err(|_| ValidationIssueKind::SourceUnreadable)?;
         return ValidationContext::new(
             ValidationOwnerKind::Standalone,
             Vec::new(),
             command_text_validation_required(&target.native_type),
-            references_present,
-            None,
+            dependencies.references_present,
+            dependencies.registrar_present,
             method_reference_status,
         )
         .map_err(|_| ValidationIssueKind::SourceUnreadable);
@@ -1158,23 +1095,16 @@ pub(super) fn validation_context_for_provider(
             return Err(ValidationIssueKind::LanguageProfileMissing);
         }
     }
-    let references_present =
-        references_present(provider, &target).map_err(|_| ValidationIssueKind::SourceUnreadable)?;
-    let registrar_present = match target.registrar_reference.as_ref() {
-        Some(reference) => Some(
-            registrar_present(provider, &configuration, reference)
-                .map_err(|_| ValidationIssueKind::SourceUnreadable)?,
-        ),
-        None => None,
-    };
+    let dependencies = resolve_target_dependencies(provider, &target)
+        .map_err(|_| ValidationIssueKind::SourceUnreadable)?;
     let method_reference_status = method_reference_status(provider, &target)
         .map_err(|_| ValidationIssueKind::SourceUnreadable)?;
     ValidationContext::new(
         owner_kind,
         language_codes,
         requires_languages,
-        references_present,
-        registrar_present,
+        dependencies.references_present,
+        dependencies.registrar_present,
         method_reference_status,
     )
     .map_err(|_| ValidationIssueKind::SourceUnreadable)
@@ -1226,7 +1156,8 @@ struct DescriptorIdentity {
     name: String,
     language_code: Option<String>,
     references: Option<Vec<(String, String)>>,
-    registrar_reference: Option<(String, String)>,
+    registrar_references: Option<Vec<(String, String)>>,
+    requires_registrar: bool,
     method_reference: Option<Result<(String, String), ()>>,
 }
 
@@ -1274,43 +1205,73 @@ fn read_semantic_descriptor(
         .filter(|descriptor| descriptor.native_type == native_type && descriptor.name == name))
 }
 
-fn references_present(
-    provider: &LazyPlatformSource,
-    target: &DescriptorIdentity,
-) -> Result<Option<bool>, SafeRootError> {
-    let Some(references) = target.references.as_ref() else {
-        return Ok(None);
-    };
-    for (native_type, name) in references {
-        if read_semantic_descriptor(provider, native_type, name)?.is_none() {
-            return Ok(Some(false));
-        }
-    }
-    Ok(Some(true))
+#[derive(Debug)]
+struct TargetDependencyResolution {
+    keys: Vec<String>,
+    references_present: Option<bool>,
+    registrar_present: Option<bool>,
 }
 
-fn registrar_present(
+fn resolve_target_dependencies(
     provider: &LazyPlatformSource,
-    configuration: &ConfigurationDescriptor,
-    reference: &(String, String),
-) -> Result<bool, SafeRootError> {
-    for (_, document_name) in configuration
-        .registrations
-        .iter()
-        .filter(|(native_type, _)| native_type == "Document")
-    {
-        let Some(document) = read_semantic_descriptor(provider, "Document", document_name)? else {
-            continue;
-        };
-        if document
+    target: &DescriptorIdentity,
+) -> Result<TargetDependencyResolution, SafeRootError> {
+    let mut keys = BTreeSet::new();
+    let references_present = match target.references.as_ref() {
+        None => None,
+        Some(references) => {
+            let mut present = true;
+            for (native_type, name) in references {
+                match read_semantic_descriptor(provider, native_type, name)? {
+                    Some(descriptor) => {
+                        keys.insert(descriptor.key);
+                    }
+                    None => present = false,
+                }
+            }
+            Some(present)
+        }
+    };
+    let registrar_present = if target.native_type == "Document"
+        && target
             .references
             .as_ref()
-            .is_some_and(|references| references.contains(reference))
-        {
-            return Ok(true);
+            .is_some_and(|references| !references.is_empty())
+    {
+        references_present
+    } else if target.requires_registrar {
+        match target.registrar_references.as_ref() {
+            Some(registrars) if !registrars.is_empty() => {
+                let target_reference = (target.native_type.clone(), target.name.clone());
+                let mut present = true;
+                for (native_type, name) in registrars {
+                    if native_type != "Document" {
+                        present = false;
+                        continue;
+                    }
+                    match read_semantic_descriptor(provider, native_type, name)? {
+                        Some(descriptor) => {
+                            present &= descriptor
+                                .references
+                                .as_ref()
+                                .is_some_and(|references| references.contains(&target_reference));
+                            keys.insert(descriptor.key);
+                        }
+                        None => present = false,
+                    }
+                }
+                Some(present)
+            }
+            _ => Some(false),
         }
-    }
-    Ok(false)
+    } else {
+        None
+    };
+    Ok(TargetDependencyResolution {
+        keys: keys.into_iter().collect(),
+        references_present,
+        registrar_present,
+    })
 }
 
 fn descriptor_candidates(target_key: &str) -> Vec<String> {
@@ -1364,7 +1325,12 @@ fn descriptor_identity(key: &str, bytes: &[u8]) -> Option<DescriptorIdentity> {
     let references = properties
         .and_then(|properties| child(properties, "RegisterRecords"))
         .map(reference_values);
-    let reads_registrars = matches!(
+    let registrar_references = properties
+        .and_then(|properties| {
+            child(properties, "Recorders").or_else(|| child(properties, "Registrars"))
+        })
+        .map(reference_values);
+    let requires_registrar = matches!(
         native_type,
         "AccumulationRegister" | "AccountingRegister" | "CalculationRegister"
     ) || (native_type == "InformationRegister"
@@ -1373,7 +1339,6 @@ fn descriptor_identity(key: &str, bytes: &[u8]) -> Option<DescriptorIdentity> {
             .map(inner_text)
             .as_deref()
             == Some("RecorderSubordinate"));
-    let registrar_reference = reads_registrars.then(|| (native_type.to_string(), name.clone()));
     let language_code = (native_type == "Language")
         .then(|| {
             properties
@@ -1401,7 +1366,8 @@ fn descriptor_identity(key: &str, bytes: &[u8]) -> Option<DescriptorIdentity> {
         name,
         language_code,
         references,
-        registrar_reference,
+        registrar_references,
+        requires_registrar,
         method_reference,
     })
 }
@@ -1463,11 +1429,7 @@ fn configuration_descriptor(
 fn reference_values(node: Node<'_, '_>) -> Vec<(String, String)> {
     let items = node
         .children()
-        .filter(|item| {
-            item.is_element()
-                && item.tag_name().namespace() == Some(xml::MD_CLASSES_NS)
-                && item.tag_name().name() == "Item"
-        })
+        .filter(|item| item.is_element() && item.tag_name().name() == "Item")
         .filter_map(|item| {
             inner_text(item)
                 .split_once('.')
@@ -1481,6 +1443,10 @@ fn reference_values(node: Node<'_, '_>) -> Vec<(String, String)> {
         .split_once('.')
         .map(|(kind, name)| vec![(kind.to_string(), name.to_string())])
         .unwrap_or_default()
+}
+
+pub(super) fn source_unavailable(message: &'static str) -> SourceAdapterError {
+    SourceAdapterError::new(SourceAdapterErrorKind::SourceUnavailable, message)
 }
 
 fn child<'a>(node: Node<'a, 'a>, name: &str) -> Option<Node<'a, 'a>> {
@@ -1645,7 +1611,7 @@ mod fix_round3_tests {
     };
 
     use super::*;
-    use crate::safe_root::with_artifact_open_log;
+    use crate::safe_root::{with_artifact_open_log, with_evidence_finalization_failure};
     use unica_format_core::source::{SourceContext, SourceLocation};
 
     fn fixture_root(label: &str) -> PathBuf {
@@ -1661,9 +1627,15 @@ mod fix_round3_tests {
 
     fn write_fixture(root: &Path, unrelated: impl FnOnce(&Path)) -> PlatformOperationSession {
         fs::create_dir_all(root.join("Catalogs")).unwrap();
+        fs::create_dir_all(root.join("Languages")).unwrap();
         fs::write(
             root.join("Configuration.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="00000000-0000-0000-0000-000000000001"><Properties><Name>Main</Name></Properties><ChildObjects><Catalog>Target</Catalog><Catalog>Unrelated</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="00000000-0000-0000-0000-000000000001"><Properties><Name>Main</Name></Properties><ChildObjects><Language>English</Language><Catalog>Target</Catalog><Catalog>Unrelated</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Languages/English.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Language uuid="00000000-0000-0000-0000-000000000004"><Properties><Name>English</Name><LanguageCode>en</LanguageCode></Properties></Language></MetaDataObject>"#,
         )
         .unwrap();
         let target = root.join("Catalogs/Target.xml");
@@ -1741,6 +1713,184 @@ mod fix_round3_tests {
             fs::remove_dir_all(root).unwrap();
         }
     }
+
+    fn assert_source_unavailable(error: SourceAdapterError) {
+        assert_eq!(error.kind, SourceAdapterErrorKind::SourceUnavailable);
+    }
+
+    #[test]
+    fn evidence_finalization_failure_cannot_return_cacheable_success() {
+        let compatibility_root = fixture_root("finalize-compatibility");
+        let compatibility_session = write_fixture(&compatibility_root, |path| {
+            fs::write(path, b"<broken").unwrap();
+        });
+        assert_source_unavailable(
+            with_evidence_finalization_failure(|| compatibility(&compatibility_session))
+                .unwrap_err(),
+        );
+        fs::remove_dir_all(compatibility_root).unwrap();
+
+        let authorability_root = fixture_root("finalize-authorability");
+        let authorability_session = write_fixture(&authorability_root, |path| {
+            fs::write(path, b"<broken").unwrap();
+        });
+        let denied = with_evidence_finalization_failure(|| {
+            authorability(&authorability_session, AuthorabilityRequirement::Editable)
+        })
+        .unwrap();
+        assert!(!denied.is_allowed());
+        assert_eq!(denied.authorability(), Authorability::UnknownSupportState);
+        assert_eq!(denied.summary().state(), SupportState::Unreadable);
+        assert!(denied.evidence_revision().is_none());
+        fs::remove_dir_all(authorability_root).unwrap();
+
+        let context_root = fixture_root("finalize-context");
+        let context_session = write_fixture(&context_root, |path| {
+            fs::write(path, b"<broken").unwrap();
+        });
+        assert_source_unavailable(
+            with_evidence_finalization_failure(|| validation(&context_session)).unwrap_err(),
+        );
+        fs::remove_dir_all(context_root).unwrap();
+
+        let validation_root = fixture_root("finalize-validation");
+        let validation_session = write_fixture(&validation_root, |path| {
+            fs::write(path, b"<broken").unwrap();
+        });
+        let handle = unica_format_core::ports::OperationalSourceSession::new(validation_session);
+        assert_source_unavailable(
+            with_evidence_finalization_failure(|| {
+                super::super::validation::validate(
+                    &[handle],
+                    unica_format_core::ports::ValidationOptions::new(true, 100).unwrap(),
+                )
+            })
+            .unwrap_err(),
+        );
+        fs::remove_dir_all(validation_root).unwrap();
+    }
+
+    fn write_direct_reference_fixture(
+        root: &Path,
+        unrelated: impl FnOnce(&Path, &Path, &Path),
+    ) -> PlatformOperationSession {
+        for directory in [
+            "Documents",
+            "InformationRegisters",
+            "AccumulationRegisters",
+            "Languages",
+        ] {
+            fs::create_dir_all(root.join(directory)).unwrap();
+        }
+        fs::write(
+            root.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="10000000-0000-0000-0000-000000000001"><Properties><Name>Main</Name></Properties><ChildObjects><Language>English</Language><Document>Target</Document><Document>Malformed</Document><Document>Oversized</Document><Document>Unreadable</Document><InformationRegister>Stock</InformationRegister><AccumulationRegister>Balance</AccumulationRegister></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Languages/English.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Language uuid="10000000-0000-0000-0000-000000000002"><Properties><Name>English</Name><LanguageCode>en</LanguageCode></Properties></Language></MetaDataObject>"#,
+        )
+        .unwrap();
+        let target = root.join("Documents/Target.xml");
+        fs::write(
+            &target,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20"><Document uuid="10000000-0000-0000-0000-000000000003"><Properties><Name>Target</Name><RegisterRecords><xr:Item>InformationRegister.Stock</xr:Item><xr:Item>AccumulationRegister.Balance</xr:Item></RegisterRecords></Properties><ChildObjects/></Document></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("InformationRegisters/Stock.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><InformationRegister uuid="10000000-0000-0000-0000-000000000004"><Properties><Name>Stock</Name><WriteMode>RecorderSubordinate</WriteMode></Properties><ChildObjects/></InformationRegister></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("AccumulationRegisters/Balance.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><AccumulationRegister uuid="10000000-0000-0000-0000-000000000005"><Properties><Name>Balance</Name></Properties><ChildObjects/></AccumulationRegister></MetaDataObject>"#,
+        )
+        .unwrap();
+        unrelated(
+            &root.join("Documents/Malformed.xml"),
+            &root.join("Documents/Oversized.xml"),
+            &root.join("Documents/Unreadable.xml"),
+        );
+        let source = SourceContext::new(
+            SourceLocation::new(root.to_path_buf(), root.to_path_buf(), target),
+            Some("main".to_string()),
+            SourceFamily::PlatformXml,
+            None,
+        );
+        PlatformOperationSession::capture_validation(&source, OwnerResolutionMode::Existing)
+    }
+
+    #[test]
+    fn direct_multi_register_facts_open_only_explicit_references() {
+        let root = fixture_root("direct-register-records");
+        let outside = fixture_root("direct-register-records-outside");
+        fs::write(&outside, b"outside").unwrap();
+        let session = write_direct_reference_fixture(&root, |malformed, oversized, unreadable| {
+            fs::write(malformed, b"<broken").unwrap();
+            File::create(oversized)
+                .unwrap()
+                .set_len(70 * 1024 * 1024)
+                .unwrap();
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&outside, unreadable).unwrap();
+            #[cfg(not(unix))]
+            fs::write(unreadable, b"<broken").unwrap();
+        });
+
+        let (context, validation_opens) = with_artifact_open_log(|| validation(&session).unwrap());
+        let context = context
+            .context()
+            .expect("direct-reference context is valid");
+        assert_eq!(context.references_present(), Some(true));
+        assert_eq!(context.registrar_present(), Some(true));
+        for expected in [
+            "Documents/Target.xml",
+            "InformationRegisters/Stock.xml",
+            "AccumulationRegisters/Balance.xml",
+        ] {
+            assert!(
+                validation_opens
+                    .iter()
+                    .any(|path| path == Path::new(expected)),
+                "missing targeted read {expected}: {validation_opens:?}"
+            );
+        }
+        for forbidden in [
+            "Documents/Malformed.xml",
+            "Documents/Oversized.xml",
+            "Documents/Unreadable.xml",
+        ] {
+            assert!(
+                validation_opens
+                    .iter()
+                    .all(|path| path != Path::new(forbidden)),
+                "opened unrelated registrar candidate {forbidden}: {validation_opens:?}"
+            );
+        }
+
+        let compatibility_session =
+            write_direct_reference_fixture(&root, |_malformed, _oversized, _unreadable| {});
+        let (compatibility, compatibility_opens) =
+            with_artifact_open_log(|| compatibility(&compatibility_session).unwrap());
+        assert!(compatibility.issue().is_none(), "{compatibility:?}");
+        for forbidden in [
+            "Documents/Malformed.xml",
+            "Documents/Oversized.xml",
+            "Documents/Unreadable.xml",
+        ] {
+            assert!(
+                compatibility_opens
+                    .iter()
+                    .all(|path| path != Path::new(forbidden)),
+                "compatibility opened unrelated registrar candidate {forbidden}: {compatibility_opens:?}"
+            );
+        }
+
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_file(outside).unwrap();
+    }
 }
 
 pub(crate) fn session_from_handle(
@@ -1795,7 +1945,7 @@ mod authorization_order_tests {
                 authorability(&session, AuthorabilityRequirement::Editable)
             },
         );
-        assert!(matches!(result, AuthorabilityResult::Denied(_)));
+        assert!(matches!(result, Ok(AuthorabilityResult::Denied(_))));
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1820,7 +1970,7 @@ mod authorization_order_tests {
                 authorability(&session, AuthorabilityRequirement::Editable)
             },
         );
-        assert!(matches!(result, AuthorabilityResult::Denied(_)));
+        assert!(matches!(result, Ok(AuthorabilityResult::Denied(_))));
         std::fs::remove_dir_all(root).unwrap();
         std::fs::remove_file(outside).unwrap();
     }

@@ -215,3 +215,62 @@ fn operational_evidence_changes_only_with_the_validation_read_set() {
 
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn direct_multi_register_validation_ignores_unrelated_registered_documents() {
+    let root = temp_root("direct-register-records");
+    for directory in [
+        "Documents",
+        "InformationRegisters",
+        "AccumulationRegisters",
+        "Languages",
+    ] {
+        fs::create_dir_all(root.join(directory)).unwrap();
+    }
+    fs::write(
+        root.join("Configuration.xml"),
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="20000000-0000-0000-0000-000000000001"><Properties><Name>Main</Name></Properties><ChildObjects><Language>English</Language><Document>Target</Document><Document>Malformed</Document><Document>Oversized</Document><InformationRegister>Stock</InformationRegister><AccumulationRegister>Balance</AccumulationRegister></ChildObjects></Configuration></MetaDataObject>"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("Languages/English.xml"),
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Language uuid="20000000-0000-0000-0000-000000000002"><Properties><Name>English</Name><LanguageCode>en</LanguageCode></Properties></Language></MetaDataObject>"#,
+    )
+    .unwrap();
+    let target = root.join("Documents/Target.xml");
+    fs::write(
+        &target,
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20"><Document uuid="20000000-0000-0000-0000-000000000003"><Properties><Name>Target</Name><RegisterRecords><xr:Item>InformationRegister.Stock</xr:Item><xr:Item>AccumulationRegister.Balance</xr:Item></RegisterRecords></Properties><ChildObjects/></Document></MetaDataObject>"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("InformationRegisters/Stock.xml"),
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><InformationRegister uuid="20000000-0000-0000-0000-000000000004"><Properties><Name>Stock</Name><WriteMode>RecorderSubordinate</WriteMode></Properties><ChildObjects/></InformationRegister></MetaDataObject>"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("AccumulationRegisters/Balance.xml"),
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><AccumulationRegister uuid="20000000-0000-0000-0000-000000000005"><Properties><Name>Balance</Name></Properties><ChildObjects/></AccumulationRegister></MetaDataObject>"#,
+    )
+    .unwrap();
+    fs::write(root.join("Documents/Malformed.xml"), b"<broken").unwrap();
+    File::create(root.join("Documents/Oversized.xml"))
+        .unwrap()
+        .set_len(70 * 1024 * 1024)
+        .unwrap();
+
+    let factory = PlatformXmlAdapterFactory::new();
+    let context = factory
+        .operational_registration()
+        .validation_context()
+        .inspect(&unica_format_core::ports::ValidationContextRequest::new(
+            factory
+                .capture_validation_source(&source(&root, &target), OwnerResolutionMode::Existing),
+        ))
+        .unwrap();
+    let context = context.context().expect("direct reference context");
+    assert_eq!(context.references_present(), Some(true));
+    assert_eq!(context.registrar_present(), Some(true));
+
+    fs::remove_dir_all(root).unwrap();
+}

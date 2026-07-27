@@ -26,7 +26,7 @@ impl CompatibilityPort for PlatformXmlGuards {
         evidence.update(b"unica:platform-xml:compatibility-request:v1\0");
         for handle in request.sessions() {
             let session = v2_20::operations::session_from_handle(handle)?;
-            let result = v2_20::operations::compatibility(session);
+            let result = v2_20::operations::compatibility(session)?;
             evidence.update(result.evidence_revision().digest());
             match result.issue().map(|issue| issue.kind()) {
                 None => {}
@@ -94,9 +94,6 @@ impl AuthorabilityPort for PlatformXmlGuards {
         request: &AuthorabilityRequest,
     ) -> Result<AuthorabilityResult, SourceAdapterError> {
         let session = v2_20::operations::session_from_handle(request.session())?;
-        Ok(v2_20::operations::authorability(
-            session,
-            request.requirement(),
-        ))
+        v2_20::operations::authorability(session, request.requirement())
     }
 }

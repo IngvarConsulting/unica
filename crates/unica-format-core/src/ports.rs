@@ -1033,7 +1033,7 @@ pub struct AuthorabilityDenial {
     authorability: Authorability,
     summary: SupportSummary,
     diagnostic: FormatDiagnostic,
-    evidence_revision: OperationalEvidenceRevision,
+    evidence_revision: Option<OperationalEvidenceRevision>,
 }
 
 impl AuthorabilityDenial {
@@ -1041,10 +1041,20 @@ impl AuthorabilityDenial {
         authorability: Authorability,
         summary: SupportSummary,
         diagnostic: FormatDiagnostic,
-        evidence_revision: OperationalEvidenceRevision,
+        evidence_revision: Option<OperationalEvidenceRevision>,
     ) -> Result<Self, OperationalContractError> {
         let requirement_specific_denial = authorability == Authorability::Authorable
             && diagnostic.code() == FormatDiagnosticCode::SupportRemovalRequired;
+        let unverified_source_unreadable = authorability == Authorability::UnknownSupportState
+            && summary.state() == SupportState::Unreadable
+            && summary.editing_enabled().is_none()
+            && summary.vendor_count() == 0
+            && summary.rule_counts() == [0; 3]
+            && diagnostic.code() == FormatDiagnosticCode::SupportStateUnreadable
+            && matches!(
+                diagnostic.detail(),
+                FormatDiagnosticDetail::Support(SupportState::Unreadable)
+            );
         if (authorability == Authorability::Authorable && !requirement_specific_denial)
             || !matches!(
                 diagnostic.detail(),
@@ -1052,6 +1062,7 @@ impl AuthorabilityDenial {
             )
             || (authorability == Authorability::UnknownSupportState
                 && summary.state() != SupportState::Unreadable)
+            || (evidence_revision.is_none() && !unverified_source_unreadable)
         {
             return Err(OperationalContractError::InvalidStateCombination);
         }
@@ -1075,8 +1086,8 @@ impl AuthorabilityDenial {
         &self.diagnostic
     }
 
-    pub const fn evidence_revision(&self) -> &OperationalEvidenceRevision {
-        &self.evidence_revision
+    pub const fn evidence_revision(&self) -> Option<&OperationalEvidenceRevision> {
+        self.evidence_revision.as_ref()
     }
 }
 
@@ -1091,7 +1102,7 @@ impl<'de> Deserialize<'de> for AuthorabilityDenial {
             authorability: Authorability,
             summary: SupportSummary,
             diagnostic: FormatDiagnostic,
-            evidence_revision: OperationalEvidenceRevision,
+            evidence_revision: Option<OperationalEvidenceRevision>,
         }
 
         let wire = Wire::deserialize(deserializer)?;
@@ -1225,8 +1236,25 @@ impl AuthorabilityResult {
         diagnostic: FormatDiagnostic,
         evidence_revision: OperationalEvidenceRevision,
     ) -> Result<Self, OperationalContractError> {
-        AuthorabilityDenial::new(authorability, summary, diagnostic, evidence_revision)
+        AuthorabilityDenial::new(authorability, summary, diagnostic, Some(evidence_revision))
             .map(Self::Denied)
+    }
+
+    pub fn source_unreadable() -> Self {
+        Self::Denied(
+            AuthorabilityDenial::new(
+                Authorability::UnknownSupportState,
+                SupportSummary::new(SupportState::Unreadable, None, 0, [0; 3])
+                    .expect("closed unreadable support summary is valid"),
+                FormatDiagnostic::new(
+                    FormatDiagnosticCode::SupportStateUnreadable,
+                    FormatDiagnosticDetail::Support(SupportState::Unreadable),
+                )
+                .expect("closed unreadable support diagnostic is valid"),
+                None,
+            )
+            .expect("closed source-unreadable denial is valid"),
+        )
     }
 
     pub const fn is_allowed(&self) -> bool {
@@ -1247,9 +1275,9 @@ impl AuthorabilityResult {
         }
     }
 
-    pub const fn evidence_revision(&self) -> &OperationalEvidenceRevision {
+    pub const fn evidence_revision(&self) -> Option<&OperationalEvidenceRevision> {
         match self {
-            Self::Allowed(evidence) => evidence.evidence_revision(),
+            Self::Allowed(evidence) => Some(evidence.evidence_revision()),
             Self::Denied(denial) => denial.evidence_revision(),
         }
     }
@@ -1291,7 +1319,7 @@ impl Serialize for AuthorabilityResult {
                 state.serialize_field("authorability", &denial.authorability())?;
                 state.serialize_field("summary", denial.summary())?;
                 state.serialize_field("diagnostic", denial.diagnostic())?;
-                state.serialize_field("evidenceRevision", denial.evidence_revision())?;
+                state.serialize_field("evidenceRevision", &denial.evidence_revision())?;
                 state.end()
             }
         }
@@ -1317,7 +1345,7 @@ impl<'de> Deserialize<'de> for AuthorabilityResult {
                 summary: SupportSummary,
                 diagnostic: FormatDiagnostic,
                 #[serde(rename = "evidenceRevision")]
-                evidence_revision: OperationalEvidenceRevision,
+                evidence_revision: Option<OperationalEvidenceRevision>,
             },
         }
 
@@ -1335,7 +1363,8 @@ impl<'de> Deserialize<'de> for AuthorabilityResult {
                 summary,
                 diagnostic,
                 evidence_revision,
-            } => Self::denied(authorability, summary, diagnostic, evidence_revision)
+            } => AuthorabilityDenial::new(authorability, summary, diagnostic, evidence_revision)
+                .map(Self::Denied)
                 .map_err(D::Error::custom),
         }
     }

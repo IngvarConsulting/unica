@@ -429,7 +429,7 @@ impl PublicationPort for PlatformXmlPublication {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FileIdentity {
     volume: u64,
-    file: u64,
+    file: u128,
 }
 
 #[cfg(unix)]
@@ -455,7 +455,7 @@ fn file_identity(file: &File) -> std::io::Result<FileIdentity> {
     let metadata = file.metadata()?;
     Ok(FileIdentity {
         volume: metadata.dev(),
-        file: metadata.ino(),
+        file: u128::from(metadata.ino()),
     })
 }
 
@@ -852,6 +852,18 @@ impl<'a> VerifiedFullDumpAdapter<'a> {
                     ));
                 }
             };
+        let staged_evidence = match finalize_publication_evidence(&staged_snapshot) {
+            Ok(evidence) => evidence,
+            Err(error) => {
+                finish_prepared!(dump_failure(
+                    tool_name,
+                    error,
+                    Some(redactor(&output.stdout)),
+                    Some(redactor(&output.stderr)),
+                    Some(reported_command),
+                ));
+            }
+        };
         if cancellation.is_cancelled() {
             finish_prepared!(cancelled_dump_outcome(tool_name, &output, reported_command));
         }
@@ -889,6 +901,11 @@ impl<'a> VerifiedFullDumpAdapter<'a> {
                         "private staged dump changed after validation: {}",
                         private.staged_tree.display()
                     ));
+                }
+                if finalize_publication_evidence(&current_stage)? != staged_evidence {
+                    return Err(
+                        "private staged dump evidence changed after finalization".to_string()
+                    );
                 }
                 if cancellation.is_cancelled() {
                     private.cancellation = PublicationCancellation::BeforePublication;
@@ -3015,6 +3032,52 @@ enum TreeSnapshot {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PublicationEvidenceRevision([u8; 32]);
+
+fn finalize_publication_evidence(
+    snapshot: &TreeSnapshot,
+) -> Result<PublicationEvidenceRevision, String> {
+    run_publication_failpoint(PublicationCheckpoint::FinalizeEvidence)?;
+    let mut digest = Sha256::new();
+    digest.update(b"unica:platform-xml:publication-evidence:v1\0");
+    match snapshot {
+        TreeSnapshot::Absent => digest.update([0]),
+        TreeSnapshot::Directory { identity, entries } => {
+            digest.update([1]);
+            update_publication_identity(&mut digest, *identity);
+            digest.update((entries.len() as u64).to_le_bytes());
+            for entry in entries {
+                let relative = entry.relative_path.to_string_lossy();
+                digest.update((relative.len() as u64).to_le_bytes());
+                digest.update(relative.as_bytes());
+                match entry.kind {
+                    TreeEntryKind::Directory { identity } => {
+                        digest.update([0]);
+                        update_publication_identity(&mut digest, identity);
+                    }
+                    TreeEntryKind::File {
+                        identity,
+                        size,
+                        sha256,
+                    } => {
+                        digest.update([1]);
+                        update_publication_identity(&mut digest, identity);
+                        digest.update(size.to_le_bytes());
+                        digest.update(sha256);
+                    }
+                }
+            }
+        }
+    }
+    Ok(PublicationEvidenceRevision(digest.finalize().into()))
+}
+
+fn update_publication_identity(digest: &mut Sha256, identity: FileIdentity) {
+    digest.update(identity.volume.to_le_bytes());
+    digest.update(identity.file.to_le_bytes());
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TreeEntrySnapshot {
     relative_path: PathBuf,
@@ -4537,6 +4600,7 @@ fn rename_child_no_replace(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PublicationCheckpoint {
+    FinalizeEvidence,
     AfterBackup,
     BeforeStageInstall,
     BeforeSealedPublishRename,
@@ -6815,6 +6879,29 @@ mod tests {
             result.lifecycle.recovery(),
             PublicationRecovery::NotRequired
         );
+        assert_eq!(std::fs::read(target.join("before.txt")).unwrap(), b"before");
+        assert_eq!(
+            std::fs::read_to_string(target.join("Configuration.xml")).unwrap(),
+            valid_configuration_owner()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn publication_evidence_finalization_failure_never_becomes_visible_or_cacheable() {
+        let (root, context, _) = workspace("evidence-finalization");
+        let target = context.cwd.join("src");
+        seed_valid_target(&target);
+        let platform = fixed_platform(&root);
+        let runner = DumpRunner::valid();
+
+        let result = with_publication_failpoint(PublicationCheckpoint::FinalizeEvidence, || {
+            invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context)
+        });
+
+        assert!(!result.is_ok(), "{result:?}");
+        assert!(result.changes.is_empty(), "{result:?}");
+        assert!(result.artifacts.is_empty(), "{result:?}");
         assert_eq!(std::fs::read(target.join("before.txt")).unwrap(), b"before");
         assert_eq!(
             std::fs::read_to_string(target.join("Configuration.xml")).unwrap(),

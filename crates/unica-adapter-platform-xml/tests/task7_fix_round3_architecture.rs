@@ -7,12 +7,24 @@ use std::{
 
 use syn::{
     visit::{self, Visit},
-    ExprCall, ExprMethodCall, ExprPath, Item, ItemFn, ItemUse, Lit, UseTree,
+    Expr, ExprCall, ExprMethodCall, ExprPath, ImplItem, Item, ItemUse, Lit, TraitItem, Type,
+    UseTree,
 };
+
+#[derive(Debug)]
+enum CallFact {
+    Path(Vec<String>),
+    Method(String),
+    Ufcs {
+        self_type: Vec<String>,
+        trait_path: Vec<String>,
+        method: String,
+    },
+}
 
 #[derive(Debug, Default)]
 struct FunctionFacts {
-    calls: Vec<Vec<String>>,
+    calls: Vec<CallFact>,
     forbidden: Vec<String>,
 }
 
@@ -23,9 +35,18 @@ struct FunctionNode {
     facts: FunctionFacts,
 }
 
+#[derive(Debug, Clone)]
+struct MethodTarget {
+    id: String,
+    owner: Vec<String>,
+    trait_path: Option<Vec<String>>,
+}
+
 #[derive(Debug, Default)]
 struct CallGraph {
     functions: BTreeMap<String, FunctionNode>,
+    methods_by_name: BTreeMap<String, Vec<MethodTarget>>,
+    associated_methods: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl CallGraph {
@@ -34,32 +55,123 @@ impl CallGraph {
         for (module, source) in sources {
             let file = syn::parse_file(&source)
                 .unwrap_or_else(|error| panic!("failed to parse {module}: {error}"));
-            let imports = module_imports(&module, &file.items);
-            for item in file.items {
-                if let Item::Fn(function) = item {
-                    graph.insert_function(&module, &imports, function);
-                }
-            }
+            graph.insert_items(&module, &file.items);
         }
         graph
     }
 
-    fn insert_function(
+    fn insert_items(&mut self, module: &str, items: &[Item]) {
+        let imports = module_imports(module, items);
+        for item in items {
+            match item {
+                Item::Fn(function) => {
+                    let id = format!("{module}::{}", function.sig.ident);
+                    self.insert_body(&id, module, &imports, &function.block);
+                }
+                Item::Impl(item_impl) => {
+                    let Some(owner) = type_path_segments(&item_impl.self_ty)
+                        .map(|path| resolve_decl_path(module, &imports, path))
+                    else {
+                        continue;
+                    };
+                    let trait_path = item_impl.trait_.as_ref().map(|(_, path, _)| {
+                        resolve_decl_path(module, &imports, path_segments(path))
+                    });
+                    for impl_item in &item_impl.items {
+                        let ImplItem::Fn(method) = impl_item else {
+                            continue;
+                        };
+                        let method_name = method.sig.ident.to_string();
+                        let trait_label = trait_path
+                            .as_ref()
+                            .map(|path| format!(" as {}", path.join("::")))
+                            .unwrap_or_default();
+                        let id = format!(
+                            "{module}::<{}{}>::{method_name}",
+                            owner.join("::"),
+                            trait_label
+                        );
+                        self.insert_body(&id, module, &imports, &method.block);
+                        self.insert_method_target(
+                            MethodTarget {
+                                id,
+                                owner: owner.clone(),
+                                trait_path: trait_path.clone(),
+                            },
+                            &method_name,
+                        );
+                    }
+                }
+                Item::Trait(item_trait) => {
+                    let trait_path =
+                        resolve_decl_path(module, &imports, vec![item_trait.ident.to_string()]);
+                    for trait_item in &item_trait.items {
+                        let TraitItem::Fn(method) = trait_item else {
+                            continue;
+                        };
+                        let Some(default) = &method.default else {
+                            continue;
+                        };
+                        let method_name = method.sig.ident.to_string();
+                        let id =
+                            format!("{module}::<trait {}>::{method_name}", trait_path.join("::"));
+                        self.insert_body(&id, module, &imports, default);
+                        self.insert_method_target(
+                            MethodTarget {
+                                id,
+                                owner: trait_path.clone(),
+                                trait_path: Some(trait_path.clone()),
+                            },
+                            &method_name,
+                        );
+                    }
+                }
+                Item::Mod(item_mod) => {
+                    if let Some((_, nested)) = &item_mod.content {
+                        self.insert_items(&format!("{module}::{}", item_mod.ident), nested);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn insert_body(
         &mut self,
+        id: &str,
         module: &str,
         imports: &BTreeMap<String, Vec<String>>,
-        function: ItemFn,
+        block: &syn::Block,
     ) {
         let mut visitor = FactVisitor::default();
-        visitor.visit_item_fn(&function);
+        visitor.visit_block(block);
         self.functions.insert(
-            format!("{module}::{}", function.sig.ident),
+            id.to_string(),
             FunctionNode {
                 module: module.to_string(),
                 imports: imports.clone(),
                 facts: visitor.facts,
             },
         );
+    }
+
+    fn insert_method_target(&mut self, target: MethodTarget, method_name: &str) {
+        let owner_key = format!("{}::{method_name}", target.owner.join("::"));
+        self.associated_methods
+            .entry(owner_key)
+            .or_default()
+            .insert(target.id.clone());
+        if let Some(trait_path) = &target.trait_path {
+            let trait_key = format!("{}::{method_name}", trait_path.join("::"));
+            self.associated_methods
+                .entry(trait_key)
+                .or_default()
+                .insert(target.id.clone());
+        }
+        self.methods_by_name
+            .entry(method_name.to_string())
+            .or_default()
+            .push(target);
     }
 
     fn violations_from(&self, roots: &[&str]) -> Vec<String> {
@@ -81,27 +193,62 @@ impl CallGraph {
                 violations.push(format!("{function_id}: {reason}"));
             }
             for call in &function.facts.calls {
-                if call.first().is_some_and(|alias| {
-                    function.imports.get(alias).is_some_and(|path| {
-                        path.iter()
-                            .any(|segment| matches!(segment.as_str(), "roxmltree" | "quick_xml"))
-                    })
-                }) {
-                    violations.push(format!(
-                        "{function_id}: calls imported parser path {}",
-                        call.join("::")
-                    ));
-                    continue;
-                }
-                if let Some(target) = self.resolve(function, call) {
-                    queue.push_back(target);
+                match call {
+                    CallFact::Path(path) => {
+                        if path.first().is_some_and(|alias| {
+                            function.imports.get(alias).is_some_and(|imported| {
+                                imported.iter().any(|segment| {
+                                    matches!(segment.as_str(), "roxmltree" | "quick_xml")
+                                })
+                            })
+                        }) {
+                            violations.push(format!(
+                                "{function_id}: calls imported parser path {}",
+                                path.join("::")
+                            ));
+                            continue;
+                        }
+                        queue.extend(self.resolve_path(function, path));
+                    }
+                    CallFact::Method(method) => {
+                        if let Some(targets) = self.methods_by_name.get(method) {
+                            queue.extend(targets.iter().map(|target| target.id.clone()));
+                        }
+                    }
+                    CallFact::Ufcs {
+                        self_type,
+                        trait_path,
+                        method,
+                    } => {
+                        let owner = resolve_decl_path(
+                            &function.module,
+                            &function.imports,
+                            self_type.clone(),
+                        );
+                        let trait_path = resolve_decl_path(
+                            &function.module,
+                            &function.imports,
+                            trait_path.clone(),
+                        );
+                        if let Some(targets) = self.methods_by_name.get(method) {
+                            queue.extend(
+                                targets
+                                    .iter()
+                                    .filter(|target| {
+                                        target.owner == owner
+                                            && target.trait_path.as_ref() == Some(&trait_path)
+                                    })
+                                    .map(|target| target.id.clone()),
+                            );
+                        }
+                    }
                 }
             }
         }
         violations
     }
 
-    fn resolve(&self, caller: &FunctionNode, call: &[String]) -> Option<String> {
+    fn resolve_path(&self, caller: &FunctionNode, call: &[String]) -> Vec<String> {
         let candidate = match call {
             [name] => {
                 if let Some(imported) = caller.imports.get(name) {
@@ -120,7 +267,14 @@ impl CallGraph {
             }
             _ => format!("{}::{}", caller.module, call.join("::")),
         };
-        self.functions.contains_key(&candidate).then_some(candidate)
+        let mut targets = Vec::new();
+        if self.functions.contains_key(&candidate) {
+            targets.push(candidate.clone());
+        }
+        if let Some(methods) = self.associated_methods.get(&candidate) {
+            targets.extend(methods.iter().cloned());
+        }
+        targets
     }
 }
 
@@ -131,15 +285,32 @@ struct FactVisitor {
 
 impl<'ast> Visit<'ast> for FactVisitor {
     fn visit_expr_call(&mut self, node: &'ast ExprCall) {
-        if let syn::Expr::Path(path) = node.func.as_ref() {
-            self.facts.calls.push(path_segments(&path.path));
+        if let Expr::Path(path) = node.func.as_ref() {
+            if let Some(qself) = &path.qself {
+                let segments = path_segments(&path.path);
+                if let (Some(self_type), Some(method)) =
+                    (type_path_segments(&qself.ty), segments.last().cloned())
+                {
+                    self.facts.calls.push(CallFact::Ufcs {
+                        self_type,
+                        trait_path: segments[..segments.len().saturating_sub(1)].to_vec(),
+                        method,
+                    });
+                }
+            } else {
+                self.facts
+                    .calls
+                    .push(CallFact::Path(path_segments(&path.path)));
+            }
         }
         visit::visit_expr_call(self, node);
     }
 
     fn visit_expr_path(&mut self, node: &'ast ExprPath) {
         let path = path_segments(&node.path);
-        self.facts.calls.push(path.clone());
+        if node.qself.is_none() {
+            self.facts.calls.push(CallFact::Path(path.clone()));
+        }
         if path
             .iter()
             .any(|segment| matches!(segment.as_str(), "roxmltree" | "quick_xml"))
@@ -152,6 +323,9 @@ impl<'ast> Visit<'ast> for FactVisitor {
     }
 
     fn visit_expr_method_call(&mut self, node: &'ast ExprMethodCall) {
+        self.facts
+            .calls
+            .push(CallFact::Method(node.method.to_string()));
         if matches!(
             node.method.to_string().as_str(),
             "tag_name" | "namespace" | "attribute"
@@ -183,6 +357,35 @@ impl<'ast> Visit<'ast> for FactVisitor {
             }
         }
         visit::visit_lit(self, literal);
+    }
+}
+
+fn type_path_segments(ty: &Type) -> Option<Vec<String>> {
+    let Type::Path(path) = ty else {
+        return None;
+    };
+    Some(path_segments(&path.path))
+}
+
+fn resolve_decl_path(
+    module: &str,
+    imports: &BTreeMap<String, Vec<String>>,
+    path: Vec<String>,
+) -> Vec<String> {
+    match path.as_slice() {
+        [first, ..] if matches!(first.as_str(), "crate" | "self" | "super") => {
+            absolutize_path(module, path)
+        }
+        [first, rest @ ..] if imports.contains_key(first) => {
+            let mut resolved = imports[first].clone();
+            resolved.extend(rest.iter().cloned());
+            resolved
+        }
+        _ => {
+            let mut resolved = module.split("::").map(str::to_string).collect::<Vec<_>>();
+            resolved.extend(path);
+            resolved
+        }
     }
 }
 
@@ -405,5 +608,119 @@ fn moved_cross_file_native_layout_helper_is_still_rejected() {
             .iter()
             .any(|violation| violation.contains("Configuration.xml")),
         "{violations:?}"
+    );
+}
+
+#[test]
+fn renamed_inherent_method_with_method_call_syntax_is_rejected() {
+    let graph = fixture_graph(
+        "inherent-method",
+        &[(
+            "entry.rs",
+            r#"
+                pub struct Boundary;
+                impl Boundary {
+                    fn inspect_hidden(&self) {
+                        let _ = std::path::Path::new(".").join("Configuration.xml");
+                    }
+                }
+                pub fn run() {
+                    let boundary = Boundary;
+                    boundary.inspect_hidden();
+                }
+            "#,
+        )],
+    );
+
+    let violations = graph.violations_from(&["crate::entry::run"]);
+    assert!(
+        violations
+            .iter()
+            .any(|violation| violation.contains("Configuration.xml")),
+        "{violations:?}"
+    );
+}
+
+#[test]
+fn renamed_trait_impl_method_and_ufcs_call_are_rejected() {
+    let graph = fixture_graph(
+        "trait-ufcs",
+        &[(
+            "entry.rs",
+            r#"
+                trait BoundaryCheck { fn inspect_hidden(&self); }
+                struct Boundary;
+                impl BoundaryCheck for Boundary {
+                    fn inspect_hidden(&self) {
+                        let _ = roxmltree::Document::parse("<x/>");
+                    }
+                }
+                pub fn run() {
+                    <Boundary as BoundaryCheck>::inspect_hidden(&Boundary);
+                }
+            "#,
+        )],
+    );
+
+    let violations = graph.violations_from(&["crate::entry::run"]);
+    assert!(
+        violations
+            .iter()
+            .any(|violation| violation.contains("roxmltree")),
+        "{violations:?}"
+    );
+}
+
+#[test]
+fn nested_multi_layer_trait_method_logic_is_rejected() {
+    let graph = fixture_graph(
+        "nested-method-layers",
+        &[(
+            "entry.rs",
+            r#"
+                mod nested {
+                    pub trait BoundaryCheck { fn inspect_hidden(&self); }
+                    pub struct Boundary;
+                    impl BoundaryCheck for Boundary {
+                        fn inspect_hidden(&self) { first(self); }
+                    }
+                    fn first(boundary: &Boundary) { second(boundary); }
+                    fn second(_boundary: &Boundary) {
+                        let _ = std::path::Path::new(".").join("ParentConfigurations.bin");
+                    }
+                }
+                pub fn run() {
+                    use nested::BoundaryCheck;
+                    nested::Boundary.inspect_hidden();
+                }
+            "#,
+        )],
+    );
+
+    let violations = graph.violations_from(&["crate::entry::run"]);
+    assert!(
+        violations
+            .iter()
+            .any(|violation| violation.contains("ParentConfigurations.bin")),
+        "{violations:?}"
+    );
+}
+
+#[test]
+fn unknown_neutral_trait_object_method_terminates_without_false_positive() {
+    let graph = fixture_graph(
+        "neutral-trait-object",
+        &[(
+            "entry.rs",
+            r#"
+                pub trait NeutralPort { fn inspect(&self); }
+                pub fn run(port: &dyn NeutralPort) { port.inspect(); }
+            "#,
+        )],
+    );
+
+    assert!(
+        graph.violations_from(&["crate::entry::run"]).is_empty(),
+        "neutral trait-object calls must terminate at the port boundary"
     );
 }

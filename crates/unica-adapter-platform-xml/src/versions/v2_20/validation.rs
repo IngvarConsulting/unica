@@ -44,20 +44,15 @@ fn validate_one(
     let provider = match session.validation_provider() {
         Ok(provider) => provider,
         Err(_) => {
-            return Ok((
-                report(
-                    SemanticArtifactId::new("artifact:unavailable").expect("constant semantic id"),
-                    1,
-                    vec![error(ValidationFindingCode::SourceUnreadable)],
-                )?,
-                session.failure_evidence(b"validation"),
+            return Err(super::operations::source_unavailable(
+                "validation source is unavailable",
             ))
         }
     };
     let report = validate_one_with_provider(session, &provider, options)?;
-    let evidence = provider
-        .finalize_evidence(b"validation")
-        .unwrap_or_else(|_| session.failure_evidence(b"validation"));
+    let evidence = provider.finalize_evidence(b"validation").map_err(|_| {
+        super::operations::source_unavailable("validation evidence could not be finalized")
+    })?;
     Ok((report, evidence))
 }
 
