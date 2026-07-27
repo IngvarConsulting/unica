@@ -802,7 +802,11 @@ fn locate_selector(
         }
     };
     let local = local_line_ending_at(text, offset, position);
-    let eol = resolve_line_ending(EolPolicy::Preserve, snapshot, local)
+    let policy = match snapshot.line_endings() {
+        LineEndingProfile::None => EolPolicy::Lf,
+        LineEndingProfile::Uniform(_) | LineEndingProfile::Mixed { .. } => EolPolicy::Preserve,
+    };
+    let eol = resolve_line_ending(policy, snapshot, local)
         .map_err(|error| format!("resolve code.patch EOL: {error}"))?;
     let leading_separator = if position == Position::After
         && offset == text.len()
@@ -1692,6 +1696,37 @@ mod tests {
         let repeated = patch_inner(&args, &context, PatchMode::Apply);
         assert!(repeated.outcome.ok);
         assert!(repeated.data.unwrap().no_op);
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn code_patch_without_any_source_eol_uses_lf_for_preview_apply_and_repeat_noop() {
+        let context = temp_context("no-source-eol");
+        let module = context
+            .workspace_root
+            .join("src/CommonModules/Sample/Ext/Module.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        let before = "Процедура Тест() КонецПроцедуры";
+        let expected = "Процедура Тест() КонецПроцедуры\nПроцедура Добавлена() КонецПроцедуры\n";
+        fs::write(&module, before).unwrap();
+        let args = patch_args(
+            "src/CommonModules/Sample/Ext/Module.bsl",
+            "Тест",
+            "Процедура Добавлена() КонецПроцедуры",
+        );
+
+        let preview = patch_inner(&args, &context, PatchMode::Preview);
+        assert!(preview.outcome.ok, "{:?}", preview.outcome.errors);
+        assert_eq!(fs::read_to_string(&module).unwrap(), before);
+
+        let applied = patch_inner(&args, &context, PatchMode::Apply);
+        assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
+        assert_eq!(fs::read_to_string(&module).unwrap(), expected);
+
+        let repeated = patch_inner(&args, &context, PatchMode::Apply);
+        assert!(repeated.outcome.ok, "{:?}", repeated.outcome.errors);
+        assert!(repeated.data.unwrap().no_op);
+        assert_eq!(fs::read_to_string(&module).unwrap(), expected);
         fs::remove_dir_all(&context.workspace_root).unwrap();
     }
 

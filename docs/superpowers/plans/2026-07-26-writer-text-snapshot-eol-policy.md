@@ -650,3 +650,74 @@ git log --oneline --decorate upstream/main..HEAD
 
 Expected: clean worktree and a small sequence containing the design, snapshot,
 policy, and `code.patch` adoption commits.
+
+---
+
+### Task 5: Review Follow-up for Modules Without EOL
+
+**Files:**
+- Modify: `crates/unica-coder/src/infrastructure/native_operations/code.rs`
+- Modify: `spec/architecture/code-patch-v1.md`
+- Modify: `docs/superpowers/plans/2026-07-26-writer-text-snapshot-eol-policy.md`
+
+**Interfaces:**
+- Consumes: strict shared `resolve_line_ending(EolPolicy::Preserve, ...)`.
+- Produces: a `code.patch`-local LF fallback for `LineEndingProfile::None`;
+  the shared preserve policy remains fail-closed.
+
+- [x] **Step 1: Add a failing end-to-end regression test**
+
+Add a test using the valid one-line module
+`Процедура Тест() КонецПроцедуры` that exercises preview, apply, and repeated
+apply. Assert that preview does not write, apply inserts an LF separator and
+LF-terminated content, and repeated apply is a semantic no-op.
+
+- [x] **Step 2: Run the regression test and verify RED**
+
+Run:
+
+```bash
+cargo test -p unica-coder infrastructure::native_operations::code::tests::code_patch_without_any_source_eol_uses_lf_for_preview_apply_and_repeat_noop -- --exact
+```
+
+Expected: FAIL because `Preserve + LineEndingProfile::None` returns
+`MissingPreserveContext`.
+
+- [x] **Step 3: Implement the consumer-local policy choice**
+
+In `locate_selector`, choose `EolPolicy::Lf` only when
+`snapshot.line_endings() == LineEndingProfile::None`; use
+`EolPolicy::Preserve` for every other supported profile. Do not weaken
+`resolve_line_ending` and do not add a public EOL argument.
+
+- [x] **Step 4: Run the regression and focused suites and verify GREEN**
+
+Run:
+
+```bash
+cargo test -p unica-coder infrastructure::native_operations::code::tests::code_patch_without_any_source_eol_uses_lf_for_preview_apply_and_repeat_noop -- --exact
+cargo test -p unica-coder native_operations::code::tests -- --test-threads=1
+cargo test -p unica-coder text_snapshot -- --test-threads=1
+```
+
+Expected: all commands exit 0.
+
+- [x] **Step 5: Update the active v1 contract**
+
+Document in `spec/architecture/code-patch-v1.md` that a source without any EOL
+uses LF for inserted separators/content for v1 compatibility, while any lone
+CR source remains rejected before mutation.
+
+- [x] **Step 6: Run full verification**
+
+Run:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy -p unica-coder --all-targets --all-features -- -D warnings
+cargo test -p unica-coder -- --test-threads=1
+python3 scripts/ci/check-rust-platform-boundary.py
+git diff --check upstream/main...HEAD
+```
+
+Expected: every command exits 0; existing ignored tests remain ignored.
