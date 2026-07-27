@@ -76,6 +76,7 @@ fn compile_preview_without_payload_uses_the_safe_dry_run_placeholder() {
     fs::remove_dir_all(root).unwrap();
 }
 
+/// Verifies the facade routes meta-edit dry-runs to the detailed preview.
 #[test]
 fn meta_edit_dry_run_dispatches_to_projected_diff_preview() {
     let root = temp_root("meta-edit-dry-run-dispatch");

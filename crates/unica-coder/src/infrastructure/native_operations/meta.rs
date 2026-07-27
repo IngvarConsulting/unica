@@ -2628,6 +2628,7 @@ mod edit_tests {
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
+    /// Verifies inline previews expose the exact projected XML without writing it.
     #[test]
     fn preview_meta_edit_reports_projected_inline_diff_without_writing() {
         let context = temp_context("preview-inline-change");
@@ -2661,6 +2662,7 @@ mod edit_tests {
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
+    /// Verifies a missing preview target remains a useful dry-run failure.
     #[test]
     fn preview_meta_edit_rejects_missing_object() {
         let context = temp_context("preview-missing-object");
@@ -2683,6 +2685,7 @@ mod edit_tests {
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
+    /// Verifies DefinitionFile previews use the same exact diff contract.
     #[test]
     fn preview_meta_edit_reports_definition_file_diff_without_writing() {
         let context = temp_context("preview-definition-file");
@@ -2713,6 +2716,7 @@ mod edit_tests {
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
+    /// Verifies byte-identical previews report a no-op and omit the diff.
     #[test]
     fn preview_meta_edit_reports_no_file_changes_without_diff() {
         let context = temp_context("preview-no-op");
@@ -2738,6 +2742,28 @@ mod edit_tests {
         assert_eq!(fs::read(&object_path).unwrap(), before);
 
         let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    /// Verifies a renderer fault does not turn a valid metadata edit into a failure.
+    #[test]
+    fn projected_diff_render_failure_becomes_warning() {
+        let mut info_lines = Vec::new();
+        let mut warnings = Vec::new();
+
+        meta_edit_record_projected_diff(
+            &mut info_lines,
+            &mut warnings,
+            Err("synthetic renderer failure".to_string()),
+        );
+
+        assert!(info_lines.is_empty());
+        assert_eq!(
+            warnings,
+            vec![
+                "projected diff could not be rendered safely: synthetic renderer failure"
+                    .to_string()
+            ]
+        );
     }
 
     #[test]
@@ -16749,10 +16775,11 @@ fn edit_meta_with_mode(
                 .map_err(|err| format!("failed to preview {}: {err}", object_path.display()))?;
             let after = String::from_utf8(serialized_bytes)
                 .map_err(|err| format!("failed to preview {}: {err}", object_path.display()))?;
-            info_lines.push(format!(
-                "\n=== projected diff ===\n{}",
-                meta_edit_unified_diff(&diff_path, &before, &after)?
-            ));
+            meta_edit_record_projected_diff(
+                &mut info_lines,
+                &mut warnings,
+                meta_edit_unified_diff(&diff_path, &before, &after),
+            );
         } else {
             counts = MetaEditCounts::default();
             info_lines.push("[INFO] No changes".to_string());
@@ -16808,6 +16835,20 @@ fn edit_meta_with_mode(
             stderr: Some(format!("{error}\n")),
             command: None,
         },
+    }
+}
+
+/// Adds a verified diff to stdout or records a non-fatal renderer diagnostic.
+fn meta_edit_record_projected_diff(
+    info_lines: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+    rendered: Result<String, String>,
+) {
+    match rendered {
+        Ok(diff) => info_lines.push(format!("\n=== projected diff ===\n{diff}")),
+        Err(error) => warnings.push(format!(
+            "projected diff could not be rendered safely: {error}"
+        )),
     }
 }
 
