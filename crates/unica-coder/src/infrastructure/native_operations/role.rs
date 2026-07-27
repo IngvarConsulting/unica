@@ -684,6 +684,13 @@ pub(crate) fn validate_role(
                         report.warn(format!(
                             "{obj_name}: unknown right '{right_name}'.{suggestion}"
                         ));
+                    } else if !valid_rights.is_empty()
+                        && right_value == "true"
+                        && right_name.ends_with("PredefinedData")
+                    {
+                        report.warn(format!(
+                            "{obj_name}: '{right_name}' = true grants interactive changes to predefined data (predefined data is part of the configuration and should not be available to end users)"
+                        ));
                     }
                 }
             }
@@ -2564,5 +2571,92 @@ mod role_compile_contract_tests {
             assert!(!generated.contains(r#"version="2.17""#), "{generated}");
         }
         let _ = fs::remove_dir_all(root);
+    }
+
+    fn validate_role_stdout(rights_xml: &str) -> String {
+        let workspace = temp_root("role-validate-predefined-data");
+        let ext_dir = workspace.join("Roles/PredefinedDataEditor/Ext");
+        fs::create_dir_all(&ext_dir).unwrap();
+        let rights_path = ext_dir.join("Rights.xml");
+        fs::write(&rights_path, rights_xml).unwrap();
+
+        let args = Map::from_iter([
+            (
+                "RightsPath".to_string(),
+                Value::String(rights_path.display().to_string()),
+            ),
+            ("Detailed".to_string(), Value::Bool(true)),
+        ]);
+        let outcome = validate_role(&args, &context(&workspace));
+        let stdout = outcome.stdout.clone().unwrap_or_default();
+        let _ = fs::remove_dir_all(&workspace);
+        assert!(outcome.ok, "{outcome:?}");
+        stdout
+    }
+
+    const PREDEFINED_DATA_WARNING: &str =
+        "grants interactive changes to predefined data (predefined data is part of the configuration and should not be available to end users)";
+
+    #[test]
+    fn validate_role_warns_on_interactive_predefined_data_right_set_true() {
+        let rights = concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+            "<Rights xmlns=\"http://v8.1c.ru/8.2/roles\" xsi:type=\"Rights\" version=\"2.20\"\n",
+            "        xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n",
+            "    <setForNewObjects>false</setForNewObjects>\n",
+            "    <setForAttributesByDefault>false</setForAttributesByDefault>\n",
+            "    <independentRightsOfChildObjects>false</independentRightsOfChildObjects>\n",
+            "    <object>\n",
+            "        <name>Catalog.Products</name>\n",
+            "        <right><name>Read</name><value>true</value></right>\n",
+            "        <right><name>InteractiveDeletePredefinedData</name><value>true</value></right>\n",
+            "    </object>\n",
+            "</Rights>\n",
+        );
+        let stdout = validate_role_stdout(rights);
+        assert!(
+            stdout.contains(&format!(
+                "Catalog.Products: 'InteractiveDeletePredefinedData' = true {PREDEFINED_DATA_WARNING}"
+            )),
+            "{stdout}"
+        );
+    }
+
+    #[test]
+    fn validate_role_allows_interactive_predefined_data_right_set_false() {
+        let rights = concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+            "<Rights xmlns=\"http://v8.1c.ru/8.2/roles\" xsi:type=\"Rights\" version=\"2.20\"\n",
+            "        xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n",
+            "    <setForNewObjects>false</setForNewObjects>\n",
+            "    <setForAttributesByDefault>false</setForAttributesByDefault>\n",
+            "    <independentRightsOfChildObjects>false</independentRightsOfChildObjects>\n",
+            "    <object>\n",
+            "        <name>Catalog.Products</name>\n",
+            "        <right><name>InteractiveClearDeletionMarkPredefinedData</name><value>false</value></right>\n",
+            "    </object>\n",
+            "</Rights>\n",
+        );
+        let stdout = validate_role_stdout(rights);
+        assert!(!stdout.contains(PREDEFINED_DATA_WARNING), "{stdout}");
+    }
+
+    #[test]
+    fn validate_role_allows_ordinary_right_without_predefined_data_warning() {
+        let rights = concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+            "<Rights xmlns=\"http://v8.1c.ru/8.2/roles\" xsi:type=\"Rights\" version=\"2.20\"\n",
+            "        xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n",
+            "    <setForNewObjects>false</setForNewObjects>\n",
+            "    <setForAttributesByDefault>false</setForAttributesByDefault>\n",
+            "    <independentRightsOfChildObjects>false</independentRightsOfChildObjects>\n",
+            "    <object>\n",
+            "        <name>Catalog.Products</name>\n",
+            "        <right><name>InteractiveDelete</name><value>true</value></right>\n",
+            "    </object>\n",
+            "</Rights>\n",
+        );
+        let stdout = validate_role_stdout(rights);
+        assert!(!stdout.contains(PREDEFINED_DATA_WARNING), "{stdout}");
     }
 }
