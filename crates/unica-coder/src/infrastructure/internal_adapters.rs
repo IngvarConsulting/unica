@@ -2208,6 +2208,13 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
                 "{tool_name} cancelled before adapter work"
             )));
         }
+        let diagnostics_path = match (tool_name, args.get("path")) {
+            ("unica.code.diagnostics", Some(Value::String(path))) => Some(path.as_str()),
+            ("unica.code.diagnostics", Some(_)) => {
+                return Err("invalid_diagnostics_path: argument `path` must be string".to_string());
+            }
+            _ => None,
+        };
         if tool_name == "unica.code.diagnostics" && diagnostics_mode(args) == "analyze" {
             let cli_args = diagnostics_analyze_args(args);
             let process_timeout = diagnostics_analyze_timeout(args)?;
@@ -2232,6 +2239,9 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
             "could not locate Unica plugin root for bsl-analyzer MCP adapter lookup".to_string()
         })?;
         let source_dir = resolve_source_dir(context, args)?;
+        if let Some(path) = diagnostics_path {
+            validate_diagnostics_path(&source_dir, path)?;
+        }
         let (remote_tool, tool_args) = bsl_mcp_tool_request(tool_name, args)?;
         let bundled_tool = resolve_bundled_tool(&plugin_root, "bsl-analyzer", !dry_run)?;
         let command = bsl_mcp_command(
@@ -3289,6 +3299,29 @@ fn resolve_source_dir(
 ) -> Result<PathBuf, String> {
     resolve_source_root(context, args.get("sourceDir").and_then(Value::as_str))
         .map(|resolved| resolved.path)
+}
+
+/// Rejects diagnostics paths whose normalized identity escapes the resolved source directory.
+fn validate_diagnostics_path(source_dir: &Path, raw_path: &str) -> Result<(), String> {
+    let raw_path = Path::new(raw_path);
+    let candidate = if raw_path.is_absolute() {
+        raw_path.to_path_buf()
+    } else {
+        source_dir.join(raw_path)
+    };
+    let path = normalize_path_identity(&candidate)
+        .map_err(|error| format!("invalid_diagnostics_path: {error}"))?;
+    let source_dir = normalize_path_identity(source_dir)
+        .map_err(|error| format!("invalid_diagnostics_path: {error}"))?;
+    if path.starts_with(&source_dir) {
+        Ok(())
+    } else {
+        Err(format!(
+            "invalid_diagnostics_path: path {} is outside sourceDir {}",
+            path.display(),
+            source_dir.display()
+        ))
+    }
 }
 
 fn bsl_mcp_readiness_warnings(text: &str) -> Vec<String> {
@@ -6925,10 +6958,126 @@ source-set:
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].tool_name, "diagnostics");
         assert_eq!(commands[0].tool_args["action"], "file");
+        assert_eq!(
+            commands[0].tool_args["path"],
+            "CommonModules/SmokeModule/Ext/Module.bsl"
+        );
         assert_eq!(commands[0].tool_args["min_severity"], "warning");
         assert_eq!(commands[0].tool_args["range_start"], 3);
         assert_eq!(commands[0].tool_args["range_end"], 7);
         assert_eq!(commands[0].tool_args["max_findings"], 5);
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn diagnostics_mcp_adapter_accepts_absolute_path_inside_source_dir() {
+        let context = temp_context("diagnostics-absolute-inside");
+        let path = context
+            .cwd
+            .join("CommonModules/SmokeModule/Ext/Module.bsl")
+            .display()
+            .to_string();
+        let runner = RecordingBslMcpRunner {
+            commands: RefCell::new(Vec::new()),
+            output: BslMcpOutput {
+                result_text: "{\"action\":\"file\",\"findings\":[]}".to_string(),
+                stderr: String::new(),
+            },
+        };
+        let mut args = Map::new();
+        args.insert("mode".to_string(), json!("file"));
+        args.insert("path".to_string(), json!(path));
+
+        let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
+            .invoke("unica.code.diagnostics", &args, &context, false)
+            .unwrap();
+
+        assert!(outcome.ok);
+        let commands = runner.commands.borrow();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].tool_args["path"], path);
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn diagnostics_mcp_adapter_rejects_paths_outside_source_dir() {
+        let context = temp_context("diagnostics-path-containment");
+        fs::create_dir_all(context.workspace_root.join("src")).unwrap();
+        let outside = context.workspace_root.with_file_name(format!(
+            "{}-outside",
+            context
+                .workspace_root
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+        ));
+        fs::create_dir_all(&outside).unwrap();
+        let absolute_outside_path = outside.join("Module.bsl");
+
+        let mut paths = vec![
+            "../outside/Module.bsl".to_string(),
+            absolute_outside_path.display().to_string(),
+        ];
+        if let Some(symlink_result) =
+            crate::infrastructure::platform::filesystem::create_dir_symlink_for_test(
+                &outside,
+                context.workspace_root.join("src").join("escape"),
+            )
+        {
+            symlink_result.unwrap();
+            paths.push("escape/Module.bsl".to_string());
+        }
+
+        for path in paths {
+            let runner = RecordingBslMcpRunner {
+                commands: RefCell::new(Vec::new()),
+                output: BslMcpOutput {
+                    result_text: "{\"action\":\"file\",\"findings\":[]}".to_string(),
+                    stderr: String::new(),
+                },
+            };
+            let mut args = Map::new();
+            args.insert("mode".to_string(), json!("file"));
+            args.insert("sourceDir".to_string(), json!("src"));
+            args.insert("path".to_string(), json!(path));
+
+            let error = BslAnalyzerMcpAdapter::with_runner(&runner)
+                .invoke("unica.code.diagnostics", &args, &context, false)
+                .unwrap_err();
+            assert!(error.starts_with("invalid_diagnostics_path:"), "{error}");
+            assert!(runner.commands.borrow().is_empty());
+        }
+
+        cleanup_context(&context);
+        let _ = fs::remove_dir_all(outside);
+    }
+
+    #[test]
+    fn diagnostics_mcp_adapter_rejects_non_string_path_before_runner() {
+        let context = temp_context("diagnostics-non-string-path");
+
+        for path in [Value::Null, json!(true), json!(1), json!([]), json!({})] {
+            let runner = RecordingBslMcpRunner {
+                commands: RefCell::new(Vec::new()),
+                output: BslMcpOutput {
+                    result_text: "{\"action\":\"file\",\"findings\":[]}".to_string(),
+                    stderr: String::new(),
+                },
+            };
+            let mut args = Map::new();
+            args.insert("mode".to_string(), json!("file"));
+            args.insert("path".to_string(), path.clone());
+
+            let error = BslAnalyzerMcpAdapter::with_runner(&runner)
+                .invoke("unica.code.diagnostics", &args, &context, false)
+                .unwrap_err();
+            assert!(
+                error.starts_with("invalid_diagnostics_path:"),
+                "{path}: {error}"
+            );
+            assert!(runner.commands.borrow().is_empty(), "{path}");
+        }
+
         cleanup_context(&context);
     }
 
