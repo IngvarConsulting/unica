@@ -6,7 +6,8 @@ use unica_format_core::{
         FormatDiagnosticDetail, OperationalEvidenceRevision, OperationalValidationResult,
         SemanticArtifactId, SupportState, SupportSummary, ValidationContext,
         ValidationContextResult, ValidationFinding, ValidationFindingCode,
-        ValidationFindingSeverity, ValidationOwnerKind, ValidationReport,
+        ValidationFindingSeverity, ValidationOwnerKind, ValidationRelationCoverage,
+        ValidationReport,
     },
 };
 
@@ -29,7 +30,7 @@ fn every_read_derived_operational_result_carries_opaque_evidence() {
         Vec::new(),
         false,
         None,
-        None,
+        ValidationRelationCoverage::NotApplicable,
         None,
     )
     .unwrap();

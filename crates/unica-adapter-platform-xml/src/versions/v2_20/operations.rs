@@ -1052,7 +1052,7 @@ pub(super) fn validation_context_for_provider(
             Vec::new(),
             command_text_validation_required(&target.native_type),
             dependencies.references_present,
-            dependencies.registrar_present,
+            dependencies.registrar_coverage,
             method_reference_status,
         )
         .map_err(|_| ValidationIssueKind::SourceUnreadable);
@@ -1104,7 +1104,7 @@ pub(super) fn validation_context_for_provider(
         language_codes,
         requires_languages,
         dependencies.references_present,
-        dependencies.registrar_present,
+        dependencies.registrar_coverage,
         method_reference_status,
     )
     .map_err(|_| ValidationIssueKind::SourceUnreadable)
@@ -1156,7 +1156,6 @@ struct DescriptorIdentity {
     name: String,
     language_code: Option<String>,
     references: Option<Vec<(String, String)>>,
-    registrar_references: Option<Vec<(String, String)>>,
     requires_registrar: bool,
     method_reference: Option<Result<(String, String), ()>>,
 }
@@ -1209,7 +1208,7 @@ fn read_semantic_descriptor(
 struct TargetDependencyResolution {
     keys: Vec<String>,
     references_present: Option<bool>,
-    registrar_present: Option<bool>,
+    registrar_coverage: unica_format_core::ports::ValidationRelationCoverage,
 }
 
 fn resolve_target_dependencies(
@@ -1232,45 +1231,15 @@ fn resolve_target_dependencies(
             Some(present)
         }
     };
-    let registrar_present = if target.native_type == "Document"
-        && target
-            .references
-            .as_ref()
-            .is_some_and(|references| !references.is_empty())
-    {
-        references_present
-    } else if target.requires_registrar {
-        match target.registrar_references.as_ref() {
-            Some(registrars) if !registrars.is_empty() => {
-                let target_reference = (target.native_type.clone(), target.name.clone());
-                let mut present = true;
-                for (native_type, name) in registrars {
-                    if native_type != "Document" {
-                        present = false;
-                        continue;
-                    }
-                    match read_semantic_descriptor(provider, native_type, name)? {
-                        Some(descriptor) => {
-                            present &= descriptor
-                                .references
-                                .as_ref()
-                                .is_some_and(|references| references.contains(&target_reference));
-                            keys.insert(descriptor.key);
-                        }
-                        None => present = false,
-                    }
-                }
-                Some(present)
-            }
-            _ => Some(false),
-        }
+    let registrar_coverage = if target.requires_registrar {
+        unica_format_core::ports::ValidationRelationCoverage::NotEvaluated
     } else {
-        None
+        unica_format_core::ports::ValidationRelationCoverage::NotApplicable
     };
     Ok(TargetDependencyResolution {
         keys: keys.into_iter().collect(),
         references_present,
-        registrar_present,
+        registrar_coverage,
     })
 }
 
@@ -1325,11 +1294,6 @@ fn descriptor_identity(key: &str, bytes: &[u8]) -> Option<DescriptorIdentity> {
     let references = properties
         .and_then(|properties| child(properties, "RegisterRecords"))
         .map(reference_values);
-    let registrar_references = properties
-        .and_then(|properties| {
-            child(properties, "Recorders").or_else(|| child(properties, "Registrars"))
-        })
-        .map(reference_values);
     let requires_registrar = matches!(
         native_type,
         "AccumulationRegister" | "AccountingRegister" | "CalculationRegister"
@@ -1366,7 +1330,6 @@ fn descriptor_identity(key: &str, bytes: &[u8]) -> Option<DescriptorIdentity> {
         name,
         language_code,
         references,
-        registrar_references,
         requires_registrar,
         method_reference,
     })
@@ -1844,7 +1807,10 @@ mod fix_round3_tests {
             .context()
             .expect("direct-reference context is valid");
         assert_eq!(context.references_present(), Some(true));
-        assert_eq!(context.registrar_present(), Some(true));
+        assert_eq!(
+            context.registrar_coverage(),
+            unica_format_core::ports::ValidationRelationCoverage::NotApplicable
+        );
         for expected in [
             "Documents/Target.xml",
             "InformationRegisters/Stock.xml",
@@ -1890,6 +1856,169 @@ mod fix_round3_tests {
 
         fs::remove_dir_all(root).unwrap();
         fs::remove_file(outside).unwrap();
+    }
+
+    fn write_register_target_fixture(
+        root: &Path,
+        unrelated: impl FnOnce(&Path, &Path, &Path),
+    ) -> PlatformOperationSession {
+        for directory in ["Documents", "InformationRegisters", "Languages"] {
+            fs::create_dir_all(root.join(directory)).unwrap();
+        }
+        fs::write(
+            root.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="30000000-0000-0000-0000-000000000001"><Properties><Name>Main</Name></Properties><ChildObjects><Language>English</Language><Document>RecorderA</Document><Document>RecorderB</Document><Document>Malformed</Document><Document>Oversized</Document><Document>Unreadable</Document><InformationRegister>Stock</InformationRegister></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Languages/English.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Language uuid="30000000-0000-0000-0000-000000000005"><Properties><Name>English</Name><LanguageCode>en</LanguageCode></Properties></Language></MetaDataObject>"#,
+        )
+        .unwrap();
+        let target = root.join("InformationRegisters/Stock.xml");
+        fs::write(
+            &target,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><InformationRegister uuid="30000000-0000-0000-0000-000000000002"><Properties><Name>Stock</Name><WriteMode>RecorderSubordinate</WriteMode></Properties><ChildObjects/></InformationRegister></MetaDataObject>"#,
+        )
+        .unwrap();
+        for (name, uuid) in [
+            ("RecorderA", "30000000-0000-0000-0000-000000000003"),
+            ("RecorderB", "30000000-0000-0000-0000-000000000004"),
+        ] {
+            fs::write(
+                root.join(format!("Documents/{name}.xml")),
+                format!(
+                    r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20"><Document uuid="{uuid}"><Properties><Name>{name}</Name><RegisterRecords><xr:Item>InformationRegister.Stock</xr:Item></RegisterRecords></Properties><ChildObjects/></Document></MetaDataObject>"#
+                ),
+            )
+            .unwrap();
+        }
+        unrelated(
+            &root.join("Documents/Malformed.xml"),
+            &root.join("Documents/Oversized.xml"),
+            &root.join("Documents/Unreadable.xml"),
+        );
+        let source = SourceContext::new(
+            SourceLocation::new(root.to_path_buf(), root.to_path_buf(), target),
+            Some("main".to_string()),
+            SourceFamily::PlatformXml,
+            None,
+        );
+        PlatformOperationSession::capture_validation(&source, OwnerResolutionMode::Existing)
+    }
+
+    #[test]
+    fn register_target_without_reverse_fields_is_partial_and_opens_no_documents() {
+        let root = fixture_root("register-target-local");
+        let outside = fixture_root("register-target-local-outside");
+        fs::write(&outside, b"outside").unwrap();
+        let session = write_register_target_fixture(&root, |malformed, oversized, unreadable| {
+            fs::write(malformed, b"<broken").unwrap();
+            File::create(oversized)
+                .unwrap()
+                .set_len(70 * 1024 * 1024)
+                .unwrap();
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&outside, unreadable).unwrap();
+            #[cfg(not(unix))]
+            fs::write(unreadable, b"<broken").unwrap();
+        });
+
+        let (context, context_opens) = with_artifact_open_log(|| validation(&session).unwrap());
+        let context = context
+            .context()
+            .unwrap_or_else(|| panic!("register context diagnostics: {:?}", context.diagnostics()));
+        assert_eq!(
+            context.registrar_coverage(),
+            unica_format_core::ports::ValidationRelationCoverage::NotEvaluated
+        );
+        assert!(context_opens
+            .iter()
+            .all(|path| !path.starts_with("Documents")));
+
+        let handle = unica_format_core::ports::OperationalSourceSession::new(session);
+        let (result, report_opens) = with_artifact_open_log(|| {
+            super::super::validation::validate(
+                &[handle],
+                unica_format_core::ports::ValidationOptions::new(true, 100).unwrap(),
+            )
+            .unwrap()
+        });
+        let report = &result.reports()[0];
+        assert_eq!(
+            report.coverage(),
+            unica_format_core::ports::ValidationCoverage::Partial
+        );
+        assert!(report.findings().iter().all(|finding| {
+            finding.code() != unica_format_core::ports::ValidationFindingCode::RegistrarMissing
+        }));
+        assert!(report_opens
+            .iter()
+            .all(|path| !path.starts_with("Documents")));
+
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_file(outside).unwrap();
+    }
+
+    #[test]
+    fn document_missing_explicit_register_target_is_reference_missing() {
+        let root = fixture_root("missing-forward-register");
+        fs::create_dir_all(root.join("Documents")).unwrap();
+        fs::create_dir_all(root.join("InformationRegisters")).unwrap();
+        fs::create_dir_all(root.join("Languages")).unwrap();
+        fs::write(
+            root.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="40000000-0000-0000-0000-000000000001"><Properties><Name>Main</Name></Properties><ChildObjects><Language>English</Language><Document>Target</Document><InformationRegister>Missing</InformationRegister></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Languages/English.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Language uuid="40000000-0000-0000-0000-000000000003"><Properties><Name>English</Name><LanguageCode>en</LanguageCode></Properties></Language></MetaDataObject>"#,
+        )
+        .unwrap();
+        let target = root.join("Documents/Target.xml");
+        fs::write(
+            &target,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20"><Document uuid="40000000-0000-0000-0000-000000000002"><Properties><Name>Target</Name><RegisterRecords><xr:Item>InformationRegister.Missing</xr:Item></RegisterRecords></Properties><ChildObjects/></Document></MetaDataObject>"#,
+        )
+        .unwrap();
+        let source = SourceContext::new(
+            SourceLocation::new(root.clone(), root.clone(), target),
+            Some("main".to_string()),
+            SourceFamily::PlatformXml,
+            None,
+        );
+        let session =
+            PlatformOperationSession::capture_validation(&source, OwnerResolutionMode::Existing);
+
+        let context = validation(&session).unwrap();
+        let context = context.context().expect("document context is valid");
+        assert_eq!(context.references_present(), Some(false));
+        assert_eq!(
+            context.registrar_coverage(),
+            unica_format_core::ports::ValidationRelationCoverage::NotApplicable
+        );
+
+        let result = super::super::validation::validate(
+            &[unica_format_core::ports::OperationalSourceSession::new(
+                session,
+            )],
+            unica_format_core::ports::ValidationOptions::new(true, 100).unwrap(),
+        )
+        .unwrap();
+        let report = &result.reports()[0];
+        assert_eq!(
+            report.coverage(),
+            unica_format_core::ports::ValidationCoverage::Complete
+        );
+        assert!(report.findings().iter().any(|finding| {
+            finding.code() == unica_format_core::ports::ValidationFindingCode::ReferenceMissing
+        }));
+        assert!(report.findings().iter().all(|finding| {
+            finding.code() != unica_format_core::ports::ValidationFindingCode::RegistrarMissing
+        }));
+
+        fs::remove_dir_all(root).unwrap();
     }
 }
 

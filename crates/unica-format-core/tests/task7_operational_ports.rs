@@ -5,8 +5,10 @@ use unica_format_core::{
         FormatDiagnosticCode, FormatDiagnosticDetail, OperationCancellation,
         OperationalEvidenceRevision, OperationalSourceSession, PublicationCancellation,
         PublicationCleanup, PublicationFailureKind, PublicationLifecycle, PublicationPort,
-        PublicationRecovery, PublicationResult, PublicationRollback, SupportState,
-        ValidationContext, ValidationContextPort, ValidationOwnerKind,
+        PublicationRecovery, PublicationResult, PublicationRollback, SemanticArtifactId,
+        SupportState, ValidationContext, ValidationContextPort, ValidationCoverage,
+        ValidationFinding, ValidationFindingCode, ValidationFindingSeverity, ValidationOwnerKind,
+        ValidationRelationCoverage, ValidationReport,
     },
 };
 
@@ -71,7 +73,7 @@ fn task7_validation_context_rejects_non_semantic_language_values() {
         vec!["/private/source".to_string()],
         true,
         None,
-        None,
+        ValidationRelationCoverage::NotEvaluated,
         None,
     )
     .is_err());
@@ -80,10 +82,43 @@ fn task7_validation_context_rejects_non_semantic_language_values() {
         vec!["ru".to_string(), "en-US".to_string()],
         true,
         Some(true),
-        Some(false),
+        ValidationRelationCoverage::CompleteMissing,
         None,
     )
     .is_ok());
+}
+
+#[test]
+fn task7_validation_coverage_is_closed_and_explicitly_partial() {
+    let context = ValidationContext::new(
+        ValidationOwnerKind::Aggregate,
+        Vec::new(),
+        false,
+        None,
+        ValidationRelationCoverage::NotEvaluated,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        context.registrar_coverage(),
+        ValidationRelationCoverage::NotEvaluated
+    );
+
+    let report = ValidationReport::new_with_coverage(
+        SemanticArtifactId::new("artifact:register").unwrap(),
+        1,
+        vec![ValidationFinding::new(
+            ValidationFindingSeverity::Warning,
+            ValidationFindingCode::UnsupportedCombination,
+        )],
+        ValidationCoverage::Partial,
+    )
+    .unwrap();
+    assert_eq!(report.coverage(), ValidationCoverage::Partial);
+    assert_eq!(
+        serde_json::from_value::<ValidationReport>(serde_json::to_value(&report).unwrap()).unwrap(),
+        report
+    );
 }
 
 #[test]

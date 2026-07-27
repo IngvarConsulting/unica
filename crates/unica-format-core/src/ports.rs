@@ -1384,13 +1384,30 @@ pub enum ValidationOwnerKind {
     Standalone,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ValidationCoverage {
+    Complete,
+    Partial,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ValidationRelationCoverage {
+    NotApplicable,
+    NotEvaluated,
+    Partial,
+    CompletePresent,
+    CompleteMissing,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidationContext {
     owner_kind: ValidationOwnerKind,
     language_codes: Vec<String>,
     command_text_validation_required: bool,
     references_present: Option<bool>,
-    registrar_present: Option<bool>,
+    registrar_coverage: ValidationRelationCoverage,
     method_reference_status: Option<ValidationMethodReferenceStatus>,
 }
 
@@ -1400,7 +1417,7 @@ impl ValidationContext {
         language_codes: Vec<String>,
         command_text_validation_required: bool,
         references_present: Option<bool>,
-        registrar_present: Option<bool>,
+        registrar_coverage: ValidationRelationCoverage,
         method_reference_status: Option<ValidationMethodReferenceStatus>,
     ) -> Result<Self, OperationalContractError> {
         if language_codes.iter().any(|code| {
@@ -1417,7 +1434,7 @@ impl ValidationContext {
             language_codes,
             command_text_validation_required,
             references_present,
-            registrar_present,
+            registrar_coverage,
             method_reference_status,
         })
     }
@@ -1438,8 +1455,8 @@ impl ValidationContext {
         self.references_present
     }
 
-    pub const fn registrar_present(&self) -> Option<bool> {
-        self.registrar_present
+    pub const fn registrar_coverage(&self) -> ValidationRelationCoverage {
+        self.registrar_coverage
     }
 
     pub const fn method_reference_status(&self) -> Option<ValidationMethodReferenceStatus> {
@@ -1612,6 +1629,7 @@ pub enum ValidationStatus {
 pub struct ValidationReport {
     subject: SemanticArtifactId,
     status: ValidationStatus,
+    coverage: ValidationCoverage,
     checks: u16,
     findings: Vec<ValidationFinding>,
 }
@@ -1622,9 +1640,22 @@ impl ValidationReport {
         checks: u16,
         findings: Vec<ValidationFinding>,
     ) -> Result<Self, OperationalContractError> {
+        Self::new_with_coverage(subject, checks, findings, ValidationCoverage::Complete)
+    }
+
+    pub fn new_with_coverage(
+        subject: SemanticArtifactId,
+        checks: u16,
+        findings: Vec<ValidationFinding>,
+        coverage: ValidationCoverage,
+    ) -> Result<Self, OperationalContractError> {
         if checks == 0
             || findings.len() > usize::from(checks)
             || findings.len() > usize::from(u16::MAX)
+            || (coverage != ValidationCoverage::Complete
+                && findings
+                    .iter()
+                    .any(|finding| finding.code == ValidationFindingCode::RegistrarMissing))
         {
             return Err(OperationalContractError::InvalidStateCombination);
         }
@@ -1639,6 +1670,7 @@ impl ValidationReport {
         Ok(Self {
             subject,
             status,
+            coverage,
             checks,
             findings,
         })
@@ -1650,6 +1682,10 @@ impl ValidationReport {
 
     pub const fn status(&self) -> ValidationStatus {
         self.status
+    }
+
+    pub const fn coverage(&self) -> ValidationCoverage {
+        self.coverage
     }
 
     pub const fn checks(&self) -> u16 {
@@ -1671,13 +1707,15 @@ impl<'de> Deserialize<'de> for ValidationReport {
         struct Wire {
             subject: SemanticArtifactId,
             status: ValidationStatus,
+            coverage: ValidationCoverage,
             checks: u16,
             findings: Vec<ValidationFinding>,
         }
 
         let wire = Wire::deserialize(deserializer)?;
         let report =
-            Self::new(wire.subject, wire.checks, wire.findings).map_err(D::Error::custom)?;
+            Self::new_with_coverage(wire.subject, wire.checks, wire.findings, wire.coverage)
+                .map_err(D::Error::custom)?;
         if report.status != wire.status {
             return Err(D::Error::custom(
                 OperationalContractError::InvalidStateCombination,

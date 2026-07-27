@@ -4,8 +4,8 @@ use sha2::{Digest, Sha256};
 use unica_format_core::{
     ports::{
         OperationalEvidenceRevision, OperationalValidationResult, SemanticArtifactId,
-        ValidationFinding, ValidationFindingCode, ValidationFindingSeverity, ValidationIssueKind,
-        ValidationOptions, ValidationReport,
+        ValidationCoverage, ValidationFinding, ValidationFindingCode, ValidationFindingSeverity,
+        ValidationIssueKind, ValidationOptions, ValidationRelationCoverage, ValidationReport,
     },
     source::{SourceAdapterError, SourceAdapterErrorKind},
 };
@@ -75,6 +75,7 @@ fn validate_one_with_provider(
     let bytes = subject.bytes();
     let mut checks = 1u16;
     let mut findings = Vec::new();
+    let mut coverage = ValidationCoverage::Complete;
     let (_, document) = match xml::parse_bounded_xml_document(bytes) {
         Ok(document) => document,
         Err(_) => {
@@ -205,22 +206,35 @@ fn validate_one_with_provider(
                 checks = checks.saturating_add(1);
             }
         }
-        if context.references_present() == Some(false) {
-            findings.push(error(ValidationFindingCode::ReferenceMissing));
+        if let Some(references_present) = context.references_present() {
+            checks = checks.saturating_add(1);
+            if !references_present {
+                findings.push(error(ValidationFindingCode::ReferenceMissing));
+            }
         }
-        if context.registrar_present() == Some(false) {
-            findings.push(error(ValidationFindingCode::RegistrarMissing));
+        match context.registrar_coverage() {
+            ValidationRelationCoverage::CompletePresent => {
+                checks = checks.saturating_add(1);
+            }
+            ValidationRelationCoverage::CompleteMissing => {
+                checks = checks.saturating_add(1);
+                findings.push(error(ValidationFindingCode::RegistrarMissing));
+            }
+            ValidationRelationCoverage::Partial | ValidationRelationCoverage::NotEvaluated => {
+                coverage = ValidationCoverage::Partial;
+            }
+            ValidationRelationCoverage::NotApplicable => {}
         }
-        if context.method_reference_status().is_some_and(|status| {
-            status != unica_format_core::ports::ValidationMethodReferenceStatus::Valid
-        }) {
-            findings.push(error(ValidationFindingCode::MethodReferenceInvalid));
+        if let Some(status) = context.method_reference_status() {
+            checks = checks.saturating_add(1);
+            if status != unica_format_core::ports::ValidationMethodReferenceStatus::Valid {
+                findings.push(error(ValidationFindingCode::MethodReferenceInvalid));
+            }
         }
-        checks = checks.saturating_add(3);
     }
 
     findings.truncate(usize::from(options.max_findings()));
-    report(subject_id, checks.max(1), findings)
+    report_with_coverage(subject_id, checks.max(1), findings, coverage)
 }
 
 fn report(
@@ -228,8 +242,22 @@ fn report(
     checks: u16,
     findings: Vec<ValidationFinding>,
 ) -> Result<ValidationReport, SourceAdapterError> {
-    ValidationReport::new(subject, checks.max(findings.len() as u16), findings)
-        .map_err(contract_error)
+    report_with_coverage(subject, checks, findings, ValidationCoverage::Complete)
+}
+
+fn report_with_coverage(
+    subject: SemanticArtifactId,
+    checks: u16,
+    findings: Vec<ValidationFinding>,
+    coverage: ValidationCoverage,
+) -> Result<ValidationReport, SourceAdapterError> {
+    ValidationReport::new_with_coverage(
+        subject,
+        checks.max(findings.len() as u16),
+        findings,
+        coverage,
+    )
+    .map_err(contract_error)
 }
 
 const fn error(code: ValidationFindingCode) -> ValidationFinding {

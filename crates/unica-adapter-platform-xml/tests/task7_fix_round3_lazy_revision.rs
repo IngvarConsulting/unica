@@ -270,7 +270,10 @@ fn direct_multi_register_validation_ignores_unrelated_registered_documents() {
         .unwrap();
     let context = context.context().expect("direct reference context");
     assert_eq!(context.references_present(), Some(true));
-    assert_eq!(context.registrar_present(), Some(true));
+    assert_eq!(
+        context.registrar_coverage(),
+        unica_format_core::ports::ValidationRelationCoverage::NotApplicable
+    );
 
     fs::remove_dir_all(root).unwrap();
 }
