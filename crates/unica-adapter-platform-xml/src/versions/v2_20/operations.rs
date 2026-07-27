@@ -1909,6 +1909,22 @@ mod fix_round3_tests {
 
     #[test]
     fn register_target_without_reverse_fields_is_partial_and_opens_no_documents() {
+        let register_profile =
+            super::super::semantic_map::metadata_class_profile("InformationRegister").unwrap();
+        let write_mode = super::super::semantic_map::property_mapping(
+            super::super::semantic_map::object_kind(register_profile),
+            "WriteMode",
+        )
+        .unwrap();
+        assert!(
+            super::super::semantic_map::enum_value(
+                super::super::semantic_map::object_kind(register_profile),
+                write_mode.semantic_id,
+                "RecorderSubordinate",
+            )
+            .is_some(),
+            "the authoritative registry must recognize recorder-subordinate write mode"
+        );
         let root = fixture_root("register-target-local");
         let outside = fixture_root("register-target-local-outside");
         fs::write(&outside, b"outside").unwrap();
@@ -1949,6 +1965,16 @@ mod fix_round3_tests {
             report.coverage(),
             unica_format_core::ports::ValidationCoverage::Partial
         );
+        assert_eq!(
+            report.status(),
+            unica_format_core::ports::ValidationStatus::Partial
+        );
+        assert!(report.findings().iter().any(|finding| {
+            finding.code()
+                == unica_format_core::ports::ValidationFindingCode::RegistrarCoverageNotEvaluated
+                && finding.severity()
+                    == unica_format_core::ports::ValidationFindingSeverity::Warning
+        }));
         assert!(report.findings().iter().all(|finding| {
             finding.code() != unica_format_core::ports::ValidationFindingCode::RegistrarMissing
         }));

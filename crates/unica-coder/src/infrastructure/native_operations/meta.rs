@@ -5068,6 +5068,116 @@ mod edit_tests {
     }
 
     #[test]
+    fn meta_validation_ai_json_preserves_complete_partial_invalid_and_unavailable() {
+        let context = temp_context("public-validation-status");
+        let standalone = context.cwd.join("tools/Standalone.xml");
+        let malformed = context.cwd.join("tools/Broken.xml");
+        write_file(
+            &standalone,
+            &sample_meta_named("ExternalDataProcessor", "Standalone"),
+        );
+        write_file(&malformed, "<broken");
+
+        let src = write_owner(
+            &context.cwd.join("src"),
+            "InformationRegister",
+            "SampleStock",
+            &["Russian"],
+        );
+        write_file(
+            &src.join("Languages/Russian.xml"),
+            &sample_language_named("Russian", "ru"),
+        );
+        let register = src.join("InformationRegisters/SampleStock.xml");
+        write_file(
+            &register,
+            &sample_register_xml("InformationRegister").replace(
+                "<Comment/>",
+                "<Comment/><WriteMode>RecorderSubordinate</WriteMode>",
+            ),
+        );
+
+        let invoke = |paths: String| {
+            let mut args = Map::new();
+            args.insert("ObjectPath".to_string(), json!(paths));
+            validate_meta_with_data(&args, &context)
+        };
+        let complete = invoke(standalone.display().to_string());
+        let partial = invoke(register.display().to_string());
+        let invalid = invoke(malformed.display().to_string());
+        let unavailable = invoke(context.cwd.join("tools/Missing.xml").display().to_string());
+        let batch = invoke(format!("{}|{}", standalone.display(), register.display()));
+
+        assert_eq!(complete.data["validation"]["status"], "valid");
+        assert_eq!(complete.data["validation"]["coverage"], "complete");
+        assert_eq!(complete.data["validation"]["reports"][0]["status"], "valid");
+
+        assert!(partial.adapter.ok, "{:?}", partial.adapter);
+        assert_eq!(partial.data["validation"]["status"], "partial");
+        assert_eq!(partial.data["validation"]["coverage"], "partial");
+        assert_eq!(
+            partial.data["validation"]["reports"][0]["status"],
+            "partial"
+        );
+        assert_eq!(
+            partial.data["validation"]["reports"][0]["coverage"],
+            "partial"
+        );
+        assert!(partial.data["validation"]["reports"][0]["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| finding["code"] == "registrarCoverageNotEvaluated"));
+
+        assert!(!invalid.adapter.ok);
+        assert_eq!(invalid.data["validation"]["status"], "invalid");
+        assert!(!unavailable.adapter.ok);
+        assert_eq!(unavailable.data["validation"]["status"], "unavailable");
+        assert_eq!(unavailable.data["validation"]["coverage"], "unavailable");
+        assert_eq!(
+            unavailable.data["validation"]["diagnostics"][0]["code"],
+            "sourceUnreadable"
+        );
+
+        assert_eq!(batch.data["validation"]["status"], "partial");
+        assert_eq!(batch.data["validation"]["coverage"], "partial");
+        let batch_partial = batch.data["validation"]["reports"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|report| report["status"] == "partial")
+            .unwrap();
+        assert_eq!(
+            batch_partial, &partial.data["validation"]["reports"][0],
+            "single and batch validation changed the same subject report"
+        );
+
+        let public = serde_json::to_string(&[
+            &complete.data,
+            &partial.data,
+            &invalid.data,
+            &unavailable.data,
+            &batch.data,
+        ])
+        .unwrap();
+        for forbidden in [
+            context.cwd.to_string_lossy().as_ref(),
+            "/private/source",
+            r"C:\private\source",
+            "Configuration.xml",
+            "MetaDataObject",
+            "MDClasses",
+            "InformationRegister",
+            "ExternalDataProcessor",
+            "2.20",
+            "8.3.27",
+        ] {
+            assert!(!public.contains(forbidden), "leaked {forbidden}: {public}");
+        }
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
     fn validate_meta_accepts_registered_extension_owner() {
         let context = temp_context("extension-owner");
         write_file(
@@ -5527,9 +5637,55 @@ pub(crate) struct MetaInfoWsOperation {
 
 pub(crate) struct MetaValidationRun {
     pub(crate) ok: bool,
+    status: MetaValidationCommandStatus,
+    coverage: MetaValidationCommandCoverage,
+    reports: Vec<unica_format_core::ports::ValidationReport>,
     pub(crate) stdout: String,
     pub(crate) artifacts: Vec<String>,
+    pub(crate) warnings: Vec<String>,
     pub(crate) errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+enum MetaValidationCommandStatus {
+    Valid,
+    Partial,
+    Invalid,
+    Unavailable,
+}
+
+impl MetaValidationCommandStatus {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Valid => "valid",
+            Self::Partial => "partial",
+            Self::Invalid => "invalid",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+enum MetaValidationCommandCoverage {
+    Complete,
+    Partial,
+    Unavailable,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MetaValidationPublicResult {
+    status: MetaValidationCommandStatus,
+    coverage: MetaValidationCommandCoverage,
+    reports: Vec<unica_format_core::ports::ValidationReport>,
+    diagnostics: Vec<unica_format_core::ports::ValidationFinding>,
+}
+
+pub(crate) struct MetaValidationInvocation {
+    pub(crate) adapter: AdapterOutcome,
+    pub(crate) data: Value,
 }
 
 #[derive(Debug, Clone)]
@@ -5542,6 +5698,13 @@ pub(crate) fn validate_meta(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
+    validate_meta_with_data(args, context).adapter
+}
+
+pub(crate) fn validate_meta_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> MetaValidationInvocation {
     let run = (|| -> Result<MetaValidationRun, String> {
         let raw = required_path(
             args,
@@ -5562,33 +5725,83 @@ pub(crate) fn validate_meta(
     })();
 
     match run {
-        Ok(run) => AdapterOutcome {
-            ok: run.ok,
-            summary: if run.ok {
-                "unica.meta.validate completed".to_string()
-            } else {
-                "unica.meta.validate found semantic violations".to_string()
-            },
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: run.errors,
-            artifacts: run.artifacts,
-            stdout: Some(run.stdout),
-            stderr: None,
-            command: None,
-        },
-        Err(_) => AdapterOutcome {
-            ok: false,
-            summary: "unica.meta.validate could not inspect the requested source".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec!["validation source is unavailable".to_string()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: None,
-            command: None,
-        },
+        Ok(run) => {
+            let data = meta_validation_public_data(
+                run.status,
+                run.coverage,
+                run.reports.clone(),
+                Vec::new(),
+            );
+            let summary = match run.status {
+                MetaValidationCommandStatus::Valid => "unica.meta.validate completed",
+                MetaValidationCommandStatus::Partial => {
+                    "unica.meta.validate completed with partial semantic coverage"
+                }
+                MetaValidationCommandStatus::Invalid => {
+                    "unica.meta.validate found semantic violations"
+                }
+                MetaValidationCommandStatus::Unavailable => {
+                    "unica.meta.validate could not inspect the requested source"
+                }
+            };
+            MetaValidationInvocation {
+                adapter: AdapterOutcome {
+                    ok: run.ok,
+                    summary: summary.to_string(),
+                    changes: Vec::new(),
+                    warnings: run.warnings,
+                    errors: run.errors,
+                    artifacts: run.artifacts,
+                    stdout: Some(run.stdout),
+                    stderr: None,
+                    command: None,
+                },
+                data,
+            }
+        }
+        Err(_) => {
+            let diagnostic = unica_format_core::ports::ValidationFinding::new(
+                unica_format_core::ports::ValidationFindingSeverity::Error,
+                unica_format_core::ports::ValidationFindingCode::SourceUnreadable,
+            );
+            MetaValidationInvocation {
+                adapter: AdapterOutcome {
+                    ok: false,
+                    summary: "unica.meta.validate could not inspect the requested source"
+                        .to_string(),
+                    changes: Vec::new(),
+                    warnings: Vec::new(),
+                    errors: vec!["validation:sourceUnreadable".to_string()],
+                    artifacts: Vec::new(),
+                    stdout: None,
+                    stderr: None,
+                    command: None,
+                },
+                data: meta_validation_public_data(
+                    MetaValidationCommandStatus::Unavailable,
+                    MetaValidationCommandCoverage::Unavailable,
+                    Vec::new(),
+                    vec![diagnostic],
+                ),
+            }
+        }
     }
+}
+
+fn meta_validation_public_data(
+    status: MetaValidationCommandStatus,
+    coverage: MetaValidationCommandCoverage,
+    reports: Vec<unica_format_core::ports::ValidationReport>,
+    diagnostics: Vec<unica_format_core::ports::ValidationFinding>,
+) -> Value {
+    serde_json::json!({
+        "validation": MetaValidationPublicResult {
+            status,
+            coverage,
+            reports,
+            diagnostics,
+        }
+    })
 }
 
 pub(crate) fn meta_validation_options(args: &Map<String, Value>) -> MetaValidationOptions {
@@ -5642,8 +5855,10 @@ fn run_meta_validation(
 
     let mut stdout = Vec::new();
     let mut artifacts = Vec::new();
+    let mut warnings = Vec::new();
     let mut errors = Vec::new();
-    let mut ok = true;
+    let mut status = MetaValidationCommandStatus::Valid;
+    let mut coverage = MetaValidationCommandCoverage::Complete;
     for report in result.reports() {
         let subject = report.subject().as_str().to_string();
         artifacts.push(subject.clone());
@@ -5652,25 +5867,52 @@ fn run_meta_validation(
         for finding in report.findings() {
             let code = validation_finding_code(finding.code());
             let severity = match finding.severity() {
-                unica_format_core::ports::ValidationFindingSeverity::Warning => "WARN",
+                unica_format_core::ports::ValidationFindingSeverity::Warning => {
+                    warnings.push(format!("validation:{code}"));
+                    "WARN"
+                }
                 unica_format_core::ports::ValidationFindingSeverity::Error => {
-                    ok = false;
                     errors.push(format!("validation:{code}"));
                     "ERROR"
                 }
             };
             stdout.push(format!("[{severity}] {code}"));
         }
-        if report.status() == unica_format_core::ports::ValidationStatus::Invalid {
-            ok = false;
+        if report.coverage() == unica_format_core::ports::ValidationCoverage::Partial {
+            coverage = MetaValidationCommandCoverage::Partial;
+        }
+        match report.status() {
+            unica_format_core::ports::ValidationStatus::Valid => {}
+            unica_format_core::ports::ValidationStatus::Partial => {
+                if status == MetaValidationCommandStatus::Valid {
+                    status = MetaValidationCommandStatus::Partial;
+                }
+            }
+            unica_format_core::ports::ValidationStatus::Invalid => {
+                status = MetaValidationCommandStatus::Invalid;
+            }
+        }
+        if report.findings().iter().any(|finding| {
+            finding.code() == unica_format_core::ports::ValidationFindingCode::SourceUnreadable
+        }) {
+            status = MetaValidationCommandStatus::Unavailable;
+            coverage = MetaValidationCommandCoverage::Unavailable;
         }
     }
     stdout.push(format!("validated: {}", artifacts.len()));
-    stdout.push(format!("result: {}", if ok { "valid" } else { "invalid" }));
+    stdout.push(format!("result: {}", status.as_str()));
+    let ok = matches!(
+        status,
+        MetaValidationCommandStatus::Valid | MetaValidationCommandStatus::Partial
+    );
     Ok(MetaValidationRun {
         ok,
+        status,
+        coverage,
+        reports: result.reports().to_vec(),
         stdout: format!("{}\n", stdout.join("\n")),
         artifacts,
+        warnings,
         errors,
     })
 }
@@ -5690,6 +5932,8 @@ fn validation_finding_code(code: unica_format_core::ports::ValidationFindingCode
         ValidationFindingCode::LanguageProfileMissing => "languageProfileMissing",
         ValidationFindingCode::ReferenceMissing => "referenceMissing",
         ValidationFindingCode::RegistrarMissing => "registrarMissing",
+        ValidationFindingCode::RegistrarCoverageNotEvaluated => "registrarCoverageNotEvaluated",
+        ValidationFindingCode::RegistrarCoveragePartial => "registrarCoveragePartial",
         ValidationFindingCode::MethodReferenceInvalid => "methodReferenceInvalid",
         ValidationFindingCode::DuplicateSemanticItem => "duplicateSemanticItem",
         ValidationFindingCode::CommandPresentationTooLong => "commandPresentationTooLong",

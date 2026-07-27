@@ -38,6 +38,13 @@ impl NativeOperationAdapter {
         dry_run: bool,
         mutating: bool,
     ) -> Result<NativeOperationResult, String> {
+        if !mutating && operation == "meta-validate" {
+            let validation = meta::validate_meta_with_data(args, context);
+            return Ok(NativeOperationResult {
+                adapter: validation.adapter,
+                data: Some(validation.data),
+            });
+        }
         if !mutating && operation == "meta-info" {
             let navigation = match metadata_navigation_command(args) {
                 Ok(command) => {
@@ -304,6 +311,58 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_GATEWAY_FIXTURE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn meta_validate_typed_gateway_exposes_closed_validation_json() {
+        let root = fixture_root("validation-data");
+        let path = root.join("tools/Standalone.xml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><ExternalDataProcessor uuid="11111111-1111-4111-8111-111111111111"><Properties><Name>Standalone</Name><Synonym/><Comment/></Properties><ChildObjects/></ExternalDataProcessor></MetaDataObject>"#,
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let args = json!({"ObjectPath": path}).as_object().unwrap().clone();
+
+        let result = NativeOperationAdapter::invoke_with_data(
+            "meta-validate",
+            "unica.meta.validate",
+            &args,
+            &context,
+            false,
+            false,
+        )
+        .unwrap();
+        let data = result
+            .data
+            .expect("meta.validate must use typed public data");
+
+        assert!(result.adapter.ok, "{:?}", result.adapter);
+        assert_eq!(data["validation"]["status"], "valid");
+        assert_eq!(data["validation"]["coverage"], "complete");
+        assert_eq!(data["validation"]["reports"][0]["status"], "valid");
+        let public = serde_json::to_string(&data).unwrap();
+        for forbidden in [
+            root.to_string_lossy().as_ref(),
+            "/private/source",
+            r"C:\private\source",
+            "Configuration.xml",
+            "MetaDataObject",
+            "MDClasses",
+            "ExternalDataProcessor",
+            "2.20",
+            "8.3.27",
+        ] {
+            assert!(!public.contains(forbidden), "leaked {forbidden}: {public}");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn meta_info_typed_gateway_returns_direct_navigation_for_normal_dry_run_and_unavailable() {

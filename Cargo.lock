@@ -1681,6 +1681,7 @@ dependencies = [
  "base64",
  "libc",
  "quick-xml",
+ "quote",
  "roxmltree",
  "serde",
  "serde_json",

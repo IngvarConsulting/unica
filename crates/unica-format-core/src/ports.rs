@@ -1558,6 +1558,8 @@ pub enum ValidationFindingCode {
     LanguageProfileMissing,
     ReferenceMissing,
     RegistrarMissing,
+    RegistrarCoverageNotEvaluated,
+    RegistrarCoveragePartial,
     MethodReferenceInvalid,
     DuplicateSemanticItem,
     CommandPresentationTooLong,
@@ -1621,6 +1623,7 @@ impl<'de> Deserialize<'de> for SemanticArtifactId {
 #[serde(rename_all = "camelCase")]
 pub enum ValidationStatus {
     Valid,
+    Partial,
     Invalid,
 }
 
@@ -1649,6 +1652,16 @@ impl ValidationReport {
         findings: Vec<ValidationFinding>,
         coverage: ValidationCoverage,
     ) -> Result<Self, OperationalContractError> {
+        let coverage_findings = findings
+            .iter()
+            .filter(|finding| {
+                matches!(
+                    finding.code,
+                    ValidationFindingCode::RegistrarCoverageNotEvaluated
+                        | ValidationFindingCode::RegistrarCoveragePartial
+                )
+            })
+            .collect::<Vec<_>>();
         if checks == 0
             || findings.len() > usize::from(checks)
             || findings.len() > usize::from(u16::MAX)
@@ -1656,6 +1669,11 @@ impl ValidationReport {
                 && findings
                     .iter()
                     .any(|finding| finding.code == ValidationFindingCode::RegistrarMissing))
+            || (coverage == ValidationCoverage::Complete && !coverage_findings.is_empty())
+            || (coverage == ValidationCoverage::Partial && coverage_findings.len() != 1)
+            || coverage_findings
+                .iter()
+                .any(|finding| finding.severity != ValidationFindingSeverity::Warning)
         {
             return Err(OperationalContractError::InvalidStateCombination);
         }
@@ -1664,6 +1682,8 @@ impl ValidationReport {
             .any(|finding| finding.severity == ValidationFindingSeverity::Error)
         {
             ValidationStatus::Invalid
+        } else if coverage == ValidationCoverage::Partial {
+            ValidationStatus::Partial
         } else {
             ValidationStatus::Valid
         };

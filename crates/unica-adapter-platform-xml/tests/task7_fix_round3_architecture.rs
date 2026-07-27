@@ -5,6 +5,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use quote::ToTokens;
 use syn::{
     visit::{self, Visit},
     Expr, ExprCall, ExprMethodCall, ExprPath, FnArg, ImplItem, Item, ItemUse, Lit, Pat, Signature,
@@ -33,6 +34,7 @@ enum CallFact {
     Method {
         name: String,
         approved_neutral_port: bool,
+        fail_if_unresolved: bool,
     },
     Ufcs {
         self_type: Vec<String>,
@@ -90,11 +92,7 @@ impl CallGraph {
                     self.insert_body(&id, module, &imports, None, &function.sig, &function.block);
                 }
                 Item::Impl(item_impl) => {
-                    let Some(owner) = type_path_segments(&item_impl.self_ty)
-                        .map(|path| resolve_decl_path(module, &imports, path))
-                    else {
-                        continue;
-                    };
+                    let owner = canonical_type_owner(module, &imports, None, &item_impl.self_ty);
                     let trait_path = item_impl.trait_.as_ref().map(|(_, path, _)| {
                         resolve_decl_path(module, &imports, path_segments(path))
                     });
@@ -208,8 +206,13 @@ impl CallGraph {
         signature: &Signature,
         block: &syn::Block,
     ) {
-        let mut visitor =
-            FactVisitor::new(module, imports.clone(), neutral_port_receivers(signature));
+        let mut visitor = FactVisitor::new(
+            module,
+            imports.clone(),
+            owner.clone(),
+            neutral_port_receivers(module, imports, signature),
+            receiver_parameters(module, imports, signature),
+        );
         visitor.visit_block(block);
         self.functions.insert(
             id.to_string(),
@@ -284,12 +287,16 @@ impl CallGraph {
                     CallFact::Method {
                         name,
                         approved_neutral_port,
+                        fail_if_unresolved,
                     } => {
                         if *approved_neutral_port {
                             continue;
                         }
                         if let Some(targets) = self.methods_by_name.get(name) {
                             queue.extend(targets.iter().map(|target| target.id.clone()));
+                        } else if *fail_if_unresolved {
+                            violations
+                                .push(format!("{function_id}: unresolved receiver method {name}"));
                         }
                     }
                     CallFact::Ufcs {
@@ -298,12 +305,7 @@ impl CallGraph {
                         method,
                         imports,
                     } => {
-                        let owner = resolve_call_path(
-                            &function.module,
-                            imports,
-                            function.owner.as_ref(),
-                            self_type.clone(),
-                        );
+                        let owner = self_type.clone();
                         let trait_path = resolve_call_path(
                             &function.module,
                             imports,
@@ -312,10 +314,10 @@ impl CallGraph {
                         );
                         let mut matched = false;
                         if let Some(targets) = self.methods_by_name.get(method) {
-                            for target in targets.iter().filter(|target| {
-                                target.trait_path.as_ref() == Some(&trait_path)
-                                    && (target.owner == owner || target.owner == trait_path)
-                            }) {
+                            for target in targets
+                                .iter()
+                                .filter(|target| target.trait_path.as_ref() == Some(&trait_path))
+                            {
                                 matched = true;
                                 queue.push_back(target.id.clone());
                             }
@@ -447,17 +449,34 @@ struct FactVisitor {
     module: String,
     module_imports: Imports,
     scopes: Vec<Imports>,
-    neutral_receivers: BTreeSet<String>,
+    owner: Option<Vec<String>>,
+    neutral_receivers: BTreeMap<String, BTreeSet<String>>,
+    receiver_scopes: Vec<BTreeMap<String, ReceiverProvenance>>,
     facts: FunctionFacts,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReceiverProvenance {
+    Local,
+    External,
+    Unknown,
+}
+
 impl FactVisitor {
-    fn new(module: &str, module_imports: Imports, neutral_receivers: BTreeSet<String>) -> Self {
+    fn new(
+        module: &str,
+        module_imports: Imports,
+        owner: Option<Vec<String>>,
+        neutral_receivers: BTreeMap<String, BTreeSet<String>>,
+        receiver_parameters: BTreeMap<String, ReceiverProvenance>,
+    ) -> Self {
         Self {
             module: module.to_string(),
             module_imports,
             scopes: Vec::new(),
+            owner,
             neutral_receivers,
+            receiver_scopes: vec![receiver_parameters],
             facts: FunctionFacts::default(),
         }
     }
@@ -468,6 +487,61 @@ impl FactVisitor {
             imports.overlay(scope);
         }
         imports
+    }
+
+    fn receiver_provenance(&self, name: &str) -> ReceiverProvenance {
+        self.receiver_scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name).copied())
+            .unwrap_or(ReceiverProvenance::Unknown)
+    }
+
+    fn expression_provenance(&self, expression: &Expr) -> ReceiverProvenance {
+        match expression {
+            Expr::Path(path) if path.qself.is_none() && path.path.segments.len() == 1 => {
+                let name = path.path.segments[0].ident.to_string();
+                let known = self.receiver_provenance(&name);
+                if known != ReceiverProvenance::Unknown {
+                    known
+                } else {
+                    path_provenance(&self.module, &self.effective_imports(), &path.path)
+                }
+            }
+            Expr::Path(path) if path.qself.is_none() => {
+                path_provenance(&self.module, &self.effective_imports(), &path.path)
+            }
+            Expr::Struct(expression) => {
+                path_provenance(&self.module, &self.effective_imports(), &expression.path)
+            }
+            Expr::Reference(reference) => self.expression_provenance(&reference.expr),
+            Expr::Paren(paren) => self.expression_provenance(&paren.expr),
+            Expr::Group(group) => self.expression_provenance(&group.expr),
+            Expr::Array(_) | Expr::Tuple(_) | Expr::Lit(_) => ReceiverProvenance::External,
+            Expr::Call(call) => {
+                let Expr::Path(path) = call.func.as_ref() else {
+                    return ReceiverProvenance::Unknown;
+                };
+                if path.path.segments.len() != 1 {
+                    return ReceiverProvenance::Unknown;
+                }
+                let first = path.path.segments.first().map(|segment| {
+                    segment
+                        .ident
+                        .to_string()
+                        .chars()
+                        .next()
+                        .is_some_and(|character| character.is_ascii_uppercase())
+                });
+                if first == Some(true) {
+                    path_provenance(&self.module, &self.effective_imports(), &path.path)
+                } else {
+                    ReceiverProvenance::Unknown
+                }
+            }
+            Expr::MethodCall(_) => ReceiverProvenance::Unknown,
+            _ => ReceiverProvenance::Unknown,
+        }
     }
 }
 
@@ -480,22 +554,50 @@ impl<'ast> Visit<'ast> for FactVisitor {
             }
         }
         self.scopes.push(scope);
+        self.receiver_scopes.push(BTreeMap::new());
         visit::visit_block(self, node);
+        self.receiver_scopes.pop();
         self.scopes.pop();
+    }
+
+    fn visit_local(&mut self, node: &'ast syn::Local) {
+        visit::visit_local(self, node);
+        let (pattern, provenance) = match &node.pat {
+            Pat::Type(pattern) => (
+                pattern.pat.as_ref(),
+                type_provenance(&self.module, &self.effective_imports(), pattern.ty.as_ref()),
+            ),
+            pattern => (
+                pattern,
+                node.init
+                    .as_ref()
+                    .map(|init| self.expression_provenance(&init.expr))
+                    .unwrap_or(ReceiverProvenance::Unknown),
+            ),
+        };
+        if let Pat::Ident(pattern) = pattern {
+            if let Some(scope) = self.receiver_scopes.last_mut() {
+                scope.insert(pattern.ident.to_string(), provenance);
+            }
+        }
     }
 
     fn visit_expr_call(&mut self, node: &'ast ExprCall) {
         if let Expr::Path(path) = node.func.as_ref() {
             if let Some(qself) = &path.qself {
                 let segments = path_segments(&path.path);
-                if let (Some(self_type), Some(method)) =
-                    (type_path_segments(&qself.ty), segments.last().cloned())
-                {
+                if let Some(method) = segments.last().cloned() {
+                    let imports = self.effective_imports();
                     self.facts.calls.push(CallFact::Ufcs {
-                        self_type,
+                        self_type: canonical_type_owner(
+                            &self.module,
+                            &imports,
+                            self.owner.as_ref(),
+                            &qself.ty,
+                        ),
                         trait_path: segments[..segments.len().saturating_sub(1)].to_vec(),
                         method,
-                        imports: self.effective_imports(),
+                        imports,
                     });
                 }
             } else {
@@ -522,11 +624,21 @@ impl<'ast> Visit<'ast> for FactVisitor {
     }
 
     fn visit_expr_method_call(&mut self, node: &'ast ExprMethodCall) {
-        let approved_neutral_port = receiver_ident(node.receiver.as_ref())
-            .is_some_and(|receiver| self.neutral_receivers.contains(&receiver));
+        let method = node.method.to_string();
+        let receiver = receiver_ident(node.receiver.as_ref());
+        let approved_neutral_port = receiver
+            .as_ref()
+            .and_then(|receiver| self.neutral_receivers.get(receiver))
+            .is_some_and(|methods| methods.contains(&method));
+        let fail_if_unresolved = receiver
+            .as_deref()
+            .map(|receiver| self.receiver_provenance(receiver))
+            .unwrap_or_else(|| self.expression_provenance(node.receiver.as_ref()))
+            == ReceiverProvenance::Local;
         self.facts.calls.push(CallFact::Method {
-            name: node.method.to_string(),
+            name: method,
             approved_neutral_port,
+            fail_if_unresolved,
         });
         if matches!(
             node.method.to_string().as_str(),
@@ -562,11 +674,98 @@ impl<'ast> Visit<'ast> for FactVisitor {
     }
 }
 
-fn type_path_segments(ty: &Type) -> Option<Vec<String>> {
-    let Type::Path(path) = ty else {
-        return None;
-    };
-    Some(path_segments(&path.path))
+fn canonical_type_owner(
+    module: &str,
+    imports: &Imports,
+    owner: Option<&Vec<String>>,
+    ty: &Type,
+) -> Vec<String> {
+    vec![canonical_type(module, imports, owner, ty)]
+}
+
+fn canonical_type(
+    module: &str,
+    imports: &Imports,
+    owner: Option<&Vec<String>>,
+    ty: &Type,
+) -> String {
+    match ty {
+        Type::Path(path) if path.qself.is_none() => {
+            let plain = path_segments(&path.path);
+            let mut resolved = if plain.first().is_some_and(|segment| segment == "Self") {
+                owner.cloned().unwrap_or_else(|| {
+                    let mut unresolved = module_segments(module);
+                    unresolved.push("Self".to_string());
+                    unresolved
+                })
+            } else {
+                resolve_decl_path(module, imports, plain)
+            };
+            let offset = resolved.len().saturating_sub(path.path.segments.len());
+            for (index, segment) in path.path.segments.iter().enumerate() {
+                let arguments = compact_tokens(&segment.arguments);
+                if !arguments.is_empty() {
+                    if let Some(resolved_segment) = resolved.get_mut(offset + index) {
+                        resolved_segment.push_str(&arguments);
+                    }
+                }
+            }
+            resolved.join("::")
+        }
+        Type::Reference(reference) => format!(
+            "&{}{}{}",
+            reference
+                .lifetime
+                .as_ref()
+                .map(|lifetime| format!("{} ", lifetime.ident))
+                .unwrap_or_default(),
+            if reference.mutability.is_some() {
+                "mut "
+            } else {
+                ""
+            },
+            canonical_type(module, imports, owner, &reference.elem)
+        ),
+        Type::Ptr(pointer) => format!(
+            "*{} {}",
+            if pointer.mutability.is_some() {
+                "mut"
+            } else {
+                "const"
+            },
+            canonical_type(module, imports, owner, &pointer.elem)
+        ),
+        Type::Slice(slice) => {
+            format!("[{}]", canonical_type(module, imports, owner, &slice.elem))
+        }
+        Type::Array(array) => format!(
+            "[{};{}]",
+            canonical_type(module, imports, owner, &array.elem),
+            compact_tokens(&array.len)
+        ),
+        Type::Tuple(tuple) => format!(
+            "({})",
+            tuple
+                .elems
+                .iter()
+                .map(|element| canonical_type(module, imports, owner, element))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        Type::Paren(paren) => {
+            format!("({})", canonical_type(module, imports, owner, &paren.elem))
+        }
+        Type::Group(group) => canonical_type(module, imports, owner, &group.elem),
+        other => compact_tokens(other),
+    }
+}
+
+fn compact_tokens(value: &impl ToTokens) -> String {
+    value
+        .to_token_stream()
+        .to_string()
+        .split_whitespace()
+        .collect()
 }
 
 fn resolve_decl_path(module: &str, imports: &Imports, path: Vec<String>) -> Vec<String> {
@@ -616,7 +815,11 @@ fn receiver_ident(receiver: &Expr) -> Option<String> {
         .map(|segment| segment.ident.to_string())
 }
 
-fn neutral_port_receivers(signature: &Signature) -> BTreeSet<String> {
+fn neutral_port_receivers(
+    module: &str,
+    imports: &Imports,
+    signature: &Signature,
+) -> BTreeMap<String, BTreeSet<String>> {
     signature
         .inputs
         .iter()
@@ -627,12 +830,110 @@ fn neutral_port_receivers(signature: &Signature) -> BTreeSet<String> {
             let Pat::Ident(pattern) = argument.pat.as_ref() else {
                 return None;
             };
-            is_explicit_neutral_port_trait_object(&argument.ty).then(|| pattern.ident.to_string())
+            let methods = approved_neutral_port_methods(module, imports, &argument.ty);
+            (!methods.is_empty()).then(|| (pattern.ident.to_string(), methods))
         })
         .collect()
 }
 
-fn is_explicit_neutral_port_trait_object(ty: &Type) -> bool {
+fn receiver_parameters(
+    module: &str,
+    imports: &Imports,
+    signature: &Signature,
+) -> BTreeMap<String, ReceiverProvenance> {
+    let mut parameters = BTreeMap::new();
+    for input in &signature.inputs {
+        match input {
+            FnArg::Receiver(_) => {
+                parameters.insert("self".to_string(), ReceiverProvenance::Local);
+            }
+            FnArg::Typed(argument) => {
+                let Pat::Ident(pattern) = argument.pat.as_ref() else {
+                    continue;
+                };
+                parameters.insert(
+                    pattern.ident.to_string(),
+                    type_provenance(module, imports, &argument.ty),
+                );
+            }
+        }
+    }
+    parameters
+}
+
+fn type_provenance(module: &str, imports: &Imports, ty: &Type) -> ReceiverProvenance {
+    match ty {
+        Type::Reference(reference) => type_provenance(module, imports, &reference.elem),
+        Type::Paren(paren) => type_provenance(module, imports, &paren.elem),
+        Type::Group(group) => type_provenance(module, imports, &group.elem),
+        Type::Path(path) if path.qself.is_none() => path_provenance(module, imports, &path.path),
+        Type::Array(_) | Type::Slice(_) | Type::Ptr(_) | Type::Tuple(_) => {
+            ReceiverProvenance::External
+        }
+        Type::TraitObject(_) => ReceiverProvenance::Local,
+        Type::ImplTrait(_) => ReceiverProvenance::Unknown,
+        _ => ReceiverProvenance::Unknown,
+    }
+}
+
+fn path_provenance(module: &str, imports: &Imports, path: &syn::Path) -> ReceiverProvenance {
+    let path = path_segments(path);
+    let Some(first) = path.first() else {
+        return ReceiverProvenance::Unknown;
+    };
+    if is_primitive_type(first) || is_prelude_type(first) {
+        return ReceiverProvenance::External;
+    }
+    if is_external_crate_root(first) {
+        return ReceiverProvenance::External;
+    }
+    if let Some(imported) = imports.aliases.get(first) {
+        return if imported.first().is_some_and(|root| {
+            is_external_crate_root(root) || matches!(root.as_str(), "std" | "core" | "alloc")
+        }) {
+            ReceiverProvenance::External
+        } else {
+            ReceiverProvenance::Local
+        };
+    }
+    if matches!(first.as_str(), "crate" | "self" | "super" | "Self") {
+        return ReceiverProvenance::Local;
+    }
+    if first
+        .chars()
+        .next()
+        .is_some_and(|character| character.is_ascii_uppercase())
+    {
+        let resolved = resolve_decl_path(module, imports, path);
+        return if is_local_path(&resolved) {
+            ReceiverProvenance::Local
+        } else {
+            ReceiverProvenance::External
+        };
+    }
+    ReceiverProvenance::Unknown
+}
+
+fn is_prelude_type(name: &str) -> bool {
+    matches!(
+        name,
+        "Box"
+            | "Cow"
+            | "Option"
+            | "Result"
+            | "String"
+            | "Vec"
+            | "VecDeque"
+            | "BTreeMap"
+            | "BTreeSet"
+            | "HashMap"
+            | "HashSet"
+            | "Arc"
+            | "Rc"
+    )
+}
+
+fn approved_neutral_port_methods(module: &str, imports: &Imports, ty: &Type) -> BTreeSet<String> {
     let ty = match ty {
         Type::Reference(reference) => reference.elem.as_ref(),
         Type::Paren(paren) => paren.elem.as_ref(),
@@ -640,18 +941,81 @@ fn is_explicit_neutral_port_trait_object(ty: &Type) -> bool {
         other => other,
     };
     let Type::TraitObject(trait_object) = ty else {
-        return false;
+        return BTreeSet::new();
     };
-    trait_object.bounds.iter().any(|bound| {
+    let mut methods = BTreeSet::new();
+    for bound in &trait_object.bounds {
         let TypeParamBound::Trait(bound) = bound else {
-            return false;
+            continue;
         };
-        bound
-            .path
-            .segments
-            .last()
-            .is_some_and(|segment| segment.ident.to_string().ends_with("Port"))
-    })
+        for candidate in resolve_trait_candidates(module, imports, &bound.path) {
+            if let Some(approved) = approved_neutral_trait(&candidate.join("::")) {
+                methods.extend(approved.iter().map(|method| (*method).to_string()));
+            }
+        }
+    }
+    methods
+}
+
+fn resolve_trait_candidates(module: &str, imports: &Imports, path: &syn::Path) -> Vec<Vec<String>> {
+    let path = path_segments(path);
+    match path.as_slice() {
+        [first, ..] if matches!(first.as_str(), "crate" | "self" | "super") => {
+            vec![absolutize_path(module, path)]
+        }
+        [first, rest @ ..] if imports.aliases.contains_key(first) => {
+            let mut resolved = imports.aliases[first].clone();
+            resolved.extend(rest.iter().cloned());
+            vec![resolved]
+        }
+        [first, ..] if is_external_crate_root(first) => vec![path],
+        _ => {
+            let mut candidates = imports
+                .globs
+                .iter()
+                .map(|glob| {
+                    let mut candidate = glob.clone();
+                    candidate.extend(path.iter().cloned());
+                    candidate
+                })
+                .collect::<Vec<_>>();
+            let mut local = module_segments(module);
+            local.extend(path);
+            candidates.push(local);
+            candidates
+        }
+    }
+}
+
+fn approved_neutral_trait(path: &str) -> Option<&'static [&'static str]> {
+    match path {
+        "unica_format_core::ports::ProbePort" => Some(&["probe"]),
+        "unica_format_core::ports::CapturedSourceSession" => {
+            Some(&["source", "snapshot", "binding", "as_any"])
+        }
+        "unica_format_core::ports::CapturePort" => Some(&["capture"]),
+        "unica_format_core::ports::ReadPort" => Some(&["read"]),
+        "unica_format_core::ports::OwnershipPort" => Some(&["resolve"]),
+        "unica_format_core::ports::FormatInspectionPort" => Some(&["inspect"]),
+        "unica_format_core::ports::SupportPort" => Some(&["inspect"]),
+        "unica_format_core::ports::WritePort" => Some(&["write"]),
+        "unica_format_core::ports::ValidationPort" => Some(&["validate"]),
+        "unica_format_core::ports::CapabilityPort" => Some(&["capabilities"]),
+        "unica_format_core::ports::ObjectKindRegistryPort" => {
+            Some(&["resolve", "ordered_kinds", "lease", "project"])
+        }
+        "unica_format_core::ports::SemanticArtifactPort" => Some(&["read", "bytes"]),
+        "unica_format_core::ports::CompatibilityPort" => Some(&["inspect"]),
+        "unica_format_core::ports::SourceCompatibilityPort" => Some(&["inspect_source"]),
+        "unica_format_core::ports::AuthorabilityPort" => Some(&["inspect"]),
+        "unica_format_core::ports::ValidationContextPort" => Some(&["inspect"]),
+        "unica_format_core::ports::OperationalValidationPort" => Some(&["validate"]),
+        "unica_format_core::ports::PublicationPort" => Some(&["publish"]),
+        "unica_application::navigation::SourceRegistrationResolver" => {
+            Some(&["locate", "authorize_continuation"])
+        }
+        _ => None,
+    }
 }
 
 fn module_segments(module: &str) -> Vec<String> {
@@ -1048,21 +1412,29 @@ fn nested_multi_layer_trait_method_logic_is_rejected() {
 }
 
 #[test]
-fn unknown_neutral_trait_object_method_terminates_without_false_positive() {
+fn local_port_suffix_does_not_terminate_reachability() {
     let graph = fixture_graph(
-        "neutral-trait-object",
+        "local-port-suffix",
         &[(
             "entry.rs",
             r#"
                 pub trait NeutralPort { fn inspect(&self); }
+                trait HiddenBoundary {
+                    fn inspect(&self) {
+                        let _ = std::path::Path::new(".").join("Template.xml");
+                    }
+                }
                 pub fn run(port: &dyn NeutralPort) { port.inspect(); }
             "#,
         )],
     );
 
+    let violations = graph.violations_from(&["crate::entry::run"]);
     assert!(
-        graph.violations_from(&["crate::entry::run"]).is_empty(),
-        "neutral trait-object calls must terminate at the port boundary"
+        violations
+            .iter()
+            .any(|violation| violation.contains("Template.xml")),
+        "{violations:?}"
     );
 }
 
@@ -1249,13 +1621,13 @@ fn explicit_neutral_port_trait_object_ignores_same_named_local_methods() {
         &[(
             "entry.rs",
             r#"
-                pub trait ValidationPort { fn inspect(&self); }
+                use unica_format_core::ports::ValidationContextPort;
                 trait HiddenBoundary {
                     fn inspect(&self) {
                         let _ = std::path::Path::new(".").join("Template.xml");
                     }
                 }
-                pub fn run(port: &dyn ValidationPort) { port.inspect(); }
+                pub fn run(port: &dyn ValidationContextPort) { port.inspect(); }
             "#,
         )],
     );
@@ -1263,6 +1635,210 @@ fn explicit_neutral_port_trait_object_ignores_same_named_local_methods() {
     assert!(
         graph.violations_from(&["crate::entry::run"]).is_empty(),
         "statically typed neutral port call must terminate at the port boundary"
+    );
+}
+
+#[test]
+fn every_legal_impl_self_type_is_indexed_and_reachable() {
+    let graph = fixture_graph(
+        "impl-self-types",
+        &[(
+            "entry.rs",
+            r#"
+                trait RefBoundary { fn via_ref(&self); }
+                trait WrappedBoundary { fn via_wrapper(&self); }
+                trait TupleBoundary { fn via_tuple(&self); }
+                trait ArrayBoundary { fn via_array(&self); }
+                trait SliceBoundary { fn via_slice(&self); }
+                struct Boundary;
+                struct Wrapper<T>(T);
+
+                impl RefBoundary for &Boundary {
+                    fn via_ref(&self) {
+                        let _ = std::path::Path::new(".").join("Configuration.xml");
+                    }
+                }
+                impl<T> WrappedBoundary for Wrapper<T> {
+                    fn via_wrapper(&self) {
+                        let _ = std::path::Path::new(".").join("ParentConfigurations.bin");
+                    }
+                }
+                impl TupleBoundary for (Boundary,) {
+                    fn via_tuple(&self) {
+                        let _ = std::path::Path::new(".").join("Rights.xml");
+                    }
+                }
+                impl ArrayBoundary for [Boundary; 1] {
+                    fn via_array(&self) {
+                        let _ = std::path::Path::new(".").join("Form.xml");
+                    }
+                }
+                impl SliceBoundary for [Boundary] {
+                    fn via_slice(&self) {
+                        let _ = std::path::Path::new(".").join("Template.xml");
+                    }
+                }
+
+                pub fn run(
+                    a: &Boundary,
+                    b: Wrapper<Boundary>,
+                    c: (Boundary,),
+                    d: [Boundary; 1],
+                    e: &[Boundary],
+                ) {
+                    a.via_ref();
+                    b.via_wrapper();
+                    c.via_tuple();
+                    d.via_array();
+                    e.via_slice();
+                }
+            "#,
+        )],
+    );
+
+    let violations = graph.violations_from(&["crate::entry::run"]);
+    for native_artifact in [
+        "Configuration.xml",
+        "ParentConfigurations.bin",
+        "Rights.xml",
+        "Form.xml",
+        "Template.xml",
+    ] {
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.contains(native_artifact)),
+            "{native_artifact} escaped through an unindexed impl self type: {violations:?}"
+        );
+    }
+    let wrapped_owners = &graph.methods_by_name["via_wrapper"];
+    assert!(
+        wrapped_owners.iter().any(|target| {
+            let owner = target.owner.join("::");
+            owner.contains("Wrapper<") && owner.contains('T')
+        }),
+        "generic arguments were erased from impl identity: {wrapped_owners:?}"
+    );
+}
+
+#[test]
+fn receiver_method_without_any_candidate_fails_closed() {
+    let graph = fixture_graph(
+        "missing-method-candidate",
+        &[(
+            "entry.rs",
+            "pub struct Unknown; pub fn run(value: Unknown) { value.hidden_native_reader(); }",
+        )],
+    );
+
+    let violations = graph.violations_from(&["crate::entry::run"]);
+    assert!(
+        violations
+            .iter()
+            .any(|violation| violation.contains("unresolved receiver method hidden_native_reader")),
+        "{violations:?}"
+    );
+}
+
+#[test]
+fn neutral_port_provenance_cannot_be_spoofed() {
+    let cases = [
+        (
+            "local-host-port",
+            r#"
+                trait HostPort { fn inspect(&self); }
+                trait HiddenBoundary {
+                    fn inspect(&self) {
+                        let _ = std::path::Path::new(".").join("Configuration.xml");
+                    }
+                }
+                pub fn run(port: &dyn HostPort) { port.inspect(); }
+            "#,
+        ),
+        (
+            "reexport-spoof",
+            r#"
+                mod spoof { pub trait ValidationContextPort { fn inspect(&self); } }
+                pub use spoof::ValidationContextPort;
+                trait HiddenBoundary {
+                    fn inspect(&self) {
+                        let _ = std::path::Path::new(".").join("Rights.xml");
+                    }
+                }
+                pub fn run(port: &dyn ValidationContextPort) { port.inspect(); }
+            "#,
+        ),
+        (
+            "alias-spoof",
+            r#"
+                mod spoof { pub trait HostBoundary { fn inspect(&self); } }
+                use crate::entry::spoof::HostBoundary as OperationalValidationPort;
+                trait HiddenBoundary {
+                    fn inspect(&self) {
+                        let _ = std::path::Path::new(".").join("Form.xml");
+                    }
+                }
+                pub fn run(port: &dyn OperationalValidationPort) { port.inspect(); }
+            "#,
+        ),
+        (
+            "shadow-spoof",
+            r#"
+                mod local {
+                    pub trait ValidationContextPort { fn inspect(&self); }
+                }
+                use local::ValidationContextPort;
+                trait HiddenBoundary {
+                    fn inspect(&self) {
+                        let _ = std::path::Path::new(".").join("Template.xml");
+                    }
+                }
+                pub fn run(port: &dyn ValidationContextPort) { port.inspect(); }
+            "#,
+        ),
+    ];
+
+    for (label, source) in cases {
+        let graph = fixture_graph(label, &[("entry.rs", source)]);
+        let violations = graph.violations_from(&["crate::entry::run"]);
+        assert!(
+            !violations.is_empty(),
+            "{label} was accepted as an approved neutral port"
+        );
+    }
+}
+
+#[test]
+fn exact_neutral_port_alias_and_glob_imports_are_approved_by_provenance() {
+    let graph = fixture_graph(
+        "real-port-imports",
+        &[(
+            "entry.rs",
+            r#"
+                use unica_format_core::ports::ValidationContextPort as ContextPort;
+                use unica_format_core::ports::*;
+                trait HiddenBoundary {
+                    fn inspect(&self) {
+                        let _ = std::path::Path::new(".").join("Configuration.xml");
+                    }
+                    fn validate(&self) {
+                        let _ = std::path::Path::new(".").join("Rights.xml");
+                    }
+                }
+                pub fn run(
+                    context: &dyn ContextPort,
+                    validation: &dyn OperationalValidationPort,
+                ) {
+                    context.inspect();
+                    validation.validate();
+                }
+            "#,
+        )],
+    );
+
+    assert!(
+        graph.violations_from(&["crate::entry::run"]).is_empty(),
+        "exact neutral port imports must terminate at their declared methods"
     );
 }
 

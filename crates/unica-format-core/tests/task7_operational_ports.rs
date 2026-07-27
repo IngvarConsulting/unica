@@ -109,12 +109,16 @@ fn task7_validation_coverage_is_closed_and_explicitly_partial() {
         1,
         vec![ValidationFinding::new(
             ValidationFindingSeverity::Warning,
-            ValidationFindingCode::UnsupportedCombination,
+            ValidationFindingCode::RegistrarCoverageNotEvaluated,
         )],
         ValidationCoverage::Partial,
     )
     .unwrap();
     assert_eq!(report.coverage(), ValidationCoverage::Partial);
+    assert_eq!(
+        report.status(),
+        unica_format_core::ports::ValidationStatus::Partial
+    );
     assert_eq!(
         serde_json::from_value::<ValidationReport>(serde_json::to_value(&report).unwrap()).unwrap(),
         report

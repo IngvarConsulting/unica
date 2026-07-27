@@ -220,8 +220,15 @@ fn validate_one_with_provider(
                 checks = checks.saturating_add(1);
                 findings.push(error(ValidationFindingCode::RegistrarMissing));
             }
-            ValidationRelationCoverage::Partial | ValidationRelationCoverage::NotEvaluated => {
+            ValidationRelationCoverage::Partial => {
                 coverage = ValidationCoverage::Partial;
+                findings.push(warning(ValidationFindingCode::RegistrarCoveragePartial));
+            }
+            ValidationRelationCoverage::NotEvaluated => {
+                coverage = ValidationCoverage::Partial;
+                findings.push(warning(
+                    ValidationFindingCode::RegistrarCoverageNotEvaluated,
+                ));
             }
             ValidationRelationCoverage::NotApplicable => {}
         }
@@ -329,6 +336,7 @@ fn child<'a>(node: roxmltree::Node<'a, 'a>, name: &str) -> Option<roxmltree::Nod
 
 fn inner_text(node: roxmltree::Node<'_, '_>) -> String {
     node.descendants()
+        .filter(roxmltree::Node::is_text)
         .filter_map(|child| child.text())
         .collect::<String>()
         .trim()
