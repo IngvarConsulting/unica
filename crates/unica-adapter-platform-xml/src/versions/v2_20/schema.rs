@@ -135,7 +135,8 @@ use crate::domain::{
     identifiers::is_1c_identifier,
     navigation::{
         DateFractions, DateQualifiers, NumberQualifiers, NumberSign, PrimitiveTypeKind,
-        PropertyValue, StringLength, StringQualifiers, TypeQualifiers, TypeSetValue, TypeVariant,
+        PropertyValue, SemanticObjectKind, StringLength, StringQualifiers, TypeQualifiers,
+        TypeSetValue, TypeVariant,
     },
     navigation_limits::MAX_NAVIGATION_TYPE_VARIANTS,
     source_adapters::{SourceAdapterError, SourceAdapterErrorKind},
@@ -263,19 +264,16 @@ pub(crate) fn parse_type_description_2_20(
         let primitive_indexes = variants
             .iter()
             .enumerate()
-            .filter_map(|(index, variant)| {
-                matches!(variant, TypeVariant::Primitive { .. }).then_some(index)
-            })
+            .filter_map(|(index, variant)| variant.primitive_kind().map(|_| index))
             .collect::<Vec<_>>();
         if primitive_indexes.len() != 1 {
             return Err(projection_error(
                 "type qualifiers require one primitive variant",
             ));
         }
-        let kind = match &variants[primitive_indexes[0]] {
-            TypeVariant::Primitive { kind, .. } => *kind,
-            _ => unreachable!(),
-        };
+        let kind = variants[primitive_indexes[0]]
+            .primitive_kind()
+            .expect("primitive index was selected above");
         if !qualifier_groups
             .iter()
             .all(|group| group.is_compatible_with(&kind))
@@ -284,55 +282,60 @@ pub(crate) fn parse_type_description_2_20(
                 "type qualifier group is incompatible with primitive variant",
             ));
         }
-        let TypeVariant::Primitive {
-            qualifiers: destination,
-            ..
-        } = &mut variants[primitive_indexes[0]]
-        else {
-            unreachable!()
-        };
-        *destination = Some(match kind {
-            PrimitiveTypeKind::String => TypeQualifiers::String(StringQualifiers {
-                length: qualifier_integer(&qualifiers, "length")?,
-                allowed_length: qualifier_string(&qualifiers, "allowedLength")
-                    .map(|value| match value {
-                        "Fixed" => Ok(StringLength::Fixed),
-                        "Variable" => Ok(StringLength::Variable),
-                        _ => Err(projection_error("invalid string length qualifier")),
-                    })
-                    .transpose()?,
-            }),
-            PrimitiveTypeKind::Number => TypeQualifiers::Number(NumberQualifiers {
-                digits: qualifier_integer(&qualifiers, "digits")?,
-                fraction_digits: qualifier_integer(&qualifiers, "fractionDigits")?,
-                allowed_sign: qualifier_string(&qualifiers, "allowedSign")
-                    .map(|value| match value {
-                        "Any" => Ok(NumberSign::Any),
-                        "Nonnegative" => Ok(NumberSign::Nonnegative),
-                        _ => Err(projection_error("invalid number sign qualifier")),
-                    })
-                    .transpose()?,
-            }),
-            PrimitiveTypeKind::Date => TypeQualifiers::Date(DateQualifiers {
-                date_fractions: qualifier_string(&qualifiers, "dateFractions")
-                    .map(|value| match value {
-                        "Date" => Ok(DateFractions::Date),
-                        "DateTime" => Ok(DateFractions::DateTime),
-                        "Time" => Ok(DateFractions::Time),
-                        _ => Err(projection_error("invalid date fractions qualifier")),
-                    })
-                    .transpose()?,
-            }),
+        let qualifiers = match kind {
+            PrimitiveTypeKind::String => TypeQualifiers::String(
+                StringQualifiers::new(
+                    qualifier_integer(&qualifiers, "length")?,
+                    qualifier_string(&qualifiers, "allowedLength")
+                        .map(|value| match value {
+                            "Fixed" => Ok(StringLength::Fixed),
+                            "Variable" => Ok(StringLength::Variable),
+                            _ => Err(projection_error("invalid string length qualifier")),
+                        })
+                        .transpose()?,
+                )
+                .map_err(|_| projection_error("invalid semantic string qualifiers"))?,
+            ),
+            PrimitiveTypeKind::Number => TypeQualifiers::Number(
+                NumberQualifiers::new(
+                    qualifier_integer(&qualifiers, "digits")?,
+                    qualifier_integer(&qualifiers, "fractionDigits")?,
+                    qualifier_string(&qualifiers, "allowedSign")
+                        .map(|value| match value {
+                            "Any" => Ok(NumberSign::Any),
+                            "Nonnegative" => Ok(NumberSign::Nonnegative),
+                            _ => Err(projection_error("invalid number sign qualifier")),
+                        })
+                        .transpose()?,
+                )
+                .map_err(|_| projection_error("invalid semantic number qualifiers"))?,
+            ),
+            PrimitiveTypeKind::Date => TypeQualifiers::Date(
+                DateQualifiers::new(
+                    qualifier_string(&qualifiers, "dateFractions")
+                        .map(|value| match value {
+                            "Date" => Ok(DateFractions::Date),
+                            "DateTime" => Ok(DateFractions::DateTime),
+                            "Time" => Ok(DateFractions::Time),
+                            _ => Err(projection_error("invalid date fractions qualifier")),
+                        })
+                        .transpose()?,
+                )
+                .map_err(|_| projection_error("invalid semantic date qualifiers"))?,
+            ),
             PrimitiveTypeKind::Boolean => {
                 return Err(projection_error(
                     "boolean type cannot carry Platform XML qualifiers",
                 ))
             }
-        });
+        };
+        variants[primitive_indexes[0]] = TypeVariant::primitive(kind, Some(qualifiers))
+            .map_err(|_| projection_error("invalid qualified semantic primitive"))?;
     }
     variants.sort_by_key(type_variant_key);
     variants.dedup();
-    Ok(TypeSetValue { variants })
+    TypeSetValue::new(variants)
+        .map_err(|_| projection_error("invalid semantic type-description value"))
 }
 
 #[derive(Clone, Copy)]
@@ -445,10 +448,8 @@ fn parse_type_variant(value: &str, node: Node<'_, '_>) -> Result<TypeVariant, So
         let Some(kind) = primitive else {
             return Err(projection_error("unsupported XML Schema type variant"));
         };
-        return Ok(TypeVariant::Primitive {
-            kind,
-            qualifiers: None,
-        });
+        return TypeVariant::primitive(kind, None)
+            .map_err(|_| projection_error("invalid semantic primitive type"));
     }
     if namespace != CURRENT_CONFIGURATION_NAMESPACE {
         return Err(projection_error(
@@ -463,28 +464,27 @@ fn parse_type_variant(value: &str, node: Node<'_, '_>) -> Result<TypeVariant, So
             "invalid Platform XML metadata type target",
         ));
     }
-    let target = match class {
-        "CatalogRef" => format!("Catalog.{name}"),
-        "DocumentRef" => format!("Document.{name}"),
+    let target_kind = match class {
+        "CatalogRef" => SemanticObjectKind::Catalog,
+        "DocumentRef" => SemanticObjectKind::Document,
         "EnumRef" => {
-            return Ok(TypeVariant::Enumeration {
-                target: format!("Enum.{name}"),
-            })
+            return TypeVariant::enumeration(name)
+                .map_err(|_| projection_error("invalid semantic enumeration target"))
         }
         "DefinedType" => {
-            return Ok(TypeVariant::DefinedType {
-                target: format!("DefinedType.{name}"),
-            })
+            return TypeVariant::defined_type(name)
+                .map_err(|_| projection_error("invalid semantic defined-type target"))
         }
-        "ChartOfAccountsRef" => format!("ChartOfAccounts.{name}"),
-        "ChartOfCharacteristicTypesRef" => format!("ChartOfCharacteristicTypes.{name}"),
+        "ChartOfAccountsRef" => SemanticObjectKind::ChartOfAccounts,
+        "ChartOfCharacteristicTypesRef" => SemanticObjectKind::ChartOfCharacteristicTypes,
         _ => {
             return Err(projection_error(
                 "unsupported Platform XML metadata type class",
             ))
         }
     };
-    Ok(TypeVariant::Reference { target })
+    TypeVariant::reference(target_kind, name)
+        .map_err(|_| projection_error("invalid semantic reference target"))
 }
 
 fn text_only(node: Node<'_, '_>) -> Result<String, SourceAdapterError> {
@@ -537,11 +537,16 @@ fn qualifier_string<'a>(
 }
 
 fn type_variant_key(value: &TypeVariant) -> String {
-    match value {
-        TypeVariant::Primitive { kind, .. } => format!("primitive:{}", kind.as_str()),
-        TypeVariant::Reference { target } => format!("reference:{target}"),
-        TypeVariant::Enumeration { target } => format!("enumeration:{target}"),
-        TypeVariant::DefinedType { target } => format!("definedType:{target}"),
+    if let Some(kind) = value.primitive_kind() {
+        return format!("primitive:{}", kind.as_str());
+    }
+    let target = value
+        .target()
+        .expect("non-primitive semantic type has a target");
+    match target.kind() {
+        SemanticObjectKind::Enumeration => format!("enumeration:{}", target.name()),
+        SemanticObjectKind::DefinedType => format!("definedType:{}", target.name()),
+        kind => format!("reference:{kind}:{}", target.name()),
     }
 }
 
@@ -612,12 +617,15 @@ mod tests {
         );
         let document = Document::parse(&inherited).unwrap();
         let root = document.root_element().first_element_child().unwrap();
-        assert_eq!(parse_type_description_2_20(root).unwrap().variants.len(), 2);
+        assert_eq!(
+            parse_type_description_2_20(root).unwrap().variants().len(),
+            2
+        );
 
         let alias = format!(
             "<DataType xmlns=\"{MD}\" xmlns:core=\"{V8}\" xmlns:schema=\"{XS}\"><core:Type>schema:boolean</core:Type></DataType>"
         );
-        assert_eq!(parse(&alias).unwrap().variants.len(), 1);
+        assert_eq!(parse(&alias).unwrap().variants().len(), 1);
     }
 
     #[test]

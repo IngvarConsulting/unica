@@ -669,7 +669,7 @@ fn preflight_native_node(
             "semantic properties",
         )?;
         if let NativePropertyValue::TypeSet(type_set) = &property.value {
-            if type_set.variants.len() > MAX_NAVIGATION_TYPE_VARIANTS {
+            if type_set.variants().len() > MAX_NAVIGATION_TYPE_VARIANTS {
                 return Err(resource_limit("native type set has too many variants"));
             }
         }
@@ -1254,10 +1254,8 @@ mod tests {
             panic!("expected structured type set");
         };
         assert_eq!(
-            type_set.variants[0],
-            TypeVariant::Reference {
-                target: "Catalog.Products".to_string()
-            }
+            type_set.variants()[0],
+            TypeVariant::reference(NodeKind::Catalog, "Products").unwrap()
         );
     }
 
@@ -1269,18 +1267,16 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            type_set.variants,
+            type_set.variants(),
             vec![
-                TypeVariant::Enumeration {
-                    target: "Enum.Statuses".to_string()
-                },
-                TypeVariant::Primitive {
-                    kind: PrimitiveTypeKind::String,
-                    qualifiers: Some(TypeQualifiers::String(StringQualifiers {
-                        length: Some(10),
-                        allowed_length: Some(StringLength::Variable),
-                    })),
-                },
+                TypeVariant::enumeration("Statuses").unwrap(),
+                TypeVariant::primitive(
+                    PrimitiveTypeKind::String,
+                    Some(TypeQualifiers::String(
+                        StringQualifiers::new(Some(10), Some(StringLength::Variable)).unwrap(),
+                    )),
+                )
+                .unwrap(),
             ],
         );
     }
@@ -1764,11 +1760,10 @@ mod tests {
                     NativeProperty {
                         canonical_id: "DataType".to_string(),
                         value: NativePropertyValue::TypeSet(
-                            crate::domain::navigation::TypeSetValue {
-                                variants: vec![TypeVariant::Reference {
-                                    target: "Catalog.Products".to_string(),
-                                }],
-                            },
+                            crate::domain::navigation::TypeSetValue::new(vec![
+                                TypeVariant::reference(NodeKind::Catalog, "Products").unwrap(),
+                            ])
+                            .unwrap(),
                         ),
                         provenance: NativePropertyProvenance::Explicit,
                     },

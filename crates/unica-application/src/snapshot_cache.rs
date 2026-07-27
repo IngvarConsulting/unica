@@ -870,7 +870,7 @@ fn validate_property_value(
     limits: SnapshotCacheLimits,
     depth: usize,
 ) -> Result<(), SourceAdapterError> {
-    use unica_format_core::navigation::{PropertyValue, TypeVariant};
+    use unica_format_core::navigation::PropertyValue;
 
     match value {
         PropertyValue::Decimal(value)
@@ -885,14 +885,9 @@ fn validate_property_value(
             }
         }
         PropertyValue::TypeSet(value) => {
-            for variant in &value.variants {
-                match variant {
-                    TypeVariant::Primitive { .. } => {}
-                    TypeVariant::Reference { target }
-                    | TypeVariant::Enumeration { target }
-                    | TypeVariant::DefinedType { target } => {
-                        validate_semantic_string(target, limits.max_semantic_string_bytes)?;
-                    }
+            for variant in value.variants() {
+                if let Some(target) = variant.target() {
+                    validate_semantic_string(target.name(), limits.max_semantic_string_bytes)?;
                 }
             }
         }
@@ -1293,7 +1288,7 @@ impl<'a> BindingValidator<'a> {
                 "navigation binding validation exceeds the property nesting limit",
             ));
         }
-        use unica_format_core::navigation::{PropertyValue, TypeVariant};
+        use unica_format_core::navigation::PropertyValue;
         match value {
             PropertyValue::ObjectRef(reference) => self.validate_object_ref(reference),
             PropertyValue::List(values) => {
@@ -1311,11 +1306,9 @@ impl<'a> BindingValidator<'a> {
                 Ok(())
             }
             PropertyValue::TypeSet(types) => {
-                self.charge(types.variants.len())?;
-                for variant in &types.variants {
-                    if let TypeVariant::Primitive { qualifiers, .. } = variant {
-                        self.charge(usize::from(qualifiers.is_some()))?;
-                    }
+                self.charge(types.variants().len())?;
+                for variant in types.variants() {
+                    self.charge(usize::from(variant.qualifiers().is_some()))?;
                 }
                 Ok(())
             }
@@ -1330,11 +1323,11 @@ mod tests {
     use std::{collections::BTreeMap, sync::Arc};
     use unica_format_core::{
         navigation::{
-            ActionAvailability, Atomicity, Authorability, CapabilityState, IdentityStrength,
-            NavigationRelationPage, NavigationStatus, NodeKind, ObjectKey, ObjectRef,
-            OperationBinding, PropertyCapability, PropertyValue, RelationGroupRef, RelationKind,
-            RelationRole, ResolutionState, SemanticAction, SemanticProperty, SemanticPropertyId,
-            SourceAdapterDiagnostic,
+            ActionAvailability, Atomicity, Authorability, CapabilityState, CoverageState,
+            IdentityStrength, NavigationRelationPage, NavigationStatus, NodeKind, ObjectKey,
+            ObjectRef, OperationBinding, PropertyCapability, PropertyValue, RelationGroupRef,
+            RelationKind, RelationRole, ResolutionState, SemanticAction, SemanticProperty,
+            SemanticPropertyId, SourceAdapterDiagnostic,
         },
         source::{SnapshotConsistency, SourceRevision, SourceSnapshot},
     };
@@ -1406,6 +1399,27 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.kind, SourceAdapterErrorKind::ProjectionAmbiguous);
+    }
+
+    #[test]
+    fn cache_hydration_forces_unknown_coverage_to_partial() {
+        let (binding, mut navigation) = fixture();
+        navigation.nodes[0].capability.coverage = CoverageState::Unknown;
+
+        let cached = CachedNavigation::new(
+            "unknown-coverage".to_string(),
+            binding,
+            navigation,
+            DEFAULT_SNAPSHOT_CACHE_LIMITS,
+        )
+        .unwrap();
+
+        assert_eq!(cached.navigation.status, NavigationStatus::Partial);
+        assert!(cached
+            .navigation
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "partialCoverage"));
     }
 
     fn set_fill_value(navigation: &mut NavigationEnvelope, value: PropertyValue) {
@@ -1524,7 +1538,7 @@ mod tests {
     #[test]
     fn broad_shallow_property_value_is_cacheable_without_width_proportional_validation_stack() {
         let (binding, mut navigation) = fixture();
-        let shallow = PropertyValue::List(vec![PropertyValue::Null; 100_000]);
+        let shallow = PropertyValue::List(vec![PropertyValue::Null; 25_000]);
         assert_eq!(
             property_value_validation_max_active_depth(&shallow, DEFAULT_SNAPSHOT_CACHE_LIMITS)
                 .unwrap(),

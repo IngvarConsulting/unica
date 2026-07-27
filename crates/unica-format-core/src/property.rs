@@ -8,10 +8,9 @@ use serde::{
 };
 
 use crate::{
-    navigation::{IdentityStrength, ObjectKey, ObjectRef},
-    semantic_ids::{SemanticEnumValue, SemanticObjectKind, SemanticPropertyId},
-    source::{SourceAdapterError, SourceAdapterErrorKind, SourceId},
-    value::{PropertyType, PropertyValue, TypeSetValue},
+    semantic_ids::SemanticPropertyId,
+    source::{SourceAdapterError, SourceAdapterErrorKind},
+    value::{PropertyType, PropertyValue},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -430,6 +429,11 @@ impl SemanticProperty {
                 ))
             }
         }
+        if let Some(value) = &self.value {
+            value
+                .validate()
+                .map_err(|error| invalid_property(error.message()))?;
+        }
         let expected_provenance = match self.value_state {
             PropertyValueState::Explicit => PropertyProvenance::Declared,
             PropertyValueState::Defaulted => PropertyProvenance::Default,
@@ -569,137 +573,12 @@ fn property_value_from_json(
     value_type: PropertyType,
     value: serde_json::Value,
 ) -> Result<PropertyValue, SourceAdapterError> {
-    match value_type {
-        PropertyType::Boolean => value
-            .as_bool()
-            .map(PropertyValue::Boolean)
-            .ok_or_else(|| invalid_property("semantic boolean property value is invalid")),
-        PropertyType::Integer => value
-            .as_i64()
-            .map(PropertyValue::Integer)
-            .ok_or_else(|| invalid_property("semantic integer property value is invalid")),
-        PropertyType::Decimal => json_string(value, "decimal").map(PropertyValue::Decimal),
-        PropertyType::String => json_string(value, "string").map(PropertyValue::String),
-        PropertyType::LocalizedString => serde_json::from_value(value)
-            .map(PropertyValue::LocalizedString)
-            .map_err(|_| invalid_property("semantic localized string property value is invalid")),
-        PropertyType::Uuid => {
-            let value = json_string(value, "UUID")?;
-            value
-                .parse()
-                .map(PropertyValue::Uuid)
-                .map_err(|_| invalid_property("semantic UUID property value is invalid"))
-        }
-        PropertyType::Enum => {
-            let value = json_string(value, "enum")?;
-            SemanticEnumValue::parse(&value)
-                .map(PropertyValue::EnumSymbol)
-                .ok_or_else(|| invalid_property("semantic enum property value is unregistered"))
-        }
-        PropertyType::Date => json_string(value, "date").map(PropertyValue::Date),
-        PropertyType::TypeSet => serde_json::from_value::<TypeSetValue>(value)
-            .map(PropertyValue::TypeSet)
-            .map_err(|_| invalid_property("semantic type-set property value is invalid")),
-        PropertyType::ObjectRef => object_ref_from_json(value).map(PropertyValue::ObjectRef),
-        PropertyType::List => {
-            let values = value
-                .as_array()
-                .ok_or_else(|| invalid_property("semantic list property value is invalid"))?
-                .iter()
-                .cloned()
-                .map(infer_nested_property_value)
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(PropertyValue::List(values))
-        }
-        PropertyType::Structure => {
-            let values = value
-                .as_object()
-                .ok_or_else(|| invalid_property("semantic structure property value is invalid"))?
-                .iter()
-                .map(|(key, value)| {
-                    infer_nested_property_value(value.clone()).map(|value| (key.clone(), value))
-                })
-                .collect::<Result<BTreeMap<_, _>, _>>()?;
-            Ok(PropertyValue::Structure(values))
-        }
-        PropertyType::Null if value.is_null() => Ok(PropertyValue::Null),
-        PropertyType::Null => Err(invalid_property("semantic null property value is invalid")),
-        PropertyType::Unknown => {
-            #[derive(Deserialize)]
-            #[serde(deny_unknown_fields)]
-            struct UnknownWire {
-                summary: String,
-            }
-            serde_json::from_value::<UnknownWire>(value)
-                .map(|value| PropertyValue::Unknown {
-                    summary: value.summary,
-                })
-                .map_err(|_| invalid_property("semantic unknown property value is invalid"))
-        }
+    let value = serde_json::from_value::<PropertyValue>(value)
+        .map_err(|_| invalid_property("semantic property value is invalid"))?;
+    if value.value_type() != value_type {
+        return Err(invalid_property(
+            "semantic property value tag is inconsistent with its registered type",
+        ));
     }
-}
-
-fn json_string(value: serde_json::Value, label: &str) -> Result<String, SourceAdapterError> {
-    value
-        .as_str()
-        .map(str::to_string)
-        .ok_or_else(|| invalid_property(&format!("semantic {label} property value is invalid")))
-}
-
-fn infer_nested_property_value(
-    value: serde_json::Value,
-) -> Result<PropertyValue, SourceAdapterError> {
-    match value {
-        serde_json::Value::Null => Ok(PropertyValue::Null),
-        serde_json::Value::Bool(value) => Ok(PropertyValue::Boolean(value)),
-        serde_json::Value::Number(value) => value
-            .as_i64()
-            .map(PropertyValue::Integer)
-            .ok_or_else(|| invalid_property("nested semantic number is not an integer")),
-        serde_json::Value::String(value) => Ok(PropertyValue::String(value)),
-        serde_json::Value::Array(values) => values
-            .into_iter()
-            .map(infer_nested_property_value)
-            .collect::<Result<Vec<_>, _>>()
-            .map(PropertyValue::List),
-        serde_json::Value::Object(values) => values
-            .into_iter()
-            .map(|(key, value)| infer_nested_property_value(value).map(|value| (key, value)))
-            .collect::<Result<BTreeMap<_, _>, _>>()
-            .map(PropertyValue::Structure),
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ObjectRefWire {
-    source_id: String,
-    object_key: String,
-    identity_strength: String,
-    kind: String,
-    display_name: String,
-}
-
-fn object_ref_from_json(value: serde_json::Value) -> Result<ObjectRef, SourceAdapterError> {
-    let value = serde_json::from_value::<ObjectRefWire>(value)
-        .map_err(|_| invalid_property("semantic object reference property value is invalid"))?;
-    let identity_strength = match value.identity_strength.as_str() {
-        "persistent" => IdentityStrength::Persistent,
-        "derived" => IdentityStrength::Derived,
-        "snapshotOnly" => IdentityStrength::SnapshotOnly,
-        _ => {
-            return Err(invalid_property(
-                "semantic object reference identity strength is invalid",
-            ))
-        }
-    };
-    let kind = SemanticObjectKind::parse(&value.kind)
-        .ok_or_else(|| invalid_property("semantic object reference kind is unregistered"))?;
-    Ok(ObjectRef::new(
-        SourceId::new(value.source_id)?,
-        ObjectKey::new(value.object_key)?,
-        identity_strength,
-        kind,
-        value.display_name,
-    ))
+    Ok(value)
 }

@@ -556,7 +556,7 @@ impl<'a> BindingValidator<'a> {
                 "navigation binding validation exceeds the property nesting limit",
             ));
         }
-        use crate::domain::navigation::{PropertyValue, TypeVariant};
+        use crate::domain::navigation::PropertyValue;
         match value {
             PropertyValue::ObjectRef(reference) => self.validate_object_ref(reference),
             PropertyValue::List(values) => {
@@ -574,11 +574,9 @@ impl<'a> BindingValidator<'a> {
                 Ok(())
             }
             PropertyValue::TypeSet(types) => {
-                self.charge(types.variants.len())?;
-                for variant in &types.variants {
-                    if let TypeVariant::Primitive { qualifiers, .. } = variant {
-                        self.charge(usize::from(qualifiers.is_some()))?;
-                    }
+                self.charge(types.variants().len())?;
+                for variant in types.variants() {
+                    self.charge(usize::from(variant.qualifiers().is_some()))?;
                 }
                 Ok(())
             }

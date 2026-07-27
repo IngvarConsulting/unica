@@ -8,7 +8,7 @@ use unica_format_core::{
         PropertyProvenance, PropertyValueState, SemanticProperty, SEMANTIC_PROPERTY_DEFINITIONS,
     },
     semantic_ids::SemanticPropertyId,
-    value::{PropertyType, PropertyValue, TypeSetValue},
+    value::{PrimitiveTypeKind, PropertyType, PropertyValue, TypeSetValue, TypeVariant},
 };
 
 #[derive(Deserialize)]
@@ -99,9 +99,14 @@ fn constructors_bind_id_type_value_state_provenance_and_capability() {
     .is_err());
     assert!(SemanticProperty::explicit(
         SemanticPropertyId::FIELD_FILL_VALUE,
-        PropertyValue::TypeSet(TypeSetValue {
-            variants: Vec::new(),
-        }),
+        PropertyValue::TypeSet(
+            TypeSetValue::new(vec![TypeVariant::primitive(
+                PrimitiveTypeKind::Boolean,
+                None
+            )
+            .unwrap()])
+            .unwrap(),
+        ),
     )
     .is_err());
 }
@@ -113,7 +118,7 @@ fn key_aware_deserialization_rejects_divergent_or_invalid_property_envelopes() {
             "metadata.name": {
                 "type": "string",
                 "valueState": "explicit",
-                "value": "Items",
+                "value": {"type": "string", "value": "Items"},
                 "provenance": "declared",
                 "capability": "readOnly"
             }
@@ -129,9 +134,20 @@ fn key_aware_deserialization_rejects_divergent_or_invalid_property_envelopes() {
         json!({
             "properties": {
                 "metadata.name": {
+                    "type": "string",
+                    "valueState": "explicit",
+                    "value": {"type": "integer", "value": 11},
+                    "provenance": "declared",
+                    "capability": "readOnly"
+                }
+            }
+        }),
+        json!({
+            "properties": {
+                "metadata.name": {
                     "type": "integer",
                     "valueState": "explicit",
-                    "value": 11,
+                    "value": {"type": "integer", "value": 11},
                     "provenance": "declared",
                     "capability": "readOnly"
                 }
@@ -152,7 +168,7 @@ fn key_aware_deserialization_rejects_divergent_or_invalid_property_envelopes() {
                 "metadata.name": {
                     "type": "string",
                     "valueState": "defaulted",
-                    "value": "Items",
+                    "value": {"type": "string", "value": "Items"},
                     "provenance": "declared",
                     "capability": "readOnly"
                 }
@@ -173,7 +189,7 @@ fn key_aware_deserialization_rejects_divergent_or_invalid_property_envelopes() {
                 "adapter.nativeName": {
                     "type": "string",
                     "valueState": "explicit",
-                    "value": "Items",
+                    "value": {"type": "string", "value": "Items"},
                     "provenance": "declared",
                     "capability": "readOnly"
                 }
@@ -185,4 +201,35 @@ fn key_aware_deserialization_rejects_divergent_or_invalid_property_envelopes() {
             "invalid property envelope was accepted"
         );
     }
+}
+
+#[test]
+fn property_map_round_trips_tagged_recursive_values_without_variant_loss() {
+    let value = PropertyValue::Structure(BTreeMap::from([
+        (
+            "decimal".to_string(),
+            PropertyValue::Decimal("10.250".to_string()),
+        ),
+        (
+            "nested".to_string(),
+            PropertyValue::List(vec![
+                PropertyValue::Date("2026-07-27".to_string()),
+                PropertyValue::Null,
+            ]),
+        ),
+    ]));
+    let property =
+        SemanticProperty::explicit(SemanticPropertyId::FIELD_FILL_VALUE, value.clone()).unwrap();
+    let encoded = serde_json::to_value(property).unwrap();
+    let decoded = serde_json::from_value::<PropertyMapWire>(json!({
+        "properties": {
+            "field.fillValue": encoded
+        }
+    }))
+    .unwrap();
+
+    assert_eq!(
+        decoded.properties[&SemanticPropertyId::FIELD_FILL_VALUE].value(),
+        Some(&value)
+    );
 }

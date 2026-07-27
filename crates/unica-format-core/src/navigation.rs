@@ -34,8 +34,8 @@ pub use crate::{
     semantic_ids::{SemanticEnumValue, SemanticObjectKind, SemanticPropertyId, SemanticRelationId},
     value::{
         DateFractions, DateQualifiers, NumberQualifiers, NumberSign, PrimitiveTypeKind,
-        PropertyType, PropertyValue, StringLength, StringQualifiers, TypeQualifiers, TypeSetValue,
-        TypeVariant,
+        PropertyType, PropertyValue, SemanticTypeTarget, SemanticValueError, StringLength,
+        StringQualifiers, TypeQualifiers, TypeSetValue, TypeVariant,
     },
 };
 
@@ -207,6 +207,12 @@ pub enum CoverageState {
     Complete,
     Partial,
     Unknown,
+}
+
+impl CoverageState {
+    pub const fn is_complete(self) -> bool {
+        matches!(self, Self::Complete)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1064,7 +1070,7 @@ impl NavigationEnvelope {
                 .flat_map(|page| page.items.iter())
                 .any(node_has_partial_coverage)
             || self.relation_index.iter().any(|relation| {
-                relation.capability.coverage == CoverageState::Partial
+                !relation.capability.coverage.is_complete()
                     || relation.capability.resolution == ResolutionState::Unresolved
             });
         if partial {
@@ -1101,7 +1107,7 @@ impl SourceAdapterDiagnostic {
 }
 
 fn node_has_partial_coverage(node: &NavigationNode) -> bool {
-    node.capability.coverage == CoverageState::Partial
+    !node.capability.coverage.is_complete()
         || node.capability.resolution == ResolutionState::Unresolved
         || node.properties.values().any(|property| {
             property.value_type() == PropertyType::Unknown
@@ -2042,7 +2048,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             serde_json::to_value(PropertyValue::Uuid(value)).unwrap(),
-            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+            serde_json::json!({
+                "type": "uuid",
+                "value": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+            })
         );
         assert!("aaaaaaaa-bbbbcccc-dddd-eeee-eeeeeeee"
             .parse::<Uuid>()
@@ -2163,7 +2172,10 @@ mod tests {
         .unwrap();
         let value = serde_json::to_value(property).unwrap();
         assert_eq!(value["type"], "integer");
-        assert_eq!(value["value"], 11);
+        assert_eq!(
+            value["value"],
+            serde_json::json!({"type": "integer", "value": 11})
+        );
         assert_eq!(value["valueState"], "explicit");
     }
 

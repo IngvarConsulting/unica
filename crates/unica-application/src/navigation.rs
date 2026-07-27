@@ -1169,6 +1169,40 @@ mod tests {
     }
 
     #[test]
+    fn unknown_node_coverage_forces_partial_envelope_and_neutral_diagnostic() {
+        let harness = Harness::new(1, "2.20");
+        harness.port.envelope.lock().unwrap().nodes[0]
+            .capability
+            .coverage = unica_format_core::navigation::CoverageState::Unknown;
+
+        let result = harness.first_page(1);
+
+        assert_eq!(result.status, NavigationStatus::Partial);
+        assert!(result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "partialCoverage"));
+    }
+
+    #[test]
+    fn unknown_relation_coverage_forces_partial_envelope_and_neutral_diagnostic() {
+        let harness = Harness::new(1, "2.20");
+        let mut envelope = harness.port.envelope.lock().unwrap();
+        std::sync::Arc::make_mut(&mut envelope.relation_index)[0]
+            .capability
+            .coverage = unica_format_core::navigation::CoverageState::Unknown;
+        drop(envelope);
+
+        let result = harness.first_page(1);
+
+        assert_eq!(result.status, NavigationStatus::Partial);
+        assert!(result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "partialCoverage"));
+    }
+
+    #[test]
     fn partial_cursor_retains_explanatory_diagnostics() {
         let harness = Harness::new(2, "2.20");
         {

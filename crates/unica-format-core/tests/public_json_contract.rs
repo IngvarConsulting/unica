@@ -63,15 +63,16 @@ fn navigation_json_has_exact_top_level_fields_and_stable_semantic_keys() {
         SemanticPropertyId::FIELD_TYPE,
         SemanticProperty::explicit(
             SemanticPropertyId::FIELD_TYPE,
-            PropertyValue::TypeSet(TypeSetValue {
-                variants: vec![TypeVariant::Primitive {
-                    kind: unica_format_core::value::PrimitiveTypeKind::String,
-                    qualifiers: Some(TypeQualifiers::String(StringQualifiers {
-                        length: Some(20),
-                        allowed_length: Some(StringLength::Variable),
-                    })),
-                }],
-            }),
+            PropertyValue::TypeSet(
+                TypeSetValue::new(vec![TypeVariant::primitive(
+                    unica_format_core::value::PrimitiveTypeKind::String,
+                    Some(TypeQualifiers::String(
+                        StringQualifiers::new(Some(20), Some(StringLength::Variable)).unwrap(),
+                    )),
+                )
+                .unwrap()])
+                .unwrap(),
+            ),
         )
         .unwrap(),
     );
@@ -121,23 +122,25 @@ fn navigation_json_has_exact_top_level_fields_and_stable_semantic_keys() {
         json!({
             "type": "string",
             "valueState": "explicit",
-            "value": "Shipment",
+            "value": {"type": "string", "value": "Shipment"},
             "provenance": "declared",
             "capability": "readOnly",
         })
     );
     assert_eq!(
         value["nodes"][0]["properties"]["metadata.synonym"]["value"],
-        json!({"en": "Shipment", "ru": "Отгрузка"})
+        json!({
+            "type": "localizedString",
+            "value": {"en": "Shipment", "ru": "Отгрузка"}
+        })
     );
     assert_eq!(
-        value["nodes"][0]["properties"]["field.type"]["value"]["variants"][0],
+        value["nodes"][0]["properties"]["field.type"]["value"]["value"]["variants"][0],
         json!({
-            "primitive": {
-                "kind": "string",
-                "qualifiers": {
-                    "string": {"length": 20, "allowedLength": "variable"}
-                }
+            "kind": "primitive",
+            "primitive": "string",
+            "qualifiers": {
+                "string": {"length": 20, "allowedLength": "variable"}
             }
         })
     );
