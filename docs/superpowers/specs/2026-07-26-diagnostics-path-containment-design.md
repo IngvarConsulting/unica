@@ -13,7 +13,9 @@ The contract layer permits `path` only when the resolved diagnostics mode is
 every present `path` value to be a string and enforces file-path containment
 within the resolved `sourceDir`.
 
-The change does not alter source-root selection or graph requests.
+The change does not alter source-root selection or graph requests. The
+contract-layer rule shipped separately via #216; this change implements the
+adapter enforcement.
 
 ## Design
 

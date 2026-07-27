@@ -119,9 +119,12 @@ git commit -m "fix(diagnostics): contain file paths in source root"
 
 ### Task 2: Restrict `path` to file diagnostics
 
+> **Status:** landed on `main` separately via #216 (`fix(diagnostics): reject
+> ambiguous paths and loading success`); this branch carries only Task 1.
+
 **Files:**
-- Modify: `crates/unica-coder/src/application/tool_contracts.rs:1083-1118`
-- Test: `crates/unica-coder/src/application/tool_contracts.rs:3023-3090`
+- Modify: `crates/unica-coder/src/application/tool_contracts.rs:1090-1128`
+- Test: `crates/unica-coder/src/application/tool_contracts.rs:3954-4055`
 
 **Interfaces:**
 - Resolves: an omitted diagnostics `mode` as `analyze`.
@@ -132,8 +135,9 @@ git commit -m "fix(diagnostics): contain file paths in source root"
 
 Extend `bsl_diagnostics_contract_exposes_modes_and_keeps_analyze_default` with
 literal cases that supply `path` for explicit `analyze`, `status`, `catalog`,
-and `workspace` requests. Assert that every case reports that `path` is only
-supported for `file`; keep the existing omitted-mode `analyze` default.
+and `workspace` requests. Assert that every case reports that its mode does not
+support `path` and directs the caller to `file`; keep the existing omitted-mode
+`analyze` default.
 
 - [ ] **Step 2: Run the contract test and verify it fails**
 
