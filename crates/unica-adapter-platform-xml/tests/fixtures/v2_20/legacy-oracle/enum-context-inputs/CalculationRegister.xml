@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <CalculationRegister uuid="61000000-0000-0000-0000-000000000004">
+    <Properties>
+      <Name>EnumContextCalculationRegister</Name>
+      <DataLockControlMode>Automatic</DataLockControlMode>
+      <FullTextSearch>Use</FullTextSearch>
+      <Periodicity>Day</Periodicity>
+    </Properties>
+  </CalculationRegister>
+</MetaDataObject>

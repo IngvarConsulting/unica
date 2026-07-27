@@ -1,0 +1,3 @@
+﻿=== Бизнес-процесс: EnumContextBusinessProcess ===
+Поддержка: не на поддержке
+Представление типа: EnumContextBusinessProcess

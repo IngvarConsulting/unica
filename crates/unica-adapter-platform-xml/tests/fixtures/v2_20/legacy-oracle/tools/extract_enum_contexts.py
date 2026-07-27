@@ -40,9 +40,167 @@ def _tree(path: Path) -> ast.AST:
     return ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
 
 
-def _camel(value: str) -> str:
-    parts = value.split("_")
-    return parts[0] + "".join(part[:1].upper() + part[1:] for part in parts[1:])
+def _source_class_id(native_class: str) -> str:
+    initialism = re.match(r"^([A-Z]+)(?=[A-Z][a-z]|$)", native_class)
+    if initialism:
+        prefix = initialism.group(1).lower()
+        return prefix + native_class[len(initialism.group(1)) :]
+    return native_class[:1].lower() + native_class[1:]
+
+
+def _emitter_owners(compile_tree: ast.AST) -> dict[str, str]:
+    matches: list[ast.Dict] = []
+    for node in ast.walk(compile_tree):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if isinstance(target, ast.Name) and target.id == "property_emitters":
+            if not isinstance(node.value, ast.Dict):
+                raise ValueError("legacy property_emitters is not a literal dispatch table")
+            matches.append(node.value)
+    if len(matches) != 1:
+        raise ValueError(
+            f"legacy property_emitters is not unique: {len(matches)} matches"
+        )
+    owners: dict[str, str] = {}
+    for key, value in zip(matches[0].keys, matches[0].values, strict=True):
+        if (
+            not isinstance(key, ast.Constant)
+            or not isinstance(key.value, str)
+            or not isinstance(value, ast.Name)
+        ):
+            raise ValueError("legacy property_emitters contains a dynamic entry")
+        if value.id in owners:
+            raise ValueError(f"legacy emitter {value.id} has multiple owners")
+        owners[value.id] = key.value
+    return owners
+
+
+def _fixture_observations(
+    repo_root: Path,
+    cases: Iterable[dict[str, Any]],
+    raw_outputs: dict[str, bytes],
+) -> list[dict[str, str]]:
+    observations: list[dict[str, str]] = []
+    for case in cases:
+        raw = raw_outputs.get(case["id"])
+        if raw is None or not raw.decode("utf-8-sig").strip():
+            raise ValueError(
+                f"enum context case {case['id']} has no generated legacy output"
+            )
+        paths = [case["input"], *case.get("inputArtifacts", [])]
+        for relative in sorted(set(paths)):
+            path = repo_root / relative
+            if path.suffix.lower() != ".xml":
+                continue
+            try:
+                root = ET.parse(path).getroot()
+            except ET.ParseError:
+                continue
+            root_class = root.tag.rsplit("}", 1)[-1]
+            if root_class == "MetaDataObject":
+                descriptor_owners = [
+                    child.tag.rsplit("}", 1)[-1]
+                    for child in root
+                    if child.tag.rsplit("}", 1)[-1] != "Properties"
+                ]
+                if len(descriptor_owners) != 1:
+                    raise ValueError(
+                        f"enum context fixture {relative} has "
+                        f"{len(descriptor_owners)} descriptor owners"
+                    )
+                descriptor_owner = descriptor_owners[0]
+            else:
+                descriptor_owner = root_class
+            descriptor_owner_id = _source_class_id(descriptor_owner)
+            for node in root.iter():
+                native_class = node.tag.rsplit("}", 1)[-1]
+                properties = next(
+                    (
+                        child
+                        for child in node
+                        if child.tag.rsplit("}", 1)[-1] == "Properties"
+                    ),
+                    None,
+                )
+                if properties is None:
+                    continue
+                values = {
+                    child.tag.rsplit("}", 1)[-1]: (
+                        child.text.strip()
+                        if child.text and child.text.strip()
+                        else ""
+                    )
+                    for child in properties
+                }
+                object_kind = _source_class_id(native_class)
+                contextual_object_kind = (
+                    object_kind
+                    if native_class == descriptor_owner
+                    else descriptor_owner_id + native_class
+                )
+                if (
+                    native_class == "Template"
+                    and values.get("TemplateType") == "SpreadsheetDocument"
+                ):
+                    object_kind = "spreadsheetDocumentTemplate"
+                    contextual_object_kind = object_kind
+                for native_property, value in values.items():
+                    observations.append(
+                        {
+                            "case": case["id"],
+                            "input": relative,
+                            "rawOutput": case["rawOutput"],
+                            "nativeClass": native_class,
+                            "objectKind": object_kind,
+                            "contextualObjectKind": contextual_object_kind,
+                            "nativeProperty": native_property,
+                            "nativeValue": value,
+                        }
+                    )
+    return observations
+
+
+def _attach_owner_evidence(
+    contexts: list[dict[str, Any]],
+    observations: list[dict[str, str]],
+) -> None:
+    for context in contexts:
+        evidence = []
+        for object_kind in context["objectKinds"]:
+            matches = [
+                observation
+                for observation in observations
+                if object_kind
+                in {
+                    observation["objectKind"],
+                    observation["contextualObjectKind"],
+                }
+                and observation["nativeProperty"] == context["nativeProperty"]
+            ]
+            if not matches:
+                raise ValueError(
+                    "source enum context has no generated legacy fixture evidence: "
+                    f"{context['sourceFact']} owner={object_kind}"
+                )
+            selected = sorted(
+                matches,
+                key=lambda item: (
+                    item["input"],
+                    item["rawOutput"],
+                    item["nativeValue"],
+                ),
+            )[0]
+            evidence.append(
+                {
+                    "objectKind": object_kind,
+                    "nativeOwner": selected["nativeClass"],
+                    "nativeValue": selected["nativeValue"],
+                    "input": selected["input"],
+                    "rawOutput": selected["rawOutput"],
+                }
+            )
+        context["ownerEvidence"] = evidence
 
 
 def _joined_string_tag_and_names(node: ast.AST) -> tuple[str, set[str]] | None:
@@ -93,16 +251,19 @@ def _compile_contexts(
     valid_values: dict[str, list[str]],
 ) -> list[dict[str, Any]]:
     result = []
+    owners = _emitter_owners(compile_tree)
     for function in ast.walk(compile_tree):
         if not isinstance(function, ast.FunctionDef):
             continue
         match = re.fullmatch(r"emit_(.+)_properties", function.name)
         if match is None:
             continue
-        owner_source_name = "".join(
-            part[:1].upper() + part[1:] for part in match.group(1).split("_")
-        )
-        object_kind = _camel(match.group(1))
+        owner_source_name = owners.get(function.name)
+        if owner_source_name is None:
+            raise ValueError(
+                f"legacy enum emitter {function.name} is absent from property_emitters"
+            )
+        object_kind = _source_class_id(owner_source_name)
         variables: dict[str, str] = {}
         for node in ast.walk(function):
             if not isinstance(node, ast.Assign) or len(node.targets) != 1:
@@ -196,6 +357,35 @@ def _field_contexts(
 ) -> list[dict[str, Any]]:
     function = _function(info_tree, "format_flags")
     properties = _find_properties(function)
+    get_attributes = _function(info_tree, "get_attributes")
+    argument_names = [argument.arg for argument in get_attributes.args.args]
+    child_index = argument_names.index("child_tag")
+    default_offset = len(argument_names) - len(get_attributes.args.defaults)
+    default_node = get_attributes.args.defaults[child_index - default_offset]
+    if not isinstance(default_node, ast.Constant) or not isinstance(
+        default_node.value, str
+    ):
+        raise ValueError("legacy get_attributes child_tag default is dynamic")
+    owner_tags = set()
+    for node in ast.walk(info_tree):
+        if (
+            not isinstance(node, ast.Call)
+            or not isinstance(node.func, ast.Name)
+            or node.func.id != "get_attributes"
+        ):
+            continue
+        if len(node.args) > child_index:
+            supplied = node.args[child_index]
+            if not isinstance(supplied, ast.Constant) or not isinstance(
+                supplied.value, str
+            ):
+                raise ValueError("legacy get_attributes child owner is dynamic")
+            owner_tags.add(supplied.value)
+        else:
+            owner_tags.add(default_node.value)
+    if not owner_tags:
+        raise ValueError("legacy meta-info has no field owner call sites")
+    object_kinds = sorted(_source_class_id(tag) for tag in owner_tags)
     result = []
     for native_property in ("FillChecking", "Indexing"):
         if native_property not in properties:
@@ -207,7 +397,7 @@ def _field_contexts(
                 "sourceFact": f"metaInfo:format_flags:{native_property}",
                 "sourceKey": native_property,
                 "nativeProperty": native_property,
-                "objectKinds": ["attribute", "dimension", "resource"],
+                "objectKinds": object_kinds,
                 "nativeAliases": sorted(set(valid_values[native_property])),
                 "sourceLocation": {
                     "function": function.name,
@@ -229,7 +419,7 @@ def _field_contexts(
             "sourceFact": "metaInfo:format_flags:Use",
             "sourceKey": "Use",
             "nativeProperty": "Use",
-            "objectKinds": ["attribute", "dimension", "resource"],
+            "objectKinds": object_kinds,
             "nativeAliases": sorted(constants),
             "sourceLocation": {
                 "function": function.name,
@@ -243,6 +433,7 @@ def _field_contexts(
 def _transfer_direction_context(
     info_tree: ast.AST,
     valid_values: dict[str, list[str]],
+    observations: list[dict[str, str]],
 ) -> dict[str, Any]:
     function = _function(info_tree, "get_ws_operations")
     if "TransferDirection" not in _find_properties(function):
@@ -260,11 +451,22 @@ def _transfer_direction_context(
     }
     if "Parameter" not in parameter_tags:
         raise ValueError("meta-info TransferDirection has no Parameter owner")
+    object_kinds = sorted(
+        {
+            observation["contextualObjectKind"]
+            for observation in observations
+            if observation["nativeProperty"] == "TransferDirection"
+        }
+    )
+    if not object_kinds:
+        raise ValueError(
+            "legacy TransferDirection context has no generated fixture evidence"
+        )
     return {
         "sourceFact": "metaInfo:get_ws_operations:TransferDirection",
         "sourceKey": "TransferDirection",
         "nativeProperty": "TransferDirection",
-        "objectKinds": ["webServiceParameter"],
+        "objectKinds": object_kinds,
         "nativeAliases": sorted(set(valid_values["TransferDirection"])),
         "sourceLocation": {
             "function": function.name,
@@ -274,47 +476,23 @@ def _transfer_direction_context(
 
 
 def _descriptor_enum_contexts(
-    repo_root: Path,
-    cases: Iterable[dict[str, Any]],
+    observations: list[dict[str, str]],
     form_aliases: set[str],
     template_aliases: set[str],
 ) -> list[dict[str, Any]]:
     contexts: dict[str, set[str]] = {"FormType": set(), "TemplateType": set()}
     aliases: dict[str, set[str]] = {"FormType": set(), "TemplateType": set()}
     locations: dict[str, list[str]] = {"FormType": [], "TemplateType": []}
-    paths = []
-    for case in cases:
-        paths.append(case["input"])
-        paths.extend(case.get("inputArtifacts", []))
-    for relative in sorted(set(paths)):
-        path = repo_root / relative
-        if path.suffix.lower() != ".xml":
+    for observation in observations:
+        property_name = observation["nativeProperty"]
+        if property_name not in contexts:
             continue
-        try:
-            root = ET.parse(path).getroot()
-        except ET.ParseError:
-            continue
-        classes = [
-            node
-            for node in root.iter()
-            if node.tag.rsplit("}", 1)[-1]
-            in {"Form", "CommonForm", "Template", "CommonTemplate"}
-        ]
-        for node in classes:
-            kind = node.tag.rsplit("}", 1)[-1]
-            semantic_kind = kind[:1].lower() + kind[1:]
-            for descendant in node.iter():
-                property_name = descendant.tag.rsplit("}", 1)[-1]
-                if property_name not in contexts:
-                    continue
-                contexts[property_name].add(semantic_kind)
-                if descendant.text and descendant.text.strip():
-                    aliases[property_name].add(descendant.text.strip())
-                locations[property_name].append(relative)
+        contexts[property_name].add(observation["objectKind"])
+        if observation["nativeValue"]:
+            aliases[property_name].add(observation["nativeValue"])
+        locations[property_name].append(observation["input"])
     aliases["FormType"].update(form_aliases)
     aliases["TemplateType"].update(template_aliases)
-    if "SpreadsheetDocument" in aliases["TemplateType"]:
-        contexts["TemplateType"].add("spreadsheetDocumentTemplate")
     if not contexts["FormType"] or not contexts["TemplateType"]:
         raise ValueError("legacy descriptor corpus has no form/template enum contexts")
     return [
@@ -337,7 +515,11 @@ def _descriptor_enum_contexts(
     ]
 
 
-def extract(repo_root: Path, inputs: dict[str, Any]) -> list[dict[str, Any]]:
+def extract(
+    repo_root: Path,
+    inputs: dict[str, Any],
+    raw_outputs: dict[str, bytes],
+) -> list[dict[str, Any]]:
     sources = inputs["referenceSources"]
     validate_tree = _tree(repo_root / sources["metaValidate"])
     info_tree = _tree(repo_root / sources["metaInfo"])
@@ -361,6 +543,8 @@ def extract(repo_root: Path, inputs: dict[str, Any]) -> list[dict[str, Any]]:
         if isinstance(value, dict) and isinstance(value.get("TemplateType"), str)
     }
 
+    cases = [*inputs["cases"], *inputs.get("contextCases", [])]
+    observations = _fixture_observations(repo_root, cases, raw_outputs)
     contexts = _compile_contexts(compile_tree, valid_values)
     register_display_aliases = set()
     for node in ast.walk(info_tree):
@@ -384,15 +568,17 @@ def extract(repo_root: Path, inputs: dict[str, Any]) -> list[dict[str, Any]]:
         set(register_context["nativeAliases"]) | register_display_aliases
     )
     contexts.extend(_field_contexts(info_tree, valid_values))
-    contexts.append(_transfer_direction_context(info_tree, valid_values))
+    contexts.append(
+        _transfer_direction_context(info_tree, valid_values, observations)
+    )
     contexts.extend(
         _descriptor_enum_contexts(
-            repo_root,
-            inputs["cases"],
+            observations,
             form_aliases,
             template_aliases,
         )
     )
+    _attach_owner_evidence(contexts, observations)
     by_id: dict[str, dict[str, Any]] = {}
     for context in contexts:
         source_fact = context["sourceFact"]

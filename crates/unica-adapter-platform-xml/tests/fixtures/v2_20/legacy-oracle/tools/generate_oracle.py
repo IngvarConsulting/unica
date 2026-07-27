@@ -16,6 +16,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
+from build_new_only_contract import build_contract as build_new_only_contract
 from extract_enum_contexts import extract as extract_native_enum_contexts
 
 
@@ -25,6 +26,7 @@ CROSSWALK_PATH = ORACLE_DIR / "crosswalk.json"
 RIGHTS_TARGET_CROSSWALK_PATH = ORACLE_DIR / "rights-target-crosswalk.json"
 ENUM_CONTEXTS_PATH = ORACLE_DIR / "enum-source-contexts.json"
 NEW_ONLY_CONTRACT_PATH = ORACLE_DIR / "new-only-contract.json"
+NEW_ONLY_CONTRACT_SOURCE_PATH = ORACLE_DIR / "new-only-contract-source.json"
 ORACLE_PATH = ORACLE_DIR / "legacy-semantic-oracle.json"
 MANIFEST_PATH = ORACLE_DIR / "oracle-manifest.json"
 
@@ -183,6 +185,28 @@ def extract_enum_coverage(
         if source_fact in by_source_fact:
             raise ValueError(f"duplicate extracted source enum fact {source_fact}")
         by_source_fact[source_fact] = context
+    references = [
+        source_fact
+        for domain in crosswalk["enumDomains"].values()
+        for source_fact in domain.get("sourceFacts", [])
+    ]
+    duplicates = sorted(
+        source_fact
+        for source_fact, count in Counter(references).items()
+        if count != 1
+    )
+    if duplicates:
+        raise ValueError(
+            f"source enum contexts are not referenced exactly once: {duplicates}"
+        )
+    referenced = set(references)
+    extracted = set(by_source_fact)
+    if referenced != extracted:
+        raise ValueError(
+            "source enum context inventory is not exact: "
+            f"unreferenced={sorted(extracted - referenced)}, "
+            f"extra={sorted(referenced - extracted)}"
+        )
     coverage: list[dict[str, Any]] = []
     for domain_name, domain in crosswalk["enumDomains"].items():
         forbidden = {"nativeProperty", "objectKinds", "sourceKeys", "extractors"}
@@ -268,12 +292,31 @@ class LineLedger:
 
 
 SUPPORT_VALUES = {
-    "не на поддержке",
-    "снято с поддержки (правки свободны)",
-    "конфигурация read-only (возможность изменения выключена) — правки невозможны без включения",
-    "на замке — прямая правка сломает обновления; дорабатывай через cfe-* либо включи редактирование объекта",
-    "редактируется с сохранением поддержки",
+    "не на поддержке": ("notSupported", False),
+    "снято с поддержки (правки свободны)": ("removedFromSupport", False),
+    "конфигурация read-only (возможность изменения выключена) — правки невозможны без включения": (
+        "configurationReadOnly",
+        True,
+    ),
+    "на замке — прямая правка сломает обновления; дорабатывай через cfe-* либо включи редактирование объекта": (
+        "supportedLocked",
+        True,
+    ),
+    "редактируется с сохранением поддержки": ("supportedEditable", True),
 }
+
+
+def add_support_facts(
+    builder: FactBuilder,
+    subject: str,
+    phrase: str,
+) -> None:
+    try:
+        state, active = SUPPORT_VALUES[phrase]
+    except KeyError as error:
+        raise ValueError(f"unknown support value {phrase!r}") from error
+    builder.prop(subject, "support.state", enum_value(state))
+    builder.prop(subject, "support.active", bool_value(active))
 
 
 def validate_meta_output_lines(
@@ -835,11 +878,7 @@ def parse_meta_output(
             continue
         if stripped.startswith("Поддержка:"):
             support = stripped.split(":", 1)[1].strip()
-            builder.prop(
-                root,
-                "support.active",
-                bool_value(support != "не на поддержке"),
-            )
+            add_support_facts(builder, root, support)
             continue
         for prefix, property_id in (
             ("Представление типа:", "presentation.type"),
@@ -1326,11 +1365,7 @@ def parse_role_output(
                 raise ValueError(
                     f"{case['id']}:{line_number}: unknown support value {support.group(1)!r}"
                 )
-            builder.prop(
-                root,
-                "support.active",
-                bool_value(support.group(1) != "не на поддержке"),
-            )
+            add_support_facts(builder, root, support.group(1))
             ledger.consume(line_number, "useful:support")
             index += 1
             continue
@@ -1572,6 +1607,7 @@ def provenance_entries(
     raw_outputs: dict[str, bytes],
     enum_contexts_data: bytes,
     oracle_data: bytes,
+    new_only_contract_data: bytes,
 ) -> list[dict[str, str]]:
     entries: dict[tuple[str, str], dict[str, str]] = {}
 
@@ -1586,15 +1622,20 @@ def provenance_entries(
 
     add("oracleGenerator", Path(__file__).resolve())
     add("enumSourceExtractor", Path(__file__).resolve().with_name("extract_enum_contexts.py"))
+    add(
+        "newOnlyContractBuilder",
+        Path(__file__).resolve().with_name("build_new_only_contract.py"),
+    )
     add("oracleInputs", INPUTS_PATH)
     add("independentCrosswalk", CROSSWALK_PATH)
     add("rightsTargetCrosswalk", RIGHTS_TARGET_CROSSWALK_PATH)
-    add("newOnlyContract", NEW_ONLY_CONTRACT_PATH)
+    add("newOnlyContractSource", NEW_ONLY_CONTRACT_SOURCE_PATH)
+    add("newOnlyContract", NEW_ONLY_CONTRACT_PATH, new_only_contract_data)
     for path in inputs["referenceSources"].values():
         add("legacyReferenceSource", repo_root / path)
     for path in inputs.get("contractInputs", []):
         add("newOnlyContractInput", repo_root / path)
-    for case in inputs["cases"]:
+    for case in [*inputs["cases"], *inputs.get("contextCases", [])]:
         add("legacyInputFixture", repo_root / case["input"])
         if case.get("adapterInput") and case["adapterInput"] != case["input"]:
             add("legacyInputFixture", repo_root / case["adapterInput"])
@@ -1610,7 +1651,9 @@ def provenance_entries(
     return [entries[key] for key in sorted(entries)]
 
 
-def build(repo_root: Path) -> tuple[dict[str, bytes], bytes, bytes, bytes]:
+def build(
+    repo_root: Path,
+) -> tuple[dict[str, bytes], bytes, bytes, bytes, bytes]:
     inputs = read_json(INPUTS_PATH)
     crosswalk = read_json(CROSSWALK_PATH)
     target_crosswalk = read_json(RIGHTS_TARGET_CROSSWALK_PATH)
@@ -1620,7 +1663,12 @@ def build(repo_root: Path) -> tuple[dict[str, bytes], bytes, bytes, bytes]:
         or target_crosswalk.get("schemaVersion") != 1
     ):
         raise ValueError("legacy oracle source schema is unsupported")
-    source_contexts = extract_native_enum_contexts(repo_root, inputs)
+    all_cases = [*inputs["cases"], *inputs.get("contextCases", [])]
+    raw_outputs = {
+        case["id"]: run_legacy_case(repo_root, inputs, case)
+        for case in all_cases
+    }
+    source_contexts = extract_native_enum_contexts(repo_root, inputs, raw_outputs)
     enum_contexts_data = json_bytes(
         {
             "schemaVersion": 1,
@@ -1629,11 +1677,9 @@ def build(repo_root: Path) -> tuple[dict[str, bytes], bytes, bytes, bytes]:
         }
     )
 
-    raw_outputs: dict[str, bytes] = {}
     cases: list[dict[str, Any]] = []
     for case in inputs["cases"]:
-        raw = run_legacy_case(repo_root, inputs, case)
-        raw_outputs[case["id"]] = raw
+        raw = raw_outputs[case["id"]]
         if case["tool"] == "metaInfo":
             cases.append(parse_meta_output(case, raw, crosswalk))
         elif case["tool"] == "roleInfo":
@@ -1662,6 +1708,13 @@ def build(repo_root: Path) -> tuple[dict[str, bytes], bytes, bytes, bytes]:
             case["rootKind"] = parent["rootKind"]
             case["rootName"] = parent["rootName"]
     oracle_data = json_bytes(oracle)
+    new_only_contract_data = json_bytes(
+        build_new_only_contract(
+            repo_root,
+            inputs,
+            read_json(NEW_ONLY_CONTRACT_SOURCE_PATH),
+        )
+    )
     manifest = {
         "schemaVersion": 1,
         "hashAlgorithm": "SHA-256",
@@ -1675,9 +1728,16 @@ def build(repo_root: Path) -> tuple[dict[str, bytes], bytes, bytes, bytes]:
             raw_outputs,
             enum_contexts_data,
             oracle_data,
+            new_only_contract_data,
         ),
     }
-    return raw_outputs, enum_contexts_data, oracle_data, json_bytes(manifest)
+    return (
+        raw_outputs,
+        enum_contexts_data,
+        oracle_data,
+        new_only_contract_data,
+        json_bytes(manifest),
+    )
 
 
 def write_outputs(
@@ -1685,15 +1745,20 @@ def write_outputs(
     raw_outputs: dict[str, bytes],
     enum_contexts_data: bytes,
     oracle_data: bytes,
+    new_only_contract_data: bytes,
     manifest_data: bytes,
 ) -> None:
     inputs = read_json(INPUTS_PATH)
-    paths = {case["id"]: repo_root / case["rawOutput"] for case in inputs["cases"]}
+    paths = {
+        case["id"]: repo_root / case["rawOutput"]
+        for case in [*inputs["cases"], *inputs.get("contextCases", [])]
+    }
     for case_id, data in raw_outputs.items():
         paths[case_id].parent.mkdir(parents=True, exist_ok=True)
         paths[case_id].write_bytes(data)
     ENUM_CONTEXTS_PATH.write_bytes(enum_contexts_data)
     ORACLE_PATH.write_bytes(oracle_data)
+    NEW_ONLY_CONTRACT_PATH.write_bytes(new_only_contract_data)
     MANIFEST_PATH.write_bytes(manifest_data)
 
 
@@ -1702,17 +1767,19 @@ def check_outputs(
     raw_outputs: dict[str, bytes],
     enum_contexts_data: bytes,
     oracle_data: bytes,
+    new_only_contract_data: bytes,
     manifest_data: bytes,
 ) -> None:
     inputs = read_json(INPUTS_PATH)
     failures: list[str] = []
-    for case in inputs["cases"]:
+    for case in [*inputs["cases"], *inputs.get("contextCases", [])]:
         path = repo_root / case["rawOutput"]
         if not path.exists() or path.read_bytes() != raw_outputs[case["id"]]:
             failures.append(f"raw legacy output drifted: {case['rawOutput']}")
     for path, expected, label in (
         (ENUM_CONTEXTS_PATH, enum_contexts_data, "enum source contexts"),
         (ORACLE_PATH, oracle_data, "legacy semantic oracle"),
+        (NEW_ONLY_CONTRACT_PATH, new_only_contract_data, "new-only exact contract"),
         (MANIFEST_PATH, manifest_data, "oracle provenance manifest"),
     ):
         if not path.exists() or path.read_bytes() != expected:
@@ -1851,7 +1918,12 @@ def run_self_tests(repo_root: Path) -> None:
     )
 
     inputs = read_json(INPUTS_PATH)
-    contexts = extract_native_enum_contexts(repo_root, inputs)
+    all_cases = [*inputs["cases"], *inputs.get("contextCases", [])]
+    raw_outputs = {
+        case["id"]: run_legacy_case(repo_root, inputs, case)
+        for case in all_cases
+    }
+    contexts = extract_native_enum_contexts(repo_root, inputs, raw_outputs)
     extract_enum_coverage(crosswalk, contexts)
     context_override = json.loads(json.dumps(crosswalk))
     first_domain = next(iter(context_override["enumDomains"].values()))
@@ -1865,6 +1937,12 @@ def run_self_tests(repo_root: Path) -> None:
     expect_failure(
         "ambiguous duplicate source context",
         lambda: extract_enum_coverage(crosswalk, duplicate_contexts),
+    )
+    coordinated_omission = json.loads(json.dumps(crosswalk))
+    coordinated_omission["enumDomains"].pop("catalogChoiceMode", None)
+    expect_failure(
+        "crosswalk and coverage coordinated source-domain omission",
+        lambda: extract_enum_coverage(coordinated_omission, contexts),
     )
 
 
@@ -1881,13 +1959,20 @@ def main() -> int:
         run_self_tests(repo_root)
         print("verified fail-closed parser and source-context negative suite")
         return 0
-    raw_outputs, enum_contexts_data, oracle_data, manifest_data = build(repo_root)
+    (
+        raw_outputs,
+        enum_contexts_data,
+        oracle_data,
+        new_only_contract_data,
+        manifest_data,
+    ) = build(repo_root)
     if args.write:
         write_outputs(
             repo_root,
             raw_outputs,
             enum_contexts_data,
             oracle_data,
+            new_only_contract_data,
             manifest_data,
         )
         print(
@@ -1900,6 +1985,7 @@ def main() -> int:
             raw_outputs,
             enum_contexts_data,
             oracle_data,
+            new_only_contract_data,
             manifest_data,
         )
         print(

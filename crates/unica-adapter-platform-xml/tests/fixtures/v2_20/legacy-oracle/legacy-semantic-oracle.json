@@ -101,6 +101,16 @@
             "type": "boolean",
             "value": false
           }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.state",
+          "state": "present",
+          "subject": "allTypes/root",
+          "value": {
+            "type": "enum",
+            "value": "notSupported"
+          }
         }
       ],
       "id": "allTypes",
@@ -733,6 +743,16 @@
           }
         },
         {
+          "kind": "property",
+          "predicate": "support.state",
+          "state": "present",
+          "subject": "catalogCurrencies/root",
+          "value": {
+            "type": "enum",
+            "value": "notSupported"
+          }
+        },
+        {
           "kind": "relation",
           "predicate": "attributes",
           "state": "present",
@@ -1126,6 +1146,16 @@
             "type": "boolean",
             "value": false
           }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.state",
+          "state": "present",
+          "subject": "commonForm/root",
+          "value": {
+            "type": "enum",
+            "value": "notSupported"
+          }
         }
       ],
       "id": "commonForm",
@@ -1211,6 +1241,16 @@
             "type": "boolean",
             "value": false
           }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.state",
+          "state": "present",
+          "subject": "commonModuleGoogleTranslator/root",
+          "value": {
+            "type": "enum",
+            "value": "notSupported"
+          }
         }
       ],
       "id": "commonModuleGoogleTranslator",
@@ -1258,6 +1298,16 @@
           "value": {
             "type": "boolean",
             "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.state",
+          "state": "present",
+          "subject": "commonTemplate/root",
+          "value": {
+            "type": "enum",
+            "value": "notSupported"
           }
         }
       ],
@@ -2450,6 +2500,16 @@
           }
         },
         {
+          "kind": "property",
+          "predicate": "support.state",
+          "state": "present",
+          "subject": "documentDestructionAct/root",
+          "value": {
+            "type": "enum",
+            "value": "notSupported"
+          }
+        },
+        {
           "kind": "relation",
           "predicate": "attributes",
           "state": "present",
@@ -3075,6 +3135,16 @@
           }
         },
         {
+          "kind": "property",
+          "predicate": "support.state",
+          "state": "present",
+          "subject": "enumerationAccountingIssueImportance/root",
+          "value": {
+            "type": "enum",
+            "value": "notSupported"
+          }
+        },
+        {
           "kind": "relation",
           "predicate": "enumValues",
           "state": "present",
@@ -3263,6 +3333,16 @@
           "value": {
             "type": "boolean",
             "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.state",
+          "state": "present",
+          "subject": "eventSources/root",
+          "value": {
+            "type": "enum",
+            "value": "notSupported"
           }
         }
       ],
@@ -3516,6 +3596,16 @@
           }
         },
         {
+          "kind": "property",
+          "predicate": "support.state",
+          "state": "present",
+          "subject": "informationRegisterAdministrativeHierarchy/root",
+          "value": {
+            "type": "enum",
+            "value": "notSupported"
+          }
+        },
+        {
           "kind": "relation",
           "predicate": "dimensions",
           "state": "present",
@@ -3620,6 +3710,16 @@
             "type": "boolean",
             "value": false
           }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.state",
+          "state": "present",
+          "subject": "languageRussian/root",
+          "value": {
+            "type": "enum",
+            "value": "notSupported"
+          }
         }
       ],
       "id": "languageRussian",
@@ -3680,6 +3780,16 @@
           "value": {
             "type": "boolean",
             "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.state",
+          "state": "present",
+          "subject": "ownedArtifacts/root",
+          "value": {
+            "type": "enum",
+            "value": "notSupported"
           }
         },
         {
@@ -3786,6 +3896,16 @@
           "value": {
             "type": "boolean",
             "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.state",
+          "state": "present",
+          "subject": "reportObjectVersionAnalysis/root",
+          "value": {
+            "type": "enum",
+            "value": "notSupported"
           }
         },
         {
@@ -4137,6 +4257,16 @@
           }
         },
         {
+          "kind": "property",
+          "predicate": "support.state",
+          "state": "present",
+          "subject": "rights/root",
+          "value": {
+            "type": "enum",
+            "value": "notSupported"
+          }
+        },
+        {
           "kind": "relation",
           "predicate": "accessPermissions",
           "state": "present",
@@ -4426,6 +4556,15 @@
         {
           "kind": "node",
           "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/calculationRegister:Payroll:Read#1",
+          "value": {
+            "kind": "accessPermission",
+            "name": "Read"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
           "subject": "rightsMultiTarget/accessPermission/catalog:Products:Read#1",
           "value": {
             "kind": "accessPermission",
@@ -4480,6 +4619,33 @@
         {
           "kind": "node",
           "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/IntegrationAccess#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "IntegrationAccess"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/PayrollPeriod#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "PayrollPeriod"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/PositiveAmount#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "PositiveAmount"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
           "subject": "rightsMultiTarget/accessRestrictionTemplate/PositivePrice#1",
           "value": {
             "kind": "accessRestrictionTemplate",
@@ -4489,10 +4655,73 @@
         {
           "kind": "node",
           "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/ProductAccess#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "ProductAccess"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/SalesAccess#1",
+          "value": {
+            "kind": "accessRestrictionTemplate",
+            "name": "SalesAccess"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/calculationRegister/Payroll",
+          "value": {
+            "kind": "calculationRegister",
+            "name": "Payroll"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/catalog/Products",
+          "value": {
+            "kind": "catalog",
+            "name": "Products"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/commonModule/Integration",
+          "value": {
+            "kind": "commonModule",
+            "name": "Integration"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/document/SalesOrder",
+          "value": {
+            "kind": "document",
+            "name": "SalesOrder"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
           "subject": "rightsMultiTarget/external/informationRegister/Prices",
           "value": {
             "kind": "informationRegister",
             "name": "Prices"
+          }
+        },
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/report/Sales",
+          "value": {
+            "kind": "report",
+            "name": "Sales"
           }
         },
         {
@@ -4511,7 +4740,7 @@
           "subject": "rightsMultiTarget/root",
           "value": {
             "type": "integer",
-            "value": 5
+            "value": 6
           }
         },
         {
@@ -4552,6 +4781,16 @@
           "value": {
             "type": "boolean",
             "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.allowed",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/calculationRegister:Payroll:Read#1",
+          "value": {
+            "type": "boolean",
+            "value": true
           }
         },
         {
@@ -4612,6 +4851,16 @@
           "value": {
             "type": "boolean",
             "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.permission.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/calculationRegister:Payroll:Read#1",
+          "value": {
+            "type": "string",
+            "value": "Read"
           }
         },
         {
@@ -4681,7 +4930,47 @@
           "subject": "rightsMultiTarget/root",
           "value": {
             "type": "integer",
-            "value": 1
+            "value": 6
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/calculationRegister/Payroll",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/catalog/Products",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/commonModule/Integration",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/document/SalesOrder",
+          "value": {
+            "type": "boolean",
+            "value": true
           }
         },
         {
@@ -4696,12 +4985,72 @@
         },
         {
           "kind": "property",
+          "predicate": "access.restriction.present",
+          "state": "present",
+          "subject": "rightsMultiTarget/external/report/Sales",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/IntegrationAccess#1",
+          "value": {
+            "type": "string",
+            "value": "IntegrationAccess"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/PayrollPeriod#1",
+          "value": {
+            "type": "string",
+            "value": "PayrollPeriod"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/PositiveAmount#1",
+          "value": {
+            "type": "string",
+            "value": "PositiveAmount"
+          }
+        },
+        {
+          "kind": "property",
           "predicate": "access.restrictionTemplate.name",
           "state": "present",
           "subject": "rightsMultiTarget/accessRestrictionTemplate/PositivePrice#1",
           "value": {
             "type": "string",
             "value": "PositivePrice"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/ProductAccess#1",
+          "value": {
+            "type": "string",
+            "value": "ProductAccess"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "access.restrictionTemplate.name",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessRestrictionTemplate/SalesAccess#1",
+          "value": {
+            "type": "string",
+            "value": "SalesAccess"
           }
         },
         {
@@ -4724,6 +5073,27 @@
           "value": {
             "type": "boolean",
             "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.state",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "type": "enum",
+            "value": "notSupported"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessPermissions",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessPermission/calculationRegister:Payroll:Read#1",
+            "targetKind": "accessPermission",
+            "targetName": "Read"
           }
         },
         {
@@ -4790,6 +5160,17 @@
             "target": "rightsMultiTarget/accessPermission/report:Sales:Use#1",
             "targetKind": "accessPermission",
             "targetName": "Use"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "accessTarget",
+          "state": "present",
+          "subject": "rightsMultiTarget/accessPermission/calculationRegister:Payroll:Read#1",
+          "value": {
+            "target": "rightsMultiTarget/external/calculationRegister/Payroll",
+            "targetKind": "calculationRegister",
+            "targetName": "Payroll"
           }
         },
         {
@@ -4864,9 +5245,64 @@
           "state": "present",
           "subject": "rightsMultiTarget/root",
           "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/IntegrationAccess#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "IntegrationAccess"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/PayrollPeriod#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "PayrollPeriod"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/PositiveAmount#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "PositiveAmount"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
             "target": "rightsMultiTarget/accessRestrictionTemplate/PositivePrice#1",
             "targetKind": "accessRestrictionTemplate",
             "targetName": "PositivePrice"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/ProductAccess#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "ProductAccess"
+          }
+        },
+        {
+          "kind": "relation",
+          "predicate": "restrictionTemplates",
+          "state": "present",
+          "subject": "rightsMultiTarget/root",
+          "value": {
+            "target": "rightsMultiTarget/accessRestrictionTemplate/SalesAccess#1",
+            "targetKind": "accessRestrictionTemplate",
+            "targetName": "SalesAccess"
           }
         }
       ],
@@ -4915,7 +5351,7 @@
         },
         {
           "classification": "useful:right-target:Catalog",
-          "line": "    Products: Read",
+          "line": "    Products: Read [RLS]",
           "lineNumber": 9
         },
         {
@@ -4930,7 +5366,7 @@
         },
         {
           "classification": "useful:right-target:Document",
-          "line": "    SalesOrder: Posting",
+          "line": "    SalesOrder: Posting [RLS]",
           "lineNumber": 12
         },
         {
@@ -4960,7 +5396,7 @@
         },
         {
           "classification": "useful:right-target:CommonModule",
-          "line": "    Integration: View",
+          "line": "    Integration: View [RLS]",
           "lineNumber": 18
         },
         {
@@ -4975,7 +5411,7 @@
         },
         {
           "classification": "useful:right-target:Report",
-          "line": "    Sales: Use",
+          "line": "    Sales: Use [RLS]",
           "lineNumber": 21
         },
         {
@@ -4984,23 +5420,23 @@
           "lineNumber": 22
         },
         {
-          "classification": "structural:denied-section",
-          "line": "Denied rights:",
+          "classification": "structural:right-group:CalculationRegister",
+          "line": "  CalculationRegister (1):",
           "lineNumber": 23
+        },
+        {
+          "classification": "useful:right-target:CalculationRegister",
+          "line": "    Payroll: Read [RLS]",
+          "lineNumber": 24
         },
         {
           "classification": "structural:blank",
           "line": "",
-          "lineNumber": 24
-        },
-        {
-          "classification": "structural:right-group:Report",
-          "line": "  Report (1):",
           "lineNumber": 25
         },
         {
-          "classification": "useful:right-target:Report",
-          "line": "    Sales: -Update",
+          "classification": "structural:denied-section",
+          "line": "Denied rights:",
           "lineNumber": 26
         },
         {
@@ -5009,13 +5445,13 @@
           "lineNumber": 27
         },
         {
-          "classification": "useful:restriction-count",
-          "line": "RLS: 1 restrictions",
+          "classification": "structural:right-group:Report",
+          "line": "  Report (1):",
           "lineNumber": 28
         },
         {
-          "classification": "useful:restriction-templates",
-          "line": "Templates: PositivePrice",
+          "classification": "useful:right-target:Report",
+          "line": "    Sales: -Update",
           "lineNumber": 29
         },
         {
@@ -5024,14 +5460,29 @@
           "lineNumber": 30
         },
         {
-          "classification": "structural:totals-delimiter",
-          "line": "---",
+          "classification": "useful:restriction-count",
+          "line": "RLS: 6 restrictions",
           "lineNumber": 31
         },
         {
-          "classification": "useful:right-totals",
-          "line": "Total: 5 allowed, 1 denied",
+          "classification": "useful:restriction-templates",
+          "line": "Templates: ProductAccess, PositiveAmount, PositivePrice, IntegrationAccess, SalesAccess, PayrollPeriod",
           "lineNumber": 32
+        },
+        {
+          "classification": "structural:blank",
+          "line": "",
+          "lineNumber": 33
+        },
+        {
+          "classification": "structural:totals-delimiter",
+          "line": "---",
+          "lineNumber": 34
+        },
+        {
+          "classification": "useful:right-totals",
+          "line": "Total: 6 allowed, 1 denied",
+          "lineNumber": 35
         }
       ],
       "profile": "role-info",
@@ -5039,6 +5490,271 @@
       "rootKind": "role",
       "rootName": "MultiTargetReader",
       "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights"
+    },
+    {
+      "adapterInput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/configuration-read-only/Languages/SupportState.xml",
+      "facts": [
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "supportConfigurationReadOnly/root",
+          "value": {
+            "kind": "language",
+            "name": "SupportState"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.active",
+          "state": "present",
+          "subject": "supportConfigurationReadOnly/root",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.state",
+          "state": "present",
+          "subject": "supportConfigurationReadOnly/root",
+          "value": {
+            "type": "enum",
+            "value": "configurationReadOnly"
+          }
+        }
+      ],
+      "id": "supportConfigurationReadOnly",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/configuration-read-only/Languages/SupportState.xml",
+      "lineClassifications": [
+        {
+          "classification": "useful:object-header",
+          "line": "=== Language: SupportState ===",
+          "lineNumber": 1
+        },
+        {
+          "classification": "useful:support",
+          "line": "Поддержка: конфигурация read-only (возможность изменения выключена) — правки невозможны без включения",
+          "lineNumber": 2
+        }
+      ],
+      "profile": "meta-full",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/configuration-read-only.support.txt",
+      "rootKind": "language",
+      "rootName": "SupportState",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/configuration-read-only"
+    },
+    {
+      "adapterInput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/editable/Languages/SupportState.xml",
+      "facts": [
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "supportEditable/root",
+          "value": {
+            "kind": "language",
+            "name": "SupportState"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.active",
+          "state": "present",
+          "subject": "supportEditable/root",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.state",
+          "state": "present",
+          "subject": "supportEditable/root",
+          "value": {
+            "type": "enum",
+            "value": "supportedEditable"
+          }
+        }
+      ],
+      "id": "supportEditable",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/editable/Languages/SupportState.xml",
+      "lineClassifications": [
+        {
+          "classification": "useful:object-header",
+          "line": "=== Language: SupportState ===",
+          "lineNumber": 1
+        },
+        {
+          "classification": "useful:support",
+          "line": "Поддержка: редактируется с сохранением поддержки",
+          "lineNumber": 2
+        }
+      ],
+      "profile": "meta-full",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/editable.support.txt",
+      "rootKind": "language",
+      "rootName": "SupportState",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/editable"
+    },
+    {
+      "adapterInput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/locked/Languages/SupportState.xml",
+      "facts": [
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "supportLocked/root",
+          "value": {
+            "kind": "language",
+            "name": "SupportState"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.active",
+          "state": "present",
+          "subject": "supportLocked/root",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.state",
+          "state": "present",
+          "subject": "supportLocked/root",
+          "value": {
+            "type": "enum",
+            "value": "supportedLocked"
+          }
+        }
+      ],
+      "id": "supportLocked",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/locked/Languages/SupportState.xml",
+      "lineClassifications": [
+        {
+          "classification": "useful:object-header",
+          "line": "=== Language: SupportState ===",
+          "lineNumber": 1
+        },
+        {
+          "classification": "useful:support",
+          "line": "Поддержка: на замке — прямая правка сломает обновления; дорабатывай через cfe-* либо включи редактирование объекта",
+          "lineNumber": 2
+        }
+      ],
+      "profile": "meta-full",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/locked.support.txt",
+      "rootKind": "language",
+      "rootName": "SupportState",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/locked"
+    },
+    {
+      "adapterInput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/not-supported/Languages/SupportState.xml",
+      "facts": [
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "supportNotSupported/root",
+          "value": {
+            "kind": "language",
+            "name": "SupportState"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.active",
+          "state": "present",
+          "subject": "supportNotSupported/root",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.state",
+          "state": "present",
+          "subject": "supportNotSupported/root",
+          "value": {
+            "type": "enum",
+            "value": "notSupported"
+          }
+        }
+      ],
+      "id": "supportNotSupported",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/not-supported/Languages/SupportState.xml",
+      "lineClassifications": [
+        {
+          "classification": "useful:object-header",
+          "line": "=== Language: SupportState ===",
+          "lineNumber": 1
+        },
+        {
+          "classification": "useful:support",
+          "line": "Поддержка: не на поддержке",
+          "lineNumber": 2
+        }
+      ],
+      "profile": "meta-full",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/not-supported.support.txt",
+      "rootKind": "language",
+      "rootName": "SupportState",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/not-supported"
+    },
+    {
+      "adapterInput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/removed/Languages/SupportState.xml",
+      "facts": [
+        {
+          "kind": "node",
+          "state": "present",
+          "subject": "supportRemoved/root",
+          "value": {
+            "kind": "language",
+            "name": "SupportState"
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.active",
+          "state": "present",
+          "subject": "supportRemoved/root",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.state",
+          "state": "present",
+          "subject": "supportRemoved/root",
+          "value": {
+            "type": "enum",
+            "value": "removedFromSupport"
+          }
+        }
+      ],
+      "id": "supportRemoved",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/removed/Languages/SupportState.xml",
+      "lineClassifications": [
+        {
+          "classification": "useful:object-header",
+          "line": "=== Language: SupportState ===",
+          "lineNumber": 1
+        },
+        {
+          "classification": "useful:support",
+          "line": "Поддержка: снято с поддержки (правки свободны)",
+          "lineNumber": 2
+        }
+      ],
+      "profile": "meta-full",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/removed.support.txt",
+      "rootKind": "language",
+      "rootName": "SupportState",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/removed"
     },
     {
       "adapterInput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/unknowns/UnknownCases.xml",
@@ -5122,6 +5838,16 @@
           "value": {
             "type": "boolean",
             "value": false
+          }
+        },
+        {
+          "kind": "property",
+          "predicate": "support.state",
+          "state": "present",
+          "subject": "unknownCases/root",
+          "value": {
+            "type": "enum",
+            "value": "notSupported"
           }
         },
         {
@@ -5209,6 +5935,20 @@
       "semanticProperty": "document.realTimePosting.mode"
     },
     {
+      "nativeAlias": "AsCode",
+      "nativeProperty": "DefaultPresentation",
+      "objectKind": "catalog",
+      "semantic": "asCode",
+      "semanticProperty": "presentation.defaultMode"
+    },
+    {
+      "nativeAlias": "AsDescription",
+      "nativeProperty": "DefaultPresentation",
+      "objectKind": "catalog",
+      "semantic": "asDescription",
+      "semanticProperty": "presentation.defaultMode"
+    },
+    {
       "nativeAlias": "AutoDelete",
       "nativeProperty": "RegisterRecordsDeletion",
       "objectKind": "document",
@@ -5244,6 +5984,97 @@
       "semanticProperty": "webService.reuseSessions"
     },
     {
+      "nativeAlias": "Automatic",
+      "nativeProperty": "DataLockControlMode",
+      "objectKind": "accountingRegister",
+      "semantic": "automatic",
+      "semanticProperty": "locking.controlMode"
+    },
+    {
+      "nativeAlias": "Automatic",
+      "nativeProperty": "DataLockControlMode",
+      "objectKind": "accumulationRegister",
+      "semantic": "automatic",
+      "semanticProperty": "locking.controlMode"
+    },
+    {
+      "nativeAlias": "Automatic",
+      "nativeProperty": "DataLockControlMode",
+      "objectKind": "businessProcess",
+      "semantic": "automatic",
+      "semanticProperty": "locking.controlMode"
+    },
+    {
+      "nativeAlias": "Automatic",
+      "nativeProperty": "DataLockControlMode",
+      "objectKind": "calculationRegister",
+      "semantic": "automatic",
+      "semanticProperty": "locking.controlMode"
+    },
+    {
+      "nativeAlias": "Automatic",
+      "nativeProperty": "DataLockControlMode",
+      "objectKind": "catalog",
+      "semantic": "automatic",
+      "semanticProperty": "locking.controlMode"
+    },
+    {
+      "nativeAlias": "Automatic",
+      "nativeProperty": "DataLockControlMode",
+      "objectKind": "chartOfAccounts",
+      "semantic": "automatic",
+      "semanticProperty": "locking.controlMode"
+    },
+    {
+      "nativeAlias": "Automatic",
+      "nativeProperty": "DataLockControlMode",
+      "objectKind": "chartOfCalculationTypes",
+      "semantic": "automatic",
+      "semanticProperty": "locking.controlMode"
+    },
+    {
+      "nativeAlias": "Automatic",
+      "nativeProperty": "DataLockControlMode",
+      "objectKind": "chartOfCharacteristicTypes",
+      "semantic": "automatic",
+      "semanticProperty": "locking.controlMode"
+    },
+    {
+      "nativeAlias": "Automatic",
+      "nativeProperty": "DataLockControlMode",
+      "objectKind": "constant",
+      "semantic": "automatic",
+      "semanticProperty": "locking.controlMode"
+    },
+    {
+      "nativeAlias": "Automatic",
+      "nativeProperty": "DataLockControlMode",
+      "objectKind": "document",
+      "semantic": "automatic",
+      "semanticProperty": "locking.controlMode"
+    },
+    {
+      "nativeAlias": "Automatic",
+      "nativeProperty": "DataLockControlMode",
+      "objectKind": "exchangePlan",
+      "semantic": "automatic",
+      "semanticProperty": "locking.controlMode"
+    },
+    {
+      "nativeAlias": "Automatic",
+      "nativeProperty": "DataLockControlMode",
+      "objectKind": "informationRegister",
+      "semantic": "automatic",
+      "semanticProperty": "locking.controlMode"
+    },
+    {
+      "nativeAlias": "Automatic",
+      "nativeProperty": "DataLockControlMode",
+      "objectKind": "task",
+      "semantic": "automatic",
+      "semanticProperty": "locking.controlMode"
+    },
+    {
       "nativeAlias": "Balance",
       "nativeProperty": "RegisterType",
       "objectKind": "accumulationRegister",
@@ -5277,6 +6108,20 @@
       "objectKind": "template",
       "semantic": "binaryData",
       "semanticProperty": "template.type"
+    },
+    {
+      "nativeAlias": "BothWays",
+      "nativeProperty": "ChoiceMode",
+      "objectKind": "catalog",
+      "semantic": "bothWays",
+      "semanticProperty": "choice.mode"
+    },
+    {
+      "nativeAlias": "BothWays",
+      "nativeProperty": "EditType",
+      "objectKind": "businessProcess",
+      "semantic": "bothWays",
+      "semanticProperty": "editing.mode"
     },
     {
       "nativeAlias": "DataCompositionSchema",
@@ -5378,6 +6223,97 @@
     },
     {
       "nativeAlias": "DontUse",
+      "nativeProperty": "DependenceOnCalculationTypes",
+      "objectKind": "chartOfCalculationTypes",
+      "semantic": "dontUse",
+      "semanticProperty": "calculation.dependenceMode"
+    },
+    {
+      "nativeAlias": "DontUse",
+      "nativeProperty": "FullTextSearch",
+      "objectKind": "accountingRegister",
+      "semantic": "dontUse",
+      "semanticProperty": "search.fullText.mode"
+    },
+    {
+      "nativeAlias": "DontUse",
+      "nativeProperty": "FullTextSearch",
+      "objectKind": "accumulationRegister",
+      "semantic": "dontUse",
+      "semanticProperty": "search.fullText.mode"
+    },
+    {
+      "nativeAlias": "DontUse",
+      "nativeProperty": "FullTextSearch",
+      "objectKind": "businessProcess",
+      "semantic": "dontUse",
+      "semanticProperty": "search.fullText.mode"
+    },
+    {
+      "nativeAlias": "DontUse",
+      "nativeProperty": "FullTextSearch",
+      "objectKind": "calculationRegister",
+      "semantic": "dontUse",
+      "semanticProperty": "search.fullText.mode"
+    },
+    {
+      "nativeAlias": "DontUse",
+      "nativeProperty": "FullTextSearch",
+      "objectKind": "catalog",
+      "semantic": "dontUse",
+      "semanticProperty": "search.fullText.mode"
+    },
+    {
+      "nativeAlias": "DontUse",
+      "nativeProperty": "FullTextSearch",
+      "objectKind": "chartOfAccounts",
+      "semantic": "dontUse",
+      "semanticProperty": "search.fullText.mode"
+    },
+    {
+      "nativeAlias": "DontUse",
+      "nativeProperty": "FullTextSearch",
+      "objectKind": "chartOfCalculationTypes",
+      "semantic": "dontUse",
+      "semanticProperty": "search.fullText.mode"
+    },
+    {
+      "nativeAlias": "DontUse",
+      "nativeProperty": "FullTextSearch",
+      "objectKind": "chartOfCharacteristicTypes",
+      "semantic": "dontUse",
+      "semanticProperty": "search.fullText.mode"
+    },
+    {
+      "nativeAlias": "DontUse",
+      "nativeProperty": "FullTextSearch",
+      "objectKind": "document",
+      "semantic": "dontUse",
+      "semanticProperty": "search.fullText.mode"
+    },
+    {
+      "nativeAlias": "DontUse",
+      "nativeProperty": "FullTextSearch",
+      "objectKind": "exchangePlan",
+      "semantic": "dontUse",
+      "semanticProperty": "search.fullText.mode"
+    },
+    {
+      "nativeAlias": "DontUse",
+      "nativeProperty": "FullTextSearch",
+      "objectKind": "informationRegister",
+      "semantic": "dontUse",
+      "semanticProperty": "search.fullText.mode"
+    },
+    {
+      "nativeAlias": "DontUse",
+      "nativeProperty": "FullTextSearch",
+      "objectKind": "task",
+      "semantic": "dontUse",
+      "semanticProperty": "search.fullText.mode"
+    },
+    {
+      "nativeAlias": "DontUse",
       "nativeProperty": "ReturnValuesReuse",
       "objectKind": "commonModule",
       "semantic": "dontUse",
@@ -5412,6 +6348,55 @@
       "semanticProperty": "module.returnValuesReuse"
     },
     {
+      "nativeAlias": "Fixed",
+      "nativeProperty": "CodeAllowedLength",
+      "objectKind": "catalog",
+      "semantic": "fixed",
+      "semanticProperty": "code.allowedLength"
+    },
+    {
+      "nativeAlias": "Fixed",
+      "nativeProperty": "CodeAllowedLength",
+      "objectKind": "chartOfCalculationTypes",
+      "semantic": "fixed",
+      "semanticProperty": "code.allowedLength"
+    },
+    {
+      "nativeAlias": "Fixed",
+      "nativeProperty": "CodeAllowedLength",
+      "objectKind": "chartOfCharacteristicTypes",
+      "semantic": "fixed",
+      "semanticProperty": "code.allowedLength"
+    },
+    {
+      "nativeAlias": "Fixed",
+      "nativeProperty": "CodeAllowedLength",
+      "objectKind": "exchangePlan",
+      "semantic": "fixed",
+      "semanticProperty": "code.allowedLength"
+    },
+    {
+      "nativeAlias": "Fixed",
+      "nativeProperty": "NumberAllowedLength",
+      "objectKind": "businessProcess",
+      "semantic": "fixed",
+      "semanticProperty": "number.allowedLength"
+    },
+    {
+      "nativeAlias": "Fixed",
+      "nativeProperty": "NumberAllowedLength",
+      "objectKind": "document",
+      "semantic": "fixed",
+      "semanticProperty": "number.allowedLength"
+    },
+    {
+      "nativeAlias": "Fixed",
+      "nativeProperty": "NumberAllowedLength",
+      "objectKind": "task",
+      "semantic": "fixed",
+      "semanticProperty": "number.allowedLength"
+    },
+    {
       "nativeAlias": "ForFolder",
       "nativeProperty": "Use",
       "objectKind": "attribute",
@@ -5473,6 +6458,13 @@
       "objectKind": "resource",
       "semantic": "forItem",
       "semanticProperty": "field.use"
+    },
+    {
+      "nativeAlias": "FromForm",
+      "nativeProperty": "ChoiceMode",
+      "objectKind": "catalog",
+      "semantic": "fromForm",
+      "semanticProperty": "choice.mode"
     },
     {
       "nativeAlias": "HTMLDocument",
@@ -5515,6 +6507,20 @@
       "objectKind": "webServiceParameter",
       "semantic": "in",
       "semanticProperty": "webService.parameter.direction"
+    },
+    {
+      "nativeAlias": "InDialog",
+      "nativeProperty": "EditType",
+      "objectKind": "businessProcess",
+      "semantic": "inDialog",
+      "semanticProperty": "editing.mode"
+    },
+    {
+      "nativeAlias": "InList",
+      "nativeProperty": "EditType",
+      "objectKind": "businessProcess",
+      "semantic": "inList",
+      "semanticProperty": "editing.mode"
     },
     {
       "nativeAlias": "InOut",
@@ -5574,6 +6580,97 @@
     },
     {
       "nativeAlias": "Managed",
+      "nativeProperty": "DataLockControlMode",
+      "objectKind": "accountingRegister",
+      "semantic": "managed",
+      "semanticProperty": "locking.controlMode"
+    },
+    {
+      "nativeAlias": "Managed",
+      "nativeProperty": "DataLockControlMode",
+      "objectKind": "accumulationRegister",
+      "semantic": "managed",
+      "semanticProperty": "locking.controlMode"
+    },
+    {
+      "nativeAlias": "Managed",
+      "nativeProperty": "DataLockControlMode",
+      "objectKind": "businessProcess",
+      "semantic": "managed",
+      "semanticProperty": "locking.controlMode"
+    },
+    {
+      "nativeAlias": "Managed",
+      "nativeProperty": "DataLockControlMode",
+      "objectKind": "calculationRegister",
+      "semantic": "managed",
+      "semanticProperty": "locking.controlMode"
+    },
+    {
+      "nativeAlias": "Managed",
+      "nativeProperty": "DataLockControlMode",
+      "objectKind": "catalog",
+      "semantic": "managed",
+      "semanticProperty": "locking.controlMode"
+    },
+    {
+      "nativeAlias": "Managed",
+      "nativeProperty": "DataLockControlMode",
+      "objectKind": "chartOfAccounts",
+      "semantic": "managed",
+      "semanticProperty": "locking.controlMode"
+    },
+    {
+      "nativeAlias": "Managed",
+      "nativeProperty": "DataLockControlMode",
+      "objectKind": "chartOfCalculationTypes",
+      "semantic": "managed",
+      "semanticProperty": "locking.controlMode"
+    },
+    {
+      "nativeAlias": "Managed",
+      "nativeProperty": "DataLockControlMode",
+      "objectKind": "chartOfCharacteristicTypes",
+      "semantic": "managed",
+      "semanticProperty": "locking.controlMode"
+    },
+    {
+      "nativeAlias": "Managed",
+      "nativeProperty": "DataLockControlMode",
+      "objectKind": "constant",
+      "semantic": "managed",
+      "semanticProperty": "locking.controlMode"
+    },
+    {
+      "nativeAlias": "Managed",
+      "nativeProperty": "DataLockControlMode",
+      "objectKind": "document",
+      "semantic": "managed",
+      "semanticProperty": "locking.controlMode"
+    },
+    {
+      "nativeAlias": "Managed",
+      "nativeProperty": "DataLockControlMode",
+      "objectKind": "exchangePlan",
+      "semantic": "managed",
+      "semanticProperty": "locking.controlMode"
+    },
+    {
+      "nativeAlias": "Managed",
+      "nativeProperty": "DataLockControlMode",
+      "objectKind": "informationRegister",
+      "semantic": "managed",
+      "semanticProperty": "locking.controlMode"
+    },
+    {
+      "nativeAlias": "Managed",
+      "nativeProperty": "DataLockControlMode",
+      "objectKind": "task",
+      "semantic": "managed",
+      "semanticProperty": "locking.controlMode"
+    },
+    {
+      "nativeAlias": "Managed",
       "nativeProperty": "FormType",
       "objectKind": "commonForm",
       "semantic": "managed",
@@ -5623,10 +6720,45 @@
     },
     {
       "nativeAlias": "Number",
+      "nativeProperty": "CodeType",
+      "objectKind": "catalog",
+      "semantic": "number",
+      "semanticProperty": "code.type"
+    },
+    {
+      "nativeAlias": "Number",
+      "nativeProperty": "CodeType",
+      "objectKind": "chartOfCalculationTypes",
+      "semantic": "number",
+      "semanticProperty": "code.type"
+    },
+    {
+      "nativeAlias": "Number",
+      "nativeProperty": "NumberType",
+      "objectKind": "businessProcess",
+      "semantic": "number",
+      "semanticProperty": "number.type"
+    },
+    {
+      "nativeAlias": "Number",
       "nativeProperty": "NumberType",
       "objectKind": "document",
       "semantic": "number",
       "semanticProperty": "document.number.type"
+    },
+    {
+      "nativeAlias": "Number",
+      "nativeProperty": "NumberType",
+      "objectKind": "task",
+      "semantic": "number",
+      "semanticProperty": "number.type"
+    },
+    {
+      "nativeAlias": "OnActionPeriod",
+      "nativeProperty": "DependenceOnCalculationTypes",
+      "objectKind": "chartOfCalculationTypes",
+      "semantic": "onActionPeriod",
+      "semanticProperty": "calculation.dependenceMode"
     },
     {
       "nativeAlias": "Ordinary",
@@ -5669,6 +6801,13 @@
       "objectKind": "calculationRegister",
       "semantic": "quarter",
       "semanticProperty": "register.periodicity"
+    },
+    {
+      "nativeAlias": "QuickChoice",
+      "nativeProperty": "ChoiceMode",
+      "objectKind": "catalog",
+      "semantic": "quickChoice",
+      "semanticProperty": "choice.mode"
     },
     {
       "nativeAlias": "RecorderPosition",
@@ -5756,10 +6895,38 @@
     },
     {
       "nativeAlias": "String",
+      "nativeProperty": "CodeType",
+      "objectKind": "catalog",
+      "semantic": "string",
+      "semanticProperty": "code.type"
+    },
+    {
+      "nativeAlias": "String",
+      "nativeProperty": "CodeType",
+      "objectKind": "chartOfCalculationTypes",
+      "semantic": "string",
+      "semanticProperty": "code.type"
+    },
+    {
+      "nativeAlias": "String",
+      "nativeProperty": "NumberType",
+      "objectKind": "businessProcess",
+      "semantic": "string",
+      "semanticProperty": "number.type"
+    },
+    {
+      "nativeAlias": "String",
       "nativeProperty": "NumberType",
       "objectKind": "document",
       "semantic": "string",
       "semanticProperty": "document.number.type"
+    },
+    {
+      "nativeAlias": "String",
+      "nativeProperty": "NumberType",
+      "objectKind": "task",
+      "semantic": "string",
+      "semanticProperty": "number.type"
     },
     {
       "nativeAlias": "TextDocument",
@@ -5783,11 +6950,165 @@
       "semanticProperty": "template.type"
     },
     {
+      "nativeAlias": "ToFolders",
+      "nativeProperty": "SubordinationUse",
+      "objectKind": "catalog",
+      "semantic": "toGroups",
+      "semanticProperty": "subordination.use"
+    },
+    {
+      "nativeAlias": "ToFoldersAndItems",
+      "nativeProperty": "SubordinationUse",
+      "objectKind": "catalog",
+      "semantic": "toGroupsAndItems",
+      "semanticProperty": "subordination.use"
+    },
+    {
+      "nativeAlias": "ToItems",
+      "nativeProperty": "SubordinationUse",
+      "objectKind": "catalog",
+      "semantic": "toItems",
+      "semanticProperty": "subordination.use"
+    },
+    {
       "nativeAlias": "Turnovers",
       "nativeProperty": "RegisterType",
       "objectKind": "accumulationRegister",
       "semantic": "turnovers",
       "semanticProperty": "register.type"
+    },
+    {
+      "nativeAlias": "Use",
+      "nativeProperty": "FullTextSearch",
+      "objectKind": "accountingRegister",
+      "semantic": "use",
+      "semanticProperty": "search.fullText.mode"
+    },
+    {
+      "nativeAlias": "Use",
+      "nativeProperty": "FullTextSearch",
+      "objectKind": "accumulationRegister",
+      "semantic": "use",
+      "semanticProperty": "search.fullText.mode"
+    },
+    {
+      "nativeAlias": "Use",
+      "nativeProperty": "FullTextSearch",
+      "objectKind": "businessProcess",
+      "semantic": "use",
+      "semanticProperty": "search.fullText.mode"
+    },
+    {
+      "nativeAlias": "Use",
+      "nativeProperty": "FullTextSearch",
+      "objectKind": "calculationRegister",
+      "semantic": "use",
+      "semanticProperty": "search.fullText.mode"
+    },
+    {
+      "nativeAlias": "Use",
+      "nativeProperty": "FullTextSearch",
+      "objectKind": "catalog",
+      "semantic": "use",
+      "semanticProperty": "search.fullText.mode"
+    },
+    {
+      "nativeAlias": "Use",
+      "nativeProperty": "FullTextSearch",
+      "objectKind": "chartOfAccounts",
+      "semantic": "use",
+      "semanticProperty": "search.fullText.mode"
+    },
+    {
+      "nativeAlias": "Use",
+      "nativeProperty": "FullTextSearch",
+      "objectKind": "chartOfCalculationTypes",
+      "semantic": "use",
+      "semanticProperty": "search.fullText.mode"
+    },
+    {
+      "nativeAlias": "Use",
+      "nativeProperty": "FullTextSearch",
+      "objectKind": "chartOfCharacteristicTypes",
+      "semantic": "use",
+      "semanticProperty": "search.fullText.mode"
+    },
+    {
+      "nativeAlias": "Use",
+      "nativeProperty": "FullTextSearch",
+      "objectKind": "document",
+      "semantic": "use",
+      "semanticProperty": "search.fullText.mode"
+    },
+    {
+      "nativeAlias": "Use",
+      "nativeProperty": "FullTextSearch",
+      "objectKind": "exchangePlan",
+      "semantic": "use",
+      "semanticProperty": "search.fullText.mode"
+    },
+    {
+      "nativeAlias": "Use",
+      "nativeProperty": "FullTextSearch",
+      "objectKind": "informationRegister",
+      "semantic": "use",
+      "semanticProperty": "search.fullText.mode"
+    },
+    {
+      "nativeAlias": "Use",
+      "nativeProperty": "FullTextSearch",
+      "objectKind": "task",
+      "semantic": "use",
+      "semanticProperty": "search.fullText.mode"
+    },
+    {
+      "nativeAlias": "Variable",
+      "nativeProperty": "CodeAllowedLength",
+      "objectKind": "catalog",
+      "semantic": "variable",
+      "semanticProperty": "code.allowedLength"
+    },
+    {
+      "nativeAlias": "Variable",
+      "nativeProperty": "CodeAllowedLength",
+      "objectKind": "chartOfCalculationTypes",
+      "semantic": "variable",
+      "semanticProperty": "code.allowedLength"
+    },
+    {
+      "nativeAlias": "Variable",
+      "nativeProperty": "CodeAllowedLength",
+      "objectKind": "chartOfCharacteristicTypes",
+      "semantic": "variable",
+      "semanticProperty": "code.allowedLength"
+    },
+    {
+      "nativeAlias": "Variable",
+      "nativeProperty": "CodeAllowedLength",
+      "objectKind": "exchangePlan",
+      "semantic": "variable",
+      "semanticProperty": "code.allowedLength"
+    },
+    {
+      "nativeAlias": "Variable",
+      "nativeProperty": "NumberAllowedLength",
+      "objectKind": "businessProcess",
+      "semantic": "variable",
+      "semanticProperty": "number.allowedLength"
+    },
+    {
+      "nativeAlias": "Variable",
+      "nativeProperty": "NumberAllowedLength",
+      "objectKind": "document",
+      "semantic": "variable",
+      "semanticProperty": "number.allowedLength"
+    },
+    {
+      "nativeAlias": "Variable",
+      "nativeProperty": "NumberAllowedLength",
+      "objectKind": "task",
+      "semantic": "variable",
+      "semanticProperty": "number.allowedLength"
     },
     {
       "nativeAlias": "WholeCatalog",

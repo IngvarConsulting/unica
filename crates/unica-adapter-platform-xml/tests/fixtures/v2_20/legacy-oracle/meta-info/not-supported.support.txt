@@ -1,0 +1,2 @@
+﻿=== Language: SupportState ===
+Поддержка: не на поддержке

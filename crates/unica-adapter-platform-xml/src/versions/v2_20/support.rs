@@ -249,8 +249,8 @@ pub(crate) fn read_support_facts(bin_path: &Path) -> SupportFacts {
 }
 
 /// Parse support evidence already captured by a Platform XML provider.  An
-/// absent file in an immutable snapshot is a removed support state, not an
-/// invitation to inspect the live filesystem again.
+/// absent file in an immutable snapshot is explicit evidence that the source
+/// is not on support, not an invitation to inspect the live filesystem again.
 pub(crate) fn read_support_facts_bytes(bytes: Option<&[u8]>) -> SupportFacts {
     match bytes {
         Some(bytes) if bytes.len() <= 1024 * 1024 => parse_parent_configurations(bytes),
@@ -259,7 +259,7 @@ pub(crate) fn read_support_facts_bytes(bytes: Option<&[u8]>) -> SupportFacts {
             1024 * 1024,
             "ParentConfigurations.bin",
         )),
-        None => removed(),
+        None => absent(),
     }
 }
 
@@ -276,7 +276,7 @@ pub(crate) fn read_support_facts_bytes_for_configuration(
             1024 * 1024,
             "ParentConfigurations.bin",
         )),
-        None => removed(),
+        None => absent(),
     }
 }
 
@@ -380,14 +380,7 @@ fn decode_certified_v6(
                     "removed profile",
                 ));
             }
-            return Ok(SupportFacts {
-                source: SupportSourceState::Parsed,
-                object_rules: BTreeMap::new(),
-                global_editing_enabled: Some(global),
-                configuration_rule: None,
-                vendors: Vec::new(),
-                multi_vendor_semantics_unproven: false,
-            });
+            return Ok(removed());
         }
         count if count > MAX_VENDOR_COUNT => {
             return Err(cursor.error(
@@ -1143,10 +1136,10 @@ mod tests {
     }
 
     #[test]
-    fn missing_snapshot_support_is_removed_and_oversize_fails_closed() {
+    fn missing_snapshot_support_is_absent_and_oversize_fails_closed() {
         assert!(matches!(
             super::read_support_facts_bytes(None).source,
-            SupportSourceState::Removed
+            SupportSourceState::Absent
         ));
         let facts = super::read_support_facts_bytes(Some(&vec![b' '; 1024 * 1024 + 1]));
         assert_eq!(

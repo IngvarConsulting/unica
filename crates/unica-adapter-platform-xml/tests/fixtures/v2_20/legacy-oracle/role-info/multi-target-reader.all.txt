@@ -6,27 +6,30 @@ Properties: setForNewObjects=false, setForAttributesByDefault=false, independent
 Allowed rights:
 
   Catalog (1):
-    Products: Read
+    Products: Read [RLS]
 
   Document (1):
-    SalesOrder: Posting
+    SalesOrder: Posting [RLS]
 
   InformationRegister (1):
     Prices: Read [RLS]
 
   CommonModule (1):
-    Integration: View
+    Integration: View [RLS]
 
   Report (1):
-    Sales: Use
+    Sales: Use [RLS]
+
+  CalculationRegister (1):
+    Payroll: Read [RLS]
 
 Denied rights:
 
   Report (1):
     Sales: -Update
 
-RLS: 1 restrictions
-Templates: PositivePrice
+RLS: 6 restrictions
+Templates: ProductAccess, PositiveAmount, PositivePrice, IntegrationAccess, SalesAccess, PayrollPeriod
 
 ---
-Total: 5 allowed, 1 denied
+Total: 6 allowed, 1 denied

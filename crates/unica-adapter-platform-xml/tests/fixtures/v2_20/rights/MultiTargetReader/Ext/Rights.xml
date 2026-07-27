@@ -8,11 +8,17 @@
         independentRightsOfChildObjects="true">
   <object>
     <name>Catalog.Products</name>
-    <right><name>Read</name><value>true</value></right>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>ProductActive = TRUE</condition></restrictionByCondition>
+    </right>
   </object>
   <object>
     <name>Document.SalesOrder</name>
-    <right><name>Posting</name><value>true</value></right>
+    <right>
+      <name>Posting</name><value>true</value>
+      <restrictionByCondition><condition>Amount &gt; 0</condition></restrictionByCondition>
+    </right>
   </object>
   <object>
     <name>InformationRegister.Prices</name>
@@ -23,15 +29,48 @@
   </object>
   <object>
     <name>CommonModule.Integration</name>
-    <right><name>View</name><value>true</value></right>
+    <right>
+      <name>View</name><value>true</value>
+      <restrictionByCondition><condition>IntegrationEnabled = TRUE</condition></restrictionByCondition>
+    </right>
   </object>
   <object>
     <name>Report.Sales</name>
-    <right><name>Use</name><value>true</value></right>
+    <right>
+      <name>Use</name><value>true</value>
+      <restrictionByCondition><condition>SalesVisible = TRUE</condition></restrictionByCondition>
+    </right>
     <right><name>Update</name><value>false</value></right>
   </object>
+  <object>
+    <name>CalculationRegister.Payroll</name>
+    <right>
+      <name>Read</name><value>true</value>
+      <restrictionByCondition><condition>Period &gt;= &amp;StartDate</condition></restrictionByCondition>
+    </right>
+  </object>
+  <restrictionTemplate>
+    <name>ProductAccess(&amp;User)</name>
+    <condition>ProductOwner = &amp;User</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>PositiveAmount(&amp;Minimum)</name>
+    <condition>Amount &gt; &amp;Minimum</condition>
+  </restrictionTemplate>
   <restrictionTemplate>
     <name>PositivePrice(&amp;Minimum)</name>
     <condition>Price &gt; &amp;Minimum</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>IntegrationAccess(&amp;User)</name>
+    <condition>IntegrationOwner = &amp;User</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>SalesAccess(&amp;User)</name>
+    <condition>SalesOwner = &amp;User</condition>
+  </restrictionTemplate>
+  <restrictionTemplate>
+    <name>PayrollPeriod(&amp;StartDate)</name>
+    <condition>Period &gt;= &amp;StartDate</condition>
   </restrictionTemplate>
 </Rights>

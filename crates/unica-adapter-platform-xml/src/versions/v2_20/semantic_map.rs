@@ -107,6 +107,32 @@ struct EnumAlias {
     object_kinds: Vec<NodeKind>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum DerivedEnumCase {
+    SupportAbsent,
+    SupportRemoved,
+    SupportEditable,
+    SupportLocked,
+    SupportConfigurationReadOnly,
+}
+
+impl DerivedEnumCase {
+    const ALL: [Self; 5] = [
+        Self::SupportAbsent,
+        Self::SupportRemoved,
+        Self::SupportEditable,
+        Self::SupportLocked,
+        Self::SupportConfigurationReadOnly,
+    ];
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DerivedEnumValue {
+    case: DerivedEnumCase,
+    semantic: SemanticEnumValue,
+    property_id: SemanticPropertyId,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NativeTypeNamespace {
     XmlSchema,
@@ -177,6 +203,7 @@ struct CoverageRegistry {
     relation_properties: Vec<RelationPropertyMapping>,
     children: Vec<ChildMapping>,
     enum_aliases: Vec<EnumAlias>,
+    derived_enum_values: Vec<DerivedEnumValue>,
     type_variants: Vec<TypeAliasMapping>,
     backing_artifacts: Vec<BackingMapping>,
     intentional_partial_cases: Vec<IntentionalPartialCase>,
@@ -192,6 +219,7 @@ struct RawCoverageRegistry {
     relation_properties: Vec<RawRelationPropertyMapping>,
     children: Vec<RawChildMapping>,
     enum_aliases: Vec<RawEnumAlias>,
+    derived_enum_values: Vec<RawDerivedEnumValue>,
     type_variants: Vec<RawTypeAlias>,
     backing_artifacts: Vec<RawBackingMapping>,
     intentional_partial_cases: Vec<RawPartialCase>,
@@ -250,6 +278,14 @@ struct RawEnumAlias {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawDerivedEnumValue {
+    case: String,
+    semantic: String,
+    semantic_property: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RawTypeAlias {
     namespace: String,
     alias: String,
@@ -297,6 +333,11 @@ impl CoverageRegistry {
             relation_properties: raw.relation_properties.into_iter().map(convert_relation_property).collect::<Result<_, _>>()?,
             children: raw.children.into_iter().map(convert_child).collect::<Result<_, _>>()?,
             enum_aliases: raw.enum_aliases.into_iter().map(convert_enum).collect::<Result<_, _>>()?,
+            derived_enum_values: raw
+                .derived_enum_values
+                .into_iter()
+                .map(convert_derived_enum)
+                .collect::<Result<_, _>>()?,
             type_variants: raw.type_variants.into_iter().map(convert_type).collect::<Result<_, _>>()?,
             backing_artifacts: raw.backing_artifacts.into_iter().map(convert_backing).collect::<Result<_, _>>()?,
             intentional_partial_cases: raw.intentional_partial_cases.into_iter().map(convert_partial).collect::<Result<_, _>>()?,
@@ -321,14 +362,27 @@ impl CoverageRegistry {
             })
         }), "per-kind property mapping")?;
         ensure_unique(self.relation_properties.iter().flat_map(|entry| entry.object_kinds.iter().flat_map(move |kind| entry.native_names.iter().map(move |name| format!("{}:{name}", kind.as_str())))), "relation-property mapping")?;
-        ensure_unique(self.enum_aliases.iter().map(|entry| entry.semantic), "semantic enum mapping")?;
-        ensure_unique(self.enum_aliases.iter().flat_map(|entry| entry.native_aliases.iter().cloned()), "enum alias")?;
+        ensure_unique(
+            self.enum_aliases.iter().flat_map(|entry| {
+                entry.native_aliases.iter().flat_map(move |native| {
+                    entry.property_ids.iter().flat_map(move |property| {
+                        entry.object_kinds.iter().map(move |kind| {
+                            format!("{native}:{}:{}", property.as_str(), kind.as_str())
+                        })
+                    })
+                })
+            }),
+            "enum alias/property/owner mapping",
+        )?;
+        ensure_unique(self.derived_enum_values.iter().map(|entry| entry.case), "derived enum case")?;
+        ensure_unique(self.derived_enum_values.iter().map(|entry| entry.semantic), "derived semantic enum mapping")?;
         ensure_unique(self.type_variants.iter().map(|entry| format!("{:?}:{}", entry.namespace, entry.alias)), "type alias")?;
         ensure_unique(self.backing_artifacts.iter().flat_map(|entry| entry.object_kinds.iter().map(|kind| kind.as_str())), "backing mapping")?;
         ensure_unique(self.intentional_partial_cases.iter().flat_map(|entry| entry.object_kinds.iter().map(move |kind| (*kind, entry.reason))), "intentional partial case")?;
         if self.objects.is_empty() || self.properties.is_empty() || self.relation_properties.is_empty()
             || self.children.is_empty()
-            || self.enum_aliases.is_empty() || self.type_variants.is_empty()
+            || self.enum_aliases.is_empty() || self.derived_enum_values.is_empty()
+            || self.type_variants.is_empty()
             || self.backing_artifacts.is_empty() || self.intentional_partial_cases.is_empty()
         {
             return Err(invalid_registry("coverage registry has an empty required section"));
@@ -337,6 +391,11 @@ impl CoverageRegistry {
             .enum_aliases
             .iter()
             .map(|entry| entry.semantic)
+            .chain(
+                self.derived_enum_values
+                    .iter()
+                    .map(|entry| entry.semantic),
+            )
             .collect::<BTreeSet<_>>();
         let closed_enums = SemanticEnumValue::ALL
             .iter()
@@ -346,6 +405,32 @@ impl CoverageRegistry {
             return Err(invalid_registry(
                 "coverage registry enum inventory is not exhaustive",
             ));
+        }
+        let derived_cases = self
+            .derived_enum_values
+            .iter()
+            .map(|entry| entry.case)
+            .collect::<BTreeSet<_>>();
+        if derived_cases
+            != DerivedEnumCase::ALL
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>()
+        {
+            return Err(invalid_registry(
+                "coverage registry derived enum cases are not exhaustive",
+            ));
+        }
+        for entry in &self.derived_enum_values {
+            if entry.property_id != SemanticPropertyId::SUPPORT_STATE
+                || crate::domain::navigation::property_definition(entry.property_id)
+                    .allowed_types()
+                    != [crate::domain::navigation::PropertyType::Enum]
+            {
+                return Err(invalid_registry(
+                    "coverage registry derived enum applicability is invalid",
+                ));
+            }
         }
         for alias in &self.enum_aliases {
             if alias.native_aliases.is_empty()
@@ -603,6 +688,32 @@ fn convert_enum(raw: RawEnumAlias) -> Result<EnumAlias, SourceAdapterError> {
     })
 }
 
+fn convert_derived_enum(
+    raw: RawDerivedEnumValue,
+) -> Result<DerivedEnumValue, SourceAdapterError> {
+    let case = match raw.case.as_str() {
+        "supportAbsent" => DerivedEnumCase::SupportAbsent,
+        "supportRemoved" => DerivedEnumCase::SupportRemoved,
+        "supportEditable" => DerivedEnumCase::SupportEditable,
+        "supportLocked" => DerivedEnumCase::SupportLocked,
+        "supportConfigurationReadOnly" => DerivedEnumCase::SupportConfigurationReadOnly,
+        _ => {
+            return Err(invalid_registry(
+                "coverage registry derived enum case is not closed",
+            ))
+        }
+    };
+    Ok(DerivedEnumValue {
+        case,
+        semantic: SemanticEnumValue::parse(&raw.semantic).ok_or_else(|| {
+            invalid_registry("coverage registry derived enum value is not closed")
+        })?,
+        property_id: SemanticPropertyId::parse(&raw.semantic_property).ok_or_else(|| {
+            invalid_registry("coverage registry derived enum property is not closed")
+        })?,
+    })
+}
+
 fn convert_type(raw: RawTypeAlias) -> Result<TypeAliasMapping, SourceAdapterError> {
     if raw.alias.trim().is_empty() {
         return Err(invalid_registry(
@@ -776,25 +887,41 @@ pub(crate) fn validate_coverage_registry() -> Result<(), SourceAdapterError> {
                 "enum registry contains applicability unused by runtime properties",
             ));
         }
-        for property in registry
-            .properties
-            .iter()
-            .filter(|property| property.value_kind == NativeValueKind::Enum)
-        {
-            for kind in &property.object_kinds {
-                if alias.property_ids.contains(&property.semantic_id)
-                    && alias.object_kinds.contains(kind)
-                {
-                    continue;
-                }
-                for native in &alias.native_aliases {
-                    if enum_value(*kind, property.semantic_id, native).is_some() {
-                        return Err(invalid_registry(
-                            "enum registry accepts an alias outside its declared property or owner context",
-                        ));
-                    }
+    }
+    let native_aliases = registry
+        .enum_aliases
+        .iter()
+        .flat_map(|entry| entry.native_aliases.iter().map(String::as_str))
+        .collect::<BTreeSet<_>>();
+    for property in registry
+        .properties
+        .iter()
+        .filter(|property| property.value_kind == NativeValueKind::Enum)
+    {
+        for kind in &property.object_kinds {
+            for native in &native_aliases {
+                let expected = registry
+                    .enum_aliases
+                    .iter()
+                    .find(|entry| {
+                        entry.property_ids.contains(&property.semantic_id)
+                            && entry.object_kinds.contains(kind)
+                            && entry.native_aliases.iter().any(|alias| alias == native)
+                    })
+                    .map(|entry| entry.semantic);
+                if enum_value(*kind, property.semantic_id, native) != expected {
+                    return Err(invalid_registry(
+                        "enum registry accepts an alias outside its exact property or owner context",
+                    ));
                 }
             }
+        }
+    }
+    for entry in &registry.derived_enum_values {
+        if derived_enum_value(entry.case) != Some(entry.semantic) {
+            return Err(invalid_registry(
+                "derived enum registry lookup is not bijective",
+            ));
         }
     }
     for alias in &registry.type_variants {
@@ -928,6 +1055,14 @@ pub(crate) fn enum_value(
                 && entry.object_kinds.contains(&kind)
                 && entry.native_aliases.iter().any(|alias| alias == native)
         })
+        .map(|entry| entry.semantic)
+}
+
+pub(crate) fn derived_enum_value(case: DerivedEnumCase) -> Option<SemanticEnumValue> {
+    registry()
+        .derived_enum_values
+        .iter()
+        .find(|entry| entry.case == case)
         .map(|entry| entry.semantic)
 }
 

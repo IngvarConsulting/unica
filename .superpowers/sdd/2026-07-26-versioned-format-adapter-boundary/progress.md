@@ -61,3 +61,5 @@ Task 5: fix round 3 review failed — committed exact oracle was populated from 
 Task 5: fix round 4 started (base 39cdb8e5).
 Task 5: fix round 4 review failed — oracle parsers ignore unmatched useful lines; enum contexts remain hand-authored; rights oracle handles only Catalog/Document prefixes; new-only exact contract covers only four facts.
 Task 5: fix round 5 started (base 6140c370).
+Task 5: fix round 5 review failed — enum owner/context authority still permits omitted domains; CalculationRegister rights and MultiTarget conditions absent; exact contract omits capability/provenance fields; removed-from-support is misclassified active.
+Task 5: fix round 6 started (base 1a2071d3).

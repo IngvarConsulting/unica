@@ -1,0 +1,12 @@
+﻿=== Регистр сведений: EnumContextFieldOwners ===
+Поддержка: не на поддержке
+Периодичность: День | Запись: независимая
+
+Измерения (1):
+  ContextDimension   
+
+Ресурсы (1):
+  ContextResource   
+
+Реквизиты (1):
+  ContextAttribute   

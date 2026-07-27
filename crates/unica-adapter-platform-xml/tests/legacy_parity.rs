@@ -23,7 +23,7 @@ use unica_format_core::{
     ports::{CaptureResult, FormatReadRequest},
     semantic_ids::{SemanticEnumValue, SemanticObjectKind, SemanticPropertyId},
     source::{SourceContext, SourceFamily, SourceLocation},
-    value::{PrimitiveTypeKind, PropertyValue},
+    value::{PrimitiveTypeKind, PropertyType, PropertyValue},
 };
 
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
@@ -57,14 +57,17 @@ struct LegacyCase {
 struct FactDiff {
     missing: Vec<(String, usize)>,
     unexpected: Vec<(String, usize)>,
+    first_difference: Option<String>,
 }
 
 impl fmt::Display for FactDiff {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "missing={:#?}\nunexpected={:#?}",
-            self.missing, self.unexpected
+            "firstDifference={:?}\nmissingFacts={}\nunexpectedFacts={}",
+            self.first_difference,
+            self.missing.iter().map(|(_, count)| count).sum::<usize>(),
+            self.unexpected.iter().map(|(_, count)| count).sum::<usize>(),
         )
     }
 }
@@ -101,6 +104,8 @@ fn legacy_oracle_regenerates_and_hashes_every_declared_source_without_adapter_de
     for required in [
         "oracleGenerator",
         "enumSourceExtractor",
+        "newOnlyContractBuilder",
+        "newOnlyContractSource",
         "enumSourceContexts",
         "oracleInputs",
         "independentCrosswalk",
@@ -123,12 +128,12 @@ fn legacy_oracle_regenerates_and_hashes_every_declared_source_without_adapter_de
     for source_path in [
         generator.clone(),
         root.join("tools/extract_enum_contexts.py"),
+        root.join("tools/build_new_only_contract.py"),
     ] {
         let source = fs::read_to_string(&source_path).unwrap();
         for forbidden in [
             "unica_adapter_platform_xml",
             "unica_format_core",
-            "NavigationEnvelope",
             "normalized_actual",
             "target/debug",
             "cargo run",
@@ -141,7 +146,7 @@ fn legacy_oracle_regenerates_and_hashes_every_declared_source_without_adapter_de
         }
     }
     let generator_source = fs::read_to_string(&generator).unwrap();
-    assert!(!generator_source.contains("NEW_ONLY_CONTRACT_PATH.write"));
+    assert!(generator_source.contains("build_new_only_contract"));
     let readme = fs::read_to_string(root.join("README.md")).unwrap();
     assert!(readme.contains("generate_oracle.py --repo-root . --write"));
 }
@@ -236,6 +241,104 @@ fn coordinated_crosswalk_and_coverage_context_drift_fails_against_source_and_has
 }
 
 #[test]
+fn fix_round6_every_source_enum_context_is_consumed_once_and_fixture_observed() {
+    let root = oracle_root();
+    let source_contexts: Value =
+        serde_json::from_slice(&fs::read(root.join("enum-source-contexts.json")).unwrap())
+            .unwrap();
+    let contexts = source_contexts["contexts"].as_array().unwrap();
+    let crosswalk = legacy_crosswalk();
+    let referenced = crosswalk["enumDomains"]
+        .as_object()
+        .unwrap()
+        .values()
+        .flat_map(|domain| domain["sourceFacts"].as_array().unwrap())
+        .map(|fact| fact.as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    let extracted = contexts
+        .iter()
+        .map(|context| context["sourceFact"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+
+    assert_eq!(contexts.len(), 62, "legacy AST context inventory drifted");
+    assert_eq!(
+        referenced.iter().collect::<BTreeSet<_>>(),
+        extracted.iter().collect::<BTreeSet<_>>(),
+        "every extracted context must be referenced by exactly one semantic domain"
+    );
+    assert_eq!(
+        referenced.len(),
+        referenced.iter().collect::<BTreeSet<_>>().len(),
+        "a source context cannot be shared by semantic domains"
+    );
+    for context in contexts {
+        let evidence = context["ownerEvidence"]
+            .as_array()
+            .expect("owner applicability must come from generated legacy fixtures");
+        assert!(!evidence.is_empty());
+        assert!(evidence.iter().all(|item| {
+            item["input"].as_str().is_some()
+                && item["rawOutput"].as_str().is_some()
+                && item["nativeOwner"].as_str().is_some()
+        }));
+    }
+
+    let spreadsheet = contexts
+        .iter()
+        .find(|context| {
+            context["nativeProperty"] == "TemplateType"
+                && context["nativeAliases"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("SpreadsheetDocument"))
+        })
+        .unwrap();
+    assert!(spreadsheet["ownerEvidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| {
+            item["objectKind"] == "spreadsheetDocumentTemplate"
+                && item["nativeOwner"] == "Template"
+                && item["nativeValue"] == "SpreadsheetDocument"
+                && item["input"]
+                    .as_str()
+                    .is_some_and(|path| path.ends_with("SpreadsheetDocumentTemplate.xml"))
+        }));
+
+    let mut removed_crosswalk = crosswalk.clone();
+    let (removed_domain, removed_value) = removed_crosswalk["enumDomains"]
+        .as_object_mut()
+        .unwrap()
+        .shift_remove_entry("catalogChoiceMode")
+        .expect("source-derived catalog choice domain");
+    let removed_source_facts = removed_value["sourceFacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|fact| fact.as_str().unwrap())
+        .collect::<BTreeSet<_>>();
+    let removed_semantic_property = removed_value["semanticProperty"]
+        .as_str()
+        .expect("removed enum domain semantic property");
+    let mut removed_coverage = expanded_registry_enum_coverage(&coverage_manifest());
+    removed_coverage.retain(|fact| {
+        fact["semanticProperty"].as_str() != Some(removed_semantic_property)
+    });
+    assert!(
+        extracted
+            .iter()
+            .any(|fact| removed_source_facts.contains(fact.as_str())),
+        "source extraction must remain authoritative when both consumers omit {removed_domain}"
+    );
+    assert_comparator_rejects(
+        &oracle().enum_coverage,
+        &removed_coverage,
+        "coordinated enum-domain omission",
+    );
+}
+
+#[test]
 fn multi_target_role_oracle_keeps_each_source_group_identity_and_restriction() {
     let oracle = oracle();
     let case = oracle_case(&oracle, "rightsMultiTarget");
@@ -253,6 +356,7 @@ fn multi_target_role_oracle_keeps_each_source_group_identity_and_restriction() {
     assert_eq!(
         targets,
         BTreeSet::from([
+            ("calculationRegister", "Payroll"),
             ("catalog", "Products"),
             ("commonModule", "Integration"),
             ("document", "SalesOrder"),
@@ -270,6 +374,96 @@ fn multi_target_role_oracle_keeps_each_source_group_identity_and_restriction() {
             && fact["value"]["kind"] == "accessRestrictionTemplate"
             && fact["value"]["name"] == "PositivePrice"
     }));
+}
+
+#[test]
+fn fix_round6_rights_target_crosswalk_equals_runtime_supported_top_level_registry() {
+    let manifest = coverage_manifest();
+    let expected = manifest["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["role"] == "topLevelObject" && entry["source"] == "native")
+        .map(|entry| {
+            (
+                entry["nativeClass"].as_str().unwrap().to_string(),
+                entry["kind"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let actual: Value = serde_json::from_slice(
+        &fs::read(oracle_root().join("rights-target-crosswalk.json")).unwrap(),
+    )
+    .unwrap();
+    let actual = actual["prefixes"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(prefix, kind)| {
+            (
+                prefix.clone(),
+                kind.as_str().expect("semantic target kind").to_string(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        actual, expected,
+        "rights target syntax must cover exactly the runtime-accepted native top-level registry"
+    );
+
+    let oracle = oracle();
+    let case = oracle_case(&oracle, "rightsMultiTarget");
+    let targets = case
+        .facts
+        .iter()
+        .filter(|fact| fact["kind"] == "relation" && fact["predicate"] == "accessTarget")
+        .map(|fact| {
+            (
+                fact["value"]["targetKind"].as_str().unwrap(),
+                fact["value"]["targetName"].as_str().unwrap(),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    assert!(targets.contains(&("calculationRegister", "Payroll")));
+    for (kind, name) in [
+        ("catalog", "Products"),
+        ("commonModule", "Integration"),
+        ("document", "SalesOrder"),
+        ("informationRegister", "Prices"),
+        ("report", "Sales"),
+        ("calculationRegister", "Payroll"),
+    ] {
+        let target = format!("{}/external/{kind}/{name}", case.id);
+        assert!(case.facts.iter().any(|fact| {
+            fact["kind"] == "property"
+                && fact["subject"] == target
+                && fact["predicate"] == "access.restriction.present"
+                && fact["value"]["value"] == true
+        }));
+    }
+    assert_eq!(
+        case.facts
+            .iter()
+            .filter(|fact| {
+                fact["kind"] == "node"
+                    && fact["value"]["kind"] == "accessRestrictionTemplate"
+            })
+            .count(),
+        6
+    );
+    let projected = read_path(
+        &repo_root()
+            .join("crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights"),
+        &repo_root().join(
+            "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights/MultiTargetReader.xml",
+        ),
+    );
+    assert_eq!(
+        serde_json::to_value(projected.status).unwrap(),
+        json!("ready"),
+        "fully registered rights fixture must be complete: {:#?}",
+        projected.diagnostics
+    );
 }
 
 #[test]
@@ -307,6 +501,15 @@ fn coverage_manifest_is_runtime_checked_and_rejects_every_authority_mutation() {
     });
     assert_manifest_mutation_rejected(&raw, "changed enum owner", |manifest| {
         manifest["enumAliases"][0]["objectKinds"] = json!(["catalog"]);
+    });
+    assert_manifest_mutation_rejected(&raw, "removed derived enum value", |manifest| {
+        manifest["derivedEnumValues"]
+            .as_array_mut()
+            .unwrap()
+            .remove(0);
+    });
+    assert_manifest_mutation_rejected(&raw, "changed derived enum case", |manifest| {
+        manifest["derivedEnumValues"][0]["case"] = json!("future");
     });
     assert_manifest_mutation_rejected(&raw, "removed owner role", |manifest| {
         let entry = manifest["children"]
@@ -372,6 +575,7 @@ fn coverage_manifest_is_runtime_checked_and_rejects_every_authority_mutation() {
         "relationProperties",
         "children",
         "enumAliases",
+        "derivedEnumValues",
         "typeVariants",
         "backingArtifacts",
         "intentionalPartialCases",
@@ -392,7 +596,22 @@ fn every_frozen_legacy_case_matches_the_corresponding_new_projection_exactly() {
         oracle.provenance,
         "legacy-tools-plus-independent-crosswalk"
     );
-    assert_eq!(oracle.cases.len(), 16);
+    let declared_inputs: Value = serde_json::from_slice(
+        &fs::read(oracle_root().join("inputs.json")).unwrap(),
+    )
+    .unwrap();
+    let declared_case_ids = declared_inputs["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|case| case["id"].as_str().unwrap())
+        .collect::<BTreeSet<_>>();
+    let oracle_case_ids = oracle
+        .cases
+        .iter()
+        .map(|case| case.id.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(oracle_case_ids, declared_case_ids);
 
     for case in &oracle.cases {
         assert!(
@@ -904,10 +1123,74 @@ fn compare_fact_multisets(expected: &[Value], actual: &[Value]) -> Result<(), Fa
     if missing.is_empty() && unexpected.is_empty() {
         Ok(())
     } else {
+        let first_difference = missing.iter().find_map(|(missing, _)| {
+            let expected: Value = serde_json::from_str(missing).ok()?;
+            let expected_case = expected.get("case");
+            let expected_kind = expected.get("kind");
+            unexpected.iter().find_map(|(unexpected, _)| {
+                let actual: Value = serde_json::from_str(unexpected).ok()?;
+                if actual.get("case") != expected_case || actual.get("kind") != expected_kind {
+                    return None;
+                }
+                first_json_difference(&expected, &actual, "$")
+            })
+        });
         Err(FactDiff {
             missing,
             unexpected,
+            first_difference,
         })
+    }
+}
+
+fn first_json_difference(expected: &Value, actual: &Value, path: &str) -> Option<String> {
+    match (expected, actual) {
+        (Value::Object(expected), Value::Object(actual)) => {
+            let keys = expected
+                .keys()
+                .chain(actual.keys())
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            for key in keys {
+                let next = format!("{path}.{key}");
+                match (expected.get(&key), actual.get(&key)) {
+                    (Some(expected), Some(actual)) => {
+                        if let Some(difference) =
+                            first_json_difference(expected, actual, &next)
+                        {
+                            return Some(difference);
+                        }
+                    }
+                    (Some(_), None) => return Some(format!("{next}: missing")),
+                    (None, Some(_)) => return Some(format!("{next}: unexpected")),
+                    (None, None) => unreachable!(),
+                }
+            }
+            None
+        }
+        (Value::Array(expected), Value::Array(actual)) => {
+            if expected.len() != actual.len() {
+                return Some(format!(
+                    "{path}: expected {} items, got {}",
+                    expected.len(),
+                    actual.len()
+                ));
+            }
+            for (index, (expected, actual)) in expected.iter().zip(actual).enumerate() {
+                if let Some(difference) =
+                    first_json_difference(expected, actual, &format!("{path}[{index}]"))
+                {
+                    return Some(difference);
+                }
+            }
+            None
+        }
+        _ if expected == actual => None,
+        _ => Some(format!(
+            "{path}: expected {}, got {}",
+            canonical_json(expected),
+            canonical_json(actual)
+        )),
     }
 }
 
@@ -1251,7 +1534,7 @@ fn add_type_presentation(facts: &mut Vec<Value>, subject: &str, node: &Navigatio
 }
 
 fn add_support_fact(facts: &mut Vec<Value>, subject: &str, node: &NavigationNode) {
-    let Some(PropertyValue::String(state)) = node
+    let Some(PropertyValue::EnumSymbol(state)) = node
         .properties
         .get(&SemanticPropertyId::SUPPORT_STATE)
         .and_then(|property| property.value())
@@ -1263,8 +1546,17 @@ fn add_support_fact(facts: &mut Vec<Value>, subject: &str, node: &NavigationNode
         "support.active",
         json!({
             "type": "boolean",
-            "value": !matches!(state.as_str(), "absent" | "removed"),
+            "value": !matches!(
+                *state,
+                unica_format_core::semantic_ids::SemanticEnumValue::NOT_SUPPORTED
+                    | unica_format_core::semantic_ids::SemanticEnumValue::REMOVED_FROM_SUPPORT
+            ),
         }),
+    ));
+    facts.push(property_fact(
+        subject,
+        "support.state",
+        json!({"type": "enum", "value": state.as_str()}),
     ));
 }
 
@@ -1821,11 +2113,12 @@ fn fix_round5_static_new_only_contract_is_exact_and_mutation_sensitive() {
     let contract: Value =
         serde_json::from_slice(&fs::read(&contract_path).expect("static new-only contract"))
             .unwrap();
-    assert_eq!(contract["schemaVersion"], 1);
+    assert_eq!(contract["schemaVersion"], 2);
     assert_eq!(
         contract["provenance"],
-        "independently-hand-reviewed-from-native-fixtures-and-closed-core-contracts"
+        "independent-v1-inventory-plus-native-fixtures-and-closed-core-contracts"
     );
+    let schema = contract["publicSchema"].as_object().unwrap();
     let cases = contract["cases"].as_array().expect("contract cases");
     assert!(!cases.is_empty());
 
@@ -1838,6 +2131,9 @@ fn fix_round5_static_new_only_contract_is_exact_and_mutation_sensitive() {
         let envelope = read_path(&source_root, &input);
         let expected = case["facts"].as_array().expect("contract facts");
         let actual = adapter_only_contract_facts(id, &envelope);
+        validate_contract_public_schema(schema, &actual).unwrap_or_else(|error| {
+            panic!("adapter-only public schema drifted for {id}: {error}")
+        });
         compare_fact_multisets(expected, &actual).unwrap_or_else(|diff| {
             panic!("adapter-only exact contract drifted for {id}:\n{diff}")
         });
@@ -1845,154 +2141,517 @@ fn fix_round5_static_new_only_contract_is_exact_and_mutation_sensitive() {
         all_actual.extend(actual);
     }
 
-    for category in [
-        "status",
-        "node",
-        "nodeCoverage",
-        "property",
-        "relation",
-        "facetMember",
-        "backing",
-        "diagnostic",
+    let envelope_index = all_actual
+        .iter()
+        .position(|fact| {
+            fact["kind"] == "envelope"
+                && fact["value"]["nodes"]
+                    .as_array()
+                    .is_some_and(|nodes| nodes.iter().any(|node| {
+                        !node["properties"].as_object().unwrap().is_empty()
+                    }))
+                && !fact["value"]["diagnostics"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty()
+        })
+        .expect("contract envelope with properties and diagnostics");
+    let relation_index = all_actual
+        .iter()
+        .position(|fact| fact["kind"] == "semanticRelation")
+        .expect("contract semantic relation");
+
+    let mut omitted = all_actual.clone();
+    omitted.remove(envelope_index);
+    assert_comparator_rejects(&all_expected, &omitted, "omitted envelope");
+    let mut added = all_actual.clone();
+    added.push(all_actual[envelope_index].clone());
+    assert_comparator_rejects(&all_expected, &added, "duplicate envelope");
+
+    for path in [
+        &["status"][..],
+        &["snapshot", "consistency"][..],
+        &["root", "objectKey"][..],
+        &["nodes", "0", "capabilityState", "authorability"][..],
+        &["nodes", "0", "capability", "resolution"][..],
+        &["nodes", "0", "capability", "identity"][..],
+        &["nodes", "0", "capability", "consistency"][..],
+        &["nodes", "0", "capability", "coverage"][..],
+        &["nodes", "0", "capability", "format"][..],
+        &["nodes", "0", "capability", "sourceAccess"][..],
+        &["nodes", "0", "capability", "authorability"][..],
+        &["nodes", "0", "actionProfile"][..],
+        &["nodes", "0", "actions", "0", "availability"][..],
+        &["diagnostics", "0", "code"][..],
     ] {
-        let index = all_actual
-            .iter()
-            .position(|fact| fact["kind"] == category)
-            .unwrap_or_else(|| panic!("contract has no {category} fact"));
-
-        let mut omitted = all_actual.clone();
-        omitted.remove(index);
-        assert_comparator_rejects(
-            &all_expected,
-            &omitted,
-            &format!("omitted {category} contract fact"),
-        );
-
-        let mut added = all_actual.clone();
-        added.push(all_actual[index].clone());
-        assert_comparator_rejects(
-            &all_expected,
-            &added,
-            &format!("added {category} contract fact"),
-        );
-
         let mut changed = all_actual.clone();
-        changed[index]["mutation"] = json!("must-fail");
+        mutate_json_path(
+            &mut changed[envelope_index]["value"],
+            path,
+            json!("must-fail"),
+        );
         assert_comparator_rejects(
             &all_expected,
             &changed,
-            &format!("changed {category} contract fact"),
+            &format!("changed envelope field {}", path.join(".")),
         );
+    }
+
+    let property_node_index = all_actual[envelope_index]["value"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|node| !node["properties"].as_object().unwrap().is_empty())
+        .unwrap();
+    let property_name = all_actual[envelope_index]["value"]["nodes"][property_node_index]
+        ["properties"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .next()
+        .unwrap()
+        .clone();
+    for field in ["type", "valueState", "value", "provenance", "capability"] {
+        let mut changed = all_actual.clone();
+        changed[envelope_index]["value"]["nodes"][property_node_index]["properties"]
+            [&property_name][field] = json!("must-fail");
+        assert_comparator_rejects(
+            &all_expected,
+            &changed,
+            &format!("changed property {field}"),
+        );
+    }
+
+    for path in [
+        &["relationRef", "relationKey"][..],
+        &["groupRef", "groupKey"][..],
+        &["groupRef", "owner", "objectKey"][..],
+        &["identityStrength"][..],
+        &["kind"][..],
+        &["role"][..],
+        &["source", "objectKey"][..],
+        &["target", "objectKey"][..],
+        &["capability", "resolution"][..],
+        &["capability", "identity"][..],
+        &["capability", "consistency"][..],
+        &["capability", "coverage"][..],
+        &["capability", "format"][..],
+        &["capability", "sourceAccess"][..],
+        &["capability", "authorability"][..],
+    ] {
+        let mut changed = all_actual.clone();
+        mutate_json_path(
+            &mut changed[relation_index]["value"],
+            path,
+            json!("must-fail"),
+        );
+        assert_comparator_rejects(
+            &all_expected,
+            &changed,
+            &format!("changed relation field {}", path.join(".")),
+        );
+    }
+
+    let mut added_field = all_actual.clone();
+    added_field[envelope_index]["value"]["futureField"] = json!(true);
+    assert!(validate_contract_public_schema(schema, &added_field).is_err());
+    let mut removed_field = all_actual.clone();
+    removed_field[envelope_index]["value"]
+        .as_object_mut()
+        .unwrap()
+        .remove("status");
+    assert!(validate_contract_public_schema(schema, &removed_field).is_err());
+}
+
+#[test]
+fn fix_round6_adapter_only_normalizer_covers_complete_public_schema() {
+    let contract: Value = serde_json::from_slice(
+        &fs::read(oracle_root().join("new-only-contract.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(contract["schemaVersion"], 2);
+    let schema = contract["publicSchema"]
+        .as_object()
+        .expect("checked-in public schema guard");
+    for required in [
+        "NavigationEnvelope",
+        "NavigationNode",
+        "SemanticProperty",
+        "CapabilityVector",
+        "SemanticRelation",
+        "RelationRef",
+        "RelationGroupRef",
+        "ObjectRef",
+        "SourceSnapshot",
+        "SourceAdapterDiagnostic",
+    ] {
+        assert!(schema.contains_key(required), "missing schema guard {required}");
+    }
+
+    let case = contract["cases"].as_array().unwrap().first().unwrap();
+    let id = case["id"].as_str().unwrap();
+    let source_root = repo_root().join(case["sourceRoot"].as_str().unwrap());
+    let input = repo_root().join(case["input"].as_str().unwrap());
+    let facts = adapter_only_contract_facts(id, &read_path(&source_root, &input));
+    let envelope = facts
+        .iter()
+        .find(|fact| fact["kind"] == "envelope")
+        .expect("whole public envelope fact");
+    let envelope_value = envelope["value"].as_object().unwrap();
+    assert_eq!(
+        envelope_value.keys().cloned().collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "diagnostics".to_string(),
+            "nodes".to_string(),
+            "relations".to_string(),
+            "root".to_string(),
+            "schemaVersion".to_string(),
+            "snapshot".to_string(),
+            "status".to_string(),
+        ])
+    );
+    let node = envelope_value["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| !node["properties"].as_object().unwrap().is_empty())
+        .expect("contract node with semantic properties");
+    let property = node["properties"].as_object().unwrap().values().next().unwrap();
+    assert!(property.get("provenance").is_some());
+    assert!(property.get("capability").is_some());
+    let capability = node["capability"].as_object().unwrap();
+    assert_eq!(
+        capability.keys().cloned().collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "authorability".to_string(),
+            "consistency".to_string(),
+            "coverage".to_string(),
+            "format".to_string(),
+            "identity".to_string(),
+            "resolution".to_string(),
+            "sourceAccess".to_string(),
+        ])
+    );
+    let relation = facts
+        .iter()
+        .find(|fact| fact["kind"] == "semanticRelation")
+        .expect("complete semantic relation fact");
+    for required in [
+        "relationRef",
+        "groupRef",
+        "identityStrength",
+        "kind",
+        "role",
+        "source",
+        "target",
+        "capability",
+    ] {
+        assert!(relation["value"].get(required).is_some());
     }
 }
 
+#[test]
+fn fix_round6_support_states_are_lossless_and_removed_is_inactive() {
+    let oracle = oracle();
+    let expected = BTreeSet::from([
+        "configurationReadOnly",
+        "notSupported",
+        "removedFromSupport",
+        "supportedEditable",
+        "supportedLocked",
+    ]);
+    let states = oracle
+        .cases
+        .iter()
+        .flat_map(|case| case.facts.iter())
+        .filter(|fact| fact["kind"] == "property" && fact["predicate"] == "support.state")
+        .map(|fact| fact["value"]["value"].as_str().unwrap())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(states, expected);
+
+    for case_id in ["supportNotSupported", "supportRemoved"] {
+        let case = oracle_case(&oracle, case_id);
+        assert!(case.facts.iter().any(|fact| {
+            fact["predicate"] == "support.active" && fact["value"]["value"] == false
+        }));
+    }
+
+    let currencies = read_tracked("contract/ContractCatalog.xml");
+    let support = node(&currencies, SemanticObjectKind::Catalog, "ContractCatalog")
+        .properties
+        .get(&SemanticPropertyId::SUPPORT_STATE)
+        .expect("support state");
+    assert_eq!(support.value_type(), PropertyType::Enum);
+    assert_eq!(
+        serde_json::to_value(support.value().unwrap()).unwrap(),
+        json!({"type": "enum", "value": "notSupported"})
+    );
+}
+
+fn mutate_json_path(value: &mut Value, path: &[&str], replacement: Value) {
+    let Some((head, tail)) = path.split_first() else {
+        *value = replacement;
+        return;
+    };
+    let next = match value {
+        Value::Array(values) => &mut values[head.parse::<usize>().unwrap()],
+        Value::Object(values) => values
+            .get_mut(*head)
+            .unwrap_or_else(|| panic!("mutation path is absent: {}", path.join("."))),
+        _ => panic!("mutation path is not traversable: {}", path.join(".")),
+    };
+    mutate_json_path(next, tail, replacement);
+}
+
+fn validate_contract_public_schema(
+    schema: &serde_json::Map<String, Value>,
+    facts: &[Value],
+) -> Result<(), String> {
+    fn validate_keys(
+        schema: &serde_json::Map<String, Value>,
+        name: &str,
+        value: &Value,
+    ) -> Result<(), String> {
+        let object = value
+            .as_object()
+            .ok_or_else(|| format!("{name} is not an object"))?;
+        let definition = schema
+            .get(name)
+            .and_then(Value::as_object)
+            .ok_or_else(|| format!("{name} has no schema definition"))?;
+        let required = definition["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<BTreeSet<_>>();
+        let optional = definition["optional"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<BTreeSet<_>>();
+        let actual = object.keys().map(String::as_str).collect::<BTreeSet<_>>();
+        if !required.is_subset(&actual) {
+            return Err(format!(
+                "{name} is missing fields: {:?}",
+                required.difference(&actual).collect::<Vec<_>>()
+            ));
+        }
+        let allowed = required.union(&optional).copied().collect::<BTreeSet<_>>();
+        if !actual.is_subset(&allowed) {
+            return Err(format!(
+                "{name} has unregistered fields: {:?}",
+                actual.difference(&allowed).collect::<Vec<_>>()
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_object_ref(
+        schema: &serde_json::Map<String, Value>,
+        value: &Value,
+    ) -> Result<(), String> {
+        validate_keys(schema, "ObjectRef", value)
+    }
+
+    fn validate_capability(
+        schema: &serde_json::Map<String, Value>,
+        value: &Value,
+    ) -> Result<(), String> {
+        validate_keys(schema, "CapabilityVector", value)
+    }
+
+    for fact in facts {
+        match fact["kind"].as_str() {
+            Some("envelope") => {
+                let envelope = &fact["value"];
+                validate_keys(schema, "NavigationEnvelope", envelope)?;
+                if !envelope["snapshot"].is_null() {
+                    validate_keys(schema, "SourceSnapshot", &envelope["snapshot"])?;
+                }
+                if !envelope["root"].is_null() {
+                    validate_object_ref(schema, &envelope["root"])?;
+                }
+                for node in envelope["nodes"].as_array().unwrap() {
+                    validate_keys(schema, "NavigationNode", node)?;
+                    validate_object_ref(schema, &node["objectRef"])?;
+                    validate_object_ref(schema, &node["reference"])?;
+                    validate_keys(schema, "CapabilityState", &node["capabilityState"])?;
+                    validate_capability(schema, &node["capability"])?;
+                    for property in node["properties"].as_object().unwrap().values() {
+                        validate_keys(schema, "SemanticProperty", property)?;
+                    }
+                    for action in node["actions"].as_array().unwrap() {
+                        validate_keys(schema, "SemanticAction", action)?;
+                        if !action["target"].is_null() {
+                            validate_object_ref(schema, &action["target"])?;
+                        }
+                        if !action["owningRelation"].is_null() {
+                            validate_keys(
+                                schema,
+                                "RelationRef",
+                                &action["owningRelation"],
+                            )?;
+                        }
+                    }
+                }
+                for diagnostic in envelope["diagnostics"].as_array().unwrap() {
+                    validate_keys(schema, "SourceAdapterDiagnostic", diagnostic)?;
+                }
+            }
+            Some("semanticRelation") => {
+                let relation = &fact["value"];
+                validate_keys(schema, "SemanticRelation", relation)?;
+                validate_keys(schema, "RelationRef", &relation["relationRef"])?;
+                validate_keys(schema, "RelationGroupRef", &relation["groupRef"])?;
+                validate_object_ref(schema, &relation["groupRef"]["owner"])?;
+                validate_object_ref(schema, &relation["source"])?;
+                validate_object_ref(schema, &relation["target"])?;
+                validate_capability(schema, &relation["capability"])?;
+            }
+            Some(other) => return Err(format!("unknown contract fact kind {other}")),
+            None => return Err("contract fact has no kind".to_string()),
+        }
+    }
+    Ok(())
+}
+
 fn adapter_only_contract_facts(case_id: &str, envelope: &NavigationEnvelope) -> Vec<Value> {
+    let identities = contract_identities(envelope);
+    let source_id = format!("source:{case_id}");
+    let mut relation_ids = BTreeMap::new();
+    let mut group_ids = BTreeMap::new();
+    for relation in envelope.relation_index.iter() {
+        let source = &identities[relation.source.object_key.as_str()];
+        let target = &identities[relation.target.object_key.as_str()];
+        let kind = serde_json::to_value(relation.kind)
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string();
+        relation_ids.insert(
+            relation.relation_ref.relation_key.as_str().to_string(),
+            format!("relation:{source}:{}:{target}:{kind}", relation.role.as_str()),
+        );
+        group_ids.insert(
+            relation.group_ref.group_key.as_str().to_string(),
+            format!("group:{source}:{}:{kind}", relation.role.as_str()),
+        );
+    }
+    let mut envelope_value = serde_json::to_value(envelope).unwrap();
+    for node in envelope_value["nodes"]
+        .as_array_mut()
+        .expect("serialized navigation nodes")
+    {
+        for members in node["facets"]
+            .as_object_mut()
+            .expect("serialized semantic facets")
+            .values_mut()
+        {
+            members
+                .as_array_mut()
+                .expect("serialized facet members")
+                .sort_by_key(canonical_json);
+        }
+    }
+    normalize_contract_value(
+        &mut envelope_value,
+        case_id,
+        &source_id,
+        &identities,
+        &relation_ids,
+        &group_ids,
+    );
+    envelope_value["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .sort_by_key(canonical_json);
+    envelope_value["diagnostics"]
+        .as_array_mut()
+        .unwrap()
+        .sort_by_key(canonical_json);
     let mut facts = vec![json!({
         "case": case_id,
-        "kind": "status",
-        "value": serde_json::to_value(envelope.status).unwrap(),
+        "kind": "envelope",
+        "value": envelope_value,
     })];
-    let identities = contract_identities(envelope);
-    for node in &envelope.nodes {
-        let identity = &identities[node.object_ref.object_key.as_str()];
-        facts.push(json!({
-            "case": case_id,
-            "kind": "node",
-            "identity": identity,
-            "identityStrength": serde_json::to_value(&node.object_ref.identity_strength).unwrap(),
-            "name": node.object_ref.display_name,
-            "objectKind": node.object_ref.kind.as_str(),
-        }));
-        facts.push(json!({
-            "case": case_id,
-            "kind": "nodeCoverage",
-            "identity": identity,
-            "coverage": serde_json::to_value(node.capability.coverage).unwrap(),
-            "resolution": serde_json::to_value(node.capability.resolution).unwrap(),
-        }));
-
-        let facets = serde_json::to_value(&node.facets).unwrap();
-        for (facet, members) in facets.as_object().expect("semantic facets") {
-            let members = members.as_array().expect("semantic facet members");
-            for member in members {
-                facts.push(json!({
-                    "case": case_id,
-                    "kind": "facetMember",
-                    "identity": identity,
-                    "facet": facet,
-                    "member": member,
-                }));
-            }
-        }
-
-        for (id, property) in &node.properties {
-            if !is_adapter_only_contract_property(*id) {
-                continue;
-            }
-            facts.push(json!({
-                "case": case_id,
-                "kind": "property",
-                "identity": identity,
-                "property": id.as_str(),
-                "valueType": serde_json::to_value(property.value_type()).unwrap(),
-                "valueState": serde_json::to_value(property.value_state()).unwrap(),
-                "value": property.value().map(|value| serde_json::to_value(value).unwrap()),
-            }));
-        }
-
-        if let Some(backing_kind) = backing_kind(node.object_ref.kind) {
-            facts.push(json!({
-                "case": case_id,
-                "kind": "backing",
-                "identity": identity,
-                "backingKind": backing_kind,
-                "descriptorAvailable": contract_property_value(
-                    node,
-                    SemanticPropertyId::BACKING_DESCRIPTOR_AVAILABLE,
-                ),
-                "descriptorUuid": contract_property_value(
-                    node,
-                    SemanticPropertyId::BACKING_DESCRIPTOR_UUID,
-                ),
-                "contentAvailable": contract_property_value(
-                    node,
-                    SemanticPropertyId::BACKING_CONTENT_AVAILABLE,
-                ),
-                "opaque": contract_property_value(
-                    node,
-                    SemanticPropertyId::BACKING_CONTENT_OPAQUE,
-                ),
-            }));
-        }
-    }
-
     for relation in envelope.relation_index.iter() {
+        let mut value = serde_json::to_value(relation).unwrap();
+        normalize_contract_value(
+            &mut value,
+            case_id,
+            &source_id,
+            &identities,
+            &relation_ids,
+            &group_ids,
+        );
         facts.push(json!({
             "case": case_id,
-            "kind": "relation",
-            "source": identities[relation.source.object_key.as_str()],
-            "role": relation.role.as_str(),
-            "target": identities[relation.target.object_key.as_str()],
-            "targetKind": relation.target.kind.as_str(),
-            "targetName": relation.target.display_name,
-            "coverage": serde_json::to_value(relation.capability.coverage).unwrap(),
-            "resolution": serde_json::to_value(relation.capability.resolution).unwrap(),
+            "kind": "semanticRelation",
+            "value": value,
         }));
     }
-    for diagnostic in &envelope.diagnostics {
-        let mut details = diagnostic.details.clone();
-        if let Some(details) = details.as_mut() {
-            normalize_diagnostic_details(details, &identities);
-        }
-        facts.push(json!({
-            "case": case_id,
-            "kind": "diagnostic",
-            "code": diagnostic.code,
-            "message": diagnostic.message,
-            "details": details,
-        }));
-    }
+    facts.sort_by_key(canonical_json);
     facts
+}
+
+fn normalize_contract_value(
+    value: &mut Value,
+    case_id: &str,
+    source_id: &str,
+    identities: &BTreeMap<String, String>,
+    relation_ids: &BTreeMap<String, String>,
+    group_ids: &BTreeMap<String, String>,
+) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                normalize_contract_value(
+                    value,
+                    case_id,
+                    source_id,
+                    identities,
+                    relation_ids,
+                    group_ids,
+                );
+            }
+        }
+        Value::Object(values) => {
+            if let Some(Value::String(value)) = values.get_mut("sourceId") {
+                *value = source_id.to_string();
+            }
+            if let Some(Value::String(value)) = values.get_mut("revision") {
+                *value = format!("revision:{case_id}");
+            }
+            if let Some(Value::String(value)) = values.get_mut("objectKey") {
+                if let Some(identity) = identities.get(value) {
+                    *value = identity.clone();
+                }
+            }
+            if let Some(Value::String(value)) = values.get_mut("relationKey") {
+                if let Some(identity) = relation_ids.get(value) {
+                    *value = identity.clone();
+                }
+            }
+            if let Some(Value::String(value)) = values.get_mut("groupKey") {
+                if let Some(identity) = group_ids.get(value) {
+                    *value = identity.clone();
+                }
+            }
+            for value in values.values_mut() {
+                normalize_contract_value(
+                    value,
+                    case_id,
+                    source_id,
+                    identities,
+                    relation_ids,
+                    group_ids,
+                );
+            }
+        }
+        _ => {}
+    }
 }
 
 fn contract_identities(envelope: &NavigationEnvelope) -> BTreeMap<String, String> {
@@ -2034,76 +2693,4 @@ fn contract_identities(envelope: &NavigationEnvelope) -> BTreeMap<String, String
         register(&relation.target, "external", &mut identities);
     }
     identities
-}
-
-fn is_adapter_only_contract_property(id: SemanticPropertyId) -> bool {
-    matches!(
-        id,
-        SemanticPropertyId::FORM_TYPE
-            | SemanticPropertyId::TEMPLATE_TYPE
-            | SemanticPropertyId::CATALOG_HIERARCHICAL
-            | SemanticPropertyId::CATALOG_HIERARCHY_TYPE
-            | SemanticPropertyId::CATALOG_HIERARCHY_LEVEL_LIMITED
-            | SemanticPropertyId::CATALOG_HIERARCHY_LEVEL_COUNT
-            | SemanticPropertyId::CATALOG_HIERARCHY_LEVEL_LIMIT
-            | SemanticPropertyId::CATALOG_CODE_SERIES
-            | SemanticPropertyId::FIELD_TYPE
-            | SemanticPropertyId::FIELD_FILL_VALUE
-            | SemanticPropertyId::ACCESS_RESTRICTION_CONDITIONS
-            | SemanticPropertyId::BACKING_DESCRIPTOR_AVAILABLE
-            | SemanticPropertyId::BACKING_DESCRIPTOR_UUID
-            | SemanticPropertyId::BACKING_CONTENT_AVAILABLE
-            | SemanticPropertyId::BACKING_CONTENT_OPAQUE
-            | SemanticPropertyId::UNKNOWN_FACTS
-    )
-}
-
-fn backing_kind(kind: SemanticObjectKind) -> Option<&'static str> {
-    match kind {
-        SemanticObjectKind::Role => Some("rights"),
-        SemanticObjectKind::Form | SemanticObjectKind::CommonForm => Some("form"),
-        SemanticObjectKind::Template
-        | SemanticObjectKind::SpreadsheetDocumentTemplate
-        | SemanticObjectKind::CommonTemplate => Some("template"),
-        _ => None,
-    }
-}
-
-fn contract_property_value(node: &NavigationNode, id: SemanticPropertyId) -> Value {
-    node.properties
-        .get(&id)
-        .and_then(|property| property.value())
-        .map(|value| serde_json::to_value(value).unwrap())
-        .unwrap_or(Value::Null)
-}
-
-fn normalize_diagnostic_details(
-    value: &mut Value,
-    identities: &BTreeMap<String, String>,
-) {
-    match value {
-        Value::Array(values) => {
-            for value in values {
-                normalize_diagnostic_details(value, identities);
-            }
-        }
-        Value::Object(values) => {
-            if values.contains_key("objectKey")
-                && values.contains_key("kind")
-                && values.contains_key("displayName")
-            {
-                values.remove("sourceId");
-                values.remove("identityStrength");
-                if let Some(Value::String(object_key)) = values.get_mut("objectKey") {
-                    if let Some(identity) = identities.get(object_key) {
-                        *object_key = identity.clone();
-                    }
-                }
-            }
-            for value in values.values_mut() {
-                normalize_diagnostic_details(value, identities);
-            }
-        }
-        _ => {}
-    }
 }

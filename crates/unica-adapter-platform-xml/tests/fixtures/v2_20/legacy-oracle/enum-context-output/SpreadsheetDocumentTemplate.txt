@@ -1,0 +1,2 @@
+﻿=== Template: EnumContextSpreadsheetDocument ===
+Поддержка: не на поддержке

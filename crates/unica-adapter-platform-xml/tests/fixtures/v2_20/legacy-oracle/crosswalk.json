@@ -1,5 +1,116 @@
 {
   "enumDomains": {
+    "accountingRegisterDataLockControlMode": {
+      "sourceFacts": [
+        "metaCompile:emit_accounting_register_properties:DataLockControlMode"
+      ],
+      "semanticProperty": "locking.controlMode",
+      "semanticByAlias": {
+        "Automatic": "automatic",
+        "Managed": "managed"
+      }
+    },
+    "accountingRegisterFullTextSearch": {
+      "sourceFacts": [
+        "metaCompile:emit_accounting_register_properties:FullTextSearch"
+      ],
+      "semanticProperty": "search.fullText.mode",
+      "semanticByAlias": {
+        "DontUse": "dontUse",
+        "Use": "use"
+      }
+    },
+    "accumulationRegisterDataLockControlMode": {
+      "sourceFacts": [
+        "metaCompile:emit_accumulation_register_properties:DataLockControlMode"
+      ],
+      "semanticProperty": "locking.controlMode",
+      "semanticByAlias": {
+        "Automatic": "automatic",
+        "Managed": "managed"
+      }
+    },
+    "accumulationRegisterFullTextSearch": {
+      "sourceFacts": [
+        "metaCompile:emit_accumulation_register_properties:FullTextSearch"
+      ],
+      "semanticProperty": "search.fullText.mode",
+      "semanticByAlias": {
+        "DontUse": "dontUse",
+        "Use": "use"
+      }
+    },
+    "businessProcessDataLockControlMode": {
+      "sourceFacts": [
+        "metaCompile:emit_business_process_properties:DataLockControlMode"
+      ],
+      "semanticProperty": "locking.controlMode",
+      "semanticByAlias": {
+        "Automatic": "automatic",
+        "Managed": "managed"
+      }
+    },
+    "businessProcessEditType": {
+      "sourceFacts": [
+        "metaCompile:emit_business_process_properties:EditType"
+      ],
+      "semanticProperty": "editing.mode",
+      "semanticByAlias": {
+        "BothWays": "bothWays",
+        "InDialog": "inDialog",
+        "InList": "inList"
+      }
+    },
+    "businessProcessFullTextSearch": {
+      "sourceFacts": [
+        "metaCompile:emit_business_process_properties:FullTextSearch"
+      ],
+      "semanticProperty": "search.fullText.mode",
+      "semanticByAlias": {
+        "DontUse": "dontUse",
+        "Use": "use"
+      }
+    },
+    "businessProcessNumberAllowedLength": {
+      "sourceFacts": [
+        "metaCompile:emit_business_process_properties:NumberAllowedLength"
+      ],
+      "semanticProperty": "number.allowedLength",
+      "semanticByAlias": {
+        "Fixed": "fixed",
+        "Variable": "variable"
+      }
+    },
+    "businessProcessNumberType": {
+      "sourceFacts": [
+        "metaCompile:emit_business_process_properties:NumberType"
+      ],
+      "semanticProperty": "number.type",
+      "semanticByAlias": {
+        "Number": "number",
+        "String": "string"
+      }
+    },
+    "calculationRegisterDataLockControlMode": {
+      "sourceFacts": [
+        "metaCompile:emit_calculation_register_properties:DataLockControlMode"
+      ],
+      "semanticProperty": "locking.controlMode",
+      "semanticByAlias": {
+        "Automatic": "automatic",
+        "Managed": "managed"
+      }
+    },
+    "calculationRegisterFullTextSearch": {
+      "sourceFacts": [
+        "metaCompile:emit_calculation_register_properties:FullTextSearch"
+      ],
+      "semanticProperty": "search.fullText.mode",
+      "semanticByAlias": {
+        "DontUse": "dontUse",
+        "Use": "use"
+      }
+    },
     "calculationRegisterPeriodicity": {
       "semanticByAlias": {
         "Day": "day",
@@ -12,6 +123,27 @@
         "metaCompile:emit_calculation_register_properties:Periodicity"
       ]
     },
+    "catalogChoiceMode": {
+      "sourceFacts": [
+        "metaCompile:emit_catalog_properties:ChoiceMode"
+      ],
+      "semanticProperty": "choice.mode",
+      "semanticByAlias": {
+        "BothWays": "bothWays",
+        "FromForm": "fromForm",
+        "QuickChoice": "quickChoice"
+      }
+    },
+    "catalogCodeAllowedLength": {
+      "sourceFacts": [
+        "metaCompile:emit_catalog_properties:CodeAllowedLength"
+      ],
+      "semanticProperty": "code.allowedLength",
+      "semanticByAlias": {
+        "Fixed": "fixed",
+        "Variable": "variable"
+      }
+    },
     "catalogCodeSeries": {
       "semanticByAlias": {
         "WholeCatalog": "wholeCollection",
@@ -23,6 +155,46 @@
         "metaCompile:emit_catalog_properties:CodeSeries"
       ]
     },
+    "catalogCodeType": {
+      "sourceFacts": [
+        "metaCompile:emit_catalog_properties:CodeType"
+      ],
+      "semanticProperty": "code.type",
+      "semanticByAlias": {
+        "Number": "number",
+        "String": "string"
+      }
+    },
+    "catalogDataLockControlMode": {
+      "sourceFacts": [
+        "metaCompile:emit_catalog_properties:DataLockControlMode"
+      ],
+      "semanticProperty": "locking.controlMode",
+      "semanticByAlias": {
+        "Automatic": "automatic",
+        "Managed": "managed"
+      }
+    },
+    "catalogDefaultPresentation": {
+      "sourceFacts": [
+        "metaCompile:emit_catalog_properties:DefaultPresentation"
+      ],
+      "semanticProperty": "presentation.defaultMode",
+      "semanticByAlias": {
+        "AsCode": "asCode",
+        "AsDescription": "asDescription"
+      }
+    },
+    "catalogFullTextSearch": {
+      "sourceFacts": [
+        "metaCompile:emit_catalog_properties:FullTextSearch"
+      ],
+      "semanticProperty": "search.fullText.mode",
+      "semanticByAlias": {
+        "DontUse": "dontUse",
+        "Use": "use"
+      }
+    },
     "catalogHierarchyType": {
       "semanticByAlias": {
         "HierarchyFoldersAndItems": "hierarchyOfGroupsAndItems",
@@ -32,6 +204,157 @@
       "sourceFacts": [
         "metaCompile:emit_catalog_properties:HierarchyType"
       ]
+    },
+    "catalogSubordinationUse": {
+      "sourceFacts": [
+        "metaCompile:emit_catalog_properties:SubordinationUse"
+      ],
+      "semanticProperty": "subordination.use",
+      "semanticByAlias": {
+        "ToFolders": "toGroups",
+        "ToFoldersAndItems": "toGroupsAndItems",
+        "ToItems": "toItems"
+      }
+    },
+    "chartOfAccountsDataLockControlMode": {
+      "sourceFacts": [
+        "metaCompile:emit_chart_of_accounts_properties:DataLockControlMode"
+      ],
+      "semanticProperty": "locking.controlMode",
+      "semanticByAlias": {
+        "Automatic": "automatic",
+        "Managed": "managed"
+      }
+    },
+    "chartOfAccountsFullTextSearch": {
+      "sourceFacts": [
+        "metaCompile:emit_chart_of_accounts_properties:FullTextSearch"
+      ],
+      "semanticProperty": "search.fullText.mode",
+      "semanticByAlias": {
+        "DontUse": "dontUse",
+        "Use": "use"
+      }
+    },
+    "chartOfCalculationTypesCodeAllowedLength": {
+      "sourceFacts": [
+        "metaCompile:emit_chart_of_calculation_types_properties:CodeAllowedLength"
+      ],
+      "semanticProperty": "code.allowedLength",
+      "semanticByAlias": {
+        "Fixed": "fixed",
+        "Variable": "variable"
+      }
+    },
+    "chartOfCalculationTypesCodeType": {
+      "sourceFacts": [
+        "metaCompile:emit_chart_of_calculation_types_properties:CodeType"
+      ],
+      "semanticProperty": "code.type",
+      "semanticByAlias": {
+        "Number": "number",
+        "String": "string"
+      }
+    },
+    "chartOfCalculationTypesDataLockControlMode": {
+      "sourceFacts": [
+        "metaCompile:emit_chart_of_calculation_types_properties:DataLockControlMode"
+      ],
+      "semanticProperty": "locking.controlMode",
+      "semanticByAlias": {
+        "Automatic": "automatic",
+        "Managed": "managed"
+      }
+    },
+    "chartOfCalculationTypesDependenceOnCalculationTypes": {
+      "sourceFacts": [
+        "metaCompile:emit_chart_of_calculation_types_properties:DependenceOnCalculationTypes"
+      ],
+      "semanticProperty": "calculation.dependenceMode",
+      "semanticByAlias": {
+        "DontUse": "dontUse",
+        "OnActionPeriod": "onActionPeriod"
+      }
+    },
+    "chartOfCalculationTypesFullTextSearch": {
+      "sourceFacts": [
+        "metaCompile:emit_chart_of_calculation_types_properties:FullTextSearch"
+      ],
+      "semanticProperty": "search.fullText.mode",
+      "semanticByAlias": {
+        "DontUse": "dontUse",
+        "Use": "use"
+      }
+    },
+    "chartOfCharacteristicTypesCodeAllowedLength": {
+      "sourceFacts": [
+        "metaCompile:emit_chart_of_characteristic_types_properties:CodeAllowedLength"
+      ],
+      "semanticProperty": "code.allowedLength",
+      "semanticByAlias": {
+        "Fixed": "fixed",
+        "Variable": "variable"
+      }
+    },
+    "chartOfCharacteristicTypesDataLockControlMode": {
+      "sourceFacts": [
+        "metaCompile:emit_chart_of_characteristic_types_properties:DataLockControlMode"
+      ],
+      "semanticProperty": "locking.controlMode",
+      "semanticByAlias": {
+        "Automatic": "automatic",
+        "Managed": "managed"
+      }
+    },
+    "chartOfCharacteristicTypesFullTextSearch": {
+      "sourceFacts": [
+        "metaCompile:emit_chart_of_characteristic_types_properties:FullTextSearch"
+      ],
+      "semanticProperty": "search.fullText.mode",
+      "semanticByAlias": {
+        "DontUse": "dontUse",
+        "Use": "use"
+      }
+    },
+    "constantDataLockControlMode": {
+      "sourceFacts": [
+        "metaCompile:emit_constant_properties:DataLockControlMode"
+      ],
+      "semanticProperty": "locking.controlMode",
+      "semanticByAlias": {
+        "Automatic": "automatic",
+        "Managed": "managed"
+      }
+    },
+    "documentDataLockControlMode": {
+      "sourceFacts": [
+        "metaCompile:emit_document_properties:DataLockControlMode"
+      ],
+      "semanticProperty": "locking.controlMode",
+      "semanticByAlias": {
+        "Automatic": "automatic",
+        "Managed": "managed"
+      }
+    },
+    "documentFullTextSearch": {
+      "sourceFacts": [
+        "metaCompile:emit_document_properties:FullTextSearch"
+      ],
+      "semanticProperty": "search.fullText.mode",
+      "semanticByAlias": {
+        "DontUse": "dontUse",
+        "Use": "use"
+      }
+    },
+    "documentNumberAllowedLength": {
+      "sourceFacts": [
+        "metaCompile:emit_document_properties:NumberAllowedLength"
+      ],
+      "semanticProperty": "number.allowedLength",
+      "semanticByAlias": {
+        "Fixed": "fixed",
+        "Variable": "variable"
+      }
     },
     "documentNumberPeriodicity": {
       "semanticByAlias": {
@@ -45,6 +368,36 @@
       "sourceFacts": [
         "metaCompile:emit_document_properties:NumberPeriodicity"
       ]
+    },
+    "exchangePlanCodeAllowedLength": {
+      "sourceFacts": [
+        "metaCompile:emit_exchange_plan_properties:CodeAllowedLength"
+      ],
+      "semanticProperty": "code.allowedLength",
+      "semanticByAlias": {
+        "Fixed": "fixed",
+        "Variable": "variable"
+      }
+    },
+    "exchangePlanDataLockControlMode": {
+      "sourceFacts": [
+        "metaCompile:emit_exchange_plan_properties:DataLockControlMode"
+      ],
+      "semanticProperty": "locking.controlMode",
+      "semanticByAlias": {
+        "Automatic": "automatic",
+        "Managed": "managed"
+      }
+    },
+    "exchangePlanFullTextSearch": {
+      "sourceFacts": [
+        "metaCompile:emit_exchange_plan_properties:FullTextSearch"
+      ],
+      "semanticProperty": "search.fullText.mode",
+      "semanticByAlias": {
+        "DontUse": "dontUse",
+        "Use": "use"
+      }
     },
     "fieldFillChecking": {
       "semanticByAlias": {
@@ -98,6 +451,26 @@
       "sourceFacts": [
         "metaCompile:emit_http_service_properties:ReuseSessions"
       ]
+    },
+    "informationRegisterDataLockControlMode": {
+      "sourceFacts": [
+        "metaCompile:emit_information_register_properties:DataLockControlMode"
+      ],
+      "semanticProperty": "locking.controlMode",
+      "semanticByAlias": {
+        "Automatic": "automatic",
+        "Managed": "managed"
+      }
+    },
+    "informationRegisterFullTextSearch": {
+      "sourceFacts": [
+        "metaCompile:emit_information_register_properties:FullTextSearch"
+      ],
+      "semanticProperty": "search.fullText.mode",
+      "semanticByAlias": {
+        "DontUse": "dontUse",
+        "Use": "use"
+      }
     },
     "informationRegisterPeriodicity": {
       "semanticByAlias": {
@@ -197,6 +570,46 @@
       "sourceFacts": [
         "metaCompile:emit_common_module_properties:ReturnValuesReuse"
       ]
+    },
+    "taskDataLockControlMode": {
+      "sourceFacts": [
+        "metaCompile:emit_task_properties:DataLockControlMode"
+      ],
+      "semanticProperty": "locking.controlMode",
+      "semanticByAlias": {
+        "Automatic": "automatic",
+        "Managed": "managed"
+      }
+    },
+    "taskFullTextSearch": {
+      "sourceFacts": [
+        "metaCompile:emit_task_properties:FullTextSearch"
+      ],
+      "semanticProperty": "search.fullText.mode",
+      "semanticByAlias": {
+        "DontUse": "dontUse",
+        "Use": "use"
+      }
+    },
+    "taskNumberAllowedLength": {
+      "sourceFacts": [
+        "metaCompile:emit_task_properties:NumberAllowedLength"
+      ],
+      "semanticProperty": "number.allowedLength",
+      "semanticByAlias": {
+        "Fixed": "fixed",
+        "Variable": "variable"
+      }
+    },
+    "taskNumberType": {
+      "sourceFacts": [
+        "metaCompile:emit_task_properties:NumberType"
+      ],
+      "semanticProperty": "number.type",
+      "semanticByAlias": {
+        "Number": "number",
+        "String": "string"
+      }
     },
     "templateType": {
       "semanticByAlias": {

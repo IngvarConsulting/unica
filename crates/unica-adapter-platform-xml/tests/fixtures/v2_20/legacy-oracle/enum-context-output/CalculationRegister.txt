@@ -1,0 +1,2 @@
+﻿=== Регистр расчёта: EnumContextCalculationRegister ===
+Поддержка: не на поддержке

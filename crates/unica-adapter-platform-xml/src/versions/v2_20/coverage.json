@@ -468,114 +468,248 @@
   "properties": [
     {
       "objectKinds": [
-        "*"
+        "role"
       ],
       "nativeNames": [
-        "Name"
+        "@rightsAttributesDefault"
       ],
-      "semanticProperty": "metadata.name",
+      "semanticProperty": "access.attributes.defaultAllowed",
+      "valueKind": "boolean"
+    },
+    {
+      "objectKinds": [
+        "role"
+      ],
+      "nativeNames": [
+        "@rightsChildObjectsIndependent"
+      ],
+      "semanticProperty": "access.childObjects.independent",
+      "valueKind": "boolean"
+    },
+    {
+      "objectKinds": [
+        "role"
+      ],
+      "nativeNames": [
+        "@rightsNewObjectsDefault"
+      ],
+      "semanticProperty": "access.newObjects.defaultAllowed",
+      "valueKind": "boolean"
+    },
+    {
+      "objectKinds": [
+        "accessPermission"
+      ],
+      "nativeNames": [
+        "@permissionAllowed"
+      ],
+      "semanticProperty": "access.permission.allowed",
+      "valueKind": "boolean"
+    },
+    {
+      "objectKinds": [
+        "accessPermission"
+      ],
+      "nativeNames": [
+        "@permissionName"
+      ],
+      "semanticProperty": "access.permission.name",
       "valueKind": "string"
     },
     {
       "objectKinds": [
-        "*"
+        "accessPermission",
+        "accessRestrictionTemplate"
       ],
       "nativeNames": [
-        "Uuid",
-        "UUID"
+        "@restrictionConditions"
       ],
-      "semanticProperty": "metadata.uuid",
-      "valueKind": "uuid"
+      "semanticProperty": "access.restriction.conditions",
+      "valueKind": "stringList"
     },
     {
       "objectKinds": [
-        "*"
+        "chartOfCalculationTypes"
       ],
       "nativeNames": [
-        "Synonym"
+        "DependenceOnCalculationTypes"
       ],
-      "semanticProperty": "metadata.synonym",
-      "valueKind": "localizedString"
+      "semanticProperty": "calculation.dependenceMode",
+      "valueKind": "enum"
     },
     {
       "objectKinds": [
-        "*"
+        "catalog"
       ],
       "nativeNames": [
-        "Comment"
+        "CodeLength"
       ],
-      "semanticProperty": "metadata.comment",
+      "semanticProperty": "catalog.code.length",
+      "valueKind": "integer"
+    },
+    {
+      "objectKinds": [
+        "catalog"
+      ],
+      "nativeNames": [
+        "CodeSeries"
+      ],
+      "semanticProperty": "catalog.code.series",
+      "valueKind": "enum"
+    },
+    {
+      "objectKinds": [
+        "catalog"
+      ],
+      "nativeNames": [
+        "DescriptionLength"
+      ],
+      "semanticProperty": "catalog.description.length",
+      "valueKind": "integer"
+    },
+    {
+      "objectKinds": [
+        "catalog"
+      ],
+      "nativeNames": [
+        "Hierarchical"
+      ],
+      "semanticProperty": "catalog.hierarchy.enabled",
+      "valueKind": "boolean"
+    },
+    {
+      "objectKinds": [
+        "catalog"
+      ],
+      "nativeNames": [
+        "HierarchyLevelCount",
+        "LevelCount"
+      ],
+      "semanticProperty": "catalog.hierarchy.levelCount",
+      "valueKind": "integer"
+    },
+    {
+      "objectKinds": [
+        "catalog"
+      ],
+      "nativeNames": [
+        "LimitLevelCount"
+      ],
+      "semanticProperty": "catalog.hierarchy.levelLimit.enabled",
+      "valueKind": "boolean"
+    },
+    {
+      "objectKinds": [
+        "catalog"
+      ],
+      "nativeNames": [
+        "HierarchyType"
+      ],
+      "semanticProperty": "catalog.hierarchy.type",
+      "valueKind": "enum"
+    },
+    {
+      "objectKinds": [
+        "catalog"
+      ],
+      "nativeNames": [
+        "ChoiceMode"
+      ],
+      "semanticProperty": "choice.mode",
+      "valueKind": "enum"
+    },
+    {
+      "objectKinds": [
+        "catalog",
+        "chartOfCalculationTypes",
+        "chartOfCharacteristicTypes",
+        "exchangePlan"
+      ],
+      "nativeNames": [
+        "CodeAllowedLength"
+      ],
+      "semanticProperty": "code.allowedLength",
+      "valueKind": "enum"
+    },
+    {
+      "objectKinds": [
+        "catalog",
+        "chartOfCalculationTypes"
+      ],
+      "nativeNames": [
+        "CodeType"
+      ],
+      "semanticProperty": "code.type",
+      "valueKind": "enum"
+    },
+    {
+      "objectKinds": [
+        "command",
+        "commonCommand"
+      ],
+      "nativeNames": [
+        "Group"
+      ],
+      "semanticProperty": "command.group",
       "valueKind": "string"
     },
     {
       "objectKinds": [
-        "*"
+        "command",
+        "commonCommand"
       ],
       "nativeNames": [
-        "Code"
+        "Representation"
       ],
-      "semanticProperty": "metadata.code",
+      "semanticProperty": "command.representation",
       "valueKind": "string"
     },
     {
       "objectKinds": [
-        "*"
+        "command",
+        "commonCommand",
+        "catalog"
       ],
       "nativeNames": [
-        "Description"
+        "UseStandardCommands"
       ],
-      "semanticProperty": "metadata.description",
-      "valueKind": "string"
+      "semanticProperty": "command.useStandard",
+      "valueKind": "boolean"
     },
     {
       "objectKinds": [
-        "*"
+        "constant"
       ],
       "nativeNames": [
-        "ObjectPresentation"
+        "Type",
+        "TypeDescription",
+        "DataType"
       ],
-      "semanticProperty": "presentation.object",
-      "valueKind": "localizedString"
+      "semanticProperty": "constant.value.type",
+      "valueKind": "typeSet"
     },
     {
       "objectKinds": [
-        "*"
+        "definedType"
       ],
       "nativeNames": [
-        "ExtendedObjectPresentation"
+        "Type",
+        "TypeDescription",
+        "DataType"
       ],
-      "semanticProperty": "presentation.extendedObject",
-      "valueKind": "localizedString"
-    },
-    {
-      "objectKinds": [
-        "*"
-      ],
-      "nativeNames": [
-        "ListPresentation"
-      ],
-      "semanticProperty": "presentation.list",
-      "valueKind": "localizedString"
-    },
-    {
-      "objectKinds": [
-        "*"
-      ],
-      "nativeNames": [
-        "ExtendedListPresentation"
-      ],
-      "semanticProperty": "presentation.extendedList",
-      "valueKind": "localizedString"
+      "semanticProperty": "definedType.type",
+      "valueKind": "typeSet"
     },
     {
       "objectKinds": [
         "document"
       ],
       "nativeNames": [
-        "NumberType"
+        "Autonumbering",
+        "AutoNumbering"
       ],
-      "semanticProperty": "document.number.type",
-      "valueKind": "enum"
+      "semanticProperty": "document.number.auto",
+      "valueKind": "boolean"
     },
     {
       "objectKinds": [
@@ -602,11 +736,10 @@
         "document"
       ],
       "nativeNames": [
-        "Autonumbering",
-        "AutoNumbering"
+        "NumberType"
       ],
-      "semanticProperty": "document.number.auto",
-      "valueKind": "boolean"
+      "semanticProperty": "document.number.type",
+      "valueKind": "enum"
     },
     {
       "objectKinds": [
@@ -650,228 +783,246 @@
     },
     {
       "objectKinds": [
-        "catalog"
+        "businessProcess"
       ],
       "nativeNames": [
-        "Hierarchical"
+        "EditType"
       ],
-      "semanticProperty": "catalog.hierarchy.enabled",
+      "semanticProperty": "editing.mode",
+      "valueKind": "enum"
+    },
+    {
+      "objectKinds": [
+        "dimension"
+      ],
+      "nativeNames": [
+        "DenyIncompleteValues"
+      ],
+      "semanticProperty": "field.denyIncompleteValues",
       "valueKind": "boolean"
     },
     {
       "objectKinds": [
-        "catalog"
+        "attribute",
+        "dimension",
+        "resource"
       ],
       "nativeNames": [
-        "HierarchyType"
+        "Digits"
       ],
-      "semanticProperty": "catalog.hierarchy.type",
+      "semanticProperty": "field.digits",
+      "valueKind": "integer"
+    },
+    {
+      "objectKinds": [
+        "attribute",
+        "dimension",
+        "resource"
+      ],
+      "nativeNames": [
+        "FillChecking"
+      ],
+      "semanticProperty": "field.fillChecking",
       "valueKind": "enum"
     },
     {
       "objectKinds": [
-        "catalog"
+        "attribute",
+        "dimension",
+        "resource"
       ],
       "nativeNames": [
-        "LimitLevelCount"
+        "FillValue"
       ],
-      "semanticProperty": "catalog.hierarchy.levelLimit.enabled",
+      "semanticProperty": "field.fillValue",
+      "valueKind": "polymorphic"
+    },
+    {
+      "objectKinds": [
+        "attribute",
+        "dimension",
+        "resource"
+      ],
+      "nativeNames": [
+        "FractionDigits"
+      ],
+      "semanticProperty": "field.fractionDigits",
+      "valueKind": "integer"
+    },
+    {
+      "objectKinds": [
+        "attribute",
+        "dimension",
+        "resource"
+      ],
+      "nativeNames": [
+        "Indexing"
+      ],
+      "semanticProperty": "field.indexing",
+      "valueKind": "enum"
+    },
+    {
+      "objectKinds": [
+        "attribute",
+        "dimension",
+        "resource"
+      ],
+      "nativeNames": [
+        "Length"
+      ],
+      "semanticProperty": "field.length",
+      "valueKind": "integer"
+    },
+    {
+      "objectKinds": [
+        "dimension"
+      ],
+      "nativeNames": [
+        "MainFilter"
+      ],
+      "semanticProperty": "field.mainFilter",
       "valueKind": "boolean"
     },
     {
       "objectKinds": [
-        "catalog"
+        "dimension"
       ],
       "nativeNames": [
-        "HierarchyLevelCount",
-        "LevelCount"
+        "Master"
       ],
-      "semanticProperty": "catalog.hierarchy.levelCount",
-      "valueKind": "integer"
+      "semanticProperty": "field.master",
+      "valueKind": "boolean"
     },
     {
       "objectKinds": [
-        "catalog"
+        "attribute",
+        "dimension",
+        "resource"
       ],
       "nativeNames": [
-        "CodeLength"
+        "MultiLine"
       ],
-      "semanticProperty": "catalog.code.length",
-      "valueKind": "integer"
+      "semanticProperty": "field.multiLine",
+      "valueKind": "boolean"
     },
     {
       "objectKinds": [
-        "catalog"
-      ],
-      "nativeNames": [
-        "CodeSeries"
-      ],
-      "semanticProperty": "catalog.code.series",
-      "valueKind": "enum"
-    },
-    {
-      "objectKinds": [
-        "catalog"
-      ],
-      "nativeNames": [
-        "DescriptionLength"
-      ],
-      "semanticProperty": "catalog.description.length",
-      "valueKind": "integer"
-    },
-    {
-      "objectKinds": [
-        "informationRegister"
-      ],
-      "nativeNames": [
-        "InformationRegisterPeriodicity"
-      ],
-      "semanticProperty": "register.periodicity",
-      "valueKind": "enum"
-    },
-    {
-      "objectKinds": [
-        "calculationRegister"
-      ],
-      "nativeNames": [
-        "Periodicity"
-      ],
-      "semanticProperty": "register.periodicity",
-      "valueKind": "enum"
-    },
-    {
-      "objectKinds": [
-        "informationRegister"
-      ],
-      "nativeNames": [
-        "WriteMode"
-      ],
-      "semanticProperty": "register.writeMode",
-      "valueKind": "enum"
-    },
-    {
-      "objectKinds": [
-        "accumulationRegister"
-      ],
-      "nativeNames": [
-        "RegisterType"
-      ],
-      "semanticProperty": "register.type",
-      "valueKind": "enum"
-    },
-    {
-      "objectKinds": [
-        "constant"
+        "attribute",
+        "dimension",
+        "resource",
+        "webServiceParameter"
       ],
       "nativeNames": [
         "Type",
         "TypeDescription",
         "DataType"
       ],
-      "semanticProperty": "constant.value.type",
+      "semanticProperty": "field.type",
       "valueKind": "typeSet"
     },
     {
       "objectKinds": [
-        "definedType"
+        "attribute",
+        "dimension",
+        "resource"
       ],
       "nativeNames": [
-        "Type",
-        "TypeDescription",
-        "DataType"
+        "Use"
       ],
-      "semanticProperty": "definedType.type",
-      "valueKind": "typeSet"
+      "semanticProperty": "field.use",
+      "valueKind": "enum"
     },
     {
       "objectKinds": [
-        "report"
+        "form",
+        "commonForm"
       ],
       "nativeNames": [
-        "MainDataCompositionSchema"
+        "FormType"
       ],
-      "semanticProperty": "report.mainDataCompositionSchema",
+      "semanticProperty": "form.type",
+      "valueKind": "enum"
+    },
+    {
+      "objectKinds": [
+        "*"
+      ],
+      "nativeNames": [
+        "IncludeHelpInContents"
+      ],
+      "semanticProperty": "help.includeInContents",
+      "valueKind": "boolean"
+    },
+    {
+      "objectKinds": [
+        "httpServiceMethod"
+      ],
+      "nativeNames": [
+        "Handler"
+      ],
+      "semanticProperty": "httpService.method.handler",
       "valueKind": "string"
     },
     {
       "objectKinds": [
-        "commonModule"
+        "httpServiceMethod"
       ],
       "nativeNames": [
-        "Global"
+        "HTTPMethod"
       ],
-      "semanticProperty": "module.global",
-      "valueKind": "boolean"
+      "semanticProperty": "httpService.method.httpMethod",
+      "valueKind": "string"
     },
     {
       "objectKinds": [
-        "commonModule"
+        "httpService"
       ],
       "nativeNames": [
-        "ClientManagedApplication"
+        "ReuseSessions"
       ],
-      "semanticProperty": "module.clientManagedApplication",
-      "valueKind": "boolean"
-    },
-    {
-      "objectKinds": [
-        "commonModule"
-      ],
-      "nativeNames": [
-        "Server"
-      ],
-      "semanticProperty": "module.server",
-      "valueKind": "boolean"
-    },
-    {
-      "objectKinds": [
-        "commonModule"
-      ],
-      "nativeNames": [
-        "ExternalConnection"
-      ],
-      "semanticProperty": "module.externalConnection",
-      "valueKind": "boolean"
-    },
-    {
-      "objectKinds": [
-        "commonModule"
-      ],
-      "nativeNames": [
-        "ClientOrdinaryApplication"
-      ],
-      "semanticProperty": "module.clientOrdinaryApplication",
-      "valueKind": "boolean"
-    },
-    {
-      "objectKinds": [
-        "commonModule"
-      ],
-      "nativeNames": [
-        "ServerCall"
-      ],
-      "semanticProperty": "module.serverCall",
-      "valueKind": "boolean"
-    },
-    {
-      "objectKinds": [
-        "commonModule"
-      ],
-      "nativeNames": [
-        "Privileged"
-      ],
-      "semanticProperty": "module.privileged",
-      "valueKind": "boolean"
-    },
-    {
-      "objectKinds": [
-        "commonModule"
-      ],
-      "nativeNames": [
-        "ReturnValuesReuse"
-      ],
-      "semanticProperty": "module.returnValuesReuse",
+      "semanticProperty": "httpService.reuseSessions",
       "valueKind": "enum"
+    },
+    {
+      "objectKinds": [
+        "httpService"
+      ],
+      "nativeNames": [
+        "RootURL",
+        "RootUrl"
+      ],
+      "semanticProperty": "httpService.rootUrl",
+      "valueKind": "string"
+    },
+    {
+      "objectKinds": [
+        "httpService"
+      ],
+      "nativeNames": [
+        "SessionMaxAge"
+      ],
+      "semanticProperty": "httpService.sessionMaxAge",
+      "valueKind": "integer"
+    },
+    {
+      "objectKinds": [
+        "httpServiceUrlTemplate"
+      ],
+      "nativeNames": [
+        "Template"
+      ],
+      "semanticProperty": "httpService.urlTemplate.template",
+      "valueKind": "string"
+    },
+    {
+      "objectKinds": [
+        "scheduledJob"
+      ],
+      "nativeNames": [
+        "Key"
+      ],
+      "semanticProperty": "job.key",
+      "valueKind": "string"
     },
     {
       "objectKinds": [
@@ -882,16 +1033,6 @@
       ],
       "semanticProperty": "job.method",
       "valueKind": "string"
-    },
-    {
-      "objectKinds": [
-        "scheduledJob"
-      ],
-      "nativeNames": [
-        "Use"
-      ],
-      "semanticProperty": "job.use",
-      "valueKind": "boolean"
     },
     {
       "objectKinds": [
@@ -928,10 +1069,327 @@
         "scheduledJob"
       ],
       "nativeNames": [
-        "Key"
+        "Use"
       ],
-      "semanticProperty": "job.key",
+      "semanticProperty": "job.use",
+      "valueKind": "boolean"
+    },
+    {
+      "objectKinds": [
+        "accountingRegister",
+        "accumulationRegister",
+        "businessProcess",
+        "calculationRegister",
+        "catalog",
+        "chartOfAccounts",
+        "chartOfCalculationTypes",
+        "chartOfCharacteristicTypes",
+        "constant",
+        "document",
+        "exchangePlan",
+        "informationRegister",
+        "task"
+      ],
+      "nativeNames": [
+        "DataLockControlMode"
+      ],
+      "semanticProperty": "locking.controlMode",
+      "valueKind": "enum"
+    },
+    {
+      "objectKinds": [
+        "*"
+      ],
+      "nativeNames": [
+        "Code"
+      ],
+      "semanticProperty": "metadata.code",
       "valueKind": "string"
+    },
+    {
+      "objectKinds": [
+        "*"
+      ],
+      "nativeNames": [
+        "Comment"
+      ],
+      "semanticProperty": "metadata.comment",
+      "valueKind": "string"
+    },
+    {
+      "objectKinds": [
+        "*"
+      ],
+      "nativeNames": [
+        "Description"
+      ],
+      "semanticProperty": "metadata.description",
+      "valueKind": "string"
+    },
+    {
+      "objectKinds": [
+        "*"
+      ],
+      "nativeNames": [
+        "Name"
+      ],
+      "semanticProperty": "metadata.name",
+      "valueKind": "string"
+    },
+    {
+      "objectKinds": [
+        "*"
+      ],
+      "nativeNames": [
+        "Synonym"
+      ],
+      "semanticProperty": "metadata.synonym",
+      "valueKind": "localizedString"
+    },
+    {
+      "objectKinds": [
+        "*"
+      ],
+      "nativeNames": [
+        "Uuid",
+        "UUID"
+      ],
+      "semanticProperty": "metadata.uuid",
+      "valueKind": "uuid"
+    },
+    {
+      "objectKinds": [
+        "commonModule"
+      ],
+      "nativeNames": [
+        "ClientManagedApplication"
+      ],
+      "semanticProperty": "module.clientManagedApplication",
+      "valueKind": "boolean"
+    },
+    {
+      "objectKinds": [
+        "commonModule"
+      ],
+      "nativeNames": [
+        "ClientOrdinaryApplication"
+      ],
+      "semanticProperty": "module.clientOrdinaryApplication",
+      "valueKind": "boolean"
+    },
+    {
+      "objectKinds": [
+        "commonModule"
+      ],
+      "nativeNames": [
+        "ExternalConnection"
+      ],
+      "semanticProperty": "module.externalConnection",
+      "valueKind": "boolean"
+    },
+    {
+      "objectKinds": [
+        "commonModule"
+      ],
+      "nativeNames": [
+        "Global"
+      ],
+      "semanticProperty": "module.global",
+      "valueKind": "boolean"
+    },
+    {
+      "objectKinds": [
+        "commonModule"
+      ],
+      "nativeNames": [
+        "Privileged"
+      ],
+      "semanticProperty": "module.privileged",
+      "valueKind": "boolean"
+    },
+    {
+      "objectKinds": [
+        "commonModule"
+      ],
+      "nativeNames": [
+        "ReturnValuesReuse"
+      ],
+      "semanticProperty": "module.returnValuesReuse",
+      "valueKind": "enum"
+    },
+    {
+      "objectKinds": [
+        "commonModule"
+      ],
+      "nativeNames": [
+        "Server"
+      ],
+      "semanticProperty": "module.server",
+      "valueKind": "boolean"
+    },
+    {
+      "objectKinds": [
+        "commonModule"
+      ],
+      "nativeNames": [
+        "ServerCall"
+      ],
+      "semanticProperty": "module.serverCall",
+      "valueKind": "boolean"
+    },
+    {
+      "objectKinds": [
+        "businessProcess",
+        "document",
+        "task"
+      ],
+      "nativeNames": [
+        "NumberAllowedLength"
+      ],
+      "semanticProperty": "number.allowedLength",
+      "valueKind": "enum"
+    },
+    {
+      "objectKinds": [
+        "businessProcess",
+        "task"
+      ],
+      "nativeNames": [
+        "NumberType"
+      ],
+      "semanticProperty": "number.type",
+      "valueKind": "enum"
+    },
+    {
+      "objectKinds": [
+        "catalog"
+      ],
+      "nativeNames": [
+        "DefaultPresentation"
+      ],
+      "semanticProperty": "presentation.defaultMode",
+      "valueKind": "enum"
+    },
+    {
+      "objectKinds": [
+        "*"
+      ],
+      "nativeNames": [
+        "ExtendedListPresentation"
+      ],
+      "semanticProperty": "presentation.extendedList",
+      "valueKind": "localizedString"
+    },
+    {
+      "objectKinds": [
+        "*"
+      ],
+      "nativeNames": [
+        "ExtendedObjectPresentation"
+      ],
+      "semanticProperty": "presentation.extendedObject",
+      "valueKind": "localizedString"
+    },
+    {
+      "objectKinds": [
+        "*"
+      ],
+      "nativeNames": [
+        "ListPresentation"
+      ],
+      "semanticProperty": "presentation.list",
+      "valueKind": "localizedString"
+    },
+    {
+      "objectKinds": [
+        "*"
+      ],
+      "nativeNames": [
+        "ObjectPresentation"
+      ],
+      "semanticProperty": "presentation.object",
+      "valueKind": "localizedString"
+    },
+    {
+      "objectKinds": [
+        "informationRegister"
+      ],
+      "nativeNames": [
+        "InformationRegisterPeriodicity"
+      ],
+      "semanticProperty": "register.periodicity",
+      "valueKind": "enum"
+    },
+    {
+      "objectKinds": [
+        "calculationRegister"
+      ],
+      "nativeNames": [
+        "Periodicity"
+      ],
+      "semanticProperty": "register.periodicity",
+      "valueKind": "enum"
+    },
+    {
+      "objectKinds": [
+        "accumulationRegister"
+      ],
+      "nativeNames": [
+        "RegisterType"
+      ],
+      "semanticProperty": "register.type",
+      "valueKind": "enum"
+    },
+    {
+      "objectKinds": [
+        "informationRegister"
+      ],
+      "nativeNames": [
+        "WriteMode"
+      ],
+      "semanticProperty": "register.writeMode",
+      "valueKind": "enum"
+    },
+    {
+      "objectKinds": [
+        "report"
+      ],
+      "nativeNames": [
+        "MainDataCompositionSchema"
+      ],
+      "semanticProperty": "report.mainDataCompositionSchema",
+      "valueKind": "string"
+    },
+    {
+      "objectKinds": [
+        "accountingRegister",
+        "accumulationRegister",
+        "businessProcess",
+        "calculationRegister",
+        "catalog",
+        "chartOfAccounts",
+        "chartOfCalculationTypes",
+        "chartOfCharacteristicTypes",
+        "document",
+        "exchangePlan",
+        "informationRegister",
+        "task"
+      ],
+      "nativeNames": [
+        "FullTextSearch"
+      ],
+      "semanticProperty": "search.fullText.mode",
+      "valueKind": "enum"
+    },
+    {
+      "objectKinds": [
+        "catalog"
+      ],
+      "nativeNames": [
+        "SubordinationUse"
+      ],
+      "semanticProperty": "subordination.use",
+      "valueKind": "enum"
     },
     {
       "objectKinds": [
@@ -965,63 +1423,44 @@
     },
     {
       "objectKinds": [
-        "httpService"
+        "tabularSection"
       ],
       "nativeNames": [
-        "RootURL",
-        "RootUrl"
+        "LineNumberLength"
       ],
-      "semanticProperty": "httpService.rootUrl",
-      "valueKind": "string"
-    },
-    {
-      "objectKinds": [
-        "httpService"
-      ],
-      "nativeNames": [
-        "ReuseSessions"
-      ],
-      "semanticProperty": "httpService.reuseSessions",
-      "valueKind": "enum"
-    },
-    {
-      "objectKinds": [
-        "httpService"
-      ],
-      "nativeNames": [
-        "SessionMaxAge"
-      ],
-      "semanticProperty": "httpService.sessionMaxAge",
+      "semanticProperty": "tabularSection.lineNumberLength",
       "valueKind": "integer"
     },
     {
       "objectKinds": [
-        "httpServiceUrlTemplate"
+        "tabularSection"
       ],
       "nativeNames": [
-        "Template"
+        "Order"
       ],
-      "semanticProperty": "httpService.urlTemplate.template",
-      "valueKind": "string"
+      "semanticProperty": "tabularSection.order",
+      "valueKind": "integer"
     },
     {
       "objectKinds": [
-        "httpServiceMethod"
+        "template",
+        "spreadsheetDocumentTemplate",
+        "commonTemplate"
       ],
       "nativeNames": [
-        "HTTPMethod"
+        "TemplateType"
       ],
-      "semanticProperty": "httpService.method.httpMethod",
-      "valueKind": "string"
+      "semanticProperty": "template.type",
+      "valueKind": "enum"
     },
     {
       "objectKinds": [
-        "httpServiceMethod"
+        "webService"
       ],
       "nativeNames": [
-        "Handler"
+        "DescriptorFileName"
       ],
-      "semanticProperty": "httpService.method.handler",
+      "semanticProperty": "webService.descriptorFileName",
       "valueKind": "string"
     },
     {
@@ -1036,23 +1475,73 @@
     },
     {
       "objectKinds": [
-        "webService"
+        "webServiceOperation"
       ],
       "nativeNames": [
-        "XDTOPackages"
+        "Nillable"
       ],
-      "semanticProperty": "webService.xdtoPackages",
-      "valueKind": "stringList"
+      "semanticProperty": "webService.operation.nillable",
+      "valueKind": "boolean"
     },
     {
       "objectKinds": [
-        "webService"
+        "webServiceOperation"
       ],
       "nativeNames": [
-        "DescriptorFileName"
+        "ProcedureName"
       ],
-      "semanticProperty": "webService.descriptorFileName",
+      "semanticProperty": "webService.operation.procedureName",
       "valueKind": "string"
+    },
+    {
+      "objectKinds": [
+        "webServiceOperation"
+      ],
+      "nativeNames": [
+        "XDTOReturningValueType"
+      ],
+      "semanticProperty": "webService.operation.returnType",
+      "valueKind": "typeSet"
+    },
+    {
+      "objectKinds": [
+        "webServiceOperation"
+      ],
+      "nativeNames": [
+        "Transactioned"
+      ],
+      "semanticProperty": "webService.operation.transactioned",
+      "valueKind": "boolean"
+    },
+    {
+      "objectKinds": [
+        "webServiceParameter"
+      ],
+      "nativeNames": [
+        "TransferDirection"
+      ],
+      "semanticProperty": "webService.parameter.direction",
+      "valueKind": "enum"
+    },
+    {
+      "objectKinds": [
+        "webServiceParameter"
+      ],
+      "nativeNames": [
+        "Nillable"
+      ],
+      "semanticProperty": "webService.parameter.nillable",
+      "valueKind": "boolean"
+    },
+    {
+      "objectKinds": [
+        "webServiceParameter"
+      ],
+      "nativeNames": [
+        "XDTOValueType"
+      ],
+      "semanticProperty": "webService.parameter.type",
+      "valueKind": "typeSet"
     },
     {
       "objectKinds": [
@@ -1076,361 +1565,12 @@
     },
     {
       "objectKinds": [
-        "webServiceOperation"
+        "webService"
       ],
       "nativeNames": [
-        "XDTOReturningValueType"
+        "XDTOPackages"
       ],
-      "semanticProperty": "webService.operation.returnType",
-      "valueKind": "typeSet"
-    },
-    {
-      "objectKinds": [
-        "webServiceOperation"
-      ],
-      "nativeNames": [
-        "Nillable"
-      ],
-      "semanticProperty": "webService.operation.nillable",
-      "valueKind": "boolean"
-    },
-    {
-      "objectKinds": [
-        "webServiceOperation"
-      ],
-      "nativeNames": [
-        "Transactioned"
-      ],
-      "semanticProperty": "webService.operation.transactioned",
-      "valueKind": "boolean"
-    },
-    {
-      "objectKinds": [
-        "webServiceOperation"
-      ],
-      "nativeNames": [
-        "ProcedureName"
-      ],
-      "semanticProperty": "webService.operation.procedureName",
-      "valueKind": "string"
-    },
-    {
-      "objectKinds": [
-        "webServiceParameter"
-      ],
-      "nativeNames": [
-        "XDTOValueType"
-      ],
-      "semanticProperty": "webService.parameter.type",
-      "valueKind": "typeSet"
-    },
-    {
-      "objectKinds": [
-        "webServiceParameter"
-      ],
-      "nativeNames": [
-        "Nillable"
-      ],
-      "semanticProperty": "webService.parameter.nillable",
-      "valueKind": "boolean"
-    },
-    {
-      "objectKinds": [
-        "webServiceParameter"
-      ],
-      "nativeNames": [
-        "TransferDirection"
-      ],
-      "semanticProperty": "webService.parameter.direction",
-      "valueKind": "enum"
-    },
-    {
-      "objectKinds": [
-        "attribute",
-        "dimension",
-        "resource",
-        "webServiceParameter"
-      ],
-      "nativeNames": [
-        "Type",
-        "TypeDescription",
-        "DataType"
-      ],
-      "semanticProperty": "field.type",
-      "valueKind": "typeSet"
-    },
-    {
-      "objectKinds": [
-        "attribute",
-        "dimension",
-        "resource"
-      ],
-      "nativeNames": [
-        "FillChecking"
-      ],
-      "semanticProperty": "field.fillChecking",
-      "valueKind": "enum"
-    },
-    {
-      "objectKinds": [
-        "attribute",
-        "dimension",
-        "resource"
-      ],
-      "nativeNames": [
-        "Indexing"
-      ],
-      "semanticProperty": "field.indexing",
-      "valueKind": "enum"
-    },
-    {
-      "objectKinds": [
-        "attribute",
-        "dimension",
-        "resource"
-      ],
-      "nativeNames": [
-        "MultiLine"
-      ],
-      "semanticProperty": "field.multiLine",
-      "valueKind": "boolean"
-    },
-    {
-      "objectKinds": [
-        "attribute",
-        "dimension",
-        "resource"
-      ],
-      "nativeNames": [
-        "Use"
-      ],
-      "semanticProperty": "field.use",
-      "valueKind": "enum"
-    },
-    {
-      "objectKinds": [
-        "attribute",
-        "dimension",
-        "resource"
-      ],
-      "nativeNames": [
-        "FillValue"
-      ],
-      "semanticProperty": "field.fillValue",
-      "valueKind": "polymorphic"
-    },
-    {
-      "objectKinds": [
-        "dimension"
-      ],
-      "nativeNames": [
-        "Master"
-      ],
-      "semanticProperty": "field.master",
-      "valueKind": "boolean"
-    },
-    {
-      "objectKinds": [
-        "dimension"
-      ],
-      "nativeNames": [
-        "MainFilter"
-      ],
-      "semanticProperty": "field.mainFilter",
-      "valueKind": "boolean"
-    },
-    {
-      "objectKinds": [
-        "dimension"
-      ],
-      "nativeNames": [
-        "DenyIncompleteValues"
-      ],
-      "semanticProperty": "field.denyIncompleteValues",
-      "valueKind": "boolean"
-    },
-    {
-      "objectKinds": [
-        "attribute",
-        "dimension",
-        "resource"
-      ],
-      "nativeNames": [
-        "Length"
-      ],
-      "semanticProperty": "field.length",
-      "valueKind": "integer"
-    },
-    {
-      "objectKinds": [
-        "attribute",
-        "dimension",
-        "resource"
-      ],
-      "nativeNames": [
-        "Digits"
-      ],
-      "semanticProperty": "field.digits",
-      "valueKind": "integer"
-    },
-    {
-      "objectKinds": [
-        "attribute",
-        "dimension",
-        "resource"
-      ],
-      "nativeNames": [
-        "FractionDigits"
-      ],
-      "semanticProperty": "field.fractionDigits",
-      "valueKind": "integer"
-    },
-    {
-      "objectKinds": [
-        "tabularSection"
-      ],
-      "nativeNames": [
-        "Order"
-      ],
-      "semanticProperty": "tabularSection.order",
-      "valueKind": "integer"
-    },
-    {
-      "objectKinds": [
-        "tabularSection"
-      ],
-      "nativeNames": [
-        "LineNumberLength"
-      ],
-      "semanticProperty": "tabularSection.lineNumberLength",
-      "valueKind": "integer"
-    },
-    {
-      "objectKinds": [
-        "form",
-        "commonForm"
-      ],
-      "nativeNames": [
-        "FormType"
-      ],
-      "semanticProperty": "form.type",
-      "valueKind": "enum"
-    },
-    {
-      "objectKinds": [
-        "template",
-        "spreadsheetDocumentTemplate",
-        "commonTemplate"
-      ],
-      "nativeNames": [
-        "TemplateType"
-      ],
-      "semanticProperty": "template.type",
-      "valueKind": "enum"
-    },
-    {
-      "objectKinds": [
-        "command",
-        "commonCommand"
-      ],
-      "nativeNames": [
-        "Group"
-      ],
-      "semanticProperty": "command.group",
-      "valueKind": "string"
-    },
-    {
-      "objectKinds": [
-        "command",
-        "commonCommand"
-      ],
-      "nativeNames": [
-        "Representation"
-      ],
-      "semanticProperty": "command.representation",
-      "valueKind": "string"
-    },
-    {
-      "objectKinds": [
-        "command",
-        "commonCommand",
-        "catalog"
-      ],
-      "nativeNames": [
-        "UseStandardCommands"
-      ],
-      "semanticProperty": "command.useStandard",
-      "valueKind": "boolean"
-    },
-    {
-      "objectKinds": [
-        "*"
-      ],
-      "nativeNames": [
-        "IncludeHelpInContents"
-      ],
-      "semanticProperty": "help.includeInContents",
-      "valueKind": "boolean"
-    },
-    {
-      "objectKinds": [
-        "role"
-      ],
-      "nativeNames": [
-        "@rightsNewObjectsDefault"
-      ],
-      "semanticProperty": "access.newObjects.defaultAllowed",
-      "valueKind": "boolean"
-    },
-    {
-      "objectKinds": [
-        "role"
-      ],
-      "nativeNames": [
-        "@rightsAttributesDefault"
-      ],
-      "semanticProperty": "access.attributes.defaultAllowed",
-      "valueKind": "boolean"
-    },
-    {
-      "objectKinds": [
-        "role"
-      ],
-      "nativeNames": [
-        "@rightsChildObjectsIndependent"
-      ],
-      "semanticProperty": "access.childObjects.independent",
-      "valueKind": "boolean"
-    },
-    {
-      "objectKinds": [
-        "accessPermission"
-      ],
-      "nativeNames": [
-        "@permissionName"
-      ],
-      "semanticProperty": "access.permission.name",
-      "valueKind": "string"
-    },
-    {
-      "objectKinds": [
-        "accessPermission"
-      ],
-      "nativeNames": [
-        "@permissionAllowed"
-      ],
-      "semanticProperty": "access.permission.allowed",
-      "valueKind": "boolean"
-    },
-    {
-      "objectKinds": [
-        "accessPermission",
-        "accessRestrictionTemplate"
-      ],
-      "nativeNames": [
-        "@restrictionConditions"
-      ],
-      "semanticProperty": "access.restriction.conditions",
+      "semanticProperty": "webService.xdtoPackages",
       "valueKind": "stringList"
     }
   ],
@@ -1669,15 +1809,667 @@
   ],
   "enumAliases": [
     {
-      "semantic": "string",
+      "semantic": "allow",
       "nativeAliases": [
-        "String"
+        "Allow"
       ],
       "propertyIds": [
-        "document.number.type"
+        "document.posting.mode"
       ],
       "objectKinds": [
         "document"
+      ]
+    },
+    {
+      "semantic": "allow",
+      "nativeAliases": [
+        "Allow"
+      ],
+      "propertyIds": [
+        "document.realTimePosting.mode"
+      ],
+      "objectKinds": [
+        "document"
+      ]
+    },
+    {
+      "semantic": "asCode",
+      "nativeAliases": [
+        "AsCode"
+      ],
+      "propertyIds": [
+        "presentation.defaultMode"
+      ],
+      "objectKinds": [
+        "catalog"
+      ]
+    },
+    {
+      "semantic": "asDescription",
+      "nativeAliases": [
+        "AsDescription"
+      ],
+      "propertyIds": [
+        "presentation.defaultMode"
+      ],
+      "objectKinds": [
+        "catalog"
+      ]
+    },
+    {
+      "semantic": "automatic",
+      "nativeAliases": [
+        "Automatic"
+      ],
+      "propertyIds": [
+        "locking.controlMode"
+      ],
+      "objectKinds": [
+        "accountingRegister",
+        "accumulationRegister",
+        "businessProcess",
+        "calculationRegister",
+        "catalog",
+        "chartOfAccounts",
+        "chartOfCalculationTypes",
+        "chartOfCharacteristicTypes",
+        "constant",
+        "document",
+        "exchangePlan",
+        "informationRegister",
+        "task"
+      ]
+    },
+    {
+      "semantic": "balance",
+      "nativeAliases": [
+        "Balance"
+      ],
+      "propertyIds": [
+        "register.type"
+      ],
+      "objectKinds": [
+        "accumulationRegister"
+      ]
+    },
+    {
+      "semantic": "balance",
+      "nativeAliases": [
+        "Balances"
+      ],
+      "propertyIds": [
+        "register.type"
+      ],
+      "objectKinds": [
+        "accumulationRegister"
+      ]
+    },
+    {
+      "semantic": "binaryData",
+      "nativeAliases": [
+        "BinaryData"
+      ],
+      "propertyIds": [
+        "template.type"
+      ],
+      "objectKinds": [
+        "commonTemplate",
+        "spreadsheetDocumentTemplate",
+        "template"
+      ]
+    },
+    {
+      "semantic": "bothWays",
+      "nativeAliases": [
+        "BothWays"
+      ],
+      "propertyIds": [
+        "choice.mode"
+      ],
+      "objectKinds": [
+        "catalog"
+      ]
+    },
+    {
+      "semantic": "bothWays",
+      "nativeAliases": [
+        "BothWays"
+      ],
+      "propertyIds": [
+        "editing.mode"
+      ],
+      "objectKinds": [
+        "businessProcess"
+      ]
+    },
+    {
+      "semantic": "dataCompositionSchema",
+      "nativeAliases": [
+        "DataCompositionSchema"
+      ],
+      "propertyIds": [
+        "template.type"
+      ],
+      "objectKinds": [
+        "commonTemplate",
+        "spreadsheetDocumentTemplate",
+        "template"
+      ]
+    },
+    {
+      "semantic": "day",
+      "nativeAliases": [
+        "Day"
+      ],
+      "propertyIds": [
+        "document.number.periodicity"
+      ],
+      "objectKinds": [
+        "document"
+      ]
+    },
+    {
+      "semantic": "day",
+      "nativeAliases": [
+        "Day"
+      ],
+      "propertyIds": [
+        "register.periodicity"
+      ],
+      "objectKinds": [
+        "calculationRegister",
+        "informationRegister"
+      ]
+    },
+    {
+      "semantic": "deleteAutomatic",
+      "nativeAliases": [
+        "AutoDelete"
+      ],
+      "propertyIds": [
+        "document.registerRecordsDeletion.mode"
+      ],
+      "objectKinds": [
+        "document"
+      ]
+    },
+    {
+      "semantic": "deleteDisabled",
+      "nativeAliases": [
+        "AutoDeleteOff"
+      ],
+      "propertyIds": [
+        "document.registerRecordsDeletion.mode"
+      ],
+      "objectKinds": [
+        "document"
+      ]
+    },
+    {
+      "semantic": "deleteOnReversal",
+      "nativeAliases": [
+        "AutoDeleteOnUnpost"
+      ],
+      "propertyIds": [
+        "document.registerRecordsDeletion.mode"
+      ],
+      "objectKinds": [
+        "document"
+      ]
+    },
+    {
+      "semantic": "deny",
+      "nativeAliases": [
+        "Deny"
+      ],
+      "propertyIds": [
+        "document.posting.mode"
+      ],
+      "objectKinds": [
+        "document"
+      ]
+    },
+    {
+      "semantic": "deny",
+      "nativeAliases": [
+        "Deny"
+      ],
+      "propertyIds": [
+        "document.realTimePosting.mode"
+      ],
+      "objectKinds": [
+        "document"
+      ]
+    },
+    {
+      "semantic": "dontCheck",
+      "nativeAliases": [
+        "DontCheck"
+      ],
+      "propertyIds": [
+        "field.fillChecking"
+      ],
+      "objectKinds": [
+        "attribute",
+        "dimension",
+        "resource"
+      ]
+    },
+    {
+      "semantic": "dontIndex",
+      "nativeAliases": [
+        "DontIndex"
+      ],
+      "propertyIds": [
+        "field.indexing"
+      ],
+      "objectKinds": [
+        "attribute",
+        "dimension",
+        "resource"
+      ]
+    },
+    {
+      "semantic": "dontUse",
+      "nativeAliases": [
+        "DontUse"
+      ],
+      "propertyIds": [
+        "calculation.dependenceMode"
+      ],
+      "objectKinds": [
+        "chartOfCalculationTypes"
+      ]
+    },
+    {
+      "semantic": "dontUse",
+      "nativeAliases": [
+        "DontUse"
+      ],
+      "propertyIds": [
+        "httpService.reuseSessions"
+      ],
+      "objectKinds": [
+        "httpService"
+      ]
+    },
+    {
+      "semantic": "dontUse",
+      "nativeAliases": [
+        "DontUse"
+      ],
+      "propertyIds": [
+        "module.returnValuesReuse"
+      ],
+      "objectKinds": [
+        "commonModule"
+      ]
+    },
+    {
+      "semantic": "dontUse",
+      "nativeAliases": [
+        "DontUse"
+      ],
+      "propertyIds": [
+        "search.fullText.mode"
+      ],
+      "objectKinds": [
+        "accountingRegister",
+        "accumulationRegister",
+        "businessProcess",
+        "calculationRegister",
+        "catalog",
+        "chartOfAccounts",
+        "chartOfCalculationTypes",
+        "chartOfCharacteristicTypes",
+        "document",
+        "exchangePlan",
+        "informationRegister",
+        "task"
+      ]
+    },
+    {
+      "semantic": "dontUse",
+      "nativeAliases": [
+        "DontUse"
+      ],
+      "propertyIds": [
+        "webService.reuseSessions"
+      ],
+      "objectKinds": [
+        "webService"
+      ]
+    },
+    {
+      "semantic": "duringRequest",
+      "nativeAliases": [
+        "DuringRequest"
+      ],
+      "propertyIds": [
+        "module.returnValuesReuse"
+      ],
+      "objectKinds": [
+        "commonModule"
+      ]
+    },
+    {
+      "semantic": "duringSession",
+      "nativeAliases": [
+        "DuringSession"
+      ],
+      "propertyIds": [
+        "module.returnValuesReuse"
+      ],
+      "objectKinds": [
+        "commonModule"
+      ]
+    },
+    {
+      "semantic": "fixed",
+      "nativeAliases": [
+        "Fixed"
+      ],
+      "propertyIds": [
+        "code.allowedLength"
+      ],
+      "objectKinds": [
+        "catalog",
+        "chartOfCalculationTypes",
+        "chartOfCharacteristicTypes",
+        "exchangePlan"
+      ]
+    },
+    {
+      "semantic": "fixed",
+      "nativeAliases": [
+        "Fixed"
+      ],
+      "propertyIds": [
+        "number.allowedLength"
+      ],
+      "objectKinds": [
+        "businessProcess",
+        "document",
+        "task"
+      ]
+    },
+    {
+      "semantic": "forItem",
+      "nativeAliases": [
+        "ForItem"
+      ],
+      "propertyIds": [
+        "field.use"
+      ],
+      "objectKinds": [
+        "attribute",
+        "dimension",
+        "resource"
+      ]
+    },
+    {
+      "semantic": "fromForm",
+      "nativeAliases": [
+        "FromForm"
+      ],
+      "propertyIds": [
+        "choice.mode"
+      ],
+      "objectKinds": [
+        "catalog"
+      ]
+    },
+    {
+      "semantic": "groupOnly",
+      "nativeAliases": [
+        "ForFolder"
+      ],
+      "propertyIds": [
+        "field.use"
+      ],
+      "objectKinds": [
+        "attribute",
+        "dimension",
+        "resource"
+      ]
+    },
+    {
+      "semantic": "groupsAndItems",
+      "nativeAliases": [
+        "ForFolderAndItem"
+      ],
+      "propertyIds": [
+        "field.use"
+      ],
+      "objectKinds": [
+        "attribute",
+        "dimension",
+        "resource"
+      ]
+    },
+    {
+      "semantic": "hierarchyOfGroupsAndItems",
+      "nativeAliases": [
+        "HierarchyFoldersAndItems"
+      ],
+      "propertyIds": [
+        "catalog.hierarchy.type"
+      ],
+      "objectKinds": [
+        "catalog"
+      ]
+    },
+    {
+      "semantic": "hierarchyOfItems",
+      "nativeAliases": [
+        "HierarchyOfItems"
+      ],
+      "propertyIds": [
+        "catalog.hierarchy.type"
+      ],
+      "objectKinds": [
+        "catalog"
+      ]
+    },
+    {
+      "semantic": "htmlDocument",
+      "nativeAliases": [
+        "HTMLDocument"
+      ],
+      "propertyIds": [
+        "template.type"
+      ],
+      "objectKinds": [
+        "commonTemplate",
+        "spreadsheetDocumentTemplate",
+        "template"
+      ]
+    },
+    {
+      "semantic": "in",
+      "nativeAliases": [
+        "In"
+      ],
+      "propertyIds": [
+        "webService.parameter.direction"
+      ],
+      "objectKinds": [
+        "webServiceParameter"
+      ]
+    },
+    {
+      "semantic": "independent",
+      "nativeAliases": [
+        "Independent"
+      ],
+      "propertyIds": [
+        "register.writeMode"
+      ],
+      "objectKinds": [
+        "informationRegister"
+      ]
+    },
+    {
+      "semantic": "index",
+      "nativeAliases": [
+        "Index"
+      ],
+      "propertyIds": [
+        "field.indexing"
+      ],
+      "objectKinds": [
+        "attribute",
+        "dimension",
+        "resource"
+      ]
+    },
+    {
+      "semantic": "indexWithAdditionalOrder",
+      "nativeAliases": [
+        "IndexWithAdditionalOrder"
+      ],
+      "propertyIds": [
+        "field.indexing"
+      ],
+      "objectKinds": [
+        "attribute",
+        "dimension",
+        "resource"
+      ]
+    },
+    {
+      "semantic": "inDialog",
+      "nativeAliases": [
+        "InDialog"
+      ],
+      "propertyIds": [
+        "editing.mode"
+      ],
+      "objectKinds": [
+        "businessProcess"
+      ]
+    },
+    {
+      "semantic": "inList",
+      "nativeAliases": [
+        "InList"
+      ],
+      "propertyIds": [
+        "editing.mode"
+      ],
+      "objectKinds": [
+        "businessProcess"
+      ]
+    },
+    {
+      "semantic": "inOut",
+      "nativeAliases": [
+        "InOut"
+      ],
+      "propertyIds": [
+        "webService.parameter.direction"
+      ],
+      "objectKinds": [
+        "webServiceParameter"
+      ]
+    },
+    {
+      "semantic": "managed",
+      "nativeAliases": [
+        "Managed"
+      ],
+      "propertyIds": [
+        "form.type"
+      ],
+      "objectKinds": [
+        "commonForm",
+        "form"
+      ]
+    },
+    {
+      "semantic": "managed",
+      "nativeAliases": [
+        "Managed"
+      ],
+      "propertyIds": [
+        "locking.controlMode"
+      ],
+      "objectKinds": [
+        "accountingRegister",
+        "accumulationRegister",
+        "businessProcess",
+        "calculationRegister",
+        "catalog",
+        "chartOfAccounts",
+        "chartOfCalculationTypes",
+        "chartOfCharacteristicTypes",
+        "constant",
+        "document",
+        "exchangePlan",
+        "informationRegister",
+        "task"
+      ]
+    },
+    {
+      "semantic": "month",
+      "nativeAliases": [
+        "Month"
+      ],
+      "propertyIds": [
+        "document.number.periodicity"
+      ],
+      "objectKinds": [
+        "document"
+      ]
+    },
+    {
+      "semantic": "month",
+      "nativeAliases": [
+        "Month"
+      ],
+      "propertyIds": [
+        "register.periodicity"
+      ],
+      "objectKinds": [
+        "calculationRegister",
+        "informationRegister"
+      ]
+    },
+    {
+      "semantic": "nonperiodical",
+      "nativeAliases": [
+        "Nonperiodical"
+      ],
+      "propertyIds": [
+        "document.number.periodicity"
+      ],
+      "objectKinds": [
+        "document"
+      ]
+    },
+    {
+      "semantic": "nonperiodical",
+      "nativeAliases": [
+        "Nonperiodical"
+      ],
+      "propertyIds": [
+        "register.periodicity"
+      ],
+      "objectKinds": [
+        "informationRegister"
+      ]
+    },
+    {
+      "semantic": "number",
+      "nativeAliases": [
+        "Number"
+      ],
+      "propertyIds": [
+        "code.type"
+      ],
+      "objectKinds": [
+        "catalog",
+        "chartOfCalculationTypes"
       ]
     },
     {
@@ -1693,16 +2485,113 @@
       ]
     },
     {
-      "semantic": "nonperiodical",
+      "semantic": "number",
       "nativeAliases": [
-        "Nonperiodical"
+        "Number"
       ],
       "propertyIds": [
-        "document.number.periodicity",
+        "number.type"
+      ],
+      "objectKinds": [
+        "businessProcess",
+        "task"
+      ]
+    },
+    {
+      "semantic": "onActionPeriod",
+      "nativeAliases": [
+        "OnActionPeriod"
+      ],
+      "propertyIds": [
+        "calculation.dependenceMode"
+      ],
+      "objectKinds": [
+        "chartOfCalculationTypes"
+      ]
+    },
+    {
+      "semantic": "ordinary",
+      "nativeAliases": [
+        "Ordinary"
+      ],
+      "propertyIds": [
+        "form.type"
+      ],
+      "objectKinds": [
+        "commonForm",
+        "form"
+      ]
+    },
+    {
+      "semantic": "out",
+      "nativeAliases": [
+        "Out"
+      ],
+      "propertyIds": [
+        "webService.parameter.direction"
+      ],
+      "objectKinds": [
+        "webServiceParameter"
+      ]
+    },
+    {
+      "semantic": "quarter",
+      "nativeAliases": [
+        "Quarter"
+      ],
+      "propertyIds": [
+        "document.number.periodicity"
+      ],
+      "objectKinds": [
+        "document"
+      ]
+    },
+    {
+      "semantic": "quarter",
+      "nativeAliases": [
+        "Quarter"
+      ],
+      "propertyIds": [
         "register.periodicity"
       ],
       "objectKinds": [
-        "document",
+        "calculationRegister",
+        "informationRegister"
+      ]
+    },
+    {
+      "semantic": "quickChoice",
+      "nativeAliases": [
+        "QuickChoice"
+      ],
+      "propertyIds": [
+        "choice.mode"
+      ],
+      "objectKinds": [
+        "catalog"
+      ]
+    },
+    {
+      "semantic": "recorderPosition",
+      "nativeAliases": [
+        "RecorderPosition"
+      ],
+      "propertyIds": [
+        "register.periodicity"
+      ],
+      "objectKinds": [
+        "informationRegister"
+      ]
+    },
+    {
+      "semantic": "recorderSubordinate",
+      "nativeAliases": [
+        "RecorderSubordinate"
+      ],
+      "propertyIds": [
+        "register.writeMode"
+      ],
+      "objectKinds": [
         "informationRegister"
       ]
     },
@@ -1719,63 +2608,221 @@
       ]
     },
     {
-      "semantic": "day",
+      "semantic": "showError",
       "nativeAliases": [
-        "Day"
+        "ShowError"
       ],
       "propertyIds": [
-        "document.number.periodicity",
-        "register.periodicity"
+        "field.fillChecking"
       ],
       "objectKinds": [
-        "document",
-        "informationRegister",
-        "calculationRegister"
+        "attribute",
+        "dimension",
+        "resource"
       ]
     },
     {
-      "semantic": "month",
+      "semantic": "showWarning",
       "nativeAliases": [
-        "Month"
+        "ShowWarning"
       ],
       "propertyIds": [
-        "document.number.periodicity",
-        "register.periodicity"
+        "field.fillChecking"
       ],
       "objectKinds": [
-        "document",
-        "informationRegister",
-        "calculationRegister"
+        "attribute",
+        "dimension",
+        "resource"
       ]
     },
     {
-      "semantic": "quarter",
+      "semantic": "spreadsheetDocument",
       "nativeAliases": [
-        "Quarter"
+        "SpreadsheetDocument"
       ],
       "propertyIds": [
-        "document.number.periodicity",
-        "register.periodicity"
+        "template.type"
       ],
       "objectKinds": [
-        "document",
-        "informationRegister",
-        "calculationRegister"
+        "commonTemplate",
+        "spreadsheetDocumentTemplate",
+        "template"
       ]
     },
     {
-      "semantic": "year",
+      "semantic": "string",
       "nativeAliases": [
-        "Year"
+        "String"
       ],
       "propertyIds": [
-        "document.number.periodicity",
-        "register.periodicity"
+        "code.type"
       ],
       "objectKinds": [
+        "catalog",
+        "chartOfCalculationTypes"
+      ]
+    },
+    {
+      "semantic": "string",
+      "nativeAliases": [
+        "String"
+      ],
+      "propertyIds": [
+        "document.number.type"
+      ],
+      "objectKinds": [
+        "document"
+      ]
+    },
+    {
+      "semantic": "string",
+      "nativeAliases": [
+        "String"
+      ],
+      "propertyIds": [
+        "number.type"
+      ],
+      "objectKinds": [
+        "businessProcess",
+        "task"
+      ]
+    },
+    {
+      "semantic": "textDocument",
+      "nativeAliases": [
+        "TextDocument"
+      ],
+      "propertyIds": [
+        "template.type"
+      ],
+      "objectKinds": [
+        "commonTemplate",
+        "spreadsheetDocumentTemplate",
+        "template"
+      ]
+    },
+    {
+      "semantic": "toGroups",
+      "nativeAliases": [
+        "ToFolders"
+      ],
+      "propertyIds": [
+        "subordination.use"
+      ],
+      "objectKinds": [
+        "catalog"
+      ]
+    },
+    {
+      "semantic": "toGroupsAndItems",
+      "nativeAliases": [
+        "ToFoldersAndItems"
+      ],
+      "propertyIds": [
+        "subordination.use"
+      ],
+      "objectKinds": [
+        "catalog"
+      ]
+    },
+    {
+      "semantic": "toItems",
+      "nativeAliases": [
+        "ToItems"
+      ],
+      "propertyIds": [
+        "subordination.use"
+      ],
+      "objectKinds": [
+        "catalog"
+      ]
+    },
+    {
+      "semantic": "turnovers",
+      "nativeAliases": [
+        "Turnovers"
+      ],
+      "propertyIds": [
+        "register.type"
+      ],
+      "objectKinds": [
+        "accumulationRegister"
+      ]
+    },
+    {
+      "semantic": "use",
+      "nativeAliases": [
+        "AutoUse"
+      ],
+      "propertyIds": [
+        "httpService.reuseSessions"
+      ],
+      "objectKinds": [
+        "httpService"
+      ]
+    },
+    {
+      "semantic": "use",
+      "nativeAliases": [
+        "Use"
+      ],
+      "propertyIds": [
+        "search.fullText.mode"
+      ],
+      "objectKinds": [
+        "accountingRegister",
+        "accumulationRegister",
+        "businessProcess",
+        "calculationRegister",
+        "catalog",
+        "chartOfAccounts",
+        "chartOfCalculationTypes",
+        "chartOfCharacteristicTypes",
         "document",
+        "exchangePlan",
         "informationRegister",
-        "calculationRegister"
+        "task"
+      ]
+    },
+    {
+      "semantic": "use",
+      "nativeAliases": [
+        "AutoUse"
+      ],
+      "propertyIds": [
+        "webService.reuseSessions"
+      ],
+      "objectKinds": [
+        "webService"
+      ]
+    },
+    {
+      "semantic": "variable",
+      "nativeAliases": [
+        "Variable"
+      ],
+      "propertyIds": [
+        "code.allowedLength"
+      ],
+      "objectKinds": [
+        "catalog",
+        "chartOfCalculationTypes",
+        "chartOfCharacteristicTypes",
+        "exchangePlan"
+      ]
+    },
+    {
+      "semantic": "variable",
+      "nativeAliases": [
+        "Variable"
+      ],
+      "propertyIds": [
+        "number.allowedLength"
+      ],
+      "objectKinds": [
+        "businessProcess",
+        "document",
+        "task"
       ]
     },
     {
@@ -1815,74 +2862,12 @@
       ]
     },
     {
-      "semantic": "recorderPosition",
+      "semantic": "writeAll",
       "nativeAliases": [
-        "RecorderPosition"
+        "WriteAll"
       ],
       "propertyIds": [
-        "register.periodicity"
-      ],
-      "objectKinds": [
-        "informationRegister"
-      ]
-    },
-    {
-      "semantic": "allow",
-      "nativeAliases": [
-        "Allow"
-      ],
-      "propertyIds": [
-        "document.posting.mode",
-        "document.realTimePosting.mode"
-      ],
-      "objectKinds": [
-        "document"
-      ]
-    },
-    {
-      "semantic": "deny",
-      "nativeAliases": [
-        "Deny"
-      ],
-      "propertyIds": [
-        "document.posting.mode",
-        "document.realTimePosting.mode"
-      ],
-      "objectKinds": [
-        "document"
-      ]
-    },
-    {
-      "semantic": "deleteAutomatic",
-      "nativeAliases": [
-        "AutoDelete"
-      ],
-      "propertyIds": [
-        "document.registerRecordsDeletion.mode"
-      ],
-      "objectKinds": [
-        "document"
-      ]
-    },
-    {
-      "semantic": "deleteOnReversal",
-      "nativeAliases": [
-        "AutoDeleteOnUnpost"
-      ],
-      "propertyIds": [
-        "document.registerRecordsDeletion.mode"
-      ],
-      "objectKinds": [
-        "document"
-      ]
-    },
-    {
-      "semantic": "deleteDisabled",
-      "nativeAliases": [
-        "AutoDeleteOff"
-      ],
-      "propertyIds": [
-        "document.registerRecordsDeletion.mode"
+        "document.registerRecordsWritingOnPost.mode"
       ],
       "objectKinds": [
         "document"
@@ -1913,400 +2898,28 @@
       ]
     },
     {
-      "semantic": "writeAll",
+      "semantic": "year",
       "nativeAliases": [
-        "WriteAll"
+        "Year"
       ],
       "propertyIds": [
-        "document.registerRecordsWritingOnPost.mode"
+        "document.number.periodicity"
       ],
       "objectKinds": [
         "document"
       ]
     },
     {
-      "semantic": "hierarchyOfItems",
+      "semantic": "year",
       "nativeAliases": [
-        "HierarchyOfItems"
+        "Year"
       ],
       "propertyIds": [
-        "catalog.hierarchy.type"
+        "register.periodicity"
       ],
       "objectKinds": [
-        "catalog"
-      ]
-    },
-    {
-      "semantic": "hierarchyOfGroupsAndItems",
-      "nativeAliases": [
-        "HierarchyFoldersAndItems"
-      ],
-      "propertyIds": [
-        "catalog.hierarchy.type"
-      ],
-      "objectKinds": [
-        "catalog"
-      ]
-    },
-    {
-      "semantic": "balance",
-      "nativeAliases": [
-        "Balance",
-        "Balances"
-      ],
-      "propertyIds": [
-        "register.type"
-      ],
-      "objectKinds": [
-        "accumulationRegister"
-      ]
-    },
-    {
-      "semantic": "turnovers",
-      "nativeAliases": [
-        "Turnovers"
-      ],
-      "propertyIds": [
-        "register.type"
-      ],
-      "objectKinds": [
-        "accumulationRegister"
-      ]
-    },
-    {
-      "semantic": "independent",
-      "nativeAliases": [
-        "Independent"
-      ],
-      "propertyIds": [
-        "register.writeMode"
-      ],
-      "objectKinds": [
+        "calculationRegister",
         "informationRegister"
-      ]
-    },
-    {
-      "semantic": "recorderSubordinate",
-      "nativeAliases": [
-        "RecorderSubordinate"
-      ],
-      "propertyIds": [
-        "register.writeMode"
-      ],
-      "objectKinds": [
-        "informationRegister"
-      ]
-    },
-    {
-      "semantic": "dontCheck",
-      "nativeAliases": [
-        "DontCheck"
-      ],
-      "propertyIds": [
-        "field.fillChecking"
-      ],
-      "objectKinds": [
-        "attribute",
-        "dimension",
-        "resource"
-      ]
-    },
-    {
-      "semantic": "showError",
-      "nativeAliases": [
-        "ShowError"
-      ],
-      "propertyIds": [
-        "field.fillChecking"
-      ],
-      "objectKinds": [
-        "attribute",
-        "dimension",
-        "resource"
-      ]
-    },
-    {
-      "semantic": "showWarning",
-      "nativeAliases": [
-        "ShowWarning"
-      ],
-      "propertyIds": [
-        "field.fillChecking"
-      ],
-      "objectKinds": [
-        "attribute",
-        "dimension",
-        "resource"
-      ]
-    },
-    {
-      "semantic": "dontIndex",
-      "nativeAliases": [
-        "DontIndex"
-      ],
-      "propertyIds": [
-        "field.indexing"
-      ],
-      "objectKinds": [
-        "attribute",
-        "dimension",
-        "resource"
-      ]
-    },
-    {
-      "semantic": "index",
-      "nativeAliases": [
-        "Index"
-      ],
-      "propertyIds": [
-        "field.indexing"
-      ],
-      "objectKinds": [
-        "attribute",
-        "dimension",
-        "resource"
-      ]
-    },
-    {
-      "semantic": "indexWithAdditionalOrder",
-      "nativeAliases": [
-        "IndexWithAdditionalOrder"
-      ],
-      "propertyIds": [
-        "field.indexing"
-      ],
-      "objectKinds": [
-        "attribute",
-        "dimension",
-        "resource"
-      ]
-    },
-    {
-      "semantic": "use",
-      "nativeAliases": [
-        "AutoUse"
-      ],
-      "propertyIds": [
-        "httpService.reuseSessions",
-        "webService.reuseSessions"
-      ],
-      "objectKinds": [
-        "httpService",
-        "webService"
-      ]
-    },
-    {
-      "semantic": "dontUse",
-      "nativeAliases": [
-        "DontUse"
-      ],
-      "propertyIds": [
-        "module.returnValuesReuse",
-        "httpService.reuseSessions",
-        "webService.reuseSessions"
-      ],
-      "objectKinds": [
-        "commonModule",
-        "httpService",
-        "webService"
-      ]
-    },
-    {
-      "semantic": "forItem",
-      "nativeAliases": [
-        "ForItem"
-      ],
-      "propertyIds": [
-        "field.use"
-      ],
-      "objectKinds": [
-        "attribute",
-        "dimension",
-        "resource"
-      ]
-    },
-    {
-      "semantic": "groupOnly",
-      "nativeAliases": [
-        "ForFolder"
-      ],
-      "propertyIds": [
-        "field.use"
-      ],
-      "objectKinds": [
-        "attribute",
-        "dimension",
-        "resource"
-      ]
-    },
-    {
-      "semantic": "groupsAndItems",
-      "nativeAliases": [
-        "ForFolderAndItem"
-      ],
-      "propertyIds": [
-        "field.use"
-      ],
-      "objectKinds": [
-        "attribute",
-        "dimension",
-        "resource"
-      ]
-    },
-    {
-      "semantic": "duringRequest",
-      "nativeAliases": [
-        "DuringRequest"
-      ],
-      "propertyIds": [
-        "module.returnValuesReuse"
-      ],
-      "objectKinds": [
-        "commonModule"
-      ]
-    },
-    {
-      "semantic": "duringSession",
-      "nativeAliases": [
-        "DuringSession"
-      ],
-      "propertyIds": [
-        "module.returnValuesReuse"
-      ],
-      "objectKinds": [
-        "commonModule"
-      ]
-    },
-    {
-      "semantic": "in",
-      "nativeAliases": [
-        "In"
-      ],
-      "propertyIds": [
-        "webService.parameter.direction"
-      ],
-      "objectKinds": [
-        "webServiceParameter"
-      ]
-    },
-    {
-      "semantic": "out",
-      "nativeAliases": [
-        "Out"
-      ],
-      "propertyIds": [
-        "webService.parameter.direction"
-      ],
-      "objectKinds": [
-        "webServiceParameter"
-      ]
-    },
-    {
-      "semantic": "inOut",
-      "nativeAliases": [
-        "InOut"
-      ],
-      "propertyIds": [
-        "webService.parameter.direction"
-      ],
-      "objectKinds": [
-        "webServiceParameter"
-      ]
-    },
-    {
-      "semantic": "managed",
-      "nativeAliases": [
-        "Managed"
-      ],
-      "propertyIds": [
-        "form.type"
-      ],
-      "objectKinds": [
-        "form",
-        "commonForm"
-      ]
-    },
-    {
-      "semantic": "ordinary",
-      "nativeAliases": [
-        "Ordinary"
-      ],
-      "propertyIds": [
-        "form.type"
-      ],
-      "objectKinds": [
-        "form",
-        "commonForm"
-      ]
-    },
-    {
-      "semantic": "dataCompositionSchema",
-      "nativeAliases": [
-        "DataCompositionSchema"
-      ],
-      "propertyIds": [
-        "template.type"
-      ],
-      "objectKinds": [
-        "template",
-        "spreadsheetDocumentTemplate",
-        "commonTemplate"
-      ]
-    },
-    {
-      "semantic": "spreadsheetDocument",
-      "nativeAliases": [
-        "SpreadsheetDocument"
-      ],
-      "propertyIds": [
-        "template.type"
-      ],
-      "objectKinds": [
-        "template",
-        "spreadsheetDocumentTemplate",
-        "commonTemplate"
-      ]
-    },
-    {
-      "semantic": "binaryData",
-      "nativeAliases": [
-        "BinaryData"
-      ],
-      "propertyIds": [
-        "template.type"
-      ],
-      "objectKinds": [
-        "template",
-        "spreadsheetDocumentTemplate",
-        "commonTemplate"
-      ]
-    },
-    {
-      "semantic": "textDocument",
-      "nativeAliases": [
-        "TextDocument"
-      ],
-      "propertyIds": [
-        "template.type"
-      ],
-      "objectKinds": [
-        "template",
-        "spreadsheetDocumentTemplate",
-        "commonTemplate"
-      ]
-    },
-    {
-      "semantic": "htmlDocument",
-      "nativeAliases": [
-        "HTMLDocument"
-      ],
-      "propertyIds": [
-        "template.type"
-      ],
-      "objectKinds": [
-        "template",
-        "spreadsheetDocumentTemplate",
-        "commonTemplate"
       ]
     }
   ],
@@ -2717,6 +3330,33 @@
         "resource"
       ],
       "reason": "unknownValueVariant"
+    }
+  ],
+  "derivedEnumValues": [
+    {
+      "case": "supportAbsent",
+      "semantic": "notSupported",
+      "semanticProperty": "support.state"
+    },
+    {
+      "case": "supportRemoved",
+      "semantic": "removedFromSupport",
+      "semanticProperty": "support.state"
+    },
+    {
+      "case": "supportEditable",
+      "semantic": "supportedEditable",
+      "semanticProperty": "support.state"
+    },
+    {
+      "case": "supportLocked",
+      "semantic": "supportedLocked",
+      "semanticProperty": "support.state"
+    },
+    {
+      "case": "supportConfigurationReadOnly",
+      "semantic": "configurationReadOnly",
+      "semanticProperty": "support.state"
     }
   ]
 }

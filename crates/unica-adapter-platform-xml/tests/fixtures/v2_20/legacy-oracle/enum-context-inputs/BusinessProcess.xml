@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <BusinessProcess uuid="61000000-0000-0000-0000-000000000003">
+    <Properties>
+      <Name>EnumContextBusinessProcess</Name>
+      <DataLockControlMode>Automatic</DataLockControlMode>
+      <EditType>BothWays</EditType>
+      <FullTextSearch>Use</FullTextSearch>
+      <NumberAllowedLength>Fixed</NumberAllowedLength>
+      <NumberType>String</NumberType>
+    </Properties>
+  </BusinessProcess>
+</MetaDataObject>

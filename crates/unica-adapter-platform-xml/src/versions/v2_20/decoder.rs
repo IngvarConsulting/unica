@@ -1375,7 +1375,7 @@ fn decode_rights(
         &mut root_unknown,
     );
     match root.attribute("version") {
-        Some("2.17") => {}
+        Some("2.17" | "2.20") => {}
         Some(value) => root_unknown.record_value(value),
         None => root_unknown.record_marker(),
     }

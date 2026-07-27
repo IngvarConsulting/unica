@@ -33,6 +33,9 @@ const PRESENTATION: &[SemanticFacetMember] = &[
     SemanticFacetMember::Property(SemanticPropertyId::PRESENTATION_EXTENDED_OBJECT),
     SemanticFacetMember::Property(SemanticPropertyId::PRESENTATION_LIST),
     SemanticFacetMember::Property(SemanticPropertyId::PRESENTATION_EXTENDED_LIST),
+    SemanticFacetMember::Property(SemanticPropertyId::CHOICE_MODE),
+    SemanticFacetMember::Property(SemanticPropertyId::DEFAULT_PRESENTATION_MODE),
+    SemanticFacetMember::Property(SemanticPropertyId::EDIT_MODE),
 ];
 const SUPPORT: &[SemanticFacetMember] = &[
     SemanticFacetMember::Property(SemanticPropertyId::SUPPORT_STATE),
@@ -40,6 +43,10 @@ const SUPPORT: &[SemanticFacetMember] = &[
     SemanticFacetMember::Property(SemanticPropertyId::SUPPORT_EDIT_CAPABILITY),
 ];
 const NUMBERING: &[SemanticFacetMember] = &[
+    SemanticFacetMember::Property(SemanticPropertyId::CODE_ALLOWED_LENGTH),
+    SemanticFacetMember::Property(SemanticPropertyId::CODE_TYPE),
+    SemanticFacetMember::Property(SemanticPropertyId::NUMBER_ALLOWED_LENGTH),
+    SemanticFacetMember::Property(SemanticPropertyId::NUMBER_TYPE),
     SemanticFacetMember::Property(SemanticPropertyId::DOCUMENT_NUMBER_TYPE),
     SemanticFacetMember::Property(SemanticPropertyId::DOCUMENT_NUMBER_LENGTH),
     SemanticFacetMember::Property(SemanticPropertyId::DOCUMENT_NUMBER_PERIODICITY),
@@ -136,6 +143,10 @@ const OPERATION: &[SemanticFacetMember] = &[
     SemanticFacetMember::Relation(SemanticRelationId::PARAMETERS),
 ];
 const STRUCTURE: &[SemanticFacetMember] = &[
+    SemanticFacetMember::Property(SemanticPropertyId::LOCK_CONTROL_MODE),
+    SemanticFacetMember::Property(SemanticPropertyId::FULL_TEXT_SEARCH_MODE),
+    SemanticFacetMember::Property(SemanticPropertyId::CALCULATION_DEPENDENCE_MODE),
+    SemanticFacetMember::Property(SemanticPropertyId::SUBORDINATION_USE),
     SemanticFacetMember::Relation(SemanticRelationId::CHILDREN),
     SemanticFacetMember::Relation(SemanticRelationId::TABULAR_SECTIONS),
     SemanticFacetMember::Relation(SemanticRelationId::FORMS),

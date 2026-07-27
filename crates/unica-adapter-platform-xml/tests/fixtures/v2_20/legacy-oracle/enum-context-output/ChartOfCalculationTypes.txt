@@ -1,0 +1,3 @@
+﻿=== План видов расчёта: EnumContextChartOfCalculationTypes ===
+Поддержка: не на поддержке
+Представление типа: EnumContextChartOfCalculationTypes

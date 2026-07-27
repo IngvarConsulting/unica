@@ -1,0 +1,3 @@
+﻿=== План счетов: EnumContextChartOfAccounts ===
+Поддержка: не на поддержке
+Представление типа: EnumContextChartOfAccounts

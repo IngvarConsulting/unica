@@ -1,0 +1,2 @@
+﻿=== Регистр бухгалтерии: EnumContextAccountingRegister ===
+Поддержка: не на поддержке

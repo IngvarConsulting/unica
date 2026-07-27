@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <WebService uuid="61000000-0000-0000-0000-000000000019">
+    <Properties>
+      <Name>EnumContextWebService</Name>
+      <ReuseSessions>AutoUse</ReuseSessions>
+    </Properties>
+    <ChildObjects>
+      <Operation uuid="61000000-0000-0000-0000-000000000020">
+        <Properties><Name>ContextOperation</Name></Properties>
+        <ChildObjects>
+          <Parameter uuid="61000000-0000-0000-0000-000000000021">
+            <Properties>
+              <Name>ContextParameter</Name>
+              <TransferDirection>In</TransferDirection>
+            </Properties>
+          </Parameter>
+        </ChildObjects>
+      </Operation>
+    </ChildObjects>
+  </WebService>
+</MetaDataObject>

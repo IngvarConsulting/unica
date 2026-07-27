@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <InformationRegister uuid="61000000-0000-0000-0000-000000000012">
+    <Properties>
+      <Name>EnumContextFieldOwners</Name>
+      <DataLockControlMode>Automatic</DataLockControlMode>
+      <FullTextSearch>Use</FullTextSearch>
+      <InformationRegisterPeriodicity>Day</InformationRegisterPeriodicity>
+      <WriteMode>Independent</WriteMode>
+    </Properties>
+    <ChildObjects>
+      <Attribute uuid="61000000-0000-0000-0000-000000000013">
+        <Properties>
+          <Name>ContextAttribute</Name>
+          <FillChecking>DontCheck</FillChecking>
+          <Indexing>DontIndex</Indexing>
+          <Use>ForItem</Use>
+        </Properties>
+      </Attribute>
+      <Dimension uuid="61000000-0000-0000-0000-000000000014">
+        <Properties>
+          <Name>ContextDimension</Name>
+          <FillChecking>DontCheck</FillChecking>
+          <Indexing>DontIndex</Indexing>
+          <Use>ForItem</Use>
+        </Properties>
+      </Dimension>
+      <Resource uuid="61000000-0000-0000-0000-000000000015">
+        <Properties>
+          <Name>ContextResource</Name>
+          <FillChecking>DontCheck</FillChecking>
+          <Indexing>DontIndex</Indexing>
+          <Use>ForItem</Use>
+        </Properties>
+      </Resource>
+    </ChildObjects>
+  </InformationRegister>
+</MetaDataObject>

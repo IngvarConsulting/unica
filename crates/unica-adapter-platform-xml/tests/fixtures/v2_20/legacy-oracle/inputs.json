@@ -212,6 +212,85 @@
       "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/role-info/multi-target-reader.all.txt",
       "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights",
       "tool": "roleInfo"
+    },
+    {
+      "id": "supportNotSupported",
+      "tool": "metaInfo",
+      "profile": "meta-full",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/not-supported/Languages/SupportState.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/not-supported",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/not-supported.support.txt",
+      "arguments": [
+        "-Mode",
+        "full"
+      ],
+      "inputArtifacts": [
+        "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/not-supported/Configuration.xml"
+      ]
+    },
+    {
+      "id": "supportRemoved",
+      "tool": "metaInfo",
+      "profile": "meta-full",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/removed/Languages/SupportState.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/removed",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/removed.support.txt",
+      "arguments": [
+        "-Mode",
+        "full"
+      ],
+      "inputArtifacts": [
+        "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/removed/Configuration.xml",
+        "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/removed/Ext/ParentConfigurations.bin"
+      ]
+    },
+    {
+      "id": "supportConfigurationReadOnly",
+      "tool": "metaInfo",
+      "profile": "meta-full",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/configuration-read-only/Languages/SupportState.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/configuration-read-only",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/configuration-read-only.support.txt",
+      "arguments": [
+        "-Mode",
+        "full"
+      ],
+      "inputArtifacts": [
+        "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/configuration-read-only/Configuration.xml",
+        "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/configuration-read-only/Ext/ParentConfigurations.bin"
+      ]
+    },
+    {
+      "id": "supportLocked",
+      "tool": "metaInfo",
+      "profile": "meta-full",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/locked/Languages/SupportState.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/locked",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/locked.support.txt",
+      "arguments": [
+        "-Mode",
+        "full"
+      ],
+      "inputArtifacts": [
+        "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/locked/Configuration.xml",
+        "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/locked/Ext/ParentConfigurations.bin"
+      ]
+    },
+    {
+      "id": "supportEditable",
+      "tool": "metaInfo",
+      "profile": "meta-full",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/editable/Languages/SupportState.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/editable",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/editable.support.txt",
+      "arguments": [
+        "-Mode",
+        "full"
+      ],
+      "inputArtifacts": [
+        "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/editable/Configuration.xml",
+        "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/editable/Ext/ParentConfigurations.bin"
+      ]
     }
   ],
   "contractInputs": [
@@ -228,7 +307,23 @@
     "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights/SalesReader.xml",
     "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights/SalesReader/Ext/Rights.xml",
     "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/unknowns/UnknownCases.xml",
-    "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/unknowns/UnknownCases/Ext/Future.bin"
+    "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/unknowns/UnknownCases/Ext/Future.bin",
+    "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights/MultiTargetReader.xml",
+    "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights/MultiTargetReader/Ext/Rights.xml",
+    "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/not-supported/Languages/SupportState.xml",
+    "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/not-supported/Configuration.xml",
+    "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/removed/Languages/SupportState.xml",
+    "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/removed/Configuration.xml",
+    "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/removed/Ext/ParentConfigurations.bin",
+    "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/configuration-read-only/Languages/SupportState.xml",
+    "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/configuration-read-only/Configuration.xml",
+    "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/configuration-read-only/Ext/ParentConfigurations.bin",
+    "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/locked/Languages/SupportState.xml",
+    "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/locked/Configuration.xml",
+    "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/locked/Ext/ParentConfigurations.bin",
+    "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/editable/Languages/SupportState.xml",
+    "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/editable/Configuration.xml",
+    "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/support-states/editable/Ext/ParentConfigurations.bin"
   ],
   "referenceSources": {
     "formAdd": "tests/fixtures/unica_mcp_script_parity/unica_reference_models/form-add/scripts/form-add.py",
@@ -239,5 +334,199 @@
     "roleInfo": "tests/fixtures/unica_mcp_script_parity/unica_reference_models/role-info/scripts/role-info.py",
     "templateAdd": "tests/fixtures/unica_mcp_script_parity/unica_reference_models/template-add/scripts/add-template.py"
   },
-  "schemaVersion": 1
+  "schemaVersion": 1,
+  "contextCases": [
+    {
+      "id": "enumContextAccountingRegister",
+      "tool": "metaInfo",
+      "profile": "enum-context-evidence",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/AccountingRegister.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/AccountingRegister.txt",
+      "arguments": [
+        "-Mode",
+        "full"
+      ]
+    },
+    {
+      "id": "enumContextAccumulationRegister",
+      "tool": "metaInfo",
+      "profile": "enum-context-evidence",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/AccumulationRegister.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/AccumulationRegister.txt",
+      "arguments": [
+        "-Mode",
+        "full"
+      ]
+    },
+    {
+      "id": "enumContextBusinessProcess",
+      "tool": "metaInfo",
+      "profile": "enum-context-evidence",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/BusinessProcess.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/BusinessProcess.txt",
+      "arguments": [
+        "-Mode",
+        "full"
+      ]
+    },
+    {
+      "id": "enumContextCalculationRegister",
+      "tool": "metaInfo",
+      "profile": "enum-context-evidence",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/CalculationRegister.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/CalculationRegister.txt",
+      "arguments": [
+        "-Mode",
+        "full"
+      ]
+    },
+    {
+      "id": "enumContextCatalog",
+      "tool": "metaInfo",
+      "profile": "enum-context-evidence",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Catalog.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Catalog.txt",
+      "arguments": [
+        "-Mode",
+        "full"
+      ]
+    },
+    {
+      "id": "enumContextChartOfAccounts",
+      "tool": "metaInfo",
+      "profile": "enum-context-evidence",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfAccounts.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfAccounts.txt",
+      "arguments": [
+        "-Mode",
+        "full"
+      ]
+    },
+    {
+      "id": "enumContextChartOfCalculationTypes",
+      "tool": "metaInfo",
+      "profile": "enum-context-evidence",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfCalculationTypes.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfCalculationTypes.txt",
+      "arguments": [
+        "-Mode",
+        "full"
+      ]
+    },
+    {
+      "id": "enumContextChartOfCharacteristicTypes",
+      "tool": "metaInfo",
+      "profile": "enum-context-evidence",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfCharacteristicTypes.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfCharacteristicTypes.txt",
+      "arguments": [
+        "-Mode",
+        "full"
+      ]
+    },
+    {
+      "id": "enumContextConstant",
+      "tool": "metaInfo",
+      "profile": "enum-context-evidence",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Constant.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Constant.txt",
+      "arguments": [
+        "-Mode",
+        "full"
+      ]
+    },
+    {
+      "id": "enumContextDocument",
+      "tool": "metaInfo",
+      "profile": "enum-context-evidence",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Document.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Document.txt",
+      "arguments": [
+        "-Mode",
+        "full"
+      ]
+    },
+    {
+      "id": "enumContextExchangePlan",
+      "tool": "metaInfo",
+      "profile": "enum-context-evidence",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ExchangePlan.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ExchangePlan.txt",
+      "arguments": [
+        "-Mode",
+        "full"
+      ]
+    },
+    {
+      "id": "enumContextFieldOwners",
+      "tool": "metaInfo",
+      "profile": "enum-context-evidence",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt",
+      "arguments": [
+        "-Mode",
+        "full"
+      ]
+    },
+    {
+      "id": "enumContextHTTPService",
+      "tool": "metaInfo",
+      "profile": "enum-context-evidence",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/HTTPService.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/HTTPService.txt",
+      "arguments": [
+        "-Mode",
+        "full"
+      ]
+    },
+    {
+      "id": "enumContextSpreadsheetDocumentTemplate",
+      "tool": "metaInfo",
+      "profile": "enum-context-evidence",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/SpreadsheetDocumentTemplate.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/SpreadsheetDocumentTemplate.txt",
+      "arguments": [
+        "-Mode",
+        "full"
+      ]
+    },
+    {
+      "id": "enumContextTask",
+      "tool": "metaInfo",
+      "profile": "enum-context-evidence",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Task.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Task.txt",
+      "arguments": [
+        "-Mode",
+        "full"
+      ]
+    },
+    {
+      "id": "enumContextWebService",
+      "tool": "metaInfo",
+      "profile": "enum-context-evidence",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/WebService.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs",
+      "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/WebService.txt",
+      "arguments": [
+        "-Mode",
+        "full"
+      ]
+    }
+  ]
 }

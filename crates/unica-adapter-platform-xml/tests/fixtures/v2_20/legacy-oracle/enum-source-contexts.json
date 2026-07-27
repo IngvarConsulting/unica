@@ -10,6 +10,22 @@
         "commonForm",
         "form"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_form/CommonDashboard.xml",
+          "nativeOwner": "CommonForm",
+          "nativeValue": "Managed",
+          "objectKind": "commonForm",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/common-form.full.txt"
+        },
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport/Forms/MainForm.xml",
+          "nativeOwner": "Form",
+          "nativeValue": "Managed",
+          "objectKind": "form",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/owned-artifacts.full.txt"
+        }
+      ],
       "sourceFact": "legacyDescriptors:FormType",
       "sourceKey": "FormType",
       "sourceLocation": {
@@ -33,12 +49,36 @@
         "spreadsheetDocumentTemplate",
         "template"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_template/CommonLayout.xml",
+          "nativeOwner": "CommonTemplate",
+          "nativeValue": "BinaryData",
+          "objectKind": "commonTemplate",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/common-template.full.txt"
+        },
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/SpreadsheetDocumentTemplate.xml",
+          "nativeOwner": "Template",
+          "nativeValue": "SpreadsheetDocument",
+          "objectKind": "spreadsheetDocumentTemplate",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/SpreadsheetDocumentTemplate.txt"
+        },
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport/Templates/MainSchema.xml",
+          "nativeOwner": "Template",
+          "nativeValue": "DataCompositionSchema",
+          "objectKind": "template",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/owned-artifacts.full.txt"
+        }
+      ],
       "sourceFact": "legacyDescriptors:TemplateType",
       "sourceKey": "TemplateType",
       "sourceLocation": {
         "fixtures": [
           "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport/Templates/MainSchema.xml",
-          "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_template/CommonLayout.xml"
+          "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_template/CommonLayout.xml",
+          "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/SpreadsheetDocumentTemplate.xml"
         ]
       }
     },
@@ -50,6 +90,15 @@
       "nativeProperty": "DataLockControlMode",
       "objectKinds": [
         "accountingRegister"
+      ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/AccountingRegister.xml",
+          "nativeOwner": "AccountingRegister",
+          "nativeValue": "Automatic",
+          "objectKind": "accountingRegister",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/AccountingRegister.txt"
+        }
       ],
       "sourceFact": "metaCompile:emit_accounting_register_properties:DataLockControlMode",
       "sourceKey": "DataLockControlMode",
@@ -67,6 +116,15 @@
       "objectKinds": [
         "accountingRegister"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/AccountingRegister.xml",
+          "nativeOwner": "AccountingRegister",
+          "nativeValue": "Use",
+          "objectKind": "accountingRegister",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/AccountingRegister.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_accounting_register_properties:FullTextSearch",
       "sourceKey": "FullTextSearch",
       "sourceLocation": {
@@ -83,6 +141,15 @@
       "objectKinds": [
         "accumulationRegister"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/AccumulationRegister.xml",
+          "nativeOwner": "AccumulationRegister",
+          "nativeValue": "Automatic",
+          "objectKind": "accumulationRegister",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/AccumulationRegister.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_accumulation_register_properties:DataLockControlMode",
       "sourceKey": "DataLockControlMode",
       "sourceLocation": {
@@ -98,6 +165,15 @@
       "nativeProperty": "FullTextSearch",
       "objectKinds": [
         "accumulationRegister"
+      ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/AccumulationRegister.xml",
+          "nativeOwner": "AccumulationRegister",
+          "nativeValue": "Use",
+          "objectKind": "accumulationRegister",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/AccumulationRegister.txt"
+        }
       ],
       "sourceFact": "metaCompile:emit_accumulation_register_properties:FullTextSearch",
       "sourceKey": "FullTextSearch",
@@ -116,6 +192,15 @@
       "objectKinds": [
         "accumulationRegister"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/AccumulationRegister.xml",
+          "nativeOwner": "AccumulationRegister",
+          "nativeValue": "Balance",
+          "objectKind": "accumulationRegister",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/AccumulationRegister.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_accumulation_register_properties:RegisterType",
       "sourceKey": "RegisterType",
       "sourceLocation": {
@@ -131,6 +216,15 @@
       "nativeProperty": "DataLockControlMode",
       "objectKinds": [
         "businessProcess"
+      ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/BusinessProcess.xml",
+          "nativeOwner": "BusinessProcess",
+          "nativeValue": "Automatic",
+          "objectKind": "businessProcess",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/BusinessProcess.txt"
+        }
       ],
       "sourceFact": "metaCompile:emit_business_process_properties:DataLockControlMode",
       "sourceKey": "DataLockControlMode",
@@ -149,6 +243,15 @@
       "objectKinds": [
         "businessProcess"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/BusinessProcess.xml",
+          "nativeOwner": "BusinessProcess",
+          "nativeValue": "BothWays",
+          "objectKind": "businessProcess",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/BusinessProcess.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_business_process_properties:EditType",
       "sourceKey": "EditType",
       "sourceLocation": {
@@ -164,6 +267,15 @@
       "nativeProperty": "FullTextSearch",
       "objectKinds": [
         "businessProcess"
+      ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/BusinessProcess.xml",
+          "nativeOwner": "BusinessProcess",
+          "nativeValue": "Use",
+          "objectKind": "businessProcess",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/BusinessProcess.txt"
+        }
       ],
       "sourceFact": "metaCompile:emit_business_process_properties:FullTextSearch",
       "sourceKey": "FullTextSearch",
@@ -181,6 +293,15 @@
       "objectKinds": [
         "businessProcess"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/BusinessProcess.xml",
+          "nativeOwner": "BusinessProcess",
+          "nativeValue": "Fixed",
+          "objectKind": "businessProcess",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/BusinessProcess.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_business_process_properties:NumberAllowedLength",
       "sourceKey": "NumberAllowedLength",
       "sourceLocation": {
@@ -196,6 +317,15 @@
       "nativeProperty": "NumberType",
       "objectKinds": [
         "businessProcess"
+      ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/BusinessProcess.xml",
+          "nativeOwner": "BusinessProcess",
+          "nativeValue": "String",
+          "objectKind": "businessProcess",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/BusinessProcess.txt"
+        }
       ],
       "sourceFact": "metaCompile:emit_business_process_properties:NumberType",
       "sourceKey": "NumberType",
@@ -213,6 +343,15 @@
       "objectKinds": [
         "calculationRegister"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/CalculationRegister.xml",
+          "nativeOwner": "CalculationRegister",
+          "nativeValue": "Automatic",
+          "objectKind": "calculationRegister",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/CalculationRegister.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_calculation_register_properties:DataLockControlMode",
       "sourceKey": "DataLockControlMode",
       "sourceLocation": {
@@ -228,6 +367,15 @@
       "nativeProperty": "FullTextSearch",
       "objectKinds": [
         "calculationRegister"
+      ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/CalculationRegister.xml",
+          "nativeOwner": "CalculationRegister",
+          "nativeValue": "Use",
+          "objectKind": "calculationRegister",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/CalculationRegister.txt"
+        }
       ],
       "sourceFact": "metaCompile:emit_calculation_register_properties:FullTextSearch",
       "sourceKey": "FullTextSearch",
@@ -247,6 +395,15 @@
       "objectKinds": [
         "calculationRegister"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/CalculationRegister.xml",
+          "nativeOwner": "CalculationRegister",
+          "nativeValue": "Day",
+          "objectKind": "calculationRegister",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/CalculationRegister.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_calculation_register_properties:Periodicity",
       "sourceKey": "CalculationRegisterPeriodicity",
       "sourceLocation": {
@@ -264,6 +421,15 @@
       "objectKinds": [
         "catalog"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Catalog.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "BothWays",
+          "objectKind": "catalog",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Catalog.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_catalog_properties:ChoiceMode",
       "sourceKey": "ChoiceMode",
       "sourceLocation": {
@@ -279,6 +445,15 @@
       "nativeProperty": "CodeAllowedLength",
       "objectKinds": [
         "catalog"
+      ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Catalog.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "Fixed",
+          "objectKind": "catalog",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Catalog.txt"
+        }
       ],
       "sourceFact": "metaCompile:emit_catalog_properties:CodeAllowedLength",
       "sourceKey": "CodeAllowedLength",
@@ -297,6 +472,15 @@
       "objectKinds": [
         "catalog"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Catalog.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "WholeCatalog",
+          "objectKind": "catalog",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Catalog.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_catalog_properties:CodeSeries",
       "sourceKey": "CatalogCodeSeries",
       "sourceLocation": {
@@ -312,6 +496,15 @@
       "nativeProperty": "CodeType",
       "objectKinds": [
         "catalog"
+      ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Catalog.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "String",
+          "objectKind": "catalog",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Catalog.txt"
+        }
       ],
       "sourceFact": "metaCompile:emit_catalog_properties:CodeType",
       "sourceKey": "CodeType",
@@ -329,6 +522,15 @@
       "objectKinds": [
         "catalog"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Catalog.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "Automatic",
+          "objectKind": "catalog",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Catalog.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_catalog_properties:DataLockControlMode",
       "sourceKey": "DataLockControlMode",
       "sourceLocation": {
@@ -344,6 +546,15 @@
       "nativeProperty": "DefaultPresentation",
       "objectKinds": [
         "catalog"
+      ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Catalog.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "AsDescription",
+          "objectKind": "catalog",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Catalog.txt"
+        }
       ],
       "sourceFact": "metaCompile:emit_catalog_properties:DefaultPresentation",
       "sourceKey": "DefaultPresentation",
@@ -361,6 +572,15 @@
       "objectKinds": [
         "catalog"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Catalog.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "Use",
+          "objectKind": "catalog",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Catalog.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_catalog_properties:FullTextSearch",
       "sourceKey": "FullTextSearch",
       "sourceLocation": {
@@ -376,6 +596,15 @@
       "nativeProperty": "HierarchyType",
       "objectKinds": [
         "catalog"
+      ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Catalog.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "HierarchyOfItems",
+          "objectKind": "catalog",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Catalog.txt"
+        }
       ],
       "sourceFact": "metaCompile:emit_catalog_properties:HierarchyType",
       "sourceKey": "HierarchyType",
@@ -394,6 +623,15 @@
       "objectKinds": [
         "catalog"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Catalog.xml",
+          "nativeOwner": "Catalog",
+          "nativeValue": "ToItems",
+          "objectKind": "catalog",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Catalog.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_catalog_properties:SubordinationUse",
       "sourceKey": "SubordinationUse",
       "sourceLocation": {
@@ -409,6 +647,15 @@
       "nativeProperty": "DataLockControlMode",
       "objectKinds": [
         "chartOfAccounts"
+      ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfAccounts.xml",
+          "nativeOwner": "ChartOfAccounts",
+          "nativeValue": "Automatic",
+          "objectKind": "chartOfAccounts",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfAccounts.txt"
+        }
       ],
       "sourceFact": "metaCompile:emit_chart_of_accounts_properties:DataLockControlMode",
       "sourceKey": "DataLockControlMode",
@@ -426,6 +673,15 @@
       "objectKinds": [
         "chartOfAccounts"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfAccounts.xml",
+          "nativeOwner": "ChartOfAccounts",
+          "nativeValue": "Use",
+          "objectKind": "chartOfAccounts",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfAccounts.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_chart_of_accounts_properties:FullTextSearch",
       "sourceKey": "FullTextSearch",
       "sourceLocation": {
@@ -441,6 +697,15 @@
       "nativeProperty": "CodeAllowedLength",
       "objectKinds": [
         "chartOfCalculationTypes"
+      ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfCalculationTypes.xml",
+          "nativeOwner": "ChartOfCalculationTypes",
+          "nativeValue": "Fixed",
+          "objectKind": "chartOfCalculationTypes",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfCalculationTypes.txt"
+        }
       ],
       "sourceFact": "metaCompile:emit_chart_of_calculation_types_properties:CodeAllowedLength",
       "sourceKey": "CodeAllowedLength",
@@ -458,6 +723,15 @@
       "objectKinds": [
         "chartOfCalculationTypes"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfCalculationTypes.xml",
+          "nativeOwner": "ChartOfCalculationTypes",
+          "nativeValue": "String",
+          "objectKind": "chartOfCalculationTypes",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfCalculationTypes.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_chart_of_calculation_types_properties:CodeType",
       "sourceKey": "CodeType",
       "sourceLocation": {
@@ -473,6 +747,15 @@
       "nativeProperty": "DataLockControlMode",
       "objectKinds": [
         "chartOfCalculationTypes"
+      ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfCalculationTypes.xml",
+          "nativeOwner": "ChartOfCalculationTypes",
+          "nativeValue": "Automatic",
+          "objectKind": "chartOfCalculationTypes",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfCalculationTypes.txt"
+        }
       ],
       "sourceFact": "metaCompile:emit_chart_of_calculation_types_properties:DataLockControlMode",
       "sourceKey": "DataLockControlMode",
@@ -490,6 +773,15 @@
       "objectKinds": [
         "chartOfCalculationTypes"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfCalculationTypes.xml",
+          "nativeOwner": "ChartOfCalculationTypes",
+          "nativeValue": "DontUse",
+          "objectKind": "chartOfCalculationTypes",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfCalculationTypes.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_chart_of_calculation_types_properties:DependenceOnCalculationTypes",
       "sourceKey": "DependenceOnCalculationTypes",
       "sourceLocation": {
@@ -505,6 +797,15 @@
       "nativeProperty": "FullTextSearch",
       "objectKinds": [
         "chartOfCalculationTypes"
+      ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfCalculationTypes.xml",
+          "nativeOwner": "ChartOfCalculationTypes",
+          "nativeValue": "Use",
+          "objectKind": "chartOfCalculationTypes",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfCalculationTypes.txt"
+        }
       ],
       "sourceFact": "metaCompile:emit_chart_of_calculation_types_properties:FullTextSearch",
       "sourceKey": "FullTextSearch",
@@ -522,6 +823,15 @@
       "objectKinds": [
         "chartOfCharacteristicTypes"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfCharacteristicTypes.xml",
+          "nativeOwner": "ChartOfCharacteristicTypes",
+          "nativeValue": "Fixed",
+          "objectKind": "chartOfCharacteristicTypes",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfCharacteristicTypes.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_chart_of_characteristic_types_properties:CodeAllowedLength",
       "sourceKey": "CodeAllowedLength",
       "sourceLocation": {
@@ -538,6 +848,15 @@
       "objectKinds": [
         "chartOfCharacteristicTypes"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfCharacteristicTypes.xml",
+          "nativeOwner": "ChartOfCharacteristicTypes",
+          "nativeValue": "Automatic",
+          "objectKind": "chartOfCharacteristicTypes",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfCharacteristicTypes.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_chart_of_characteristic_types_properties:DataLockControlMode",
       "sourceKey": "DataLockControlMode",
       "sourceLocation": {
@@ -553,6 +872,15 @@
       "nativeProperty": "FullTextSearch",
       "objectKinds": [
         "chartOfCharacteristicTypes"
+      ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ChartOfCharacteristicTypes.xml",
+          "nativeOwner": "ChartOfCharacteristicTypes",
+          "nativeValue": "Use",
+          "objectKind": "chartOfCharacteristicTypes",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ChartOfCharacteristicTypes.txt"
+        }
       ],
       "sourceFact": "metaCompile:emit_chart_of_characteristic_types_properties:FullTextSearch",
       "sourceKey": "FullTextSearch",
@@ -571,6 +899,15 @@
       "objectKinds": [
         "commonModule"
       ],
+      "ownerEvidence": [
+        {
+          "input": "tests/fixtures/unica_mcp_script_parity/bsp/meta/CommonModules/GoogleПереводчик.xml",
+          "nativeOwner": "CommonModule",
+          "nativeValue": "DontUse",
+          "objectKind": "commonModule",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/meta-info/common-module-google-translator.full.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_common_module_properties:ReturnValuesReuse",
       "sourceKey": "ReturnValuesReuse",
       "sourceLocation": {
@@ -586,6 +923,15 @@
       "nativeProperty": "DataLockControlMode",
       "objectKinds": [
         "constant"
+      ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Constant.xml",
+          "nativeOwner": "Constant",
+          "nativeValue": "Automatic",
+          "objectKind": "constant",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Constant.txt"
+        }
       ],
       "sourceFact": "metaCompile:emit_constant_properties:DataLockControlMode",
       "sourceKey": "DataLockControlMode",
@@ -603,6 +949,15 @@
       "objectKinds": [
         "document"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Document.xml",
+          "nativeOwner": "Document",
+          "nativeValue": "Automatic",
+          "objectKind": "document",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Document.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_document_properties:DataLockControlMode",
       "sourceKey": "DataLockControlMode",
       "sourceLocation": {
@@ -619,6 +974,15 @@
       "objectKinds": [
         "document"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Document.xml",
+          "nativeOwner": "Document",
+          "nativeValue": "Use",
+          "objectKind": "document",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Document.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_document_properties:FullTextSearch",
       "sourceKey": "FullTextSearch",
       "sourceLocation": {
@@ -634,6 +998,15 @@
       "nativeProperty": "NumberAllowedLength",
       "objectKinds": [
         "document"
+      ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Document.xml",
+          "nativeOwner": "Document",
+          "nativeValue": "Fixed",
+          "objectKind": "document",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Document.txt"
+        }
       ],
       "sourceFact": "metaCompile:emit_document_properties:NumberAllowedLength",
       "sourceKey": "NumberAllowedLength",
@@ -654,6 +1027,15 @@
       "objectKinds": [
         "document"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Document.xml",
+          "nativeOwner": "Document",
+          "nativeValue": "Year",
+          "objectKind": "document",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Document.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_document_properties:NumberPeriodicity",
       "sourceKey": "DocumentNumberPeriodicity",
       "sourceLocation": {
@@ -669,6 +1051,15 @@
       "nativeProperty": "NumberType",
       "objectKinds": [
         "document"
+      ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Document.xml",
+          "nativeOwner": "Document",
+          "nativeValue": "String",
+          "objectKind": "document",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Document.txt"
+        }
       ],
       "sourceFact": "metaCompile:emit_document_properties:NumberType",
       "sourceKey": "NumberType",
@@ -686,6 +1077,15 @@
       "objectKinds": [
         "document"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Document.xml",
+          "nativeOwner": "Document",
+          "nativeValue": "Allow",
+          "objectKind": "document",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Document.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_document_properties:Posting",
       "sourceKey": "Posting",
       "sourceLocation": {
@@ -701,6 +1101,15 @@
       "nativeProperty": "RealTimePosting",
       "objectKinds": [
         "document"
+      ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Document.xml",
+          "nativeOwner": "Document",
+          "nativeValue": "Allow",
+          "objectKind": "document",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Document.txt"
+        }
       ],
       "sourceFact": "metaCompile:emit_document_properties:RealTimePosting",
       "sourceKey": "RealTimePosting",
@@ -719,6 +1128,15 @@
       "objectKinds": [
         "document"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Document.xml",
+          "nativeOwner": "Document",
+          "nativeValue": "AutoDelete",
+          "objectKind": "document",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Document.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_document_properties:RegisterRecordsDeletion",
       "sourceKey": "RegisterRecordsDeletion",
       "sourceLocation": {
@@ -736,6 +1154,15 @@
       "objectKinds": [
         "document"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Document.xml",
+          "nativeOwner": "Document",
+          "nativeValue": "WriteAll",
+          "objectKind": "document",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Document.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_document_properties:RegisterRecordsWritingOnPost",
       "sourceKey": "RegisterRecordsWritingOnPost",
       "sourceLocation": {
@@ -751,6 +1178,15 @@
       "nativeProperty": "CodeAllowedLength",
       "objectKinds": [
         "exchangePlan"
+      ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ExchangePlan.xml",
+          "nativeOwner": "ExchangePlan",
+          "nativeValue": "Fixed",
+          "objectKind": "exchangePlan",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ExchangePlan.txt"
+        }
       ],
       "sourceFact": "metaCompile:emit_exchange_plan_properties:CodeAllowedLength",
       "sourceKey": "CodeAllowedLength",
@@ -768,6 +1204,15 @@
       "objectKinds": [
         "exchangePlan"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ExchangePlan.xml",
+          "nativeOwner": "ExchangePlan",
+          "nativeValue": "Automatic",
+          "objectKind": "exchangePlan",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ExchangePlan.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_exchange_plan_properties:DataLockControlMode",
       "sourceKey": "DataLockControlMode",
       "sourceLocation": {
@@ -783,6 +1228,15 @@
       "nativeProperty": "FullTextSearch",
       "objectKinds": [
         "exchangePlan"
+      ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/ExchangePlan.xml",
+          "nativeOwner": "ExchangePlan",
+          "nativeValue": "Use",
+          "objectKind": "exchangePlan",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/ExchangePlan.txt"
+        }
       ],
       "sourceFact": "metaCompile:emit_exchange_plan_properties:FullTextSearch",
       "sourceKey": "FullTextSearch",
@@ -800,6 +1254,15 @@
       "objectKinds": [
         "httpService"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/HTTPService.xml",
+          "nativeOwner": "HTTPService",
+          "nativeValue": "AutoUse",
+          "objectKind": "httpService",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/HTTPService.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_http_service_properties:ReuseSessions",
       "sourceKey": "ReuseSessions",
       "sourceLocation": {
@@ -816,6 +1279,15 @@
       "objectKinds": [
         "informationRegister"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
+          "nativeOwner": "InformationRegister",
+          "nativeValue": "Automatic",
+          "objectKind": "informationRegister",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_information_register_properties:DataLockControlMode",
       "sourceKey": "DataLockControlMode",
       "sourceLocation": {
@@ -831,6 +1303,15 @@
       "nativeProperty": "FullTextSearch",
       "objectKinds": [
         "informationRegister"
+      ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
+          "nativeOwner": "InformationRegister",
+          "nativeValue": "Use",
+          "objectKind": "informationRegister",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
+        }
       ],
       "sourceFact": "metaCompile:emit_information_register_properties:FullTextSearch",
       "sourceKey": "FullTextSearch",
@@ -853,6 +1334,15 @@
       "objectKinds": [
         "informationRegister"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
+          "nativeOwner": "InformationRegister",
+          "nativeValue": "Day",
+          "objectKind": "informationRegister",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_information_register_properties:InformationRegisterPeriodicity",
       "sourceKey": "InformationRegisterPeriodicity",
       "sourceLocation": {
@@ -868,6 +1358,15 @@
       "nativeProperty": "WriteMode",
       "objectKinds": [
         "informationRegister"
+      ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
+          "nativeOwner": "InformationRegister",
+          "nativeValue": "Independent",
+          "objectKind": "informationRegister",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
+        }
       ],
       "sourceFact": "metaCompile:emit_information_register_properties:WriteMode",
       "sourceKey": "WriteMode",
@@ -885,6 +1384,15 @@
       "objectKinds": [
         "task"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Task.xml",
+          "nativeOwner": "Task",
+          "nativeValue": "Automatic",
+          "objectKind": "task",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Task.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_task_properties:DataLockControlMode",
       "sourceKey": "DataLockControlMode",
       "sourceLocation": {
@@ -900,6 +1408,15 @@
       "nativeProperty": "FullTextSearch",
       "objectKinds": [
         "task"
+      ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Task.xml",
+          "nativeOwner": "Task",
+          "nativeValue": "Use",
+          "objectKind": "task",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Task.txt"
+        }
       ],
       "sourceFact": "metaCompile:emit_task_properties:FullTextSearch",
       "sourceKey": "FullTextSearch",
@@ -917,6 +1434,15 @@
       "objectKinds": [
         "task"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Task.xml",
+          "nativeOwner": "Task",
+          "nativeValue": "Fixed",
+          "objectKind": "task",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Task.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_task_properties:NumberAllowedLength",
       "sourceKey": "NumberAllowedLength",
       "sourceLocation": {
@@ -933,6 +1459,15 @@
       "objectKinds": [
         "task"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/Task.xml",
+          "nativeOwner": "Task",
+          "nativeValue": "String",
+          "objectKind": "task",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/Task.txt"
+        }
+      ],
       "sourceFact": "metaCompile:emit_task_properties:NumberType",
       "sourceKey": "NumberType",
       "sourceLocation": {
@@ -948,6 +1483,15 @@
       "nativeProperty": "ReuseSessions",
       "objectKinds": [
         "webService"
+      ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/WebService.xml",
+          "nativeOwner": "WebService",
+          "nativeValue": "AutoUse",
+          "objectKind": "webService",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/WebService.txt"
+        }
       ],
       "sourceFact": "metaCompile:emit_web_service_properties:ReuseSessions",
       "sourceKey": "ReuseSessions",
@@ -968,6 +1512,29 @@
         "dimension",
         "resource"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontCheck",
+          "objectKind": "attribute",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
+        },
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
+          "nativeOwner": "Dimension",
+          "nativeValue": "DontCheck",
+          "objectKind": "dimension",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
+        },
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
+          "nativeOwner": "Resource",
+          "nativeValue": "DontCheck",
+          "objectKind": "resource",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
+        }
+      ],
       "sourceFact": "metaInfo:format_flags:FillChecking",
       "sourceKey": "FillChecking",
       "sourceLocation": {
@@ -986,6 +1553,29 @@
         "attribute",
         "dimension",
         "resource"
+      ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "DontIndex",
+          "objectKind": "attribute",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
+        },
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
+          "nativeOwner": "Dimension",
+          "nativeValue": "DontIndex",
+          "objectKind": "dimension",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
+        },
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
+          "nativeOwner": "Resource",
+          "nativeValue": "DontIndex",
+          "objectKind": "resource",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
+        }
       ],
       "sourceFact": "metaInfo:format_flags:Indexing",
       "sourceKey": "Indexing",
@@ -1006,6 +1596,29 @@
         "dimension",
         "resource"
       ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
+          "nativeOwner": "Attribute",
+          "nativeValue": "ForItem",
+          "objectKind": "attribute",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
+        },
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
+          "nativeOwner": "Dimension",
+          "nativeValue": "ForItem",
+          "objectKind": "dimension",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
+        },
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/FieldOwners.xml",
+          "nativeOwner": "Resource",
+          "nativeValue": "ForItem",
+          "objectKind": "resource",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/FieldOwners.txt"
+        }
+      ],
       "sourceFact": "metaInfo:format_flags:Use",
       "sourceKey": "Use",
       "sourceLocation": {
@@ -1022,6 +1635,15 @@
       "nativeProperty": "TransferDirection",
       "objectKinds": [
         "webServiceParameter"
+      ],
+      "ownerEvidence": [
+        {
+          "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-inputs/WebService.xml",
+          "nativeOwner": "Parameter",
+          "nativeValue": "In",
+          "objectKind": "webServiceParameter",
+          "rawOutput": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/enum-context-output/WebService.txt"
+        }
       ],
       "sourceFact": "metaInfo:get_ws_operations:TransferDirection",
       "sourceKey": "TransferDirection",

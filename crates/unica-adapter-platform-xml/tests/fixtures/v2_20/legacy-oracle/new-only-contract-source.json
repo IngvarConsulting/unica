@@ -1,0 +1,2651 @@
+{
+  "cases": [
+    {
+      "facts": [
+        {
+          "case": "ownedArtifactsContract",
+          "kind": "status",
+          "value": "partial"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "identity": "uuid:20000000-0000-0000-0000-000000000001",
+          "identityStrength": "persistent",
+          "kind": "node",
+          "name": "ArtifactReport",
+          "objectKind": "report"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "coverage": "partial",
+          "identity": "uuid:20000000-0000-0000-0000-000000000001",
+          "kind": "nodeCoverage",
+          "resolution": "resolved"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "identity": "uuid:20000000-0000-0000-0000-000000000002",
+          "identityStrength": "persistent",
+          "kind": "node",
+          "name": "MainForm",
+          "objectKind": "form"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "coverage": "partial",
+          "identity": "uuid:20000000-0000-0000-0000-000000000002",
+          "kind": "nodeCoverage",
+          "resolution": "unresolved"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "identity": "uuid:20000000-0000-0000-0000-000000000003",
+          "identityStrength": "persistent",
+          "kind": "node",
+          "name": "MainSchema",
+          "objectKind": "template"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "coverage": "partial",
+          "identity": "uuid:20000000-0000-0000-0000-000000000003",
+          "kind": "nodeCoverage",
+          "resolution": "unresolved"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "facet": "backing",
+          "identity": "uuid:20000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "backing.descriptor.available"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "facet": "backing",
+          "identity": "uuid:20000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "backing.descriptor.uuid"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "facet": "backing",
+          "identity": "uuid:20000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "backing.content.available"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "facet": "backing",
+          "identity": "uuid:20000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "backing.content.opaque"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "facet": "backing",
+          "identity": "uuid:20000000-0000-0000-0000-000000000003",
+          "kind": "facetMember",
+          "member": "backing.descriptor.available"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "facet": "backing",
+          "identity": "uuid:20000000-0000-0000-0000-000000000003",
+          "kind": "facetMember",
+          "member": "backing.descriptor.uuid"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "facet": "backing",
+          "identity": "uuid:20000000-0000-0000-0000-000000000003",
+          "kind": "facetMember",
+          "member": "backing.content.available"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "facet": "backing",
+          "identity": "uuid:20000000-0000-0000-0000-000000000003",
+          "kind": "facetMember",
+          "member": "backing.content.opaque"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "identity": "uuid:20000000-0000-0000-0000-000000000002",
+          "kind": "property",
+          "property": "form.type",
+          "value": {
+            "type": "enum",
+            "value": "managed"
+          },
+          "valueState": "explicit",
+          "valueType": "enum"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "identity": "uuid:20000000-0000-0000-0000-000000000002",
+          "kind": "property",
+          "property": "backing.descriptor.available",
+          "value": {
+            "type": "boolean",
+            "value": true
+          },
+          "valueState": "computed",
+          "valueType": "boolean"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "identity": "uuid:20000000-0000-0000-0000-000000000002",
+          "kind": "property",
+          "property": "backing.descriptor.uuid",
+          "value": {
+            "type": "uuid",
+            "value": "20000000-0000-0000-0000-000000000002"
+          },
+          "valueState": "explicit",
+          "valueType": "uuid"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "identity": "uuid:20000000-0000-0000-0000-000000000002",
+          "kind": "property",
+          "property": "backing.content.available",
+          "value": {
+            "type": "boolean",
+            "value": true
+          },
+          "valueState": "computed",
+          "valueType": "boolean"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "identity": "uuid:20000000-0000-0000-0000-000000000002",
+          "kind": "property",
+          "property": "backing.content.opaque",
+          "value": {
+            "type": "boolean",
+            "value": true
+          },
+          "valueState": "computed",
+          "valueType": "boolean"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "identity": "uuid:20000000-0000-0000-0000-000000000003",
+          "kind": "property",
+          "property": "template.type",
+          "value": {
+            "type": "enum",
+            "value": "dataCompositionSchema"
+          },
+          "valueState": "explicit",
+          "valueType": "enum"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "identity": "uuid:20000000-0000-0000-0000-000000000003",
+          "kind": "property",
+          "property": "backing.descriptor.available",
+          "value": {
+            "type": "boolean",
+            "value": true
+          },
+          "valueState": "computed",
+          "valueType": "boolean"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "identity": "uuid:20000000-0000-0000-0000-000000000003",
+          "kind": "property",
+          "property": "backing.descriptor.uuid",
+          "value": {
+            "type": "uuid",
+            "value": "20000000-0000-0000-0000-000000000003"
+          },
+          "valueState": "explicit",
+          "valueType": "uuid"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "identity": "uuid:20000000-0000-0000-0000-000000000003",
+          "kind": "property",
+          "property": "backing.content.available",
+          "value": {
+            "type": "boolean",
+            "value": true
+          },
+          "valueState": "computed",
+          "valueType": "boolean"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "identity": "uuid:20000000-0000-0000-0000-000000000003",
+          "kind": "property",
+          "property": "backing.content.opaque",
+          "value": {
+            "type": "boolean",
+            "value": true
+          },
+          "valueState": "computed",
+          "valueType": "boolean"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "coverage": "partial",
+          "kind": "relation",
+          "resolution": "resolved",
+          "role": "forms",
+          "source": "uuid:20000000-0000-0000-0000-000000000001",
+          "target": "uuid:20000000-0000-0000-0000-000000000002",
+          "targetKind": "form",
+          "targetName": "MainForm"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "coverage": "partial",
+          "kind": "relation",
+          "resolution": "resolved",
+          "role": "templates",
+          "source": "uuid:20000000-0000-0000-0000-000000000001",
+          "target": "uuid:20000000-0000-0000-0000-000000000003",
+          "targetKind": "template",
+          "targetName": "MainSchema"
+        },
+        {
+          "backingKind": "form",
+          "case": "ownedArtifactsContract",
+          "contentAvailable": {
+            "type": "boolean",
+            "value": true
+          },
+          "descriptorAvailable": {
+            "type": "boolean",
+            "value": true
+          },
+          "descriptorUuid": {
+            "type": "uuid",
+            "value": "20000000-0000-0000-0000-000000000002"
+          },
+          "identity": "uuid:20000000-0000-0000-0000-000000000002",
+          "kind": "backing",
+          "opaque": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "backingKind": "template",
+          "case": "ownedArtifactsContract",
+          "contentAvailable": {
+            "type": "boolean",
+            "value": true
+          },
+          "descriptorAvailable": {
+            "type": "boolean",
+            "value": true
+          },
+          "descriptorUuid": {
+            "type": "uuid",
+            "value": "20000000-0000-0000-0000-000000000003"
+          },
+          "identity": "uuid:20000000-0000-0000-0000-000000000003",
+          "kind": "backing",
+          "opaque": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "code": "partialCoverage",
+          "details": null,
+          "kind": "diagnostic",
+          "message": "requested semantic coverage is partial"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "identity": "derived:sourceRoot:Source#1",
+          "identityStrength": "derived",
+          "kind": "node",
+          "name": "Source",
+          "objectKind": "sourceRoot"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "coverage": "partial",
+          "identity": "derived:sourceRoot:Source#1",
+          "kind": "nodeCoverage",
+          "resolution": "resolved"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "coverage": "partial",
+          "kind": "relation",
+          "resolution": "resolved",
+          "role": "children",
+          "source": "derived:sourceRoot:Source#1",
+          "target": "uuid:20000000-0000-0000-0000-000000000001",
+          "targetKind": "report",
+          "targetName": "ArtifactReport"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "facet": "structure",
+          "identity": "derived:sourceRoot:Source#1",
+          "kind": "facetMember",
+          "member": "children"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "facet": "identity",
+          "identity": "uuid:20000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "metadata.kind"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "facet": "identity",
+          "identity": "uuid:20000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "metadata.name"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "facet": "identity",
+          "identity": "uuid:20000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "metadata.uuid"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "facet": "support",
+          "identity": "uuid:20000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "support.state"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "facet": "support",
+          "identity": "uuid:20000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "support.authorability"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "facet": "support",
+          "identity": "uuid:20000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "support.editCapability"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "facet": "identity",
+          "identity": "uuid:20000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "metadata.kind"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "facet": "identity",
+          "identity": "uuid:20000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "metadata.name"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "facet": "identity",
+          "identity": "uuid:20000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "metadata.uuid"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "facet": "support",
+          "identity": "uuid:20000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "support.state"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "facet": "support",
+          "identity": "uuid:20000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "support.authorability"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "facet": "support",
+          "identity": "uuid:20000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "support.editCapability"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "facet": "identity",
+          "identity": "uuid:20000000-0000-0000-0000-000000000003",
+          "kind": "facetMember",
+          "member": "metadata.kind"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "facet": "identity",
+          "identity": "uuid:20000000-0000-0000-0000-000000000003",
+          "kind": "facetMember",
+          "member": "metadata.name"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "facet": "identity",
+          "identity": "uuid:20000000-0000-0000-0000-000000000003",
+          "kind": "facetMember",
+          "member": "metadata.uuid"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "facet": "support",
+          "identity": "uuid:20000000-0000-0000-0000-000000000003",
+          "kind": "facetMember",
+          "member": "support.state"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "facet": "support",
+          "identity": "uuid:20000000-0000-0000-0000-000000000003",
+          "kind": "facetMember",
+          "member": "support.authorability"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "facet": "support",
+          "identity": "uuid:20000000-0000-0000-0000-000000000003",
+          "kind": "facetMember",
+          "member": "support.editCapability"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "facet": "structure",
+          "identity": "uuid:20000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "forms"
+        },
+        {
+          "case": "ownedArtifactsContract",
+          "facet": "structure",
+          "identity": "uuid:20000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "templates"
+        }
+      ],
+      "id": "ownedArtifactsContract",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts/ArtifactReport.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/artifacts"
+    },
+    {
+      "facts": [
+        {
+          "case": "commonFormContract",
+          "kind": "status",
+          "value": "partial"
+        },
+        {
+          "case": "commonFormContract",
+          "identity": "uuid:30000000-0000-0000-0000-000000000001",
+          "identityStrength": "persistent",
+          "kind": "node",
+          "name": "CommonDashboard",
+          "objectKind": "commonForm"
+        },
+        {
+          "case": "commonFormContract",
+          "coverage": "partial",
+          "identity": "uuid:30000000-0000-0000-0000-000000000001",
+          "kind": "nodeCoverage",
+          "resolution": "resolved"
+        },
+        {
+          "case": "commonFormContract",
+          "facet": "backing",
+          "identity": "uuid:30000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "backing.descriptor.available"
+        },
+        {
+          "case": "commonFormContract",
+          "facet": "backing",
+          "identity": "uuid:30000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "backing.descriptor.uuid"
+        },
+        {
+          "case": "commonFormContract",
+          "facet": "backing",
+          "identity": "uuid:30000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "backing.content.available"
+        },
+        {
+          "case": "commonFormContract",
+          "facet": "backing",
+          "identity": "uuid:30000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "backing.content.opaque"
+        },
+        {
+          "case": "commonFormContract",
+          "identity": "uuid:30000000-0000-0000-0000-000000000001",
+          "kind": "property",
+          "property": "form.type",
+          "value": {
+            "type": "enum",
+            "value": "managed"
+          },
+          "valueState": "explicit",
+          "valueType": "enum"
+        },
+        {
+          "case": "commonFormContract",
+          "identity": "uuid:30000000-0000-0000-0000-000000000001",
+          "kind": "property",
+          "property": "backing.descriptor.available",
+          "value": {
+            "type": "boolean",
+            "value": true
+          },
+          "valueState": "computed",
+          "valueType": "boolean"
+        },
+        {
+          "case": "commonFormContract",
+          "identity": "uuid:30000000-0000-0000-0000-000000000001",
+          "kind": "property",
+          "property": "backing.descriptor.uuid",
+          "value": {
+            "type": "uuid",
+            "value": "30000000-0000-0000-0000-000000000001"
+          },
+          "valueState": "explicit",
+          "valueType": "uuid"
+        },
+        {
+          "case": "commonFormContract",
+          "identity": "uuid:30000000-0000-0000-0000-000000000001",
+          "kind": "property",
+          "property": "backing.content.available",
+          "value": {
+            "type": "boolean",
+            "value": true
+          },
+          "valueState": "computed",
+          "valueType": "boolean"
+        },
+        {
+          "case": "commonFormContract",
+          "identity": "uuid:30000000-0000-0000-0000-000000000001",
+          "kind": "property",
+          "property": "backing.content.opaque",
+          "value": {
+            "type": "boolean",
+            "value": true
+          },
+          "valueState": "computed",
+          "valueType": "boolean"
+        },
+        {
+          "backingKind": "form",
+          "case": "commonFormContract",
+          "contentAvailable": {
+            "type": "boolean",
+            "value": true
+          },
+          "descriptorAvailable": {
+            "type": "boolean",
+            "value": true
+          },
+          "descriptorUuid": {
+            "type": "uuid",
+            "value": "30000000-0000-0000-0000-000000000001"
+          },
+          "identity": "uuid:30000000-0000-0000-0000-000000000001",
+          "kind": "backing",
+          "opaque": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "case": "commonFormContract",
+          "code": "partialCoverage",
+          "details": null,
+          "kind": "diagnostic",
+          "message": "requested semantic coverage is partial"
+        },
+        {
+          "case": "commonFormContract",
+          "identity": "derived:sourceRoot:Source#1",
+          "identityStrength": "derived",
+          "kind": "node",
+          "name": "Source",
+          "objectKind": "sourceRoot"
+        },
+        {
+          "case": "commonFormContract",
+          "coverage": "partial",
+          "identity": "derived:sourceRoot:Source#1",
+          "kind": "nodeCoverage",
+          "resolution": "resolved"
+        },
+        {
+          "case": "commonFormContract",
+          "coverage": "partial",
+          "kind": "relation",
+          "resolution": "resolved",
+          "role": "children",
+          "source": "derived:sourceRoot:Source#1",
+          "target": "uuid:30000000-0000-0000-0000-000000000001",
+          "targetKind": "commonForm",
+          "targetName": "CommonDashboard"
+        },
+        {
+          "case": "commonFormContract",
+          "facet": "structure",
+          "identity": "derived:sourceRoot:Source#1",
+          "kind": "facetMember",
+          "member": "children"
+        },
+        {
+          "case": "commonFormContract",
+          "facet": "identity",
+          "identity": "uuid:30000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "metadata.kind"
+        },
+        {
+          "case": "commonFormContract",
+          "facet": "identity",
+          "identity": "uuid:30000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "metadata.name"
+        },
+        {
+          "case": "commonFormContract",
+          "facet": "identity",
+          "identity": "uuid:30000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "metadata.uuid"
+        },
+        {
+          "case": "commonFormContract",
+          "facet": "support",
+          "identity": "uuid:30000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "support.state"
+        },
+        {
+          "case": "commonFormContract",
+          "facet": "support",
+          "identity": "uuid:30000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "support.authorability"
+        },
+        {
+          "case": "commonFormContract",
+          "facet": "support",
+          "identity": "uuid:30000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "support.editCapability"
+        }
+      ],
+      "id": "commonFormContract",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_form/CommonDashboard.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_form"
+    },
+    {
+      "facts": [
+        {
+          "case": "commonTemplateContract",
+          "kind": "status",
+          "value": "partial"
+        },
+        {
+          "case": "commonTemplateContract",
+          "identity": "uuid:40000000-0000-0000-0000-000000000001",
+          "identityStrength": "persistent",
+          "kind": "node",
+          "name": "CommonLayout",
+          "objectKind": "commonTemplate"
+        },
+        {
+          "case": "commonTemplateContract",
+          "coverage": "partial",
+          "identity": "uuid:40000000-0000-0000-0000-000000000001",
+          "kind": "nodeCoverage",
+          "resolution": "resolved"
+        },
+        {
+          "case": "commonTemplateContract",
+          "facet": "backing",
+          "identity": "uuid:40000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "backing.descriptor.available"
+        },
+        {
+          "case": "commonTemplateContract",
+          "facet": "backing",
+          "identity": "uuid:40000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "backing.descriptor.uuid"
+        },
+        {
+          "case": "commonTemplateContract",
+          "facet": "backing",
+          "identity": "uuid:40000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "backing.content.available"
+        },
+        {
+          "case": "commonTemplateContract",
+          "facet": "backing",
+          "identity": "uuid:40000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "backing.content.opaque"
+        },
+        {
+          "case": "commonTemplateContract",
+          "identity": "uuid:40000000-0000-0000-0000-000000000001",
+          "kind": "property",
+          "property": "template.type",
+          "value": {
+            "type": "enum",
+            "value": "binaryData"
+          },
+          "valueState": "explicit",
+          "valueType": "enum"
+        },
+        {
+          "case": "commonTemplateContract",
+          "identity": "uuid:40000000-0000-0000-0000-000000000001",
+          "kind": "property",
+          "property": "backing.descriptor.available",
+          "value": {
+            "type": "boolean",
+            "value": true
+          },
+          "valueState": "computed",
+          "valueType": "boolean"
+        },
+        {
+          "case": "commonTemplateContract",
+          "identity": "uuid:40000000-0000-0000-0000-000000000001",
+          "kind": "property",
+          "property": "backing.descriptor.uuid",
+          "value": {
+            "type": "uuid",
+            "value": "40000000-0000-0000-0000-000000000001"
+          },
+          "valueState": "explicit",
+          "valueType": "uuid"
+        },
+        {
+          "case": "commonTemplateContract",
+          "identity": "uuid:40000000-0000-0000-0000-000000000001",
+          "kind": "property",
+          "property": "backing.content.available",
+          "value": {
+            "type": "boolean",
+            "value": true
+          },
+          "valueState": "computed",
+          "valueType": "boolean"
+        },
+        {
+          "case": "commonTemplateContract",
+          "identity": "uuid:40000000-0000-0000-0000-000000000001",
+          "kind": "property",
+          "property": "backing.content.opaque",
+          "value": {
+            "type": "boolean",
+            "value": true
+          },
+          "valueState": "computed",
+          "valueType": "boolean"
+        },
+        {
+          "backingKind": "template",
+          "case": "commonTemplateContract",
+          "contentAvailable": {
+            "type": "boolean",
+            "value": true
+          },
+          "descriptorAvailable": {
+            "type": "boolean",
+            "value": true
+          },
+          "descriptorUuid": {
+            "type": "uuid",
+            "value": "40000000-0000-0000-0000-000000000001"
+          },
+          "identity": "uuid:40000000-0000-0000-0000-000000000001",
+          "kind": "backing",
+          "opaque": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "case": "commonTemplateContract",
+          "code": "partialCoverage",
+          "details": null,
+          "kind": "diagnostic",
+          "message": "requested semantic coverage is partial"
+        },
+        {
+          "case": "commonTemplateContract",
+          "identity": "derived:sourceRoot:Source#1",
+          "identityStrength": "derived",
+          "kind": "node",
+          "name": "Source",
+          "objectKind": "sourceRoot"
+        },
+        {
+          "case": "commonTemplateContract",
+          "coverage": "partial",
+          "identity": "derived:sourceRoot:Source#1",
+          "kind": "nodeCoverage",
+          "resolution": "resolved"
+        },
+        {
+          "case": "commonTemplateContract",
+          "coverage": "partial",
+          "kind": "relation",
+          "resolution": "resolved",
+          "role": "children",
+          "source": "derived:sourceRoot:Source#1",
+          "target": "uuid:40000000-0000-0000-0000-000000000001",
+          "targetKind": "commonTemplate",
+          "targetName": "CommonLayout"
+        },
+        {
+          "case": "commonTemplateContract",
+          "facet": "structure",
+          "identity": "derived:sourceRoot:Source#1",
+          "kind": "facetMember",
+          "member": "children"
+        },
+        {
+          "case": "commonTemplateContract",
+          "facet": "identity",
+          "identity": "uuid:40000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "metadata.kind"
+        },
+        {
+          "case": "commonTemplateContract",
+          "facet": "identity",
+          "identity": "uuid:40000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "metadata.name"
+        },
+        {
+          "case": "commonTemplateContract",
+          "facet": "identity",
+          "identity": "uuid:40000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "metadata.uuid"
+        },
+        {
+          "case": "commonTemplateContract",
+          "facet": "support",
+          "identity": "uuid:40000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "support.state"
+        },
+        {
+          "case": "commonTemplateContract",
+          "facet": "support",
+          "identity": "uuid:40000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "support.authorability"
+        },
+        {
+          "case": "commonTemplateContract",
+          "facet": "support",
+          "identity": "uuid:40000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "support.editCapability"
+        }
+      ],
+      "id": "commonTemplateContract",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_template/CommonLayout.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/common_template"
+    },
+    {
+      "facts": [
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "kind": "status",
+          "value": "ready"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "identity": "uuid:70000000-0000-0000-0000-000000000001",
+          "identityStrength": "persistent",
+          "kind": "node",
+          "name": "ContractCatalog",
+          "objectKind": "catalog"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "coverage": "complete",
+          "identity": "uuid:70000000-0000-0000-0000-000000000001",
+          "kind": "nodeCoverage",
+          "resolution": "resolved"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "identity": "uuid:70000000-0000-0000-0000-000000000002",
+          "identityStrength": "persistent",
+          "kind": "node",
+          "name": "EmptyOwner",
+          "objectKind": "attribute"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "coverage": "complete",
+          "identity": "uuid:70000000-0000-0000-0000-000000000002",
+          "kind": "nodeCoverage",
+          "resolution": "resolved"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "facet": "hierarchy",
+          "identity": "uuid:70000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "catalog.hierarchy.enabled"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "facet": "hierarchy",
+          "identity": "uuid:70000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "catalog.hierarchy.type"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "facet": "hierarchy",
+          "identity": "uuid:70000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "catalog.hierarchy.levelLimit.enabled"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "facet": "hierarchy",
+          "identity": "uuid:70000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "catalog.hierarchy.levelCount"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "facet": "hierarchy",
+          "identity": "uuid:70000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "catalog.hierarchy.levelLimit"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "facet": "numbering",
+          "identity": "uuid:70000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "catalog.code.series"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "facet": "fields",
+          "identity": "uuid:70000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "attributes"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "facet": "fields",
+          "identity": "uuid:70000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "field.type"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "facet": "fields",
+          "identity": "uuid:70000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "field.fillValue"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "identity": "uuid:70000000-0000-0000-0000-000000000001",
+          "kind": "property",
+          "property": "catalog.hierarchy.enabled",
+          "value": {
+            "type": "boolean",
+            "value": false
+          },
+          "valueState": "explicit",
+          "valueType": "boolean"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "identity": "uuid:70000000-0000-0000-0000-000000000001",
+          "kind": "property",
+          "property": "catalog.hierarchy.type",
+          "value": {
+            "type": "enum",
+            "value": "hierarchyOfGroupsAndItems"
+          },
+          "valueState": "explicit",
+          "valueType": "enum"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "identity": "uuid:70000000-0000-0000-0000-000000000001",
+          "kind": "property",
+          "property": "catalog.hierarchy.levelLimit.enabled",
+          "value": {
+            "type": "boolean",
+            "value": false
+          },
+          "valueState": "explicit",
+          "valueType": "boolean"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "identity": "uuid:70000000-0000-0000-0000-000000000001",
+          "kind": "property",
+          "property": "catalog.hierarchy.levelCount",
+          "value": {
+            "type": "integer",
+            "value": 2
+          },
+          "valueState": "explicit",
+          "valueType": "integer"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "identity": "uuid:70000000-0000-0000-0000-000000000001",
+          "kind": "property",
+          "property": "catalog.hierarchy.levelLimit",
+          "value": null,
+          "valueState": "absent",
+          "valueType": "integer"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "identity": "uuid:70000000-0000-0000-0000-000000000001",
+          "kind": "property",
+          "property": "catalog.code.series",
+          "value": {
+            "type": "enum",
+            "value": "wholeCollection"
+          },
+          "valueState": "explicit",
+          "valueType": "enum"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "identity": "uuid:70000000-0000-0000-0000-000000000002",
+          "kind": "property",
+          "property": "field.type",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "reference",
+                  "target": {
+                    "kind": "catalog",
+                    "name": "ContractCatalog"
+                  }
+                }
+              ]
+            }
+          },
+          "valueState": "explicit",
+          "valueType": "typeSet"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "identity": "uuid:70000000-0000-0000-0000-000000000002",
+          "kind": "property",
+          "property": "field.fillValue",
+          "value": {
+            "type": "emptyReference"
+          },
+          "valueState": "explicit",
+          "valueType": "emptyReference"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "coverage": "complete",
+          "kind": "relation",
+          "resolution": "resolved",
+          "role": "attributes",
+          "source": "uuid:70000000-0000-0000-0000-000000000001",
+          "target": "uuid:70000000-0000-0000-0000-000000000002",
+          "targetKind": "attribute",
+          "targetName": "EmptyOwner"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "identity": "derived:sourceRoot:Source#1",
+          "identityStrength": "derived",
+          "kind": "node",
+          "name": "Source",
+          "objectKind": "sourceRoot"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "coverage": "complete",
+          "identity": "derived:sourceRoot:Source#1",
+          "kind": "nodeCoverage",
+          "resolution": "resolved"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "coverage": "complete",
+          "kind": "relation",
+          "resolution": "resolved",
+          "role": "children",
+          "source": "derived:sourceRoot:Source#1",
+          "target": "uuid:70000000-0000-0000-0000-000000000001",
+          "targetKind": "catalog",
+          "targetName": "ContractCatalog"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "facet": "fields",
+          "identity": "uuid:70000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "field.fillChecking"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "facet": "fields",
+          "identity": "uuid:70000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "field.indexing"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "facet": "fields",
+          "identity": "uuid:70000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "field.required"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "facet": "structure",
+          "identity": "derived:sourceRoot:Source#1",
+          "kind": "facetMember",
+          "member": "children"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "facet": "identity",
+          "identity": "uuid:70000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "metadata.kind"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "facet": "identity",
+          "identity": "uuid:70000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "metadata.name"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "facet": "identity",
+          "identity": "uuid:70000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "metadata.uuid"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "facet": "support",
+          "identity": "uuid:70000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "support.state"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "facet": "support",
+          "identity": "uuid:70000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "support.authorability"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "facet": "support",
+          "identity": "uuid:70000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "support.editCapability"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "facet": "identity",
+          "identity": "uuid:70000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "metadata.kind"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "facet": "identity",
+          "identity": "uuid:70000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "metadata.name"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "facet": "identity",
+          "identity": "uuid:70000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "metadata.uuid"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "facet": "support",
+          "identity": "uuid:70000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "support.state"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "facet": "support",
+          "identity": "uuid:70000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "support.authorability"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "facet": "support",
+          "identity": "uuid:70000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "support.editCapability"
+        },
+        {
+          "case": "hierarchyEmptyReferenceContract",
+          "facet": "typing",
+          "identity": "uuid:70000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "field.type"
+        }
+      ],
+      "id": "hierarchyEmptyReferenceContract",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/contract/ContractCatalog.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/contract"
+    },
+    {
+      "facts": [
+        {
+          "case": "rightsContract",
+          "kind": "status",
+          "value": "ready"
+        },
+        {
+          "case": "rightsContract",
+          "identity": "uuid:10000000-0000-0000-0000-000000000001",
+          "identityStrength": "persistent",
+          "kind": "node",
+          "name": "SalesReader",
+          "objectKind": "role"
+        },
+        {
+          "case": "rightsContract",
+          "coverage": "complete",
+          "identity": "uuid:10000000-0000-0000-0000-000000000001",
+          "kind": "nodeCoverage",
+          "resolution": "resolved"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "access",
+          "identity": "uuid:10000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "access.newObjects.defaultAllowed"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "access",
+          "identity": "uuid:10000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "access.attributes.defaultAllowed"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "access",
+          "identity": "uuid:10000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "access.childObjects.independent"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "access",
+          "identity": "uuid:10000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "accessPermissions"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "access",
+          "identity": "uuid:10000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "restrictionTemplates"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "backing",
+          "identity": "uuid:10000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "backing.content.available"
+        },
+        {
+          "case": "rightsContract",
+          "identity": "uuid:10000000-0000-0000-0000-000000000001",
+          "kind": "property",
+          "property": "backing.content.available",
+          "value": {
+            "type": "boolean",
+            "value": true
+          },
+          "valueState": "computed",
+          "valueType": "boolean"
+        },
+        {
+          "backingKind": "rights",
+          "case": "rightsContract",
+          "contentAvailable": {
+            "type": "boolean",
+            "value": true
+          },
+          "descriptorAvailable": null,
+          "descriptorUuid": null,
+          "identity": "uuid:10000000-0000-0000-0000-000000000001",
+          "kind": "backing",
+          "opaque": null
+        },
+        {
+          "case": "rightsContract",
+          "identity": "derived:accessPermission:Products:1#1",
+          "identityStrength": "derived",
+          "kind": "node",
+          "name": "Products:1",
+          "objectKind": "accessPermission"
+        },
+        {
+          "case": "rightsContract",
+          "coverage": "complete",
+          "identity": "derived:accessPermission:Products:1#1",
+          "kind": "nodeCoverage",
+          "resolution": "resolved"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "access",
+          "identity": "derived:accessPermission:Products:1#1",
+          "kind": "facetMember",
+          "member": "access.permission.name"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "access",
+          "identity": "derived:accessPermission:Products:1#1",
+          "kind": "facetMember",
+          "member": "access.permission.allowed"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "access",
+          "identity": "derived:accessPermission:Products:1#1",
+          "kind": "facetMember",
+          "member": "accessTarget"
+        },
+        {
+          "case": "rightsContract",
+          "coverage": "complete",
+          "kind": "relation",
+          "resolution": "resolved",
+          "role": "accessPermissions",
+          "source": "uuid:10000000-0000-0000-0000-000000000001",
+          "target": "derived:accessPermission:Products:1#1",
+          "targetKind": "accessPermission",
+          "targetName": "Products:1"
+        },
+        {
+          "case": "rightsContract",
+          "coverage": "complete",
+          "kind": "relation",
+          "resolution": "resolved",
+          "role": "accessTarget",
+          "source": "derived:accessPermission:Products:1#1",
+          "target": "external:catalog:Products#1",
+          "targetKind": "catalog",
+          "targetName": "Products"
+        },
+        {
+          "case": "rightsContract",
+          "identity": "derived:accessPermission:Products:2#1",
+          "identityStrength": "derived",
+          "kind": "node",
+          "name": "Products:2",
+          "objectKind": "accessPermission"
+        },
+        {
+          "case": "rightsContract",
+          "coverage": "complete",
+          "identity": "derived:accessPermission:Products:2#1",
+          "kind": "nodeCoverage",
+          "resolution": "resolved"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "access",
+          "identity": "derived:accessPermission:Products:2#1",
+          "kind": "facetMember",
+          "member": "access.permission.name"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "access",
+          "identity": "derived:accessPermission:Products:2#1",
+          "kind": "facetMember",
+          "member": "access.permission.allowed"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "access",
+          "identity": "derived:accessPermission:Products:2#1",
+          "kind": "facetMember",
+          "member": "access.restriction.conditions"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "access",
+          "identity": "derived:accessPermission:Products:2#1",
+          "kind": "facetMember",
+          "member": "accessTarget"
+        },
+        {
+          "case": "rightsContract",
+          "identity": "derived:accessPermission:Products:2#1",
+          "kind": "property",
+          "property": "access.restriction.conditions",
+          "value": {
+            "type": "list",
+            "value": [
+              {
+                "type": "string",
+                "value": "Products.Owner = &CurrentUser"
+              }
+            ]
+          },
+          "valueState": "explicit",
+          "valueType": "list"
+        },
+        {
+          "case": "rightsContract",
+          "coverage": "complete",
+          "kind": "relation",
+          "resolution": "resolved",
+          "role": "accessPermissions",
+          "source": "uuid:10000000-0000-0000-0000-000000000001",
+          "target": "derived:accessPermission:Products:2#1",
+          "targetKind": "accessPermission",
+          "targetName": "Products:2"
+        },
+        {
+          "case": "rightsContract",
+          "coverage": "complete",
+          "kind": "relation",
+          "resolution": "resolved",
+          "role": "accessTarget",
+          "source": "derived:accessPermission:Products:2#1",
+          "target": "external:catalog:Products#1",
+          "targetKind": "catalog",
+          "targetName": "Products"
+        },
+        {
+          "case": "rightsContract",
+          "identity": "derived:accessPermission:Products:3#1",
+          "identityStrength": "derived",
+          "kind": "node",
+          "name": "Products:3",
+          "objectKind": "accessPermission"
+        },
+        {
+          "case": "rightsContract",
+          "coverage": "complete",
+          "identity": "derived:accessPermission:Products:3#1",
+          "kind": "nodeCoverage",
+          "resolution": "resolved"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "access",
+          "identity": "derived:accessPermission:Products:3#1",
+          "kind": "facetMember",
+          "member": "access.permission.name"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "access",
+          "identity": "derived:accessPermission:Products:3#1",
+          "kind": "facetMember",
+          "member": "access.permission.allowed"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "access",
+          "identity": "derived:accessPermission:Products:3#1",
+          "kind": "facetMember",
+          "member": "accessTarget"
+        },
+        {
+          "case": "rightsContract",
+          "coverage": "complete",
+          "kind": "relation",
+          "resolution": "resolved",
+          "role": "accessPermissions",
+          "source": "uuid:10000000-0000-0000-0000-000000000001",
+          "target": "derived:accessPermission:Products:3#1",
+          "targetKind": "accessPermission",
+          "targetName": "Products:3"
+        },
+        {
+          "case": "rightsContract",
+          "coverage": "complete",
+          "kind": "relation",
+          "resolution": "resolved",
+          "role": "accessTarget",
+          "source": "derived:accessPermission:Products:3#1",
+          "target": "external:catalog:Products#1",
+          "targetKind": "catalog",
+          "targetName": "Products"
+        },
+        {
+          "case": "rightsContract",
+          "identity": "derived:accessPermission:SalesOrder:4#1",
+          "identityStrength": "derived",
+          "kind": "node",
+          "name": "SalesOrder:4",
+          "objectKind": "accessPermission"
+        },
+        {
+          "case": "rightsContract",
+          "coverage": "complete",
+          "identity": "derived:accessPermission:SalesOrder:4#1",
+          "kind": "nodeCoverage",
+          "resolution": "resolved"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "access",
+          "identity": "derived:accessPermission:SalesOrder:4#1",
+          "kind": "facetMember",
+          "member": "access.permission.name"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "access",
+          "identity": "derived:accessPermission:SalesOrder:4#1",
+          "kind": "facetMember",
+          "member": "access.permission.allowed"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "access",
+          "identity": "derived:accessPermission:SalesOrder:4#1",
+          "kind": "facetMember",
+          "member": "accessTarget"
+        },
+        {
+          "case": "rightsContract",
+          "coverage": "complete",
+          "kind": "relation",
+          "resolution": "resolved",
+          "role": "accessPermissions",
+          "source": "uuid:10000000-0000-0000-0000-000000000001",
+          "target": "derived:accessPermission:SalesOrder:4#1",
+          "targetKind": "accessPermission",
+          "targetName": "SalesOrder:4"
+        },
+        {
+          "case": "rightsContract",
+          "coverage": "complete",
+          "kind": "relation",
+          "resolution": "resolved",
+          "role": "accessTarget",
+          "source": "derived:accessPermission:SalesOrder:4#1",
+          "target": "external:document:SalesOrder#1",
+          "targetKind": "document",
+          "targetName": "SalesOrder"
+        },
+        {
+          "case": "rightsContract",
+          "identity": "derived:accessPermission:SalesOrder:5#1",
+          "identityStrength": "derived",
+          "kind": "node",
+          "name": "SalesOrder:5",
+          "objectKind": "accessPermission"
+        },
+        {
+          "case": "rightsContract",
+          "coverage": "complete",
+          "identity": "derived:accessPermission:SalesOrder:5#1",
+          "kind": "nodeCoverage",
+          "resolution": "resolved"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "access",
+          "identity": "derived:accessPermission:SalesOrder:5#1",
+          "kind": "facetMember",
+          "member": "access.permission.name"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "access",
+          "identity": "derived:accessPermission:SalesOrder:5#1",
+          "kind": "facetMember",
+          "member": "access.permission.allowed"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "access",
+          "identity": "derived:accessPermission:SalesOrder:5#1",
+          "kind": "facetMember",
+          "member": "accessTarget"
+        },
+        {
+          "case": "rightsContract",
+          "coverage": "complete",
+          "kind": "relation",
+          "resolution": "resolved",
+          "role": "accessPermissions",
+          "source": "uuid:10000000-0000-0000-0000-000000000001",
+          "target": "derived:accessPermission:SalesOrder:5#1",
+          "targetKind": "accessPermission",
+          "targetName": "SalesOrder:5"
+        },
+        {
+          "case": "rightsContract",
+          "coverage": "complete",
+          "kind": "relation",
+          "resolution": "resolved",
+          "role": "accessTarget",
+          "source": "derived:accessPermission:SalesOrder:5#1",
+          "target": "external:document:SalesOrder#1",
+          "targetKind": "document",
+          "targetName": "SalesOrder"
+        },
+        {
+          "case": "rightsContract",
+          "identity": "derived:accessPermission:SalesOrder:6#1",
+          "identityStrength": "derived",
+          "kind": "node",
+          "name": "SalesOrder:6",
+          "objectKind": "accessPermission"
+        },
+        {
+          "case": "rightsContract",
+          "coverage": "complete",
+          "identity": "derived:accessPermission:SalesOrder:6#1",
+          "kind": "nodeCoverage",
+          "resolution": "resolved"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "access",
+          "identity": "derived:accessPermission:SalesOrder:6#1",
+          "kind": "facetMember",
+          "member": "access.permission.name"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "access",
+          "identity": "derived:accessPermission:SalesOrder:6#1",
+          "kind": "facetMember",
+          "member": "access.permission.allowed"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "access",
+          "identity": "derived:accessPermission:SalesOrder:6#1",
+          "kind": "facetMember",
+          "member": "accessTarget"
+        },
+        {
+          "case": "rightsContract",
+          "coverage": "complete",
+          "kind": "relation",
+          "resolution": "resolved",
+          "role": "accessPermissions",
+          "source": "uuid:10000000-0000-0000-0000-000000000001",
+          "target": "derived:accessPermission:SalesOrder:6#1",
+          "targetKind": "accessPermission",
+          "targetName": "SalesOrder:6"
+        },
+        {
+          "case": "rightsContract",
+          "coverage": "complete",
+          "kind": "relation",
+          "resolution": "resolved",
+          "role": "accessTarget",
+          "source": "derived:accessPermission:SalesOrder:6#1",
+          "target": "external:document:SalesOrder#1",
+          "targetKind": "document",
+          "targetName": "SalesOrder"
+        },
+        {
+          "case": "rightsContract",
+          "identity": "derived:accessRestrictionTemplate:OnlyOwn(&CurrentUser)#1",
+          "identityStrength": "derived",
+          "kind": "node",
+          "name": "OnlyOwn(&CurrentUser)",
+          "objectKind": "accessRestrictionTemplate"
+        },
+        {
+          "case": "rightsContract",
+          "coverage": "complete",
+          "identity": "derived:accessRestrictionTemplate:OnlyOwn(&CurrentUser)#1",
+          "kind": "nodeCoverage",
+          "resolution": "resolved"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "access",
+          "identity": "derived:accessRestrictionTemplate:OnlyOwn(&CurrentUser)#1",
+          "kind": "facetMember",
+          "member": "access.restriction.conditions"
+        },
+        {
+          "case": "rightsContract",
+          "identity": "derived:accessRestrictionTemplate:OnlyOwn(&CurrentUser)#1",
+          "kind": "property",
+          "property": "access.restriction.conditions",
+          "value": {
+            "type": "list",
+            "value": [
+              {
+                "type": "string",
+                "value": "Owner = &CurrentUser"
+              }
+            ]
+          },
+          "valueState": "explicit",
+          "valueType": "list"
+        },
+        {
+          "case": "rightsContract",
+          "coverage": "complete",
+          "kind": "relation",
+          "resolution": "resolved",
+          "role": "restrictionTemplates",
+          "source": "uuid:10000000-0000-0000-0000-000000000001",
+          "target": "derived:accessRestrictionTemplate:OnlyOwn(&CurrentUser)#1",
+          "targetKind": "accessRestrictionTemplate",
+          "targetName": "OnlyOwn(&CurrentUser)"
+        },
+        {
+          "case": "rightsContract",
+          "identity": "derived:sourceRoot:Source#1",
+          "identityStrength": "derived",
+          "kind": "node",
+          "name": "Source",
+          "objectKind": "sourceRoot"
+        },
+        {
+          "case": "rightsContract",
+          "coverage": "complete",
+          "identity": "derived:sourceRoot:Source#1",
+          "kind": "nodeCoverage",
+          "resolution": "resolved"
+        },
+        {
+          "case": "rightsContract",
+          "coverage": "complete",
+          "kind": "relation",
+          "resolution": "resolved",
+          "role": "children",
+          "source": "derived:sourceRoot:Source#1",
+          "target": "uuid:10000000-0000-0000-0000-000000000001",
+          "targetKind": "role",
+          "targetName": "SalesReader"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "structure",
+          "identity": "derived:sourceRoot:Source#1",
+          "kind": "facetMember",
+          "member": "children"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "identity",
+          "identity": "uuid:10000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "metadata.kind"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "identity",
+          "identity": "uuid:10000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "metadata.name"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "identity",
+          "identity": "uuid:10000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "metadata.uuid"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "identity",
+          "identity": "uuid:10000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "metadata.synonym"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "support",
+          "identity": "uuid:10000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "support.state"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "support",
+          "identity": "uuid:10000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "support.authorability"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "support",
+          "identity": "uuid:10000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "support.editCapability"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "identity",
+          "identity": "derived:accessPermission:Products:1#1",
+          "kind": "facetMember",
+          "member": "metadata.kind"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "identity",
+          "identity": "derived:accessPermission:Products:1#1",
+          "kind": "facetMember",
+          "member": "metadata.name"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "support",
+          "identity": "derived:accessPermission:Products:1#1",
+          "kind": "facetMember",
+          "member": "support.state"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "support",
+          "identity": "derived:accessPermission:Products:1#1",
+          "kind": "facetMember",
+          "member": "support.authorability"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "support",
+          "identity": "derived:accessPermission:Products:1#1",
+          "kind": "facetMember",
+          "member": "support.editCapability"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "identity",
+          "identity": "derived:accessPermission:Products:2#1",
+          "kind": "facetMember",
+          "member": "metadata.kind"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "identity",
+          "identity": "derived:accessPermission:Products:2#1",
+          "kind": "facetMember",
+          "member": "metadata.name"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "support",
+          "identity": "derived:accessPermission:Products:2#1",
+          "kind": "facetMember",
+          "member": "support.state"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "support",
+          "identity": "derived:accessPermission:Products:2#1",
+          "kind": "facetMember",
+          "member": "support.authorability"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "support",
+          "identity": "derived:accessPermission:Products:2#1",
+          "kind": "facetMember",
+          "member": "support.editCapability"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "identity",
+          "identity": "derived:accessPermission:Products:3#1",
+          "kind": "facetMember",
+          "member": "metadata.kind"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "identity",
+          "identity": "derived:accessPermission:Products:3#1",
+          "kind": "facetMember",
+          "member": "metadata.name"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "support",
+          "identity": "derived:accessPermission:Products:3#1",
+          "kind": "facetMember",
+          "member": "support.state"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "support",
+          "identity": "derived:accessPermission:Products:3#1",
+          "kind": "facetMember",
+          "member": "support.authorability"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "support",
+          "identity": "derived:accessPermission:Products:3#1",
+          "kind": "facetMember",
+          "member": "support.editCapability"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "identity",
+          "identity": "derived:accessPermission:SalesOrder:4#1",
+          "kind": "facetMember",
+          "member": "metadata.kind"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "identity",
+          "identity": "derived:accessPermission:SalesOrder:4#1",
+          "kind": "facetMember",
+          "member": "metadata.name"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "support",
+          "identity": "derived:accessPermission:SalesOrder:4#1",
+          "kind": "facetMember",
+          "member": "support.state"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "support",
+          "identity": "derived:accessPermission:SalesOrder:4#1",
+          "kind": "facetMember",
+          "member": "support.authorability"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "support",
+          "identity": "derived:accessPermission:SalesOrder:4#1",
+          "kind": "facetMember",
+          "member": "support.editCapability"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "identity",
+          "identity": "derived:accessPermission:SalesOrder:5#1",
+          "kind": "facetMember",
+          "member": "metadata.kind"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "identity",
+          "identity": "derived:accessPermission:SalesOrder:5#1",
+          "kind": "facetMember",
+          "member": "metadata.name"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "support",
+          "identity": "derived:accessPermission:SalesOrder:5#1",
+          "kind": "facetMember",
+          "member": "support.state"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "support",
+          "identity": "derived:accessPermission:SalesOrder:5#1",
+          "kind": "facetMember",
+          "member": "support.authorability"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "support",
+          "identity": "derived:accessPermission:SalesOrder:5#1",
+          "kind": "facetMember",
+          "member": "support.editCapability"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "identity",
+          "identity": "derived:accessPermission:SalesOrder:6#1",
+          "kind": "facetMember",
+          "member": "metadata.kind"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "identity",
+          "identity": "derived:accessPermission:SalesOrder:6#1",
+          "kind": "facetMember",
+          "member": "metadata.name"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "support",
+          "identity": "derived:accessPermission:SalesOrder:6#1",
+          "kind": "facetMember",
+          "member": "support.state"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "support",
+          "identity": "derived:accessPermission:SalesOrder:6#1",
+          "kind": "facetMember",
+          "member": "support.authorability"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "support",
+          "identity": "derived:accessPermission:SalesOrder:6#1",
+          "kind": "facetMember",
+          "member": "support.editCapability"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "identity",
+          "identity": "derived:accessRestrictionTemplate:OnlyOwn(&CurrentUser)#1",
+          "kind": "facetMember",
+          "member": "metadata.kind"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "identity",
+          "identity": "derived:accessRestrictionTemplate:OnlyOwn(&CurrentUser)#1",
+          "kind": "facetMember",
+          "member": "metadata.name"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "support",
+          "identity": "derived:accessRestrictionTemplate:OnlyOwn(&CurrentUser)#1",
+          "kind": "facetMember",
+          "member": "support.state"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "support",
+          "identity": "derived:accessRestrictionTemplate:OnlyOwn(&CurrentUser)#1",
+          "kind": "facetMember",
+          "member": "support.authorability"
+        },
+        {
+          "case": "rightsContract",
+          "facet": "support",
+          "identity": "derived:accessRestrictionTemplate:OnlyOwn(&CurrentUser)#1",
+          "kind": "facetMember",
+          "member": "support.editCapability"
+        }
+      ],
+      "id": "rightsContract",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights/SalesReader.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/rights"
+    },
+    {
+      "facts": [
+        {
+          "case": "unknownContract",
+          "kind": "status",
+          "value": "partial"
+        },
+        {
+          "case": "unknownContract",
+          "identity": "uuid:60000000-0000-0000-0000-000000000001",
+          "identityStrength": "persistent",
+          "kind": "node",
+          "name": "UnknownCases",
+          "objectKind": "document"
+        },
+        {
+          "case": "unknownContract",
+          "coverage": "partial",
+          "identity": "uuid:60000000-0000-0000-0000-000000000001",
+          "kind": "nodeCoverage",
+          "resolution": "resolved"
+        },
+        {
+          "case": "unknownContract",
+          "identity": "uuid:60000000-0000-0000-0000-000000000002",
+          "identityStrength": "persistent",
+          "kind": "node",
+          "name": "MysteryType",
+          "objectKind": "attribute"
+        },
+        {
+          "case": "unknownContract",
+          "coverage": "partial",
+          "identity": "uuid:60000000-0000-0000-0000-000000000002",
+          "kind": "nodeCoverage",
+          "resolution": "resolved"
+        },
+        {
+          "case": "unknownContract",
+          "identity": "derived:unknown:NestedUnknown#1",
+          "identityStrength": "derived",
+          "kind": "node",
+          "name": "NestedUnknown",
+          "objectKind": "unknown"
+        },
+        {
+          "case": "unknownContract",
+          "coverage": "partial",
+          "identity": "derived:unknown:NestedUnknown#1",
+          "kind": "nodeCoverage",
+          "resolution": "resolved"
+        },
+        {
+          "case": "unknownContract",
+          "facet": "fields",
+          "identity": "uuid:60000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "attributes"
+        },
+        {
+          "case": "unknownContract",
+          "facet": "unknown",
+          "identity": "uuid:60000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "unknown.facts"
+        },
+        {
+          "case": "unknownContract",
+          "facet": "unknown",
+          "identity": "uuid:60000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "unknown"
+        },
+        {
+          "case": "unknownContract",
+          "facet": "fields",
+          "identity": "uuid:60000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "field.type"
+        },
+        {
+          "case": "unknownContract",
+          "facet": "unknown",
+          "identity": "derived:unknown:NestedUnknown#1",
+          "kind": "facetMember",
+          "member": "unknown.facts"
+        },
+        {
+          "case": "unknownContract",
+          "identity": "uuid:60000000-0000-0000-0000-000000000001",
+          "kind": "property",
+          "property": "unknown.facts",
+          "value": {
+            "type": "list",
+            "value": [
+              {
+                "type": "structure",
+                "value": {
+                  "category": {
+                    "type": "string",
+                    "value": "property"
+                  },
+                  "value": {
+                    "type": "list",
+                    "value": [
+                      {
+                        "type": "string",
+                        "value": "backing"
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "structure",
+                "value": {
+                  "category": {
+                    "type": "string",
+                    "value": "property"
+                  },
+                  "value": {
+                    "type": "string",
+                    "value": "property-readable-value"
+                  }
+                }
+              }
+            ]
+          },
+          "valueState": "explicit",
+          "valueType": "list"
+        },
+        {
+          "case": "unknownContract",
+          "identity": "uuid:60000000-0000-0000-0000-000000000002",
+          "kind": "property",
+          "property": "field.type",
+          "value": {
+            "type": "typeSet",
+            "value": {
+              "variants": [
+                {
+                  "kind": "unknown",
+                  "ordinal": 1
+                },
+                {
+                  "kind": "unknown",
+                  "ordinal": 2
+                }
+              ]
+            }
+          },
+          "valueState": "explicit",
+          "valueType": "typeSet"
+        },
+        {
+          "case": "unknownContract",
+          "identity": "derived:unknown:NestedUnknown#1",
+          "kind": "property",
+          "property": "unknown.facts",
+          "value": {
+            "type": "list",
+            "value": [
+              {
+                "type": "structure",
+                "value": {
+                  "category": {
+                    "type": "string",
+                    "value": "property"
+                  },
+                  "value": {
+                    "type": "string",
+                    "value": "2"
+                  }
+                }
+              },
+              {
+                "type": "structure",
+                "value": {
+                  "category": {
+                    "type": "string",
+                    "value": "property"
+                  },
+                  "value": {
+                    "type": "string",
+                    "value": "nested-readable-value"
+                  }
+                }
+              }
+            ]
+          },
+          "valueState": "explicit",
+          "valueType": "list"
+        },
+        {
+          "case": "unknownContract",
+          "coverage": "partial",
+          "kind": "relation",
+          "resolution": "resolved",
+          "role": "attributes",
+          "source": "uuid:60000000-0000-0000-0000-000000000001",
+          "target": "uuid:60000000-0000-0000-0000-000000000002",
+          "targetKind": "attribute",
+          "targetName": "MysteryType"
+        },
+        {
+          "case": "unknownContract",
+          "coverage": "partial",
+          "kind": "relation",
+          "resolution": "resolved",
+          "role": "unknown",
+          "source": "uuid:60000000-0000-0000-0000-000000000001",
+          "target": "derived:unknown:NestedUnknown#1",
+          "targetKind": "unknown",
+          "targetName": "NestedUnknown"
+        },
+        {
+          "case": "unknownContract",
+          "coverage": "partial",
+          "kind": "relation",
+          "resolution": "resolved",
+          "role": "basedOn",
+          "source": "uuid:60000000-0000-0000-0000-000000000001",
+          "target": "external:unknown:Target#1",
+          "targetKind": "unknown",
+          "targetName": "Target"
+        },
+        {
+          "case": "unknownContract",
+          "code": "unmappedSemanticFact",
+          "details": {
+            "objectRef": {
+              "displayName": "UnknownCases",
+              "kind": "document",
+              "objectKey": "uuid:60000000-0000-0000-0000-000000000001"
+            }
+          },
+          "kind": "diagnostic",
+          "message": "source contains a property outside the registered semantic vocabulary"
+        },
+        {
+          "case": "unknownContract",
+          "code": "unmappedSemanticFact",
+          "details": {
+            "objectRef": {
+              "displayName": "UnknownCases",
+              "kind": "document",
+              "objectKey": "uuid:60000000-0000-0000-0000-000000000001"
+            }
+          },
+          "kind": "diagnostic",
+          "message": "source contains a property outside the registered semantic vocabulary"
+        },
+        {
+          "case": "unknownContract",
+          "code": "unmappedSemanticFact",
+          "details": {
+            "objectRef": {
+              "displayName": "NestedUnknown",
+              "kind": "unknown",
+              "objectKey": "derived:unknown:NestedUnknown#1"
+            }
+          },
+          "kind": "diagnostic",
+          "message": "source contains a property outside the registered semantic vocabulary"
+        },
+        {
+          "case": "unknownContract",
+          "code": "unmappedSemanticFact",
+          "details": {
+            "objectRef": {
+              "displayName": "NestedUnknown",
+              "kind": "unknown",
+              "objectKey": "derived:unknown:NestedUnknown#1"
+            }
+          },
+          "kind": "diagnostic",
+          "message": "source contains a property outside the registered semantic vocabulary"
+        },
+        {
+          "case": "unknownContract",
+          "code": "unmappedSemanticFact",
+          "details": {
+            "objectRef": {
+              "displayName": "NestedUnknown",
+              "kind": "unknown",
+              "objectKey": "derived:unknown:NestedUnknown#1"
+            }
+          },
+          "kind": "diagnostic",
+          "message": "source contains a fact outside the registered semantic vocabulary"
+        },
+        {
+          "case": "unknownContract",
+          "code": "unmappedSemanticFact",
+          "details": {
+            "objectRef": {
+              "displayName": "NestedUnknown",
+              "kind": "unknown",
+              "objectKey": "derived:unknown:NestedUnknown#1"
+            }
+          },
+          "kind": "diagnostic",
+          "message": "source contains a fact outside the registered semantic vocabulary"
+        },
+        {
+          "case": "unknownContract",
+          "identity": "derived:sourceRoot:Source#1",
+          "identityStrength": "derived",
+          "kind": "node",
+          "name": "Source",
+          "objectKind": "sourceRoot"
+        },
+        {
+          "case": "unknownContract",
+          "coverage": "partial",
+          "identity": "derived:sourceRoot:Source#1",
+          "kind": "nodeCoverage",
+          "resolution": "resolved"
+        },
+        {
+          "case": "unknownContract",
+          "coverage": "partial",
+          "kind": "relation",
+          "resolution": "resolved",
+          "role": "children",
+          "source": "derived:sourceRoot:Source#1",
+          "target": "uuid:60000000-0000-0000-0000-000000000001",
+          "targetKind": "document",
+          "targetName": "UnknownCases"
+        },
+        {
+          "case": "unknownContract",
+          "facet": "fields",
+          "identity": "uuid:60000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "field.fillChecking"
+        },
+        {
+          "case": "unknownContract",
+          "facet": "fields",
+          "identity": "uuid:60000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "field.indexing"
+        },
+        {
+          "case": "unknownContract",
+          "facet": "fields",
+          "identity": "uuid:60000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "field.required"
+        },
+        {
+          "case": "unknownContract",
+          "code": "unmappedSemanticFact",
+          "details": {
+            "objectRef": {
+              "displayName": "UnknownCases",
+              "kind": "document",
+              "objectKey": "uuid:60000000-0000-0000-0000-000000000001"
+            }
+          },
+          "kind": "diagnostic",
+          "message": "source contains a fact outside the registered semantic vocabulary"
+        },
+        {
+          "case": "unknownContract",
+          "code": "unmappedSemanticFact",
+          "details": {
+            "objectRef": {
+              "displayName": "MysteryType",
+              "kind": "attribute",
+              "objectKey": "uuid:60000000-0000-0000-0000-000000000002"
+            }
+          },
+          "kind": "diagnostic",
+          "message": "source contains a fact outside the registered semantic vocabulary"
+        },
+        {
+          "case": "unknownContract",
+          "facet": "structure",
+          "identity": "derived:sourceRoot:Source#1",
+          "kind": "facetMember",
+          "member": "children"
+        },
+        {
+          "case": "unknownContract",
+          "facet": "identity",
+          "identity": "uuid:60000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "metadata.kind"
+        },
+        {
+          "case": "unknownContract",
+          "facet": "identity",
+          "identity": "uuid:60000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "metadata.name"
+        },
+        {
+          "case": "unknownContract",
+          "facet": "identity",
+          "identity": "uuid:60000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "metadata.uuid"
+        },
+        {
+          "case": "unknownContract",
+          "facet": "support",
+          "identity": "uuid:60000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "support.state"
+        },
+        {
+          "case": "unknownContract",
+          "facet": "support",
+          "identity": "uuid:60000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "support.authorability"
+        },
+        {
+          "case": "unknownContract",
+          "facet": "support",
+          "identity": "uuid:60000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "support.editCapability"
+        },
+        {
+          "case": "unknownContract",
+          "facet": "identity",
+          "identity": "uuid:60000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "metadata.kind"
+        },
+        {
+          "case": "unknownContract",
+          "facet": "identity",
+          "identity": "uuid:60000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "metadata.name"
+        },
+        {
+          "case": "unknownContract",
+          "facet": "identity",
+          "identity": "uuid:60000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "metadata.uuid"
+        },
+        {
+          "case": "unknownContract",
+          "facet": "support",
+          "identity": "uuid:60000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "support.state"
+        },
+        {
+          "case": "unknownContract",
+          "facet": "support",
+          "identity": "uuid:60000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "support.authorability"
+        },
+        {
+          "case": "unknownContract",
+          "facet": "support",
+          "identity": "uuid:60000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "support.editCapability"
+        },
+        {
+          "case": "unknownContract",
+          "facet": "identity",
+          "identity": "derived:unknown:NestedUnknown#1",
+          "kind": "facetMember",
+          "member": "metadata.kind"
+        },
+        {
+          "case": "unknownContract",
+          "facet": "identity",
+          "identity": "derived:unknown:NestedUnknown#1",
+          "kind": "facetMember",
+          "member": "metadata.name"
+        },
+        {
+          "case": "unknownContract",
+          "facet": "support",
+          "identity": "derived:unknown:NestedUnknown#1",
+          "kind": "facetMember",
+          "member": "support.state"
+        },
+        {
+          "case": "unknownContract",
+          "facet": "support",
+          "identity": "derived:unknown:NestedUnknown#1",
+          "kind": "facetMember",
+          "member": "support.authorability"
+        },
+        {
+          "case": "unknownContract",
+          "facet": "support",
+          "identity": "derived:unknown:NestedUnknown#1",
+          "kind": "facetMember",
+          "member": "support.editCapability"
+        },
+        {
+          "case": "unknownContract",
+          "facet": "posting",
+          "identity": "uuid:60000000-0000-0000-0000-000000000001",
+          "kind": "facetMember",
+          "member": "basedOn"
+        },
+        {
+          "case": "unknownContract",
+          "facet": "typing",
+          "identity": "uuid:60000000-0000-0000-0000-000000000002",
+          "kind": "facetMember",
+          "member": "field.type"
+        }
+      ],
+      "id": "unknownContract",
+      "input": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/unknowns/UnknownCases.xml",
+      "sourceRoot": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/unknowns"
+    }
+  ],
+  "provenance": "independently-hand-reviewed-from-native-fixtures-and-closed-core-contracts",
+  "schemaVersion": 1
+}

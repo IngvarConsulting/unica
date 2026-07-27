@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Document uuid="61000000-0000-0000-0000-000000000010">
+    <Properties>
+      <Name>EnumContextDocument</Name>
+      <DataLockControlMode>Automatic</DataLockControlMode>
+      <FullTextSearch>Use</FullTextSearch>
+      <NumberAllowedLength>Fixed</NumberAllowedLength>
+      <NumberPeriodicity>Year</NumberPeriodicity>
+      <NumberType>String</NumberType>
+      <Posting>Allow</Posting>
+      <RealTimePosting>Allow</RealTimePosting>
+      <RegisterRecordsDeletion>AutoDelete</RegisterRecordsDeletion>
+      <RegisterRecordsWritingOnPost>WriteAll</RegisterRecordsWritingOnPost>
+    </Properties>
+  </Document>
+</MetaDataObject>

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <ChartOfCalculationTypes uuid="61000000-0000-0000-0000-000000000007">
+    <Properties>
+      <Name>EnumContextChartOfCalculationTypes</Name>
+      <CodeAllowedLength>Fixed</CodeAllowedLength>
+      <CodeType>String</CodeType>
+      <DataLockControlMode>Automatic</DataLockControlMode>
+      <DependenceOnCalculationTypes>DontUse</DependenceOnCalculationTypes>
+      <FullTextSearch>Use</FullTextSearch>
+    </Properties>
+  </ChartOfCalculationTypes>
+</MetaDataObject>

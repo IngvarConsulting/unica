@@ -1,0 +1,3 @@
+﻿=== План обмена: EnumContextExchangePlan ===
+Поддержка: не на поддержке
+Представление типа: EnumContextExchangePlan

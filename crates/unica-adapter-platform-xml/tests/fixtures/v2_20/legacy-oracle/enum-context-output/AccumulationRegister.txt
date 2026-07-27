@@ -1,0 +1,3 @@
+﻿=== Регистр накопления: EnumContextAccumulationRegister ===
+Поддержка: не на поддержке
+Вид: Balance

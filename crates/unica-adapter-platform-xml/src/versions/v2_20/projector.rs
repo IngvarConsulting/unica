@@ -623,11 +623,22 @@ impl<'a> GraphBuilder<'a> {
             .map(|uuid| uuid.to_string())
             .unwrap_or_default();
         let rule = self.support.effective_rule_for(&support_identity);
-        for property in [
-            SemanticProperty::computed(
+        let support_state = match support_state_case(rule) {
+            Some(case) => SemanticProperty::computed(
                 SemanticPropertyId::SUPPORT_STATE,
-                PropertyValue::String(support_rule_label(rule).to_string()),
+                PropertyValue::EnumSymbol(
+                    semantic_map::derived_enum_value(case).ok_or_else(|| {
+                        ambiguous("support state is absent from the coverage registry")
+                    })?,
+                ),
             )?,
+            None => {
+                projection.incomplete = true;
+                SemanticProperty::unresolved(SemanticPropertyId::SUPPORT_STATE)
+            }
+        };
+        for property in [
+            support_state,
             SemanticProperty::computed(
                 SemanticPropertyId::SUPPORT_AUTHORABILITY,
                 PropertyValue::String(authorability_label(authorability).to_string()),
@@ -1345,15 +1356,18 @@ fn normalize_xml_schema_decimal(value: &str) -> Option<String> {
     ))
 }
 
-fn support_rule_label(rule: EffectiveSupportRule) -> &'static str {
+fn support_state_case(
+    rule: EffectiveSupportRule,
+) -> Option<semantic_map::DerivedEnumCase> {
     match rule {
-        EffectiveSupportRule::Absent => "absent",
-        EffectiveSupportRule::Removed => "removed",
-        EffectiveSupportRule::Editable => "editable",
-        EffectiveSupportRule::Locked => "locked",
-        EffectiveSupportRule::ConfigurationReadOnly => "configurationReadOnly",
-        EffectiveSupportRule::UnknownReadOnly => "unknownReadOnly",
-        EffectiveSupportRule::Unreadable => "unreadable",
+        EffectiveSupportRule::Absent => Some(semantic_map::DerivedEnumCase::SupportAbsent),
+        EffectiveSupportRule::Removed => Some(semantic_map::DerivedEnumCase::SupportRemoved),
+        EffectiveSupportRule::Editable => Some(semantic_map::DerivedEnumCase::SupportEditable),
+        EffectiveSupportRule::Locked => Some(semantic_map::DerivedEnumCase::SupportLocked),
+        EffectiveSupportRule::ConfigurationReadOnly => {
+            Some(semantic_map::DerivedEnumCase::SupportConfigurationReadOnly)
+        }
+        EffectiveSupportRule::UnknownReadOnly | EffectiveSupportRule::Unreadable => None,
     }
 }
 

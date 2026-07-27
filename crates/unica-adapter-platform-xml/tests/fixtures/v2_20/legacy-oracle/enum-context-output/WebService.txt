@@ -1,0 +1,5 @@
+﻿=== Веб-сервис: EnumContextWebService ===
+Поддержка: не на поддержке
+
+Операции (1):
+  ContextOperation(ContextParameter: ?) → void

@@ -1,0 +1,3 @@
+﻿=== Справочник: EnumContextCatalog ===
+Поддержка: не на поддержке
+Представление типа: EnumContextCatalog
