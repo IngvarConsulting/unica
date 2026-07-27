@@ -73,3 +73,9 @@ Task 5: fix round 9 review failed — missing valid digits+allowedSign/no-fracti
 Task 5: fix round 10 started (base 61c4416c).
 Task 5: fix round 10 review failed — malformed/tampered cursor mutations stop at helper error instead of the exact parity comparator; tamper test does not prove authentication-specific rejection.
 Task 5: fix round 11 started (base 9a555928).
+Task 5: fix round 11 review approved — shared cursor canonicalize-and-compare pipeline closes final gap; no critical or important findings.
+Task 5: complete at bc5b7e0d.
+Task 6: started.
+- Task 6 implementation committed at `4b95e6b25f47a39ab49a469cf000ff8504b677aa` (`feat: expose complete metadata relation graph`).
+- Task 6 focused validation passed: closed role/kind core contract, EmptyReference cache invariant, three specialized graph fixtures, const version identity, authoritative runtime metadata-class registry, and three coder MCP/runtime/skill contracts.
+- Task 6 complete; report recorded in `.superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/task-6-report.md`. Architecture guards remain Task 10.
