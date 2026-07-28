@@ -46,7 +46,7 @@ class DocumentedContractTests(unittest.TestCase):
         documents = (
             ROOT / "spec/0126-platform-8-3-27-deviation-matrix.md",
             ROOT
-            / "docs/superpowers/specs/2026-07-23-platform-8-3-27-format-2-20-design.md",
+            / "docs/design/2026-07-23-platform-8-3-27-format-2-20-design.md",
         )
 
         for path in documents:

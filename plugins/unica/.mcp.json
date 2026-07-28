@@ -11,7 +11,7 @@
         "unica",
         "--"
       ],
-      "note": "Single public Unica stdio MCP orchestrator. Source checkouts start the Rust binary through cargo with a plugin-root-relative Cargo manifest path; packaged archives rewrite this to launch ./bin/<target>/unica directly."
+      "note": "Single public Unica stdio MCP orchestrator. Source checkouts start the Rust binary through cargo with a plugin-root-relative Cargo manifest path. The public marketplace package rewrites this entry into a command-scoped Git alias that resolves the plugin root and hands it to the packaged bootstrap launcher, which verifies the pinned runtime before launching unica; only the development-only local debug package rewrites it to the host-target unica binary."
     }
   }
 }

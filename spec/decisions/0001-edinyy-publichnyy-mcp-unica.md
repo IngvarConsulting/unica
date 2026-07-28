@@ -2,6 +2,13 @@
 
 - Статус: `accepted`
 - Дата: `2026-05-03`
+- Обновлено: `2026-07-28`
+
+> Пункт 2 «Плана реализации» описывал упаковку, действовавшую до ADR-0008.
+> Публичный пакет больше не запускает `./bin/<target>/unica` напрямую; прямой
+> запуск остался только у локального debug-пакета. Действующая норма —
+> `INV-PKG-02` и `INV-PKG-07`. Остальная часть решения в силе: правило единого
+> публичного сервера ADR-0008 не затрагивает.
 
 ## Контекст
 
@@ -41,7 +48,8 @@ Unica должен помогать экономить контекст, поэ�
 
 1. Keep `.mcp.json` single-server.
 2. Source checkout starts `unica` with `cargo run --manifest-path ../../Cargo.toml --bin unica`; packages start
-   `./bin/<target>/unica` directly with `cwd` set to the plugin root.
+   the single public server with `cwd` set to the plugin root. The launcher for
+   published packages was replaced by ADR-0008; see `INV-PKG-02`.
 3. Keep tests for `initialize`, `tools/list`, and dry-run mutating calls.
 4. Validate generated marketplace packages, not only source files.
 

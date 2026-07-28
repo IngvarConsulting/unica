@@ -1,28 +1,123 @@
-# Spec Guide
+# Каталог `spec/`
 
-`spec/` stores the active internal truth layer for Unica planning, architecture
-rules, ADRs, and acceptance.
+`spec/` — активный слой внутренней правды Unica: инварианты, архитектурные
+решения, arc42-описание, контракты отдельных инструментов и приёмка. Этот файл
+— полный индекс каталога: у каждого активного документа есть ссылка и одна
+строка о том, за что он отвечает, а у каждого исторического — отметка о том,
+почему на него нельзя ссылаться как на норму.
 
-## Active Entry Points
+## Границы продукта
 
-- Implementation task list: open implementation gaps only.
-- `decisions/README.md`: accepted architecture decisions and their owning ADR files.
-- `architecture/invariants.md`: non-negotiable rules that changes must preserve.
-- `architecture/change-checklist.md`: required sync checklist for MCP, skill, cache, and package changes.
-- `architecture/arc42/`: detailed architecture map for maintainers and agentic work.
-- `acceptance/unica-mcp-validation.md`: active acceptance and smoke plan for the single MCP contract.
+Unica — один каталог плагина, обслуживающий два хоста, Codex и Claude Code
+(ADR-0012, `INV-PRODUCT-01`). Публичная поверхность для модели — один MCP-сервер
+`unica` с инструментами в пространстве имён `unica.*` (`INV-MCP-01`,
+`INV-MCP-04`). Сборка и runtime 1С, анализ BSL, индекс кода, поиск по стандартам
+и операции над платформенным XML и DSL живут за внутренними адаптерами и никогда
+не регистрируются как отдельные публичные MCP-серверы.
 
-## Project Boundary
+Скилл-локальных Python-, PowerShell- и shell-файлов операций в дереве нет:
+переход на нативные обработчики `unica.*` завершён, а возврат такого пути
+исполнения запрещён (`INV-SKILL-03`, `INV-APP-04`).
 
-Unica is a Codex plugin for 1C:Enterprise development workflows. Its public AI
-surface is the single MCP server `unica`. Build/runtime tools, BSL analysis,
-standards lookup, and XML/DSL operations are owned by the orchestrator. Current
-skill-local Python/PowerShell operation files are migration debt: their command
-semantics must move into native MCP tools and the files must be removed from
-skills after parity.
+## Порядок источников истины
 
-## Usage Rule
+Порядок разрешения противоречий задан в [`../AGENTS.md`](../AGENTS.md) и здесь
+не дублируется. Практическое следствие для этого каталога: если документ в
+`spec/` расходится с кодом, тестами, `plugins/unica/.mcp.json` или манифестами
+пакета, правда за реализацией, и документ правится в том же изменении.
 
-If a statement here conflicts with current code, tests, `.mcp.json`, or plugin
-packaging metadata, trust the current implementation first and then update this
-spec layer.
+## Активный слой
+
+### Нормы и процесс
+
+- [`architecture/invariants.md`](architecture/invariants.md) — реестр
+  инвариантов `INV-*`. Одна запись — одно нормативное правило, ADR-источник и
+  конкретная проверка, которая его удерживает. Реестр владеет нормативным
+  текстом; остальные документы ссылаются на него по ID.
+- [`decisions/README.md`](decisions/README.md) — индекс архитектурных решений,
+  шаблон записи, значения статуса, правила нумерации и список выведенных из
+  обращения номеров. Сами записи лежат рядом, в том же каталоге.
+- [`architecture/change-checklist.md`](architecture/change-checklist.md) —
+  чек-лист изменения публичной MCP-поверхности, маршрутизации скиллов,
+  адаптеров, кеша и упаковки. Каждый пункт назван идентификатором инварианта,
+  а не собственной формулировкой правила.
+
+### Архитектурное описание
+
+- [`architecture/arc42/architecture.md`](architecture/arc42/architecture.md) —
+  оглавление arc42 и точка входа в двенадцать глав: цели, ограничения, контекст
+  и границы, стратегия решения, строительные блоки, runtime, развёртывание,
+  сквозные концепции, архитектурные решения, требования к качеству, риски и
+  технический долг, глоссарий. Главы описывают систему; правила из них выведены
+  в реестр инвариантов.
+
+### Контракты отдельных инструментов
+
+- [`architecture/code-patch-v1.md`](architecture/code-patch-v1.md) —
+  действующий контракт `unica.code.patch` v1: границы применимости, аргументы,
+  форма `OperationResult.data`, требования к побайтовой записи и перечень
+  тестов, которые всё это закрепляют.
+- [`0126-platform-8-3-27-deviation-matrix.md`](0126-platform-8-3-27-deviation-matrix.md)
+  — матрица покрытия и отклонений для единственного записываемого профиля:
+  платформа `8.3.27`, формат выгрузки `2.20`. Документ проверяется тестом
+  `tests/ci/test_format_profile_contract.py` и потому остаётся живым
+  контрактом, а не запиской.
+
+### Приёмка
+
+- [`acceptance/unica-mcp-validation.md`](acceptance/unica-mcp-validation.md) —
+  приёмочный и smoke-план единственного MCP-контракта: обязательный локальный
+  контракт, MCP-смоук, регрессионный прогон, политика parity-фикстур, смоук
+  упаковки, проверка свежей установки на хосте и поведение скрытых
+  workspace-сервисов.
+
+### Планирование
+
+- [`IMPLEMENTATION_TODO.md`](IMPLEMENTATION_TODO.md) — короткий список
+  немедленно исполнимой работы и критерии её завершения. Основное планирование
+  ведётся датированными планами и дизайнами вне `spec/`; файл описывает свою
+  текущую роль сам и не изображает полный трекер.
+
+## Что лежит вне этого каталога
+
+Правило простое и без исключений: **всё в `spec/` нормативно, всё вне — нет.**
+
+Проектные записки и планы реализации — исторические записи. Они фиксируют, как
+и почему было сделано конкретное изменение, и источником истины не являются:
+правило, выведенное только из них, недействительно, пока не перенесено в реестр
+инвариантов или в запись решения (`INV-DOC-05`). Открывайте их, чтобы
+восстановить историю одного изменения, а не чтобы узнать текущее поведение.
+
+- [`docs/design/`](../docs/design/README.md) — датированные проектные записки:
+  рассмотренные варианты, компромиссы, выбор. Их пишет скилл `brainstorming`.
+  Каждая объявляет в шапке, породила ли она решение (`Decision`).
+- [`docs/plans/`](../docs/plans/README.md) — датированные планы реализации.
+
+Одно исключение из «вне `spec/` — не контракт»: архивный документ, который
+CI-тест закрепляет по пути, остаётся живым контрактом. Такие файлы перечислены
+в README своего каталога; проверить можно через `rg <path> tests/ scripts/`.
+
+## Языковая политика
+
+Нормативные формулировки пишутся по-английски: правила реестра, требования,
+пункты чек-листов и решения в новых записях. Заголовки разделов, вводные абзацы
+и пояснительная проза могут оставаться русскими. Одно предложение никогда не
+смешивает два языка. Правило принадлежит записи `INV-DOC-07`. Принятые
+ADR-0001…ADR-0006 не переводятся и не переоформляются: это исторические записи
+уже принятых решений.
+
+## Как поддерживать
+
+- Every markdown document directly under `spec/architecture/` is listed in this
+  index, and every document this index links to exists.
+- Every arc42 chapter is listed in `architecture/arc42/architecture.md`, and
+  every accepted decision record is listed in `decisions/README.md`
+  (`INV-DOC-04`).
+- A new normative rule enters the invariant registry together with its check;
+  this index gains a link to the owning document, never a copy of the rule
+  (`INV-DOC-08`).
+- Every relative link in this file resolves from `spec/` (`INV-DOC-06`).
+
+Проверяет это `tests/ci/test_architecture_registry.py`: он разбирает формат
+записей реестра, сверяет индексы с файлами на диске и не даёт документу из
+`spec/architecture/` остаться неперечисленным здесь.

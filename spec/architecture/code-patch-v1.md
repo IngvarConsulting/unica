@@ -1,7 +1,24 @@
 # `unica.code.patch` v1: границы и контракт
 
-Статус: accepted for safe narrow v1.
-Связанная задача: #73.
+- Status: `accepted`
+- Date: `2026-07-21`
+- Scope: contract for one shipped public tool
+- Связанная задача: #73
+
+Это контракт реализованного инструмента, а не проект. `unica.code.patch`
+объявлен в реестре инструментов (`crates/unica-coder/src/application/mod.rs`),
+реализован в
+`crates/unica-coder/src/infrastructure/native_operations/code.rs` и закреплён
+тестами, перечисленными ниже. Документ описывает границы, которые нельзя
+расширять без нового решения.
+
+Отдельная запись в `spec/decisions/` для этого контракта не создавалась:
+решение узкое, касается одного инструмента и не меняет ни один
+общеархитектурный контракт. Владельцем нормы остаётся этот файл, а
+общеприменимые следствия вынесены в реестр инвариантов
+(`INV-MCP-04`, `INV-SOURCE-04`, `INV-CACHE-04`). Расширение инструмента за
+границы v1 — `replace`, `delete`, batch, EDT или расширения конфигурации —
+меняет публичный контракт и требует записи решения (`INV-MCP-08`).
 
 ## Цель
 
@@ -112,28 +129,46 @@ v1 возвращает `affectedTarget`, но не объявляет, что �
 Подключение mutation event к durable dirty state выполняется отдельным
 изменением после принятия #76 contract.
 
-## RED-набор до реализации
+## Что удерживает контракт
 
-1. BOM+CRLF: preview показывает только вставку; suffix не становится ложной
-   заменой; applied результат byte-identical вне вставки.
-2. Mixed EOL: method и multiline anchor используют локальный EOL; второй apply
-   — no-op без записи.
-3. Property/comment/string с `Обработчик.Процедура` или
-   `Обработчик.КонецПроцедуры` не меняет границы метода.
+Перечисленные ниже свойства не являются пожеланиями: каждое закреплено тестом.
+Изменение поведения без изменения этого списка — регрессия.
+
+1. BOM+CRLF: preview показывает только вставку, suffix не становится ложной
+   заменой, applied результат byte-identical вне вставки.
+2. Mixed EOL: метод и многострочный anchor используют локальный EOL; повторный
+   apply — no-op без записи.
+3. Свойства, комментарии и строки, содержащие `Обработчик.Процедура` или
+   `Обработчик.КонецПроцедуры`, не меняют границы метода.
 4. Отсутствующий, двусмысленный или пересекающий closing token selector
    отклоняется до записи.
-5. `path` вне workspace, symlink escape, не-`*Module.bsl`, неизвестный source
-   set, external/EDT/extension target и `operation != insert` отклоняются.
-6. `dryRun` возвращает те же pre/post hashes, diff и ranges, но не меняет файл
-   и state; успешный apply публикует ровно один affected target.
-7. Postimage validation failure до staging и occupied staging path сохраняют
+5. `path` вне рабочего пространства, symlink escape, не-`*Module.bsl`,
+   неизвестный source set, external/EDT/extension target и
+   `operation != insert` отклоняются.
+6. `dryRun` возвращает те же pre/post hashes, diff и ranges, но не меняет ни
+   файл, ни состояние; успешный apply публикует ровно один affected target.
+7. Ошибка валидации postimage до staging и занятый staging path сохраняют
    исходные байты.
 
-## Последующие задачи
+Проверки:
 
-- Отдельный ADR и MCP schema/tests добавляются вместе с реализацией public
-  инструмента.
-- `replace`, `delete`, method documentation и atomic batch требуют отдельных
-  контрактных решений.
-- #74 расширяет writer guarantees на XML и остальные mutation tools; он не
-  должен раздувать v1 `code.patch`.
+- `crates/unica-coder/src/infrastructure/native_operations/code.rs` — поведение
+  selector-ов, границы методов, EOL и BOM, идемпотентность, а также отказ
+  `resolve_target` для source set, не являющегося platform XML `CONFIGURATION`.
+- `crates/unica-coder/src/infrastructure/native_operations/text_snapshot.rs` —
+  байтовая стабильность writer и политика EOL.
+- `crates/unica-coder/src/application/mod.rs` — dry-run по умолчанию и форма
+  результата на уровне вызова инструмента.
+- `crates/unica-coder/src/infrastructure/native_operations/tests.rs` — типизированный
+  путь диспетчеризации: `code-patch` не проходит через теряющий `data` общий путь.
+- `crates/unica-coder/src/infrastructure/format_guard.rs` — сверка формата
+  выгрузки с активным профилем: вызов внутри source set более старого формата
+  блокируется.
+
+## Границы расширения
+
+- `replace`, `delete`, method documentation и atomic batch — за пределами v1;
+  каждый требует собственного контрактного решения, а не расширения этого
+  документа.
+- Общие writer guarantees для XML и остальных мутирующих инструментов
+  развиваются отдельно (#74) и не должны раздувать v1 `code.patch`.

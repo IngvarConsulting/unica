@@ -559,8 +559,8 @@ git commit -m "refactor(code): use shared text EOL snapshot"
 ### Task 4: Contract Documentation and Full Verification
 
 **Files:**
-- Modify: `docs/superpowers/specs/2026-07-26-writer-text-snapshot-eol-policy-design.md` only if implementation evidence reveals a factual mismatch.
-- Modify: `docs/superpowers/plans/2026-07-26-writer-text-snapshot-eol-policy.md` by checking completed steps.
+- Modify: `docs/design/2026-07-26-writer-text-snapshot-eol-policy-design.md` only if implementation evidence reveals a factual mismatch.
+- Modify: `docs/plans/2026-07-26-writer-text-snapshot-eol-policy.md` by checking completed steps.
 
 **Interfaces:**
 - Consumes: completed implementation from Tasks 1–3.
@@ -628,7 +628,7 @@ If the accepted design needed a factual correction discovered by verification,
 edit only that fact and commit:
 
 ```bash
-git add docs/superpowers/specs/2026-07-26-writer-text-snapshot-eol-policy-design.md
+git add docs/design/2026-07-26-writer-text-snapshot-eol-policy-design.md
 git commit -m "docs: align writer snapshot design evidence"
 ```
 
@@ -653,7 +653,7 @@ policy, and `code.patch` adoption commits.
 **Files:**
 - Modify: `crates/unica-coder/src/infrastructure/native_operations/code.rs`
 - Modify: `spec/architecture/code-patch-v1.md`
-- Modify: `docs/superpowers/plans/2026-07-26-writer-text-snapshot-eol-policy.md`
+- Modify: `docs/plans/2026-07-26-writer-text-snapshot-eol-policy.md`
 
 **Interfaces:**
 - Consumes: strict shared `resolve_line_ending(EolPolicy::Preserve, ...)`.
@@ -724,9 +724,9 @@ Expected: every command exits 0; existing ignored tests remain ignored.
 **Files:**
 - Modify: `crates/unica-coder/src/infrastructure/native_operations/text_snapshot.rs`
 - Modify: `crates/unica-coder/src/infrastructure/native_operations/code.rs`
-- Modify: `docs/superpowers/specs/2026-07-26-writer-text-snapshot-eol-policy-design.md`
+- Modify: `docs/design/2026-07-26-writer-text-snapshot-eol-policy-design.md`
 - Modify: `spec/architecture/code-patch-v1.md`
-- Modify: `docs/superpowers/plans/2026-07-26-writer-text-snapshot-eol-policy.md`
+- Modify: `docs/plans/2026-07-26-writer-text-snapshot-eol-policy.md`
 
 **Interfaces:**
 - Consumes: byte-exact `SourceTextSnapshot` and existing `code.patch`

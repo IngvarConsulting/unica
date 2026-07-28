@@ -223,7 +223,7 @@ Stage only:
 crates/unica-coder/src/infrastructure/native_operations/meta.rs
 plugins/unica/skills/meta-edit/SKILL.md
 plugins/unica/skills/meta-edit/child-operations.md
-docs/superpowers/plans/2026-07-24-line-number-length.md
+docs/plans/2026-07-24-line-number-length.md
 ```
 
 Commit as `fix: support tabular line number length`, push `codex/issue-178-line-number-length`, and open a draft PR to `main`. The PR body must explain the root cause, platform constraints, tests, the #53 dry-run boundary, and contain `Closes #178`.

@@ -678,7 +678,7 @@ git commit -m "Подключить cf-edit к безопасному publisher"
 
 **Files:**
 - Modify: `AGENTS.md`
-- Modify: `docs/superpowers/specs/2026-07-20-safe-single-file-publisher-design.md`
+- Modify: `docs/design/2026-07-20-safe-single-file-publisher-design.md`
 - Modify Rust files only when review requires a tested correction
 
 - [ ] **Step 1: Mark design approved**
@@ -715,7 +715,7 @@ Expected: all commands exit 0, 0 test failures, no AGENTS diff, no common `atomi
 - [ ] **Step 5: Commit**
 
 ```bash
-git add AGENTS.md docs/superpowers/specs/2026-07-20-safe-single-file-publisher-design.md crates/unica-coder/src
+git add AGENTS.md docs/design/2026-07-20-safe-single-file-publisher-design.md crates/unica-coder/src
 git commit -m "Завершить ревью safe publisher" -m "Co-Authored-By: codex <codex@openai.com>"
 ```
 

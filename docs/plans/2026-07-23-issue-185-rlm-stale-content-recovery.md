@@ -39,7 +39,7 @@
 - Modify `crates/unica-coder/src/infrastructure/internal_adapters.rs`
   - Stop mapping inactive stale state to `rlm index building`.
   - Add adapter warning tests.
-- Modify `docs/superpowers/plans/2026-07-23-issue-185-rlm-stale-content-recovery.md`
+- Modify `docs/plans/2026-07-23-issue-185-rlm-stale-content-recovery.md`
   - Check off completed steps during execution.
 
 No new production module is warranted: index parsing, marker policy, lock ownership,
@@ -1059,7 +1059,7 @@ git commit -m "fix: report terminal RLM index failures"
 ### Task 4: Complete Regression Verification
 
 **Files:**
-- Modify: `docs/superpowers/plans/2026-07-23-issue-185-rlm-stale-content-recovery.md`
+- Modify: `docs/plans/2026-07-23-issue-185-rlm-stale-content-recovery.md`
 - Verify: `crates/unica-coder/src/infrastructure/workspace_index.rs`
 - Verify: `crates/unica-coder/src/infrastructure/workspace_services.rs`
 - Verify: `crates/unica-coder/src/infrastructure/internal_adapters.rs`
@@ -1137,6 +1137,6 @@ Expected:
 - [x] **Step 5: Commit plan completion if checkbox updates remain**
 
 ```powershell
-git add docs/superpowers/plans/2026-07-23-issue-185-rlm-stale-content-recovery.md
+git add docs/plans/2026-07-23-issue-185-rlm-stale-content-recovery.md
 git commit -m "docs: complete issue 185 implementation plan"
 ```

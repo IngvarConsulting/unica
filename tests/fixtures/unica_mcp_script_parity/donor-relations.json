@@ -7,7 +7,7 @@
       "contentDigest": "e60d6bb56d2ed9fc5334bb9a058aa463b389c6f6a803559eb334da7cb364a0d5",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/cfe.rs"
       ],
       "observation": {
@@ -32,7 +32,7 @@
       "contentDigest": "b9eebf5fd001bb4c16781619413bc3cbdef664cc26af50d738a92745a24afb1a",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/cfe.rs"
       ],
       "observation": {
@@ -57,7 +57,7 @@
       "contentDigest": "848e56d06e73ed75d978602b2fd39750b57d616cb5bf9b560a98d4225b498f97",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/cfe.rs"
       ],
       "observation": {
@@ -82,7 +82,7 @@
       "contentDigest": "ff0f727e6500a6d4087c45fbbaa038d4b713744c1abfd8fa9cf3f1c2d5d864e2",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/cfe.rs"
       ],
       "observation": {
@@ -107,7 +107,7 @@
       "contentDigest": "b916cc30e3ae7feb4ca909ef305971fa76da800ed6a94fdf7f2f5df12cfd21d4",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/cfe.rs"
       ],
       "observation": {
@@ -132,7 +132,7 @@
       "contentDigest": "9553cd9afeaf4e27f5cb3777362930284110c472b2a13b8445dff4c894f5d01f",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/cfe.rs"
       ],
       "observation": {
@@ -157,7 +157,7 @@
       "contentDigest": "d8a895672b46c1415ef6642a5d8e71ae0d35e555cc05934d968b080c4f2f1062",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -183,7 +183,7 @@
       "contentDigest": "39beae436557d28423db7216023f44cc02982ac68694c36bd691233d1ffbcac5",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -208,7 +208,7 @@
       "contentDigest": "ba7316ff5f74adcc1c31a45910b9854c1298cff16b7568b56daec648748a6b81",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -233,7 +233,7 @@
       "contentDigest": "9d3b60405a8751906271924c3302b3170c57cc037c8a903c6e4cb5c71de47eda",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -259,7 +259,7 @@
       "contentDigest": "52d1736b5d4ef1bcf50bfd5a7e55b25b440c5872e5b557f72a4d9a3a8d179b22",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -285,7 +285,7 @@
       "contentDigest": "7924478ce3e8341be0f07fec17d1eb58f34ea76d61f65e80be44585ee45c0e07",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -311,7 +311,7 @@
       "contentDigest": "d75bef1a39971e7aafa0ac7a5cbd193cf74c3a1f7f66468f2a7877305194931b",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -336,7 +336,7 @@
       "contentDigest": "da96e559dc0846e97a5cd136b277bae313f98c90d71d3fb7a523ac49b5029f36",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -361,7 +361,7 @@
       "contentDigest": "75ba8ccda85040291aee6a3cefcf9d04b1a726b0db9551b479c153e28b62bc7e",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -387,7 +387,7 @@
       "contentDigest": "00510469da82355b0f1e95a3da93ff8a1b16769cc43501d8797ba6b4b613795d",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -413,7 +413,7 @@
       "contentDigest": "12b03c95382217782d0856964c8a9a1f383e4daf552a723d3520f040e5d10f1e",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -439,7 +439,7 @@
       "contentDigest": "e0dc082d770787b50f96c0fcf4367c13f58c9e0bdd8f186e061d8a0252a5b99f",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -465,7 +465,7 @@
       "contentDigest": "b9dae507aef8c4a0059d05eb8de530bea66f4ba650c84bf1fbf06f3ad31b973c",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -491,7 +491,7 @@
       "contentDigest": "3579d852ff145af4cc83d6829391c07d5068cdc09b1c16ee80f612000ed9026d",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -516,7 +516,7 @@
       "contentDigest": "b35bb890b9b9098188837d18029a86d799b53541f384ef9c305012cfab63d650",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -541,7 +541,7 @@
       "contentDigest": "bd6bdef8d04b4d8fea62027ea2c5166cc5104fcf138c4078f85db8e1178f4698",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -567,7 +567,7 @@
       "contentDigest": "947fdfb6a73b393308a4c310c443c87a774cea85158377dbde761d899b5948e0",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -593,7 +593,7 @@
       "contentDigest": "dd93193b18e1eb45de32d2410482e247cece3f07821948478c451403aea7443b",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -618,7 +618,7 @@
       "contentDigest": "43244692610809fa07a11b69de3e9ecda4d9bd583378bc29b5272340ec4fa498",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -644,7 +644,7 @@
       "contentDigest": "9ea7abd8322f2389afd002a37e3ea29c58299851d9e072c42285cff684c7ac74",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -670,7 +670,7 @@
       "contentDigest": "8c5201b308fd23b8f0ca15e560fbc81d9486ac5d94110f1340392869f691c0ff",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -695,7 +695,7 @@
       "caseId": "form-compile/collapsible-control-representation",
       "contentDigest": "7d6b48d6926f3b7968e12cc55a86475c1bbb9430d94501676308df3e54042994",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -720,7 +720,7 @@
       "contentDigest": "4cd0f0f67efb8dadbac3ca0ec382d56b1c55b0e31d292f04c4656acce924c391",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -745,7 +745,7 @@
       "contentDigest": "e86476a3bab9cb2aec205bcfe40a1d29754041bb8bc23462d0810121df8d614c",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -770,7 +770,7 @@
       "contentDigest": "3da3dff60876f9cf7ac3605bb2cb09f45de724a126d653670d0c6aaa0d596ce0",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -796,7 +796,7 @@
       "contentDigest": "6b3af0f3d71ccbf0cbc73e270b2ade7efa8a7a75ec8f0f5fa43a4f8568434c66",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -822,7 +822,7 @@
       "contentDigest": "0729b5c126992b33bb335760505b1d9f70794a6acb7613902d127fba84fcc5a6",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -847,7 +847,7 @@
       "contentDigest": "5368ad39b4325ea4deca462600e3a0ef65bce9f22e3061bab5cbdfb64ffd312c",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -872,7 +872,7 @@
       "contentDigest": "e9a501ccf3d65bc462fd5b8973b36286b8c5aa6f889a9261d15fd532e7ca8058",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -898,7 +898,7 @@
       "contentDigest": "892fbeaa280dcc0d7be43b249007ffb2f90e9943fffd7b0a3205abce8c1293ab",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -924,7 +924,7 @@
       "contentDigest": "59c0f046d4c711b6b3968cb6871c40aa9d42b62ef0379fcae3231b540c281faf",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -949,7 +949,7 @@
       "contentDigest": "9cf13c566ef57651dfe99d5e84f159c84376e222c6f40e22edcaae1dadc58a38",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -973,7 +973,7 @@
       "caseId": "form-compile/guard-deny",
       "contentDigest": "4af67e6f96af1189a3259d702362d658739d568132f3437fdc02e2e9880feb41",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -998,7 +998,7 @@
       "contentDigest": "3d64378ff1014d82bcb53df51d18a0359043291031843f50f8df1d88535e6692",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -1024,7 +1024,7 @@
       "contentDigest": "38d395dbd87898a4131f9db06efff7fe03fe15347490cd30c4c8200898448f33",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -1049,7 +1049,7 @@
       "contentDigest": "a2fa5c12569984cd8383b00a5d01681e43a1f8c32d4a96359c326e740e5ab641",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -1074,7 +1074,7 @@
       "contentDigest": "6008711e1c4934b0d32c3e7f2d3a6f25f75491ab182805876d5384e604732605",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -1099,7 +1099,7 @@
       "contentDigest": "5fd95305510953a7ae8ce7c373fc5d97f66396e3564882d85f92b781ac5c8e9e",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -1125,7 +1125,7 @@
       "contentDigest": "01b46d9de6813f369d7c3f12a1c730e4557e0daea1cc0882fbae7f0b791d0d5f",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -1151,7 +1151,7 @@
       "contentDigest": "2eda14339ae3474d659a0b44065dfc4787242cc6dc78f5c1cb7d6404c0bcaa02",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -1177,7 +1177,7 @@
       "contentDigest": "514042ac652d9974d70e4af78a987d1c7e3bfe2375f3cd32360662b1e28b3225",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -1203,7 +1203,7 @@
       "contentDigest": "e66a534fe5b3c8c77b2aa22995ad655f3160d7fe5f60151ba0691dc9d1ae8946",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -1229,7 +1229,7 @@
       "contentDigest": "2634e123e3416ae3e97972d81bb024d92c9b49f0c3a80b63f6f2adf8d19ca17a",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -1254,7 +1254,7 @@
       "contentDigest": "cf8c0c42326cddc02d51ba729b4a254f2a080c7f035890d548547f185c10059b",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -1279,7 +1279,7 @@
       "contentDigest": "8ad278a4cd9ea0245acedfb94f3624ad19be92e434a096f0d5c0900656f8dff2",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
@@ -1304,7 +1304,7 @@
       "contentDigest": "f4cd2fceaea801de978e8edfb7b1cb679ba7b1b8b23ff8ce97e904852a5a0dff",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -1335,7 +1335,7 @@
       "contentDigest": "bc7b073133696d07b6cb01910a4e4558743440278bbc8b1437a5ed58110e0f0f",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -1366,7 +1366,7 @@
       "contentDigest": "8696daab0fc4b4ac2a816e95e6b50c8b75a0208e117fd3cc6215637e0004f3df",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -1399,7 +1399,7 @@
       "contentDigest": "35027db2bbfed09bd34272919d24b12851fd18df1e28343f74da23cff1cecf19",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -1432,7 +1432,7 @@
       "contentDigest": "461b3502413d4ae18bb275f44e06c9a3d37cea1faa0df5fdea59b09c19c98b44",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -1463,7 +1463,7 @@
       "contentDigest": "42fd5f778f3a50a9834ea361b434709a767cf4e47b2900dc42b0de71692cf88b",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -1492,7 +1492,7 @@
       "contentDigest": "5b1cd315be270394e9c74ec9329999589e3ab3ae2731886a84887387968f4051",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -1521,7 +1521,7 @@
       "contentDigest": "7c7d62a191cf0119195838b247c07bb97e6b74e3e108374c2f6c92333fba9ecb",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -1550,7 +1550,7 @@
       "contentDigest": "b0470013c313ad709579d236833d8ad3ee9a33d068ede7af075ec51f96e2b36d",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -1580,7 +1580,7 @@
       "contentDigest": "2d9f2724458598df51072b488350248f80cbaa7662c18a701415255f2b466654",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -1606,7 +1606,7 @@
       "contentDigest": "48e74814082e48f5c3e34b1245002838110bbec2435b84072428b4e40119868a",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -1636,7 +1636,7 @@
       "contentDigest": "b134887b66d4cd3a42a5e2f83f7d2e61c5cc2d880d1b85d1ce0cbc99f124381b",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -1667,7 +1667,7 @@
       "contentDigest": "3cad309a5bcd82996377115e797e028cc0600de13eac6692b9064dd81bba58a4",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -1697,7 +1697,7 @@
       "contentDigest": "c61146f996288d0dc8c2fbd0fa544e955903a40c74f70c456745f785abc67baf",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -1728,7 +1728,7 @@
       "contentDigest": "95cf433f3eb638a46dcc48c6c8ebb359c04dd12018c17eadf36337f23dd4419e",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -1757,7 +1757,7 @@
       "contentDigest": "c2f624bc115ee482a45bfce66afdb86686c9ee8b4316bf979897d444d422f4d7",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -1786,7 +1786,7 @@
       "contentDigest": "3e35c1bf3809604678f53b1e8ad27980d99fa6dca191bfb43aefe45fdd16bee3",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -1815,7 +1815,7 @@
       "contentDigest": "2abad6799d761fbfe8cc544f952d7097944272ae712333e41863cdc8440f3306",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -1840,7 +1840,7 @@
       "contentDigest": "9f71c980c172a6c49e0bca0b58af6d0014cebdb880e5dbe8983acaa1f8c428b8",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -1870,7 +1870,7 @@
       "contentDigest": "8046493cb059ecab0ef0d37d579eab9fc6d337e5e0db9472a14b213e48eae365",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -1899,7 +1899,7 @@
       "contentDigest": "6684f0da9536687ad2673b9761b0745fec9ad3b5a616c483026e85784719532d",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -1930,7 +1930,7 @@
       "contentDigest": "e79e46abe551fbdc91dc55350a3a6ba03e8ebcdf5f7565e99feeb203d6216645",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -1959,7 +1959,7 @@
       "contentDigest": "d6c0c663564cce81ebc83763f3aa3170e664aedc609fb756a09a74b207cd6212",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -1988,7 +1988,7 @@
       "contentDigest": "681bd5f867c9d748121fc1006617b97cf06ff56b96062ef4b758e10050646eab",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2019,7 +2019,7 @@
       "contentDigest": "a657f7b7251be04602d342291d355c0f7df74005747e5b600cc7b4972ab08959",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2049,7 +2049,7 @@
       "contentDigest": "6004fb8c570492bca80869b505c0404188bae729433bbe41ed3be8d09dc61a8f",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2080,7 +2080,7 @@
       "contentDigest": "b79ade657e5c714453e59578596383a008feb02e2e2a37d4c3393f9e15ee7b0a",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2111,7 +2111,7 @@
       "contentDigest": "825d9dc9fbc97a248907459818f306b48fad94491113cfbcc089c51327ee9569",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2142,7 +2142,7 @@
       "contentDigest": "313b05208b6ae4cccbcfbe752be77927a0efac13bd6c668d915437ec450329fc",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2172,7 +2172,7 @@
       "contentDigest": "4f2d41dc1a6d21e3dd57a293a9206395f42c0579fdd8fbed221c96990e726fd9",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2202,7 +2202,7 @@
       "contentDigest": "58991f7937244062e082e4d24a0bf2fd9fba93a42d7fe483ae14521847be8df7",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2234,7 +2234,7 @@
       "contentDigest": "a6dca6173d91e750729c51aa45f31648961264993d597eb823cdf22f12c0259e",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2278,7 +2278,7 @@
       "contentDigest": "8051b115643a707b41ff1fc09d0cd59cca159806cfc236ed778f5932d9e2590c",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2308,7 +2308,7 @@
       "contentDigest": "f47876e41e0d27d684b0204554532f6caac726b55df4116ea2f9f0db63411e93",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2338,7 +2338,7 @@
       "contentDigest": "3f38ce1ddbd5aa94ee5a10d55720eba1cdd1ecd8d9e175ea9c42c304464fc65c",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2367,7 +2367,7 @@
       "contentDigest": "4b5f104ef2db4051d436f0ed51785939920c3d8305cac14ecb1fa7b732cd0b10",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2396,7 +2396,7 @@
       "contentDigest": "8db80e1572e5aa28e6abbf2e96d8f80d8c52babad50e064b46a8693ac18e3eda",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2427,7 +2427,7 @@
       "contentDigest": "d0f45d310b234ea8fa0f531ff640a6ef8244fb51cfeb94c2f67b1b42a81dba74",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2457,7 +2457,7 @@
       "contentDigest": "08b0c1dc3f2492226a4d4fa153f40e1a1220170f0e51c868e358b25637f7f45e",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2486,7 +2486,7 @@
       "contentDigest": "22bcc446cced610e91069e9373fd202379a3001b289357b5ce74a659e914df23",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2515,7 +2515,7 @@
       "contentDigest": "cad1e311523633b2cfd2c1f6f2439289864f538ccb8b87e01ebcb1223a7e5f85",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2544,7 +2544,7 @@
       "contentDigest": "e50668e058931706b8bc79f75af45263b7b01ffe6ca12f69a7f5bfe9b53e56ea",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2575,7 +2575,7 @@
       "contentDigest": "2110bad6523fe15b9c0d054775e12e8ca693a5f003913c4f49881f73d1bf0b20",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2604,7 +2604,7 @@
       "contentDigest": "ebc208f8a0dca563b47243b9c573d0eb5f676dab980892ea86af54bc4570935a",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2633,7 +2633,7 @@
       "contentDigest": "7967c10c51129ba7e85b99ca7abd59f5649423b944ce791cf6d0a7d280d6cbde",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2662,7 +2662,7 @@
       "contentDigest": "35f148f94f5e98435e975bb4429c34b1a034bcc6137a2c1d62ba460b486788af",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2692,7 +2692,7 @@
       "contentDigest": "d09ad8ed62e7747b21bf8c6f8425c173a61eba1955d73b86fe2cccd30ba6ec93",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2721,7 +2721,7 @@
       "contentDigest": "e44e55c0728a0748ce6ed0f3164671ac5af3da314ce860008514f89af432df7a",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2750,7 +2750,7 @@
       "contentDigest": "21af4679d0522a2ab341a8d6c41e946dd58f69371e8ae557427442b7ca466d89",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2776,7 +2776,7 @@
       "contentDigest": "a45a66e7280fe1f25c4f9c5823ab3cb655a191cb0af155fc0fa2027ebe76298f",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2806,7 +2806,7 @@
       "caseId": "meta-compile/error-unknown-type",
       "contentDigest": "13b107f110073b4c7256fe3d2c9632c673997edcfed2bb17f50358390ce03742",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2831,7 +2831,7 @@
       "contentDigest": "47d429529181ae79d2c6996898fad67100bc561abc2c1df19b09331eb0865a93",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2861,7 +2861,7 @@
       "contentDigest": "6493b4f48931b77196238d9bb00b50d352b45921d11fd77b329f4be016729e6b",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2891,7 +2891,7 @@
       "contentDigest": "59ecae64780166600504631ab011d889c9743081d6ff4460357a1315f59906ef",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2924,7 +2924,7 @@
       "contentDigest": "dc8d45d38619bdc9fcd10ec792dc19937438fe7c7628f9a51e97a48a6dfb42b8",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2955,7 +2955,7 @@
       "contentDigest": "694f8f09d91376cb798549e4b9d8a4632fbdbc0412dd29ee869375588823f746",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -2985,7 +2985,7 @@
       "contentDigest": "acc60b84585c4cee81c86bbdcfae521e19220b5f1da84715b491dc02ba96f35d",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -3015,7 +3015,7 @@
       "contentDigest": "dcc3308ea8f3c11063e0180daf7a54445a8ad6f313e313cb5a7d9ab792177828",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -3044,7 +3044,7 @@
       "caseId": "meta-compile/guard-deny-root",
       "contentDigest": "62069bd4b4799ff577d26a6048f09602fe2fb42013758eca6895c7700ce88c86",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -3069,7 +3069,7 @@
       "contentDigest": "275fbdbf1d6c8f686804bb6372d88d164cec8d3ae8064fce98a0035b43776818",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -3100,7 +3100,7 @@
       "contentDigest": "9fac75d0db408394c5683795c76468cf4734b988b33b8f7bf172202f0f6f8ef6",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -3136,7 +3136,7 @@
       "contentDigest": "3ce23d2a44dcee7860d389456d7cc5b3f9b3c691222f661b6ace180443bec60b",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -3166,7 +3166,7 @@
       "contentDigest": "09d9eb23d48240e47483bab6edf62accb8a5edf797b2cc3e9ba5e02ba4867b49",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -3195,7 +3195,7 @@
       "contentDigest": "e8a928d942690c8d2a73a76b5be58fb09ac5b7b45d8de1c75153053af29da6e7",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -3225,7 +3225,7 @@
       "contentDigest": "e1e984223592041b117784faec4bf72d0fd249a6af457404d47a1f27682d7225",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -3255,7 +3255,7 @@
       "contentDigest": "783d9fbe3e92b5dcf73ef02f884c1797307d99f6039579e3c4e74bbb28e06564",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -3285,7 +3285,7 @@
       "contentDigest": "09e006032bb95bf19ef87f0dd37e9ef98f5d1c9664ae3633e1b64bd0090259a5",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -3316,7 +3316,7 @@
       "contentDigest": "ae24ff2c48ab7c9f654c9e1af941e934daa8e00f3a84587ef08c1bad07556756",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -3347,7 +3347,7 @@
       "contentDigest": "16f1e27bb14b867a06b7dcd07c5b8bca9f962cb65d84898ba6762b6f2955038c",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
       ],
       "observation": {
@@ -3377,7 +3377,7 @@
       "contentDigest": "7c971493b837ac1da9742962130ae3b9fdfe64e14b8563061b2554c793806103",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
@@ -3406,7 +3406,7 @@
       "contentDigest": "9b7694c88d2b534a67e6a571b2eaad730d58ec347f3909a8a05514c352e7f1d4",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
@@ -3435,7 +3435,7 @@
       "contentDigest": "81dc37df58c13db19a05addf6eff206292e233877abc31a8bffb68de972b0c68",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
@@ -3464,7 +3464,7 @@
       "contentDigest": "f0a44227c75c0723606adc1e7e36621cb9d52598c85bc364f34000a745f0a6e6",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
@@ -3493,7 +3493,7 @@
       "contentDigest": "9cf9895dc643ab5e9ca6f58f95dcd60b92c6b09f990dbad4f58aa552037fdc6b",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
@@ -3522,7 +3522,7 @@
       "contentDigest": "ac940f2e8e1bc1d229cba205460a2ad1e7421171d9cda6140d317f128dfac5a6",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
@@ -3552,7 +3552,7 @@
       "contentDigest": "98e177f6fd283a443559bbc2b5fc179d3963d8450158d6f68e37498e14776ab9",
       "decision": "defer",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
@@ -3582,7 +3582,7 @@
       "contentDigest": "586f6616908ffe08bd251fb0250b5c30078ca9552c9d7bb04754184b58c9f6a0",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
@@ -3610,7 +3610,7 @@
       "caseId": "skd-compile/field-multi-type",
       "contentDigest": "4b48b6fa1c715fc8a5ca7ed8acfe2caf3e8662b015b6641352ae40598b406ad7",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
@@ -3639,7 +3639,7 @@
       "contentDigest": "1c3271ff4880c090ee17df7318960dd3a04545d2f0dfa78ebe1751da84f0ac12",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
@@ -3668,7 +3668,7 @@
       "contentDigest": "62c494d0f5d7be263aeb113cc00608950375de5b5ce1bd3b42ac667d95137bd4",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
@@ -3697,7 +3697,7 @@
       "contentDigest": "331e9303aa04afcefc0fa9923f0227d504f530731cfec94f4749b4394f851fb5",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
@@ -3725,7 +3725,7 @@
       "caseId": "skd-compile/guard-deny",
       "contentDigest": "4d6e18e324e00234a9a146a612386c3a3e1b7d35735394b29b506d3a5602b255",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
@@ -3750,7 +3750,7 @@
       "contentDigest": "030c8e1a1b6dfb6fb32d747da505ad48eb0fbe9a43ec0b3710d33b30c3d29c97",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
@@ -3778,7 +3778,7 @@
       "caseId": "skd-compile/minimal",
       "contentDigest": "c8f5d973a0c2277494c20f7c926b10eccfb14c8f0600cf7d32fe90c45f650b3f",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
@@ -3807,7 +3807,7 @@
       "contentDigest": "6ca53c308dd912efc6479904470bbff889f959718dcf238407e65710d80df730",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
@@ -3836,7 +3836,7 @@
       "contentDigest": "f83f554a10314a649146fbf0f90da0a0f0b9eff21a302f663a09a3df7208ab38",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
@@ -3865,7 +3865,7 @@
       "contentDigest": "a207a4fdaba8c73f072ed60ce29997b82a8a3e3b8310561bc964ccaa9479bf9e",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
@@ -3894,7 +3894,7 @@
       "contentDigest": "80a17f63d04d9e64457d41084e5e3104c8f0c80fbaa1d61309cd5bd7fdeb9d92",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
@@ -3923,7 +3923,7 @@
       "contentDigest": "4fa9f6afd0cb85318cd80c7227b398d26ae41543e905552f8be434bdaaa31c09",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
@@ -3951,7 +3951,7 @@
       "caseId": "skd-compile/simple-query",
       "contentDigest": "f982228497b55791d6845b00791f5e6d20ae6fc53ecdaec25926b55109eb47d3",
       "evidence": [
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
@@ -3980,7 +3980,7 @@
       "contentDigest": "14b5dfafa0122370017597d2bf347599b304c23d2ba554e19e6e9ca0f9027b49",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
@@ -4009,7 +4009,7 @@
       "contentDigest": "14667230e3989416ee409523aa6b2c4ed9fa1b3809791d266b457994524db902",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
@@ -4038,7 +4038,7 @@
       "contentDigest": "b7e7dc0160c1bab7308bad6b308f008db9e78c97558543fd9462c46de22eb2bf",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
@@ -4067,7 +4067,7 @@
       "contentDigest": "9f87bb252f5f87d2971ac8242453fa258ada6a644ea1be6e052665d4834c5fbc",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
@@ -4096,7 +4096,7 @@
       "contentDigest": "1ea99bda166de6f5526021a3d963522e4fd870917ca1ae16e4eec7e0cc2f0606",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
@@ -4125,7 +4125,7 @@
       "contentDigest": "52b75e1def962835e8ddb1376e30cc79564148d674c6973dfebc19e7a08b169c",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
@@ -4154,7 +4154,7 @@
       "contentDigest": "556d4c677523fa5d36568df504b0bc2f19a21bd120af86c31fd58853b07ea36d",
       "evidence": [
         "spec/0126-platform-8-3-27-deviation-matrix.md",
-        "docs/superpowers/specs/2026-07-24-updatable-donor-parity-relations-design.md",
+        "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {

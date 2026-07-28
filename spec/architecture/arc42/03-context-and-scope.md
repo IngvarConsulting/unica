@@ -1,39 +1,79 @@
 # 3. Контекст и границы системы
 
-## System Context
+## Системный контекст
 
-Unica sits between Codex/LLM and local 1C development assets. It translates
-operation-level requests into typed Rust use cases, cache decisions, and internal
-adapter calls.
+Unica sits between a host that runs the model and the local 1C development
+assets. It turns operation-level requests into typed Rust use cases, cache
+decisions, and internal adapter calls.
 
-## Public Boundary
+## Внешние акторы
 
-The only public MCP server is `unica`.
+- Codex and Claude Code — the two supported hosts. Both discover `skills/` and
+  the root `.mcp.json` in the same plugin directory, and each reads only its
+  own manifest directory (INV-PRODUCT-01).
+- The AI agent inside a host — the only caller of the public tool surface.
+- The 1C developer — states the intent and approves a mutation.
+- The local workspace — source sets on disk, `v8project.yaml`, and git state.
+- A local 1C:Enterprise installation — reached only through the bundled
+  runtime tooling for dump, load, build, and launch operations.
+- The remote standards service at `https://ai.v8std.ru/mcp`, overridable with
+  `UNICA_STANDARDS_MCP_URL`.
+- The release origin
+  `https://github.com/IngvarConsulting/unica/releases/download/<tag>/` — the
+  only approved source of runtime archives for `unica-bootstrap`
+  (INV-PKG-03).
 
-Public tool groups:
+## Публичная граница
 
-- `unica.project.*`
-- `unica.cf.*`, `unica.cfe.*`, `unica.meta.*`
-- `unica.form.*`, `unica.dcs.*`, `unica.mxl.*`, `unica.role.*`
-- `unica.interface.*`, `unica.subsystem.*`, `unica.template.*`
-- `unica.build.*`
-- `unica.runtime.*`
-- `unica.code.*`
-- `unica.standards.*`
+The only public MCP server is `unica` (INV-MCP-01, INV-MCP-02), and every
+public tool is named `unica.<group>.<operation>` (INV-MCP-04).
 
-## Internal Boundary
+Источник истины по составу публичной поверхности — реестр в коде:
+`UnicaApplication::tools()` в `crates/unica-coder/src/application/mod.rs`. Эта
+глава перечисляет только группы и их назначение; конкретные имена, схемы и
+количество инструментов читаются из реестра, а не отсюда.
 
-Internal adapters may call:
+| Группа | Назначение |
+| --- | --- |
+| `unica.project.*` | workspace status and the source-set map |
+| `unica.cf.*` | configuration container: scaffold, inspect, edit, validate |
+| `unica.cfe.*` | configuration extensions: scaffold, borrow, patch, diff |
+| `unica.meta.*` | metadata objects and their structure |
+| `unica.form.*` | managed forms |
+| `unica.dcs.*` | data composition schemas |
+| `unica.mxl.*` | spreadsheet documents |
+| `unica.role.*` | roles and access rights |
+| `unica.subsystem.*` | subsystems |
+| `unica.interface.*` | subsystem command interface |
+| `unica.template.*` | templates attached to a metadata object |
+| `unica.help.*` | built-in object help |
+| `unica.support.*` | vendor support state of a configuration and its objects |
+| `unica.epf.*` | external data processor scaffolding |
+| `unica.erf.*` | external report scaffolding |
+| `unica.build.*` | dump, load, update, make, and launch through the platform |
+| `unica.runtime.*` | typed runtime workflows and durable runtime jobs |
+| `unica.code.*` | BSL search, navigation, patching, and diagnostics |
+| `unica.standards.*` | 1C development standards knowledge |
 
-- v8-runner wrappers for build/runtime operations;
-- BSL analysis wrappers for code search and diagnostics;
-- remote v8std endpoint for standards knowledge.
+## Внутренняя граница
 
-These adapters are not public MCP registrations.
+Internal adapters may reach:
 
-## Out Of Scope
+- the bundled runtime tool for platform build and launch operations;
+- the bundled BSL analyzer and the BSL index for code intelligence;
+- typed `git grep` as one code-search section;
+- in-process native XML and DSL operations for metadata artifacts;
+- the remote standards endpoint over HTTP.
 
-- Making every adapter native Rust before the public single-MCP contract is
-  stable.
-- Publishing separate MCP servers for specialized engines.
-- Replacing donor reference scripts that are used only by parity fixtures.
+None of them is a public MCP registration, and prompt-visible text never names
+them as a call target (INV-MCP-01, INV-PRODUCT-03).
+
+## Вне области
+
+- Publishing a separate public MCP server for a specialized engine.
+- Exposing internal service, cache, or index coordination as a public tool
+  argument.
+- Reintroducing an operation-file execution path in the runtime (INV-APP-04,
+  INV-SKILL-03).
+- Replacing the donor snapshot and the reference models that exist only as
+  parity fixtures (INV-SKILL-04).

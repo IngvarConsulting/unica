@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[2]
 MATRIX = ROOT / "spec/0126-platform-8-3-27-deviation-matrix.md"
 DESIGN = (
     ROOT
-    / "docs/superpowers/specs/2026-07-23-platform-8-3-27-format-2-20-design.md"
+    / "docs/design/2026-07-23-platform-8-3-27-format-2-20-design.md"
 )
 FULL_DUMP_PUBLICATION = (
     ROOT

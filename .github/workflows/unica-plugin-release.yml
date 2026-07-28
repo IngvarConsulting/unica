@@ -60,6 +60,11 @@ jobs:
       - run: python -m py_compile scripts/ci/*.py tests/ci/*.py
       - run: python -m py_compile scripts/dev/*.py tests/dev/*.py
       - run: python scripts/ci/check-version-contract.py
+      - name: Check architecture sync
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags origin "${{ github.base_ref }}"
+          python scripts/ci/check-architecture-sync.py --base FETCH_HEAD
 
   test-rust-primary:
     name: Rust tests (macos-14 primary)

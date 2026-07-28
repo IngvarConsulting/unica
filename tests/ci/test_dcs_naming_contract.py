@@ -164,7 +164,7 @@ class DcsNamingContractTests(unittest.TestCase):
                     continue
                 if relative.startswith("plugins/unica/provenance/reviews/"):
                     continue
-                if relative.startswith("spec/plans/"):
+                if relative.startswith("docs/plans/"):
                     continue
                 paths.append(path)
         return sorted(set(paths))

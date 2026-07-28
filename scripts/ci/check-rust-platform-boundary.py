@@ -23,6 +23,9 @@ WINDOWS_SYS_ROOT_IMPORT = re.compile(
 )
 FORBIDDEN_DOMAIN_IMPORTS = ("application", "infrastructure", "interfaces")
 FORBIDDEN_APPLICATION_IMPORTS = ("infrastructure", "interfaces")
+# An adapter that reached into `interfaces` could render an MCP response itself
+# and bypass application cache reporting and event handling (INV-APP-03).
+FORBIDDEN_INFRASTRUCTURE_IMPORTS = ("interfaces",)
 RUST_IDENTIFIER_PATTERN = r"[A-Za-z_][A-Za-z0-9_]*"
 DOMAIN_STD_IO_MODULES = frozenset({"fs", "env", "process"})
 DOMAIN_PATH_IO_METHODS = (
@@ -257,7 +260,17 @@ def _forbidden_imports(path: PurePosixPath) -> tuple[str, ...]:
         return FORBIDDEN_DOMAIN_IMPORTS
     if normalized.startswith("crates/unica-coder/src/application/"):
         return FORBIDDEN_APPLICATION_IMPORTS
+    if normalized.startswith("crates/unica-coder/src/infrastructure/"):
+        return FORBIDDEN_INFRASTRUCTURE_IMPORTS
     return ()
+
+
+def _layer_name(path: PurePosixPath) -> str:
+    normalized = path.as_posix()
+    for layer in ("domain", "application", "infrastructure"):
+        if f"/src/{layer}/" in normalized:
+            return layer
+    return "application"
 
 
 def _dependency_diagnostics(path: PurePosixPath, source: str, masked: str) -> list[str]:
@@ -265,7 +278,7 @@ def _dependency_diagnostics(path: PurePosixPath, source: str, masked: str) -> li
     if not forbidden_imports:
         return []
 
-    layer = "domain" if "/src/domain/" in path.as_posix() else "application"
+    layer = _layer_name(path)
     diagnostics: list[str] = []
     for index, prefix, module in _direct_layer_references(masked):
         if module in forbidden_imports:
