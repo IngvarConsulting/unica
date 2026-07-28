@@ -2571,12 +2571,12 @@ fn fixed_rlm_helper_code(operation: &WorkspaceRlmOperation) -> Result<String, St
             "_result = get_module_outline(_args[\"path\"], include_methods=_args[\"include_methods\"])\nprint(json.dumps(_result, ensure_ascii=False))"
         }
         // `find_predefined` is the only supported way to reach predefined items and
-        // it has no count operation, so the section reports what it actually holds
-        // and flags truncation instead of publishing a fabricated `total`. The
-        // over-fetch is measured before the category filter, otherwise filtering a
-        // single row out of the probe would hide the fact that more rows exist.
+        // it has neither a count nor a category argument. When the cross-category
+        // fetch is capped, post-filtering cannot establish a complete answer for
+        // the requested category, so the section fails closed instead of claiming
+        // an authoritative `ok` or `empty`.
         WorkspaceRlmOperation::ObjectProfile { .. } => {
-            "_raw_sections = _args[\"sections\"]\n_section_aliases = {\"functionalOptions\": \"functional_options\"}\n_profile_sections = None if _raw_sections is None else [_section_aliases.get(_section, _section) for _section in _raw_sections if _section != \"predefinedItems\"]\n_result = get_object_profile(_args[\"name\"], sections=_profile_sections, include_flow=False, include_code_usages=False, limit=_args[\"limit\"])\nif _raw_sections is not None and \"predefinedItems\" in _raw_sections and \"error\" not in _result:\n    _category = _result.get(\"category\")\n    _fetched = find_predefined(object_name=_result.get(\"object_name\") or _args[\"name\"], limit=_args[\"limit\"] + 1)\n    _has_more = len(_fetched) > _args[\"limit\"]\n    _items = _fetched\n    if _category:\n        _items = [_item for _item in _items if not _item.get(\"category\") or _item.get(\"category\") == _category]\n    _items = _items[:_args[\"limit\"]]\n    _result.setdefault(\"sections\", {})[\"predefined_items\"] = {\"status\": \"ok\" if _items else \"empty\", \"summary\": {}, \"items\": _items, \"total\": len(_items), \"returned\": len(_items), \"has_more\": _has_more, \"_meta\": {\"source\": \"index\", \"truncated\": _has_more}}\nprint(json.dumps(_result, ensure_ascii=False))"
+            "_raw_sections = _args[\"sections\"]\n_section_aliases = {\"functionalOptions\": \"functional_options\"}\n_profile_sections = None if _raw_sections is None else [_section_aliases.get(_section, _section) for _section in _raw_sections if _section != \"predefinedItems\"]\n_result = get_object_profile(_args[\"name\"], sections=_profile_sections, include_flow=False, include_code_usages=False, limit=_args[\"limit\"])\nif _raw_sections is not None and \"predefinedItems\" in _raw_sections and \"error\" not in _result:\n    _category = _result.get(\"category\")\n    _fetched = find_predefined(object_name=_result.get(\"object_name\") or _args[\"name\"], limit=_args[\"limit\"] + 1)\n    _has_more = len(_fetched) > _args[\"limit\"]\n    _items = _fetched\n    if _category:\n        _items = [_item for _item in _items if not _item.get(\"category\") or _item.get(\"category\") == _category]\n    _items = _items[:_args[\"limit\"]]\n    if _category and _has_more:\n        _predefined = {\"status\": \"unavailable\", \"summary\": {}, \"items\": [], \"total\": 0, \"returned\": 0, \"has_more\": True, \"_meta\": {\"source\": \"index\", \"truncated\": True, \"error\": \"supported RLM API cannot establish category-complete predefined items after a capped cross-category fetch\"}}\n    else:\n        _predefined = {\"status\": \"ok\" if _items else \"empty\", \"summary\": {}, \"items\": _items, \"total\": len(_items), \"returned\": len(_items), \"has_more\": _has_more, \"_meta\": {\"source\": \"index\", \"truncated\": _has_more, \"total_is_lower_bound\": _has_more}}\n    _result.setdefault(\"sections\", {})[\"predefined_items\"] = _predefined\nprint(json.dumps(_result, ensure_ascii=False))"
         }
     };
     Ok(format!(
@@ -3774,6 +3774,29 @@ mod tests {
             .find("_item.get(\"category\") == _category")
             .expect("the category filter is still applied");
         assert!(fetch < filter, "{code}");
+    }
+
+    #[test]
+    fn object_profile_helper_does_not_claim_category_complete_results_after_a_capped_fetch() {
+        let code = fixed_rlm_helper_code(&WorkspaceRlmOperation::ObjectProfile {
+            name: "Document.Заказ".to_string(),
+            sections: Some(vec!["predefinedItems".to_string()]),
+            limit: 20,
+        })
+        .unwrap();
+
+        assert!(
+            code.contains("if _category and _has_more:"),
+            "category ambiguity must be handled explicitly: {code}"
+        );
+        assert!(
+            code.contains("\"status\": \"unavailable\""),
+            "a capped cross-category fetch must not claim ok or empty: {code}"
+        );
+        assert!(
+            code.contains("category-complete predefined items"),
+            "the unavailable result must explain why completeness is unknown: {code}"
+        );
     }
 
     #[test]

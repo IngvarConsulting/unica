@@ -1,8 +1,6 @@
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
-use crate::domain::code_intelligence::{
-    CodeIntelligenceContext, CodeIntelligenceReadRequest, SearchRequest,
-};
+use crate::domain::code_intelligence::{CodeIntelligenceReadRequest, SearchRequest};
 use crate::domain::events::{runtime_event_kind, DomainEvent, DomainEventKind};
 use crate::domain::workspace::WorkspaceContext;
 pub(crate) use operation_descriptors::SupportGuardRequirement;
@@ -10,8 +8,7 @@ pub(crate) use outcome::AdapterOutcome;
 use ports::{ApplicationPorts, FormatGuardCheck, SupportGuardCheck};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
-use std::borrow::Cow;
-use std::path::{Component, Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 pub(crate) use tool_contracts::{
     DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS, DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
@@ -622,7 +619,7 @@ fn invoke_code_intelligence_read(
             .push(context.source_root.path.display().to_string());
         return Ok(ports::HandlerOutcome::plain(outcome));
     }
-    let request = normalize_code_intelligence_read_request(
+    let request = ports.normalize_code_intelligence_read_request(
         code_intelligence_read_request(operation, args)?,
         &context,
     )?;
@@ -714,102 +711,6 @@ fn code_intelligence_read_request(
             Err("search cannot be built as a code intelligence read request".to_string())
         }
     }
-}
-
-fn normalize_code_intelligence_read_request(
-    mut request: CodeIntelligenceReadRequest,
-    context: &CodeIntelligenceContext,
-) -> Result<CodeIntelligenceReadRequest, String> {
-    match &mut request {
-        CodeIntelligenceReadRequest::Definition { module_hint, .. }
-            if Path::new(module_hint).is_absolute()
-                || module_hint.contains('/')
-                || module_hint.contains('\\') =>
-        {
-            *module_hint = normalize_code_intelligence_path(module_hint, context)?;
-        }
-        CodeIntelligenceReadRequest::Outline { path, .. } => {
-            *path = normalize_code_intelligence_path(path, context)?;
-        }
-        CodeIntelligenceReadRequest::Definition { .. }
-        | CodeIntelligenceReadRequest::ObjectProfile { .. } => {}
-    }
-    Ok(request)
-}
-
-fn normalize_code_intelligence_path(
-    raw: &str,
-    context: &CodeIntelligenceContext,
-) -> Result<String, String> {
-    let source_root = normalize_lexical_path(&context.source_root.path);
-    let workspace_root = normalize_lexical_path(&context.workspace.workspace_root);
-    // Callers address 1C sources with either separator regardless of the host, so
-    // the argument has to become host-neutral components before containment is
-    // checked. A Unix `Path` reads `..\..\x` as one `Normal` component, which
-    // would slip past the `ParentDir` and `starts_with` gates below and only turn
-    // back into `../../x` when the relative form is rendered on the way out.
-    // Hosts that already separate on backslashes keep the argument verbatim so
-    // extended-length and UNC prefixes stay parseable.
-    let host_neutral = separator_neutral_path(raw);
-    let raw_path = Path::new(host_neutral.as_ref());
-    let resolved = if raw_path.is_absolute() {
-        normalize_lexical_path(raw_path)
-    } else {
-        let from_cwd = normalize_lexical_path(&context.workspace.cwd.join(raw_path));
-        let from_workspace = normalize_lexical_path(&workspace_root.join(raw_path));
-        if from_cwd.starts_with(&source_root) {
-            from_cwd
-        } else if from_workspace.starts_with(&source_root) {
-            from_workspace
-        } else if raw_path
-            .components()
-            .any(|component| component == Component::ParentDir)
-        {
-            from_cwd
-        } else {
-            normalize_lexical_path(&source_root.join(raw_path))
-        }
-    };
-    if !resolved.starts_with(&workspace_root) || !resolved.starts_with(&source_root) {
-        return Err(format!(
-            "path `{raw}` resolves outside resolved source root {}",
-            context.source_root.path.display()
-        ));
-    }
-    let relative = resolved
-        .strip_prefix(&source_root)
-        .map_err(|error| format!("failed to normalize code intelligence path `{raw}`: {error}"))?;
-    if relative.as_os_str().is_empty() {
-        return Err(format!(
-            "path `{raw}` resolves to the source root rather than a source file"
-        ));
-    }
-    Ok(relative.to_string_lossy().replace('\\', "/"))
-}
-
-/// Renders a caller-supplied path so that both separators split components on
-/// the running host. Windows already treats `\` as a separator, so the argument
-/// is returned untouched there and only foreign backslashes are folded.
-fn separator_neutral_path(raw: &str) -> Cow<'_, str> {
-    if std::path::MAIN_SEPARATOR == '\\' || !raw.contains('\\') {
-        Cow::Borrowed(raw)
-    } else {
-        Cow::Owned(raw.replace('\\', "/"))
-    }
-}
-
-fn normalize_lexical_path(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            _ => normalized.push(component.as_os_str()),
-        }
-    }
-    normalized
 }
 
 fn required_code_intelligence_string<'a>(
@@ -1929,150 +1830,6 @@ mod tests {
             serde_json::to_value(result(Some(data.clone()))).expect("typed result must serialize");
         assert_eq!(structured["data"], data);
         assert!(structured.get("stdout").is_none());
-    }
-
-    fn code_intelligence_context_for_paths(
-    ) -> crate::domain::code_intelligence::CodeIntelligenceContext {
-        crate::domain::code_intelligence::CodeIntelligenceContext::new(
-            WorkspaceContext {
-                cwd: PathBuf::from("/workspace"),
-                workspace_root: PathBuf::from("/workspace"),
-                cache_root: PathBuf::from("/workspace/.build/unica"),
-                workspace_epoch: 1,
-            },
-            crate::domain::source_roots::ResolvedSourceRoot {
-                source_set: Some("main".to_string()),
-                path: PathBuf::from("/workspace/src/cf"),
-            },
-        )
-    }
-
-    #[test]
-    fn code_intelligence_read_paths_are_normalized_to_the_resolved_source_root() {
-        for raw in [
-            "CommonModules/X/Ext/Module.bsl",
-            "src/cf/CommonModules/X/Ext/Module.bsl",
-            "/workspace/src/cf/CommonModules/X/Ext/Module.bsl",
-        ] {
-            let request = CodeIntelligenceReadRequest::Outline {
-                path: raw.to_string(),
-                include_methods: true,
-            };
-            let normalized = normalize_code_intelligence_read_request(
-                request,
-                &code_intelligence_context_for_paths(),
-            )
-            .unwrap();
-
-            assert_eq!(
-                normalized,
-                CodeIntelligenceReadRequest::Outline {
-                    path: "CommonModules/X/Ext/Module.bsl".to_string(),
-                    include_methods: true,
-                }
-            );
-        }
-    }
-
-    #[test]
-    fn code_intelligence_read_path_cannot_escape_the_selected_source_root() {
-        let request = CodeIntelligenceReadRequest::Outline {
-            path: "../../other/Module.bsl".to_string(),
-            include_methods: true,
-        };
-
-        let error = normalize_code_intelligence_read_request(
-            request,
-            &code_intelligence_context_for_paths(),
-        )
-        .unwrap_err();
-
-        assert!(error.contains("outside resolved source root"), "{error}");
-    }
-
-    #[test]
-    fn code_intelligence_read_path_cannot_escape_through_windows_separators() {
-        for raw in [
-            r"..\..\other\Module.bsl",
-            r"..\../other/Module.bsl",
-            r"CommonModules\..\..\..\other\Module.bsl",
-        ] {
-            let error = normalize_code_intelligence_read_request(
-                CodeIntelligenceReadRequest::Outline {
-                    path: raw.to_string(),
-                    include_methods: true,
-                },
-                &code_intelligence_context_for_paths(),
-            )
-            .unwrap_err();
-
-            assert!(
-                error.contains("outside resolved source root"),
-                "{raw}: {error}"
-            );
-        }
-    }
-
-    #[test]
-    fn code_intelligence_definition_module_hint_cannot_escape_through_windows_separators() {
-        let error = normalize_code_intelligence_read_request(
-            CodeIntelligenceReadRequest::Definition {
-                name: "ОбщегоНазначения".to_string(),
-                module_hint: r"..\..\other\Module.bsl".to_string(),
-                limit: 50,
-            },
-            &code_intelligence_context_for_paths(),
-        )
-        .unwrap_err();
-
-        assert!(error.contains("outside resolved source root"), "{error}");
-    }
-
-    #[test]
-    fn code_intelligence_read_path_accepts_windows_separators_inside_the_source_root() {
-        let normalized = normalize_code_intelligence_read_request(
-            CodeIntelligenceReadRequest::Outline {
-                path: r"CommonModules\X\Ext\Module.bsl".to_string(),
-                include_methods: true,
-            },
-            &code_intelligence_context_for_paths(),
-        )
-        .unwrap();
-
-        assert_eq!(
-            normalized,
-            CodeIntelligenceReadRequest::Outline {
-                path: "CommonModules/X/Ext/Module.bsl".to_string(),
-                include_methods: true,
-            }
-        );
-    }
-
-    #[test]
-    fn code_intelligence_read_path_accepts_workspace_and_cwd_relative_forms() {
-        let mut context = code_intelligence_context_for_paths();
-        context.workspace.cwd = PathBuf::from("/workspace/tools");
-
-        for raw in [
-            "src/cf/CommonModules/X/Ext/Module.bsl",
-            "../src/cf/CommonModules/X/Ext/Module.bsl",
-        ] {
-            let normalized = normalize_code_intelligence_read_request(
-                CodeIntelligenceReadRequest::Outline {
-                    path: raw.to_string(),
-                    include_methods: true,
-                },
-                &context,
-            )
-            .unwrap();
-            assert_eq!(
-                normalized,
-                CodeIntelligenceReadRequest::Outline {
-                    path: "CommonModules/X/Ext/Module.bsl".to_string(),
-                    include_methods: true,
-                }
-            );
-        }
     }
 
     #[test]

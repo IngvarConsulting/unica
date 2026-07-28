@@ -5,7 +5,8 @@ use crate::application::{project_map, project_status, AdapterOutcome, ToolHandle
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
-    CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceRegistry,
+    CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadRequest,
+    CodeIntelligenceRegistry,
 };
 use crate::domain::events::DomainEvent;
 use crate::domain::workspace::WorkspaceContext;
@@ -21,7 +22,8 @@ use crate::infrastructure::platform::full_dump_publication::{
 use crate::infrastructure::workspace_services::WorkspaceServiceManager;
 use crate::infrastructure::workspace_state::WorkspaceStateRepository;
 use serde_json::{Map, Value};
-use std::path::PathBuf;
+use std::borrow::Cow;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 pub(crate) struct InfrastructureApplicationPorts;
 
@@ -65,6 +67,14 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         workspace.cwd =
             crate::infrastructure::source_roots::normalize_path_identity(&workspace.cwd)?;
         Ok(CodeIntelligenceContext::new(workspace, source_root))
+    }
+
+    fn normalize_code_intelligence_read_request(
+        &self,
+        request: CodeIntelligenceReadRequest,
+        context: &CodeIntelligenceContext,
+    ) -> Result<CodeIntelligenceReadRequest, String> {
+        normalize_code_intelligence_read_request(request, context)
     }
 
     fn code_intelligence_registry(&self) -> Result<CodeIntelligenceRegistry, String> {
@@ -249,6 +259,107 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
     }
 }
 
+fn normalize_code_intelligence_read_request(
+    mut request: CodeIntelligenceReadRequest,
+    context: &CodeIntelligenceContext,
+) -> Result<CodeIntelligenceReadRequest, String> {
+    match &mut request {
+        CodeIntelligenceReadRequest::Definition { module_hint, .. }
+            if Path::new(module_hint).is_absolute()
+                || module_hint.contains('/')
+                || module_hint.contains('\\') =>
+        {
+            *module_hint = normalize_code_intelligence_path(module_hint, context)?;
+        }
+        CodeIntelligenceReadRequest::Outline { path, .. } => {
+            *path = normalize_code_intelligence_path(path, context)?;
+        }
+        CodeIntelligenceReadRequest::Definition { .. }
+        | CodeIntelligenceReadRequest::ObjectProfile { .. } => {}
+    }
+    Ok(request)
+}
+
+fn normalize_code_intelligence_path(
+    raw: &str,
+    context: &CodeIntelligenceContext,
+) -> Result<String, String> {
+    let source_root =
+        crate::infrastructure::source_roots::normalize_path_identity(&context.source_root.path)?;
+    let workspace_root = crate::infrastructure::source_roots::normalize_path_identity(
+        &context.workspace.workspace_root,
+    )?;
+    let cwd = crate::infrastructure::source_roots::normalize_path_identity(&context.workspace.cwd)?;
+
+    // Callers address 1C sources with either separator regardless of the host, so
+    // the argument has to become host-neutral components before candidate
+    // selection. Filesystem identity is resolved only after choosing the base:
+    // this follows symlink components and keeps non-existent suffixes attached to
+    // their nearest existing canonical ancestor.
+    let host_neutral = separator_neutral_path(raw);
+    let raw_path = Path::new(host_neutral.as_ref());
+    let candidate = if raw_path.is_absolute() {
+        normalize_lexical_path(raw_path)
+    } else {
+        let from_cwd = normalize_lexical_path(&cwd.join(raw_path));
+        let from_workspace = normalize_lexical_path(&workspace_root.join(raw_path));
+        if from_cwd.starts_with(&source_root) {
+            from_cwd
+        } else if from_workspace.starts_with(&source_root) {
+            from_workspace
+        } else if raw_path
+            .components()
+            .any(|component| component == Component::ParentDir)
+        {
+            from_cwd
+        } else {
+            normalize_lexical_path(&source_root.join(raw_path))
+        }
+    };
+    let resolved = crate::infrastructure::source_roots::normalize_path_identity(&candidate)
+        .map_err(|error| format!("failed to normalize code intelligence path `{raw}`: {error}"))?;
+    if !resolved.starts_with(&workspace_root) || !resolved.starts_with(&source_root) {
+        return Err(format!(
+            "path `{raw}` resolves outside resolved source root {}",
+            context.source_root.path.display()
+        ));
+    }
+    let relative = resolved
+        .strip_prefix(&source_root)
+        .map_err(|error| format!("failed to normalize code intelligence path `{raw}`: {error}"))?;
+    if relative.as_os_str().is_empty() {
+        return Err(format!(
+            "path `{raw}` resolves to the source root rather than a source file"
+        ));
+    }
+    Ok(relative.to_string_lossy().replace('\\', "/"))
+}
+
+/// Renders a caller-supplied path so that both separators split components on
+/// the running host. Windows already treats `\` as a separator, so the argument
+/// is returned untouched there and only foreign backslashes are folded.
+fn separator_neutral_path(raw: &str) -> Cow<'_, str> {
+    if std::path::MAIN_SEPARATOR == '\\' || !raw.contains('\\') {
+        Cow::Borrowed(raw)
+    } else {
+        Cow::Owned(raw.replace('\\', "/"))
+    }
+}
+
+fn normalize_lexical_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
 fn is_applied_full_dump(args: &Map<String, Value>, dry_run: bool) -> bool {
     !dry_run && args.get("mode").and_then(Value::as_str) == Some("full")
 }
@@ -276,11 +387,15 @@ fn verified_full_dump_invocation(
 
 #[cfg(test)]
 mod tests {
-    use super::verified_full_dump_invocation;
+    use super::{normalize_code_intelligence_read_request, verified_full_dump_invocation};
     use crate::application::{RuntimeJobAction, ToolHandler, ToolSpec};
     use crate::domain::cache::CacheAccess;
+    use crate::domain::code_intelligence::{CodeIntelligenceContext, CodeIntelligenceReadRequest};
+    use crate::domain::source_roots::ResolvedSourceRoot;
+    use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::platform::full_dump_publication::FullDumpInvocation;
     use serde_json::{json, Map};
+    use std::path::PathBuf;
 
     fn spec(name: &'static str, handler: ToolHandler) -> ToolSpec {
         ToolSpec {
@@ -334,5 +449,138 @@ mod tests {
             verified_full_dump_invocation(runtime, &runtime_args, false),
             None
         );
+    }
+
+    fn code_intelligence_context_for_paths() -> (PathBuf, CodeIntelligenceContext) {
+        let root = std::env::temp_dir().join(format!(
+            "unica-code-intelligence-paths-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let workspace = root.join("workspace");
+        let source_root = workspace.join("src/cf");
+        std::fs::create_dir_all(&source_root).unwrap();
+        (
+            root,
+            CodeIntelligenceContext::new(
+                WorkspaceContext {
+                    cwd: workspace.clone(),
+                    workspace_root: workspace.clone(),
+                    cache_root: workspace.join(".build/unica"),
+                    workspace_epoch: 1,
+                },
+                ResolvedSourceRoot {
+                    source_set: Some("main".to_string()),
+                    path: source_root,
+                },
+            ),
+        )
+    }
+
+    #[test]
+    fn code_intelligence_read_paths_are_normalized_to_the_resolved_source_root() {
+        let (root, context) = code_intelligence_context_for_paths();
+        let absolute = context
+            .source_root
+            .path
+            .join("CommonModules/X/Ext/Module.bsl")
+            .display()
+            .to_string();
+        for raw in [
+            "CommonModules/X/Ext/Module.bsl".to_string(),
+            "src/cf/CommonModules/X/Ext/Module.bsl".to_string(),
+            absolute,
+        ] {
+            let normalized = normalize_code_intelligence_read_request(
+                CodeIntelligenceReadRequest::Outline {
+                    path: raw,
+                    include_methods: true,
+                },
+                &context,
+            )
+            .unwrap();
+
+            assert_eq!(
+                normalized,
+                CodeIntelligenceReadRequest::Outline {
+                    path: "CommonModules/X/Ext/Module.bsl".to_string(),
+                    include_methods: true,
+                }
+            );
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn code_intelligence_read_path_cannot_escape_through_either_separator() {
+        let (root, context) = code_intelligence_context_for_paths();
+        for raw in [
+            "../../other/Module.bsl",
+            r"..\..\other\Module.bsl",
+            r"..\../other/Module.bsl",
+            r"CommonModules\..\..\..\other\Module.bsl",
+        ] {
+            let error = normalize_code_intelligence_read_request(
+                CodeIntelligenceReadRequest::Outline {
+                    path: raw.to_string(),
+                    include_methods: true,
+                },
+                &context,
+            )
+            .unwrap_err();
+
+            assert!(
+                error.contains("outside resolved source root"),
+                "{raw}: {error}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn code_intelligence_definition_module_hint_uses_the_same_path_identity() {
+        let (root, context) = code_intelligence_context_for_paths();
+        let error = normalize_code_intelligence_read_request(
+            CodeIntelligenceReadRequest::Definition {
+                name: "ОбщегоНазначения".to_string(),
+                module_hint: r"..\..\other\Module.bsl".to_string(),
+                limit: 50,
+            },
+            &context,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("outside resolved source root"), "{error}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn code_intelligence_read_path_accepts_workspace_cwd_and_windows_forms() {
+        let (root, mut context) = code_intelligence_context_for_paths();
+        context.workspace.cwd = context.workspace.workspace_root.join("tools");
+        std::fs::create_dir_all(&context.workspace.cwd).unwrap();
+
+        for raw in [
+            r"CommonModules\X\Ext\Module.bsl",
+            "src/cf/CommonModules/X/Ext/Module.bsl",
+            "../src/cf/CommonModules/X/Ext/Module.bsl",
+        ] {
+            let normalized = normalize_code_intelligence_read_request(
+                CodeIntelligenceReadRequest::Outline {
+                    path: raw.to_string(),
+                    include_methods: true,
+                },
+                &context,
+            )
+            .unwrap();
+            assert_eq!(
+                normalized,
+                CodeIntelligenceReadRequest::Outline {
+                    path: "CommonModules/X/Ext/Module.bsl".to_string(),
+                    include_methods: true,
+                }
+            );
+        }
+        let _ = std::fs::remove_dir_all(root);
     }
 }

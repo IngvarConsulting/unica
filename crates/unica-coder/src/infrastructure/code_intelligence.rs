@@ -701,9 +701,13 @@ fn git_grep_section(output: ProcessOutput, limit: usize) -> ProviderSearchSectio
         diagnostics.push("git-grep output was truncated by the process runner".to_string());
     }
     let status = if hits.is_empty() {
-        if output.stdout.trim().is_empty() || output.stdout_truncated {
-            // Dropping the partial first row can leave nothing behind; that is a
-            // truncated capture, not output the parser failed to understand.
+        if output.stdout_truncated {
+            diagnostics.insert(
+                0,
+                "git-grep capture contained no complete result after truncation".to_string(),
+            );
+            ProviderSectionStatus::Failed
+        } else if output.stdout.trim().is_empty() {
             ProviderSectionStatus::Empty
         } else {
             diagnostics.insert(
@@ -1029,6 +1033,39 @@ mod tests {
             "{:?}",
             section.hits
         );
+    }
+
+    #[test]
+    fn git_grep_does_not_report_empty_when_truncation_removed_the_only_row() {
+        let runner = FakeRunner {
+            output: ProcessOutput {
+                status_success: false,
+                status: "exit status: 0".to_string(),
+                stdout: "dules/Broken/Ext/Module.bsl:12:Procedure Broken()\n".to_string(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: true,
+            },
+            commands: Mutex::new(Vec::new()),
+        };
+
+        let section = GitGrepProvider::with_runner(&runner).search(
+            &SearchRequest {
+                query: "Procedure".to_string(),
+                limit: 20,
+            },
+            &context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
+            &CancellationToken::new(),
+        );
+
+        assert_eq!(section.status, ProviderSectionStatus::Failed);
+        assert!(section.hits.is_empty());
+        assert!(section
+            .diagnostics
+            .iter()
+            .any(|item| item.contains("truncated")));
     }
 
     #[test]

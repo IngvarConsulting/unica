@@ -436,14 +436,15 @@ fn render_profile(value: &Value) -> Result<String, String> {
             .get("returned")
             .and_then(Value::as_u64)
             .unwrap_or_default();
-        // A truncated section knows only how many rows it holds, so its count is a
-        // lower bound. Rendering it as an exact total would understate the object.
-        let truncated = section
-            .get("has_more")
+        // Upstream sections compute `total` before applying their item limit, so
+        // `has_more` and `_meta.truncated` do not by themselves make that count
+        // approximate. Only composed sections that cannot obtain a count mark the
+        // value explicitly as a lower bound.
+        let total_is_lower_bound = section
+            .pointer("/_meta/total_is_lower_bound")
             .and_then(Value::as_bool)
-            .or_else(|| section.pointer("/_meta/truncated").and_then(Value::as_bool))
             .unwrap_or(false);
-        let more = if truncated { "+" } else { "" };
+        let more = if total_is_lower_bound { "+" } else { "" };
         lines.push(format!(
             "section {}: {status} total={total}{more} returned={returned}",
             public_profile_section_name(name)
@@ -740,7 +741,11 @@ mod tests {
                     "total": 1,
                     "returned": 1,
                     "has_more": true,
-                    "_meta": {"source": "index", "truncated": true}
+                    "_meta": {
+                        "source": "index",
+                        "truncated": true,
+                        "total_is_lower_bound": true
+                    }
                 }
             }
         }))
@@ -750,6 +755,30 @@ mod tests {
             text.contains("section predefinedItems: ok total=1+ returned=1"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn profile_renderer_keeps_upstream_exact_total_when_items_are_limited() {
+        let text = render_profile(&json!({
+            "object_name": "Заказ",
+            "category": "Document",
+            "sections": {
+                "structure": {
+                    "status": "ok",
+                    "items": [{"name": "Реквизит1"}],
+                    "total": 100,
+                    "returned": 20,
+                    "has_more": true
+                }
+            }
+        }))
+        .unwrap();
+
+        assert!(
+            text.contains("section structure: ok total=100 returned=20"),
+            "{text}"
+        );
+        assert!(!text.contains("total=100+"), "{text}");
     }
 
     #[test]

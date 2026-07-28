@@ -55,3 +55,105 @@ fn code_intelligence_accepts_source_paths_reached_through_a_symlinked_workspace(
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[cfg(unix)]
+#[test]
+fn code_intelligence_accepts_an_absolute_source_path_through_a_symlinked_workspace() {
+    use serde_json::{Map, Value};
+    use std::os::unix::fs::symlink;
+    use unica_coder::application::UnicaApplication;
+
+    let root = std::env::temp_dir().join(format!(
+        "unica-code-intelligence-absolute-symlink-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let workspace = root.join("real");
+    let relative_module = "src/CommonModules/Тест/Ext/Module.bsl";
+    let module = workspace.join(relative_module);
+    std::fs::create_dir_all(module.parent().unwrap()).unwrap();
+    std::fs::write(&module, "Процедура Тест() КонецПроцедуры\n").unwrap();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+    )
+    .unwrap();
+
+    let linked_workspace = root.join("linked");
+    symlink(&workspace, &linked_workspace).unwrap();
+
+    let mut args = Map::new();
+    args.insert(
+        "cwd".to_string(),
+        Value::String(linked_workspace.display().to_string()),
+    );
+    args.insert(
+        "path".to_string(),
+        Value::String(linked_workspace.join(relative_module).display().to_string()),
+    );
+
+    let result = UnicaApplication::new().call_tool("unica.code.outline", &args);
+
+    match result {
+        Ok(outcome) => {
+            let rendered = format!("{} {:?}", outcome.summary, outcome.errors);
+            assert!(
+                !rendered.contains("outside resolved source root"),
+                "{rendered}"
+            );
+        }
+        Err(error) => {
+            assert!(!error.contains("outside resolved source root"), "{error}");
+        }
+    }
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg(unix)]
+#[test]
+fn code_intelligence_rejects_a_source_path_through_a_symlink_outside_the_source_root() {
+    use serde_json::{Map, Value};
+    use std::os::unix::fs::symlink;
+    use unica_coder::application::UnicaApplication;
+
+    let root = std::env::temp_dir().join(format!(
+        "unica-code-intelligence-symlink-escape-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let workspace = root.join("workspace");
+    let source_root = workspace.join("src");
+    let outside = root.join("outside");
+    std::fs::create_dir_all(&source_root).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+    )
+    .unwrap();
+    std::fs::write(
+        outside.join("Module.bsl"),
+        "Процедура Снаружи() КонецПроцедуры\n",
+    )
+    .unwrap();
+    symlink(&outside, source_root.join("escape")).unwrap();
+
+    let mut args = Map::new();
+    args.insert(
+        "cwd".to_string(),
+        Value::String(workspace.display().to_string()),
+    );
+    args.insert(
+        "path".to_string(),
+        Value::String("escape/Module.bsl".to_string()),
+    );
+
+    let error = UnicaApplication::new()
+        .call_tool("unica.code.outline", &args)
+        .expect_err("a source path through an escaping symlink must be rejected");
+
+    assert!(error.contains("outside resolved source root"), "{error}");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
