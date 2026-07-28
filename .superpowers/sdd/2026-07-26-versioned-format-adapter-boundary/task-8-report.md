@@ -1135,3 +1135,191 @@ crates/unica-format-core/tests/task8_fix_round3_contract.rs
 - The 13 adapter reader/projection failures and one core registry-list failure remain exact, visible non-Task-8 residuals.
 - Full `unica-coder` Windows GNU validation requires a runner with the Windows GNU C runtime headers for both `ring` and bundled SQLite; touched core+adapter Windows checks are green.
 - Test-only legacy parser fixtures remain isolated under `#[cfg(test)]`; production compile-graph guards prevent them from becoming a compatibility surface.
+
+
+## Fix Round 4
+
+### Baseline and commits
+
+- Requested base: `9425041ec325dcd113f5bc29e92bcc683ba8da6f`.
+- Branch: `codex/versioned-source-adapter-design`.
+- Implementation commit: `f1328ed2d0d50bc46dc02b3713eaed575daa6182` (`fix(adapter): close Task 8 round 4 findings`).
+- This report is committed separately without amend.
+- Controller-owned `.superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/progress.md` remained modified, unstaged, and uncommitted.
+
+### Finding 1: family-owned DCS/MXL revision policy
+
+Compatibility now classifies the actual captured qualified root before interpreting its revision. Filename and basename are not inputs to this policy.
+
+| Family | Required qualified root | Revision | Typed decision | Publication |
+|---|---|---:|---|---|
+| DCS | `DataCompositionSchema` in the DCS schema namespace | `0.x` | `SourceRevisionOlder` | rejected; no implicit upgrade or downgrade |
+| DCS | same | `1.0` | compatible | preview/apply allowed |
+| DCS | same | `1.1` or later | `SourceRevisionNewer` / public `UnsupportedFormat` | rejected before write |
+| MXL | `document` in the spreadsheet namespace | `0.x` | `SourceRevisionOlder` | rejected; no implicit upgrade or downgrade |
+| MXL | same | `1.0` | compatible | preview/apply allowed |
+| MXL | same | `1.1` or later | `SourceRevisionNewer` / public `UnsupportedFormat` | rejected before write |
+| Both | wrong root or namespace | any | `SourceMalformed` | rejected before write |
+| Both | missing or non-`major.minor` revision | missing/malformed | `SourceMalformed` | rejected before write |
+
+The writer registry performs the family-owned preflight before both preview and apply. DCS and MXL writer validators retain defense-in-depth root, namespace, and `1.0` checks. Generated DCS and MXL documents and the reviewed 8.3.27 spreadsheet fixture now carry `version="1.0"`.
+
+### Finding 2: authoritative metadata applicability and projection
+
+- Core owns one exhaustive 40-kind applicability registry over all 64 `MetadataKindPropertyName` values.
+- `AccountingRegister + EnableTotalsSplitting` is valid and emits `EnableTotalsSplitting` from the typed boolean value instead of a hardcoded default.
+- `CalculationRegister + Periodicity` emits native `Periodicity`.
+- `InformationRegister + Periodicity` remains the distinct native `InformationRegisterPeriodicity` property.
+- Adapter projection validates kind/property applicability before returning a target property.
+- `tests/fixtures/task8-metadata-property-targets.json` is an independent reviewed 64-property target crosswalk with the two kind-specific periodicity overrides.
+- The adapter unit audit executes all `40 * 64 = 2,560` pairs. The pre-existing independent core matrix owns valid/invalid applicability, while the adapter crosswalk owns target spelling, so synchronized omissions do not pass.
+- Mutation assertions reject `EnableTotalSplitting`, calculation-to-information periodicity substitution, and the inverse substitution.
+
+### Finding 3: readable exact semantic oracle
+
+The preservation matrix no longer contains `Sha256`, `fact_set_digest`, `expected_fact_digests`, marker predicates, or before/after digest strings.
+
+Each of the 25 command variants has a readable JSON file under `tests/fixtures/task8-writer-semantic-facts/` with:
+
+- schema version and exact command variant;
+- provenance pointing to the approved Task 8 brief, Task 5 contract, and pre-migration v2_20 legacy oracle;
+- counted exact removed facts;
+- counted exact added facts.
+
+The production reader envelope is normalized without discarding nodes into status/root/consistency, diagnostics, full identity/capability/action/facet state, typed properties and provenance, actions, and relations. Standalone artifacts are independently parsed into every element's ordinal structure, semantic kind, scalar value, attributes, document identity, family, and namespace. UUIDs and opaque content hashes are canonicalized only as identities before exact multiset comparison; no implementation hash is an expected value.
+
+`FormCreate` and `FormRemove` have independent exact add/remove files. DCS/MXL/external/form/interface/help/CFE standalone facts include namespace identity. Mutation tests prove that wrong property value, property type, relation, namespace, addition, removal, and FormRemove direction all fail exact comparison.
+
+### Finding 4: genuine denial and deterministic concurrency
+
+All 150 rows (`25 variants * 6 scenarios`) execute production capture, reader, writer, fresh reopen, exact semantic comparison, and complete XML reparsing.
+
+| Variant family | Denial source |
+|---|---|
+| CF and configuration-owned meta/form/template/help/interface/role/subsystem/support | structurally valid owner advanced from `2.20` to `2.21` |
+| CFE borrow/patch | complete same-family extension owner advanced from `2.20` to `2.21` |
+| CFE initialize | structurally valid same-family `2.21` extension descriptor |
+| External EPF/ERF initialize | structurally valid same-family `2.21` external descriptor |
+| DCS create/edit | valid DCS root and namespace at `1.1` |
+| MXL create | valid spreadsheet root and namespace at `1.1` |
+
+Exact denial outcomes are asserted, never `any Rejected`:
+
+- `InvalidRequest`: ConfigurationInitialize, ExtensionInitialize, preserving create-only guard ordering.
+- `AlreadyExists`: ExternalProcessorInitialize, ExternalReportInitialize.
+- `UnsupportedFormat`: every other variant, including DCS and MXL future roots.
+
+Concurrency uses the adapter publication lock pause plus contention signal. Writer A is held after acquiring the shared lock, writer B must signal contention on that same lock, then A is released. Exact serialized contender outcomes are:
+
+- `InvalidRequest`: ConfigurationInitialize, ExtensionInitialize, FormCreate, HelpCreate.
+- `AlreadyExists`: ExternalProcessorInitialize, ExternalReportInitialize, FormEdit, TemplateCreate.
+- `NotFound`: MetadataRemove, FormRemove, TemplateRemove.
+- `Applied`: all other variants.
+
+Every concurrency row compares final facts to its reviewed success delta and reparses all XML, proving no partial write. Cancellation crosses the publication mutation checkpoint and requires `DuringPublication + Performed` rollback with exact before facts restored.
+
+### RED evidence
+
+| Scope | Command | RED result |
+|---|---|---|
+| Core applicability | `cargo test -p unica-format-core --test task8_fix_round3_contract` | 2 passed, 1 failed: AccountingRegister rejected EnableTotalsSplitting |
+| Oracle architecture | `cargo test -p unica-adapter-platform-xml --features test-support --test task8_fix_round4_architecture` | 0 passed, 2 failed: SHA oracle remained and readable fixtures were absent |
+| Revision/mapping behavior | `cargo test -p unica-adapter-platform-xml --features test-support --test task8_fix_round4_contract` | 2 passed, 2 failed: DCS/MXL `0.9` classified compatible and accounting property rejected |
+| Preview/apply parity | same focused contract after first implementation | 3 passed, 1 failed: preview bypassed DCS/MXL revision preflight |
+| Existing writers | `cargo test -p unica-adapter-platform-xml --lib versions::v2_20::writers::` | 791 passed, 47 failed: valid DCS/MXL test roots lacked required `1.0`; one spreadsheet golden lacked it |
+| Old architecture assertion | `cargo test -p unica-adapter-platform-xml --features test-support --test task8_fix_round2_architecture` | 5 passed, 1 failed: test still required deleted digest helpers |
+
+RED logs: `/tmp/task8-fix4-red-core.log`, `/tmp/task8-fix4-red-adapter.log`, `/tmp/task8-fix4-red-adapter-contract.log`, `/tmp/task8-fix4-adapter-writers.log`, and `/tmp/task8-fix4-task8-round2-arch.log`.
+
+### GREEN validation
+
+| Scope | Command/result |
+|---|---|
+| Formatting | `cargo fmt --all -- --check`: exit 0 |
+| Diff hygiene | `git diff --check`: exit 0 |
+| Core Task 8 | four test targets: 17 passed, 0 failed |
+| Round 4 contracts | contract 4/4; architecture 2/2 |
+| Preservation matrix | 2 harness tests green; exact coverage is 150/150 rows |
+| Metadata projection | 2/2, including all 2,560 kind/property pairs |
+| Private writer suite | 838 passed, 0 failed; requested 836 baseline plus 2 new projection tests |
+| Remaining Task 8 adapter suites | 20 passed, 0 failed across writer architecture/ports and Fix Rounds 1-3 |
+| Task 5 parity | 26 passed, 0 failed with Python 3.12 `lxml` supplied via `/tmp/task8-fix4-python312` |
+| Task 6 relations | 7 passed, 0 failed |
+| Task 7 adapter scopes | 50 passed, 0 failed |
+| Task 7 core scopes | 35 passed, 0 failed |
+| Host external contract | 1 passed, 0 failed |
+| Host CF initialization contract | 6 passed, 0 failed, 1 ignored |
+| Touched Windows crates | `cargo check --target x86_64-pc-windows-gnu -p unica-format-core -p unica-adapter-platform-xml`: exit 0 |
+
+Final GREEN logs include `/tmp/task8-fix4-core-task8.log`, `/tmp/task8-fix4-adapter-round4-final.log`, `/tmp/task8-fix4-metadata-projection.log`, `/tmp/task8-fix4-adapter-writers-green.log`, `/tmp/task8-fix4-adapter-task8-remaining.log`, `/tmp/task8-fix4-legacy-parity.log`, `/tmp/task8-fix4-task6-relations.log`, `/tmp/task8-fix4-adapter-task7.log`, and `/tmp/task8-fix4-core-task7.log`.
+
+### Exact residual host failures
+
+`cargo test -p unica-coder --lib` remains exactly `581 passed; 28 failed; 2 ignored`:
+
+```text
+application::tests::ambiguous_source_set_owner_has_same_structured_failure_for_preview_and_apply
+application::tests::cf_edit_add_child_object_prioritizes_newer_existing_target_descriptor
+application::tests::cf_edit_rejects_symlink_configuration_without_touching_referent
+application::tests::cf_edit_validation_dependencies_block_incompatible_home_page_file
+application::tests::cfe_borrow_rejects_edt_config_source_set_target
+application::tests::code_patch_apply_is_blocked_for_a_locked_supported_object
+application::tests::create_only_initializers_prioritize_exact_newer_planned_xml_targets
+application::tests::declared_existing_dcs_output_rejects_wrong_root_before_handler
+application::tests::declared_existing_form_output_rejects_wrong_root_before_handler
+application::tests::declared_existing_mxl_output_rejects_wrong_root_before_handler
+application::tests::declared_form_output_with_nonstandard_suffix_still_blocks_newer_owner
+application::tests::detailed_compile_dry_run_rejects_edt_source_set_like_apply
+application::tests::detailed_compile_dry_run_rejects_output_escape_like_apply
+application::tests::entity_spelled_supported_format_is_invalid_at_the_public_boundary
+application::tests::form_compile_dry_run_rejects_edt_source_set_like_apply
+application::tests::form_compile_dry_run_rejects_output_escape_like_apply
+application::tests::meta_edit_rejects_ambiguous_or_empty_standalone_metadata_owner_before_handler
+application::tests::mutating_cf_edit_blocks_locked_configuration_directory_target
+application::tests::mutating_meta_edit_blocks_locked_vendor_object_by_default
+application::tests::mutating_native_operation_rejects_output_escape_before_backend_execution
+application::tests::mxl_compile_blocks_write_inside_older_dump_with_structured_diagnostic
+application::tests::native_xml_metadata_tools_reject_edt_source_set_targets
+application::tests::numeric_equivalent_noncanonical_format_warns_on_read_and_blocks_public_mutator
+application::tests::read_only_path_aliases_warn_for_older_directory_owned_inputs
+application::tool_contracts::tests::every_native_path_alias_group_normalizes_to_one_canonical_argument
+application::tool_contracts::tests::every_published_argument_is_described
+infrastructure::source_adapters::registry::registry_tests::pinned_format_and_foreign_probe_identity_fail_closed
+infrastructure::source_adapters::registry::registry_tests::typed_identity_fields_fail_closed_without_inspecting_ordinary_data_keys
+```
+
+The relevant host platform corpus remains `25 passed; 1 failed; 1 ignored`. Exact remaining failure:
+
+```text
+cfe_patch_method_inventory_covers_atomic_xml_and_bsl_change
+unica.form.add failed; errors=["missing required ObjectName argument"]
+```
+
+No Task 8 round-4 adapter regression is hidden behind those signatures. Full logs: `/tmp/task8-fix4-host-lib.log` and `/tmp/task8-fix4-host-platform-contracts.log`.
+
+### Windows cross-check
+
+- Core plus adapter touched crates are green for `x86_64-pc-windows-gnu`.
+- Host check is blocked in `ring 0.17.14` because the local GNU cross environment lacks `assert.h`.
+- Isolated `libsqlite3-sys 0.30.1` first reports missing `stdio.h`; a diagnostic probe exposing only that first header reaches and confirms the additional missing `stdlib.h` blocker.
+- These are cross-toolchain/sysroot header blockers, not Rust errors in touched core/adapter code.
+
+Logs: `/tmp/task8-fix4-windows-core-adapter.log`, `/tmp/task8-fix4-windows-host.log`, `/tmp/task8-fix4-windows-sqlite.log`, and `/tmp/task8-fix4-windows-sqlite-stdlib.log`.
+
+### Changed responsibility map
+
+| Area | Responsibility after Fix Round 4 |
+|---|---|
+| `unica-format-core` | exhaustive metadata kind/property applicability only; no native property names |
+| adapter compatibility | private qualified-root and family revision interpretation |
+| adapter writer registry | preview/apply family preflight and typed command dispatch |
+| private DCS/MXL writers | exact root/namespace/`1.0` defense-in-depth and versioned generation |
+| private metadata writer | validated semantic-kind to reviewed native target projection |
+| matrix | production reader normalization, independent standalone parsing, exact reviewed facts, cancellation, denial, and shared-lock concurrency |
+| host | unchanged neutral-result mapping and public MCP boundary |
+
+### Residual risks
+
+- The 28 host unit failures and one host corpus failure above remain; they are reported per test and were not relabeled as inherited success.
+- Task 5 oracle regeneration requires Python 3.12 `lxml`; it is not declared by this Rust change and was supplied only in `/tmp` for validation.
+- A complete Windows host build still requires a real MinGW-compatible C sysroot providing both the `ring/assert.h` and SQLite standard-library headers.
