@@ -2570,8 +2570,13 @@ fn fixed_rlm_helper_code(operation: &WorkspaceRlmOperation) -> Result<String, St
         WorkspaceRlmOperation::Outline { .. } => {
             "_result = get_module_outline(_args[\"path\"], include_methods=_args[\"include_methods\"])\nprint(json.dumps(_result, ensure_ascii=False))"
         }
+        // `find_predefined` is the only supported way to reach predefined items and
+        // it has no count operation, so the section reports what it actually holds
+        // and flags truncation instead of publishing a fabricated `total`. The
+        // over-fetch is measured before the category filter, otherwise filtering a
+        // single row out of the probe would hide the fact that more rows exist.
         WorkspaceRlmOperation::ObjectProfile { .. } => {
-            "_raw_sections = _args[\"sections\"]\n_section_aliases = {\"functionalOptions\": \"functional_options\"}\n_profile_sections = None if _raw_sections is None else [_section_aliases.get(_section, _section) for _section in _raw_sections if _section != \"predefinedItems\"]\n_result = get_object_profile(_args[\"name\"], sections=_profile_sections, include_flow=False, include_code_usages=False, limit=_args[\"limit\"])\nif _raw_sections is not None and \"predefinedItems\" in _raw_sections and \"error\" not in _result:\n    _category = _result.get(\"category\")\n    _items = find_predefined(object_name=_result.get(\"object_name\") or _args[\"name\"], limit=_args[\"limit\"] + 1)\n    if _category:\n        _items = [_item for _item in _items if not _item.get(\"category\") or _item.get(\"category\") == _category]\n    _has_more = len(_items) > _args[\"limit\"]\n    _items = _items[:_args[\"limit\"]]\n    _result.setdefault(\"sections\", {})[\"predefined_items\"] = {\"status\": \"ok\" if _items else \"empty\", \"summary\": {}, \"items\": _items, \"total\": len(_items) + (1 if _has_more else 0), \"returned\": len(_items), \"has_more\": _has_more, \"_meta\": {\"source\": \"index\", \"truncated\": _has_more}}\nprint(json.dumps(_result, ensure_ascii=False))"
+            "_raw_sections = _args[\"sections\"]\n_section_aliases = {\"functionalOptions\": \"functional_options\"}\n_profile_sections = None if _raw_sections is None else [_section_aliases.get(_section, _section) for _section in _raw_sections if _section != \"predefinedItems\"]\n_result = get_object_profile(_args[\"name\"], sections=_profile_sections, include_flow=False, include_code_usages=False, limit=_args[\"limit\"])\nif _raw_sections is not None and \"predefinedItems\" in _raw_sections and \"error\" not in _result:\n    _category = _result.get(\"category\")\n    _fetched = find_predefined(object_name=_result.get(\"object_name\") or _args[\"name\"], limit=_args[\"limit\"] + 1)\n    _has_more = len(_fetched) > _args[\"limit\"]\n    _items = _fetched\n    if _category:\n        _items = [_item for _item in _items if not _item.get(\"category\") or _item.get(\"category\") == _category]\n    _items = _items[:_args[\"limit\"]]\n    _result.setdefault(\"sections\", {})[\"predefined_items\"] = {\"status\": \"ok\" if _items else \"empty\", \"summary\": {}, \"items\": _items, \"total\": len(_items), \"returned\": len(_items), \"has_more\": _has_more, \"_meta\": {\"source\": \"index\", \"truncated\": _has_more}}\nprint(json.dumps(_result, ensure_ascii=False))"
         }
     };
     Ok(format!(
@@ -3748,6 +3753,27 @@ mod tests {
         assert!(code.contains("find_predefined("));
         assert!(code.contains("[\"predefined_items\"]"));
         assert_eq!(code.matches("print(json.dumps(").count(), 1);
+    }
+
+    #[test]
+    fn object_profile_helper_reports_predefined_items_it_holds_instead_of_a_fabricated_total() {
+        let code = fixed_rlm_helper_code(&WorkspaceRlmOperation::ObjectProfile {
+            name: "Document.Заказ".to_string(),
+            sections: Some(vec!["predefinedItems".to_string()]),
+            limit: 20,
+        })
+        .unwrap();
+
+        assert!(code.contains("\"total\": len(_items),"), "{code}");
+        assert!(!code.contains("(1 if _has_more else 0)"), "{code}");
+        // The over-fetch decides truncation before the category filter can hide it.
+        let fetch = code
+            .find("_has_more = len(_fetched) > _args[\"limit\"]")
+            .expect("truncation is measured from the raw fetch window");
+        let filter = code
+            .find("_item.get(\"category\") == _category")
+            .expect("the category filter is still applied");
+        assert!(fetch < filter, "{code}");
     }
 
     #[test]

@@ -52,7 +52,19 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
             context,
             args.get("sourceDir").and_then(Value::as_str),
         )?;
-        Ok(CodeIntelligenceContext::new(context.clone(), source_root))
+        // `resolve_source_root` hands back a canonical path while the discovered
+        // workspace keeps whatever the caller was standing in, so a symlinked cwd
+        // (or the macOS `/var` -> `/private/var` alias) would make the two
+        // incomparable and reject paths that live inside the source root. Put all
+        // three into the same identity class before the application layer folds
+        // them lexically.
+        let mut workspace = context.clone();
+        workspace.workspace_root = crate::infrastructure::source_roots::normalize_path_identity(
+            &workspace.workspace_root,
+        )?;
+        workspace.cwd =
+            crate::infrastructure::source_roots::normalize_path_identity(&workspace.cwd)?;
+        Ok(CodeIntelligenceContext::new(workspace, source_root))
     }
 
     fn code_intelligence_registry(&self) -> Result<CodeIntelligenceRegistry, String> {

@@ -14,6 +14,29 @@ use std::time::Duration;
 
 const RLM_NAVIGATION_TIMEOUT: Duration = Duration::from_secs(45);
 
+/// Stable machine-readable markers that let a caller tell a retryable pending
+/// index from a permanent one without parsing prose.
+const INDEX_PENDING_PREFIX: &str = "index_pending:";
+const INDEX_UNAVAILABLE_PREFIX: &str = "index_unavailable:";
+
+/// How a read tool renders a not-ready index. `Warn` keeps the call successful
+/// with a warning because the tool still answers something useful; `Fail`
+/// reports a typed failure because without the index the tool has nothing to
+/// return and a success would tell the caller the outline was empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnreadyIndexPolicy {
+    Warn,
+    Fail,
+}
+
+fn unready_index_policy(request: &CodeIntelligenceReadRequest) -> UnreadyIndexPolicy {
+    match request {
+        CodeIntelligenceReadRequest::Outline { .. } => UnreadyIndexPolicy::Fail,
+        CodeIntelligenceReadRequest::Definition { .. }
+        | CodeIntelligenceReadRequest::ObjectProfile { .. } => UnreadyIndexPolicy::Warn,
+    }
+}
+
 trait RlmNavigationClient: Send + Sync {
     fn readiness(
         &self,
@@ -123,7 +146,7 @@ impl<'a> RlmNavigationAdapter<'a> {
         };
         let db_path = match readiness {
             IndexReadiness::Ready { db_path } => db_path,
-            other => return Ok(index_unavailable_outcome(tool_name, other)),
+            other => return Ok(index_unavailable_outcome(request, other)),
         };
         let timeout = deadline.remaining().min(RLM_NAVIGATION_TIMEOUT);
         if timeout.is_zero() {
@@ -413,8 +436,16 @@ fn render_profile(value: &Value) -> Result<String, String> {
             .get("returned")
             .and_then(Value::as_u64)
             .unwrap_or_default();
+        // A truncated section knows only how many rows it holds, so its count is a
+        // lower bound. Rendering it as an exact total would understate the object.
+        let truncated = section
+            .get("has_more")
+            .and_then(Value::as_bool)
+            .or_else(|| section.pointer("/_meta/truncated").and_then(Value::as_bool))
+            .unwrap_or(false);
+        let more = if truncated { "+" } else { "" };
         lines.push(format!(
-            "section {}: {status} total={total} returned={returned}",
+            "section {}: {status} total={total}{more} returned={returned}",
             public_profile_section_name(name)
         ));
         if let Some(items) = section.get("items").and_then(Value::as_array) {
@@ -483,7 +514,12 @@ fn format_section(name: &str, text: &str) -> String {
     }
 }
 
-fn index_unavailable_outcome(tool_name: &str, readiness: IndexReadiness) -> AdapterOutcome {
+fn index_unavailable_outcome(
+    request: &CodeIntelligenceReadRequest,
+    readiness: IndexReadiness,
+) -> AdapterOutcome {
+    let tool_name = request.tool_name();
+    let pending = matches!(readiness, IndexReadiness::Building);
     let warning = readiness_warning(readiness);
     if warning.starts_with(CANCELLED_PREFIX) {
         return AdapterOutcome::cancelled(
@@ -493,11 +529,44 @@ fn index_unavailable_outcome(tool_name: &str, readiness: IndexReadiness) -> Adap
                 .trim(),
         );
     }
-    let mut outcome = AdapterOutcome::ok(format!(
-        "{tool_name} could not use the persistent RLM MCP API"
-    ));
-    outcome.warnings.push(warning);
-    outcome
+    if unready_index_policy(request) == UnreadyIndexPolicy::Warn {
+        let mut outcome = AdapterOutcome::ok(format!(
+            "{tool_name} could not use the persistent RLM MCP API"
+        ));
+        outcome.warnings.push(warning);
+        return outcome;
+    }
+    let (summary, error) = if pending {
+        (
+            "pending RLM index build",
+            format!("{INDEX_PENDING_PREFIX} {warning}"),
+        )
+    } else {
+        (
+            "could not read RLM index",
+            format!(
+                "{INDEX_UNAVAILABLE_PREFIX} {}",
+                warning
+                    .strip_prefix("rlm index unavailable: ")
+                    .unwrap_or(&warning)
+            ),
+        )
+    };
+    index_failure_outcome(tool_name, summary, error)
+}
+
+fn index_failure_outcome(tool_name: &str, summary: &str, error: String) -> AdapterOutcome {
+    AdapterOutcome {
+        ok: false,
+        summary: format!("{tool_name} {summary}"),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec![error],
+        artifacts: Vec::new(),
+        stdout: None,
+        stderr: None,
+        command: None,
+    }
 }
 
 fn cancelled_client_outcome(tool_name: &str, error: &str) -> AdapterOutcome {
@@ -532,6 +601,7 @@ mod tests {
         operation_for_request, render_definition, render_outline, render_profile,
         RlmNavigationAdapter, RlmNavigationClient,
     };
+    use crate::application::AdapterOutcome;
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::{
         CodeIntelligenceContext, CodeIntelligenceReadRequest, ProviderDeadline,
@@ -659,6 +729,55 @@ mod tests {
     }
 
     #[test]
+    fn profile_renderer_reports_a_truncated_section_as_a_lower_bound() {
+        let text = render_profile(&json!({
+            "object_name": "Заказ",
+            "category": "Document",
+            "sections": {
+                "predefined_items": {
+                    "status": "ok",
+                    "items": [{"name": "Основной"}],
+                    "total": 1,
+                    "returned": 1,
+                    "has_more": true,
+                    "_meta": {"source": "index", "truncated": true}
+                }
+            }
+        }))
+        .unwrap();
+
+        assert!(
+            text.contains("section predefinedItems: ok total=1+ returned=1"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn profile_renderer_keeps_an_exact_total_when_nothing_was_truncated() {
+        let text = render_profile(&json!({
+            "object_name": "Заказ",
+            "category": "Document",
+            "sections": {
+                "predefined_items": {
+                    "status": "ok",
+                    "items": [{"name": "Основной"}],
+                    "total": 1,
+                    "returned": 1,
+                    "has_more": false,
+                    "_meta": {"source": "index", "truncated": false}
+                }
+            }
+        }))
+        .unwrap();
+
+        assert!(
+            text.contains("section predefinedItems: ok total=1 returned=1"),
+            "{text}"
+        );
+        assert!(!text.contains("total=1+"), "{text}");
+    }
+
+    #[test]
     fn object_profile_operation_keeps_predefined_items_request() {
         let request = CodeIntelligenceReadRequest::ObjectProfile {
             name: "Document.Заказ".to_string(),
@@ -756,6 +875,157 @@ mod tests {
             assert!(!outcome.ok);
             assert!(outcome.summary.contains("cancelled"));
         }
+    }
+
+    struct UnreadyClient {
+        readiness: IndexReadiness,
+    }
+
+    impl RlmNavigationClient for UnreadyClient {
+        fn readiness(
+            &self,
+            _context: &WorkspaceContext,
+            _source_root: &Path,
+            _timeout: Duration,
+            _cancellation: &CancellationToken,
+        ) -> Result<IndexReadiness, String> {
+            Ok(self.readiness.clone())
+        }
+
+        fn call(
+            &self,
+            _context: &WorkspaceContext,
+            _source_root: &Path,
+            _operation: WorkspaceRlmOperation,
+            _timeout: Duration,
+            _cancellation: &CancellationToken,
+        ) -> Result<WorkspaceServiceRlmOutput, String> {
+            panic!("a not-ready index must never reach the RLM call")
+        }
+    }
+
+    fn unready_index_outcome(
+        request: &CodeIntelligenceReadRequest,
+        readiness: IndexReadiness,
+    ) -> AdapterOutcome {
+        RlmNavigationAdapter::with_client(&UnreadyClient { readiness })
+            .invoke_resolved_cancellable(
+                request,
+                &unready_index_context(),
+                ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
+                &CancellationToken::new(),
+            )
+            .expect("a not-ready index must be reported as an outcome")
+    }
+
+    fn unready_index_context() -> CodeIntelligenceContext {
+        CodeIntelligenceContext::new(
+            WorkspaceContext {
+                cwd: PathBuf::from("/workspace"),
+                workspace_root: PathBuf::from("/workspace"),
+                cache_root: PathBuf::from("/cache"),
+                workspace_epoch: 1,
+            },
+            ResolvedSourceRoot {
+                source_set: Some("main".to_string()),
+                path: PathBuf::from("/workspace/src"),
+            },
+        )
+    }
+
+    fn outline_request() -> CodeIntelligenceReadRequest {
+        CodeIntelligenceReadRequest::Outline {
+            path: "CommonModules/X/Ext/Module.bsl".to_string(),
+            include_methods: true,
+        }
+    }
+
+    #[test]
+    fn outline_reports_building_index_as_retryable_failure() {
+        let outcome = unready_index_outcome(&outline_request(), IndexReadiness::Building);
+
+        assert!(!outcome.ok);
+        assert_eq!(
+            outcome.summary,
+            "unica.code.outline pending RLM index build"
+        );
+        assert_eq!(outcome.errors, vec!["index_pending: rlm index building"]);
+        assert!(outcome.warnings.is_empty());
+        assert!(outcome.stdout.is_none());
+    }
+
+    #[test]
+    fn outline_reports_unready_index_as_typed_failure() {
+        for (readiness, expected) in [
+            (
+                IndexReadiness::Missing,
+                "index_unavailable: index is missing",
+            ),
+            (
+                IndexReadiness::Failed("helper crashed".to_string()),
+                "index_unavailable: helper crashed",
+            ),
+            (
+                IndexReadiness::Stale {
+                    status: "dump is newer".to_string(),
+                },
+                "index_unavailable: rlm index stale: dump is newer",
+            ),
+        ] {
+            let outcome = unready_index_outcome(&outline_request(), readiness);
+
+            assert!(!outcome.ok, "{expected}");
+            assert_eq!(
+                outcome.summary,
+                "unica.code.outline could not read RLM index"
+            );
+            assert_eq!(outcome.errors, vec![expected.to_string()]);
+            assert!(outcome.stdout.is_none(), "{expected}");
+        }
+    }
+
+    #[test]
+    fn definition_and_profile_keep_the_warning_only_contract_for_an_unready_index() {
+        for request in [
+            CodeIntelligenceReadRequest::Definition {
+                name: "Найти".to_string(),
+                module_hint: String::new(),
+                limit: 50,
+            },
+            CodeIntelligenceReadRequest::ObjectProfile {
+                name: "Справочники.Номенклатура".to_string(),
+                sections: None,
+                limit: 20,
+            },
+        ] {
+            let outcome = unready_index_outcome(&request, IndexReadiness::Missing);
+
+            assert!(outcome.ok, "{}", request.tool_name());
+            assert!(outcome.errors.is_empty(), "{}", request.tool_name());
+            assert_eq!(
+                outcome.warnings,
+                vec!["rlm index unavailable: index is missing".to_string()]
+            );
+        }
+    }
+
+    #[test]
+    fn outline_reports_a_cancelled_readiness_as_cancellation_not_index_failure() {
+        let outcome = unready_index_outcome(
+            &outline_request(),
+            IndexReadiness::Unavailable("cancelled: readiness stopped".to_string()),
+        );
+
+        assert!(!outcome.ok);
+        assert!(outcome.summary.contains("cancelled"), "{}", outcome.summary);
+        assert!(
+            !outcome
+                .errors
+                .iter()
+                .any(|error| error.starts_with(super::INDEX_UNAVAILABLE_PREFIX)),
+            "{:?}",
+            outcome.errors
+        );
     }
 
     impl RlmNavigationClient for RecordingClient {

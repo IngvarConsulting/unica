@@ -113,7 +113,11 @@ Implementation evidence:
 - `infrastructure/code_intelligence.rs` contains the three provider adapters;
   its RLM adapter implements the typed read SPI, while
   `infrastructure/rlm_navigation.rs` keeps definition, outline, and metadata
-  profile on the same supported persistent RLM MCP API.
+  profile on the same supported persistent RLM MCP API. A not-ready index is
+  per-tool: definition and metadata profile stay `ok` with a warning, while
+  outline keeps its pre-existing typed failure carrying the stable
+  `index_pending:` / `index_unavailable:` markers, because an outline without an
+  index would otherwise read as an empty module.
 - `workspace_services.rs` owns the reusable RLM logical session
   (`rlm_start`/`rlm_execute`/`rlm_end`) and the reusable analyzer transport.
 - `issue_89_workspace_service.rs` proves worktree/source-root selection,

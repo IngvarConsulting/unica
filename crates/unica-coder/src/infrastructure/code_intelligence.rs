@@ -673,7 +673,15 @@ fn git_grep_section(output: ProcessOutput, limit: usize) -> ProviderSearchSectio
 
     let mut diagnostics = Vec::new();
     let mut hits = Vec::new();
-    for line in output.stdout.lines().filter(|line| !line.trim().is_empty()) {
+    let mut rows = output.stdout.lines();
+    if output.stdout_truncated {
+        // The runner keeps the tail of the capture, so the first retained row lost
+        // its leading bytes. Such a fragment still parses as `path:line:snippet`
+        // and would publish a path that does not exist, so drop it. At worst one
+        // whole row is lost when the cut landed on a line boundary.
+        rows.next();
+    }
+    for line in rows.filter(|line| !line.trim().is_empty()) {
         match parse_git_grep_line(line) {
             Some(hit) => hits.push(hit),
             None => diagnostics.push(format!("ignored malformed git-grep result: {line}")),
@@ -693,7 +701,9 @@ fn git_grep_section(output: ProcessOutput, limit: usize) -> ProviderSearchSectio
         diagnostics.push("git-grep output was truncated by the process runner".to_string());
     }
     let status = if hits.is_empty() {
-        if output.stdout.trim().is_empty() {
+        if output.stdout.trim().is_empty() || output.stdout_truncated {
+            // Dropping the partial first row can leave nothing behind; that is a
+            // truncated capture, not output the parser failed to understand.
             ProviderSectionStatus::Empty
         } else {
             diagnostics.insert(
@@ -949,7 +959,11 @@ mod tests {
             output: ProcessOutput {
                 status_success: false,
                 status: "exit status: 0".to_string(),
-                stdout: "CommonModules/Test/Ext/Module.bsl:1:Procedure Test()\n".to_string(),
+                stdout: concat!(
+                    "dules/Broken/Ext/Module.bsl:12:Procedure Broken()\n",
+                    "CommonModules/Test/Ext/Module.bsl:1:Procedure Test()\n"
+                )
+                .to_string(),
                 stderr: String::new(),
                 timed_out: false,
                 cancelled: false,
@@ -974,6 +988,80 @@ mod tests {
             .diagnostics
             .iter()
             .any(|item| item.contains("truncated")));
+    }
+
+    #[test]
+    fn git_grep_drops_the_partial_first_row_of_a_truncated_capture() {
+        let runner = FakeRunner {
+            output: ProcessOutput {
+                status_success: false,
+                status: "exit status: 0".to_string(),
+                stdout: concat!(
+                    "dules/Broken/Ext/Module.bsl:12:Procedure Broken()\n",
+                    "CommonModules/Test/Ext/Module.bsl:1:Procedure Test()\n"
+                )
+                .to_string(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: true,
+            },
+            commands: Mutex::new(Vec::new()),
+        };
+
+        let section = GitGrepProvider::with_runner(&runner).search(
+            &SearchRequest {
+                query: "Procedure".to_string(),
+                limit: 20,
+            },
+            &context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
+            &CancellationToken::new(),
+        );
+
+        assert_eq!(section.hits.len(), 1);
+        assert_eq!(section.hits[0].path, "CommonModules/Test/Ext/Module.bsl");
+        assert!(
+            !section
+                .hits
+                .iter()
+                .any(|hit| hit.path == "dules/Broken/Ext/Module.bsl"),
+            "{:?}",
+            section.hits
+        );
+    }
+
+    #[test]
+    fn git_grep_keeps_every_row_when_the_capture_was_not_truncated() {
+        let runner = FakeRunner {
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: concat!(
+                    "CommonModules/Other/Ext/Module.bsl:12:Procedure Other()\n",
+                    "CommonModules/Test/Ext/Module.bsl:1:Procedure Test()\n"
+                )
+                .to_string(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+            },
+            commands: Mutex::new(Vec::new()),
+        };
+
+        let section = GitGrepProvider::with_runner(&runner).search(
+            &SearchRequest {
+                query: "Procedure".to_string(),
+                limit: 20,
+            },
+            &context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
+            &CancellationToken::new(),
+        );
+
+        assert_eq!(section.status, ProviderSectionStatus::Ok);
+        assert_eq!(section.hits.len(), 2);
     }
 
     #[test]

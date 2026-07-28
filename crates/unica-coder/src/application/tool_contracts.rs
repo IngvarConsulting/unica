@@ -1808,7 +1808,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "config",
-        "Workspace-relative path to v8project.yaml on unica.runtime.execute, unica.runtime.job.start and unica.build.* — the file to create for operation config-init and the existing project config for every other operation, never v8project.local.yaml; on unica.code.search and unica.code.diagnostics `config` is a separate passthrough to the bsl-analyzer run and is not the project config.",
+        "Workspace-relative path to v8project.yaml on unica.runtime.execute, unica.runtime.job.start and unica.build.* — the file to create for operation config-init and the existing project config for every other operation, never v8project.local.yaml; on unica.code.diagnostics `config` is a separate passthrough to the bsl-analyzer run and is not the project config.",
     ),
     (
         "configDir",
@@ -2727,6 +2727,22 @@ mod tests {
 
         assert!(description.contains("mxl.compile"));
         assert!(!description.contains("mxl.decompile"));
+    }
+
+    #[test]
+    fn config_description_excludes_tools_that_stopped_accepting_it() {
+        let (_, description) = ARG_DESCRIPTIONS
+            .iter()
+            .find(|(name, _)| *name == "config")
+            .expect("config must have a shared description");
+
+        assert!(!CODE_SEARCH_ARGS.contains(&"config"));
+        assert!(!description.contains("unica.code.search"), "{description}");
+        assert!(CODE_DIAGNOSTICS_ARGS.contains(&"config"));
+        assert!(
+            description.contains("unica.code.diagnostics"),
+            "{description}"
+        );
     }
 
     #[test]

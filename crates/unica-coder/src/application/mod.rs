@@ -10,6 +10,7 @@ pub(crate) use outcome::AdapterOutcome;
 use ports::{ApplicationPorts, FormatGuardCheck, SupportGuardCheck};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
+use std::borrow::Cow;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 pub(crate) use tool_contracts::{
@@ -742,7 +743,15 @@ fn normalize_code_intelligence_path(
 ) -> Result<String, String> {
     let source_root = normalize_lexical_path(&context.source_root.path);
     let workspace_root = normalize_lexical_path(&context.workspace.workspace_root);
-    let raw_path = Path::new(raw);
+    // Callers address 1C sources with either separator regardless of the host, so
+    // the argument has to become host-neutral components before containment is
+    // checked. A Unix `Path` reads `..\..\x` as one `Normal` component, which
+    // would slip past the `ParentDir` and `starts_with` gates below and only turn
+    // back into `../../x` when the relative form is rendered on the way out.
+    // Hosts that already separate on backslashes keep the argument verbatim so
+    // extended-length and UNC prefixes stay parseable.
+    let host_neutral = separator_neutral_path(raw);
+    let raw_path = Path::new(host_neutral.as_ref());
     let resolved = if raw_path.is_absolute() {
         normalize_lexical_path(raw_path)
     } else {
@@ -776,6 +785,17 @@ fn normalize_code_intelligence_path(
         ));
     }
     Ok(relative.to_string_lossy().replace('\\', "/"))
+}
+
+/// Renders a caller-supplied path so that both separators split components on
+/// the running host. Windows already treats `\` as a separator, so the argument
+/// is returned untouched there and only foreign backslashes are folded.
+fn separator_neutral_path(raw: &str) -> Cow<'_, str> {
+    if std::path::MAIN_SEPARATOR == '\\' || !raw.contains('\\') {
+        Cow::Borrowed(raw)
+    } else {
+        Cow::Owned(raw.replace('\\', "/"))
+    }
 }
 
 fn normalize_lexical_path(path: &Path) -> PathBuf {
@@ -1968,6 +1988,64 @@ mod tests {
         .unwrap_err();
 
         assert!(error.contains("outside resolved source root"), "{error}");
+    }
+
+    #[test]
+    fn code_intelligence_read_path_cannot_escape_through_windows_separators() {
+        for raw in [
+            r"..\..\other\Module.bsl",
+            r"..\../other/Module.bsl",
+            r"CommonModules\..\..\..\other\Module.bsl",
+        ] {
+            let error = normalize_code_intelligence_read_request(
+                CodeIntelligenceReadRequest::Outline {
+                    path: raw.to_string(),
+                    include_methods: true,
+                },
+                &code_intelligence_context_for_paths(),
+            )
+            .unwrap_err();
+
+            assert!(
+                error.contains("outside resolved source root"),
+                "{raw}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn code_intelligence_definition_module_hint_cannot_escape_through_windows_separators() {
+        let error = normalize_code_intelligence_read_request(
+            CodeIntelligenceReadRequest::Definition {
+                name: "ОбщегоНазначения".to_string(),
+                module_hint: r"..\..\other\Module.bsl".to_string(),
+                limit: 50,
+            },
+            &code_intelligence_context_for_paths(),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("outside resolved source root"), "{error}");
+    }
+
+    #[test]
+    fn code_intelligence_read_path_accepts_windows_separators_inside_the_source_root() {
+        let normalized = normalize_code_intelligence_read_request(
+            CodeIntelligenceReadRequest::Outline {
+                path: r"CommonModules\X\Ext\Module.bsl".to_string(),
+                include_methods: true,
+            },
+            &code_intelligence_context_for_paths(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            normalized,
+            CodeIntelligenceReadRequest::Outline {
+                path: "CommonModules/X/Ext/Module.bsl".to_string(),
+                include_methods: true,
+            }
+        );
     }
 
     #[test]
