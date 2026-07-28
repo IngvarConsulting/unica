@@ -165,6 +165,38 @@ class CommandLineTests(unittest.TestCase):
             self.assertIsNone(self.guard.resolve_base(None))
             self.assertEqual(self.guard.main([]), 0)
 
+    def test_strict_mode_fails_when_the_base_cannot_be_resolved(self) -> None:
+        """A guard that cannot run must say so rather than pass.
+
+        In CI an unusable base means the job is misconfigured. Reporting success
+        there is how a guard becomes decorative.
+        """
+        from unittest.mock import patch
+
+        failed = subprocess_result(returncode=1)
+        with patch.dict(self.guard.os.environ, {}, clear=True), patch.object(
+            self.guard.subprocess, "run", return_value=failed
+        ):
+            self.assertEqual(self.guard.main(["--strict"]), 2)
+
+    def test_strict_mode_fails_when_the_diff_cannot_be_read(self) -> None:
+        from unittest.mock import patch
+
+        with patch.object(self.guard, "resolve_base", return_value="origin/main"), patch.object(
+            self.guard, "read_diff", return_value=None
+        ):
+            self.assertEqual(self.guard.main(["--strict"]), 2)
+            self.assertEqual(self.guard.main([]), 0)
+
+    def test_strict_mode_still_passes_a_clean_diff(self) -> None:
+        from unittest.mock import patch
+
+        clean = diff_for("README.md", "@@ -1 +1 @@\n-old\n+new\n")
+        with patch.object(self.guard, "resolve_base", return_value="origin/main"), patch.object(
+            self.guard, "read_diff", return_value=clean
+        ):
+            self.assertEqual(self.guard.main(["--strict"]), 0)
+
     def test_violating_diff_from_stdin_exits_one(self) -> None:
         import io
         import sys

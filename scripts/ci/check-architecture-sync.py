@@ -18,6 +18,12 @@ Usage:
 
 Without a resolvable base the guard exits 0 and says so: a local checkout that
 cannot name its base ref is not evidence of a violation.
+
+That leniency is wrong in CI, where an unresolvable base means the job is
+misconfigured, not that the change is clean. `--strict` turns every skip into a
+failure, so a guard that cannot run reports itself instead of passing silently.
+A shallow checkout is the usual cause: the three-dot diff needs a merge base,
+which requires `fetch-depth: 0`.
 """
 
 from __future__ import annotations
@@ -156,28 +162,40 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", help="git ref the change is measured against")
     parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="treat an unusable base ref as a failure instead of a skip",
+    )
+    parser.add_argument(
         "diff",
         nargs="?",
         help="read a unified diff from stdin when set to '-'",
     )
     args = parser.parse_args(argv)
 
+    def unusable(message: str) -> int:
+        if args.strict:
+            print(f"check-architecture-sync: {message}")
+            print(
+                "--strict was requested, so this is a failure: the guard could "
+                "not run and therefore proves nothing. A shallow checkout is "
+                "the usual cause; the three-dot diff needs `fetch-depth: 0`."
+            )
+            return 2
+        print(f"check-architecture-sync: {message}; skipping")
+        return 0
+
     if args.diff == "-":
         diff_text = sys.stdin.read()
     else:
         base = resolve_base(args.base)
         if base is None:
-            print(
-                "check-architecture-sync: no base ref resolved; skipping "
-                "(pass --base or set UNICA_DIFF_BASE to enforce)"
+            return unusable(
+                "no base ref resolved (pass --base or set UNICA_DIFF_BASE)"
             )
-            return 0
         diff_text = read_diff(base)
         if diff_text is None:
-            print(
-                f"check-architecture-sync: cannot diff against {base!r}; skipping"
-            )
-            return 0
+            return unusable(f"cannot diff against {base!r}")
 
     change = analyze_diff(diff_text)
     if not change.touches_public_surface:

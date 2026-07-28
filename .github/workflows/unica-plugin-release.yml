@@ -51,6 +51,10 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The architecture-sync guard diffs against the merge base, which a
+          # shallow clone cannot compute.
+          fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -64,7 +68,7 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           git fetch --no-tags origin "${{ github.base_ref }}"
-          python scripts/ci/check-architecture-sync.py --base FETCH_HEAD
+          python scripts/ci/check-architecture-sync.py --base FETCH_HEAD --strict
 
   test-rust-primary:
     name: Rust tests (macos-14 primary)
