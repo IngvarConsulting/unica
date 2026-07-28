@@ -1,67 +1,74 @@
-# ADR-0012: One plugin directory serves Codex and Claude Code
+# ADR-0012: Один каталог плагина обслуживает Codex и Claude Code
 
-- Status: accepted
-- Date: 2026-07-26
+- Статус: `accepted`
+- Дата: `2026-07-26`
+- Обновлено: `2026-07-28`
 
-## Context
+> Переведено на русский; содержание решения не изменялось.
 
-Unica is published to the Codex marketplace as a thin package under
-[ADR-0008](0008-public-marketplace-thin-runtime.md). Supporting Claude Code adds
-a second host with the same shape: a plugin directory holding `skills/`, a
-manifest directory, and a root `.mcp.json`.
+## Контекст
 
-The two hosts agree on almost everything. Both scan `skills/<name>/SKILL.md`,
-both read `.mcp.json` from the plugin root, and Claude Code accepts the existing
-skill frontmatter unchanged. They disagree on two points. Each host reads its
-own manifest directory, `.codex-plugin/` or `.claude-plugin/`. And each resolves
-the plugin root differently: Codex launches the server with the plugin directory
-as the working directory, while Claude Code substitutes `${CLAUDE_PLUGIN_ROOT}`
-into the server configuration and does not guarantee a working directory.
+Unica публикуется в маркетплейс Codex тонким пакетом по
+[ADR-0008](0008-public-marketplace-thin-runtime.md). Поддержка Claude Code
+добавляет второй хост той же формы: каталог плагина, в котором лежат `skills/`,
+каталог манифеста и корневой `.mcp.json`.
 
-Measurements on Claude Code 2.1.49 settled three open questions:
+Хосты сходятся почти во всём. Оба сканируют `skills/<name>/SKILL.md`, оба читают
+`.mcp.json` из корня плагина, и Claude Code принимает существующий frontmatter
+скиллов без изменений. Расходятся они в двух местах. Каждый хост читает свой
+каталог манифеста — `.codex-plugin/` или `.claude-plugin/`. И каждый по-своему
+разрешает корень плагина: Codex запускает сервер с каталогом плагина в качестве
+рабочего каталога, а Claude Code подставляет `${CLAUDE_PLUGIN_ROOT}` в
+конфигурацию сервера и рабочий каталог не гарантирует.
 
-- A manifest-declared `mcpServers` path does not replace the root `.mcp.json`;
-  both are loaded. Two host-specific MCP files in one directory would therefore
-  start two servers under the same `unica` key.
-- `${CLAUDE_PLUGIN_ROOT}` is substituted inside an arbitrary `args` string, so a
-  Git alias can receive an absolute plugin root.
-- An unrecognized manifest or catalog key is a hard load error on older clients,
-  not a warning. `git-subdir` is likewise unparsable before 2.1.69.
+Замеры на Claude Code 2.1.49 закрыли три открытых вопроса:
 
-## Decision
+- Объявленный в манифесте путь `mcpServers` не заменяет корневой `.mcp.json` —
+  загружаются оба. Два файла MCP под разные хосты в одном каталоге поэтому
+  подняли бы два сервера под одним ключом `unica`.
+- `${CLAUDE_PLUGIN_ROOT}` подставляется внутрь произвольной строки `args`, так
+  что Git-алиас может получить абсолютный корень плагина.
+- Нераспознанный ключ манифеста или каталога на старых клиентах — жёсткая
+  ошибка загрузки, а не предупреждение. `git-subdir` точно так же не
+  разбирается до 2.1.69.
 
-One plugin directory serves both hosts.
+## Решение
 
-Both manifests live side by side and are held at the same version by the version
-contract. Each host reads its own and ignores the other.
+Один каталог плагина обслуживает оба хоста.
 
-`.mcp.json` stays single and host-neutral. The packaged Git alias resolves
-`root="${CLAUDE_PLUGIN_ROOT}"` first and falls back to `$PWD/${GIT_PREFIX:-}`
-when that is empty. Claude Code rewrites the token before the shell runs; Codex
-leaves it unset and the original resolution applies unchanged. The runtime cache
-travels the same way through `UNICA_RUNTIME_CACHE_DIR`, and the bootstrap
-discards a value still containing `${` so a host that does not substitute the
-token cannot create a directory named after it.
+Оба манифеста лежат рядом и удерживаются на одной версии контрактом версий.
+Каждый хост читает свой и игнорирует чужой.
 
-The Claude catalog is generated from the Claude manifest rather than maintained
-by hand, and is pinned with `git-subdir` to the same immutable tag as the Codex
-catalog. Both manifests and both catalog entries are restricted to keys the
-oldest supported client accepts; a current client only warns about the rest, so
-this is enforced by test rather than by `claude plugin validate`.
+`.mcp.json` остаётся единственным и нейтральным к хосту. Упакованный Git-алиас
+сначала разрешает `root="${CLAUDE_PLUGIN_ROOT}"`, а если тот пуст — откатывается
+к `$PWD/${GIT_PREFIX:-}`. Claude Code переписывает токен до запуска оболочки;
+Codex оставляет его незаданным, и исходное разрешение работает как прежде. Кеш
+runtime едет тем же путём через `UNICA_RUNTIME_CACHE_DIR`, а bootstrap
+отбрасывает значение, в котором всё ещё есть `${`, чтобы хост, не подставивший
+токен, не создал каталог, названный этим токеном.
 
-Claude Code 2.1.69 is the minimum supported version, because `git-subdir` is the
-only source type that both pins to a tag and addresses a subdirectory.
+Каталог Claude генерируется из манифеста Claude, а не ведётся вручную, и
+закрепляется через `git-subdir` на тот же неизменяемый тег, что и каталог Codex.
+Оба манифеста и обе записи каталога ограничены ключами, которые принимает самый
+старый поддерживаемый клиент; текущий клиент об остальных только предупреждает,
+поэтому это удерживается тестом, а не `claude plugin validate`.
 
-## Consequences
+Минимальная поддерживаемая версия — Claude Code 2.1.69, потому что `git-subdir`
+— единственный тип источника, который одновременно закрепляется на теге и
+адресует подкаталог.
 
-- The bootstrap matrix ships once, not once per host; a per-host directory would
-  have added roughly 9 MB to every marketplace release.
-- Staged plugin bytes stay unserved for both hosts. Each catalog keeps naming the
-  previous tag until its promotion PR moves it, preserving the ADR-0008
-  invariant.
-- Skills, references, and the MCP boundary have no host-specific variants, so
-  host support does not fan out into skill prose.
-- Adding an optional manifest or catalog key is a compatibility decision, not a
-  cosmetic one, and raises the minimum supported client when the key is newer.
-- Consumers below Claude Code 2.1.69 cannot load the catalog at all. Lowering the
-  floor would mean giving up either tag pinning or the shared directory.
+## Последствия
+
+- Матрица bootstrap уезжает в поставку один раз, а не по разу на хост: каталог
+  под каждый хост добавил бы примерно 9 МБ к каждому релизу маркетплейса.
+- Выложенные в staging байты плагина остаются необслуживаемыми для обоих
+  хостов. Каждый каталог продолжает называть прежний тег, пока его promotion-PR
+  не сдвинет запись, — так сохраняется инвариант ADR-0008.
+- У скиллов, справочных материалов и границы MCP нет вариантов под конкретный
+  хост, поэтому поддержка хостов не расползается по прозе скиллов.
+- Добавление необязательного ключа манифеста или каталога — решение о
+  совместимости, а не косметика: оно поднимает минимальную версию клиента, если
+  ключ новее.
+- Потребители на версиях ниже Claude Code 2.1.69 не могут загрузить каталог
+  вовсе. Опустить эту границу значило бы отказаться либо от закрепления на теге,
+  либо от общего каталога.

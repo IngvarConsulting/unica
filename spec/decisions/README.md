@@ -1,15 +1,22 @@
-# Architecture Decision Records
+# Записи архитектурных решений
 
-This directory holds the architecture decisions of Unica. A record answers one
-question: what did the project commit to, why, and which check keeps that
-commitment true.
+В этом каталоге лежат архитектурные решения Unica. Запись отвечает на один
+вопрос: на что проект подписался, почему и какая проверка удерживает это
+обязательство.
 
-Rules that follow from a decision live in the invariant registry
-[`../architecture/invariants.md`](../architecture/invariants.md). The registry
-references a record by ID and does not copy its normative text, so every rule
-has exactly one owner and two documents cannot disagree about it.
+Правила, которые из решения следуют, живут в реестрах —
+[`../architecture/invariants.md`](../architecture/invariants.md) и
+[`../architecture/quality-requirements.md`](../architecture/quality-requirements.md).
+Реестр ссылается на решение по ID в поле `Decision` и не копирует его
+нормативный текст, поэтому у каждого правила ровно один владелец и два
+документа не могут разойтись в формулировке (`INV-DOC-08`).
 
-## Accepted ADRs
+Читать решения подряд не нужно. Действующее следствие каждого из них вынесено в
+реестр: запись реестра называет решение-основание и проверку, которая это
+следствие удерживает. Путь «решение → правило → проверка» проходится за два
+перехода.
+
+## Принятые решения
 
 - [ADR-0001: Единый публичный MCP `unica`](0001-edinyy-publichnyy-mcp-unica.md)
 - [ADR-0002: Транспортно-нейтральный application layer](0002-transportno-neytralnyy-application-layer.md)
@@ -17,131 +24,166 @@ has exactly one owner and two documents cannot disagree about it.
 - [ADR-0004: Operation scripts are reference-only, not runtime backends](0004-legacy-skill-scripts-are-migration-debt.md)
 - [ADR-0005: Skills route только через `unica`](0005-skills-routyatsya-tolko-cherez-unica.md)
 - [ADR-0006: Workspace-scoped internal services](0006-workspace-scoped-internal-services.md)
-- [ADR-0008: Public marketplace with a thin verified runtime](0008-public-marketplace-thin-runtime.md)
-- [ADR-0009: OS-specific code behind infrastructure platform facades](0009-os-specific-code-behind-platform-facade.md)
-- [ADR-0010: CI build cache and artifact flow](0010-ci-build-cache-and-artifact-flow.md)
-- [ADR-0011: DCS is the canonical data composition domain](0011-canonical-dcs-domain.md)
-- [ADR-0012: One plugin directory serves Codex and Claude Code](0012-one-plugin-directory-for-two-hosts.md)
-- [ADR-0013: MCP transport is owned by the official Rust SDK](0013-mcp-transport-official-rust-sdk.md)
+- [ADR-0008: Публичный маркетплейс и тонкий проверяемый runtime](0008-public-marketplace-thin-runtime.md)
+- [ADR-0009: Зависящий от ОС код живёт за платформенными фасадами инфраструктуры](0009-os-specific-code-behind-platform-facade.md)
+- [ADR-0010: Кеш сборки и поток артефактов в CI](0010-ci-build-cache-and-artifact-flow.md)
+- [ADR-0011: DCS — каноническое имя домена компоновки данных](0011-canonical-dcs-domain.md)
+- [ADR-0012: Один каталог плагина обслуживает Codex и Claude Code](0012-one-plugin-directory-for-two-hosts.md)
+- [ADR-0013: Транспортом MCP владеет официальный Rust SDK](0013-mcp-transport-official-rust-sdk.md)
 
-This index lists every record file in this directory, and every listed record
-exists. Both directions are held by `INV-DOC-04`.
+Заголовки записей ADR-0001…ADR-0006 приведены здесь дословно: индекс называет
+документ так, как он называется сам. Почему они выглядят иначе — в разделе
+[Язык](#язык).
 
-## Record Template
+Этот индекс перечисляет все записи каталога, и каждая перечисленная запись
+существует на диске. Обе стороны удерживает `INV-DOC-04`.
 
-Every record accepted from ADR-0014 onward uses this shape. ADR-0001 through
-ADR-0013 predate the template, keep their original headings, and are not
-retrofitted.
+## Шаблон записи
+
+Каждая запись, принятая начиная с ADR-0014, имеет такую форму. ADR-0001…ADR-0013
+приняты раньше шаблона: имена разделов у них русские, но состав и порядок
+разделов свои — где-то нет `Неграницы` или `Верификации`, где-то добавлен
+`План реализации`. Задним числом под шаблон их не переоформляют.
 
 ```markdown
-# ADR-NNNN: <the decision in one line>
+# ADR-NNNN: <решение одной строкой>
 
-- Status: `accepted`
-- Date: `2026-07-27`
+- Статус: `accepted`
+- Дата: `2026-07-28`
 
-## Context
+## Контекст
 
-## Decision
+## Решение
 
-## Non-goals
+## Неграницы
 
-## Consequences
+## Последствия
 
-## Verification
+## Верификация
 ```
 
-### Header fields
+### Поля шапки
 
-- `Status` — one of the values in [Status Values](#status-values), in
-  backticks.
-- `Date` — the date the record was accepted, `YYYY-MM-DD`, in backticks.
-- `Updated` — optional, `YYYY-MM-DD`, in backticks. Add it when the normative
-  text of an already accepted record changes, and leave `Date` untouched so the
-  acceptance date is never rewritten. `Updated` is the only accepted spelling
-  for this field.
-- `Issue` — optional link to the tracking issue, as in ADR-0011.
+- `Статус` — одно из значений раздела [Значения статуса](#значения-статуса), в
+  обратных кавычках.
+- `Дата` — дата принятия записи, `YYYY-MM-DD`, в обратных кавычках.
+- `Обновлено` — необязательное поле, `YYYY-MM-DD`, в обратных кавычках. Его
+  ставят, когда текст уже принятой записи правили редакционно; поле `Дата` при
+  этом не трогают, чтобы дата принятия не переписывалась никогда. Что считается
+  редакционной правкой, а что требует новой записи — в разделе
+  [Принятое решение не переписывают](#принятое-решение-не-переписывают).
+- `Задача` — необязательная ссылка на задачу, в которой решение отслеживается,
+  как в ADR-0011.
 
-No other header field is allowed, and the fields keep the order above.
+Других полей в шапке нет, и порядок полей такой, как выше.
 
-### Sections
+### Разделы
 
-- `Context` — the forces that make a decision necessary: current behavior, the
-  cost it imposes, and the constraints that cannot be relaxed. Observed facts
-  only, no proposal.
-- `Decision` — what the project commits to, written in the present tense as
-  numbered normative statements. This is the section other documents cite.
-- `Non-goals` — what the decision deliberately leaves open, so that a later
-  change in that space is not read as a violation.
-- `Consequences` — what the decision costs: work it creates, options it
-  closes, and trade-offs accepted knowingly.
-- `Verification` — the checks that fail when the decision is broken.
+- `Контекст` — силы, из-за которых решение стало нужным: как система ведёт себя
+  сейчас, чего это стоит и какие ограничения ослабить нельзя. Только
+  наблюдаемые факты, без предложения.
+- `Решение` — на что проект подписывается. Пишется в настоящем времени
+  пронумерованными нормативными утверждениями. Именно этот раздел цитируют
+  другие документы.
+- `Неграницы` — что решение намеренно оставляет открытым, чтобы более позднее
+  изменение в этом пространстве не читалось как нарушение.
+- `Последствия` — чего решение стоит: какую работу создаёт, какие варианты
+  закрывает, на какие компромиссы проект идёт осознанно.
+- `Верификация` — проверки, которые падают, когда решение нарушено.
 
-### Verification is a list of checks, not a summary
+### Верификация — это список проверок, а не пересказ
 
-`Verification` names runnable checks, one per line, each pointing at something
-that can fail: a test file or a `cargo test` filter, a guard script under
-`scripts/ci/`, a CI job, or a release gate step. Each line says what the check
-proves, so a reader can run it and get a verdict.
+`Верификация` называет запускаемые проверки, по одной в строке, и каждая
+указывает на то, что может упасть: файл теста или фильтр `cargo test`,
+guard-скрипт из `scripts/ci/`, задание CI или шаг релизного гейта. В строке
+сказано, что именно проверка доказывает, — так читатель может её запустить и
+получить вердикт.
 
-A line that describes the record instead of a check — "the ADR defines X",
-"the ADR covers Y" — is not verification. It restates the document to itself,
-can never fail, and is rejected in review. When a decision genuinely has no
-automated check yet, write one `manual` item that names what a reviewer
-inspects; do not fill the section with self-reference.
+Строка, которая описывает саму запись вместо проверки — «ADR определяет X»,
+«ADR покрывает Y», — верификацией не является. Она пересказывает документ
+самому себе, упасть не может и на ревью отклоняется. Если у решения
+автоматической проверки пока нет, пишется один пункт `manual`, называющий, что
+именно перечитывает ревьюер; заполнять раздел ссылками на самого себя нельзя.
 
-## Language
+## Язык
 
-New records are written in English: the decision statements, the non-goals, the
-consequences, and the verification list. A single sentence never mixes English
-and Russian (`INV-DOC-07`).
+Записи пишутся по-русски: и утверждения решения, и неграницы, и последствия, и
+список проверок. По-английски внутри русского текста остаются только
+идентификаторы — пути и имена файлов, имена инструментов вроде
+`unica.form.edit`, имена типов, функций и переменных окружения, ID записей вида
+`ADR-0008` и значения полей-перечислений. Одно предложение не смешивает два
+языка (`INV-DOC-07`).
 
-ADR-0001 through ADR-0006 carry Russian titles, headings, and header field
-names. They are historical records of decisions already taken. They are not
-translated, renamed, or reformatted — rewriting them would change what the
-project can prove it decided, and gains nothing.
+ADR-0008…ADR-0013 были написаны по-английски и переведены на русский `2026-07-28`
+без изменения содержания: каждая из них несёт в шапке поле `Обновлено` и строку
+о том, что менялся только язык. Перевод — редакционная правка, а не новое
+решение, поэтому дата принятия и номер остались прежними.
 
-## Status Values
+ADR-0001…ADR-0006 записаны смешанно: русские заголовки, поля шапки и часть прозы
+при английских формулировках внутри разделов. Это исторические записи уже
+принятых решений, и они не переводятся. Отдельно к ADR-0006: дословные английские
+формулировки её бюджетов и порядка отмены закреплены проверкой
+`tests/ci/test_product_contracts.py` вместе с описанием runtime и приёмочным
+планом — перевод одного документа из трёх рассинхронизировал бы контракт.
 
-- `accepted`: active decision.
-- `superseded`: replaced by a newer record, which the header names.
-- `proposed`: not yet active; not a source of truth while it holds this status.
+## Значения статуса
 
-## Numbering And Lifecycle
+- `accepted` — действующее решение.
+- `superseded` — заменено более новой записью, которую шапка называет.
+- `proposed` — ещё не действует; пока запись в этом статусе, источником истины
+  она не является.
 
-- Numbers are monotonic: a new record takes the next unused number.
-- A number is spent the moment it is assigned and is never reissued, whatever
-  became of the record that held it (`INV-DOC-02`).
-- A decision that stops being true is not deleted. It takes the status
-  `superseded`, names the record that replaces it, and stays in this directory
-  so that older commits, tests, and release notes keep resolving.
-- A number withdrawn before acceptance leaves no file. It is recorded below
-  instead of leaving a dangling index link (`INV-DOC-05`).
+## Принятое решение не переписывают
 
-### Retired numbers
+Запись фиксирует момент выбора, а не текущее состояние кода. Отсюда правило,
+которое удерживает `INV-DOC-09`:
 
-- `0007` — spent on a record that was withdrawn before it reached `accepted`.
-  There is no `0007-*.md` file, the number is never reissued, and the gap
-  between ADR-0006 and ADR-0008 is expected rather than a missing document.
+- Принятая запись не правится под изменившийся код. Она заменяется новой
+  записью; прежняя получает статус `superseded` и называет заменившую.
+- Текст замещённой записи остаётся прежним — меняется только её статус.
+- Поле `Дата` уже принятой записи не переписывается никогда.
+- Допустимая правка старой записи — пометка `Обновлено` со ссылкой на решение,
+  которое её заменило, и редакционное изменение, не трогающее содержание
+  (перевод, исправление опечатки, починка ссылки).
 
-## When A Record Is Required
+Когда код нарушает действующее решение, решение обновляется или замещается в
+том же изменении. Изменить код и оставить запись стоять — процессный дефект, а
+не строчка в бэклоге документации.
 
-A change to the public surface needs a decision record in the same change set.
-The public surface is the set of `unica.*` tools and their contracts, the MCP
-server identity, skill routing, the packaging and release contract, the layer
-boundaries, and any rule carried by the invariant registry.
+## Нумерация
 
-The record, the registry entry, and the check move together. Two different
-checks hold that rule, and neither covers the other:
+- Номера монотонны: новая запись берёт следующий неиспользованный.
+- Номер израсходован в момент назначения и не выдаётся повторно, что бы ни
+  случилось с записью, которая его занимала (`INV-DOC-02`).
+- Решение, переставшее действовать, не удаляется: файл остаётся в каталоге,
+  чтобы старые коммиты, тесты и заметки к релизам продолжали разрешаться, а
+  индекс — перечислять его.
+- Номер, отозванный до принятия, не оставляет файла. Вместо висящей ссылки в
+  индексе он записывается ниже (`INV-DOC-05`).
 
-- `scripts/ci/check-architecture-sync.py` runs on every pull request and fails a
-  change that adds or removes a `unica.*` tool declaration in the Rust registry
-  without touching `spec/decisions/`, `spec/acceptance/`, or
-  `spec/architecture/`. It looks only at tool declarations, so a change to the
-  behaviour of an existing tool is still caught by review, not by the guard.
-- `tests/ci/test_architecture_registry.py` fails a registry entry whose decision
-  record does not exist, and an index that no longer matches the records on
-  disk.
+### Выведенные из обращения номера
 
-When code changes violate an accepted record, update or supersede that record
-in the same change set. Changing the code and leaving the record standing is a
-process defect, not a documentation backlog item.
+- `0007` — израсходован на запись, отозванную до того, как она дошла до статуса
+  `accepted`. Файла `0007-*.md` нет, номер повторно не выдаётся, а разрыв между
+  ADR-0006 и ADR-0008 ожидаем и не означает пропавшего документа.
+
+## Когда запись обязательна
+
+Изменение публичной поверхности требует записи решения в том же наборе правок.
+Публичная поверхность — это набор инструментов `unica.*` и их контракты,
+идентичность MCP-сервера, маршрутизация скиллов, контракт упаковки и релиза,
+границы слоёв и любое правило, которое несёт реестр инвариантов. Сюда же
+относится перенос владения кешем или состоянием рабочего пространства и
+раскрытие внутреннего движка напрямую наружу.
+
+Запись решения, выведенная из неё запись реестра и названная в ней проверка
+меняются одним набором правок. Это удерживают две разные проверки, и ни одна не
+покрывает другую:
+
+- `scripts/ci/check-architecture-sync.py` запускается на каждом pull request и
+  роняет изменение, которое добавляет или убирает объявление инструмента
+  `unica.*` в реестре Rust, не тронув `spec/decisions/`, `spec/acceptance/` или
+  `spec/architecture/`. Скрипт смотрит только на объявления инструментов,
+  поэтому изменение поведения существующего инструмента ловит ревью, а не он.
+- `tests/ci/test_architecture_registry.py` роняет запись реестра, у которой нет
+  файла названного решения, и индекс, разошедшийся с файлами на диске.

@@ -5,116 +5,128 @@
 
 Каждый пункт назван идентификатором записи реестра — инварианта из
 [`invariants.md`](invariants.md) или требования из
-[`arc42/10-quality-requirements.md`](arc42/10-quality-requirements.md) — и не
-повторяет её формулировку: правило принадлежит реестру, чек-лист лишь
-напоминает, что его нужно проверить (`INV-DOC-08`). Если пункт нельзя
-выполнить, изменению нужна новая или заменяющая запись решения, а не исключение
-в этом файле.
+[`quality-requirements.md`](quality-requirements.md) — и не повторяет её
+формулировку: правило принадлежит реестру, чек-лист лишь напоминает, что его
+нужно проверить (`INV-DOC-08`). Если пункт нельзя выполнить, изменению нужна
+новая или заменяющая запись решения, а не исключение в этом файле.
 
 ## MCP-поверхность
 
-- [ ] Internal engines are still reachable only through internal adapters
+- [ ] Внутренние движки по-прежнему достижимы только через внутренние адаптеры
   (`INV-MCP-01`).
-- [ ] `.mcp.json` still declares exactly one `mcpServers` entry named `unica`
-  (`INV-MCP-02`).
-- [ ] `initialize` still returns `serverInfo.name = "unica"` (`INV-MCP-03`).
-- [ ] `tools/list` exposes only `unica.<group>.<operation>` names and no removed
-  alias (`INV-MCP-04`).
-- [ ] Tool names, descriptions, and schemas still come from the data-driven
-  descriptors and expose no raw adapter argument (`INV-MCP-05`).
-- [ ] Transport code and `rmcp` types stay inside `interfaces/mcp.rs`
+- [ ] `.mcp.json` по-прежнему объявляет ровно одну запись `mcpServers` с именем
+  `unica` (`INV-MCP-02`).
+- [ ] `initialize` по-прежнему возвращает `serverInfo.name = "unica"`
+  (`INV-MCP-03`).
+- [ ] `tools/list` показывает только имена вида `unica.<группа>.<операция>` и ни
+  одного снятого псевдонима (`INV-MCP-04`).
+- [ ] Имена, описания и схемы инструментов по-прежнему берутся из дескрипторов,
+  заданных данными, и не показывают ни одного сырого аргумента адаптера
+  (`INV-MCP-05`).
+- [ ] Код транспорта и типы `rmcp` остаются внутри `interfaces/mcp.rs`
   (`INV-MCP-06`).
-- [ ] Admission bound, overload error, cancellation, and shutdown grace are
-  preserved or re-tested (`INV-MCP-07`).
-- [ ] The Rust registry, the parity harness, the routing skill, and the owning
-  decision record move in one change set (`INV-MCP-08`).
+- [ ] Предел приёма вызовов, ошибка перегрузки, отмена и запас времени на
+  остановку сохранены или заново покрыты тестом (`INV-MCP-07`).
+- [ ] Реестр в Rust, стенд паритета, скилл маршрутизации и запись-владелец
+  решения меняются одним набором изменений (`INV-MCP-08`).
 
 ## Маршрутизация скиллов
 
-- [ ] Updated skills route through MCP `unica` and name the `unica.*` tool they
-  call (`INV-SKILL-01`).
-- [ ] Updated skills name no internal adapter server or adapter tool identifier
-  as a routing target (`INV-SKILL-02`).
-- [ ] Updated skills ship and reference no skill-local Python, PowerShell, or
-  shell operation file (`INV-SKILL-03`).
-- [ ] Mutating guidance keeps the preview path as its default (`INV-SKILL-05`).
-- [ ] Every `tools/call` example in a touched skill still executes as an MCP dry
-  run (`INV-SKILL-06`).
-- [ ] Bundled low-level engines are never named as call targets in
-  prompt-visible text (`INV-PRODUCT-03`).
+- [ ] Изменённые скиллы ходят через MCP `unica` и называют инструмент `unica.*`,
+  который вызывают (`INV-SKILL-01`).
+- [ ] Изменённые скиллы не называют целью маршрутизации ни внутренний
+  сервер-адаптер, ни идентификатор инструмента адаптера (`INV-SKILL-02`).
+- [ ] Изменённые скиллы не поставляют и не упоминают ни одного локального для
+  скилла Python-, PowerShell- или shell-файла операции (`INV-SKILL-03`).
+- [ ] Инструкции по изменяющим операциям сохраняют предпросмотр как путь по
+  умолчанию (`INV-SKILL-05`).
+- [ ] Каждый пример `tools/call` в затронутом скилле по-прежнему исполняется как
+  сухой прогон MCP (`INV-SKILL-06`).
+- [ ] Встроенные низкоуровневые движки нигде не названы целью вызова в тексте,
+  видимом модели (`INV-PRODUCT-03`).
 
 ## Кеш и события
 
-- [ ] The mutating operation emits the right `DomainEventKind`, and the reported
-  cache impact matches the caches those events invalidate (`INV-CACHE-02`).
-- [ ] The dry run reports impact and writes no workspace state, index, or
-  service record (`INV-CACHE-04`).
-- [ ] The applied operation writes state only after a successful mutation and
-  notifies live workspace services with the same events (`INV-CACHE-05`).
-- [ ] No cache state is written outside the volatile cache root (`INV-CACHE-03`).
-- [ ] Workspace identity and service keys keep a linked worktree isolated
-  (`INV-CACHE-06`).
+- [ ] Изменяющая операция порождает верный `DomainEventKind`, и заявленное
+  влияние на кеш совпадает с тем, что эти события инвалидируют
+  (`INV-CACHE-02`).
+- [ ] Сухой прогон сообщает о последствиях и не пишет ни состояние рабочего
+  пространства, ни индекс, ни запись сервиса (`INV-CACHE-04`).
+- [ ] Применённая операция пишет состояние только после успешной мутации и
+  уведомляет живые сервисы рабочего пространства теми же событиями
+  (`INV-CACHE-05`).
+- [ ] Никакое состояние кеша не пишется за пределами корня изменчивого кеша
+  (`INV-CACHE-03`).
+- [ ] Идентичность рабочего пространства и ключи сервисов держат связанное
+  рабочее дерево изолированным (`INV-CACHE-06`).
 
 ## Адаптеры и границы слоёв
 
-- [ ] New dispatch enters through `UnicaApplication`, not through the transport
-  or an adapter (`INV-APP-01`, `INV-APP-02`).
-- [ ] Adapters reach the workspace through `ApplicationPorts` and render no MCP
-  response (`INV-APP-03`); their failures surface through the shared envelope
-  fields `warnings` and `errors` (`REQ-OBS-01`).
-- [ ] No production code path spawns a script interpreter as an operation
-  backend (`INV-APP-04`).
-- [ ] Layer dependency direction and the composition root are unchanged
+- [ ] Новая диспетчеризация входит через `UnicaApplication`, а не через
+  транспорт или адаптер (`INV-APP-01`, `INV-APP-02`).
+- [ ] Адаптеры идут к рабочему пространству через `ApplicationPorts` и не
+  формируют MCP-ответ (`INV-APP-03`); их отказы выходят наружу через общие поля
+  конверта `warnings` и `errors` (`REQ-OBS-01`).
+- [ ] Ни один путь исполнения в продуктовом коде не запускает интерпретатор
+  скриптов как бэкенд операции (`INV-APP-04`).
+- [ ] Направление зависимостей между слоями и корень композиции не изменились
   (`INV-APP-05`).
-- [ ] Application code constructs no `git` child process (`INV-APP-06`).
-- [ ] Analyzer and index work that needs warm state goes through the hidden
-  workspace service manager, and a cheap read-only tool such as
-  `unica.code.grep` still starts no service (`INV-APP-07`).
-- [ ] OS-specific code stays behind the platform facades and child processes are
-  owned as process trees (`INV-PLATFORM-01`, `INV-PLATFORM-04`).
+- [ ] Код слоя application не создаёт дочерний процесс `git` (`INV-APP-06`).
+- [ ] Работа анализатора и индекса, которой нужно тёплое состояние, идёт через
+  менеджер скрытых сервисов рабочего пространства, а дешёвый инструмент только
+  на чтение вроде `unica.code.grep` по-прежнему не поднимает ни одного сервиса
+  (`INV-APP-07`).
+- [ ] Зависящий от ОС код остаётся за платформенными фасадами, а дочерние
+  процессы удерживаются как деревья процессов (`INV-PLATFORM-01`,
+  `INV-PLATFORM-04`).
 
-## Source sets
+## Наборы исходников
 
-- [ ] Format detection stays a property of a single source-set (`INV-SOURCE-01`,
-  `INV-SOURCE-02`).
-- [ ] A native platform XML operation still resolves a `platform_xml` source-set
-  before touching files (`INV-SOURCE-04`).
-- [ ] Source-root selection remains deterministic and shared with the analyzer,
-  the index, and the project tools (`INV-SOURCE-05`).
+- [ ] Определение формата остаётся свойством одного набора исходников
+  (`INV-SOURCE-01`, `INV-SOURCE-02`).
+- [ ] Нативная операция над платформенным XML по-прежнему разрешает набор
+  исходников формата `platform_xml` прежде, чем трогать файлы
+  (`INV-SOURCE-04`).
+- [ ] Выбор корня исходников остаётся детерминированным и общим с анализатором,
+  индексом и инструментами проекта (`INV-SOURCE-05`).
+- [ ] Стиль перевода строки берётся из самого источника, а не назначается
+  писателем; неоднозначный источник отклоняется, а не нормализуется молча
+  (`INV-SOURCE-06`).
+- [ ] Каждая запись остаётся внутри корня рабочего пространства, включая выход
+  через символическую ссылку (`INV-SOURCE-07`).
 
 ## Упаковка
 
-- [ ] `third-party/tools.lock.json` still names the bundled public binary
-  `unica` and remains the sole version authority (`INV-PKG-04`,
+- [ ] `third-party/tools.lock.json` по-прежнему называет встроенный публичный
+  бинарник `unica` и остаётся единственным владельцем версий (`INV-PKG-04`,
   `INV-PRODUCT-05`).
-- [ ] The packaged `third-party/manifest.json` stays generated from the lock and
-  records its digest instead of becoming a second version authority
+- [ ] Упакованный `third-party/manifest.json` по-прежнему порождается из lock-а и
+  записывает его отпечаток, а не становится вторым владельцем версий
   (`INV-PRODUCT-05`).
-- [ ] `cargo run --quiet --bin unica -- --help` still works from a source
-  checkout (`INV-PKG-04`).
-- [ ] The public marketplace package stays thin: its `.mcp.json` enters through
-  the command-scoped Git shell alias that resolves the plugin root for both
-  hosts and hands it to `bootstrap/launch.sh`, with no per-target command matrix
-  and no full runtime binary (`INV-PKG-02`).
-- [ ] The launcher that starts the host-target `unica` binary directly, without
-  a bootstrap payload, stays confined to the development-only local debug
-  package (`INV-PKG-07`).
-- [ ] Both host manifests declare the same version, and no generated binary
-  becomes a tracked file (`INV-PKG-05`, `INV-PKG-01`).
-- [ ] Manifest and catalog keys stay inside the oldest supported client floor
-  (`INV-PKG-06`).
-- [ ] The runtime cache resolution order is unchanged (`INV-CACHE-07`).
-- [ ] Attribution stays complete and reachable from both READMEs
-  (`INV-PKG-08`).
-- [ ] Contracts verified on the source checkout are verified again on the
-  generated package, including a clean-cache install on each host
-  (`INV-PRODUCT-04`, `INV-PRODUCT-01`); the procedure is in
+- [ ] `cargo run --quiet --bin unica -- --help` по-прежнему работает из
+  чекаута исходников (`INV-PKG-04`).
+- [ ] Публичный пакет маркетплейса остаётся тонким: его `.mcp.json` входит через
+  ограниченный командой Git-алиас оболочки, который вычисляет корень плагина для
+  обоих хостов и передаёт его в `bootstrap/launch.sh`, без матрицы команд по
+  целевым платформам и без полного бинарника runtime (`INV-PKG-02`).
+- [ ] Запуск, стартующий бинарник `unica` для хоста напрямую, без полезной
+  нагрузки bootstrap, остаётся только в локальном отладочном пакете для
+  разработки (`INV-PKG-07`).
+- [ ] Оба манифеста хостов объявляют одну версию, и ни один собранный бинарник не
+  становится отслеживаемым файлом (`INV-PKG-05`, `INV-PKG-01`).
+- [ ] Ключи манифестов и каталогов не выходят за нижнюю границу самого старого
+  поддерживаемого клиента (`INV-PKG-06`).
+- [ ] Порядок разрешения кеша runtime не изменился (`INV-CACHE-07`).
+- [ ] Атрибуция остаётся полной и достижимой из обоих README (`INV-PKG-08`).
+- [ ] Контракты, проверенные на чекауте исходников, проверены заново на
+  сгенерированном пакете, включая установку с чистым кешем на каждом хосте
+  (`INV-PRODUCT-04`, `INV-PRODUCT-01`); порядок описан в
   [`../acceptance/unica-mcp-validation.md`](../acceptance/unica-mcp-validation.md).
 
 ## Фикстуры
 
-- [ ] Retained donor reference models stay test-only fixtures, and their byte
-  policy follows
+- [ ] Сохранённые донорские эталонные модели остаются фикстурами только для
+  тестов, а их байтовая политика следует
   [`../acceptance/unica-mcp-validation.md`](../acceptance/unica-mcp-validation.md)
   (`INV-SKILL-04`).
 
@@ -124,24 +136,26 @@
 идентичности MCP-сервера, маршрутизации скиллов, контракта упаковки и релиза или
 границ слоёв — обязано принести с собой документацию в том же изменении.
 
-- [ ] The owning decision record under [`../decisions/`](../decisions/README.md)
-  is added, updated, or superseded (`INV-MCP-08`).
-- [ ] The affected entry in [`invariants.md`](invariants.md) is updated together
-  with the check it names (`INV-DOC-03`).
-- [ ] The indexes stay synchronized: [`../decisions/README.md`](../decisions/README.md)
-  for records, [`arc42/architecture.md`](arc42/architecture.md) for chapters, and
-  [`../README.md`](../README.md) for the catalogue (`INV-DOC-04`).
-- [ ] Documents reference the new rule by ID instead of restating it
-  (`INV-DOC-08`), normative sentences are written in English (`INV-DOC-07`), and
-  every added relative link resolves from its own document (`INV-DOC-06`).
+- [ ] Запись-владелец решения в каталоге [`../decisions/`](../decisions/README.md)
+  добавлена, обновлена или заменена новой (`INV-MCP-08`); принятая запись при
+  этом не переписывается под изменившийся код (`INV-DOC-09`).
+- [ ] Затронутая запись в [`invariants.md`](invariants.md) обновлена вместе с
+  проверкой, которую она называет (`INV-DOC-03`).
+- [ ] Индексы остались синхронными: [`../decisions/README.md`](../decisions/README.md)
+  перечисляет записи решений, [`../README.md`](../README.md) — документы
+  каталога `spec/architecture/` (`INV-DOC-04`).
+- [ ] Документы ссылаются на новое правило по ID, а не пересказывают его
+  (`INV-DOC-08`), нормативные предложения написаны по-русски (`INV-DOC-07`), и
+  каждая добавленная относительная ссылка разрешается от своего документа
+  (`INV-DOC-06`).
 
 `tests/ci/test_architecture_registry.py` не читает этот чек-лист. Он удерживает
 часть названных здесь правил на самих реестрах и индексах: индекс решений
-перечисляет ровно записи на диске, а индекс arc42 — все главы (`INV-DOC-04`);
-каждая неручная проверка записи называет существующий путь (`INV-DOC-03`);
-нормативные поля записей написаны по-английски (`INV-DOC-07`); относительные
-ссылки активных документов, включая этот файл, разрешаются (`INV-DOC-06`).
-Остальные пункты раздела проверяет ревью.
+перечисляет ровно записи на диске, а `spec/README.md` — каждый документ каталога
+`spec/architecture/` (`INV-DOC-04`); каждая неручная проверка записи называет
+существующий путь (`INV-DOC-03`); нормативные поля записей написаны по-русски
+(`INV-DOC-07`); относительные ссылки действующих документов, включая этот файл,
+разрешаются (`INV-DOC-06`). Остальные пункты раздела проверяет ревью.
 
 ## Проверка
 
@@ -172,5 +186,5 @@ git diff --check
 для parity-фикстур описано в
 [`../acceptance/unica-mcp-validation.md`](../acceptance/unica-mcp-validation.md).
 Остальные шаги — сборка инструментов, контракты бинарников, упаковка плагина и
-runtime, смоук bootstrap на каждом хосте и агрегирующий гейт — запускает сам
+runtime, смоук bootstrap на каждом хосте и агрегирующий шлюз — запускает сам
 workflow.

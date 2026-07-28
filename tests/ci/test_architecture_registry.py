@@ -4,8 +4,8 @@ The registry lives in two documents that share one record format:
 
 * `spec/architecture/invariants.md` holds `INV-*` records: rules that must not
   break silently.
-* `spec/architecture/arc42/10-quality-requirements.md` holds `REQ-*` records:
-  measurable quality scenarios.
+* `spec/architecture/quality-requirements.md` holds `REQ-*` records: measurable
+  quality scenarios.
 
 These tests keep the registry honest. A record that names a check which does not
 exist, an index that drifted from the files it indexes, or a link that no longer
@@ -20,15 +20,12 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-INVARIANTS = REPO_ROOT / "spec" / "architecture" / "invariants.md"
-REQUIREMENTS = (
-    REPO_ROOT / "spec" / "architecture" / "arc42" / "10-quality-requirements.md"
-)
+ARCHITECTURE_DIR = REPO_ROOT / "spec" / "architecture"
+INVARIANTS = ARCHITECTURE_DIR / "invariants.md"
+REQUIREMENTS = ARCHITECTURE_DIR / "quality-requirements.md"
 DECISIONS_DIR = REPO_ROOT / "spec" / "decisions"
 DECISIONS_INDEX = DECISIONS_DIR / "README.md"
 SPEC_INDEX = REPO_ROOT / "spec" / "README.md"
-ARC42_DIR = REPO_ROOT / "spec" / "architecture" / "arc42"
-ARC42_INDEX = ARC42_DIR / "architecture.md"
 
 RECORD_HEADING = re.compile(r"^### (?P<id>\S+) — (?P<name>.+)$")
 RECORD_ID = re.compile(r"^(INV|REQ)-[A-Z][A-Z0-9]*-[0-9]{2}$")
@@ -46,31 +43,34 @@ SCOPES = {"source", "packaged", "ci", "release", "runtime"}
 # re-reading the code. This constant may be lowered when a manual check is
 # automated. It must never be raised: a new rule without an automated check is
 # a decision to accept documentation drift, and it belongs in a risk record
-# (spec/architecture/arc42/11-risks-and-technical-debt.md), not here.
+# (spec/architecture/risks.md), not here.
 MAX_MANUAL_CHECKS = 6
 
-# An arc42 chapter may cite a decision record to explain a choice. Linking more
-# than a few turns the chapter into a second decision index, which is how
-# chapter 9 drifted five records behind the catalogue before this rework.
-MAX_DECISION_LINKS_PER_CHAPTER = 3
+# An architecture document may cite a decision record to explain a choice.
+# Linking most of the catalogue turns the document into a second decision index,
+# which is how the decisions chapter drifted five records behind before the
+# registry rework -- and how the same list then reappeared in another chapter.
+MAX_DECISION_LINKS_PER_DOCUMENT = 3
 
-# Registry fields carry normative text, and normative text is English
-# (INV-DOC-07). Cyrillic in a field means a rule that grep in the other language
-# will not find.
+# Registry fields carry normative text, and normative text is Russian
+# (INV-DOC-07). Identifiers stay Latin, so a rule may legitimately be almost all
+# backticked names; only the prose around them is checked.
 CYRILLIC = re.compile(r"[Ѐ-ӿ]")
-NORMATIVE_FIELDS = ("Rule", "Decision", "Scope")
+BACKTICKED_SPAN = re.compile(r"`[^`]*`")
+NORMATIVE_FIELDS = ("Rule",)
 
-# Phrases that describe Unica as a single-host product. ADR-0012 made the
-# plugin directory serve both Codex and Claude Code, so these formulations are
-# wrong in the active layer. Historical records keep their original text.
+# Formulations that describe Unica as a single-host product. ADR-0012 made the
+# plugin directory serve both Codex and Claude Code, so these are wrong in the
+# active layer. Historical records keep their original text.
 SINGLE_HOST_PHRASES = (
     "Codex plugin",
     "Codex-плагин",
+    "плагин Codex",
     "fresh Codex visibility",
     "Codex operation instruction",
 )
 
-ARCHIVE_MARKER = "archived planning material, not a source of truth"
+ARCHIVE_MARKER = "Архивный материал планирования, а не источник истины"
 ARCHIVE_INDEXES = (
     REPO_ROOT / "docs" / "design" / "README.md",
     REPO_ROOT / "docs" / "plans" / "README.md",
@@ -198,17 +198,26 @@ class RegistryFormatTests(unittest.TestCase):
         ]
         self.assertEqual(offenders, [], "a record states exactly one rule")
 
-    def test_normative_fields_are_written_in_english(self) -> None:
+    def test_normative_fields_are_written_in_russian(self) -> None:
+        """Rules are stated in Russian; only identifiers stay Latin.
+
+        Backticked spans are dropped before the check, because a rule may
+        legitimately consist mostly of tool names and paths. What is left is the
+        prose that carries the meaning, and that prose must be in one language.
+        """
         offenders = []
         for record in self.records:
             for field in NORMATIVE_FIELDS:
                 for value in record.fields.get(field, []):
-                    if CYRILLIC.search(value):
-                        offenders.append(f"{record.where}: {field} is not English")
+                    prose = BACKTICKED_SPAN.sub(" ", value).strip()
+                    if not prose:
+                        continue
+                    if not CYRILLIC.search(prose):
+                        offenders.append(f"{record.where}: {field} is not Russian")
         self.assertEqual(
             offenders,
             [],
-            "normative text is English so one grep finds every statement of a rule",
+            "normative text is Russian so one grep finds every statement of a rule",
         )
 
 
@@ -250,10 +259,12 @@ class IdentifierLedgerTests(unittest.TestCase):
         """
         text = INVARIANTS.read_text(encoding="utf-8")
         section = re.search(
-            r"## Retired identifiers\n(?P<body>.*?)(?=\n## |\Z)", text, re.DOTALL
+            r"## Выведенные из обращения идентификаторы\n(?P<body>.*?)(?=\n## |\Z)",
+            text,
+            re.DOTALL,
         )
         self.assertIsNotNone(
-            section, "invariants.md must carry a 'Retired identifiers' section"
+            section, "invariants.md must carry a retired-identifier ledger"
         )
         retired = set(
             re.findall(
@@ -355,32 +366,23 @@ class IndexSynchronizationTests(unittest.TestCase):
             "spec/decisions/README.md must link every decision record and nothing else",
         )
 
-    def test_arc42_does_not_keep_a_second_decision_list(self) -> None:
-        chapter = (ARC42_DIR / "09-architecture-decisions.md").read_text(encoding="utf-8")
-        duplicated = re.findall(r"ADR-[0-9]{4}\s*:", chapter)
-        self.assertEqual(
-            duplicated,
-            [],
-            "chapter 9 must point at the decisions index instead of restating it",
-        )
-
-    def test_no_chapter_enumerates_the_decision_records(self) -> None:
-        """A chapter may cite decisions; it may not become a second index.
+    def test_no_architecture_document_enumerates_the_decision_records(self) -> None:
+        """A document may cite decisions; it may not become a second index.
 
         Citing one or two records to explain a design choice is normal. Linking
-        most of the catalogue is an index, and a second index drifts: that is
-        exactly how chapter 9 fell five records behind before this rework.
+        most of the catalogue is an index, and a second index drifts: the
+        decisions chapter fell five records behind, and once its list was
+        removed the same list reappeared in the solution-strategy chapter.
         """
         offenders = []
-        for path in sorted(ARC42_DIR.glob("*.md")):
-            linked = {
-                match
-                for match in re.findall(
+        for path in sorted(ARCHITECTURE_DIR.glob("*.md")):
+            linked = set(
+                re.findall(
                     r"decisions/([0-9]{4})-[a-z0-9-]+\.md",
                     path.read_text(encoding="utf-8"),
                 )
-            }
-            if len(linked) > MAX_DECISION_LINKS_PER_CHAPTER:
+            )
+            if len(linked) > MAX_DECISION_LINKS_PER_DOCUMENT:
                 offenders.append(
                     f"{path.name}: links {len(linked)} decision records; "
                     "cite by ID and leave the list to spec/decisions/README.md"
@@ -415,14 +417,23 @@ class IndexSynchronizationTests(unittest.TestCase):
         ]
         self.assertEqual(missing, [], "spec/README.md must list every architecture document")
 
-    def test_arc42_index_links_every_chapter(self) -> None:
-        index_text = ARC42_INDEX.read_text(encoding="utf-8")
-        missing = [
+    def test_the_retired_arc42_tree_is_not_recreated(self) -> None:
+        """The twelve-slot template is gone and stays gone.
+
+        Its numbered chapters invited filler: five of them restated the README
+        and the decisions index, and two of those grew second decision lists.
+        A document here is named for what it answers, not for a slot number.
+        """
+        self.assertFalse(
+            (ARCHITECTURE_DIR / "arc42").exists(),
+            "architecture documents live directly under spec/architecture/",
+        )
+        numbered = [
             path.name
-            for path in sorted(ARC42_DIR.glob("*.md"))
-            if path.name != ARC42_INDEX.name and path.name not in index_text
+            for path in sorted(ARCHITECTURE_DIR.glob("*.md"))
+            if re.match(r"^\d{2}-", path.name)
         ]
-        self.assertEqual(missing, [], "arc42/architecture.md must link every chapter")
+        self.assertEqual(numbered, [], "name documents by subject, not by chapter number")
 
 
 class ActiveLayerTests(unittest.TestCase):

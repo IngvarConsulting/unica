@@ -230,3 +230,81 @@ class CommandLineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DecisionRecordImmutabilityTests(unittest.TestCase):
+    """INV-DOC-09: an accepted record is superseded, never rewritten."""
+
+    def setUp(self) -> None:
+        self.guard = load_guard()
+
+    def test_moving_the_acceptance_date_is_a_violation(self) -> None:
+        diff = diff_for(
+            "spec/decisions/0008-public-marketplace-thin-runtime.md",
+            "@@ -3 +3 @@\n-- Дата: `2026-07-19`\n+- Дата: `2026-07-28`\n",
+        )
+        violations = self.guard.analyze_decision_records(diff)
+
+        self.assertEqual(len(violations), 1, violations)
+        self.assertIn("acceptance date rewritten", violations[0])
+
+    def test_walking_the_status_backwards_is_a_violation(self) -> None:
+        diff = diff_for(
+            "spec/decisions/0011-canonical-dcs-domain.md",
+            "@@ -3 +3 @@\n-- Статус: `accepted`\n+- Статус: `proposed`\n",
+        )
+        violations = self.guard.analyze_decision_records(diff)
+
+        self.assertEqual(len(violations), 1, violations)
+        self.assertIn("status moved backwards", violations[0])
+
+    def test_superseding_a_record_is_allowed(self) -> None:
+        diff = diff_for(
+            "spec/decisions/0011-canonical-dcs-domain.md",
+            "@@ -3 +3 @@\n-- Статус: `accepted`\n+- Статус: `superseded`\n",
+        )
+
+        self.assertEqual(self.guard.analyze_decision_records(diff), [])
+
+    def test_editorial_changes_are_allowed(self) -> None:
+        """Translations and typo fixes keep the date and the status."""
+        diff = diff_for(
+            "spec/decisions/0009-os-specific-code-behind-platform-facade.md",
+            "@@ -20,2 +20,3 @@\n-OS-specific code lives behind facades.\n"
+            "+Зависящий от ОС код живёт за фасадами.\n"
+            "+- Обновлено: `2026-07-28`\n",
+        )
+
+        self.assertEqual(self.guard.analyze_decision_records(diff), [])
+
+    def test_a_brand_new_record_may_say_anything(self) -> None:
+        diff = (
+            "diff --git a/spec/decisions/0014-new.md b/spec/decisions/0014-new.md\n"
+            "--- /dev/null\n+++ b/spec/decisions/0014-new.md\n"
+            "@@ -0,0 +1,2 @@\n+- Статус: `accepted`\n+- Дата: `2026-07-28`\n"
+        )
+
+        self.assertEqual(self.guard.analyze_decision_records(diff), [])
+
+    def test_edits_outside_the_decisions_directory_are_ignored(self) -> None:
+        diff = diff_for(
+            "spec/architecture/invariants.md",
+            "@@ -3 +3 @@\n-- Дата: `2026-07-19`\n+- Дата: `2026-07-28`\n",
+        )
+
+        self.assertEqual(self.guard.analyze_decision_records(diff), [])
+
+    def test_a_rewritten_record_fails_the_command(self) -> None:
+        import io
+        import sys
+
+        diff = diff_for(
+            "spec/decisions/0008-public-marketplace-thin-runtime.md",
+            "@@ -3 +3 @@\n-- Дата: `2026-07-19`\n+- Дата: `2026-07-28`\n",
+        )
+        original = sys.stdin
+        sys.stdin = io.StringIO(diff)
+        try:
+            self.assertEqual(self.guard.main(["-"]), 1)
+        finally:
+            sys.stdin = original

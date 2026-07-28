@@ -97,10 +97,18 @@ class LegacyMigrationBoundaryTests(unittest.TestCase):
                 self.assertIn(frozen_url, plugin_readme)
                 self.assertNotIn(obsolete_url, readme)
                 self.assertNotIn(obsolete_url, plugin_readme)
+        # Both documents must name the frozen bridge release and say that an old
+        # install rejoins the normal update path after it. The wording differs by
+        # language: the packaging reference is English, the decision record was
+        # translated, and the contract is the claim rather than the phrasing.
+        rejoins_normal_updates = ("ordinary marketplace update", "обычным путём обновления")
         for text in (internal_package, marketplace_adr):
             self.assertIn("v0.7.8", text)
             self.assertIn("v0.8.0", text)
-            self.assertIn("ordinary marketplace update", text)
+            self.assertTrue(
+                any(phrase in text for phrase in rejoins_normal_updates),
+                "the bridge release must say that an old install then updates normally",
+            )
 
 
 if __name__ == "__main__":

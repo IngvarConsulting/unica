@@ -33,7 +33,7 @@ DECISION_FIELD = re.compile(
 ADR_IN_DECISION = re.compile(r"ADR-(?P<number>\d{4})")
 ADR_FILE = re.compile(r"^(?P<number>\d{4})-.+\.md$")
 
-ARCHIVE_MARKER = "archived planning material, not a source of truth"
+ARCHIVE_MARKER = "Архивный материал планирования, а не источник истины"
 
 # The header requirement starts with documents written after the rule landed.
 # Rewriting the header of an older document would mean inventing an answer to a

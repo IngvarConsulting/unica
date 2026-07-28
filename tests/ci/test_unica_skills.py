@@ -1316,7 +1316,20 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertIn("platform_xml", joined)
         self.assertIn("EDT configuration", joined)
         self.assertIn("platform XML external", joined)
-        self.assertIn("not of the whole workspace", joined)
+        # The load-bearing claim: the format belongs to one source set, not to
+        # the workspace. The plugin references state it in English for skill
+        # users; the invariant registry states it in Russian. Either wording
+        # satisfies the contract, but one of them has to be present.
+        self.assertTrue(
+            any(
+                phrase in joined
+                for phrase in (
+                    "not of the whole workspace",
+                    "а не всего рабочего пространства",
+                )
+            ),
+            "the source-set format contract must be documented somewhere",
+        )
         self.assertNotIn("sourceFormat=mixed", joined)
         self.assertNotIn("source_format=mixed", joined)
 

@@ -53,6 +53,15 @@ ARCHITECTURE_PREFIXES = (
 DIFF_FILE_HEADER = re.compile(r"^\+\+\+ b/(?P<path>.+)$")
 DIFF_OLD_HEADER = re.compile(r"^--- a/(?P<path>.+)$")
 
+# An accepted decision record is a dated statement of what was chosen, not a
+# description of current code (INV-DOC-09). Two edits give the rewrite away and
+# are cheap to spot in a diff: moving the acceptance date, and walking the status
+# backwards. Prose edits stay legal, so translations and typo fixes pass.
+DECISION_RECORD = re.compile(r"^spec/decisions/\d{4}-.+\.md$")
+DATE_FIELD = re.compile(r"^-\s*(?:Дата|Date):\s*`?(?P<value>[0-9]{4}-[0-9]{2}-[0-9]{2})`?")
+STATUS_FIELD = re.compile(r"^-\s*(?:Статус|Status):\s*`?(?P<value>[a-z]+)`?")
+STATUS_ORDER = {"proposed": 0, "accepted": 1, "superseded": 2}
+
 
 class SurfaceChange:
     def __init__(self) -> None:
@@ -84,6 +93,72 @@ class SurfaceChange:
                 + ", ".join(sorted(self.architecture_files))
             )
         return "\n".join(lines)
+
+
+def analyze_decision_records(diff_text: str) -> list[str]:
+    """Report accepted decision records that the diff rewrites (INV-DOC-09).
+
+    Pure function over a unified diff: no git, no filesystem. A file that the
+    diff creates is skipped -- a brand new record may say anything. Only edits
+    to a record that already existed are judged, and only two of them: a moved
+    acceptance date and a status that walks backwards.
+    """
+    violations: list[str] = []
+    path: str | None = None
+    existed = False
+    dates: dict[str, list[str]] = {"-": [], "+": []}
+    statuses: dict[str, list[str]] = {"-": [], "+": []}
+
+    def close() -> None:
+        if path is None or not existed:
+            return
+        if dates["-"] and dates["+"] and dates["-"] != dates["+"]:
+            violations.append(
+                f"{path}: acceptance date rewritten "
+                f"({', '.join(dates['-'])} -> {', '.join(dates['+'])}); "
+                "record the editorial change with an Updated field instead"
+            )
+        for before in statuses["-"]:
+            for after in statuses["+"]:
+                rank_before = STATUS_ORDER.get(before)
+                rank_after = STATUS_ORDER.get(after)
+                if rank_before is None or rank_after is None:
+                    continue
+                if rank_after < rank_before:
+                    violations.append(
+                        f"{path}: status moved backwards ({before} -> {after})"
+                    )
+
+    for line in diff_text.splitlines():
+        new_header = DIFF_FILE_HEADER.match(line)
+        if new_header:
+            close()
+            candidate = new_header.group("path")
+            path = candidate if DECISION_RECORD.match(candidate) else None
+            dates = {"-": [], "+": []}
+            statuses = {"-": [], "+": []}
+            continue
+
+        old_header = DIFF_OLD_HEADER.match(line)
+        if old_header:
+            existed = old_header.group("path") != "/dev/null"
+            continue
+
+        if path is None or not line or line[0] not in "+-":
+            continue
+        if line.startswith(("+++", "---")):
+            continue
+
+        side, body = line[0], line[1:]
+        date = DATE_FIELD.match(body)
+        if date:
+            dates[side].append(date.group("value"))
+        status = STATUS_FIELD.match(body)
+        if status:
+            statuses[side].append(status.group("value"))
+
+    close()
+    return violations
 
 
 def analyze_diff(diff_text: str) -> SurfaceChange:
@@ -196,6 +271,19 @@ def main(argv: list[str] | None = None) -> int:
         diff_text = read_diff(base)
         if diff_text is None:
             return unusable(f"cannot diff against {base!r}")
+
+    rewritten = analyze_decision_records(diff_text)
+    if rewritten:
+        print("check-architecture-sync: an accepted decision record was rewritten")
+        for violation in rewritten:
+            print(f"  {violation}")
+        print()
+        print(
+            "INV-DOC-09: a record states what was chosen on its date. When the\n"
+            "choice stops applying, supersede it with a new record instead of\n"
+            "editing it to match the code."
+        )
+        return 1
 
     change = analyze_diff(diff_text)
     if not change.touches_public_surface:

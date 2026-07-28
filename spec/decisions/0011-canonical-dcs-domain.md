@@ -1,32 +1,35 @@
-# ADR-0011: DCS is the canonical data composition domain
+# ADR-0011: DCS — каноническое имя домена компоновки данных
 
-- Status: accepted
-- Date: 2026-07-21
-- Issue: [#158](https://github.com/IngvarConsulting/unica/issues/158)
+- Статус: `accepted`
+- Дата: `2026-07-21`
+- Обновлено: `2026-07-28`
+- Задача: [#158](https://github.com/IngvarConsulting/unica/issues/158)
 
-## Context
+> Переведено на русский; содержание решения не изменялось.
 
-Unica exposes its data composition operations as `unica.skd.*`, prompt-visible
-skills as `skd-*`, and Rust identifiers as `skd`/`Skd`. `SKD` is a
-transliteration of the Russian abbreviation `СКД`; the official English 1C
-term is **Data Composition System (DCS)**. The repository already uses DCS in
-the reference specification and native diagnostic prose, so the public package
-and the implementation contradict their own terminology.
+## Контекст
 
-This rename changes a pre-1.0 public MCP and skill contract. Keeping both names
-without a removal boundary would create two equal public domains and make the
-incorrect term permanent.
+Unica выставляет операции компоновки данных как `unica.skd.*`, видимые модели
+скиллы — как `skd-*`, а идентификаторы в Rust — как `skd`/`Skd`. `SKD` — это
+транслитерация русского сокращения `СКД`; официальный английский термин 1С —
+**Data Composition System (DCS)**. В репозитории DCS уже используется и в
+эталонной спецификации, и в прозе нативных диагностик, так что публичный пакет и
+реализация противоречат собственной терминологии.
 
-The release workflow generates GitHub release notes from merged pull requests
-and deliberately rejects repository-owned release-note files. A migration note
-therefore belongs in the packaged README and in the generated notes contributed
-by the pull request, not under a new `docs/releases` tree.
+Это переименование меняет публичный контракт MCP и скиллов до версии 1.0.
+Сохранить оба имени без границы удаления значило бы завести два равноправных
+публичных домена и сделать неверный термин постоянным.
 
-## Decision
+Релизный workflow генерирует заметки к релизу GitHub из слитых pull request и
+намеренно отвергает файлы заметок, хранимые в репозитории. Поэтому заметка о
+миграции живёт в README пакета и в сгенерированных заметках, куда её приносит
+pull request, а не в новом дереве `docs/releases`.
 
-`dcs`/`Dcs`/`DCS` is the only canonical English name for this domain:
+## Решение
 
-| Removed contract | Canonical contract |
+`dcs`/`Dcs`/`DCS` — единственное каноническое английское имя этого домена:
+
+| Убранный контракт | Канонический контракт |
 | --- | --- |
 | `unica.skd.compile` | `unica.dcs.compile` |
 | `unica.skd.edit` | `unica.dcs.edit` |
@@ -34,39 +37,42 @@ by the pull request, not under a new `docs/releases` tree.
 | `unica.skd.validate` | `unica.dcs.validate` |
 | `skd-compile/edit/info/validate` | `dcs-compile/edit/info/validate` |
 
-The change is atomic and has no `skd` compatibility alias. Unica is pre-1.0,
-the issue explicitly requires a single canonical surface, and no repository
-contract demonstrates a consumer that requires a temporary bridge. Consumers
-must replace `skd` with `dcs` when moving to the release that contains this
-change.
+Изменение атомарно, и совместимого псевдонима `skd` нет. Unica не дошла до
+версии 1.0, задача явно требует единственной канонической поверхности, и ни один
+контракт репозитория не показывает потребителя, которому нужен временный мост.
+Переходя на релиз с этим изменением, потребители обязаны заменить `skd` на
+`dcs`.
 
-Rust modules, operation names, event variants, cache graph identifiers,
-diagnostics, active documentation, package metadata, and active test scenario
-names use the same canonical term. Operation behavior and input schemas do not
-otherwise change.
+Модули Rust, имена операций, варианты событий, идентификаторы графа кеша,
+диагностики, действующая документация, метаданные пакета и имена действующих
+тестовых сценариев используют тот же канонический термин. В остальном поведение
+операций и схемы входных данных не меняются.
 
-The platform XML root/type `DataCompositionSchema` remains unchanged. The
-existing `SetMainSKD` and `setMainSKD` input spellings also remain unchanged
-because they mirror the established template-registration/platform contract;
-renaming them would be a separate schema change rather than part of the domain
-rename.
+Корень и тип платформенного XML `DataCompositionSchema` остаются как есть.
+Существующие написания входных данных `SetMainSKD` и `setMainSKD` тоже остаются
+как есть: они повторяют устоявшийся контракт регистрации макетов и платформы, и
+их переименование было бы отдельным изменением схемы, а не частью переименования
+домена.
 
-Upstream donor paths, immutable reference scripts, harvested BSP fixture paths,
-and their manifests may retain `skd` where it identifies external historical
-bytes. Active provenance records must describe the Unica side as `dcs` while
-keeping the original upstream path names verbatim.
+Донорские пути вышестоящих проектов, неизменяемые эталонные скрипты, пути
+собранных фикстур БСП и их манифесты могут сохранять `skd` там, где он
+идентифицирует внешние исторические байты. Действующие записи о происхождении
+обязаны описывать сторону Unica как `dcs`, сохраняя при этом исходные имена
+путей вышестоящего проекта дословно.
 
-A package-contract CI guard enforces the canonical tool and skill set, rejects
-the removed aliases, rejects `DSC`, and limits remaining English `skd` matches
-to the explicit XML/platform and external-fixture exceptions above.
+CI-страж контракта пакета удерживает канонический набор инструментов и скиллов,
+отвергает убранные псевдонимы, отвергает `DSC` и ограничивает оставшиеся
+английские вхождения `skd` перечисленными выше исключениями для XML и платформы
+и для внешних фикстур.
 
-## Consequences
+## Последствия
 
-- Existing callers must migrate `unica.skd.*` calls to `unica.dcs.*`.
-- Prompt-visible skills are discoverable only under `dcs-*` names.
-- Cache invalidation and operation behavior remain equivalent after their
-  identifier rename.
-- Generated release notes receive the breaking-change summary from the pull
-  request; the packaged README carries the durable migration table.
-- Future public English identifiers cannot reintroduce `skd` or the incorrect
-  `dsc` spelling without failing CI.
+- Существующие вызывающие стороны обязаны перевести вызовы `unica.skd.*` на
+  `unica.dcs.*`.
+- Видимые модели скиллы находятся только под именами `dcs-*`.
+- Инвалидация кеша и поведение операций после переименования идентификаторов
+  остаются равнозначными.
+- Сгенерированные заметки к релизу получают сводку ломающего изменения из pull
+  request; долговечную таблицу миграции несёт README пакета.
+- Будущие публичные английские идентификаторы не смогут вернуть `skd` или
+  неверное написание `dsc`, не уронив CI.
