@@ -794,3 +794,344 @@ The touched core and adapter remain green for `x86_64-pc-windows-gnu`. Full-host
 - Full-host Windows validation requires a MinGW/Windows SDK environment even though the touched core+adapter boundary cross-check is green.
 - Test-only legacy input helpers remain for private parity tests; architecture guards keep them off production dispatch.
 - Native vocabulary and source topology remain private to `unica-adapter-platform-xml`; host native-operation code is limited to MCP-to-DTO mapping, typed public-result mapping, orchestration, and BSL-only logic.
+
+## Fix Round 3
+
+Date: 2026-07-28
+
+Base: `b47ef47bdbfaab38ef335d659ad1d07bae17d894`
+
+Implementation commit: `f927c3c97eec61349573151cdd955788bf362bf0`
+
+The controller-owned `progress.md` modification was neither edited nor staged.
+
+### Responsibility map
+
+| Concern | Owner after Fix Round 3 | Evidence |
+|---|---|---|
+| Public MCP argument parsing | `unica-coder` registry | Maps every documented CF/CFE field into closed core DTOs; no XML/version/path interpretation |
+| Compatibility intent | `unica-format-core` | Ordered validated `VersionNumber` and closed `CapabilityRequirement::{Preserve, AdapterDefault, Explicit}` |
+| Artifact classification and version policy | adapter-private v2_20 operations/writers | Classification starts from semantic owner/root and parsed descriptor kind; basename is not a classifier |
+| Platform XML mutation | adapter-private v2_20 writers | Typed dispatch only; no reconstruction of legacy operation IDs or raw envelopes |
+| BSL interpretation/generation | host/application | CFE patch intent is interpreted in host; adapter locates an opaque module artifact and publishes supplied content |
+| Atomic publication, locking, rollback/recovery | adapter publication port | One shared lock/publication path for XML, BSL, and standalone artifacts |
+| Public `AdapterOutcome` mapping | host | Adapter returns typed lifecycle/status/change/artifact/diagnostic results only |
+| Semantic preservation oracle | adapter integration test | Production reader facts where navigation applies plus an independent structural oracle for standalone artifacts |
+
+Remaining host-native paths contain no Platform XML parser/serializer or native layout registry:
+
+- `crates/unica-coder/src/infrastructure/native_operations/code.rs`: BSL-only patching.
+- `crates/unica-coder/src/infrastructure/native_operations/common.rs`: host orchestration helpers.
+- `crates/unica-coder/src/infrastructure/native_operations/compile_transaction.rs`: host transaction orchestration.
+- `crates/unica-coder/src/infrastructure/native_operations/meta.rs`: thin semantic metadata wrapper.
+- `crates/unica-coder/src/infrastructure/native_operations/registry.rs`: MCP-to-command mapping and dispatch.
+- `crates/unica-coder/src/infrastructure/native_operations/typed_result.rs`: typed adapter-result to public-result mapping.
+- `crates/unica-coder/src/infrastructure/native_operations/tests.rs`: host boundary tests.
+
+### Finding 1: owner/family-aware compatibility classification
+
+The basename-based preflight was deleted. Descriptor candidates are classified from their owning semantic root and parsed artifact root before applying a version policy. Create operations preflight the owner and any existing parseable target through the same compatibility port; malformed partial scaffolds remain create-only validation failures.
+
+- DCS and MXL `Template.xml` roots at schema revision `1.0` use DCS/MXL family policy rather than configuration export-version policy.
+- `CommandInterface` sidecars are considered with their owning descriptor; a newer owner takes precedence over an older sidecar.
+- Same-basename adversarial coverage places metadata, DCS, and MXL `Template.xml` artifacts beside one another and proves different policies.
+- The complete private writer namespace is green: `836 passed`, including all 36 base-failing writer tests.
+
+### Finding 2: complete CF/CFE public semantics
+
+Core now owns format-neutral compatibility intent:
+
+- `VersionNumber`: validated two-to-four-component ordered version number, no platform-version string.
+- `CapabilityRequirement::Preserve`.
+- `CapabilityRequirement::AdapterDefault`.
+- `CapabilityRequirement::Explicit(VersionNumber)`.
+
+The host maps CF vendor, configuration version, and compatibility requirement. It maps CFE synonym, purpose, prefix, vendor, configuration version, `noRole`, and compatibility requirement. The adapter emits supplied values exactly. Defaults are applied only when the public request omits a value: CF uses adapter default intent; CFE preserves the base capability.
+
+Round-trip, public-mapping, direct writer, and reader-after-write tests cover preserve/default/explicit compatibility and all CFE vendor/version/role combinations.
+
+### Finding 3: executable full-fact preservation oracle
+
+`task8_fix_round1_preservation_matrix` now executes all 25 `WriterCommand` variants through the production writer port. Each case opens an initial fixture, obtains before facts, writes, reopens a fresh session, obtains after facts, and compares exact multisets and deltas against frozen hand-authored expectations.
+
+The normalized production reader envelope includes:
+
+- envelope status, root identity, consistency, coverage, and diagnostics;
+- object identity, kind, capabilities, actions, and visibility;
+- every property ID, semantic type, state, value, provenance, and capability;
+- facets, actions, and relations.
+
+The independent standalone oracle parses complete element/attribute/text structures for external, DCS, MXL, form/help/interface companion artifacts and BSL content. It does not use writer serializers and has no `contains` booleans. Canonicalization is limited to nondeterministic UUIDs and derived opaque hashes; the complete normalized fact entries and multiplicities remain compared.
+
+Cancellation is injected after the first publication mutation and requires `DuringPublication` plus rollback `Performed` with unchanged facts. Denial uses an actual newer-format or support-locked source. Concurrent cases require both operations to complete under serialization or a deterministic typed conflict, followed by an exact final-fact comparison.
+
+### Typed command inventory and preservation matrix
+
+Every row executes all six scenarios. `Exact delta` means a frozen full before/after/delta fact multiset; `same` means exact before equals exact after.
+
+| `WriterCommand` variant | Semantic oracle | Success | Dry run | Idempotent repeat | Unsupported/denied | Post-mutation cancel | Concurrent |
+|---|---|---|---|---|---|---|---|
+| `ConfigurationInitialize` | production reader | Exact delta | same | same | same | rollback, same | serialized |
+| `ConfigurationEdit` | production reader | Exact delta | same | same | same | rollback, same | serialized |
+| `ExtensionInitialize` | production reader | Exact delta | same | same | same | rollback, same | serialized |
+| `ExtensionBorrow` | production reader | Exact delta | same | same | same | rollback, same | serialized |
+| `ExtensionPatchMethod` | production reader plus independent BSL facts | Exact delta | same | same | same | rollback, same | serialized |
+| `ExternalProcessorInitialize` | independent full structure | Exact delta | same | same | same | rollback, same | serialized |
+| `ExternalReportInitialize` | independent full structure | Exact delta | same | same | same | rollback, same | serialized |
+| `MetadataCreate` | production reader | Exact delta | same | same | same | rollback, same | serialized |
+| `MetadataEdit` | production reader | Exact delta | same | same | same | rollback, same | serialized |
+| `MetadataRemove` | production reader | Exact delta | same | same | same | rollback, same | serialized |
+| `FormCreate` | independent full structure | Exact delta | same | same | same | rollback, same | serialized |
+| `FormCompile` | independent full structure | Exact delta | same | same | same | rollback, same | serialized |
+| `FormEdit` | independent full structure | Exact delta | same | same | same | rollback, same | serialized |
+| `FormRemove` | independent full structure | Exact delta | same | same | same | rollback, same | serialized |
+| `TemplateCreate` | production reader | Exact delta | same | same | same | rollback, same | serialized |
+| `TemplateRemove` | production reader | Exact delta | same | same | same | rollback, same | serialized |
+| `HelpWrite` | independent full structure | Exact delta | same | same | same | rollback, same | serialized |
+| `InterfaceEdit` | independent full structure | Exact delta | same | same | same | rollback, same | serialized |
+| `RoleCompile` | production reader | Exact delta | same | same | same | rollback, same | serialized |
+| `SubsystemCompile` | production reader | Exact delta | same | same | same | rollback, same | serialized |
+| `SubsystemEdit` | production reader | Exact delta | same | same | same | rollback, same | serialized |
+| `SupportEdit` | production reader | Exact delta | same | same | same | rollback, same | serialized |
+| `DataCompositionSchemaCompile` | independent full structure | Exact delta | same | same | same | rollback, same | serialized |
+| `DataCompositionSchemaEdit` | independent full structure | Exact delta | same | same | same | rollback, same | serialized |
+| `SpreadsheetCompile` | independent full structure | Exact delta | same | same | same | rollback, same | serialized |
+
+Coverage is asserted by exact `(variant, scenario)` keys: 25 variants times 6 scenarios equals 150 required and executed cases. Broad variant matching, test-name scanning, update/dump modes, and expected-value generation from reader/writer output are statically forbidden.
+
+### Finding 4: core-owned metadata applicability
+
+`MetadataKind::ALL` and `MetadataPropertyId::ALL` define a finite 40 by 64 matrix. `metadata_kind_allows_property` is core-owned and is enforced by constructors and deserialization, so invalid combinations cannot reach the adapter.
+
+The exhaustive `2,560`-pair test checks constructor and serde acceptance against the hand-authored applicability table. It explicitly proves `Catalog + Periodicity` rejection and valid `CalculationRegister + Periodicity` and `ScheduledJob + Description` combinations.
+
+### Finding 5: production legacy parser removal
+
+Raw writer reconstructors in CF, DCS, interface, role, and subsystem are deleted from the production compile graph or isolated under `#[cfg(test)]` pending test-fixture removal. Production dispatch does not accept `operation + value`, raw `serde_json::Value`, `serde_json::Map`, tool IDs, native class/tag strings, or raw definition/session payloads. Static architecture tests name each legacy root and require its test-only gate. The remaining subsystem validation map is a validator-internal compatibility path, not a writer command/reconstructor.
+
+### RED evidence
+
+1. Initial full adapter library command:
+
+   `cargo test -p unica-adapter-platform-xml --lib -- --nocapture`
+
+   Result: `982 passed; 49 failed`. The failure set was the 36 writer regressions caused by basename classification plus the pre-existing 13 reader failures listed below.
+
+2. The first full writer rerun exposed four additional owner-preflight regressions not reached by the original 36 and one malformed create-scaffold ordering conflict. Those remained RED until all create targets used owner-aware dependency preflight rather than a filename special case.
+
+3. The first exhaustive metadata matrix exposed two omitted valid pairs, `CalculationRegister + Periodicity` and `ScheduledJob + Description`. Both were added to the core applicability registry; `Catalog + Periodicity` remained rejected.
+
+4. The initial full-fact fixture freeze was nondeterministic across fresh sessions because generated UUIDs, opaque derived hashes, and pre-normalization ordering leaked into the digest. Canonical value normalization and post-normalization sorting made the separately generated rerun deterministic; no update/dump path remains.
+
+5. Static parser-boundary tests were RED while raw CF/DCS/interface/role/subsystem writer parsers remained production reachable. They turned GREEN only after the production compile graph excluded those roots.
+
+### GREEN commands and results
+
+Formatting and patch integrity:
+
+```text
+cargo fmt --all -- --check
+PASS
+
+git diff --check
+PASS
+```
+
+Task 8 core contracts:
+
+```text
+cargo test -p unica-format-core \
+  --test task8_writer_contract \
+  --test task8_fix_round1_contract \
+  --test task8_fix_round2_contract \
+  --test task8_fix_round3_contract
+17 passed; 0 failed
+```
+
+Task 8 adapter architecture and ports:
+
+```text
+cargo test -p unica-adapter-platform-xml --features test-support \
+  --test task8_writer_architecture \
+  --test task8_fix_round1_architecture \
+  --test task8_fix_round2_architecture \
+  --test task8_fix_round3_contract \
+  --test task8_writer_ports
+20 passed; 0 failed
+```
+
+Executable preservation matrix:
+
+```text
+cargo test -p unica-adapter-platform-xml --features test-support \
+  --test task8_fix_round1_preservation_matrix
+1 passed; 0 failed; 150 variant/scenario cases executed
+```
+
+Complete private writer namespace:
+
+```text
+cargo test -p unica-adapter-platform-xml --lib versions::v2_20::writers:: -- --quiet
+836 passed; 0 failed; 195 filtered out
+```
+
+Task 5 and Task 6 parity/relation scopes:
+
+```text
+cargo test -p unica-adapter-platform-xml --test legacy_parity
+26 passed; 0 failed
+
+cargo test -p unica-adapter-platform-xml --test specialized_relations
+7 passed; 0 failed
+```
+
+Task 7 adapter scopes:
+
+```text
+cargo test -p unica-adapter-platform-xml --features test-support \
+  --test task7_fix_round1_architecture \
+  --test task7_fix_round2_architecture \
+  --test task7_fix_round2_lazy_source \
+  --test task7_fix_round3_architecture \
+  --test task7_fix_round3_lazy_revision \
+  --test task7_operational_ports
+50 passed; 0 failed
+```
+
+Task 7 core scopes:
+
+```text
+cargo test -p unica-format-core \
+  --test public_json_contract \
+  --test task7_fix_round2_contracts \
+  --test task7_fix_round3_evidence \
+  --test task7_fix_round6_validation \
+  --test task7_fix_round7_validation \
+  --test task7_fix_round8_validation \
+  --test task7_operational_ports
+35 passed; 0 failed
+```
+
+Host full suite, current tree:
+
+```text
+cargo test -p unica-coder --lib
+581 passed; 28 failed; 2 ignored
+```
+
+The current 28 normalized failure names exactly match the 28 names recorded by the Fix Round 2 base run at `b47ef47bdbfaab38ef335d659ad1d07bae17d894`. This round did not reconstruct or relabel a separate base checkout run; the base comparator is the committed Fix Round 2 report, while the current command above was freshly executed on `f927c3c9`. A prior current-tree run had one additional timing-sensitive process test failure; its exact rerun passed, and the final full run above did not reproduce it.
+
+Current host failures:
+
+```text
+application::tests::ambiguous_source_set_owner_has_same_structured_failure_for_preview_and_apply
+application::tests::cf_edit_add_child_object_prioritizes_newer_existing_target_descriptor
+application::tests::cf_edit_rejects_symlink_configuration_without_touching_referent
+application::tests::cf_edit_validation_dependencies_block_incompatible_home_page_file
+application::tests::cfe_borrow_rejects_edt_config_source_set_target
+application::tests::code_patch_apply_is_blocked_for_a_locked_supported_object
+application::tests::create_only_initializers_prioritize_exact_newer_planned_xml_targets
+application::tests::declared_existing_dcs_output_rejects_wrong_root_before_handler
+application::tests::declared_existing_form_output_rejects_wrong_root_before_handler
+application::tests::declared_existing_mxl_output_rejects_wrong_root_before_handler
+application::tests::declared_form_output_with_nonstandard_suffix_still_blocks_newer_owner
+application::tests::detailed_compile_dry_run_rejects_edt_source_set_like_apply
+application::tests::detailed_compile_dry_run_rejects_output_escape_like_apply
+application::tests::entity_spelled_supported_format_is_invalid_at_the_public_boundary
+application::tests::form_compile_dry_run_rejects_edt_source_set_like_apply
+application::tests::form_compile_dry_run_rejects_output_escape_like_apply
+application::tests::meta_edit_rejects_ambiguous_or_empty_standalone_metadata_owner_before_handler
+application::tests::mutating_cf_edit_blocks_locked_configuration_directory_target
+application::tests::mutating_meta_edit_blocks_locked_vendor_object_by_default
+application::tests::mutating_native_operation_rejects_output_escape_before_backend_execution
+application::tests::mxl_compile_blocks_write_inside_older_dump_with_structured_diagnostic
+application::tests::native_xml_metadata_tools_reject_edt_source_set_targets
+application::tests::numeric_equivalent_noncanonical_format_warns_on_read_and_blocks_public_mutator
+application::tests::read_only_path_aliases_warn_for_older_directory_owned_inputs
+application::tool_contracts::tests::every_native_path_alias_group_normalizes_to_one_canonical_argument
+application::tool_contracts::tests::every_published_argument_is_described
+infrastructure::source_adapters::registry::registry_tests::pinned_format_and_foreign_probe_identity_fail_closed
+infrastructure::source_adapters::registry::registry_tests::typed_identity_fields_fail_closed_without_inspecting_ordinary_data_keys
+```
+
+Full adapter diagnostic run:
+
+```text
+cargo test -p unica-adapter-platform-xml --lib -- --nocapture
+1018 passed; 13 failed
+```
+
+All writer tests pass. The exact remaining failures are pre-existing reader/projection assertions outside the Task 8 writer scope:
+
+```text
+versions::v2_20::decoder::direct_type_property_tests::direct_foreign_qname_fails_closed_instead_of_becoming_a_scalar
+versions::v2_20::decoder::direct_type_property_tests::unbound_direct_qname_is_rejected_by_type_namespace_resolution
+versions::v2_20::decoder::tests::duplicate_inline_child_names_are_identity_collisions
+versions::v2_20::decoder::tests::scalar_annotation_rejects_alien_or_conflicting_qnames_locally
+versions::v2_20::probe::tests::configuration_unknown_child_fails_closed
+versions::v2_20::probe::tests::unknown_metadata_class_fails_closed
+versions::v2_20::probe::tests::unknown_nested_structural_features_fail_closed_for_representative_classes
+versions::v2_20::projector::tests::empty_annotated_fill_value_preserves_string_but_not_invalid_decimal
+versions::v2_20::projector::tests::fill_value_accepts_only_lossless_decimal_or_string_annotations
+versions::v2_20::projector::tests::fill_value_uses_exact_native_scalar_annotation_not_text
+versions::v2_20::projector::tests::fill_value_without_a_known_annotation_is_unresolved
+versions::v2_20::projector::tests::form_is_always_partial_and_inspection_only_before_form_internals_exist
+versions::v2_20::projector::tests::malformed_decimal_and_local_scalar_failure_remain_property_local
+```
+
+Full core diagnostic run has one pre-existing finite-registry expectation mismatch:
+
+```text
+cargo test -p unica-format-core
+property_contract::property_definition_registry_is_complete_unique_and_finite
+```
+
+The failure expects `EmptyReference` in an older test-owned list; Task 8 scoped core contracts, including all 2,560 applicability pairs, pass.
+
+### Windows cross-check
+
+Touched crates are green:
+
+```text
+cargo check --target x86_64-pc-windows-gnu \
+  -p unica-format-core -p unica-adapter-platform-xml
+PASS
+```
+
+The full host cannot be cross-compiled on this macOS runner because the Windows GNU C runtime headers/toolchain are absent. With clang selected, `ring v0.17.14` fails at `fatal error: 'assert.h' file not found`. An isolated bundled `libsqlite3-sys v0.30.1` Windows build first fails at missing `stdio.h`; the reviewer-requested explicit CRT preinclude probe fails at `fatal error: 'stdlib.h' file not found`. These are environment blockers, not touched core/adapter failures.
+
+### Files in implementation commit
+
+```text
+crates/unica-adapter-platform-xml/src/factory.rs
+crates/unica-adapter-platform-xml/src/versions/v2_20/coverage.json
+crates/unica-adapter-platform-xml/src/versions/v2_20/decoder.rs
+crates/unica-adapter-platform-xml/src/versions/v2_20/operations.rs
+crates/unica-adapter-platform-xml/src/versions/v2_20/projector.rs
+crates/unica-adapter-platform-xml/src/versions/v2_20/semantic_map.rs
+crates/unica-adapter-platform-xml/src/versions/v2_20/writers/cf.rs
+crates/unica-adapter-platform-xml/src/versions/v2_20/writers/cfe.rs
+crates/unica-adapter-platform-xml/src/versions/v2_20/writers/common.rs
+crates/unica-adapter-platform-xml/src/versions/v2_20/writers/compile_transaction.rs
+crates/unica-adapter-platform-xml/src/versions/v2_20/writers/dcs.rs
+crates/unica-adapter-platform-xml/src/versions/v2_20/writers/form.rs
+crates/unica-adapter-platform-xml/src/versions/v2_20/writers/interface.rs
+crates/unica-adapter-platform-xml/src/versions/v2_20/writers/role.rs
+crates/unica-adapter-platform-xml/src/versions/v2_20/writers/single_file_publisher.rs
+crates/unica-adapter-platform-xml/src/versions/v2_20/writers/subsystem.rs
+crates/unica-adapter-platform-xml/src/versions/v2_20/writers/template.rs
+crates/unica-adapter-platform-xml/tests/task8_fix_round1_preservation_matrix.rs
+crates/unica-adapter-platform-xml/tests/task8_fix_round2_architecture.rs
+crates/unica-adapter-platform-xml/tests/task8_fix_round3_contract.rs
+crates/unica-coder/src/infrastructure/native_operations/registry.rs
+crates/unica-format-core/src/commands/writer_payloads.rs
+crates/unica-format-core/tests/task8_fix_round2_contract.rs
+crates/unica-format-core/tests/task8_fix_round3_contract.rs
+```
+
+### Residual risks
+
+- The 28 host boundary-contract failures remain unchanged from the recorded Fix Round 2 base and need a separate reconciliation with the post-Task-7 public contract; they were not relabeled as inherited successes.
+- The 13 adapter reader/projection failures and one core registry-list failure remain exact, visible non-Task-8 residuals.
+- Full `unica-coder` Windows GNU validation requires a runner with the Windows GNU C runtime headers for both `ring` and bundled SQLite; touched core+adapter Windows checks are green.
+- Test-only legacy parser fixtures remain isolated under `#[cfg(test)]`; production compile-graph guards prevent them from becoming a compatibility surface.
