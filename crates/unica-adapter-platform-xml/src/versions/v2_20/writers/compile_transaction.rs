@@ -29,7 +29,9 @@ use crate::infrastructure::platform::filesystem::{
 use crate::infrastructure::source_roots::normalize_path_identity;
 
 #[cfg(test)]
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
+#[cfg(any(test, feature = "test-support"))]
+use std::cell::RefCell;
 
 #[cfg(test)]
 use crate::infrastructure::platform::filesystem::replace_file_atomically;
@@ -1115,6 +1117,7 @@ impl CompileTransaction {
                     ),
                 });
                 super::cancellation::publication_started();
+                checkpoint_after_publication_mutation()?;
             }
 
             failpoint_after_object_files()?;
@@ -1179,6 +1182,7 @@ impl CompileTransaction {
                     permissions,
                 ));
                 super::cancellation::publication_started();
+                checkpoint_after_publication_mutation()?;
             }
 
             if std::mem::take(&mut final_guard_pending) {
@@ -1199,6 +1203,7 @@ impl CompileTransaction {
                     .published_removals
                     .push(recovery.into_published(removal.path.clone(), removal.snapshot.clone()));
                 super::cancellation::publication_started();
+                checkpoint_after_publication_mutation()?;
                 let published = state
                     .published_removals
                     .last()
@@ -3173,6 +3178,9 @@ type BeforeRollbackMutationHook = Box<dyn FnOnce(&Path)>;
 #[cfg(test)]
 type BeforeRemovalRollbackRestoreHook = Box<dyn FnOnce(&Path, &Path)>;
 
+#[cfg(any(test, feature = "test-support"))]
+type AfterPublicationMutationHook = Box<dyn FnOnce()>;
+
 #[cfg(test)]
 thread_local! {
     static TEST_FAILPOINT: Cell<Option<CommitFailpoint>> = const { Cell::new(None) };
@@ -3180,6 +3188,39 @@ thread_local! {
     static TEST_PATH_IDENTITY_NORMALIZATIONS: Cell<usize> = const { Cell::new(0) };
     static TEST_BEFORE_ROLLBACK_MUTATION_HOOK: RefCell<Option<BeforeRollbackMutationHook>> = const { RefCell::new(None) };
     static TEST_BEFORE_REMOVAL_ROLLBACK_RESTORE_HOOK: RefCell<Option<BeforeRemovalRollbackRestoreHook>> = const { RefCell::new(None) };
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static TEST_AFTER_PUBLICATION_MUTATION_HOOK: RefCell<Option<AfterPublicationMutationHook>> = const { RefCell::new(None) };
+}
+
+#[cfg(feature = "test-support")]
+pub(crate) fn with_after_publication_mutation_hook<T>(
+    hook: impl FnOnce() + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<AfterPublicationMutationHook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_AFTER_PUBLICATION_MUTATION_HOOK.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+
+    let previous =
+        TEST_AFTER_PUBLICATION_MUTATION_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
+fn checkpoint_after_publication_mutation() -> Result<(), String> {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(hook) = TEST_AFTER_PUBLICATION_MUTATION_HOOK.with(|slot| slot.borrow_mut().take()) {
+        hook();
+    }
+    super::cancellation::checkpoint()
 }
 
 #[cfg(test)]

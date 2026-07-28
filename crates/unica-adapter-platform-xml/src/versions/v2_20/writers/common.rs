@@ -2173,31 +2173,42 @@ pub(crate) fn preflight_active_format_dependencies(
     guard_active_format_dependencies(&mut CompileTransaction::new(), targets, context)
 }
 
-pub(crate) fn reject_existing_incompatible_format_targets(targets: &[&Path]) -> Result<(), String> {
-    let mut older = None;
-    let mut newer = None;
-    for target in targets {
-        if !target.is_file() {
-            continue;
-        }
-        match crate::infrastructure::platform_xml_owner::inspect_platform_xml_compatibility(target)
-        {
-            Ok(compatibility @ FormatCompatibility::Older { .. }) if older.is_none() => {
-                older = Some(compatibility);
+pub(crate) fn preflight_active_format_dependencies_for_create(
+    dependencies: &[&Path],
+    create_targets: &[&Path],
+    context: &WorkspaceContext,
+) -> Result<(), String> {
+    let mut targets = dependencies.to_vec();
+    for target in create_targets {
+        let inspect_existing_target = match std::fs::symlink_metadata(target) {
+            Ok(metadata)
+                if metadata.is_file()
+                    && !crate::infrastructure::platform::filesystem::
+                        metadata_is_link_or_reparse_point(&metadata) =>
+            {
+                std::fs::read(target)
+                    .ok()
+                    .and_then(|bytes| {
+                        std::str::from_utf8(&bytes)
+                            .ok()
+                            .map(|text| {
+                                roxmltree::Document::parse(
+                                    text.trim_start_matches('\u{feff}'),
+                                )
+                                .is_ok()
+                            })
+                    })
+                    .unwrap_or(false)
             }
-            Ok(compatibility @ FormatCompatibility::Newer { .. }) if newer.is_none() => {
-                newer = Some(compatibility);
-            }
-            Ok(FormatCompatibility::Supported { .. })
-            | Ok(FormatCompatibility::Older { .. })
-            | Ok(FormatCompatibility::Newer { .. })
-            | Err(_) => {}
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(_) => true,
+        };
+        if inspect_existing_target {
+            targets.push(target);
         }
     }
-    if let Some(compatibility) = newer.or(older) {
-        return Err(format_compatibility_warning(&compatibility));
-    }
-    Ok(())
+    preflight_active_format_dependencies(&targets, context)
 }
 
 fn guard_active_format_targets<'a>(
@@ -2347,21 +2358,6 @@ fn bind_operational_compatibility_guard<'a>(
     if matches!(mode, OwnerResolutionMode::ExistingForNewOutput) {
         return require_supported_platform_xml_owners(&metadata_owners);
     }
-    let direct_targets = native_targets
-        .iter()
-        .map(|(target, _)| target.as_path())
-        .collect::<Vec<_>>();
-    let embedded_format_targets = direct_targets
-        .iter()
-        .copied()
-        .filter(|target| {
-            matches!(
-                target.file_name().and_then(|name| name.to_str()),
-                Some("CommandInterface.xml" | "Form.xml" | "Rights.xml" | "Template.xml")
-            )
-        })
-        .collect::<Vec<_>>();
-    reject_existing_incompatible_format_targets(&embedded_format_targets)?;
     let native_workspace_root = context.workspace_root.clone();
     let native_context = context.clone();
     transaction.guard_semantic_check_preserving_error(move || {

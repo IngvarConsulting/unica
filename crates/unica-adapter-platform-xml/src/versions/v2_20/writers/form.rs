@@ -2351,11 +2351,11 @@ fn add_form_input(input: FormCreateInput, context: &WorkspaceContext) -> NativeW
             ),
         );
 
-        super::common::reject_existing_incompatible_format_targets(&[
-            &form_meta_path,
-            &form_xml_path,
-        ])?;
-        super::common::preflight_active_format_dependencies(&[&object_xml_full], context)?;
+        super::common::preflight_active_format_dependencies_for_create(
+            &[&object_xml_full],
+            &[&form_meta_path, &form_xml_path],
+            context,
+        )?;
         let mut transaction = CompileTransaction::new();
         transaction.create_utf8_bom_text(&form_meta_path, &form_metadata)?;
         transaction.create_utf8_bom_text(&form_xml_path, &form_content)?;

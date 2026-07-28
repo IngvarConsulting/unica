@@ -1184,6 +1184,7 @@ fn validate_role_compile_name(value: &str) -> Result<(), String> {
     }
 }
 
+#[cfg(test)]
 fn role_compile_json_bool(definition: &Value, field: &str, default: bool) -> Result<bool, String> {
     match definition.get(field) {
         None => Ok(default),
@@ -2132,6 +2133,7 @@ fn typed_role_compile_input(
     })
 }
 
+#[cfg(test)]
 fn role_compile_model_from_legacy(mut definition: Value) -> Result<RoleCompileModel, String> {
     let name = definition
         .get("name")

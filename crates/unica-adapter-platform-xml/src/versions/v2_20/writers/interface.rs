@@ -337,6 +337,7 @@ fn interface_edit_failure(error: String) -> NativeWriterResult {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn interface_edit_operations(
     args: &impl ArgumentAccess,
     cwd: &Path,
@@ -362,6 +363,7 @@ pub(crate) fn interface_edit_operations(
     }
 }
 
+#[cfg(test)]
 fn interface_edit_operations_guarded(
     cwd: &Path,
     operation: Option<&str>,
@@ -384,6 +386,7 @@ fn interface_edit_operations_guarded(
     }
 }
 
+#[cfg(test)]
 fn interface_edit_operations_from_value(
     parsed: Value,
     operation: Option<&str>,
@@ -409,6 +412,7 @@ fn interface_edit_operations_from_value(
         .collect()
 }
 
+#[cfg(test)]
 pub(crate) fn interface_value_list(value: &Value) -> Result<Vec<String>, String> {
     match value {
         Value::String(text) => {
@@ -426,6 +430,7 @@ pub(crate) fn interface_value_list(value: &Value) -> Result<Vec<String>, String>
     }
 }
 
+#[cfg(test)]
 pub(crate) fn interface_json_array_strings(value: &Value) -> Result<Vec<String>, String> {
     let Some(items) = value.as_array() else {
         return Err("value must be an array".to_string());
@@ -433,6 +438,7 @@ pub(crate) fn interface_json_array_strings(value: &Value) -> Result<Vec<String>,
     Ok(items.iter().map(interface_json_string).collect())
 }
 
+#[cfg(test)]
 pub(crate) fn interface_json_string(value: &Value) -> String {
     match value {
         Value::String(value) => value.clone(),
@@ -520,6 +526,7 @@ pub(crate) fn interface_text_do_show(
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn interface_text_do_place(
     text: &mut String,
     value: &Value,
@@ -596,6 +603,7 @@ fn interface_text_do_semantic_place(
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn interface_text_do_order(
     text: &mut String,
     value: &Value,
@@ -673,6 +681,7 @@ fn interface_text_do_semantic_order(
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn interface_text_do_subsystem_order(
     text: &mut String,
     value: &Value,
@@ -721,6 +730,7 @@ fn interface_text_do_semantic_subsystem_order(
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn interface_text_do_group_order(
     text: &mut String,
     value: &Value,
@@ -1152,6 +1162,7 @@ pub(crate) fn interface_metadata_owner_path(ci_path: &Path) -> Result<PathBuf, S
     Ok(owner_path)
 }
 
+#[cfg(test)]
 pub(crate) fn interface_json_object(value: &Value) -> Result<Value, String> {
     if value.is_object() {
         Ok(value.clone())
@@ -1162,6 +1173,7 @@ pub(crate) fn interface_json_object(value: &Value) -> Result<Value, String> {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn interface_json_array(value: &Value) -> Result<Value, String> {
     if value.is_array() {
         Ok(value.clone())

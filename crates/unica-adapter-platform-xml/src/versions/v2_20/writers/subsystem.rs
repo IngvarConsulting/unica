@@ -174,16 +174,28 @@ fn validate_subsystem_metadata_name(argument: &str, value: &str) -> Result<(), S
     }
 }
 
+#[cfg(test)]
 fn canonical_subsystem_boolean(value: &Value, property: &str) -> Result<String, String> {
     match value {
         Value::Bool(value) => Ok(value.to_string()),
-        Value::String(value) if value == "true" || value == "false" => Ok(value.clone()),
+        Value::String(value) => canonical_subsystem_boolean_text(value, property),
         _ => Err(format!(
             "{property} must be a JSON boolean or the canonical string true or false"
         )),
     }
 }
 
+fn canonical_subsystem_boolean_text(value: &str, property: &str) -> Result<String, String> {
+    if matches!(value, "true" | "false") {
+        Ok(value.to_string())
+    } else {
+        Err(format!(
+            "{property} must be the canonical string true or false"
+        ))
+    }
+}
+
+#[cfg(test)]
 fn subsystem_boolean_field(
     definition: &Value,
     property: &str,
@@ -611,7 +623,7 @@ fn edit_subsystem_input(
             ("IncludeInCommandInterface", &model.include_ci),
             ("UseOneCommand", &model.use_one_command),
         ] {
-            canonical_subsystem_boolean(&Value::String(value.clone()), property)?;
+            canonical_subsystem_boolean_text(value, property)?;
         }
         for child in &model.children {
             validate_subsystem_metadata_name("Child subsystem name", child)?;
@@ -767,6 +779,7 @@ fn subsystem_native_edit(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn subsystem_edit_operations(
     args: &impl ArgumentAccess,
     cwd: &Path,
@@ -792,6 +805,7 @@ pub(crate) fn subsystem_edit_operations(
     }
 }
 
+#[cfg(test)]
 fn subsystem_edit_operations_guarded(
     cwd: &Path,
     operation: Option<&str>,
@@ -814,6 +828,7 @@ fn subsystem_edit_operations_guarded(
     }
 }
 
+#[cfg(test)]
 fn subsystem_edit_operations_from_value(
     parsed: Value,
     operation: Option<&str>,
@@ -865,6 +880,7 @@ pub(crate) fn subsystem_edit_picture_text(props: roxmltree::Node<'_, '_>) -> Str
         .to_string()
 }
 
+#[cfg(test)]
 pub(crate) fn subsystem_edit_value_list(value: &Value) -> Result<Vec<String>, String> {
     match value {
         Value::String(text) => {
@@ -882,6 +898,7 @@ pub(crate) fn subsystem_edit_value_list(value: &Value) -> Result<Vec<String>, St
     }
 }
 
+#[cfg(test)]
 pub(crate) fn subsystem_edit_array_strings(value: &Value) -> Result<Vec<String>, String> {
     let Some(items) = value.as_array() else {
         return Err("value must be an array".to_string());
@@ -889,6 +906,7 @@ pub(crate) fn subsystem_edit_array_strings(value: &Value) -> Result<Vec<String>,
     Ok(items.iter().map(json_value_to_python_string).collect())
 }
 
+#[cfg(test)]
 pub(crate) fn subsystem_edit_object(value: &Value) -> Result<Value, String> {
     if value.is_object() {
         Ok(value.clone())
@@ -899,6 +917,7 @@ pub(crate) fn subsystem_edit_object(value: &Value) -> Result<Value, String> {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn subsystem_edit_add_content(
     model: &mut SubsystemEditModel,
     value: &Value,
@@ -939,6 +958,7 @@ fn subsystem_edit_add_content_reference(
     stdout.push_str(&format!("[INFO] Added content: {item}\n"));
 }
 
+#[cfg(test)]
 pub(crate) fn subsystem_edit_remove_content(
     model: &mut SubsystemEditModel,
     value: &Value,
@@ -972,6 +992,7 @@ fn subsystem_edit_remove_content_reference(
     }
 }
 
+#[cfg(test)]
 fn subsystem_edit_add_child_legacy(
     model: &mut SubsystemEditModel,
     resolved_path: &Path,
@@ -1059,6 +1080,7 @@ pub(crate) fn subsystem_edit_add_child(
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn subsystem_edit_remove_child(
     model: &mut SubsystemEditModel,
     value: &Value,
@@ -1119,6 +1141,7 @@ fn subsystem_edit_set_semantic_property(
     counters.modified += 1;
 }
 
+#[cfg(test)]
 pub(crate) fn subsystem_edit_set_property(
     model: &mut SubsystemEditModel,
     value: &Value,
@@ -2742,6 +2765,7 @@ fn typed_subsystem_compile_input(
     })
 }
 
+#[cfg(test)]
 fn subsystem_compile_model_from_legacy(
     definition: &Value,
 ) -> Result<SubsystemCompileModel, String> {

@@ -335,7 +335,7 @@ struct PublicationLockPause {
     release: Arc<Barrier>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 type BeforeCommitHook = Box<dyn FnOnce(&Path)>;
 
 thread_local! {
@@ -346,6 +346,10 @@ thread_local! {
 #[cfg(test)]
 thread_local! {
     static TEST_PUBLISH_FAILPOINTS: RefCell<Vec<PublishCheckpoint>> = const { RefCell::new(Vec::new()) };
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
     static TEST_BEFORE_COMMIT_HOOK: RefCell<Option<BeforeCommitHook>> = const { RefCell::new(None) };
 }
 
@@ -368,7 +372,7 @@ pub(crate) fn with_publish_failpoints<T>(
     action()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn with_before_commit_hook<T>(
     hook: impl FnOnce(&Path) + 'static,
     action: impl FnOnce() -> T,
@@ -627,6 +631,7 @@ impl PreparedCreate<'_, '_, '_> {
         guard: impl FnOnce() -> Result<(), String>,
     ) -> Result<PublishReport, PublishError> {
         run_before_commit_hook(self.target);
+        cancellation_checkpoint()?;
         let recheck = injected_failure(PublishCheckpoint::Recheck, self.target)
             .map_err(|source| PublishError::io(PublishPhase::Recheck, self.target, source))
             .and_then(|()| inspect_create_target(self.target, PublishPhase::Recheck));
@@ -697,6 +702,7 @@ impl PreparedReplace<'_, '_, '_> {
         guard: impl FnOnce() -> Result<(), String>,
     ) -> Result<PublishReport, PublishError> {
         run_before_commit_hook(self.target);
+        cancellation_checkpoint()?;
         let recheck = injected_failure(PublishCheckpoint::Recheck, self.target)
             .map_err(|source| PublishError::io(PublishPhase::Recheck, self.target, source))
             .and_then(|()| {
@@ -1380,7 +1386,7 @@ fn injected_failure(_checkpoint: PublishCheckpoint, _path: &Path) -> io::Result<
 }
 
 fn run_before_commit_hook(_target: &Path) {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if let Some(hook) = TEST_BEFORE_COMMIT_HOOK.with(|slot| slot.borrow_mut().take()) {
         hook(_target);
     }

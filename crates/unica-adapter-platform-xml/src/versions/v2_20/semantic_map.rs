@@ -14,6 +14,7 @@ use crate::domain::{
 pub(crate) enum ChildObjectsVocabulary {
     None,
     ConfigurationTopLevel,
+    DescriptorReferences,
     Object,
     TabularSection,
     HttpServiceUrlTemplate,
@@ -720,6 +721,7 @@ fn parse_child_vocabulary(raw: &str) -> Result<ChildObjectsVocabulary, SourceAda
     match raw {
         "none" => Ok(ChildObjectsVocabulary::None),
         "configurationTopLevel" => Ok(ChildObjectsVocabulary::ConfigurationTopLevel),
+        "descriptorReferences" => Ok(ChildObjectsVocabulary::DescriptorReferences),
         "object" => Ok(ChildObjectsVocabulary::Object),
         "tabularSection" => Ok(ChildObjectsVocabulary::TabularSection),
         "httpServiceUrlTemplate" => Ok(ChildObjectsVocabulary::HttpServiceUrlTemplate),

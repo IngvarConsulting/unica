@@ -3129,6 +3129,7 @@ mod cf_edit_transaction_tests {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn cf_edit_operations(
     args: &impl ArgumentAccess,
     cwd: &Path,
@@ -3154,6 +3155,7 @@ pub(crate) fn cf_edit_operations(
     }
 }
 
+#[cfg(test)]
 fn cf_edit_operations_guarded(
     cwd: &Path,
     operation: Option<&str>,
@@ -3176,6 +3178,7 @@ fn cf_edit_operations_guarded(
     }
 }
 
+#[cfg(test)]
 fn cf_edit_operations_from_value(parsed: Value, operation: Option<&str>) -> Vec<(String, Value)> {
     let items = match parsed {
         Value::Array(items) => items,
@@ -3198,6 +3201,7 @@ fn cf_edit_operations_from_value(parsed: Value, operation: Option<&str>) -> Vec<
         .collect()
 }
 
+#[cfg(test)]
 pub(crate) fn cf_edit_format_dependency_paths(
     args: &impl ArgumentAccess,
     context: &WorkspaceContext,
@@ -3248,6 +3252,7 @@ pub(crate) fn cf_read_format_dependency_paths(
     Ok(paths)
 }
 
+#[cfg(test)]
 fn cf_edit_format_dependency_paths_for_operations(
     config_path: &Path,
     operations: &[(String, Value)],
@@ -3309,6 +3314,7 @@ fn cf_edit_format_dependency_paths_for_native(
     Ok(paths)
 }
 
+#[cfg(test)]
 pub(crate) fn cf_edit_validate_child_object_kinds(
     operations: &[(String, Value)],
 ) -> Result<(), String> {
@@ -3365,6 +3371,7 @@ fn cf_edit_validate_property_value(prop_name: &str, value: &str) -> Result<(), S
     }
 }
 
+#[cfg(test)]
 pub(crate) fn cf_edit_batch_value(value: &Value) -> Vec<String> {
     let text = match value {
         Value::String(value) => value.clone(),
@@ -3873,6 +3880,7 @@ pub(crate) struct CfEditExternalFilePlan {
     pub(crate) bytes: Vec<u8>,
 }
 
+#[cfg(test)]
 pub(crate) fn cf_edit_set_panels(
     value: &Value,
     config_dir: &Path,
@@ -3933,6 +3941,7 @@ pub(crate) fn cf_edit_set_panels(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn cf_edit_panel_entry_xml(entry: &Value, indent: &str) -> Result<String, String> {
     if let Some(alias) = entry.as_str() {
         let key = cf_edit_panel_alias(alias);
@@ -4106,6 +4115,7 @@ fn cf_edit_set_panel_placements(
     Ok(cf_edit_panel_plan(body_parts, config_dir))
 }
 
+#[cfg(test)]
 pub(crate) fn cf_edit_set_home_page(
     value: &Value,
     config_dir: &Path,
@@ -4164,6 +4174,7 @@ pub(crate) fn cf_edit_set_home_page(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn cf_edit_home_page_column_xml(
     tag: &str,
     items: Option<&Value>,
@@ -4187,6 +4198,7 @@ pub(crate) fn cf_edit_home_page_column_xml(
     Ok(format!("\t<{tag}>\r\n{blocks}\r\n\t</{tag}>"))
 }
 
+#[cfg(test)]
 pub(crate) fn cf_edit_home_page_item_xml(entry: &Value, indent: &str) -> Result<String, String> {
     let (form_ref, height, common, roles) = if let Some(form_ref) = entry.as_str() {
         (cf_edit_normalize_form_ref(form_ref), 10i64, true, None)
@@ -4477,6 +4489,7 @@ pub(crate) fn cf_edit_dir_to_type(value: &str) -> Option<&'static str> {
     task8_metadata_kind_by_directory(value).and_then(task8_metadata_kind_tag)
 }
 
+#[cfg(test)]
 pub(crate) fn cf_edit_json_object(
     value: &Value,
     string_parse_error: &str,
@@ -4495,6 +4508,7 @@ pub(crate) fn cf_edit_json_object(
         .ok_or_else(|| string_parse_error.to_string())
 }
 
+#[cfg(test)]
 pub(crate) fn cf_edit_object_field<'a>(
     object: &'a Map<String, Value>,
     keys: &[&str],
@@ -4502,6 +4516,7 @@ pub(crate) fn cf_edit_object_field<'a>(
     keys.iter().find_map(|key| object.get(*key))
 }
 
+#[cfg(test)]
 pub(crate) fn cf_edit_truthy_value(value: &Value) -> bool {
     match value {
         Value::Null => false,
@@ -4513,6 +4528,7 @@ pub(crate) fn cf_edit_truthy_value(value: &Value) -> bool {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn cf_edit_i64_value(value: &Value) -> Option<i64> {
     value
         .as_i64()
@@ -5215,14 +5231,31 @@ pub(crate) fn initialize_configuration(
                 .source(unica_format_core::commands::WriterSourceRole::DestinationDirectory)
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|| context.cwd.join("src")),
-            compatibility: match command.compatibility() {
-                unica_format_core::commands::CompatibilityIntent::Preserve
-                | unica_format_core::commands::CompatibilityIntent::AdapterDefault => {
-                    "Version8_3_27".to_string()
-                }
-            },
+            compatibility: native_capability_requirement(command.compatibility(), [8, 3, 27]),
         },
         context,
+    )
+}
+
+fn native_capability_requirement(
+    requirement: &unica_format_core::commands::CapabilityRequirement,
+    adapter_default: [u16; 3],
+) -> String {
+    use unica_format_core::commands::CapabilityRequirement;
+
+    let components = match requirement {
+        CapabilityRequirement::Preserve | CapabilityRequirement::AdapterDefault => {
+            adapter_default.as_slice()
+        }
+        CapabilityRequirement::Explicit(version) => version.components(),
+    };
+    format!(
+        "Version{}",
+        components
+            .iter()
+            .map(u16::to_string)
+            .collect::<Vec<_>>()
+            .join("_")
     )
 }
 

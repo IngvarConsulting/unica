@@ -58,7 +58,9 @@ fn core_writer_boundary_is_closed_and_format_neutral() {
     }
     for required in [
         "pub enum ExtensionModuleTarget",
-        "pub enum CompatibilityIntent",
+        "pub enum CapabilityRequirement",
+        "pub struct VersionNumber",
+        "pub const fn metadata_kind_allows_property",
         "deny_unknown_fields",
         "deserialize_non_empty_vec",
     ] {
@@ -247,9 +249,14 @@ fn preservation_matrix_executes_writer_and_reader_ports_and_compares_reader_fact
         source("crates/unica-adapter-platform-xml/tests/task8_fix_round1_preservation_matrix.rs");
     for required in [
         ".execute(&request)",
-        ".inspection_port()",
-        "production_projection.ok()",
-        "reader_ok: expected_reader_state",
+        ".registration()",
+        ".read(&FormatReadRequest",
+        "SemanticFact",
+        "expected_fact_digests",
+        "fact_set_digest",
+        "assert_declared_delta",
+        "normalize_envelope",
+        "normalize_standalone",
         "assert_eq!(covered, expected",
     ] {
         assert!(
@@ -257,7 +264,13 @@ fn preservation_matrix_executes_writer_and_reader_ports_and_compares_reader_fact
             "preservation matrix does not execute required behavior {required:?}"
         );
     }
-    for forbidden in ["test_names", "contains(case_name)", "Command::new(\"rg\""] {
+    for forbidden in [
+        "test_names",
+        "contains(case_name)",
+        "Command::new(\"rg\"",
+        "ExpectedMarker",
+        "TASK8_DUMP_FACT_DIGESTS",
+    ] {
         assert!(
             !matrix.contains(forbidden),
             "preservation matrix uses source/name scanning via {forbidden:?}"

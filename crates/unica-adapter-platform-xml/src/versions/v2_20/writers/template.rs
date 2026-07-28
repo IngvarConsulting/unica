@@ -189,8 +189,11 @@ fn add_template_input(
             &source_xml_text,
         ));
 
-        super::common::reject_existing_incompatible_format_targets(&[&template_meta_path])?;
-        super::common::preflight_active_format_dependencies(&[&root_xml_path], context)?;
+        super::common::preflight_active_format_dependencies_for_create(
+            &[&root_xml_path],
+            &[&template_meta_path, &template_file_path],
+            context,
+        )?;
         if template_meta_path.exists() {
             return Err(format!(
                 "Макет уже существует: {}",

@@ -23,7 +23,7 @@
       "nativeClass": "Subsystem",
       "kind": "subsystem",
       "role": "topLevelObject",
-      "childVocabulary": "object",
+      "childVocabulary": "descriptorReferences",
       "source": "native",
       "nativeDirectory": "Subsystems",
       "displayNameRu": "Подсистемы"
@@ -1698,6 +1698,16 @@
       ],
       "childRoles": [
         "topLevelObject"
+      ],
+      "relation": "children",
+      "partial": false
+    },
+    {
+      "ownerKinds": [
+        "subsystem"
+      ],
+      "childKinds": [
+        "subsystem"
       ],
       "relation": "children",
       "partial": false

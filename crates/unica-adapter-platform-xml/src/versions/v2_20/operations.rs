@@ -830,6 +830,16 @@ fn compatibility_bytes(
         }
     };
     let root = document.root_element();
+    if uses_family_owned_revision_policy(root) {
+        let owner = crate::owner::parse_snapshot_owner(bytes).map_err(|_| {
+            incompatible(
+                CompatibilityIssueKind::Malformed,
+                FormatDiagnosticCode::SourceMalformed,
+                "The captured family-owned artifact is invalid.",
+            )
+        })?;
+        return Ok(Some((owner, CompatibilityDecision::Compatible)));
+    }
     let owner = match crate::owner::parse_snapshot_owner(bytes) {
         Ok(owner) => owner,
         Err(_) if root.attribute("version").is_none() => return Ok(None),
@@ -841,9 +851,7 @@ fn compatibility_bytes(
             ))
         }
     };
-    if root.attribute("version").is_none()
-        && (is_versionless_embedded(root) || version_is_inherited_when_missing(root))
-    {
+    if root.attribute("version").is_none() && version_is_inherited_when_missing(root) {
         return Ok(Some((owner, CompatibilityDecision::Compatible)));
     }
     let result = match profile::classify_root_version(owner.version.as_deref()) {
@@ -1296,9 +1304,10 @@ fn resolve_target_dependencies(
 fn descriptor_candidates(target_key: &str) -> Vec<String> {
     let target = Path::new(target_key);
     let mut candidates = Vec::new();
-    if target.extension().and_then(|value| value.to_str()) == Some("xml")
-        && embedded_content_capture_root(target).is_none()
-    {
+    // The XML root, not a basename, decides whether the target owns an export
+    // revision or follows a family-specific policy. Keep the exact artifact in
+    // the evidence set before walking to its semantic wrapper and source root.
+    if target.extension().and_then(|value| value.to_str()) == Some("xml") {
         candidates.push(target_key.to_string());
     }
     let mut current = if target.extension().is_some() {
@@ -1601,7 +1610,7 @@ fn descriptor_uuid(provider: &LazyPlatformSource) -> Result<String, ()> {
         .map_err(|_| ())
 }
 
-fn is_versionless_embedded(root: Node<'_, '_>) -> bool {
+fn uses_family_owned_revision_policy(root: Node<'_, '_>) -> bool {
     matches!(
         (root.tag_name().namespace(), root.tag_name().name()),
         (Some(xml::SPREADSHEET_DOCUMENT_NS), "document")

@@ -543,6 +543,31 @@ fn parse_extension_module_target(value: &str) -> Result<ExtensionModuleTarget, S
     }
 }
 
+fn parse_capability_requirement(
+    args: &Map<String, Value>,
+    default: CapabilityRequirement,
+) -> Result<CapabilityRequirement, String> {
+    let Some(value) = first_string(args, &["compatibilityMode", "CompatibilityMode"]) else {
+        return Ok(default);
+    };
+    let components = value
+        .strip_prefix("Version")
+        .ok_or_else(|| {
+            "CompatibilityMode must use the documented Version<major>_<minor>_<patch> form"
+                .to_string()
+        })?
+        .split('_')
+        .map(|component| {
+            component
+                .parse::<u16>()
+                .map_err(|_| "CompatibilityMode contains an invalid version component".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    VersionNumber::new(components)
+        .map(CapabilityRequirement::Explicit)
+        .map_err(|error| format!("invalid CompatibilityMode: {error}"))
+}
+
 fn writer_command(
     operation: &str,
     args: &Map<String, Value>,
@@ -568,7 +593,10 @@ fn writer_command(
                     &["version", "Version"],
                     ArtifactVersion::new,
                 )?)
-                .omit_default_role(bool_arg(args, &["noRole", "NoRole"]));
+                .with_compatibility(parse_capability_requirement(
+                    args,
+                    CapabilityRequirement::AdapterDefault,
+                )?);
             WriterCommand::ConfigurationInitialize(value)
         }
         "cf-edit" => {
@@ -604,6 +632,17 @@ fn writer_command(
                 args,
                 &["namePrefix", "NamePrefix"],
                 NamePrefix::new,
+            )?)
+            .with_vendor(optional_text(args, &["vendor", "Vendor"], VendorName::new)?)
+            .with_version(optional_text(
+                args,
+                &["version", "Version"],
+                ArtifactVersion::new,
+            )?)
+            .omit_default_role(bool_arg(args, &["noRole", "NoRole"]))
+            .with_compatibility(parse_capability_requirement(
+                args,
+                CapabilityRequirement::Preserve,
             )?);
             WriterCommand::ExtensionInitialize(value)
         }
@@ -1435,10 +1474,9 @@ fn parse_metadata_definition_value(value: &Value) -> Result<MetadataDefinition, 
     }
     common = common.with_children(children);
     let properties = parse_metadata_kind_properties(object)?;
-    Ok(MetadataDefinition::new(
-        common,
-        MetadataKindDefinition::new(kind, properties),
-    ))
+    let specific = MetadataKindDefinition::new(kind, properties)
+        .map_err(|error| format!("metadata properties do not apply to {kind:?}: {error}"))?;
+    Ok(MetadataDefinition::new(common, specific))
 }
 
 fn parse_metadata_kind(value: &str) -> Result<MetadataKind, String> {
@@ -4849,17 +4887,19 @@ fn first_value<'a>(args: &'a Map<String, Value>, names: &[&str]) -> Option<&'a V
 #[cfg(test)]
 mod tests {
     use super::{
-        invoke_mutation, native_mutation_file_input_contract, typed_mutation_handler,
-        writer_outcome, NativeMutationFileInputContract, TopLevelJsonInput,
+        invoke_mutation, native_mutation_file_input_contract, parse_metadata_definition_value,
+        typed_mutation_handler, writer_command, writer_outcome, NativeMutationFileInputContract,
+        TopLevelJsonInput,
     };
     use crate::application::{tools, ToolHandler};
     use crate::domain::workspace::WorkspaceContext;
-    use serde_json::{Map, Value};
+    use serde_json::{json, Map, Value};
     use std::collections::BTreeMap;
     use unica_format_core::{
         commands::{
-            DiagnosticCode, MutationMode, SemanticArtifact, SemanticChange, SupportCapability,
-            SupportEdit, WriterCommand, WriterFailureKind, WriterLifecycle, WriterResult,
+            CapabilityRequirement, DiagnosticCode, MutationMode, SemanticArtifact, SemanticChange,
+            SupportCapability, SupportEdit, WriterCommand, WriterFailureKind, WriterLifecycle,
+            WriterResult,
         },
         ports::OperationCancellation,
     };
@@ -5066,6 +5106,78 @@ mod tests {
         }
         assert!(public_text.contains("support state"));
         assert!(public_text.contains("publication recovery is required"));
+    }
+
+    #[test]
+    fn public_cf_and_cfe_arguments_map_losslessly_to_typed_commands() {
+        let context = mutation_probe_context("typed-cf-cfe-contract");
+        let cf = Map::from_iter([
+            ("Name".to_string(), json!("Sales")),
+            ("Vendor".to_string(), json!("Example Vendor")),
+            ("Version".to_string(), json!("2.4.1")),
+            ("CompatibilityMode".to_string(), json!("Version8_3_25")),
+        ]);
+        let WriterCommand::ConfigurationInitialize(cf) =
+            writer_command("cf-init", &cf, &context).unwrap().unwrap()
+        else {
+            panic!("cf-init command")
+        };
+        assert_eq!(cf.vendor().unwrap().as_str(), "Example Vendor");
+        assert_eq!(cf.version().unwrap().as_str(), "2.4.1");
+        assert!(matches!(
+            cf.compatibility(),
+            CapabilityRequirement::Explicit(version)
+                if version.components() == [8, 3, 25]
+        ));
+
+        let cfe = Map::from_iter([
+            ("Name".to_string(), json!("SalesPatch")),
+            ("Synonym".to_string(), json!("Sales patch")),
+            ("Purpose".to_string(), json!("AddOn")),
+            ("NamePrefix".to_string(), json!("SP_")),
+            ("Vendor".to_string(), json!("Example Vendor")),
+            ("Version".to_string(), json!("5.0.0")),
+            ("NoRole".to_string(), json!(true)),
+            ("CompatibilityMode".to_string(), json!("Version8_3_24")),
+        ]);
+        let WriterCommand::ExtensionInitialize(cfe) =
+            writer_command("cfe-init", &cfe, &context).unwrap().unwrap()
+        else {
+            panic!("cfe-init command")
+        };
+        assert_eq!(cfe.vendor().unwrap().as_str(), "Example Vendor");
+        assert_eq!(cfe.version().unwrap().as_str(), "5.0.0");
+        assert!(cfe.omits_default_role());
+        assert!(matches!(
+            cfe.compatibility(),
+            CapabilityRequirement::Explicit(version)
+                if version.components() == [8, 3, 24]
+        ));
+
+        let default_cfe = Map::from_iter([("Name".to_string(), json!("DefaultPatch"))]);
+        let WriterCommand::ExtensionInitialize(default_cfe) =
+            writer_command("cfe-init", &default_cfe, &context)
+                .unwrap()
+                .unwrap()
+        else {
+            panic!("default cfe-init command")
+        };
+        assert!(matches!(
+            default_cfe.compatibility(),
+            CapabilityRequirement::Preserve
+        ));
+        std::fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn public_metadata_parser_rejects_kind_inapplicable_properties() {
+        let error = parse_metadata_definition_value(&json!({
+            "type": "Catalog",
+            "name": "Items",
+            "periodicity": "Month"
+        }))
+        .unwrap_err();
+        assert!(error.contains("do not apply to Catalog"), "{error}");
     }
 
     fn mutation_probe_context(operation: &str) -> WorkspaceContext {

@@ -9,7 +9,7 @@ fn text<T>(value: &str, constructor: impl FnOnce(String) -> Result<T, SemanticVa
 fn metadata_definition() -> MetadataDefinition {
     MetadataDefinition::new(
         MetadataCommonDefinition::new(text("Items", MetadataChildName::new)),
-        MetadataKindDefinition::new(MetadataKind::Catalog, Vec::new()),
+        MetadataKindDefinition::new(MetadataKind::Catalog, Vec::new()).unwrap(),
     )
 }
 

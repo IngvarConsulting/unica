@@ -58,6 +58,17 @@ impl PlatformXmlAdapterFactory {
         )
     }
 
+    #[cfg(feature = "test-support")]
+    pub fn with_publication_mutation_checkpoint<T>(
+        self,
+        checkpoint: impl FnOnce() + 'static,
+        action: impl FnOnce() -> T,
+    ) -> T {
+        v2_20::writers::compile_transaction::with_after_publication_mutation_hook(
+            checkpoint, action,
+        )
+    }
+
     pub fn registration(self) -> SourceAdapterRegistration {
         let adapter = Arc::new(PlatformXmlAdapter);
         SourceAdapterRegistration {

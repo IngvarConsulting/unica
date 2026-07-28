@@ -1009,11 +1009,12 @@ impl<'a> GraphBuilder<'a> {
             "semantic properties",
         )?;
         let id = property.id();
-        if projection
-            .properties
-            .insert(id, property.with_capability(PropertyCapability::ReadOnly)?)
-            .is_some()
-        {
+        let property = if property.value().is_some() {
+            property.with_capability(PropertyCapability::ReadOnly)?
+        } else {
+            property
+        };
+        if projection.properties.insert(id, property).is_some() {
             return Err(ambiguous(
                 "native and derived Platform XML facts map to one semantic property",
             ));

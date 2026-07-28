@@ -2791,6 +2791,7 @@ pub(crate) fn compile_dcs(
 }
 
 #[cfg(test)]
+#[cfg(test)]
 fn dcs_compile_input(args: &impl ArgumentAccess) -> Result<DcsCompileInput, String> {
     let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
     let value = string_arg(args, &["value", "Value"]).map(ToOwned::to_owned);
@@ -3382,6 +3383,7 @@ fn require_dcs_post_validation(
     ))
 }
 
+#[cfg(test)]
 pub(crate) fn dcs_compile_xml(
     defn: &Value,
     query_base_dir: &Path,
@@ -3390,6 +3392,7 @@ pub(crate) fn dcs_compile_xml(
     dcs_compile_xml_with_inputs(defn, query_base_dir, cwd, &mut Vec::new())
 }
 
+#[cfg(test)]
 fn dcs_compile_xml_with_inputs(
     defn: &Value,
     query_base_dir: &Path,
@@ -3442,6 +3445,7 @@ fn dcs_compile_xml_with_inputs(
     Ok(format!("{}\n", lines.join("\n")))
 }
 
+#[cfg(test)]
 pub(crate) fn dcs_compile_data_sources(defn: &Value) -> Vec<(String, String)> {
     if let Some(items) = defn.get("dataSources").and_then(Value::as_array) {
         let mut result = Vec::new();
@@ -3467,6 +3471,7 @@ pub(crate) struct DcsCompileQueryContext<'a> {
     inputs: &'a mut Vec<ExactFileInput>,
 }
 
+#[cfg(test)]
 pub(crate) fn dcs_compile_emit_data_set(
     lines: &mut Vec<String>,
     data_set: &Value,
@@ -3484,6 +3489,7 @@ pub(crate) fn dcs_compile_emit_data_set(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn dcs_compile_emit_data_set_element(
     lines: &mut Vec<String>,
     data_set: &Value,
@@ -3567,6 +3573,7 @@ pub(crate) fn dcs_compile_emit_data_set_element(
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn dcs_compile_emit_field(
     lines: &mut Vec<String>,
     field: &Value,
@@ -3675,6 +3682,7 @@ pub(crate) fn dcs_compile_parse_field_shorthand(text: &str) -> (String, String, 
     }
 }
 
+#[cfg(test)]
 pub(crate) fn dcs_compile_emit_restriction(
     lines: &mut Vec<String>,
     value: &Value,
@@ -3685,6 +3693,7 @@ pub(crate) fn dcs_compile_emit_restriction(
     dcs_compile_emit_merged_restriction(lines, value, &[source_key], tag_name, indent);
 }
 
+#[cfg(test)]
 pub(crate) fn dcs_compile_emit_merged_restriction(
     lines: &mut Vec<String>,
     value: &Value,
@@ -3725,6 +3734,7 @@ pub(crate) fn dcs_compile_emit_merged_restriction(
     lines.push(format!("{indent}</{tag_name}>"));
 }
 
+#[cfg(test)]
 pub(crate) fn dcs_compile_string_items(value: Option<&Value>) -> Option<Vec<String>> {
     let value = value?;
     if let Some(items) = value.as_array() {
@@ -3750,6 +3760,7 @@ pub(crate) fn dcs_compile_string_items(value: Option<&Value>) -> Option<Vec<Stri
     Some(vec![json_value_to_python_string(value)])
 }
 
+#[cfg(test)]
 pub(crate) fn dcs_compile_type_value(value: &Value) -> String {
     if let Some(items) = value.as_array() {
         return items
@@ -4198,6 +4209,7 @@ pub(crate) fn dcs_compile_emit_default_settings_variant(lines: &mut Vec<String>)
     lines.push("\t</settingsVariant>".to_string());
 }
 
+#[cfg(test)]
 pub(crate) fn dcs_compile_emit_data_set_links(lines: &mut Vec<String>, defn: &Value) {
     let Some(links) = defn.get("dataSetLinks").and_then(Value::as_array) else {
         return;
@@ -4266,6 +4278,7 @@ pub(crate) fn dcs_compile_emit_data_set_links(lines: &mut Vec<String>, defn: &Va
     }
 }
 
+#[cfg(test)]
 pub(crate) fn dcs_compile_emit_calculated_fields(
     lines: &mut Vec<String>,
     defn: &Value,
@@ -4335,6 +4348,7 @@ pub(crate) fn dcs_compile_emit_calculated_fields(
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn dcs_compile_emit_total_fields(lines: &mut Vec<String>, defn: &Value) {
     let Some(fields) = defn.get("totalFields").and_then(Value::as_array) else {
         return;
@@ -4369,6 +4383,7 @@ pub(crate) fn dcs_compile_emit_total_fields(lines: &mut Vec<String>, defn: &Valu
     }
 }
 
+#[cfg(test)]
 pub(crate) fn dcs_compile_emit_parameters(
     lines: &mut Vec<String>,
     defn: &Value,
@@ -4494,6 +4509,7 @@ pub(crate) fn dcs_compile_emit_parameters(
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn dcs_compile_parameter_available_values(
     parameter: &Value,
 ) -> Result<Vec<(String, String)>, String> {
@@ -4615,6 +4631,7 @@ pub(crate) fn dcs_compile_emit_parameter_value(
     ));
 }
 
+#[cfg(test)]
 pub(crate) fn dcs_compile_emit_settings_variants(lines: &mut Vec<String>, defn: &Value) {
     let Some(variants) = defn.get("settingsVariants").and_then(Value::as_array) else {
         dcs_compile_emit_default_settings_variant(lines);
@@ -4667,6 +4684,7 @@ pub(crate) fn dcs_compile_emit_settings_variants(lines: &mut Vec<String>, defn: 
     }
 }
 
+#[cfg(test)]
 pub(crate) fn dcs_compile_emit_selection(lines: &mut Vec<String>, items: &[Value], indent: &str) {
     if items.is_empty() {
         return;
@@ -4678,6 +4696,7 @@ pub(crate) fn dcs_compile_emit_selection(lines: &mut Vec<String>, items: &[Value
     lines.push(format!("{indent}</dcsset:selection>"));
 }
 
+#[cfg(test)]
 pub(crate) fn dcs_compile_emit_selection_item(lines: &mut Vec<String>, item: &Value, indent: &str) {
     if let Some(text) = item.as_str() {
         if text == "Auto" {
@@ -4743,6 +4762,7 @@ pub(crate) fn dcs_compile_emit_selection_item(lines: &mut Vec<String>, item: &Va
     lines.push(format!("{indent}</dcsset:item>"));
 }
 
+#[cfg(test)]
 pub(crate) fn dcs_compile_emit_filter(lines: &mut Vec<String>, items: &[Value], indent: &str) {
     if items.is_empty() {
         return;
@@ -4754,6 +4774,7 @@ pub(crate) fn dcs_compile_emit_filter(lines: &mut Vec<String>, items: &[Value], 
     lines.push(format!("{indent}</dcsset:filter>"));
 }
 
+#[cfg(test)]
 pub(crate) fn dcs_compile_emit_conditional_appearance(
     lines: &mut Vec<String>,
     items: &[Value],
@@ -4853,6 +4874,7 @@ pub(crate) fn dcs_compile_emit_conditional_appearance(
     lines.push(format!("{indent}</dcsset:conditionalAppearance>"));
 }
 
+#[cfg(test)]
 pub(crate) fn dcs_compile_emit_filter_item(lines: &mut Vec<String>, item: &Value, indent: &str) {
     let parsed_from_string;
     let item = if let Some(text) = item.as_str() {
@@ -4920,6 +4942,7 @@ pub(crate) fn dcs_compile_emit_filter_item(lines: &mut Vec<String>, item: &Value
     lines.push(format!("{indent}</dcsset:item>"));
 }
 
+#[cfg(test)]
 pub(crate) fn dcs_compile_emit_order(lines: &mut Vec<String>, items: &[Value], indent: &str) {
     if items.is_empty() {
         return;
@@ -4939,6 +4962,7 @@ pub(crate) fn dcs_compile_emit_order(lines: &mut Vec<String>, items: &[Value], i
     lines.push(format!("{indent}</dcsset:order>"));
 }
 
+#[cfg(test)]
 pub(crate) fn dcs_compile_emit_output_parameters(
     lines: &mut Vec<String>,
     params: &Map<String, Value>,
@@ -4992,6 +5016,7 @@ pub(crate) fn dcs_compile_emit_output_parameters(
     lines.push(format!("{indent}</dcsset:outputParameters>"));
 }
 
+#[cfg(test)]
 pub(crate) fn dcs_compile_emit_data_parameters(
     lines: &mut Vec<String>,
     items: &[Value],
@@ -5063,6 +5088,7 @@ pub(crate) fn dcs_compile_emit_data_parameters(
     lines.push(format!("{indent}</dcsset:dataParameters>"));
 }
 
+#[cfg(test)]
 pub(crate) fn dcs_compile_emit_structure(lines: &mut Vec<String>, structure: &Value, indent: &str) {
     if let Some(text) = structure.as_str() {
         for item in dcs_edit_parse_structure(text) {
@@ -5082,6 +5108,7 @@ pub(crate) fn dcs_compile_emit_structure(lines: &mut Vec<String>, structure: &Va
     }
 }
 
+#[cfg(test)]
 pub(crate) fn dcs_compile_emit_structure_item(lines: &mut Vec<String>, item: &Value, indent: &str) {
     let item_type = json_string_field(item, "type").unwrap_or_else(|| "group".to_string());
     if item_type != "group" {
@@ -5134,6 +5161,7 @@ pub(crate) fn dcs_compile_emit_structure_item(lines: &mut Vec<String>, item: &Va
     lines.push(format!("{indent}</dcsset:item>"));
 }
 
+#[cfg(test)]
 pub(crate) fn dcs_compile_emit_group_items(
     lines: &mut Vec<String>,
     value: Option<&Value>,
@@ -5193,6 +5221,7 @@ pub(crate) fn dcs_compile_comparison_type(operator: &str) -> &str {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn dcs_compile_setting_value_text(value: &Value) -> String {
     match value {
         Value::Bool(value) => value.to_string(),
@@ -5234,6 +5263,7 @@ pub(crate) fn dcs_compile_setting_xsi_type(explicit_type: Option<&str>, value: &
     }
 }
 
+#[cfg(test)]
 pub(crate) fn dcs_compile_output_parameter_type(key: &str, value: &Value) -> &'static str {
     if value.is_object() && !value.get("@type").is_some_and(|value| value == "Font") {
         return "mltext";
@@ -6115,6 +6145,7 @@ fn dcs_edit_failure(error: String) -> NativeWriterResult {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn dcs_edit_split_values(operation: &str, value: &str) -> Vec<String> {
     if matches!(
         operation,
@@ -11682,6 +11713,7 @@ fn dcs_semantic_value_xsi_type(
     }
 }
 
+#[cfg(test)]
 fn dcs_legacy_mutation(operation: &str, value: String) -> Result<DcsNativeMutation, String> {
     Ok(match operation {
         "add-field" => DcsNativeMutation::AddField(value),

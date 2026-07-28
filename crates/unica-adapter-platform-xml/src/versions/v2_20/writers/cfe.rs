@@ -6153,6 +6153,7 @@ struct CfeInitInput {
     destination: PathBuf,
     base_configuration: Option<PathBuf>,
     compatibility: String,
+    inherit_base_compatibility: bool,
     no_role: bool,
     vendor: Option<String>,
     version: Option<String>,
@@ -6186,6 +6187,8 @@ pub(crate) fn create_extension_scaffold(
         compatibility: string_arg(args, &["compatibilityMode", "CompatibilityMode"])
             .unwrap_or("Version8_3_24")
             .to_string(),
+        inherit_base_compatibility: string_arg(args, &["compatibilityMode", "CompatibilityMode"])
+            .is_none(),
         no_role: bool_arg(args, &["noRole", "NoRole"]),
         vendor: string_arg(args, &["vendor", "Vendor"]).map(ToOwned::to_owned),
         version: string_arg(args, &["version", "Version"]).map(ToOwned::to_owned),
@@ -6205,6 +6208,7 @@ fn create_extension_scaffold_input(
         destination,
         base_configuration,
         compatibility,
+        inherit_base_compatibility,
         no_role,
         vendor,
         version,
@@ -6345,15 +6349,17 @@ fn create_extension_scaffold_input(
                 ));
             }
 
-            if let Some(value) = first_text(&base_document, "CompatibilityMode") {
-                compatibility = value;
-                stdout_prefix.push_str(&format!(
-                    "[INFO] Base config CompatibilityMode: {compatibility}\n"
-                ));
-            } else {
-                stdout_prefix.push_str(&format!(
-                    "[WARN] CompatibilityMode not found in base config, using default: {compatibility}\n"
-                ));
+            if inherit_base_compatibility {
+                if let Some(value) = first_text(&base_document, "CompatibilityMode") {
+                    compatibility = value;
+                    stdout_prefix.push_str(&format!(
+                        "[INFO] Base config CompatibilityMode: {compatibility}\n"
+                    ));
+                } else {
+                    stdout_prefix.push_str(&format!(
+                        "[WARN] CompatibilityMode not found in base config, using default: {compatibility}\n"
+                    ));
+                }
             }
             let interface_mode = if let Some(value) =
                 first_text(&base_document, "InterfaceCompatibilityMode")
@@ -6652,17 +6658,38 @@ pub(crate) fn initialize_extension(
             base_configuration: session
                 .source(unica_format_core::commands::WriterSourceRole::Configuration)
                 .map(Path::to_path_buf),
-            compatibility: match command.compatibility() {
-                unica_format_core::commands::CompatibilityIntent::Preserve
-                | unica_format_core::commands::CompatibilityIntent::AdapterDefault => {
-                    "Version8_3_24".to_string()
-                }
-            },
-            no_role: false,
-            vendor: None,
-            version: None,
+            compatibility: native_capability_requirement(command.compatibility(), [8, 3, 24]),
+            inherit_base_compatibility: matches!(
+                command.compatibility(),
+                unica_format_core::commands::CapabilityRequirement::Preserve
+            ),
+            no_role: command.omits_default_role(),
+            vendor: command.vendor().map(|value| value.as_str().to_string()),
+            version: command.version().map(|value| value.as_str().to_string()),
         },
         context,
+    )
+}
+
+fn native_capability_requirement(
+    requirement: &unica_format_core::commands::CapabilityRequirement,
+    adapter_default: [u16; 3],
+) -> String {
+    use unica_format_core::commands::CapabilityRequirement;
+
+    let components = match requirement {
+        CapabilityRequirement::Preserve | CapabilityRequirement::AdapterDefault => {
+            adapter_default.as_slice()
+        }
+        CapabilityRequirement::Explicit(version) => version.components(),
+    };
+    format!(
+        "Version{}",
+        components
+            .iter()
+            .map(u16::to_string)
+            .collect::<Vec<_>>()
+            .join("_")
     )
 }
 

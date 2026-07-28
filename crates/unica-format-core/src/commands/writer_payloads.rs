@@ -87,11 +87,52 @@ pub enum WriterSourceRole {
     Module,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub enum CompatibilityIntent {
+pub struct VersionNumber {
+    components: Vec<u16>,
+}
+
+impl VersionNumber {
+    pub fn new(components: Vec<u16>) -> Result<Self, SemanticValueError> {
+        if !(2..=4).contains(&components.len()) || components.iter().all(|value| *value == 0) {
+            return Err(SemanticValueError::InvalidCombination);
+        }
+        Ok(Self { components })
+    }
+
+    pub fn components(&self) -> &[u16] {
+        &self.components
+    }
+}
+
+impl<'de> Deserialize<'de> for VersionNumber {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Wire {
+            components: Vec<u16>,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        Self::new(wire.components).map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    tag = "selection",
+    content = "requirement",
+    deny_unknown_fields
+)]
+pub enum CapabilityRequirement {
     Preserve,
     AdapterDefault,
+    Explicit(VersionNumber),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -469,7 +510,7 @@ pub struct ConfigurationInitialize {
     vendor: Option<VendorName>,
     version: Option<ArtifactVersion>,
     omit_default_role: bool,
-    compatibility: CompatibilityIntent,
+    compatibility: CapabilityRequirement,
 }
 
 impl ConfigurationInitialize {
@@ -480,7 +521,7 @@ impl ConfigurationInitialize {
             vendor: None,
             version: None,
             omit_default_role: false,
-            compatibility: CompatibilityIntent::AdapterDefault,
+            compatibility: CapabilityRequirement::AdapterDefault,
         }
     }
     pub fn with_synonym(mut self, value: Option<SynonymText>) -> Self {
@@ -499,7 +540,7 @@ impl ConfigurationInitialize {
         self.omit_default_role = value;
         self
     }
-    pub const fn with_compatibility(mut self, value: CompatibilityIntent) -> Self {
+    pub fn with_compatibility(mut self, value: CapabilityRequirement) -> Self {
         self.compatibility = value;
         self
     }
@@ -518,8 +559,8 @@ impl ConfigurationInitialize {
     pub const fn omits_default_role(&self) -> bool {
         self.omit_default_role
     }
-    pub const fn compatibility(&self) -> CompatibilityIntent {
-        self.compatibility
+    pub const fn compatibility(&self) -> &CapabilityRequirement {
+        &self.compatibility
     }
 }
 
@@ -614,7 +655,10 @@ pub struct ExtensionInitialize {
     synonym: Option<SynonymText>,
     purpose: Option<ExtensionPurpose>,
     prefix: Option<NamePrefix>,
-    compatibility: CompatibilityIntent,
+    vendor: Option<VendorName>,
+    version: Option<ArtifactVersion>,
+    omit_default_role: bool,
+    compatibility: CapabilityRequirement,
 }
 
 impl ExtensionInitialize {
@@ -624,7 +668,10 @@ impl ExtensionInitialize {
             synonym: None,
             purpose: None,
             prefix: None,
-            compatibility: CompatibilityIntent::AdapterDefault,
+            vendor: None,
+            version: None,
+            omit_default_role: false,
+            compatibility: CapabilityRequirement::Preserve,
         }
     }
     pub fn with_synonym(mut self, value: Option<SynonymText>) -> Self {
@@ -639,7 +686,19 @@ impl ExtensionInitialize {
         self.prefix = value;
         self
     }
-    pub const fn with_compatibility(mut self, value: CompatibilityIntent) -> Self {
+    pub fn with_vendor(mut self, value: Option<VendorName>) -> Self {
+        self.vendor = value;
+        self
+    }
+    pub fn with_version(mut self, value: Option<ArtifactVersion>) -> Self {
+        self.version = value;
+        self
+    }
+    pub const fn omit_default_role(mut self, value: bool) -> Self {
+        self.omit_default_role = value;
+        self
+    }
+    pub fn with_compatibility(mut self, value: CapabilityRequirement) -> Self {
         self.compatibility = value;
         self
     }
@@ -655,8 +714,17 @@ impl ExtensionInitialize {
     pub const fn prefix(&self) -> Option<&NamePrefix> {
         self.prefix.as_ref()
     }
-    pub const fn compatibility(&self) -> CompatibilityIntent {
-        self.compatibility
+    pub const fn vendor(&self) -> Option<&VendorName> {
+        self.vendor.as_ref()
+    }
+    pub const fn version(&self) -> Option<&ArtifactVersion> {
+        self.version.as_ref()
+    }
+    pub const fn omits_default_role(&self) -> bool {
+        self.omit_default_role
+    }
+    pub const fn compatibility(&self) -> &CapabilityRequirement {
+        &self.compatibility
     }
 }
 
@@ -945,6 +1013,51 @@ pub enum MetadataKind {
     BusinessProcess,
     Task,
     DocumentJournal,
+}
+
+impl MetadataKind {
+    pub const ALL: [Self; 40] = [
+        Self::CommonModule,
+        Self::SessionParameter,
+        Self::Role,
+        Self::CommonAttribute,
+        Self::ExchangePlan,
+        Self::XdtoPackage,
+        Self::WebService,
+        Self::HttpService,
+        Self::WsReference,
+        Self::StyleItem,
+        Self::CommonPicture,
+        Self::CommonTemplate,
+        Self::FilterCriterion,
+        Self::EventSubscription,
+        Self::ScheduledJob,
+        Self::FunctionalOption,
+        Self::FunctionalOptionsParameter,
+        Self::DefinedType,
+        Self::SettingsStorage,
+        Self::Language,
+        Self::CommandGroup,
+        Self::CommonCommand,
+        Self::DocumentNumerator,
+        Self::Sequence,
+        Self::Constant,
+        Self::Catalog,
+        Self::Document,
+        Self::Enum,
+        Self::Report,
+        Self::DataProcessor,
+        Self::ChartOfCharacteristicTypes,
+        Self::ChartOfAccounts,
+        Self::ChartOfCalculationTypes,
+        Self::InformationRegister,
+        Self::AccumulationRegister,
+        Self::AccountingRegister,
+        Self::CalculationRegister,
+        Self::BusinessProcess,
+        Self::Task,
+        Self::DocumentJournal,
+    ];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1308,6 +1421,75 @@ pub enum MetadataKindPropertyName {
     UrlTemplates,
     Namespace,
     Operations,
+}
+
+impl MetadataKindPropertyName {
+    pub const ALL: [Self; 64] = [
+        Self::Hierarchical,
+        Self::LimitLevelCount,
+        Self::LevelCount,
+        Self::FoldersOnTop,
+        Self::CodeLength,
+        Self::DescriptionLength,
+        Self::NumberLength,
+        Self::CheckUnique,
+        Self::Autonumbering,
+        Self::QuickChoice,
+        Self::SequenceFilling,
+        Self::PostInPrivilegedMode,
+        Self::UnpostInPrivilegedMode,
+        Self::MainFilterOnPeriod,
+        Self::EnableTotalsSplitting,
+        Self::Correspondence,
+        Self::PeriodAdjustmentLength,
+        Self::ActionPeriod,
+        Self::BasePeriod,
+        Self::MaxExtDimensionCount,
+        Self::CodeMask,
+        Self::AutoOrderByCode,
+        Self::OrderLength,
+        Self::ActionPeriodUse,
+        Self::DistributedInfoBase,
+        Self::IncludeConfigurationExtensions,
+        Self::RestartCountOnFailure,
+        Self::RestartIntervalOnFailure,
+        Self::SessionMaxAge,
+        Self::Length,
+        Self::Precision,
+        Self::Nonnegative,
+        Self::CreateTaskInPrivilegedMode,
+        Self::ValueType,
+        Self::ValueTypes,
+        Self::Context,
+        Self::ReturnValuesReuse,
+        Self::HierarchyType,
+        Self::Periodicity,
+        Self::RegisterType,
+        Self::ChartOfAccounts,
+        Self::ChartOfCalculationTypes,
+        Self::ExtDimensionTypes,
+        Self::AccountingFlags,
+        Self::ExtDimensionAccountingFlags,
+        Self::DependenceOnCalculationTypes,
+        Self::BaseCalculationTypes,
+        Self::Task,
+        Self::Addressing,
+        Self::MainAddressingAttribute,
+        Self::RegisteredDocuments,
+        Self::MethodName,
+        Self::Description,
+        Self::Key,
+        Self::Use,
+        Self::Predefined,
+        Self::Source,
+        Self::Event,
+        Self::Handler,
+        Self::RootUrl,
+        Self::ReuseSessions,
+        Self::UrlTemplates,
+        Self::Namespace,
+        Self::Operations,
+    ];
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1755,7 +1937,7 @@ impl MetadataCommonDefinition {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MetadataKindDefinition {
     kind: MetadataKind,
@@ -1763,14 +1945,170 @@ pub struct MetadataKindDefinition {
 }
 
 impl MetadataKindDefinition {
-    pub const fn new(kind: MetadataKind, properties: Vec<MetadataKindProperty>) -> Self {
-        Self { kind, properties }
+    pub fn new(
+        kind: MetadataKind,
+        properties: Vec<MetadataKindProperty>,
+    ) -> Result<Self, SemanticValueError> {
+        if properties
+            .iter()
+            .any(|property| !metadata_kind_allows_property(kind, property.name()))
+        {
+            return Err(SemanticValueError::InvalidCombination);
+        }
+        Ok(Self { kind, properties })
     }
     pub const fn kind(&self) -> MetadataKind {
         self.kind
     }
     pub fn properties(&self) -> &[MetadataKindProperty] {
         &self.properties
+    }
+}
+
+impl<'de> Deserialize<'de> for MetadataKindDefinition {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Wire {
+            kind: MetadataKind,
+            properties: Vec<MetadataKindProperty>,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        Self::new(wire.kind, wire.properties).map_err(serde::de::Error::custom)
+    }
+}
+
+pub const fn metadata_kind_allows_property(
+    kind: MetadataKind,
+    property: MetadataKindPropertyName,
+) -> bool {
+    use MetadataKind as Kind;
+    use MetadataKindPropertyName as Property;
+
+    match property {
+        Property::Hierarchical
+        | Property::LimitLevelCount
+        | Property::LevelCount
+        | Property::FoldersOnTop => matches!(kind, Kind::Catalog | Kind::ChartOfAccounts),
+        Property::CodeLength | Property::DescriptionLength => matches!(
+            kind,
+            Kind::Catalog
+                | Kind::ExchangePlan
+                | Kind::ChartOfCharacteristicTypes
+                | Kind::ChartOfAccounts
+                | Kind::ChartOfCalculationTypes
+        ),
+        Property::NumberLength => matches!(
+            kind,
+            Kind::Document | Kind::DocumentNumerator | Kind::BusinessProcess | Kind::Task
+        ),
+        Property::CheckUnique | Property::Autonumbering => matches!(
+            kind,
+            Kind::Catalog
+                | Kind::ExchangePlan
+                | Kind::Document
+                | Kind::DocumentNumerator
+                | Kind::ChartOfCharacteristicTypes
+                | Kind::ChartOfAccounts
+                | Kind::ChartOfCalculationTypes
+                | Kind::BusinessProcess
+                | Kind::Task
+        ),
+        Property::QuickChoice => matches!(
+            kind,
+            Kind::Catalog
+                | Kind::ExchangePlan
+                | Kind::Enum
+                | Kind::ChartOfCharacteristicTypes
+                | Kind::ChartOfAccounts
+                | Kind::ChartOfCalculationTypes
+        ),
+        Property::SequenceFilling
+        | Property::PostInPrivilegedMode
+        | Property::UnpostInPrivilegedMode => matches!(kind, Kind::Document),
+        Property::MainFilterOnPeriod => matches!(kind, Kind::InformationRegister),
+        Property::Periodicity => {
+            matches!(kind, Kind::InformationRegister | Kind::CalculationRegister)
+        }
+        Property::EnableTotalsSplitting | Property::RegisterType => {
+            matches!(kind, Kind::AccumulationRegister)
+        }
+        Property::Correspondence | Property::ChartOfAccounts => {
+            matches!(kind, Kind::AccountingRegister)
+        }
+        Property::PeriodAdjustmentLength
+        | Property::ActionPeriod
+        | Property::BasePeriod
+        | Property::ChartOfCalculationTypes => matches!(kind, Kind::CalculationRegister),
+        Property::MaxExtDimensionCount
+        | Property::CodeMask
+        | Property::AutoOrderByCode
+        | Property::OrderLength
+        | Property::ExtDimensionTypes
+        | Property::AccountingFlags
+        | Property::ExtDimensionAccountingFlags => matches!(kind, Kind::ChartOfAccounts),
+        Property::ActionPeriodUse
+        | Property::DependenceOnCalculationTypes
+        | Property::BaseCalculationTypes => matches!(kind, Kind::ChartOfCalculationTypes),
+        Property::DistributedInfoBase | Property::IncludeConfigurationExtensions => {
+            matches!(kind, Kind::ExchangePlan)
+        }
+        Property::RestartCountOnFailure
+        | Property::RestartIntervalOnFailure
+        | Property::MethodName
+        | Property::Key
+        | Property::Use
+        | Property::Predefined => matches!(kind, Kind::ScheduledJob),
+        Property::SessionMaxAge | Property::ReuseSessions => {
+            matches!(kind, Kind::HttpService | Kind::WebService)
+        }
+        Property::Length | Property::Precision | Property::Nonnegative => matches!(
+            kind,
+            Kind::SessionParameter
+                | Kind::CommonAttribute
+                | Kind::FilterCriterion
+                | Kind::FunctionalOption
+                | Kind::FunctionalOptionsParameter
+                | Kind::Constant
+        ),
+        Property::CreateTaskInPrivilegedMode | Property::Task => {
+            matches!(kind, Kind::BusinessProcess)
+        }
+        Property::ValueType => matches!(
+            kind,
+            Kind::SessionParameter
+                | Kind::CommonAttribute
+                | Kind::StyleItem
+                | Kind::FilterCriterion
+                | Kind::FunctionalOption
+                | Kind::FunctionalOptionsParameter
+                | Kind::Constant
+        ),
+        Property::ValueTypes => {
+            matches!(kind, Kind::DefinedType | Kind::ChartOfCharacteristicTypes)
+        }
+        Property::Context | Property::ReturnValuesReuse => matches!(kind, Kind::CommonModule),
+        Property::HierarchyType => matches!(kind, Kind::Catalog),
+        Property::Addressing | Property::MainAddressingAttribute => matches!(kind, Kind::Task),
+        Property::RegisteredDocuments => matches!(kind, Kind::DocumentJournal),
+        Property::Description => matches!(
+            kind,
+            Kind::StyleItem
+                | Kind::FunctionalOption
+                | Kind::FunctionalOptionsParameter
+                | Kind::CommandGroup
+                | Kind::CommonCommand
+                | Kind::ScheduledJob
+        ),
+        Property::Source | Property::Event | Property::Handler => {
+            matches!(kind, Kind::EventSubscription)
+        }
+        Property::RootUrl | Property::UrlTemplates => matches!(kind, Kind::HttpService),
+        Property::Namespace | Property::Operations => matches!(kind, Kind::WebService),
     }
 }
 

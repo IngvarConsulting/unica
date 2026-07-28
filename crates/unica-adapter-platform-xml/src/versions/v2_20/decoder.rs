@@ -317,8 +317,11 @@ fn decode_children(
                 if profile.role == MetadataClassRole::Unknown {
                     return decode_unresolved_registration(child, profile, context);
                 }
-                if owner_profile.child_objects != ChildObjectsVocabulary::ConfigurationTopLevel
-                    || profile.role != MetadataClassRole::TopLevelObject
+                if !matches!(
+                    owner_profile.child_objects,
+                    ChildObjectsVocabulary::ConfigurationTopLevel
+                        | ChildObjectsVocabulary::DescriptorReferences
+                ) || profile.role != MetadataClassRole::TopLevelObject
                 {
                     return Err(corrupted(
                         "inline Platform XML child is missing required Properties",
