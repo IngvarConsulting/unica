@@ -3,7 +3,11 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MATRIX = ROOT / "spec/architecture/format-profile-8-3-27.md"
+# Доказательства профиля живут в приёмке, а решение о единственном записываемом
+# профиле — в записи ADR-0016. Тест читает оба адреса, потому что раньше это был
+# один документ, смешивавший решение и доказательства.
+MATRIX = ROOT / "spec/acceptance/format-profile-8-3-27.md"
+PROFILE_DECISIONS = sorted(ROOT.glob("spec/decisions/0016-*.md"))
 DESIGN = (
     ROOT
     / "docs/design/2026-07-23-platform-8-3-27-format-2-20-design.md"
@@ -94,7 +98,17 @@ class FormatProfileContractTests(unittest.TestCase):
         }
         missing = sorted(name for name in required if f"`{name}`" not in text)
         self.assertFalse(missing, missing)
-        self.assertIn("only writable", text)
+
+    def test_decision_records_the_single_writable_profile(self):
+        self.assertEqual(
+            len(PROFILE_DECISIONS),
+            1,
+            "ADR-0016 должен быть ровно одной записью в spec/decisions",
+        )
+        text = PROFILE_DECISIONS[0].read_text(encoding="utf-8")
+        self.assertIn("единственный записываемый профиль", text.lower())
+        self.assertIn("8.3.27", text)
+        self.assertIn("2.20", text)
 
     def test_matrix_cites_official_8_3_27_mapping(self):
         text = MATRIX.read_text(encoding="utf-8")

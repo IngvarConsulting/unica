@@ -29,18 +29,15 @@ class RefreshFixture:
         )
         self.fixtures_root = self.snapshot.parent
         self.provenance_path = (
-            self.repo_root
-            / "plugins"
-            / "unica"
-            / "provenance"
-            / "skill-upstreams.json"
+            self.repo_root / "spec" / "provenance" / "skill-upstreams.json"
         )
-        self.reviews_root = self.provenance_path.parent / "reviews"
+        self.reviews_root = self.repo_root / "docs" / "provenance" / "reviews"
         self.owner = owner
         self.case_scope = case_scope
         self.case_id = f"{case_scope}/basic"
 
         self.upstream.mkdir(parents=True)
+        self.provenance_path.parent.mkdir(parents=True)
         self.reviews_root.mkdir(parents=True)
         self.fixtures_root.mkdir(parents=True)
         self._git("init", "-b", "main")

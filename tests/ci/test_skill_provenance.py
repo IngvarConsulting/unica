@@ -23,10 +23,10 @@ class SkillProvenanceTests(unittest.TestCase):
         return Path(__file__).resolve().parents[2]
 
     def provenance_path(self) -> Path:
-        return self.repo_root() / "plugins" / "unica" / "provenance" / "skill-upstreams.json"
+        return self.repo_root() / "spec" / "provenance" / "skill-upstreams.json"
 
     def reviews_dir(self) -> Path:
-        return self.repo_root() / "plugins" / "unica" / "provenance" / "reviews"
+        return self.repo_root() / "docs" / "provenance" / "reviews"
 
     def upstream_review_path(self) -> Path:
         return self.reviews_dir() / "2026-06-15-upstream-review.json"
@@ -113,13 +113,27 @@ class SkillProvenanceTests(unittest.TestCase):
             self.assertEqual(module.git_output(["rev-parse", "origin/main"], cwd=repo), fresh_commit)
             self.assertEqual(module.resolve_ref(repo, "main"), fresh_commit)
 
-    def test_provenance_index_lives_in_packaged_non_prompt_visible_area(self) -> None:
+    def test_provenance_index_lives_outside_the_package(self) -> None:
+        """Maintainer metadata is a source-tree artifact, not a shipped file.
+
+        The index exists to check `ATTRIBUTIONS.md` for completeness against
+        the donor inventory; that check runs over the source tree and never in
+        a consumer's install. The licence obligation is discharged by the
+        notice itself, which names every upstream.
+        """
         path = self.provenance_path()
 
         self.assertTrue(path.is_file())
-        self.assertIn("plugins/unica/provenance", path.as_posix())
-        self.assertNotIn("plugins/unica/skills", path.as_posix())
-        self.assertNotIn("plugins/unica/references", path.as_posix())
+        self.assertIn("spec/provenance", path.as_posix())
+        self.assertNotIn("plugins/unica", path.as_posix())
+        self.assertFalse((self.repo_root() / "plugins" / "unica" / "provenance").exists())
+
+    def test_review_records_live_in_the_archive_tree(self) -> None:
+        reviews = self.reviews_dir()
+
+        self.assertTrue(reviews.is_dir())
+        self.assertIn("docs/provenance/reviews", reviews.as_posix())
+        self.assertNotIn("plugins/unica", reviews.as_posix())
 
     def test_required_upstreams_are_present(self) -> None:
         data = self.load_provenance()
@@ -427,8 +441,7 @@ class SkillProvenanceTests(unittest.TestCase):
 
         removal = json.loads(
             (
-                self.repo_root()
-                / "plugins/unica/provenance/reviews/2026-07-20-script-backed-skill-removal.json"
+                self.reviews_dir() / "2026-07-20-script-backed-skill-removal.json"
             ).read_text(encoding="utf-8")
         )
         self.assertEqual(set(removal["removedSkills"]), historical_script_backed_skills)

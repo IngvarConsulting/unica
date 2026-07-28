@@ -33,7 +33,6 @@ XML formats, DSL contracts, and reusable layout patterns live in
 - `platform/platform-mechanics.md` — background jobs, temp storage, auth/crypto, data separation, and platform runtime boundaries.
 - `tooling/v8project.md` — project configuration contract.
 - `tooling/runtime-build.md` — runtime build/dump/load/make details.
-- `tooling/internal-package.md` — maintainer-only packaging and tool-wrapper notes.
 
 ## Provenance
 

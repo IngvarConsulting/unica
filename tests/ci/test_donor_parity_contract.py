@@ -26,9 +26,7 @@ class DonorParityFixture:
         (self.skills_root / "demo-validate" / "scripts").mkdir(parents=True)
         (self.case_root / "fixtures" / "on-support").mkdir(parents=True)
         (root / "spec").mkdir()
-        self.reviews_root = (
-            root / "plugins" / "unica" / "provenance" / "reviews"
-        )
+        self.reviews_root = root / "docs" / "provenance" / "reviews"
         self.reviews_root.mkdir(parents=True)
 
         self.skill_config = self.case_root / "_skill.json"

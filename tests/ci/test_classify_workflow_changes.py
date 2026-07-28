@@ -35,13 +35,24 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
         self.assertEqual(set(OUTPUT_NAMES), set(actual))
         self.assertEqual({name: expected.get(name, False) for name in OUTPUT_NAMES}, actual)
 
-    def test_skill_or_provenance_only_change_stays_in_source_contour(self) -> None:
+    def test_skill_only_change_stays_in_source_contour(self) -> None:
+        self.assert_classification(
+            ["plugins/unica/skills/meta-compile/SKILL.md"],
+            plugin_content_changed=True,
+        )
+
+    def test_maintainer_provenance_is_not_plugin_content(self) -> None:
+        """The donor index and its review records ship with nothing.
+
+        They live outside `plugins/unica/`, so a change to them must not claim
+        the plugin content contour. `verify-source` runs unconditionally and
+        still covers the attribution and provenance contracts.
+        """
         self.assert_classification(
             [
-                "plugins/unica/skills/meta-compile/SKILL.md",
-                "plugins/unica/provenance/skill-upstreams.json",
+                "spec/provenance/skill-upstreams.json",
+                "docs/provenance/reviews/2026-06-15-upstream-review.json",
             ],
-            plugin_content_changed=True,
         )
 
     def test_platform_independent_domain_or_application_rust_uses_primary_rust_contour(self) -> None:

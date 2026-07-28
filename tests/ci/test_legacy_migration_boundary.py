@@ -80,9 +80,9 @@ class LegacyMigrationBoundaryTests(unittest.TestCase):
         plugin_readme = (REPO_ROOT / "plugins/unica/README.md").read_text(
             encoding="utf-8"
         )
-        internal_package = (
-            REPO_ROOT / "plugins/unica/references/tooling/internal-package.md"
-        ).read_text(encoding="utf-8")
+        internal_package = (REPO_ROOT / "docs/internal-package.md").read_text(
+            encoding="utf-8"
+        )
         marketplace_adr = (
             REPO_ROOT / "spec/decisions/0008-public-marketplace-thin-runtime.md"
         ).read_text(encoding="utf-8")

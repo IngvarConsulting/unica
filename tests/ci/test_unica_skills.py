@@ -980,7 +980,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             "platform/integration-contracts.md",
             "platform/platform-mechanics.md",
             "tooling/v8project.md",
-            "tooling/internal-package.md",
             "tooling/runtime-build.md",
         ]
         for relative_path in required_paths:

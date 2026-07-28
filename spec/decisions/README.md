@@ -32,6 +32,7 @@
 - [ADR-0013: Транспортом MCP владеет официальный Rust SDK](0013-mcp-transport-official-rust-sdk.md)
 - [ADR-0014: Знание о хосте живёт за host-фасадом инфраструктуры](0014-host-specific-code-behind-host-facade.md)
 - [ADR-0015: Узкие границы `unica.code.patch` v1](0015-narrow-boundaries-for-code-patch-v1.md)
+- [ADR-0016: Единственный записываемый профиль выгрузки — платформа `8.3.27`, формат `2.20`](0016-single-writable-export-profile.md)
 
 Заголовки записей ADR-0001…ADR-0006 приведены здесь дословно: индекс называет
 документ так, как он называется сам. Почему они выглядят иначе — в разделе

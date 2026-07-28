@@ -37,7 +37,9 @@ def inventory(repo_root: Path) -> dict[tuple[str, str], dict]:
     plugin = load_json(root / ".codex-plugin" / "plugin.json")
     tools = load_json(root / "third-party" / "tools.lock.json").get("tools", [])
     adapters = load_json(root / "third-party" / "manifest.json").get("internalAdapters", [])
-    upstreams = load_json(root / "provenance" / "skill-upstreams.json").get("upstreams", [])
+    upstreams = load_json(
+        repo_root / "spec" / "provenance" / "skill-upstreams.json"
+    ).get("upstreams", [])
 
     result: dict[tuple[str, str], dict] = {
         ("project", plugin["name"]): {
