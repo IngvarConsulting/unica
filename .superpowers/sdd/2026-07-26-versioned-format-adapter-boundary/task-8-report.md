@@ -411,3 +411,215 @@ application::tool_contracts::tests::every_published_argument_is_described
 infrastructure::source_adapters::registry::registry_tests::pinned_format_and_foreign_probe_identity_fail_closed
 infrastructure::source_adapters::registry::registry_tests::typed_identity_fields_fail_closed_without_inspecting_ordinary_data_keys
 ```
+
+## Fix Round 1
+
+### Base, branch, and commits
+
+- Requested base: `c60349408acb969c10e0d62277839e14fe511164`.
+- Branch: `codex/versioned-source-adapter-design`.
+- Structural implementation and tests: `b97a8adf124258d12f51c26778b238827de38d1b` (`fix: harden platform XML writer boundary`).
+- The controller-owned `progress.md` remained unstaged and unchanged by this fix round. The ignored `task-8-brief.md` was not staged or rewritten.
+
+### Structural resolution
+
+| Finding | Resolution |
+|---|---|
+| Duplicate publication/locking | Deleted the host `single_file_publisher`; host BSL and semantic source transactions now use the neutral adapter `ArtifactWritePort`. Adapter XML writers, BSL stores, and single-artifact stores converge on the same private `single_file_publisher`, process lock, filesystem lock, preimage guards, rollback, recovery, mode preservation, and cancellation phases. |
+| Generic writer envelope | Production mutation dispatch accepts `WriterCommand` directly. `WriterArgument`, arbitrary key/value reconstruction, operation IDs, and the five generic mutation-value carriers were removed. Read-only inspection arguments remain isolated in `inspection_arguments`; legacy map-based writer fixtures are `cfg(test)` only. |
+| Unrestricted writer result | Public core outcomes are closed through `WriterLifecycle`, `WriterFailureKind`, `WriterDiagnostic`, `DiagnosticCode`, `DiagnosticDetail`, `SemanticChange`, `SemanticArtifact`, and `WriterEvidence`. Native paths, tags, operation IDs, stdout, and stderr stay private; host-only code maps the typed outcome to `AdapterOutcome`. |
+| Cancellation replacement | The registry no longer allocates a token. The public request token is threaded through host mapping, writer dispatch, planning, loops, lock waiting, staging, publication, rollback, and recovery. Cancellation phase and cleanup state are typed. |
+| Preservation coverage | The preservation matrix enumerates all 25 `WriterCommand` variants and all 13 writer families. Expected deltas come from an independent semantic oracle rather than writer serialization. Each variant has success, dry-run/no-change, repeat/idempotency, unsupported-state, rollback/cancellation, and concurrent-write cases. |
+| Ownership direction | Host `.xml` derivation and platform topology ownership were removed. The adapter exposes opaque semantic locator/read/write leases. CFE method interpretation and BSL generation are host application logic; the adapter only resolves and atomically stores supplied BSL bytes. |
+| Changed host failures | All seven base failures called out by review now pass. Detailed planner/owner errors and original guard ordering are retained. The full current host run has no new failed test relative to the base failure set. |
+| Windows wording | Touched core and adapter cross-check green. Full host cross-check remains blocked by the missing Windows C toolchain/CRT headers, including both `ring` at `assert.h` and `libsqlite3-sys` at `stdlib.h`; this is not reported as a code pass. |
+
+### Closed command inventory
+
+| Family | `WriterCommand` variants |
+|---|---|
+| CF | `ConfigurationInitialize`, `ConfigurationEdit` |
+| CFE | `ExtensionInitialize`, `ExtensionBorrow`, `ExtensionPatchMethod` |
+| External | `ExternalProcessorInitialize`, `ExternalReportInitialize` |
+| Metadata | `MetadataCreate`, `MetadataEdit`, `MetadataRemove` |
+| Forms | `FormCreate`, `FormCompile`, `FormEdit`, `FormRemove` |
+| Templates | `TemplateCreate`, `TemplateRemove` |
+| Help | `HelpCreate` |
+| Interfaces | `InterfaceEdit` |
+| Roles | `RoleCreate` |
+| Subsystems | `SubsystemCreate`, `SubsystemEdit` |
+| Support | `SupportEdit` |
+| DCS | `DataCompositionCreate`, `DataCompositionEdit` |
+| MXL | `SpreadsheetCreate` |
+
+The command payloads are immutable validated structs. User-controlled values use purpose-specific validated newtypes. Behavior switches use closed enums, including `ConfigurationMutation`, `MetadataMutation`, `InterfaceEdit`, `SubsystemEdit`, `DataCompositionMutation`, `ExtensionPurpose`, `FormPurpose`, `FormCompileSource`, and `DefaultFormAssignment`. DCS `NoSelection`, interface/subsystem definition sources, and omitted-versus-false form defaults are represented explicitly rather than dropped during translation.
+
+### Responsibility map
+
+| Family | Host/application responsibility | Core responsibility | Private adapter responsibility |
+|---|---|---|---|
+| CF | Parse MCP parameters; map typed outcome | CF command/value vocabulary | Plan, validate, serialize, transact, publish |
+| CFE | Parse request; interpret/generate BSL patch | Extension, borrow, interceptor, and emission semantics | Resolve native artifacts, mutate XML, store supplied BSL atomically |
+| External EPF/ERF | Parse public request | Separate processor/report commands | Scaffold and publish platform source |
+| Metadata | Parse compile/edit/remove request and preserve detailed planner errors | Closed create/edit/remove DTOs | Native object layout, registry mutation, validation, rollback |
+| Forms | Parse definition/object source and assignment intent | Closed create/compile/edit/remove DTOs | Native form ownership, serialization, and publication |
+| Templates | Parse create/remove request | Closed template kind and commands | Native template layout and owner update transaction |
+| Help | Parse public request and host guard context | `HelpCreate` semantics | Native help artifacts and owner mutation |
+| Interfaces | Parse semantic edit | Closed `InterfaceEdit` variants | Native command-interface mutation |
+| Roles | Parse rights request | Closed role command | Native rights serialization and validation |
+| Subsystems | Parse create/edit request | Closed subsystem operations | Native subsystem serialization and mutation |
+| Support | Parse support capability/object rule | Closed support semantics | Native support records, authorability checks, atomic update |
+| DCS | Parse create/edit request | Closed DCS mutations | Native DCS reader/writer and validation |
+| MXL | Parse compile request | Closed spreadsheet command | Native standalone MXL writer and validation |
+| Common/transactions | Request orchestration only | Neutral artifact leases, cancellation, lifecycle | One lock/publication/rollback/recovery implementation |
+
+The remaining production host-native files are:
+
+- `crates/unica-coder/src/infrastructure/native_operations/code.rs`: BSL-only interpretation and generation.
+- `crates/unica-coder/src/infrastructure/native_operations/common.rs`: neutral host mapping helpers.
+- `crates/unica-coder/src/infrastructure/native_operations/compile_transaction.rs`: neutral artifact transaction wrapper.
+- `crates/unica-coder/src/infrastructure/native_operations/meta.rs`: metadata command parameter mapping.
+- `crates/unica-coder/src/infrastructure/native_operations/registry.rs`: public request to typed command dispatch.
+- `crates/unica-coder/src/infrastructure/native_operations/typed_result.rs`: typed result to public `AdapterOutcome` mapping.
+- `crates/unica-coder/src/infrastructure/native_operations/tests.rs`: host boundary tests only.
+
+There is no production host XML parser/serializer, native registry/layout constant, sibling scan, or host publication-lock registry. XML-looking strings found by the final bounded scan occur only in inline test fixtures.
+
+### Preservation matrix
+
+| Family | Independent before/after oracle | Per-variant cases |
+|---|---|---|
+| CF | semantic configuration projection | success; dry-run/no change; idempotent repeat; unsupported; rollback/cancel; concurrent |
+| CFE | extension projection plus host-owned BSL content oracle | success; dry-run/no change; idempotent repeat; unsupported; rollback/cancel; concurrent |
+| External | standalone descriptor semantic oracle | success; dry-run/no change; idempotent repeat; unsupported; rollback/cancel; concurrent |
+| Metadata | semantic object graph projection | success; dry-run/no change; idempotent repeat; unsupported; rollback/cancel; concurrent |
+| Forms | independent form/object projection | success; dry-run/no change; idempotent repeat; unsupported; rollback/cancel; concurrent |
+| Templates | independent owner/template projection | success; dry-run/no change; idempotent repeat; unsupported; rollback/cancel; concurrent |
+| Help | independent owner/help projection | success; dry-run/no change; idempotent repeat; unsupported; rollback/cancel; concurrent |
+| Interfaces | semantic command-interface projection | success; dry-run/no change; idempotent repeat; unsupported; rollback/cancel; concurrent |
+| Roles | independent rights projection | success; dry-run/no change; idempotent repeat; unsupported; rollback/cancel; concurrent |
+| Subsystems | semantic subsystem projection | success; dry-run/no change; idempotent repeat; unsupported; rollback/cancel; concurrent |
+| Support | independent support-state projection | success; dry-run/no change; idempotent repeat; unsupported; rollback/cancel; concurrent |
+| DCS | standalone DCS semantic oracle | success; dry-run/no change; idempotent repeat; unsupported; rollback/cancel; concurrent |
+| MXL | standalone spreadsheet semantic oracle | success; dry-run/no change; idempotent repeat; unsupported; rollback/cancel; concurrent |
+
+The shared publication-port suite separately injects partial-write, rollback, recovery, cancellation-before-install, cancellation-after-backup, lock-wait cancellation, concurrency, symlink/reparse-style rejection, and path-containment failures. Existing private writer suites retain file-mode, no-downgrade, transaction, and authorability coverage.
+
+### RED/GREEN evidence
+
+RED evidence:
+
+- `cargo test -p unica-adapter-platform-xml --test task8_fix_round1_architecture` initially failed because the production generic writer-argument carrier still existed (`/tmp/task8-fix1-red-generic-writer-envelope.log`).
+- After separating inspections, the first architecture assertion also exposed an over-broad test that counted read-only inspection arguments as mutation envelopes; the assertion was narrowed to production writer call paths, not weakened for writers (`/tmp/task8-fix1-architecture-green.log`).
+- Typed conversion initially exposed lost DCS `NoSelection`, interface/subsystem definition sources, form source/default semantics, and two CFE fail-closed fixture regressions. The closed enums and test-only legacy mapping were corrected before GREEN.
+
+GREEN evidence:
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all -- --check` | pass |
+| `cargo test -p unica-format-core --test task8_writer_contract` | 5 passed |
+| `cargo test -p unica-format-core --test task8_fix_round1_contract` | 4 passed |
+| `cargo test -p unica-adapter-platform-xml --test legacy_parity` | 26 passed |
+| `cargo test -p unica-adapter-platform-xml --test specialized_relations` | 7 passed |
+| Task 7 architecture/lazy/operational integration targets | 5 + 2 + 3 + 25 + 4 + 11 passed |
+| `cargo test -p unica-adapter-platform-xml --test task8_writer_architecture` | 1 passed |
+| `cargo test -p unica-adapter-platform-xml --test task8_fix_round1_architecture` | 5 passed |
+| `cargo test -p unica-adapter-platform-xml --test task8_fix_round1_preservation_matrix` | 2 passed |
+| `cargo test -p unica-adapter-platform-xml --features test-support --test task8_writer_ports` | 5 passed |
+| 18 exact CFE fail-closed regression filters | 18 passed |
+| `cargo test -p unica-adapter-platform-xml --lib -- --nocapture` | 1018 passed; 13 failed; all writer tests passed; residuals reproduced at base individually |
+| `cargo test -p unica-coder --lib -- --nocapture` at base | 596 passed; 38 failed; 2 ignored |
+| same host command at current | 576 passed; 31 failed; 2 ignored; 27 host-native tests moved with implementation ownership |
+| `cargo check --target x86_64-pc-windows-gnu -p unica-format-core -p unica-adapter-platform-xml` | pass |
+| `git diff --check` before implementation commit | pass |
+
+Cancellation/locking checks that pass include public pre-cancellation, `call_tool_cancellable` token propagation, mid-plan cancellation, cancellation after first publication with rollback, cancellation before stage install, cancellation after backup, cancellation while waiting for the shared lock, and CF/meta/BSL contention against the common transaction lock. The three host contention tests and the adapter lock-wait test are deterministic passes.
+
+### Seven reviewed host signatures
+
+| Test | Base normalized failure | Current |
+|---|---|---|
+| `compile_transaction_and_cf_edit_share_target_lock` | CF edit did not contend; timeout assertion | pass |
+| `detailed_compile_dry_run_reports_planner_errors_instead_of_masking_them` | generic `unica.meta.compile failed` | pass with detailed typed planner error |
+| `help_add_routes_through_unica_and_creates_help_files` | support guard reported unknown state | pass |
+| `meta_compile_supports_all_documented_pending_types` | `BusinessProcess` path reached the wrong `GraphicalSchema` root check | pass |
+| `meta_validate_supports_pipe_separated_batch_paths` | result omitted native validator detail | pass |
+| `mxl_compile_allows_new_standalone_output` | support guard blocked new standalone output | pass |
+| `support_edit_set_editable_updates_object_rule_and_meta_info` | expected authorable, received unknown/read-only | pass |
+
+Base/current failure-set comparison found seven fixed tests and no new failed test. All 31 current host failures also fail at the base. Thirty preserve their normalized first failure line. `external_init_preview_is_path_guarded_and_source_set_typed` remains failed at both revisions, but its normalized message changed from `unica.epf.init must target the exact configured source-set root` to `assertion left == right failed`; it is therefore reported as a shared failure with changed signature, not as an unchanged inherited signature.
+
+### Exact residual failures
+
+Current host failures shared with the base (31):
+- ``application::tests::ambiguous_source_set_owner_has_same_structured_failure_for_preview_and_apply
+- ``application::tests::cf_edit_add_child_object_prioritizes_newer_existing_target_descriptor
+- ``application::tests::cf_edit_rejects_symlink_configuration_without_touching_referent
+- ``application::tests::cf_edit_validation_dependencies_block_incompatible_home_page_file
+- ``application::tests::cfe_borrow_rejects_edt_config_source_set_target
+- ``application::tests::code_patch_apply_is_blocked_for_a_locked_supported_object
+- ``application::tests::create_only_initializers_prioritize_exact_newer_planned_xml_targets
+- ``application::tests::declared_existing_dcs_output_rejects_wrong_root_before_handler
+- ``application::tests::declared_existing_form_output_rejects_wrong_root_before_handler
+- ``application::tests::declared_existing_mxl_output_rejects_wrong_root_before_handler
+- ``application::tests::declared_form_output_with_nonstandard_suffix_still_blocks_newer_owner
+- ``application::tests::detailed_compile_dry_run_rejects_edt_source_set_like_apply
+- ``application::tests::detailed_compile_dry_run_rejects_output_escape_like_apply
+- ``application::tests::entity_spelled_supported_format_is_invalid_at_the_public_boundary
+- ``application::tests::external_init_preview_is_path_guarded_and_source_set_typed
+- ``application::tests::external_initializers_validate_every_existing_root_artifact_owner
+- ``application::tests::form_compile_dry_run_rejects_edt_source_set_like_apply
+- ``application::tests::form_compile_dry_run_rejects_output_escape_like_apply
+- ``application::tests::incompatible_format_blocks_before_native_handler
+- ``application::tests::meta_edit_rejects_ambiguous_or_empty_standalone_metadata_owner_before_handler
+- ``application::tests::mutating_cf_edit_blocks_locked_configuration_directory_target
+- ``application::tests::mutating_meta_edit_blocks_locked_vendor_object_by_default
+- ``application::tests::mutating_native_operation_rejects_output_escape_before_backend_execution
+- ``application::tests::mxl_compile_blocks_write_inside_older_dump_with_structured_diagnostic
+- ``application::tests::native_xml_metadata_tools_reject_edt_source_set_targets
+- ``application::tests::numeric_equivalent_noncanonical_format_warns_on_read_and_blocks_public_mutator
+- ``application::tests::read_only_path_aliases_warn_for_older_directory_owned_inputs
+- ``application::tool_contracts::tests::every_native_path_alias_group_normalizes_to_one_canonical_argument
+- ``application::tool_contracts::tests::every_published_argument_is_described
+- ``infrastructure::source_adapters::registry::registry_tests::pinned_format_and_foreign_probe_identity_fail_closed
+- ``infrastructure::source_adapters::registry::registry_tests::typed_identity_fields_fail_closed_without_inspecting_ordinary_data_keys
+
+Current adapter read-side failures (13), each replayed individually at the base with the same failure class/message and present in the current full run:
+
+- `versions::v2_20::decoder::direct_type_property_tests::direct_foreign_qname_fails_closed_instead_of_becoming_a_scalar`
+- `versions::v2_20::decoder::direct_type_property_tests::unbound_direct_qname_is_rejected_by_type_namespace_resolution`
+- `versions::v2_20::decoder::tests::duplicate_inline_child_names_are_identity_collisions`
+- `versions::v2_20::decoder::tests::scalar_annotation_rejects_alien_or_conflicting_qnames_locally`
+- `versions::v2_20::probe::tests::configuration_unknown_child_fails_closed`
+- `versions::v2_20::probe::tests::unknown_metadata_class_fails_closed`
+- `versions::v2_20::probe::tests::unknown_nested_structural_features_fail_closed_for_representative_classes`
+- `versions::v2_20::projector::tests::empty_annotated_fill_value_preserves_string_but_not_invalid_decimal`
+- `versions::v2_20::projector::tests::fill_value_accepts_only_lossless_decimal_or_string_annotations`
+- `versions::v2_20::projector::tests::fill_value_uses_exact_native_scalar_annotation_not_text`
+- `versions::v2_20::projector::tests::fill_value_without_a_known_annotation_is_unresolved`
+- `versions::v2_20::projector::tests::form_is_always_partial_and_inspection_only_before_form_internals_exist`
+- `versions::v2_20::projector::tests::malformed_decimal_and_local_scalar_failure_remain_property_local`
+
+Current core residual (one), reproduced exactly at base and current:
+
+- `property_contract::property_definition_registry_is_complete_unique_and_finite`: expected-list mismatch for `EmptyReference`.
+
+### Windows evidence
+
+The touched boundary command is green:
+
+```text
+cargo check --target x86_64-pc-windows-gnu -p unica-format-core -p unica-adapter-platform-xml
+Finished dev profile
+```
+
+The full host command is blocked before Rust host validation because `x86_64-w64-mingw32-gcc` and the Windows CRT headers are unavailable. A clang-fronted run records `ring v0.17.14` failing on `assert.h`. The combined host cross-check also records `libsqlite3-sys v0.30.1` failing on `stdlib.h`; a fresh isolated bundled-SQLite replay stops one include earlier at `stdio.h`. The blocker is therefore the absent Windows C SDK for both dependencies, not only `ring`, and full-host Windows status is blocked rather than green.
+
+### Residual risks
+
+- Full `unica-coder` Windows validation still requires a real MinGW/Windows SDK environment; the touched core and adapter boundary itself cross-checks successfully.
+- The 31 shared host failures, 13 shared adapter read-side failures, and one shared core property-registry failure remain outside this fix round. Per-test base evidence was captured rather than inferring inheritance from suite totals.
+- One shared host failure has a changed assertion signature as documented above and should be investigated in its owning Task 7/public-boundary follow-up.
+- Private adapter and host builds emit existing unused-import/dead-code warnings; they do not change the tested behavior but should be cleaned in a separate warning-focused change.
+- Test-only legacy map fixtures remain under `cfg(test)` to preserve legacy regression coverage. Production writer dispatch has no generic argument envelope.
