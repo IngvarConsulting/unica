@@ -1,35 +1,196 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "variant": "TemplateCreate",
   "provenance": {
-    "source": "Approved Task 8 design, Task 5 semantic contract, and the pre-migration v2_20 legacy semantic oracle; exact facts were reviewed against the command DTO and legacy writer behavior.",
-    "reviewedEvidence": [
-      ".superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/task-8-brief.md",
-      "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/legacy-semantic-oracle.json",
-      "crates/unica-adapter-platform-xml/tests/task5_legacy_parity.rs"
+    "verification": "reviewed-against-tracked-sources",
+    "normalization": "Hand-authored semantic facts omit transport-generated UUID identifiers, workspace/session coordinates, parser ordinals, hashes, and native source keys while retaining meaningful identities, kinds, properties, values, relations, facets, coverage, status, diagnostics, roots, namespaces, and domain structure.",
+    "sources": [
+      {
+        "path": "spec/designs/2026-07-26-versioned-source-adapter-architecture.md",
+        "lineStart": 315,
+        "lineEnd": 405,
+        "sha256": "87f85c9346b031287041a05cb90238aba6a070e74ee9dd26d0f0467398b4a3db",
+        "claim": "Defines canonical semantic identities, typed properties, relations, facets, value types, and value states."
+      },
+      {
+        "path": "crates/unica-adapter-platform-xml/tests/legacy_parity.rs",
+        "lineStart": 119,
+        "lineEnd": 150,
+        "sha256": "d901fffef0ca68ef2ee749bdb1c60177a125082e9625b2942e109ee7034c0d3d",
+        "claim": "Defines the independent exact semantic fact-multiset comparison used by Task 5 parity."
+      },
+      {
+        "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/legacy-semantic-oracle.json",
+        "lineStart": 3605,
+        "lineEnd": 3818,
+        "sha256": "75feda9cab247618c221c35777046681033d1883c3814b21cdb42dc420d1dcbd",
+        "claim": "Task 5 owned-artifact oracle fixes form and template identities, properties, and owner relations."
+      }
     ]
   },
   "removed": [],
   "added": [
     {
       "fact": {
-        "Envelope": {
-          "status": "\"partial\"",
-          "root": [
-            "sourceRoot",
-            "Source"
-          ],
-          "consistency": "\"consistent\""
+        "Diagnostic": {
+          "code": "partialCoverage"
         }
       },
       "count": 1
     },
     {
       "fact": {
-        "Diagnostic": {
-          "code": "partialCoverage",
-          "message": "requested semantic coverage is partial",
-          "details": null
+        "Envelope": {
+          "status": "partial",
+          "root_kind": "sourceRoot",
+          "root_name": "Source",
+          "consistency": "consistent",
+          "coverage": [
+            "partial"
+          ]
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "template",
+          "owner_name": "Main",
+          "group": "backing",
+          "member": "backing.content.available"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "template",
+          "owner_name": "Main",
+          "group": "backing",
+          "member": "backing.content.opaque"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "template",
+          "owner_name": "Main",
+          "group": "backing",
+          "member": "backing.descriptor.available"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "template",
+          "owner_name": "Main",
+          "group": "backing",
+          "member": "backing.descriptor.uuid"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "template",
+          "owner_name": "Main",
+          "group": "identity",
+          "member": "metadata.comment"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "template",
+          "owner_name": "Main",
+          "group": "identity",
+          "member": "metadata.kind"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "template",
+          "owner_name": "Main",
+          "group": "identity",
+          "member": "metadata.name"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "template",
+          "owner_name": "Main",
+          "group": "identity",
+          "member": "metadata.synonym"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "template",
+          "owner_name": "Main",
+          "group": "identity",
+          "member": "metadata.uuid"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "sourceRoot",
+          "owner_name": "Source",
+          "group": "structure",
+          "member": "children"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "template",
+          "owner_name": "Main",
+          "group": "support",
+          "member": "support.authorability"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "template",
+          "owner_name": "Main",
+          "group": "support",
+          "member": "support.editCapability"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "template",
+          "owner_name": "Main",
+          "group": "support",
+          "member": "support.state"
         }
       },
       "count": 1
@@ -39,12 +200,7 @@
         "Identity": {
           "kind": "sourceRoot",
           "name": "Source",
-          "reference_kind": "sourceRoot",
-          "reference_name": "Source",
-          "capability_state": "{\"resolutionState\":\"resolved\",\"authorability\":\"derived_read_only\"}",
-          "capability": "{\"resolution\":\"resolved\",\"identity\":\"derived\",\"consistency\":\"consistent\",\"coverage\":\"partial\",\"format\":\"compatible\",\"sourceAccess\":\"readOnly\",\"authorability\":\"derived_read_only\"}",
-          "action_profile": "\"generic_metadata_object\"",
-          "facet_visibility": "Full"
+          "coverage": "partial"
         }
       },
       "count": 1
@@ -54,12 +210,7 @@
         "Identity": {
           "kind": "template",
           "name": "Main",
-          "reference_kind": "template",
-          "reference_name": "Main",
-          "capability_state": "{\"resolutionState\":\"resolved\",\"authorability\":\"unknown_read_only\"}",
-          "capability": "{\"resolution\":\"resolved\",\"identity\":\"persistent\",\"consistency\":\"consistent\",\"coverage\":\"partial\",\"format\":\"compatible\",\"sourceAccess\":\"readOnly\",\"authorability\":\"authorable\"}",
-          "action_profile": "\"unmodeled_template\"",
-          "facet_visibility": "Full"
+          "coverage": "partial"
         }
       },
       "count": 1
@@ -70,11 +221,9 @@
           "owner_kind": "template",
           "owner_name": "Main",
           "id": "backing.content.available",
-          "value_type": "\"boolean\"",
-          "value_state": "\"computed\"",
-          "value": "{\"type\":\"boolean\",\"value\":true}",
-          "provenance": "\"derived\"",
-          "capability": "\"readOnly\""
+          "value_type": "boolean",
+          "value_state": "computed",
+          "value": "true"
         }
       },
       "count": 1
@@ -85,11 +234,9 @@
           "owner_kind": "template",
           "owner_name": "Main",
           "id": "backing.content.opaque",
-          "value_type": "\"boolean\"",
-          "value_state": "\"computed\"",
-          "value": "{\"type\":\"boolean\",\"value\":true}",
-          "provenance": "\"derived\"",
-          "capability": "\"readOnly\""
+          "value_type": "boolean",
+          "value_state": "computed",
+          "value": "true"
         }
       },
       "count": 1
@@ -100,26 +247,9 @@
           "owner_kind": "template",
           "owner_name": "Main",
           "id": "backing.descriptor.available",
-          "value_type": "\"boolean\"",
-          "value_state": "\"computed\"",
-          "value": "{\"type\":\"boolean\",\"value\":true}",
-          "provenance": "\"derived\"",
-          "capability": "\"readOnly\""
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "Property": {
-          "owner_kind": "template",
-          "owner_name": "Main",
-          "id": "backing.descriptor.uuid",
-          "value_type": "\"uuid\"",
-          "value_state": "\"explicit\"",
-          "value": "{\"type\":\"uuid\",\"value\":\"<semantic-id>\"}",
-          "provenance": "\"declared\"",
-          "capability": "\"readOnly\""
+          "value_type": "boolean",
+          "value_state": "computed",
+          "value": "true"
         }
       },
       "count": 1
@@ -130,11 +260,9 @@
           "owner_kind": "template",
           "owner_name": "Main",
           "id": "metadata.comment",
-          "value_type": "\"string\"",
-          "value_state": "\"absent\"",
-          "value": null,
-          "provenance": "\"declared\"",
-          "capability": "\"unavailable\""
+          "value_type": "string",
+          "value_state": "absent",
+          "value": null
         }
       },
       "count": 1
@@ -145,11 +273,9 @@
           "owner_kind": "template",
           "owner_name": "Main",
           "id": "metadata.kind",
-          "value_type": "\"string\"",
-          "value_state": "\"computed\"",
-          "value": "{\"type\":\"string\",\"value\":\"template\"}",
-          "provenance": "\"derived\"",
-          "capability": "\"readOnly\""
+          "value_type": "string",
+          "value_state": "computed",
+          "value": "template"
         }
       },
       "count": 1
@@ -160,11 +286,9 @@
           "owner_kind": "template",
           "owner_name": "Main",
           "id": "metadata.name",
-          "value_type": "\"string\"",
-          "value_state": "\"explicit\"",
-          "value": "{\"type\":\"string\",\"value\":\"Main\"}",
-          "provenance": "\"declared\"",
-          "capability": "\"readOnly\""
+          "value_type": "string",
+          "value_state": "explicit",
+          "value": "Main"
         }
       },
       "count": 1
@@ -175,26 +299,9 @@
           "owner_kind": "template",
           "owner_name": "Main",
           "id": "metadata.synonym",
-          "value_type": "\"localizedString\"",
-          "value_state": "\"explicit\"",
-          "value": "{\"type\":\"localizedString\",\"value\":{\"ru\":\"Main\"}}",
-          "provenance": "\"declared\"",
-          "capability": "\"readOnly\""
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "Property": {
-          "owner_kind": "template",
-          "owner_name": "Main",
-          "id": "metadata.uuid",
-          "value_type": "\"uuid\"",
-          "value_state": "\"explicit\"",
-          "value": "{\"type\":\"uuid\",\"value\":\"<semantic-id>\"}",
-          "provenance": "\"declared\"",
-          "capability": "\"readOnly\""
+          "value_type": "localizedString",
+          "value_state": "explicit",
+          "value": "{\"ru\":\"Main\"}"
         }
       },
       "count": 1
@@ -205,11 +312,9 @@
           "owner_kind": "template",
           "owner_name": "Main",
           "id": "support.authorability",
-          "value_type": "\"string\"",
-          "value_state": "\"computed\"",
-          "value": "{\"type\":\"string\",\"value\":\"authorable\"}",
-          "provenance": "\"derived\"",
-          "capability": "\"readOnly\""
+          "value_type": "string",
+          "value_state": "computed",
+          "value": "authorable"
         }
       },
       "count": 1
@@ -220,11 +325,9 @@
           "owner_kind": "template",
           "owner_name": "Main",
           "id": "support.editCapability",
-          "value_type": "\"string\"",
-          "value_state": "\"computed\"",
-          "value": "{\"type\":\"string\",\"value\":\"authorable\"}",
-          "provenance": "\"derived\"",
-          "capability": "\"readOnly\""
+          "value_type": "string",
+          "value_state": "computed",
+          "value": "authorable"
         }
       },
       "count": 1
@@ -235,11 +338,9 @@
           "owner_kind": "template",
           "owner_name": "Main",
           "id": "support.state",
-          "value_type": "\"enum\"",
-          "value_state": "\"computed\"",
-          "value": "{\"type\":\"enum\",\"value\":\"notSupported\"}",
-          "provenance": "\"derived\"",
-          "capability": "\"readOnly\""
+          "value_type": "enum",
+          "value_state": "computed",
+          "value": "notSupported"
         }
       },
       "count": 1
@@ -250,53 +351,9 @@
           "owner_kind": "template",
           "owner_name": "Main",
           "id": "template.type",
-          "value_type": "\"enum\"",
-          "value_state": "\"explicit\"",
-          "value": "{\"type\":\"enum\",\"value\":\"textDocument\"}",
-          "provenance": "\"declared\"",
-          "capability": "\"readOnly\""
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "Facets": {
-          "owner_kind": "sourceRoot",
-          "owner_name": "Source",
-          "members": "{\"structure\":[\"children\"]}"
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "Facets": {
-          "owner_kind": "template",
-          "owner_name": "Main",
-          "members": "{\"backing\":[\"backing.descriptor.available\",\"backing.descriptor.uuid\",\"backing.content.available\",\"backing.content.opaque\"],\"identity\":[\"metadata.kind\",\"metadata.name\",\"metadata.uuid\",\"metadata.synonym\",\"metadata.comment\"],\"support\":[\"support.state\",\"support.authorability\",\"support.editCapability\"]}"
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "Actions": {
-          "owner_kind": "sourceRoot",
-          "owner_name": "Source",
-          "semantic": "[]",
-          "available": "[{\"kind\":\"inspect\",\"target\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"derived:sha256:<semantic-hash>\",\"identityStrength\":\"derived\",\"kind\":\"sourceRoot\",\"displayName\":\"Source\"},\"owningRelation\":null,\"availability\":\"modeled\",\"blockingReasons\":[],\"operationBinding\":null,\"atomicity\":\"read_only\"}]"
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "Actions": {
-          "owner_kind": "template",
-          "owner_name": "Main",
-          "semantic": "[]",
-          "available": "[{\"kind\":\"inspect\",\"target\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"uuid:<semantic-id>\",\"identityStrength\":\"persistent\",\"kind\":\"template\",\"displayName\":\"Main\"},\"owningRelation\":{\"sourceId\":\"workspace:task8-preservation\",\"relationKey\":\"derived:sha256:<semantic-hash>\",\"kind\":\"contains\"},\"availability\":\"modeled\",\"blockingReasons\":[],\"operationBinding\":null,\"atomicity\":\"read_only\"}]"
+          "value_type": "enum",
+          "value_state": "explicit",
+          "value": "textDocument"
         }
       },
       "count": 1
@@ -304,7 +361,12 @@
     {
       "fact": {
         "Relation": {
-          "value": "{\"relationRef\":{\"sourceId\":\"workspace:task8-preservation\",\"relationKey\":\"derived:sha256:<semantic-hash>\",\"kind\":\"contains\"},\"groupRef\":{\"sourceId\":\"workspace:task8-preservation\",\"groupKey\":\"group:sha256:<semantic-hash>\",\"owner\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"derived:sha256:<semantic-hash>\",\"identityStrength\":\"derived\",\"kind\":\"sourceRoot\",\"displayName\":\"Source\"},\"role\":\"children\",\"kind\":\"contains\"},\"identityStrength\":\"derived\",\"kind\":\"contains\",\"role\":\"children\",\"source\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"derived:sha256:<semantic-hash>\",\"identityStrength\":\"derived\",\"kind\":\"sourceRoot\",\"displayName\":\"Source\"},\"target\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"uuid:<semantic-id>\",\"identityStrength\":\"persistent\",\"kind\":\"template\",\"displayName\":\"Main\"},\"capability\":{\"resolution\":\"resolved\",\"identity\":\"derived\",\"consistency\":\"consistent\",\"coverage\":\"partial\",\"format\":\"compatible\",\"sourceAccess\":\"readOnly\",\"authorability\":\"derived_read_only\"}}"
+          "kind": "contains",
+          "role": "children",
+          "source_kind": "sourceRoot",
+          "source_name": "Source",
+          "target_kind": "template",
+          "target_name": "Main"
         }
       },
       "count": 1

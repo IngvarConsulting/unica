@@ -2885,15 +2885,15 @@ mod exact_artifact_family_guard_tests {
             (
                 "Dcs.xml",
                 unica_format_core::ports::SemanticArtifactRole::DataCompositionSchema,
-                br#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" version="2.20"/>"#
+                br#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"/>"#
                     .as_slice(),
-                br#"<document xmlns="http://v8.1c.ru/8.2/data/spreadsheet" version="2.20"/>"#
+                br#"<document xmlns="http://v8.1c.ru/8.2/data/spreadsheet"/>"#
                     .as_slice(),
             ),
             (
                 "Mxl.xml",
                 unica_format_core::ports::SemanticArtifactRole::SpreadsheetDocument,
-                br#"<document xmlns="http://v8.1c.ru/8.2/data/spreadsheet" version="2.20"/>"#
+                br#"<document xmlns="http://v8.1c.ru/8.2/data/spreadsheet"/>"#
                     .as_slice(),
                 br#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"/>"#
                     .as_slice(),
@@ -2902,7 +2902,7 @@ mod exact_artifact_family_guard_tests {
                 "Form.xml",
                 unica_format_core::ports::SemanticArtifactRole::FormDefinition,
                 br#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"/>"#.as_slice(),
-                br#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" version="2.20"/>"#
+                br#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"/>"#
                     .as_slice(),
             ),
         ];

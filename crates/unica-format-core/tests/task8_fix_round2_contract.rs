@@ -225,6 +225,8 @@ fn every_command_payload_round_trips_and_rejects_unknown_fields() {
     assert_wire::<MetadataCreate>();
     assert_wire::<MetadataEdit>();
     assert_wire::<MetadataRemove>();
+    assert_wire::<FormOwnerName>();
+    assert_wire::<FormOwnerSelection>();
     assert_wire::<FormCreate>();
     assert_wire::<FormCompile>();
     assert_wire::<FormEdit>();

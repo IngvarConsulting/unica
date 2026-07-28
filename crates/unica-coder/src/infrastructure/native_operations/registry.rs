@@ -744,15 +744,17 @@ fn writer_command(
             bool_arg(args, &["keepFiles", "KeepFiles"]),
         )),
         "form-add" => WriterCommand::FormCreate(
-            FormCreate::new(
-                required_text(
-                    args,
-                    &["objectName", "ObjectName"],
-                    "ObjectName",
-                    FormOwnerReference::new,
-                )?,
-                required_text(args, &["formName", "FormName"], "FormName", FormName::new)?,
-            )
+            FormCreate::selected_owner(required_text(
+                args,
+                &["formName", "FormName"],
+                "FormName",
+                FormName::new,
+            )?)
+            .with_expected_owner_name(optional_text(
+                args,
+                &["objectName", "ObjectName"],
+                FormOwnerName::new,
+            )?)
             .with_synonym(optional_text(
                 args,
                 &["synonym", "Synonym"],
@@ -4903,6 +4905,38 @@ mod tests {
         },
         ports::OperationCancellation,
     };
+
+    #[test]
+    fn form_add_maps_optional_owner_name_without_requiring_it() {
+        let context = mutation_probe_context("form-add-owner");
+        let path_only = Map::from_iter([
+            ("ObjectPath".to_string(), json!("src/Catalogs/Goods.xml")),
+            ("FormName".to_string(), json!("ListForm")),
+        ]);
+        let WriterCommand::FormCreate(path_only) = writer_command("form-add", &path_only, &context)
+            .unwrap()
+            .unwrap()
+        else {
+            panic!("form-add command");
+        };
+        assert!(path_only.expected_owner_name().is_none());
+
+        let with_name = Map::from_iter([
+            ("ObjectPath".to_string(), json!("src/Catalogs/Goods.xml")),
+            ("ObjectName".to_string(), json!("Goods")),
+            ("FormName".to_string(), json!("ListForm")),
+        ]);
+        let WriterCommand::FormCreate(with_name) = writer_command("form-add", &with_name, &context)
+            .unwrap()
+            .unwrap()
+        else {
+            panic!("form-add command");
+        };
+        assert_eq!(
+            with_name.expected_owner_name().map(|name| name.as_str()),
+            Some("Goods")
+        );
+    }
 
     #[test]
     fn mutating_native_tools_have_registered_mutation_handlers() {

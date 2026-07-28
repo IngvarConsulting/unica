@@ -754,7 +754,7 @@ mod tests {
         let target = root.join("Schema.xml");
         fs::write(
             &target,
-            r#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" version="2.20"/>"#,
+            r#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"/>"#,
         )
         .unwrap();
         let source = context(&root, &target);

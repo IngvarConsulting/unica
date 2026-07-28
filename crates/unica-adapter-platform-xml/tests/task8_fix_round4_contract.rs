@@ -35,24 +35,41 @@ fn root(label: &str) -> PathBuf {
 
 fn family_xml(
     family: StandaloneFamily,
-    version: Option<&str>,
     root_name: Option<&str>,
     namespace: Option<&str>,
+    body: &str,
 ) -> String {
-    let (default_root, default_namespace) = match family {
+    let (default_root, default_namespace, namespace_signature) = match family {
         StandaloneFamily::DataComposition => (
             "DataCompositionSchema",
             "http://v8.1c.ru/8.1/data-composition-system/schema",
+            concat!(
+                " xmlns:dcscom=\"http://v8.1c.ru/8.1/data-composition-system/common\"",
+                " xmlns:dcscor=\"http://v8.1c.ru/8.1/data-composition-system/core\"",
+                " xmlns:dcsset=\"http://v8.1c.ru/8.1/data-composition-system/settings\"",
+                " xmlns:v8=\"http://v8.1c.ru/8.1/data/core\"",
+                " xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\"",
+                " xmlns:xs=\"http://www.w3.org/2001/XMLSchema\"",
+                " xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""
+            ),
         ),
-        StandaloneFamily::Spreadsheet => ("document", "http://v8.1c.ru/8.2/data/spreadsheet"),
+        StandaloneFamily::Spreadsheet => (
+            "document",
+            "http://v8.1c.ru/8.2/data/spreadsheet",
+            concat!(
+                " xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\"",
+                " xmlns:v8=\"http://v8.1c.ru/8.1/data/core\"",
+                " xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\"",
+                " xmlns:xs=\"http://www.w3.org/2001/XMLSchema\"",
+                " xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""
+            ),
+        ),
     };
-    let version = version
-        .map(|value| format!(" version=\"{value}\""))
-        .unwrap_or_default();
     format!(
-        "<{} xmlns=\"{}\"{version}/>",
+        "<{} xmlns=\"{}\"{namespace_signature}>{body}</{}>",
         root_name.unwrap_or(default_root),
         namespace.unwrap_or(default_namespace),
+        root_name.unwrap_or(default_root),
     )
 }
 
@@ -152,41 +169,95 @@ fn execute_family(
     )
 }
 
-fn root_version(path: &Path) -> Option<String> {
+fn assert_native_family_root(path: &Path, family: StandaloneFamily) {
     let xml = fs::read_to_string(path).unwrap();
     let document = roxmltree::Document::parse(&xml).unwrap();
-    document
-        .root_element()
-        .attribute("version")
-        .map(str::to_owned)
+    let root = document.root_element();
+    let (name, namespace) = match family {
+        StandaloneFamily::DataComposition => (
+            "DataCompositionSchema",
+            "http://v8.1c.ru/8.1/data-composition-system/schema",
+        ),
+        StandaloneFamily::Spreadsheet => ("document", "http://v8.1c.ru/8.2/data/spreadsheet"),
+    };
+    assert_eq!(root.tag_name().name(), name);
+    assert_eq!(root.tag_name().namespace(), Some(namespace));
+    assert_eq!(
+        root.attribute("version"),
+        None,
+        "native family roots do not define a version attribute: {xml}"
+    );
 }
 
 #[test]
-fn dcs_and_mxl_use_complete_family_revision_policy_with_dry_run_apply_parity() {
-    let versions = [
-        (Some("0.9"), Some(CompatibilityIssueKind::Older)),
-        (Some("1.0"), None),
-        (Some("1.1"), Some(CompatibilityIssueKind::Newer)),
-        (Some("9.0"), Some(CompatibilityIssueKind::Newer)),
-        (None, Some(CompatibilityIssueKind::Malformed)),
-        (Some("1.x"), Some(CompatibilityIssueKind::Malformed)),
-    ];
-
+fn dcs_and_mxl_use_genuine_schema_signatures_with_dry_run_apply_parity() {
     for family in [
         StandaloneFamily::DataComposition,
         StandaloneFamily::Spreadsheet,
     ] {
-        for (version, expected_issue) in versions {
-            let fixture = root(&format!("{family:?}-{version:?}"));
+        let current_body = match family {
+            StandaloneFamily::DataComposition => {
+                "<dataSource><name>Source</name><dataSourceType>Local</dataSourceType></dataSource>"
+            }
+            StandaloneFamily::Spreadsheet => "<templateMode>true</templateMode><vgRows>0</vgRows>",
+        };
+        let cases = [
+            (
+                "current-no-version",
+                family_xml(family, None, None, current_body),
+                None,
+            ),
+            (
+                "unknown-root-namespace",
+                family_xml(family, None, Some("urn:unica:future-schema"), ""),
+                Some(CompatibilityIssueKind::Newer),
+            ),
+            (
+                "unknown-child-schema",
+                family_xml(
+                    family,
+                    None,
+                    None,
+                    "<future:marker xmlns:future=\"urn:unica:future-schema\"/>",
+                ),
+                Some(CompatibilityIssueKind::Newer),
+            ),
+            (
+                "missing-root-namespace",
+                format!(
+                    "<{}>{current_body}</{}>",
+                    match family {
+                        StandaloneFamily::DataComposition => "DataCompositionSchema",
+                        StandaloneFamily::Spreadsheet => "document",
+                    },
+                    match family {
+                        StandaloneFamily::DataComposition => "DataCompositionSchema",
+                        StandaloneFamily::Spreadsheet => "document",
+                    }
+                ),
+                Some(CompatibilityIssueKind::Newer),
+            ),
+            (
+                "wrong-root",
+                family_xml(family, Some("WrongRoot"), None, ""),
+                Some(CompatibilityIssueKind::Malformed),
+            ),
+            (
+                "malformed",
+                "<not-closed".to_string(),
+                Some(CompatibilityIssueKind::Malformed),
+            ),
+        ];
+        for (label, initial, expected_issue) in cases {
+            let fixture = root(&format!("{family:?}-{label}"));
             fs::create_dir_all(&fixture).unwrap();
             let target = fixture.join("Template.xml");
-            let initial = family_xml(family, version, None, None);
             fs::write(&target, initial.as_bytes()).unwrap();
 
             assert_eq!(
                 compatibility_issue(&fixture, &target),
                 expected_issue,
-                "{family:?} {version:?}"
+                "{family:?} {label}"
             );
 
             let dry_run = execute_family(&fixture, family, &target, MutationMode::Preview);
@@ -195,13 +266,25 @@ fn dcs_and_mxl_use_complete_family_revision_policy_with_dry_run_apply_parity() {
 
             match expected_issue {
                 None => {
-                    assert!(matches!(dry_run.lifecycle(), WriterLifecycle::Previewed));
-                    assert!(matches!(apply.lifecycle(), WriterLifecycle::Applied));
-                    assert_eq!(root_version(&target).as_deref(), Some("1.0"));
+                    assert!(
+                        matches!(dry_run.lifecycle(), WriterLifecycle::Previewed),
+                        "{family:?} {label}: {dry_run:?}"
+                    );
+                    assert!(
+                        matches!(apply.lifecycle(), WriterLifecycle::Applied),
+                        "{family:?} {label}: {apply:?}"
+                    );
+                    assert_native_family_root(&target, family);
                 }
                 Some(_) => {
-                    assert!(matches!(dry_run.lifecycle(), WriterLifecycle::Rejected(_)));
-                    assert!(matches!(apply.lifecycle(), WriterLifecycle::Rejected(_)));
+                    assert!(
+                        matches!(dry_run.lifecycle(), WriterLifecycle::Rejected(_)),
+                        "{family:?} {label}: {dry_run:?}"
+                    );
+                    assert!(
+                        matches!(apply.lifecycle(), WriterLifecycle::Rejected(_)),
+                        "{family:?} {label}: {apply:?}"
+                    );
                     assert_eq!(fs::read_to_string(&target).unwrap(), initial);
                 }
             }
@@ -210,26 +293,17 @@ fn dcs_and_mxl_use_complete_family_revision_policy_with_dry_run_apply_parity() {
 }
 
 #[test]
-fn dcs_and_mxl_reject_wrong_root_or_namespace_as_malformed() {
+fn newly_generated_dcs_and_mxl_have_spec_shaped_versionless_roots() {
     for family in [
         StandaloneFamily::DataComposition,
         StandaloneFamily::Spreadsheet,
     ] {
-        for (root_name, namespace) in [(Some("WrongRoot"), None), (None, Some("urn:wrong-family"))]
-        {
-            let fixture = root(&format!("{family:?}-{root_name:?}-{namespace:?}"));
-            fs::create_dir_all(&fixture).unwrap();
-            let target = fixture.join("Template.xml");
-            fs::write(
-                &target,
-                family_xml(family, Some("1.0"), root_name, namespace),
-            )
-            .unwrap();
-            assert_eq!(
-                compatibility_issue(&fixture, &target),
-                Some(CompatibilityIssueKind::Malformed)
-            );
-        }
+        let fixture = root(&format!("{family:?}-new-output"));
+        fs::create_dir_all(&fixture).unwrap();
+        let target = fixture.join("Template.xml");
+        let result = execute_family(&fixture, family, &target, MutationMode::Apply);
+        assert!(matches!(result.lifecycle(), WriterLifecycle::Applied));
+        assert_native_family_root(&target, family);
     }
 }
 

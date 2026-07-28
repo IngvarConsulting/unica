@@ -830,7 +830,15 @@ fn compatibility_bytes(
         }
     };
     let root = document.root_element();
-    if family_owned_artifact(root).is_some() {
+    if let Some(family) = family_owned_artifact_candidate(root) {
+        let revision = classify_family_owned_revision(root, family);
+        if revision == FamilyOwnedRevision::UnknownPossiblyNewer {
+            return Err(incompatible(
+                CompatibilityIssueKind::Newer,
+                FormatDiagnosticCode::SourceRevisionNewer,
+                "The family artifact schema signature is unsupported or possibly newer than this adapter.",
+            ));
+        }
         let owner = crate::owner::parse_snapshot_owner(bytes).map_err(|_| {
             incompatible(
                 CompatibilityIssueKind::Malformed,
@@ -838,23 +846,14 @@ fn compatibility_bytes(
                 "The captured family-owned artifact is invalid.",
             )
         })?;
-        let result = match classify_family_owned_revision(root) {
-            Ok(FamilyOwnedRevision::Supported) => CompatibilityDecision::Compatible,
-            Ok(FamilyOwnedRevision::Older) => incompatible(
+        let result = match revision {
+            FamilyOwnedRevision::Supported => CompatibilityDecision::Compatible,
+            FamilyOwnedRevision::Older => incompatible(
                 CompatibilityIssueKind::Older,
                 FormatDiagnosticCode::SourceRevisionOlder,
-                "The family artifact revision is older than the writable revision. Explicit migration is required before editing.",
+                "The family artifact schema signature is older than the writable schema. Explicit migration is required before editing.",
             ),
-            Ok(FamilyOwnedRevision::Newer) => incompatible(
-                CompatibilityIssueKind::Newer,
-                FormatDiagnosticCode::SourceRevisionNewer,
-                "The family artifact revision is newer than this adapter supports.",
-            ),
-            Err(()) => incompatible(
-                CompatibilityIssueKind::Malformed,
-                FormatDiagnosticCode::SourceMalformed,
-                "The family artifact revision declaration is missing or malformed.",
-            ),
+            FamilyOwnedRevision::UnknownPossiblyNewer => unreachable!("handled before owner parsing"),
         };
         return Ok(Some((owner, result)));
     }
@@ -1638,45 +1637,90 @@ enum FamilyOwnedArtifact {
 enum FamilyOwnedRevision {
     Older,
     Supported,
-    Newer,
+    UnknownPossiblyNewer,
 }
 
-fn family_owned_artifact(root: Node<'_, '_>) -> Option<FamilyOwnedArtifact> {
-    match (root.tag_name().namespace(), root.tag_name().name()) {
-        (Some(xml::DATA_COMPOSITION_SCHEMA_NS), "DataCompositionSchema") => {
-            Some(FamilyOwnedArtifact::DataComposition)
-        }
-        (Some(xml::SPREADSHEET_DOCUMENT_NS), "document") => Some(FamilyOwnedArtifact::Spreadsheet),
+fn family_owned_artifact_candidate(root: Node<'_, '_>) -> Option<FamilyOwnedArtifact> {
+    match root.tag_name().name() {
+        "DataCompositionSchema" => Some(FamilyOwnedArtifact::DataComposition),
+        "document" => Some(FamilyOwnedArtifact::Spreadsheet),
         _ => None,
     }
 }
 
-fn classify_family_owned_revision(root: Node<'_, '_>) -> Result<FamilyOwnedRevision, ()> {
-    family_owned_artifact(root).ok_or(())?;
-    let raw = root
-        .attributes()
-        .find(|attribute| attribute.namespace().is_none() && attribute.name() == "version")
-        .map(|attribute| attribute.value())
-        .ok_or(())?;
-    let mut components = raw.split('.');
-    let major = components
-        .next()
-        .ok_or(())?
-        .parse::<u32>()
-        .map_err(|_| ())?;
-    let minor = components
-        .next()
-        .ok_or(())?
-        .parse::<u32>()
-        .map_err(|_| ())?;
-    if components.next().is_some() {
-        return Err(());
+fn classify_family_owned_revision(
+    root: Node<'_, '_>,
+    family: FamilyOwnedArtifact,
+) -> FamilyOwnedRevision {
+    // The tracked native DCS and spreadsheet contracts define their revision
+    // through root/schema namespaces. They do not define a root `version`
+    // attribute. Older signatures remain an explicit evidence-backed list;
+    // neither reviewed contract currently records one.
+    const DCS_OLDER_SCHEMA_NAMESPACES: &[&str] = &[];
+    const MXL_OLDER_SCHEMA_NAMESPACES: &[&str] = &[];
+
+    let (current_root_namespace, older_root_namespaces, allowed_namespaces): (
+        &str,
+        &[&str],
+        &[&str],
+    ) = match family {
+        FamilyOwnedArtifact::DataComposition => (
+            xml::DATA_COMPOSITION_SCHEMA_NS,
+            DCS_OLDER_SCHEMA_NAMESPACES,
+            &[
+                xml::DATA_COMPOSITION_SCHEMA_NS,
+                "http://v8.1c.ru/8.1/data-composition-system/common",
+                "http://v8.1c.ru/8.1/data-composition-system/core",
+                "http://v8.1c.ru/8.1/data-composition-system/settings",
+                "http://v8.1c.ru/8.1/data/core",
+                "http://v8.1c.ru/8.1/data/ui",
+                "http://v8.1c.ru/8.1/data/ui/style",
+                "http://v8.1c.ru/8.1/data/ui/fonts/system",
+                "http://v8.1c.ru/8.1/data/ui/colors/web",
+                "http://v8.1c.ru/8.1/data/ui/colors/windows",
+                "http://www.w3.org/2001/XMLSchema",
+                "http://www.w3.org/2001/XMLSchema-instance",
+                "http://www.w3.org/XML/1998/namespace",
+            ],
+        ),
+        FamilyOwnedArtifact::Spreadsheet => (
+            xml::SPREADSHEET_DOCUMENT_NS,
+            MXL_OLDER_SCHEMA_NAMESPACES,
+            &[
+                xml::SPREADSHEET_DOCUMENT_NS,
+                "http://v8.1c.ru/8.1/data/ui/style",
+                "http://v8.1c.ru/8.1/data/core",
+                "http://v8.1c.ru/8.1/data/ui",
+                "http://www.w3.org/2001/XMLSchema",
+                "http://www.w3.org/2001/XMLSchema-instance",
+                "http://www.w3.org/XML/1998/namespace",
+            ],
+        ),
+    };
+    let Some(root_namespace) = root.tag_name().namespace() else {
+        return FamilyOwnedRevision::UnknownPossiblyNewer;
+    };
+    if older_root_namespaces.contains(&root_namespace) {
+        return FamilyOwnedRevision::Older;
     }
-    Ok(match (major, minor) {
-        (0, _) => FamilyOwnedRevision::Older,
-        (1, 0) => FamilyOwnedRevision::Supported,
-        _ => FamilyOwnedRevision::Newer,
-    })
+    if root_namespace != current_root_namespace {
+        return FamilyOwnedRevision::UnknownPossiblyNewer;
+    }
+    let uses_only_reviewed_namespaces = root.descendants().filter(Node::is_element).all(|node| {
+        node.tag_name()
+            .namespace()
+            .is_some_and(|namespace| allowed_namespaces.contains(&namespace))
+            && node.attributes().all(|attribute| {
+                attribute
+                    .namespace()
+                    .is_none_or(|namespace| allowed_namespaces.contains(&namespace))
+            })
+    });
+    if uses_only_reviewed_namespaces {
+        FamilyOwnedRevision::Supported
+    } else {
+        FamilyOwnedRevision::UnknownPossiblyNewer
+    }
 }
 
 fn version_is_inherited_when_missing(root: Node<'_, '_>) -> bool {

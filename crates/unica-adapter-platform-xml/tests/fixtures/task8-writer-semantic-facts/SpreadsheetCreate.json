@@ -1,552 +1,48 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "variant": "SpreadsheetCreate",
   "provenance": {
-    "source": "Approved Task 8 design, Task 5 semantic contract, and the pre-migration v2_20 legacy semantic oracle; exact facts were reviewed against the command DTO and legacy writer behavior.",
-    "reviewedEvidence": [
-      ".superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/task-8-brief.md",
-      "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/legacy-semantic-oracle.json",
-      "crates/unica-adapter-platform-xml/tests/task5_legacy_parity.rs"
+    "verification": "reviewed-against-tracked-sources",
+    "normalization": "Hand-authored semantic facts omit transport-generated UUID identifiers, workspace/session coordinates, parser ordinals, hashes, and native source keys while retaining meaningful identities, kinds, properties, values, relations, facets, coverage, status, diagnostics, roots, namespaces, and domain structure.",
+    "sources": [
+      {
+        "path": "spec/designs/2026-07-26-versioned-source-adapter-architecture.md",
+        "lineStart": 315,
+        "lineEnd": 405,
+        "sha256": "87f85c9346b031287041a05cb90238aba6a070e74ee9dd26d0f0467398b4a3db",
+        "claim": "Defines canonical semantic identities, typed properties, relations, facets, value types, and value states."
+      },
+      {
+        "path": "crates/unica-adapter-platform-xml/tests/legacy_parity.rs",
+        "lineStart": 119,
+        "lineEnd": 150,
+        "sha256": "d901fffef0ca68ef2ee749bdb1c60177a125082e9625b2942e109ee7034c0d3d",
+        "claim": "Defines the independent exact semantic fact-multiset comparison used by Task 5 parity."
+      },
+      {
+        "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/legacy-semantic-oracle.json",
+        "lineStart": 11551,
+        "lineEnd": 11552,
+        "sha256": "75feda9cab247618c221c35777046681033d1883c3814b21cdb42dc420d1dcbd",
+        "claim": "Task 5 oracle records its legacy-tools plus independent-crosswalk provenance and schema version."
+      },
+      {
+        "path": "plugins/unica/references/specs/1c-spreadsheet-spec.md",
+        "lineStart": 7,
+        "lineEnd": 39,
+        "sha256": "ffe3648707528e76f03a71c18132ce45485ab67b8efcce4a0120d79663cd5052",
+        "claim": "Defines the genuine spreadsheet root, namespace signature, and semantic document structure without a root version attribute."
+      }
     ]
   },
   "removed": [],
   "added": [
     {
       "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.1/data/core",
-          "document": 0,
-          "ordinal_path": "3.2.1.1.2.1",
-          "semantic_kind": "structure:http://v8.1c.ru/8.1/data/core:item",
-          "value": null,
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.1/data/core",
-          "document": 0,
-          "ordinal_path": "3.2.1.1.2.1.1",
-          "semantic_kind": "structure:http://v8.1c.ru/8.1/data/core:lang",
-          "value": "ru",
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.1/data/core",
-          "document": 0,
-          "ordinal_path": "3.2.1.1.2.1.2",
-          "semantic_kind": "structure:http://v8.1c.ru/8.1/data/core:content",
-          "value": "Matrix value",
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
+        "StandaloneElement": {
           "family": "spreadsheet",
           "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "",
-          "semantic_kind": "document",
-          "value": null,
-          "attributes": [
-            [
-              "formatRevision",
-              "1.0"
-            ]
-          ]
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "1",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:languageSettings",
-          "value": null,
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "1.1",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:currentLanguage",
-          "value": "ru",
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "1.2",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:defaultLanguage",
-          "value": "ru",
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "1.3",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:languageInfo",
-          "value": null,
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "1.3.1",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:id",
-          "value": "ru",
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "1.3.2",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:code",
-          "value": "\u0420\u0443\u0441\u0441\u043a\u0438\u0439",
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "1.3.3",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:description",
-          "value": "\u0420\u0443\u0441\u0441\u043a\u0438\u0439",
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "10",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:format",
-          "value": null,
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "10.1",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:font",
-          "value": "0",
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "10.2",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:fillType",
-          "value": "Text",
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "11",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:format",
-          "value": null,
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "11.1",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:width",
-          "value": "10",
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "2",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:columns",
-          "value": null,
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "2.1",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:size",
-          "value": "1",
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "3",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:rowsItem",
-          "value": null,
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "3.1",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:index",
-          "value": "0",
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "3.2",
-          "semantic_kind": "row",
-          "value": null,
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "3.2.1",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:c",
-          "value": null,
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "3.2.1.1",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:c",
-          "value": null,
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "3.2.1.1.1",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:f",
-          "value": "1",
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "3.2.1.1.2",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:tl",
-          "value": null,
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "4",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:templateMode",
-          "value": "true",
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "5",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:defaultFormatIndex",
-          "value": "2",
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "6",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:height",
-          "value": "1",
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "7",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:vgRows",
-          "value": "1",
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "8",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:namedItem",
-          "value": null,
-          "attributes": [
-            [
-              "semanticType",
-              "NamedItemCells"
-            ]
-          ]
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "8.1",
-          "semantic_kind": "identityName",
-          "value": "MatrixArea",
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "8.2",
-          "semantic_kind": "area",
-          "value": null,
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "8.2.1",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:type",
-          "value": "Rows",
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "8.2.2",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:beginRow",
-          "value": "0",
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "8.2.3",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:endRow",
-          "value": "0",
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "8.2.4",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:beginColumn",
-          "value": "-1",
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "8.2.5",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:endColumn",
-          "value": "-1",
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "spreadsheet",
-          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
-          "document": 0,
-          "ordinal_path": "9",
-          "semantic_kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:font",
+          "kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:font",
           "value": "",
           "attributes": [
             [
@@ -582,6 +78,429 @@
               "false"
             ]
           ]
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:namedItem",
+          "value": null,
+          "attributes": [
+            [
+              "semanticType",
+              "NamedItemCells"
+            ]
+          ]
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "area",
+          "value": null,
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "identityName",
+          "value": "MatrixArea",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "row",
+          "value": null,
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.1/data/core",
+          "kind": "structure:http://v8.1c.ru/8.1/data/core:content",
+          "value": "Matrix value",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.1/data/core",
+          "kind": "structure:http://v8.1c.ru/8.1/data/core:item",
+          "value": null,
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.1/data/core",
+          "kind": "structure:http://v8.1c.ru/8.1/data/core:lang",
+          "value": "ru",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:beginColumn",
+          "value": "-1",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:beginRow",
+          "value": "0",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:c",
+          "value": null,
+          "attributes": []
+        }
+      },
+      "count": 2
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:code",
+          "value": "Русский",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:columns",
+          "value": null,
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:currentLanguage",
+          "value": "ru",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:defaultFormatIndex",
+          "value": "2",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:defaultLanguage",
+          "value": "ru",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:description",
+          "value": "Русский",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:endColumn",
+          "value": "-1",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:endRow",
+          "value": "0",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:f",
+          "value": "1",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:fillType",
+          "value": "Text",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:font",
+          "value": "0",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:format",
+          "value": null,
+          "attributes": []
+        }
+      },
+      "count": 2
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:height",
+          "value": "1",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:id",
+          "value": "ru",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:index",
+          "value": "0",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:languageInfo",
+          "value": null,
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:languageSettings",
+          "value": null,
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:rowsItem",
+          "value": null,
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:size",
+          "value": "1",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:templateMode",
+          "value": "true",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:tl",
+          "value": null,
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:type",
+          "value": "Rows",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:vgRows",
+          "value": "1",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneElement": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "kind": "structure:http://v8.1c.ru/8.2/data/spreadsheet:width",
+          "value": "10",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneRoot": {
+          "family": "spreadsheet",
+          "namespace": "http://v8.1c.ru/8.2/data/spreadsheet",
+          "local_name": "document"
         }
       },
       "count": 1

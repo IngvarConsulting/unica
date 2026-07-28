@@ -1,260 +1,48 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "variant": "DataCompositionEdit",
   "provenance": {
-    "source": "Approved Task 8 design, Task 5 semantic contract, and the pre-migration v2_20 legacy semantic oracle; exact facts were reviewed against the command DTO and legacy writer behavior.",
-    "reviewedEvidence": [
-      ".superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/task-8-brief.md",
-      "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/legacy-semantic-oracle.json",
-      "crates/unica-adapter-platform-xml/tests/task5_legacy_parity.rs"
+    "verification": "reviewed-against-tracked-sources",
+    "normalization": "Hand-authored semantic facts omit transport-generated UUID identifiers, workspace/session coordinates, parser ordinals, hashes, and native source keys while retaining meaningful identities, kinds, properties, values, relations, facets, coverage, status, diagnostics, roots, namespaces, and domain structure.",
+    "sources": [
+      {
+        "path": "spec/designs/2026-07-26-versioned-source-adapter-architecture.md",
+        "lineStart": 315,
+        "lineEnd": 405,
+        "sha256": "87f85c9346b031287041a05cb90238aba6a070e74ee9dd26d0f0467398b4a3db",
+        "claim": "Defines canonical semantic identities, typed properties, relations, facets, value types, and value states."
+      },
+      {
+        "path": "crates/unica-adapter-platform-xml/tests/legacy_parity.rs",
+        "lineStart": 119,
+        "lineEnd": 150,
+        "sha256": "d901fffef0ca68ef2ee749bdb1c60177a125082e9625b2942e109ee7034c0d3d",
+        "claim": "Defines the independent exact semantic fact-multiset comparison used by Task 5 parity."
+      },
+      {
+        "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/legacy-semantic-oracle.json",
+        "lineStart": 11551,
+        "lineEnd": 11552,
+        "sha256": "75feda9cab247618c221c35777046681033d1883c3814b21cdb42dc420d1dcbd",
+        "claim": "Task 5 oracle records its legacy-tools plus independent-crosswalk provenance and schema version."
+      },
+      {
+        "path": "plugins/unica/references/specs/1c-dcs-spec.md",
+        "lineStart": 68,
+        "lineEnd": 100,
+        "sha256": "8d97d7be34a41a5493b45030e4f70144b99b25c1204bb0f4279e45aea2ec8bf0",
+        "claim": "Defines the genuine DCS root and namespace signature without a root version attribute."
+      }
     ]
   },
-  "removed": [
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "dataComposition",
-          "namespace": "http://v8.1c.ru/8.1/data-composition-system/schema",
-          "document": 0,
-          "ordinal_path": "3",
-          "semantic_kind": "settingsVariant",
-          "value": null,
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "dataComposition",
-          "namespace": "http://v8.1c.ru/8.1/data-composition-system/settings",
-          "document": 0,
-          "ordinal_path": "3.1",
-          "semantic_kind": "identityName",
-          "value": "\u041e\u0441\u043d\u043e\u0432\u043d\u043e\u0439",
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "dataComposition",
-          "namespace": "http://v8.1c.ru/8.1/data-composition-system/settings",
-          "document": 0,
-          "ordinal_path": "3.2",
-          "semantic_kind": "structure:http://v8.1c.ru/8.1/data-composition-system/settings:presentation",
-          "value": null,
-          "attributes": [
-            [
-              "semanticType",
-              "v8:LocalStringType"
-            ]
-          ]
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "dataComposition",
-          "namespace": "http://v8.1c.ru/8.1/data-composition-system/settings",
-          "document": 0,
-          "ordinal_path": "3.3",
-          "semantic_kind": "structure:http://v8.1c.ru/8.1/data-composition-system/settings:settings",
-          "value": null,
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "dataComposition",
-          "namespace": "http://v8.1c.ru/8.1/data-composition-system/settings",
-          "document": 0,
-          "ordinal_path": "3.3.1",
-          "semantic_kind": "structure:http://v8.1c.ru/8.1/data-composition-system/settings:selection",
-          "value": null,
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "dataComposition",
-          "namespace": "http://v8.1c.ru/8.1/data-composition-system/settings",
-          "document": 0,
-          "ordinal_path": "3.3.1.1",
-          "semantic_kind": "structure:http://v8.1c.ru/8.1/data-composition-system/settings:item",
-          "value": "",
-          "attributes": [
-            [
-              "semanticType",
-              "dcsset:SelectedItemAuto"
-            ]
-          ]
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "dataComposition",
-          "namespace": "http://v8.1c.ru/8.1/data-composition-system/settings",
-          "document": 0,
-          "ordinal_path": "3.3.2",
-          "semantic_kind": "structure:http://v8.1c.ru/8.1/data-composition-system/settings:item",
-          "value": null,
-          "attributes": [
-            [
-              "semanticType",
-              "dcsset:StructureItemGroup"
-            ]
-          ]
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "dataComposition",
-          "namespace": "http://v8.1c.ru/8.1/data-composition-system/settings",
-          "document": 0,
-          "ordinal_path": "3.3.2.1",
-          "semantic_kind": "structure:http://v8.1c.ru/8.1/data-composition-system/settings:order",
-          "value": null,
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "dataComposition",
-          "namespace": "http://v8.1c.ru/8.1/data-composition-system/settings",
-          "document": 0,
-          "ordinal_path": "3.3.2.1.1",
-          "semantic_kind": "structure:http://v8.1c.ru/8.1/data-composition-system/settings:item",
-          "value": "",
-          "attributes": [
-            [
-              "semanticType",
-              "dcsset:OrderItemAuto"
-            ]
-          ]
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "dataComposition",
-          "namespace": "http://v8.1c.ru/8.1/data-composition-system/settings",
-          "document": 0,
-          "ordinal_path": "3.3.2.2",
-          "semantic_kind": "structure:http://v8.1c.ru/8.1/data-composition-system/settings:selection",
-          "value": null,
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "dataComposition",
-          "namespace": "http://v8.1c.ru/8.1/data-composition-system/settings",
-          "document": 0,
-          "ordinal_path": "3.3.2.2.1",
-          "semantic_kind": "structure:http://v8.1c.ru/8.1/data-composition-system/settings:item",
-          "value": "",
-          "attributes": [
-            [
-              "semanticType",
-              "dcsset:SelectedItemAuto"
-            ]
-          ]
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "dataComposition",
-          "namespace": "http://v8.1c.ru/8.1/data/core",
-          "document": 0,
-          "ordinal_path": "3.2.1",
-          "semantic_kind": "structure:http://v8.1c.ru/8.1/data/core:item",
-          "value": null,
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "dataComposition",
-          "namespace": "http://v8.1c.ru/8.1/data/core",
-          "document": 0,
-          "ordinal_path": "3.2.1.1",
-          "semantic_kind": "structure:http://v8.1c.ru/8.1/data/core:lang",
-          "value": "ru",
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "dataComposition",
-          "namespace": "http://v8.1c.ru/8.1/data/core",
-          "document": 0,
-          "ordinal_path": "3.2.1.2",
-          "semantic_kind": "structure:http://v8.1c.ru/8.1/data/core:content",
-          "value": "\u041e\u0441\u043d\u043e\u0432\u043d\u043e\u0439",
-          "attributes": []
-        }
-      },
-      "count": 1
-    }
-  ],
+  "removed": [],
   "added": [
     {
       "fact": {
-        "StandaloneStructure": {
+        "StandaloneElement": {
           "family": "dataComposition",
           "namespace": "http://v8.1c.ru/8.1/data-composition-system/schema",
-          "document": 0,
-          "ordinal_path": "3",
-          "semantic_kind": "parameter",
-          "value": null,
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "dataComposition",
-          "namespace": "http://v8.1c.ru/8.1/data-composition-system/schema",
-          "document": 0,
-          "ordinal_path": "3.1",
-          "semantic_kind": "identityName",
+          "kind": "identityName",
           "value": "MatrixParameter",
           "attributes": []
         }
@@ -263,220 +51,11 @@
     },
     {
       "fact": {
-        "StandaloneStructure": {
+        "StandaloneElement": {
           "family": "dataComposition",
           "namespace": "http://v8.1c.ru/8.1/data-composition-system/schema",
-          "document": 0,
-          "ordinal_path": "4",
-          "semantic_kind": "settingsVariant",
+          "kind": "parameter",
           "value": null,
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "dataComposition",
-          "namespace": "http://v8.1c.ru/8.1/data-composition-system/settings",
-          "document": 0,
-          "ordinal_path": "4.1",
-          "semantic_kind": "identityName",
-          "value": "\u041e\u0441\u043d\u043e\u0432\u043d\u043e\u0439",
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "dataComposition",
-          "namespace": "http://v8.1c.ru/8.1/data-composition-system/settings",
-          "document": 0,
-          "ordinal_path": "4.2",
-          "semantic_kind": "structure:http://v8.1c.ru/8.1/data-composition-system/settings:presentation",
-          "value": null,
-          "attributes": [
-            [
-              "semanticType",
-              "v8:LocalStringType"
-            ]
-          ]
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "dataComposition",
-          "namespace": "http://v8.1c.ru/8.1/data-composition-system/settings",
-          "document": 0,
-          "ordinal_path": "4.3",
-          "semantic_kind": "structure:http://v8.1c.ru/8.1/data-composition-system/settings:settings",
-          "value": null,
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "dataComposition",
-          "namespace": "http://v8.1c.ru/8.1/data-composition-system/settings",
-          "document": 0,
-          "ordinal_path": "4.3.1",
-          "semantic_kind": "structure:http://v8.1c.ru/8.1/data-composition-system/settings:selection",
-          "value": null,
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "dataComposition",
-          "namespace": "http://v8.1c.ru/8.1/data-composition-system/settings",
-          "document": 0,
-          "ordinal_path": "4.3.1.1",
-          "semantic_kind": "structure:http://v8.1c.ru/8.1/data-composition-system/settings:item",
-          "value": "",
-          "attributes": [
-            [
-              "semanticType",
-              "dcsset:SelectedItemAuto"
-            ]
-          ]
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "dataComposition",
-          "namespace": "http://v8.1c.ru/8.1/data-composition-system/settings",
-          "document": 0,
-          "ordinal_path": "4.3.2",
-          "semantic_kind": "structure:http://v8.1c.ru/8.1/data-composition-system/settings:item",
-          "value": null,
-          "attributes": [
-            [
-              "semanticType",
-              "dcsset:StructureItemGroup"
-            ]
-          ]
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "dataComposition",
-          "namespace": "http://v8.1c.ru/8.1/data-composition-system/settings",
-          "document": 0,
-          "ordinal_path": "4.3.2.1",
-          "semantic_kind": "structure:http://v8.1c.ru/8.1/data-composition-system/settings:order",
-          "value": null,
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "dataComposition",
-          "namespace": "http://v8.1c.ru/8.1/data-composition-system/settings",
-          "document": 0,
-          "ordinal_path": "4.3.2.1.1",
-          "semantic_kind": "structure:http://v8.1c.ru/8.1/data-composition-system/settings:item",
-          "value": "",
-          "attributes": [
-            [
-              "semanticType",
-              "dcsset:OrderItemAuto"
-            ]
-          ]
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "dataComposition",
-          "namespace": "http://v8.1c.ru/8.1/data-composition-system/settings",
-          "document": 0,
-          "ordinal_path": "4.3.2.2",
-          "semantic_kind": "structure:http://v8.1c.ru/8.1/data-composition-system/settings:selection",
-          "value": null,
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "dataComposition",
-          "namespace": "http://v8.1c.ru/8.1/data-composition-system/settings",
-          "document": 0,
-          "ordinal_path": "4.3.2.2.1",
-          "semantic_kind": "structure:http://v8.1c.ru/8.1/data-composition-system/settings:item",
-          "value": "",
-          "attributes": [
-            [
-              "semanticType",
-              "dcsset:SelectedItemAuto"
-            ]
-          ]
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "dataComposition",
-          "namespace": "http://v8.1c.ru/8.1/data/core",
-          "document": 0,
-          "ordinal_path": "4.2.1",
-          "semantic_kind": "structure:http://v8.1c.ru/8.1/data/core:item",
-          "value": null,
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "dataComposition",
-          "namespace": "http://v8.1c.ru/8.1/data/core",
-          "document": 0,
-          "ordinal_path": "4.2.1.1",
-          "semantic_kind": "structure:http://v8.1c.ru/8.1/data/core:lang",
-          "value": "ru",
-          "attributes": []
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "StandaloneStructure": {
-          "family": "dataComposition",
-          "namespace": "http://v8.1c.ru/8.1/data/core",
-          "document": 0,
-          "ordinal_path": "4.2.1.2",
-          "semantic_kind": "structure:http://v8.1c.ru/8.1/data/core:content",
-          "value": "\u041e\u0441\u043d\u043e\u0432\u043d\u043e\u0439",
           "attributes": []
         }
       },

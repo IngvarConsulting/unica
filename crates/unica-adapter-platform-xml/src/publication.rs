@@ -7554,10 +7554,10 @@ mod tests {
                 "unsupported",
             ),
             (
-                "versionless-family-with-version",
+                "versionless-family-with-unknown-schema",
                 "Templates/Main/Ext/Template.xml",
-                r#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" version="2.20"/>"#,
-                "versionless",
+                r#"<DataCompositionSchema xmlns="urn:unica:unsupported:dcs"/>"#,
+                "unsupported",
             ),
         ];
         for (case, relative, xml, expected) in cases {

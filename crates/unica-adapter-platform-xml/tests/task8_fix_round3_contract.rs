@@ -216,8 +216,7 @@ fn compatibility_classification_is_root_and_owner_aware_not_basename_based() {
         &dcs,
         concat!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
-            "<DataCompositionSchema xmlns=\"http://v8.1c.ru/8.1/data-composition-system/schema\" ",
-            "version=\"1.0\"/>"
+            "<DataCompositionSchema xmlns=\"http://v8.1c.ru/8.1/data-composition-system/schema\"/>"
         ),
     )
     .unwrap();
@@ -225,7 +224,7 @@ fn compatibility_classification_is_root_and_owner_aware_not_basename_based() {
         &mxl,
         concat!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
-            "<document xmlns=\"http://v8.1c.ru/8.2/data/spreadsheet\" version=\"1.0\"/>"
+            "<document xmlns=\"http://v8.1c.ru/8.2/data/spreadsheet\"/>"
         ),
     )
     .unwrap();

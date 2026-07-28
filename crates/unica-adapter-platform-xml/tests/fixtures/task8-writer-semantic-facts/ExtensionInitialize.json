@@ -1,50 +1,305 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "variant": "ExtensionInitialize",
   "provenance": {
-    "source": "Approved Task 8 design, Task 5 semantic contract, and the pre-migration v2_20 legacy semantic oracle; exact facts were reviewed against the command DTO and legacy writer behavior.",
-    "reviewedEvidence": [
-      ".superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/task-8-brief.md",
-      "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/legacy-semantic-oracle.json",
-      "crates/unica-adapter-platform-xml/tests/task5_legacy_parity.rs"
+    "verification": "reviewed-against-tracked-sources",
+    "normalization": "Hand-authored semantic facts omit transport-generated UUID identifiers, workspace/session coordinates, parser ordinals, hashes, and native source keys while retaining meaningful identities, kinds, properties, values, relations, facets, coverage, status, diagnostics, roots, namespaces, and domain structure.",
+    "sources": [
+      {
+        "path": "spec/designs/2026-07-26-versioned-source-adapter-architecture.md",
+        "lineStart": 315,
+        "lineEnd": 405,
+        "sha256": "87f85c9346b031287041a05cb90238aba6a070e74ee9dd26d0f0467398b4a3db",
+        "claim": "Defines canonical semantic identities, typed properties, relations, facets, value types, and value states."
+      },
+      {
+        "path": "crates/unica-adapter-platform-xml/tests/legacy_parity.rs",
+        "lineStart": 119,
+        "lineEnd": 150,
+        "sha256": "d901fffef0ca68ef2ee749bdb1c60177a125082e9625b2942e109ee7034c0d3d",
+        "claim": "Defines the independent exact semantic fact-multiset comparison used by Task 5 parity."
+      },
+      {
+        "path": "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/legacy-semantic-oracle.json",
+        "lineStart": 11551,
+        "lineEnd": 11552,
+        "sha256": "75feda9cab247618c221c35777046681033d1883c3814b21cdb42dc420d1dcbd",
+        "claim": "Task 5 oracle records its legacy-tools plus independent-crosswalk provenance and schema version."
+      }
     ]
   },
   "removed": [],
   "added": [
     {
       "fact": {
-        "Envelope": {
-          "status": "\"partial\"",
-          "root": [
-            "sourceRoot",
-            "Source"
-          ],
-          "consistency": "\"consistent\""
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
         "Diagnostic": {
-          "code": "unmappedSemanticFact",
-          "message": "source contains a property outside the registered semantic vocabulary",
-          "details": "{\"objectRef\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"uuid:<semantic-id>\",\"identityStrength\":\"persistent\",\"kind\":\"configuration\",\"displayName\":\"MatrixExtension\"}}"
+          "code": "unmappedSemanticFact"
         }
       },
       "count": 18
     },
     {
       "fact": {
+        "Envelope": {
+          "status": "partial",
+          "root_kind": "sourceRoot",
+          "root_name": "Source",
+          "consistency": "consistent",
+          "coverage": [
+            "partial"
+          ]
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "role",
+          "owner_name": "MatrixExtension_ОсновнаяРоль",
+          "group": "backing",
+          "member": "backing.content.available"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "configuration",
+          "owner_name": "MatrixExtension",
+          "group": "identity",
+          "member": "metadata.comment"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "configuration",
+          "owner_name": "MatrixExtension",
+          "group": "identity",
+          "member": "metadata.kind"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "language",
+          "owner_name": "Русский",
+          "group": "identity",
+          "member": "metadata.kind"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "role",
+          "owner_name": "MatrixExtension_ОсновнаяРоль",
+          "group": "identity",
+          "member": "metadata.kind"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "configuration",
+          "owner_name": "MatrixExtension",
+          "group": "identity",
+          "member": "metadata.name"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "language",
+          "owner_name": "Русский",
+          "group": "identity",
+          "member": "metadata.name"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "role",
+          "owner_name": "MatrixExtension_ОсновнаяРоль",
+          "group": "identity",
+          "member": "metadata.name"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "configuration",
+          "owner_name": "MatrixExtension",
+          "group": "identity",
+          "member": "metadata.synonym"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "configuration",
+          "owner_name": "MatrixExtension",
+          "group": "identity",
+          "member": "metadata.uuid"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "configuration",
+          "owner_name": "MatrixExtension",
+          "group": "structure",
+          "member": "children"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "sourceRoot",
+          "owner_name": "Source",
+          "group": "structure",
+          "member": "children"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "configuration",
+          "owner_name": "MatrixExtension",
+          "group": "support",
+          "member": "support.authorability"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "language",
+          "owner_name": "Русский",
+          "group": "support",
+          "member": "support.authorability"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "role",
+          "owner_name": "MatrixExtension_ОсновнаяРоль",
+          "group": "support",
+          "member": "support.authorability"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "configuration",
+          "owner_name": "MatrixExtension",
+          "group": "support",
+          "member": "support.editCapability"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "language",
+          "owner_name": "Русский",
+          "group": "support",
+          "member": "support.editCapability"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "role",
+          "owner_name": "MatrixExtension_ОсновнаяРоль",
+          "group": "support",
+          "member": "support.editCapability"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "configuration",
+          "owner_name": "MatrixExtension",
+          "group": "support",
+          "member": "support.state"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "language",
+          "owner_name": "Русский",
+          "group": "support",
+          "member": "support.state"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "role",
+          "owner_name": "MatrixExtension_ОсновнаяРоль",
+          "group": "support",
+          "member": "support.state"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facet": {
+          "owner_kind": "configuration",
+          "owner_name": "MatrixExtension",
+          "group": "unknown",
+          "member": "unknown.facts"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
         "Identity": {
           "kind": "configuration",
           "name": "MatrixExtension",
-          "reference_kind": "configuration",
-          "reference_name": "MatrixExtension",
-          "capability_state": "{\"resolutionState\":\"resolved\",\"authorability\":\"unknown_read_only\"}",
-          "capability": "{\"resolution\":\"resolved\",\"identity\":\"persistent\",\"consistency\":\"consistent\",\"coverage\":\"partial\",\"format\":\"compatible\",\"sourceAccess\":\"readOnly\",\"authorability\":\"authorable\"}",
-          "action_profile": "\"generic_metadata_object\"",
-          "facet_visibility": "Full"
+          "coverage": "partial"
         }
       },
       "count": 1
@@ -53,13 +308,8 @@
       "fact": {
         "Identity": {
           "kind": "language",
-          "name": "\u0420\u0443\u0441\u0441\u043a\u0438\u0439",
-          "reference_kind": "language",
-          "reference_name": "\u0420\u0443\u0441\u0441\u043a\u0438\u0439",
-          "capability_state": "{\"resolutionState\":\"unresolved\",\"authorability\":\"unknown_read_only\"}",
-          "capability": "{\"resolution\":\"unresolved\",\"identity\":\"derived\",\"consistency\":\"consistent\",\"coverage\":\"partial\",\"format\":\"compatible\",\"sourceAccess\":\"readOnly\",\"authorability\":\"derived_read_only\"}",
-          "action_profile": "\"generic_metadata_object\"",
-          "facet_visibility": "Full"
+          "name": "Русский",
+          "coverage": "partial"
         }
       },
       "count": 1
@@ -68,13 +318,8 @@
       "fact": {
         "Identity": {
           "kind": "role",
-          "name": "MatrixExtension_\u041e\u0441\u043d\u043e\u0432\u043d\u0430\u044f\u0420\u043e\u043b\u044c",
-          "reference_kind": "role",
-          "reference_name": "MatrixExtension_\u041e\u0441\u043d\u043e\u0432\u043d\u0430\u044f\u0420\u043e\u043b\u044c",
-          "capability_state": "{\"resolutionState\":\"unresolved\",\"authorability\":\"unknown_read_only\"}",
-          "capability": "{\"resolution\":\"unresolved\",\"identity\":\"derived\",\"consistency\":\"consistent\",\"coverage\":\"partial\",\"format\":\"compatible\",\"sourceAccess\":\"readOnly\",\"authorability\":\"derived_read_only\"}",
-          "action_profile": "\"generic_metadata_object\"",
-          "facet_visibility": "Full"
+          "name": "MatrixExtension_ОсновнаяРоль",
+          "coverage": "partial"
         }
       },
       "count": 1
@@ -84,12 +329,20 @@
         "Identity": {
           "kind": "sourceRoot",
           "name": "Source",
-          "reference_kind": "sourceRoot",
-          "reference_name": "Source",
-          "capability_state": "{\"resolutionState\":\"resolved\",\"authorability\":\"derived_read_only\"}",
-          "capability": "{\"resolution\":\"resolved\",\"identity\":\"derived\",\"consistency\":\"consistent\",\"coverage\":\"partial\",\"format\":\"compatible\",\"sourceAccess\":\"readOnly\",\"authorability\":\"derived_read_only\"}",
-          "action_profile": "\"generic_metadata_object\"",
-          "facet_visibility": "Full"
+          "coverage": "partial"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "role",
+          "owner_name": "MatrixExtension_ОсновнаяРоль",
+          "id": "backing.content.available",
+          "value_type": "boolean",
+          "value_state": "computed",
+          "value": "false"
         }
       },
       "count": 1
@@ -100,11 +353,9 @@
           "owner_kind": "configuration",
           "owner_name": "MatrixExtension",
           "id": "metadata.comment",
-          "value_type": "\"string\"",
-          "value_state": "\"absent\"",
-          "value": null,
-          "provenance": "\"declared\"",
-          "capability": "\"unavailable\""
+          "value_type": "string",
+          "value_state": "absent",
+          "value": null
         }
       },
       "count": 1
@@ -115,11 +366,35 @@
           "owner_kind": "configuration",
           "owner_name": "MatrixExtension",
           "id": "metadata.kind",
-          "value_type": "\"string\"",
-          "value_state": "\"computed\"",
-          "value": "{\"type\":\"string\",\"value\":\"configuration\"}",
-          "provenance": "\"derived\"",
-          "capability": "\"readOnly\""
+          "value_type": "string",
+          "value_state": "computed",
+          "value": "configuration"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "language",
+          "owner_name": "Русский",
+          "id": "metadata.kind",
+          "value_type": "string",
+          "value_state": "computed",
+          "value": "language"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "role",
+          "owner_name": "MatrixExtension_ОсновнаяРоль",
+          "id": "metadata.kind",
+          "value_type": "string",
+          "value_state": "computed",
+          "value": "role"
         }
       },
       "count": 1
@@ -130,11 +405,35 @@
           "owner_kind": "configuration",
           "owner_name": "MatrixExtension",
           "id": "metadata.name",
-          "value_type": "\"string\"",
-          "value_state": "\"explicit\"",
-          "value": "{\"type\":\"string\",\"value\":\"MatrixExtension\"}",
-          "provenance": "\"declared\"",
-          "capability": "\"readOnly\""
+          "value_type": "string",
+          "value_state": "explicit",
+          "value": "MatrixExtension"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "language",
+          "owner_name": "Русский",
+          "id": "metadata.name",
+          "value_type": "string",
+          "value_state": "explicit",
+          "value": "Русский"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "role",
+          "owner_name": "MatrixExtension_ОсновнаяРоль",
+          "id": "metadata.name",
+          "value_type": "string",
+          "value_state": "explicit",
+          "value": "MatrixExtension_ОсновнаяРоль"
         }
       },
       "count": 1
@@ -145,26 +444,9 @@
           "owner_kind": "configuration",
           "owner_name": "MatrixExtension",
           "id": "metadata.synonym",
-          "value_type": "\"localizedString\"",
-          "value_state": "\"explicit\"",
-          "value": "{\"type\":\"localizedString\",\"value\":{\"ru\":\"MatrixExtension\"}}",
-          "provenance": "\"declared\"",
-          "capability": "\"readOnly\""
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "Property": {
-          "owner_kind": "configuration",
-          "owner_name": "MatrixExtension",
-          "id": "metadata.uuid",
-          "value_type": "\"uuid\"",
-          "value_state": "\"explicit\"",
-          "value": "{\"type\":\"uuid\",\"value\":\"<semantic-id>\"}",
-          "provenance": "\"declared\"",
-          "capability": "\"readOnly\""
+          "value_type": "localizedString",
+          "value_state": "explicit",
+          "value": "{\"ru\":\"MatrixExtension\"}"
         }
       },
       "count": 1
@@ -175,11 +457,35 @@
           "owner_kind": "configuration",
           "owner_name": "MatrixExtension",
           "id": "support.authorability",
-          "value_type": "\"string\"",
-          "value_state": "\"computed\"",
-          "value": "{\"type\":\"string\",\"value\":\"authorable\"}",
-          "provenance": "\"derived\"",
-          "capability": "\"readOnly\""
+          "value_type": "string",
+          "value_state": "computed",
+          "value": "authorable"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "language",
+          "owner_name": "Русский",
+          "id": "support.authorability",
+          "value_type": "string",
+          "value_state": "computed",
+          "value": "derivedReadOnly"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "role",
+          "owner_name": "MatrixExtension_ОсновнаяРоль",
+          "id": "support.authorability",
+          "value_type": "string",
+          "value_state": "computed",
+          "value": "derivedReadOnly"
         }
       },
       "count": 1
@@ -190,11 +496,35 @@
           "owner_kind": "configuration",
           "owner_name": "MatrixExtension",
           "id": "support.editCapability",
-          "value_type": "\"string\"",
-          "value_state": "\"computed\"",
-          "value": "{\"type\":\"string\",\"value\":\"authorable\"}",
-          "provenance": "\"derived\"",
-          "capability": "\"readOnly\""
+          "value_type": "string",
+          "value_state": "computed",
+          "value": "authorable"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "language",
+          "owner_name": "Русский",
+          "id": "support.editCapability",
+          "value_type": "string",
+          "value_state": "computed",
+          "value": "readOnly"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "role",
+          "owner_name": "MatrixExtension_ОсновнаяРоль",
+          "id": "support.editCapability",
+          "value_type": "string",
+          "value_state": "computed",
+          "value": "readOnly"
         }
       },
       "count": 1
@@ -205,11 +535,35 @@
           "owner_kind": "configuration",
           "owner_name": "MatrixExtension",
           "id": "support.state",
-          "value_type": "\"enum\"",
-          "value_state": "\"computed\"",
-          "value": "{\"type\":\"enum\",\"value\":\"notSupported\"}",
-          "provenance": "\"derived\"",
-          "capability": "\"readOnly\""
+          "value_type": "enum",
+          "value_state": "computed",
+          "value": "notSupported"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "language",
+          "owner_name": "Русский",
+          "id": "support.state",
+          "value_type": "enum",
+          "value_state": "computed",
+          "value": "notSupported"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "role",
+          "owner_name": "MatrixExtension_ОсновнаяРоль",
+          "id": "support.state",
+          "value_type": "enum",
+          "value_state": "computed",
+          "value": "notSupported"
         }
       },
       "count": 1
@@ -220,260 +574,9 @@
           "owner_kind": "configuration",
           "owner_name": "MatrixExtension",
           "id": "unknown.facts",
-          "value_type": "\"list\"",
-          "value_state": "\"explicit\"",
-          "value": "{\"type\":\"list\",\"value\":[{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"unknown\",\"value\":{\"summary\":\"absent\"}}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"string\",\"value\":\"Version8_3_27\"}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"string\",\"value\":\"Customization\"}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"unknown\",\"value\":{\"summary\":\"absent\"}}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"unknown\",\"value\":{\"summary\":\"absent\"}}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"string\",\"value\":\"Language.\u0420\u0443\u0441\u0441\u043a\u0438\u0439\"}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"list\",\"value\":[{\"type\":\"string\",\"value\":\"Role.MatrixExtension_\u041e\u0441\u043d\u043e\u0432\u043d\u0430\u044f\u0420\u043e\u043b\u044c\"}]}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"string\",\"value\":\"ManagedApplication\"}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"unknown\",\"value\":{\"summary\":\"absent\"}}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"string\",\"value\":\"TaxiEnableVersion8_2\"}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"string\",\"value\":\"true\"}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"string\",\"value\":\"MatrixExtension_\"}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"string\",\"value\":\"Adopted\"}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"string\",\"value\":\"Russian\"}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"list\",\"value\":[{\"type\":\"string\",\"value\":\"PlatformApplication\"}]}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"unknown\",\"value\":{\"summary\":\"absent\"}}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"unknown\",\"value\":{\"summary\":\"absent\"}}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"unknown\",\"value\":{\"summary\":\"absent\"}}}}]}",
-          "provenance": "\"declared\"",
-          "capability": "\"readOnly\""
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "Property": {
-          "owner_kind": "language",
-          "owner_name": "\u0420\u0443\u0441\u0441\u043a\u0438\u0439",
-          "id": "metadata.kind",
-          "value_type": "\"string\"",
-          "value_state": "\"computed\"",
-          "value": "{\"type\":\"string\",\"value\":\"language\"}",
-          "provenance": "\"derived\"",
-          "capability": "\"readOnly\""
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "Property": {
-          "owner_kind": "language",
-          "owner_name": "\u0420\u0443\u0441\u0441\u043a\u0438\u0439",
-          "id": "metadata.name",
-          "value_type": "\"string\"",
-          "value_state": "\"explicit\"",
-          "value": "{\"type\":\"string\",\"value\":\"\u0420\u0443\u0441\u0441\u043a\u0438\u0439\"}",
-          "provenance": "\"declared\"",
-          "capability": "\"readOnly\""
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "Property": {
-          "owner_kind": "language",
-          "owner_name": "\u0420\u0443\u0441\u0441\u043a\u0438\u0439",
-          "id": "support.authorability",
-          "value_type": "\"string\"",
-          "value_state": "\"computed\"",
-          "value": "{\"type\":\"string\",\"value\":\"derivedReadOnly\"}",
-          "provenance": "\"derived\"",
-          "capability": "\"readOnly\""
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "Property": {
-          "owner_kind": "language",
-          "owner_name": "\u0420\u0443\u0441\u0441\u043a\u0438\u0439",
-          "id": "support.editCapability",
-          "value_type": "\"string\"",
-          "value_state": "\"computed\"",
-          "value": "{\"type\":\"string\",\"value\":\"readOnly\"}",
-          "provenance": "\"derived\"",
-          "capability": "\"readOnly\""
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "Property": {
-          "owner_kind": "language",
-          "owner_name": "\u0420\u0443\u0441\u0441\u043a\u0438\u0439",
-          "id": "support.state",
-          "value_type": "\"enum\"",
-          "value_state": "\"computed\"",
-          "value": "{\"type\":\"enum\",\"value\":\"notSupported\"}",
-          "provenance": "\"derived\"",
-          "capability": "\"readOnly\""
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "Property": {
-          "owner_kind": "role",
-          "owner_name": "MatrixExtension_\u041e\u0441\u043d\u043e\u0432\u043d\u0430\u044f\u0420\u043e\u043b\u044c",
-          "id": "backing.content.available",
-          "value_type": "\"boolean\"",
-          "value_state": "\"computed\"",
-          "value": "{\"type\":\"boolean\",\"value\":false}",
-          "provenance": "\"derived\"",
-          "capability": "\"readOnly\""
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "Property": {
-          "owner_kind": "role",
-          "owner_name": "MatrixExtension_\u041e\u0441\u043d\u043e\u0432\u043d\u0430\u044f\u0420\u043e\u043b\u044c",
-          "id": "metadata.kind",
-          "value_type": "\"string\"",
-          "value_state": "\"computed\"",
-          "value": "{\"type\":\"string\",\"value\":\"role\"}",
-          "provenance": "\"derived\"",
-          "capability": "\"readOnly\""
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "Property": {
-          "owner_kind": "role",
-          "owner_name": "MatrixExtension_\u041e\u0441\u043d\u043e\u0432\u043d\u0430\u044f\u0420\u043e\u043b\u044c",
-          "id": "metadata.name",
-          "value_type": "\"string\"",
-          "value_state": "\"explicit\"",
-          "value": "{\"type\":\"string\",\"value\":\"MatrixExtension_\u041e\u0441\u043d\u043e\u0432\u043d\u0430\u044f\u0420\u043e\u043b\u044c\"}",
-          "provenance": "\"declared\"",
-          "capability": "\"readOnly\""
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "Property": {
-          "owner_kind": "role",
-          "owner_name": "MatrixExtension_\u041e\u0441\u043d\u043e\u0432\u043d\u0430\u044f\u0420\u043e\u043b\u044c",
-          "id": "support.authorability",
-          "value_type": "\"string\"",
-          "value_state": "\"computed\"",
-          "value": "{\"type\":\"string\",\"value\":\"derivedReadOnly\"}",
-          "provenance": "\"derived\"",
-          "capability": "\"readOnly\""
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "Property": {
-          "owner_kind": "role",
-          "owner_name": "MatrixExtension_\u041e\u0441\u043d\u043e\u0432\u043d\u0430\u044f\u0420\u043e\u043b\u044c",
-          "id": "support.editCapability",
-          "value_type": "\"string\"",
-          "value_state": "\"computed\"",
-          "value": "{\"type\":\"string\",\"value\":\"readOnly\"}",
-          "provenance": "\"derived\"",
-          "capability": "\"readOnly\""
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "Property": {
-          "owner_kind": "role",
-          "owner_name": "MatrixExtension_\u041e\u0441\u043d\u043e\u0432\u043d\u0430\u044f\u0420\u043e\u043b\u044c",
-          "id": "support.state",
-          "value_type": "\"enum\"",
-          "value_state": "\"computed\"",
-          "value": "{\"type\":\"enum\",\"value\":\"notSupported\"}",
-          "provenance": "\"derived\"",
-          "capability": "\"readOnly\""
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "Facets": {
-          "owner_kind": "configuration",
-          "owner_name": "MatrixExtension",
-          "members": "{\"identity\":[\"metadata.kind\",\"metadata.name\",\"metadata.uuid\",\"metadata.synonym\",\"metadata.comment\"],\"structure\":[\"children\"],\"support\":[\"support.state\",\"support.authorability\",\"support.editCapability\"],\"unknown\":[\"unknown.facts\"]}"
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "Facets": {
-          "owner_kind": "language",
-          "owner_name": "\u0420\u0443\u0441\u0441\u043a\u0438\u0439",
-          "members": "{\"identity\":[\"metadata.kind\",\"metadata.name\"],\"support\":[\"support.state\",\"support.authorability\",\"support.editCapability\"]}"
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "Facets": {
-          "owner_kind": "role",
-          "owner_name": "MatrixExtension_\u041e\u0441\u043d\u043e\u0432\u043d\u0430\u044f\u0420\u043e\u043b\u044c",
-          "members": "{\"backing\":[\"backing.content.available\"],\"identity\":[\"metadata.kind\",\"metadata.name\"],\"support\":[\"support.state\",\"support.authorability\",\"support.editCapability\"]}"
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "Facets": {
-          "owner_kind": "sourceRoot",
-          "owner_name": "Source",
-          "members": "{\"structure\":[\"children\"]}"
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "Actions": {
-          "owner_kind": "configuration",
-          "owner_name": "MatrixExtension",
-          "semantic": "[]",
-          "available": "[{\"kind\":\"inspect\",\"target\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"uuid:<semantic-id>\",\"identityStrength\":\"persistent\",\"kind\":\"configuration\",\"displayName\":\"MatrixExtension\"},\"owningRelation\":{\"sourceId\":\"workspace:task8-preservation\",\"relationKey\":\"derived:sha256:<semantic-hash>\",\"kind\":\"contains\"},\"availability\":\"modeled\",\"blockingReasons\":[],\"operationBinding\":null,\"atomicity\":\"read_only\"}]"
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "Actions": {
-          "owner_kind": "language",
-          "owner_name": "\u0420\u0443\u0441\u0441\u043a\u0438\u0439",
-          "semantic": "[]",
-          "available": "[{\"kind\":\"inspect\",\"target\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"derived:sha256:<semantic-hash>\",\"identityStrength\":\"derived\",\"kind\":\"language\",\"displayName\":\"\u0420\u0443\u0441\u0441\u043a\u0438\u0439\"},\"owningRelation\":{\"sourceId\":\"workspace:task8-preservation\",\"relationKey\":\"derived:sha256:<semantic-hash>\",\"kind\":\"contains\"},\"availability\":\"modeled\",\"blockingReasons\":[],\"operationBinding\":null,\"atomicity\":\"read_only\"}]"
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "Actions": {
-          "owner_kind": "role",
-          "owner_name": "MatrixExtension_\u041e\u0441\u043d\u043e\u0432\u043d\u0430\u044f\u0420\u043e\u043b\u044c",
-          "semantic": "[]",
-          "available": "[{\"kind\":\"inspect\",\"target\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"derived:sha256:<semantic-hash>\",\"identityStrength\":\"derived\",\"kind\":\"role\",\"displayName\":\"MatrixExtension_\u041e\u0441\u043d\u043e\u0432\u043d\u0430\u044f\u0420\u043e\u043b\u044c\"},\"owningRelation\":{\"sourceId\":\"workspace:task8-preservation\",\"relationKey\":\"derived:sha256:<semantic-hash>\",\"kind\":\"contains\"},\"availability\":\"modeled\",\"blockingReasons\":[],\"operationBinding\":null,\"atomicity\":\"read_only\"}]"
-        }
-      },
-      "count": 1
-    },
-    {
-      "fact": {
-        "Actions": {
-          "owner_kind": "sourceRoot",
-          "owner_name": "Source",
-          "semantic": "[]",
-          "available": "[{\"kind\":\"inspect\",\"target\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"derived:sha256:<semantic-hash>\",\"identityStrength\":\"derived\",\"kind\":\"sourceRoot\",\"displayName\":\"Source\"},\"owningRelation\":null,\"availability\":\"modeled\",\"blockingReasons\":[],\"operationBinding\":null,\"atomicity\":\"read_only\"}]"
+          "value_type": "list",
+          "value_state": "explicit",
+          "value": "[{\"category\":\"property\",\"value\":{\"summary\":\"absent\"}},{\"category\":\"property\",\"value\":\"Version8_3_27\"},{\"category\":\"property\",\"value\":\"Customization\"},{\"category\":\"property\",\"value\":{\"summary\":\"absent\"}},{\"category\":\"property\",\"value\":{\"summary\":\"absent\"}},{\"category\":\"property\",\"value\":\"Language.Русский\"},{\"category\":\"property\",\"value\":[\"Role.MatrixExtension_ОсновнаяРоль\"]},{\"category\":\"property\",\"value\":\"ManagedApplication\"},{\"category\":\"property\",\"value\":{\"summary\":\"absent\"}},{\"category\":\"property\",\"value\":\"TaxiEnableVersion8_2\"},{\"category\":\"property\",\"value\":\"true\"},{\"category\":\"property\",\"value\":\"MatrixExtension_\"},{\"category\":\"property\",\"value\":\"Adopted\"},{\"category\":\"property\",\"value\":\"Russian\"},{\"category\":\"property\",\"value\":[\"PlatformApplication\"]},{\"category\":\"property\",\"value\":{\"summary\":\"absent\"}},{\"category\":\"property\",\"value\":{\"summary\":\"absent\"}},{\"category\":\"property\",\"value\":{\"summary\":\"absent\"}}]"
         }
       },
       "count": 1
@@ -481,7 +584,12 @@
     {
       "fact": {
         "Relation": {
-          "value": "{\"relationRef\":{\"sourceId\":\"workspace:task8-preservation\",\"relationKey\":\"derived:sha256:<semantic-hash>\",\"kind\":\"contains\"},\"groupRef\":{\"sourceId\":\"workspace:task8-preservation\",\"groupKey\":\"group:sha256:<semantic-hash>\",\"owner\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"derived:sha256:<semantic-hash>\",\"identityStrength\":\"derived\",\"kind\":\"sourceRoot\",\"displayName\":\"Source\"},\"role\":\"children\",\"kind\":\"contains\"},\"identityStrength\":\"derived\",\"kind\":\"contains\",\"role\":\"children\",\"source\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"derived:sha256:<semantic-hash>\",\"identityStrength\":\"derived\",\"kind\":\"sourceRoot\",\"displayName\":\"Source\"},\"target\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"uuid:<semantic-id>\",\"identityStrength\":\"persistent\",\"kind\":\"configuration\",\"displayName\":\"MatrixExtension\"},\"capability\":{\"resolution\":\"resolved\",\"identity\":\"derived\",\"consistency\":\"consistent\",\"coverage\":\"partial\",\"format\":\"compatible\",\"sourceAccess\":\"readOnly\",\"authorability\":\"derived_read_only\"}}"
+          "kind": "contains",
+          "role": "children",
+          "source_kind": "configuration",
+          "source_name": "MatrixExtension",
+          "target_kind": "language",
+          "target_name": "Русский"
         }
       },
       "count": 1
@@ -489,7 +597,12 @@
     {
       "fact": {
         "Relation": {
-          "value": "{\"relationRef\":{\"sourceId\":\"workspace:task8-preservation\",\"relationKey\":\"derived:sha256:<semantic-hash>\",\"kind\":\"contains\"},\"groupRef\":{\"sourceId\":\"workspace:task8-preservation\",\"groupKey\":\"group:sha256:<semantic-hash>\",\"owner\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"uuid:<semantic-id>\",\"identityStrength\":\"persistent\",\"kind\":\"configuration\",\"displayName\":\"MatrixExtension\"},\"role\":\"children\",\"kind\":\"contains\"},\"identityStrength\":\"derived\",\"kind\":\"contains\",\"role\":\"children\",\"source\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"uuid:<semantic-id>\",\"identityStrength\":\"persistent\",\"kind\":\"configuration\",\"displayName\":\"MatrixExtension\"},\"target\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"derived:sha256:<semantic-hash>\",\"identityStrength\":\"derived\",\"kind\":\"language\",\"displayName\":\"\u0420\u0443\u0441\u0441\u043a\u0438\u0439\"},\"capability\":{\"resolution\":\"resolved\",\"identity\":\"derived\",\"consistency\":\"consistent\",\"coverage\":\"partial\",\"format\":\"compatible\",\"sourceAccess\":\"readOnly\",\"authorability\":\"derived_read_only\"}}"
+          "kind": "contains",
+          "role": "children",
+          "source_kind": "configuration",
+          "source_name": "MatrixExtension",
+          "target_kind": "role",
+          "target_name": "MatrixExtension_ОсновнаяРоль"
         }
       },
       "count": 1
@@ -497,7 +610,12 @@
     {
       "fact": {
         "Relation": {
-          "value": "{\"relationRef\":{\"sourceId\":\"workspace:task8-preservation\",\"relationKey\":\"derived:sha256:<semantic-hash>\",\"kind\":\"contains\"},\"groupRef\":{\"sourceId\":\"workspace:task8-preservation\",\"groupKey\":\"group:sha256:<semantic-hash>\",\"owner\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"uuid:<semantic-id>\",\"identityStrength\":\"persistent\",\"kind\":\"configuration\",\"displayName\":\"MatrixExtension\"},\"role\":\"children\",\"kind\":\"contains\"},\"identityStrength\":\"derived\",\"kind\":\"contains\",\"role\":\"children\",\"source\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"uuid:<semantic-id>\",\"identityStrength\":\"persistent\",\"kind\":\"configuration\",\"displayName\":\"MatrixExtension\"},\"target\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"derived:sha256:<semantic-hash>\",\"identityStrength\":\"derived\",\"kind\":\"role\",\"displayName\":\"MatrixExtension_\u041e\u0441\u043d\u043e\u0432\u043d\u0430\u044f\u0420\u043e\u043b\u044c\"},\"capability\":{\"resolution\":\"resolved\",\"identity\":\"derived\",\"consistency\":\"consistent\",\"coverage\":\"partial\",\"format\":\"compatible\",\"sourceAccess\":\"readOnly\",\"authorability\":\"derived_read_only\"}}"
+          "kind": "contains",
+          "role": "children",
+          "source_kind": "sourceRoot",
+          "source_name": "Source",
+          "target_kind": "configuration",
+          "target_name": "MatrixExtension"
         }
       },
       "count": 1

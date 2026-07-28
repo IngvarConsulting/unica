@@ -2226,6 +2226,7 @@ fn validate_form_metadata_path_name(argument: &str, value: &str) -> Result<(), S
 
 struct FormCreateInput {
     object_path: PathBuf,
+    semantic_owner: Option<unica_format_core::commands::FormOwnerReference>,
     form_name: String,
     synonym: String,
     purpose: String,
@@ -2254,6 +2255,7 @@ pub(crate) fn add_form(
         let form_name = required_string(args, &["formName", "FormName"], "FormName")?.to_string();
         Ok(FormCreateInput {
             object_path: required_path(args, OBJECT_PATH, "ObjectPath")?,
+            semantic_owner: None,
             synonym: string_arg(args, &["synonym", "Synonym"])
                 .unwrap_or(&form_name)
                 .to_string(),
@@ -2286,6 +2288,18 @@ fn add_form_input(input: FormCreateInput, context: &WorkspaceContext) -> NativeW
         let object_source_text = object_source.text;
         let mut object_text = object_source_text.clone();
         let (object_type, object_name) = detect_form_add_object(&object_text)?;
+        if let Some(expected_owner) = input.semantic_owner {
+            let expected_name = expected_owner
+                .as_str()
+                .rsplit('.')
+                .next()
+                .unwrap_or_default();
+            if expected_name != object_name {
+                return Err(format!(
+                    "selected form owner identity does not match the captured object: expected {expected_name}, captured {object_name}"
+                ));
+            }
+        }
         let format_version = crate::domain::format_profile::ACTIVE_FORMAT_PROFILE
             .export_format
             .to_string();
@@ -11096,9 +11110,14 @@ pub(crate) fn create_form(
         Ok(path) => path.to_path_buf(),
         Err(error) => return form_add_failure(error),
     };
+    let command = match resolve_form_create_owner(command, &object_path, context) {
+        Ok(command) => command,
+        Err(error) => return form_add_failure(error),
+    };
     add_form_input(
         FormCreateInput {
             object_path,
+            semantic_owner: command.owner().cloned(),
             form_name: command.name().as_str().to_string(),
             synonym: command
                 .synonym()
@@ -11114,6 +11133,33 @@ pub(crate) fn create_form(
         },
         context,
     )
+}
+
+fn resolve_form_create_owner(
+    command: &unica_format_core::commands::FormCreate,
+    object_path: &Path,
+    context: &WorkspaceContext,
+) -> Result<unica_format_core::commands::FormCreate, String> {
+    use unica_format_core::commands::{FormOwnerReference, FormOwnerSelection};
+
+    if matches!(command.owner_selection(), FormOwnerSelection::Reference(_)) {
+        return Ok(command.clone());
+    }
+    let resolved_path =
+        resolve_form_add_object_path(absolutize(object_path.to_path_buf(), &context.cwd))?;
+    let source = read_utf8_sig_snapshot(&resolved_path)?;
+    let (object_type, object_name) = detect_form_add_object(&source.text)?;
+    if let Some(expected_name) = command.expected_owner_name() {
+        if expected_name.as_str() != object_name {
+            return Err(format!(
+                "selected form owner name does not match the captured object: expected {}, captured {object_name}",
+                expected_name.as_str()
+            ));
+        }
+    }
+    let owner = FormOwnerReference::new(format!("{object_type}.{object_name}"))
+        .map_err(|error| format!("captured form owner identity is invalid: {error}"))?;
+    Ok(command.clone().resolve_owner(owner))
 }
 
 pub(crate) fn compile_form_typed(

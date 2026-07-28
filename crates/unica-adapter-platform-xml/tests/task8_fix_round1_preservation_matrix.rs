@@ -48,23 +48,18 @@ impl Scenario {
 enum SemanticFact {
     Envelope {
         status: String,
-        root: Option<(String, String)>,
+        root_kind: Option<String>,
+        root_name: Option<String>,
         consistency: Option<String>,
+        coverage: Vec<String>,
     },
     Diagnostic {
         code: String,
-        message: String,
-        details: Option<String>,
     },
     Identity {
         kind: String,
         name: String,
-        reference_kind: String,
-        reference_name: String,
-        capability_state: String,
-        capability: String,
-        action_profile: String,
-        facet_visibility: String,
+        coverage: String,
     },
     Property {
         owner_kind: String,
@@ -73,29 +68,30 @@ enum SemanticFact {
         value_type: String,
         value_state: String,
         value: Option<String>,
-        provenance: String,
-        capability: String,
     },
-    Facets {
+    Facet {
         owner_kind: String,
         owner_name: String,
-        members: String,
-    },
-    Actions {
-        owner_kind: String,
-        owner_name: String,
-        semantic: String,
-        available: String,
+        group: String,
+        member: String,
     },
     Relation {
-        value: String,
+        kind: String,
+        role: String,
+        source_kind: String,
+        source_name: String,
+        target_kind: String,
+        target_name: String,
     },
-    StandaloneStructure {
+    StandaloneRoot {
         family: String,
         namespace: Option<String>,
-        document: usize,
-        ordinal_path: String,
-        semantic_kind: String,
+        local_name: String,
+    },
+    StandaloneElement {
+        family: String,
+        namespace: Option<String>,
+        kind: String,
         value: Option<String>,
         attributes: Vec<(String, String)>,
     },
@@ -118,8 +114,19 @@ struct CountedSemanticFact {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct OracleProvenance {
-    source: String,
-    reviewed_evidence: Vec<String>,
+    verification: String,
+    normalization: String,
+    sources: Vec<OracleSource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OracleSource {
+    path: String,
+    line_start: usize,
+    line_end: usize,
+    sha256: String,
+    claim: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -374,14 +381,7 @@ fn exercise(case: &MatrixCase, scenario: Scenario, root: &Path) {
 }
 
 fn canonical_facts(facts: &SemanticFacts) -> SemanticFacts {
-    let mut canonical = SemanticFacts::new();
-    for (fact, count) in facts {
-        let mut value = serde_json::to_value(fact).expect("semantic fact must serialize");
-        normalize_volatile_identities(&mut value);
-        let fact = serde_json::from_value(value).expect("canonical semantic fact must deserialize");
-        *canonical.entry(fact).or_insert(0) += count;
-    }
-    canonical
+    facts.clone()
 }
 
 fn semantic_delta(
@@ -514,77 +514,6 @@ fn assert_all_xml_is_complete(root: &Path) {
     }
 }
 
-fn normalize_volatile_identities(value: &mut serde_json::Value) {
-    match value {
-        serde_json::Value::String(text) => {
-            *text = replace_opaque_hash_literals(&replace_uuid_literals(text))
-        }
-        serde_json::Value::Array(values) => {
-            for value in values {
-                normalize_volatile_identities(value);
-            }
-        }
-        serde_json::Value::Object(values) => {
-            for value in values.values_mut() {
-                normalize_volatile_identities(value);
-            }
-        }
-        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
-    }
-}
-
-fn replace_opaque_hash_literals(value: &str) -> String {
-    const PREFIX: &str = "sha256:";
-    const HASH_LEN: usize = 64;
-    let mut normalized = String::with_capacity(value.len());
-    let mut cursor = 0;
-    while let Some(relative) = value[cursor..].find(PREFIX) {
-        let prefix_start = cursor + relative;
-        let hash_start = prefix_start + PREFIX.len();
-        let hash_end = hash_start + HASH_LEN;
-        if hash_end <= value.len()
-            && value[hash_start..hash_end]
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit())
-        {
-            normalized.push_str(&value[cursor..hash_start]);
-            normalized.push_str("<semantic-hash>");
-            cursor = hash_end;
-        } else {
-            normalized.push_str(&value[cursor..hash_start]);
-            cursor = hash_start;
-        }
-    }
-    normalized.push_str(&value[cursor..]);
-    normalized
-}
-
-fn replace_uuid_literals(value: &str) -> String {
-    const UUID_LEN: usize = 36;
-    let mut normalized = String::with_capacity(value.len());
-    let mut copied_until = 0;
-    let mut cursor = 0;
-    while cursor + UUID_LEN <= value.len() {
-        if value.is_char_boundary(cursor)
-            && value.is_char_boundary(cursor + UUID_LEN)
-            && uuid::Uuid::parse_str(&value[cursor..cursor + UUID_LEN]).is_ok()
-        {
-            normalized.push_str(&value[copied_until..cursor]);
-            normalized.push_str("<semantic-id>");
-            cursor += UUID_LEN;
-            copied_until = cursor;
-        } else {
-            cursor += value[cursor..]
-                .chars()
-                .next()
-                .map(char::len_utf8)
-                .unwrap_or(1);
-        }
-    }
-    normalized.push_str(&value[copied_until..]);
-    normalized
-}
-
 fn execute(
     command: WriterCommand,
     sources: Vec<(WriterSourceRole, PathBuf)>,
@@ -707,8 +636,51 @@ fn production_target(kind: WriterCommandKind, root: &Path) -> Option<(PathBuf, P
     Some((source_root, target))
 }
 
-fn json_text<T: Serialize>(value: &T) -> String {
-    serde_json::to_string(value).expect("closed semantic value must serialize")
+fn semantic_text<T: Serialize>(value: &T) -> String {
+    semantic_json_text(serde_json::to_value(value).expect("closed semantic value must serialize"))
+}
+
+fn semantic_json_text(value: serde_json::Value) -> String {
+    let value = normalize_semantic_json(value);
+    match value {
+        serde_json::Value::String(value) => value,
+        serde_json::Value::Null => "null".to_string(),
+        value => serde_json::to_string(&value).expect("normalized semantic JSON must serialize"),
+    }
+}
+
+fn normalize_semantic_json(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.into_iter().map(normalize_semantic_json).collect())
+        }
+        serde_json::Value::Object(mut object) => {
+            for key in [
+                "sourceId",
+                "objectKey",
+                "relationKey",
+                "groupKey",
+                "revision",
+                "identityStrength",
+            ] {
+                object.remove(key);
+            }
+            if object.len() == 2 && object.contains_key("type") && object.contains_key("value") {
+                return normalize_semantic_json(
+                    object
+                        .remove("value")
+                        .expect("typed semantic value must contain its payload"),
+                );
+            }
+            serde_json::Value::Object(
+                object
+                    .into_iter()
+                    .map(|(key, value)| (key, normalize_semantic_json(value)))
+                    .collect(),
+            )
+        }
+        value => value,
+    }
 }
 
 fn add_fact(facts: &mut SemanticFacts, fact: SemanticFact) {
@@ -716,18 +688,33 @@ fn add_fact(facts: &mut SemanticFacts, fact: SemanticFact) {
 }
 
 fn normalize_envelope(facts: &mut SemanticFacts, envelope: &NavigationEnvelope) {
+    let coverage = envelope
+        .nodes
+        .iter()
+        .filter_map(|node| {
+            serde_json::to_value(&node.capability)
+                .ok()?
+                .get("coverage")?
+                .as_str()
+                .map(str::to_string)
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
     add_fact(
         facts,
         SemanticFact::Envelope {
-            status: json_text(&envelope.status),
-            root: envelope
+            status: semantic_text(&envelope.status),
+            root_kind: envelope
                 .root
                 .as_ref()
-                .map(|root| (root.kind.as_str().to_string(), root.display_name.clone())),
+                .map(|root| root.kind.as_str().to_string()),
+            root_name: envelope.root.as_ref().map(|root| root.display_name.clone()),
             consistency: envelope
                 .snapshot
                 .as_ref()
-                .map(|snapshot| json_text(&snapshot.consistency)),
+                .map(|snapshot| semantic_text(&snapshot.consistency)),
+            coverage,
         },
     );
     for diagnostic in &envelope.diagnostics {
@@ -735,8 +722,6 @@ fn normalize_envelope(facts: &mut SemanticFacts, envelope: &NavigationEnvelope) 
             facts,
             SemanticFact::Diagnostic {
                 code: diagnostic.code.clone(),
-                message: diagnostic.message.clone(),
-                details: diagnostic.details.as_ref().map(json_text),
             },
         );
     }
@@ -748,52 +733,68 @@ fn normalize_envelope(facts: &mut SemanticFacts, envelope: &NavigationEnvelope) 
             SemanticFact::Identity {
                 kind: owner_kind.clone(),
                 name: owner_name.clone(),
-                reference_kind: node.reference.kind.as_str().to_string(),
-                reference_name: node.reference.display_name.clone(),
-                capability_state: json_text(&node.capability_state),
-                capability: json_text(&node.capability),
-                action_profile: json_text(&node.action_profile),
-                facet_visibility: format!("{:?}", node.facet_visibility),
+                coverage: serde_json::to_value(&node.capability)
+                    .ok()
+                    .and_then(|value| value.get("coverage")?.as_str().map(str::to_string))
+                    .unwrap_or_else(|| "unknown".to_string()),
             },
         );
         for (id, property) in &node.properties {
+            let value_type = semantic_text(&property.value_type());
+            if value_type == "uuid" {
+                continue;
+            }
             add_fact(
                 facts,
                 SemanticFact::Property {
                     owner_kind: owner_kind.clone(),
                     owner_name: owner_name.clone(),
                     id: id.as_str().to_string(),
-                    value_type: json_text(&property.value_type()),
-                    value_state: json_text(&property.value_state()),
-                    value: property.value().map(json_text),
-                    provenance: json_text(&property.provenance()),
-                    capability: json_text(&property.capability()),
+                    value_type,
+                    value_state: semantic_text(&property.value_state()),
+                    value: property.value().map(semantic_text),
                 },
             );
         }
-        add_fact(
-            facts,
-            SemanticFact::Facets {
-                owner_kind: owner_kind.clone(),
-                owner_name: owner_name.clone(),
-                members: json_text(&node.facets),
-            },
-        );
-        add_fact(
-            facts,
-            SemanticFact::Actions {
-                owner_kind,
-                owner_name,
-                semantic: json_text(&node.semantic_actions),
-                available: json_text(&node.actions),
-            },
-        );
+        if let Ok(serde_json::Value::Object(groups)) = serde_json::to_value(&node.facets) {
+            for (group, members) in groups {
+                if let serde_json::Value::Array(members) = members {
+                    for member in members
+                        .into_iter()
+                        .filter_map(|member| member.as_str().map(str::to_string))
+                    {
+                        add_fact(
+                            facts,
+                            SemanticFact::Facet {
+                                owner_kind: owner_kind.clone(),
+                                owner_name: owner_name.clone(),
+                                group: group.clone(),
+                                member,
+                            },
+                        );
+                    }
+                }
+            }
+        }
     }
     for relation in envelope.relation_index.iter() {
+        let value = serde_json::to_value(relation).expect("semantic relation must serialize");
+        let text = |pointer: &str| {
+            value
+                .pointer(pointer)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
         add_fact(
             facts,
             SemanticFact::Relation {
-                value: json_text(relation),
+                kind: text("/kind"),
+                role: text("/role"),
+                source_kind: text("/source/kind"),
+                source_name: text("/source/displayName"),
+                target_kind: text("/target/kind"),
+                target_name: text("/target/displayName"),
             },
         );
     }
@@ -820,7 +821,6 @@ fn normalize_standalone(kind: WriterCommandKind, root: &Path, facts: &mut Semant
         WriterCommandKind::HelpCreate => ("help", root.join("src/Catalogs/Items")),
         _ => return,
     };
-    let mut document = 0;
     for path in files(&artifact_root) {
         let Ok(bytes) = fs::read(&path) else {
             continue;
@@ -833,18 +833,22 @@ fn normalize_standalone(kind: WriterCommandKind, root: &Path, facts: &mut Semant
                 continue;
             };
             let root_element = parsed.root_element();
-            for node in root_element.descendants().filter(|node| node.is_element()) {
-                let mut indexes = Vec::new();
-                let mut cursor = node;
-                while cursor != root_element {
-                    let index = cursor
-                        .prev_siblings()
-                        .filter(|sibling| sibling.is_element())
-                        .count();
-                    indexes.push(index);
-                    cursor = cursor.parent_element().expect("descendant has parent");
+            add_fact(
+                facts,
+                SemanticFact::StandaloneRoot {
+                    family: family.to_string(),
+                    namespace: root_element.tag_name().namespace().map(str::to_string),
+                    local_name: root_element.tag_name().name().to_string(),
+                },
+            );
+            for node in root_element
+                .descendants()
+                .filter(|node| node.is_element())
+                .skip(1)
+            {
+                if is_transport_generated_identifier(node) {
+                    continue;
                 }
-                indexes.reverse();
                 let semantic_kind = standalone_semantic_kind(
                     family,
                     node.tag_name().name(),
@@ -852,6 +856,7 @@ fn normalize_standalone(kind: WriterCommandKind, root: &Path, facts: &mut Semant
                 );
                 let mut attributes = node
                     .attributes()
+                    .filter(|attribute| !matches!(attribute.name(), "uuid" | "version"))
                     .map(|attribute| {
                         (
                             standalone_attribute_kind(attribute.name()).to_string(),
@@ -862,16 +867,10 @@ fn normalize_standalone(kind: WriterCommandKind, root: &Path, facts: &mut Semant
                 attributes.sort();
                 add_fact(
                     facts,
-                    SemanticFact::StandaloneStructure {
+                    SemanticFact::StandaloneElement {
                         family: family.to_string(),
                         namespace: node.tag_name().namespace().map(str::to_string),
-                        document,
-                        ordinal_path: indexes
-                            .iter()
-                            .map(usize::to_string)
-                            .collect::<Vec<_>>()
-                            .join("."),
-                        semantic_kind,
+                        kind: semantic_kind,
                         value: node
                             .children()
                             .all(|child| !child.is_element())
@@ -880,7 +879,6 @@ fn normalize_standalone(kind: WriterCommandKind, root: &Path, facts: &mut Semant
                     },
                 );
             }
-            document += 1;
         } else if matches!(
             path.extension().and_then(|value| value.to_str()),
             Some("bsl" | "html" | "txt")
@@ -924,10 +922,17 @@ fn standalone_attribute_kind(name: &str) -> &str {
     match name {
         "name" => "identity",
         "type" => "semanticType",
-        "uuid" => "stableIdentity",
-        "version" => "formatRevision",
         _ => name,
     }
+}
+
+fn is_transport_generated_identifier(node: roxmltree::Node<'_, '_>) -> bool {
+    matches!(
+        node.tag_name().name(),
+        "ClassId" | "ObjectId" | "TypeId" | "ValueId"
+    ) && node
+        .text()
+        .is_some_and(|value| uuid::Uuid::parse_str(value.trim()).is_ok())
 }
 
 fn make_semantically_unsupported(kind: WriterCommandKind, root: &Path) {
@@ -936,13 +941,13 @@ fn make_semantically_unsupported(kind: WriterCommandKind, root: &Path) {
         WriterCommandKind::DataCompositionCreate | WriterCommandKind::DataCompositionEdit => {
             write(
                 &root.join("standalone/dcs.xml"),
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<DataCompositionSchema xmlns=\"http://v8.1c.ru/8.1/data-composition-system/schema\" version=\"1.1\"/>\n",
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<DataCompositionSchema xmlns=\"urn:unica:future:data-composition\"/>\n",
             );
         }
         WriterCommandKind::SpreadsheetCreate => {
             write(
                 &root.join("standalone/mxl.xml"),
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<document xmlns=\"http://v8.1c.ru/8.2/data/spreadsheet\" version=\"1.1\"/>\n",
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<document xmlns=\"urn:unica:future:spreadsheet\"/>\n",
             );
         }
         WriterCommandKind::ExternalProcessorInitialize => {
@@ -1436,7 +1441,7 @@ fn load_reviewed_oracle(kind: WriterCommandKind) -> ReviewedSemanticOracle {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/task8-writer-semantic-facts")
         .join(format!("{kind:?}.json"));
-    let oracle: ReviewedSemanticOracle =
+    let mut oracle: ReviewedSemanticOracle =
         serde_json::from_slice(&fs::read(&path).unwrap_or_else(|error| {
             panic!(
                 "missing reviewed semantic oracle {}: {error}",
@@ -1449,18 +1454,18 @@ fn load_reviewed_oracle(kind: WriterCommandKind) -> ReviewedSemanticOracle {
                 path.display()
             )
         });
-    assert_eq!(oracle.schema_version, 1, "{}", path.display());
+    assert_eq!(oracle.schema_version, 2, "{}", path.display());
     assert_eq!(oracle.variant, format!("{kind:?}"), "{}", path.display());
-    assert!(
-        !oracle.provenance.source.trim().is_empty(),
+    assert_eq!(
+        oracle.provenance.verification,
+        "reviewed-against-tracked-sources",
         "{}",
         path.display()
     );
-    assert!(
-        !oracle.provenance.reviewed_evidence.is_empty(),
-        "{}",
-        path.display()
-    );
+    assert!(!oracle.provenance.normalization.trim().is_empty());
+    assert!(oracle.provenance.sources.len() >= 2, "{}", path.display());
+    oracle.removed.sort();
+    oracle.added.sort();
     oracle
 }
 
@@ -1508,7 +1513,7 @@ fn exact_oracle_rejects_value_type_relation_namespace_and_add_remove_mutations()
         .added
         .iter_mut()
         .find_map(|entry| match &mut entry.fact {
-            SemanticFact::Relation { value } => Some(value),
+            SemanticFact::Relation { role, .. } => Some(role),
             _ => None,
         })
         .expect("configuration oracle has a relation");
@@ -1521,7 +1526,7 @@ fn exact_oracle_rejects_value_type_relation_namespace_and_add_remove_mutations()
         .added
         .iter_mut()
         .find_map(|entry| match &mut entry.fact {
-            SemanticFact::StandaloneStructure { namespace, .. } => namespace.as_mut(),
+            SemanticFact::StandaloneRoot { namespace, .. } => namespace.as_mut(),
             _ => None,
         })
         .expect("DCS oracle has a namespace");

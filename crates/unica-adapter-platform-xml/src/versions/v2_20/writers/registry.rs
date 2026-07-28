@@ -104,11 +104,7 @@ fn preflight_family_owned_command(
                 WriterSourceRole::DestinationArtifact,
                 "data composition destination",
             )?;
-            common::preflight_active_format_dependencies_for_create(
-                &[],
-                &[destination],
-                session.context(),
-            )
+            common::preflight_active_format_dependencies(&[destination], session.context())
         }
         WriterCommand::DataCompositionEdit(_) => {
             let template = session.required_source(
@@ -122,11 +118,7 @@ fn preflight_family_owned_command(
                 WriterSourceRole::DestinationArtifact,
                 "spreadsheet destination",
             )?;
-            common::preflight_active_format_dependencies_for_create(
-                &[],
-                &[destination],
-                session.context(),
-            )
+            common::preflight_active_format_dependencies(&[destination], session.context())
         }
         _ => Ok(()),
     }

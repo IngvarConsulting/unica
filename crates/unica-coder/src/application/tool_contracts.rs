@@ -2243,7 +2243,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "objectName",
-        "Name of the owning object for `unica.form.remove` and `unica.template.add`/`remove`; for `unica.help.add` it is instead the object's path under `srcDir`, e.g. `Catalogs/МойСправочник`",
+        "Optional expected owning-object name for `unica.form.add`; owning-object name for `unica.form.remove` and `unica.template.add`/`remove`; for `unica.help.add` it is instead the object's path under `srcDir`, e.g. `Catalogs/МойСправочник`",
     ),
     (
         "objectPath",
@@ -3598,6 +3598,35 @@ mod tests {
         let schema = input_schema_for_tool(&form_add);
         assert_eq!(schema["properties"]["SetDefault"]["type"], "boolean");
         assert_eq!(schema["properties"]["setDefault"]["type"], "boolean");
+        assert!(schema["properties"].get("ObjectPath").is_some());
+        assert!(schema["properties"].get("ObjectName").is_some());
+        assert!(!schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("ObjectName")));
+        validate_tool_arguments(
+            form_add,
+            json!({
+                "ObjectPath": "src/Catalogs/Goods.xml",
+                "FormName": "ListForm"
+            })
+            .as_object()
+            .unwrap(),
+            false,
+        )
+        .expect("published form.add contract accepts ObjectPath without ObjectName");
+        validate_tool_arguments(
+            form_add,
+            json!({
+                "ObjectPath": "src/Catalogs/Goods.xml",
+                "ObjectName": "Goods",
+                "FormName": "ListForm"
+            })
+            .as_object()
+            .unwrap(),
+            false,
+        )
+        .expect("published form.add contract preserves optional ObjectName");
 
         let mut args = Map::new();
         args.insert("ObjectPath".to_string(), json!("src/Catalogs/Goods.xml"));

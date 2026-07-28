@@ -22,6 +22,7 @@ semantic_text!(MetadataServiceTypeName, 256);
 semantic_text!(MetadataServiceOperationName, 128);
 semantic_text!(MetadataServiceParameterName, 128);
 semantic_text!(FormOwnerReference, 256);
+semantic_text!(FormOwnerName, 128);
 semantic_text!(FormName, 128);
 semantic_text!(FormAttributeName, 128);
 semantic_text!(FormCommandName, 128);
@@ -2834,9 +2835,23 @@ impl ManagedFormDefinition {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    tag = "selection",
+    content = "reference",
+    deny_unknown_fields
+)]
+pub enum FormOwnerSelection {
+    Reference(FormOwnerReference),
+    CapturedObject,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FormCreate {
-    owner: FormOwnerReference,
+    owner: FormOwnerSelection,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expected_owner_name: Option<FormOwnerName>,
     name: FormName,
     synonym: Option<SynonymText>,
     purpose: FormPurpose,
@@ -2846,13 +2861,33 @@ pub struct FormCreate {
 impl FormCreate {
     pub const fn new(owner: FormOwnerReference, name: FormName) -> Self {
         Self {
-            owner,
+            owner: FormOwnerSelection::Reference(owner),
+            expected_owner_name: None,
             name,
             synonym: None,
             purpose: FormPurpose::Object,
             default_assignment: DefaultFormAssignment::IfVacant,
             definition: ManagedFormDefinition::empty(),
         }
+    }
+    pub const fn selected_owner(name: FormName) -> Self {
+        Self {
+            owner: FormOwnerSelection::CapturedObject,
+            expected_owner_name: None,
+            name,
+            synonym: None,
+            purpose: FormPurpose::Object,
+            default_assignment: DefaultFormAssignment::IfVacant,
+            definition: ManagedFormDefinition::empty(),
+        }
+    }
+    pub fn resolve_owner(mut self, owner: FormOwnerReference) -> Self {
+        self.owner = FormOwnerSelection::Reference(owner);
+        self
+    }
+    pub fn with_expected_owner_name(mut self, value: Option<FormOwnerName>) -> Self {
+        self.expected_owner_name = value;
+        self
     }
     pub fn with_synonym(mut self, value: Option<SynonymText>) -> Self {
         self.synonym = value;
@@ -2874,8 +2909,17 @@ impl FormCreate {
         };
         self
     }
-    pub const fn owner(&self) -> &FormOwnerReference {
+    pub const fn owner_selection(&self) -> &FormOwnerSelection {
         &self.owner
+    }
+    pub const fn owner(&self) -> Option<&FormOwnerReference> {
+        match &self.owner {
+            FormOwnerSelection::Reference(owner) => Some(owner),
+            FormOwnerSelection::CapturedObject => None,
+        }
+    }
+    pub const fn expected_owner_name(&self) -> Option<&FormOwnerName> {
+        self.expected_owner_name.as_ref()
     }
     pub const fn name(&self) -> &FormName {
         &self.name
