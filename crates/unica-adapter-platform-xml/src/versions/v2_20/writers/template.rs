@@ -1,6 +1,7 @@
 #![allow(dead_code, unused_imports)]
 use super::inspection_arguments::ArgumentAccess;
 
+use crate::application::operation_descriptors::TEMPLATE_PATH;
 use crate::application::NativeWriterResult;
 use crate::domain::workspace::WorkspaceContext;
 use crate::operations::PlatformWriterSession;
@@ -969,12 +970,61 @@ fn remove_owner_template_child_text(xml_text: &str, template_name: &str) -> Opti
 }
 
 pub(crate) fn invoke_read(
-    _operation: &str,
+    operation: &str,
     _tool_name: &str,
-    _args: &impl ArgumentAccess,
-    _context: &WorkspaceContext,
+    args: &impl ArgumentAccess,
+    context: &WorkspaceContext,
 ) -> Option<Result<NativeWriterResult, String>> {
-    None
+    match operation {
+        "template-info" | "template-validate" => {
+            Some(inspect_template_descriptor(args, context, operation))
+        }
+        _ => None,
+    }
+}
+
+fn inspect_template_descriptor(
+    args: &impl ArgumentAccess,
+    context: &WorkspaceContext,
+    operation: &str,
+) -> Result<NativeWriterResult, String> {
+    let path = absolutize(
+        required_path(args, TEMPLATE_PATH, "TemplatePath")?,
+        &context.cwd,
+    );
+    let text = read_utf8_sig(&path)
+        .map_err(|error| format!("failed to read template descriptor: {error}"))?;
+    let document = Document::parse(text.trim_start_matches('\u{feff}'))
+        .map_err(|error| format!("template descriptor parse error: {error}"))?;
+    let template = document
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name() == "Template")
+        .ok_or_else(|| "template descriptor does not contain a template object".to_string())?;
+    let name = template
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name() == "Name")
+        .and_then(|node| node.text())
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "template descriptor does not contain a semantic name".to_string())?;
+    let kind = template
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name() == "TemplateType")
+        .and_then(|node| node.text())
+        .unwrap_or("unknown");
+    Ok(NativeWriterResult {
+        ok: true,
+        summary: if operation == "template-validate" {
+            "template descriptor is valid".to_string()
+        } else {
+            format!("template {name} ({kind})")
+        },
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: Vec::new(),
+        artifacts: Vec::new(),
+        stdout: None,
+        stderr: None,
+    })
 }
 
 #[cfg(test)]
@@ -1000,9 +1050,14 @@ pub(crate) fn create_template(
         .source(unica_format_core::commands::WriterSourceRole::SourceCollection)
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("src"));
+    let (object_name, source_directory) =
+        match semantic_template_owner(command.owner().as_str(), source_directory) {
+            Ok(owner) => owner,
+            Err(error) => return template_add_failure(error),
+        };
     add_template_input(
         TemplateAddInput {
-            object_name: command.owner().as_str(),
+            object_name: &object_name,
             template_name: command.name().as_str(),
             template_type: semantic_template_kind(command.kind()),
             synonym: command
@@ -1025,14 +1080,32 @@ pub(crate) fn remove_template_typed(
         .source(unica_format_core::commands::WriterSourceRole::SourceCollection)
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("src"));
+    let (object_name, source_directory) =
+        match semantic_template_owner(command.owner().as_str(), source_directory) {
+            Ok(owner) => owner,
+            Err(error) => return template_remove_failure(error),
+        };
     remove_template_input(
         TemplateRemoveInput {
-            object_name: command.owner().as_str(),
+            object_name: &object_name,
             template_name: command.name().as_str(),
             source_directory,
         },
         context,
     )
+}
+
+fn semantic_template_owner(
+    owner: &str,
+    source_directory: PathBuf,
+) -> Result<(String, PathBuf), String> {
+    if !owner.contains('.') {
+        validate_template_metadata_name("ObjectName", owner)?;
+        return Ok((owner.to_string(), source_directory));
+    }
+    let (collection, object_name) = semantic_metadata_owner_parts(owner)?;
+    validate_template_metadata_name("ObjectName", object_name)?;
+    Ok((object_name.to_string(), source_directory.join(collection)))
 }
 
 #[cfg(test)]

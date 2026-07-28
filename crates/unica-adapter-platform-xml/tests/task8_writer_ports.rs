@@ -45,8 +45,6 @@ fn task8_cancelled_writer_cannot_publish_or_validate_native_arguments() {
     let session = factory
         .capture_writer_session(
             [(WriterSourceRole::DestinationDirectory, output.clone())],
-            None,
-            None,
             &root,
             &root,
             &root.join(".cache"),
@@ -86,8 +84,6 @@ fn task8_writer_cancellation_while_waiting_for_shared_publication_lock_is_typed(
     let session_a = factory
         .capture_writer_session(
             [(WriterSourceRole::DestinationDirectory, output.clone())],
-            None,
-            None,
             &root,
             &root,
             &root.join(".cache-a"),
@@ -124,8 +120,6 @@ fn task8_writer_cancellation_while_waiting_for_shared_publication_lock_is_typed(
     let session_b = factory
         .capture_writer_session(
             [(WriterSourceRole::DestinationDirectory, output.clone())],
-            None,
-            None,
             &root,
             &root,
             &root.join(".cache-b"),

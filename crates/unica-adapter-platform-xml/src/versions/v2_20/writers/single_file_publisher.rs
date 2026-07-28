@@ -618,7 +618,7 @@ impl PreparedCreate<'_, '_, '_> {
         staged_file_identity(&self.stage.path)
     }
 
-    pub(crate) fn commit(mut self) -> Result<PublishReport, PublishError> {
+    pub(crate) fn commit(self) -> Result<PublishReport, PublishError> {
         self.commit_with_guard(|| Ok(()))
     }
 
@@ -688,7 +688,7 @@ impl PreparedReplace<'_, '_, '_> {
         &self.snapshot.permissions
     }
 
-    pub(crate) fn commit(mut self) -> Result<PublishReport, PublishError> {
+    pub(crate) fn commit(self) -> Result<PublishReport, PublishError> {
         self.commit_with_guard(|| Ok(()))
     }
 

@@ -12,6 +12,14 @@ fn source(path: &str) -> String {
     fs::read_to_string(root().join(path)).unwrap_or_default()
 }
 
+fn command_sources() -> String {
+    [
+        source("crates/unica-format-core/src/commands/mod.rs"),
+        source("crates/unica-format-core/src/commands/writer_payloads.rs"),
+    ]
+    .join("\n")
+}
+
 #[test]
 fn one_adapter_owned_publication_and_locking_implementation_exists() {
     assert!(
@@ -150,7 +158,7 @@ fn bsl_generation_is_host_owned_and_platform_artifacts_are_adapter_owned() {
 
 #[test]
 fn core_writer_commands_use_closed_operations_and_purpose_specific_operands() {
-    let commands = source("crates/unica-format-core/src/commands/mod.rs");
+    let commands = command_sources();
     for forbidden in [
         "WriterArgument",
         "ConfigurationMutationValue",
@@ -167,7 +175,7 @@ fn core_writer_commands_use_closed_operations_and_purpose_specific_operands() {
     }
     for required in [
         "pub enum ConfigurationMutation",
-        "pub enum MetadataMutation",
+        "pub enum MetadataPatch",
         "pub enum InterfaceEdit",
         "pub enum SubsystemEdit",
         "pub enum DataCompositionMutation",
@@ -204,7 +212,7 @@ fn public_adapter_surface_remains_factory_plus_neutral_ports() {
         );
     }
 
-    let core = source("crates/unica-format-core/src/commands/mod.rs");
+    let core = command_sources();
     for forbidden in [
         "PathBuf",
         "serde_json",

@@ -9844,9 +9844,123 @@ fn meta_compile_definition_format_dependency_paths(
     paths
 }
 
+fn semantic_meta_event_subscription_dependencies(
+    definitions: &[unica_format_core::commands::MetadataDefinition],
+    output_dir: &Path,
+) -> Vec<MetaCompileEventSubscriptionDependency> {
+    use unica_format_core::commands::{
+        MetadataKind, MetadataKindPropertyName, MetadataPropertyValue,
+    };
+    let mut dependencies = Vec::new();
+    for definition in definitions {
+        if definition.specific().kind() != MetadataKind::EventSubscription {
+            continue;
+        }
+        let subscription_name = definition.common().name().as_str();
+        let descriptor = output_dir
+            .join("EventSubscriptions")
+            .join(format!("{subscription_name}.xml"));
+        for property in definition.specific().properties() {
+            if property.name() != MetadataKindPropertyName::Source {
+                continue;
+            }
+            let MetadataPropertyValue::Objects(sources) = property.value() else {
+                continue;
+            };
+            for source in sources {
+                let raw = source.as_str();
+                let resolved = resolve_meta_type(raw);
+                if validate_meta_resolved_type(raw, &resolved).is_err() {
+                    continue;
+                }
+                let Some((prefix, source_name)) = resolved.split_once('.') else {
+                    continue;
+                };
+                let source_name = source_name.to_string();
+                let source_object_type = match prefix {
+                    "CatalogRef" | "CatalogObject" => "Catalog",
+                    "DocumentRef" | "DocumentObject" => "Document",
+                    "EnumRef" => "Enum",
+                    "ChartOfAccountsRef" | "ChartOfAccountsObject" => "ChartOfAccounts",
+                    "ChartOfCharacteristicTypesRef" | "ChartOfCharacteristicTypesObject" => {
+                        "ChartOfCharacteristicTypes"
+                    }
+                    "ChartOfCalculationTypesRef" | "ChartOfCalculationTypesObject" => {
+                        "ChartOfCalculationTypes"
+                    }
+                    "ExchangePlanRef" | "ExchangePlanObject" => "ExchangePlan",
+                    "BusinessProcessRef" | "BusinessProcessObject" => "BusinessProcess",
+                    "TaskRef" | "TaskObject" => "Task",
+                    "ReportObject" => "Report",
+                    "DataProcessorObject" => "DataProcessor",
+                    "DefinedType" => "DefinedType",
+                    _ => continue,
+                };
+                let Some(directory) = meta_compile_type_plural(source_object_type) else {
+                    continue;
+                };
+                dependencies.push(MetaCompileEventSubscriptionDependency {
+                    subscription_name: subscription_name.to_string(),
+                    subscription_descriptor_path: descriptor.clone(),
+                    source_type: resolved,
+                    source_descriptor_path: output_dir
+                        .join(directory)
+                        .join(format!("{source_name}.xml")),
+                });
+            }
+        }
+    }
+    dependencies
+}
+
+fn semantic_meta_format_dependency_paths(
+    definitions: &[unica_format_core::commands::MetadataDefinition],
+    output_dir: &Path,
+    dependencies: &[MetaCompileEventSubscriptionDependency],
+) -> Vec<PathBuf> {
+    let mut paths = vec![output_dir.join("Configuration.xml")];
+    for definition in definitions {
+        let object_type = metadata_kind_native_name(definition.specific().kind());
+        let Some(directory) = meta_compile_type_plural(object_type) else {
+            continue;
+        };
+        let name = definition.common().name().as_str();
+        let target = output_dir.join(directory).join(name);
+        let descriptor = target.with_extension("xml");
+        let descriptor_exists = descriptor.is_file();
+        paths.push(descriptor);
+        if descriptor_exists {
+            continue;
+        }
+        let ext_dir = target.join("Ext");
+        for (file_name, _) in meta_compile_extra_ext_files(object_type, "") {
+            let path = ext_dir.join(file_name);
+            if path.is_file() {
+                paths.push(path);
+            }
+        }
+    }
+    paths.extend(
+        dependencies
+            .iter()
+            .map(|dependency| dependency.source_descriptor_path.clone()),
+    );
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
 struct MetaCompileInput {
-    definition: PathBuf,
+    definition: MetaCompileDefinition,
     destination: PathBuf,
+}
+
+enum MetaCompileDefinition {
+    File(PathBuf),
+    Semantic {
+        definitions: Vec<unica_format_core::commands::MetadataDefinition>,
+        guard: Option<PathBuf>,
+    },
 }
 
 #[cfg(test)]
@@ -9955,7 +10069,11 @@ type MetaCompilePlan = (
 #[cfg(test)]
 fn meta_compile_input(args: &impl ArgumentAccess) -> Result<MetaCompileInput, String> {
     Ok(MetaCompileInput {
-        definition: required_path(args, &["jsonPath", "JsonPath"], "JsonPath")?,
+        definition: MetaCompileDefinition::File(required_path(
+            args,
+            &["jsonPath", "JsonPath"],
+            "JsonPath",
+        )?),
         destination: path_arg(args, &["outputDir", "OutputDir"])
             .ok_or_else(|| "missing required OutputDir argument".to_string())?,
     })
@@ -9995,8 +10113,22 @@ fn plan_meta_compile_input(
         None
     };
     let mut transaction = CompileTransaction::new();
-    let defn =
-        read_meta_compile_definition_guarded_path(input.definition, context, &mut transaction)?;
+    let defn = match input.definition {
+        MetaCompileDefinition::File(path) => {
+            read_meta_compile_definition_guarded_path(path, context, &mut transaction)?
+        }
+        MetaCompileDefinition::Semantic { definitions, guard } => {
+            return plan_semantic_meta_compile(
+                definitions,
+                guard,
+                &output_dir_label,
+                &output_dir,
+                config_owner,
+                transaction,
+                context,
+            );
+        }
+    };
     let event_subscription_dependencies =
         meta_compile_event_subscription_dependencies(&defn, &output_dir);
     let mut format_dependencies =
@@ -10022,6 +10154,72 @@ fn plan_meta_compile_input(
         stdout,
         transaction,
         planned_artifacts,
+        config_owner.map(|(path, _)| path),
+        format_dependencies,
+    ))
+}
+
+fn plan_semantic_meta_compile(
+    definitions: Vec<unica_format_core::commands::MetadataDefinition>,
+    guard: Option<PathBuf>,
+    output_dir_label: &str,
+    output_dir: &Path,
+    config_owner: Option<(PathBuf, Vec<u8>)>,
+    mut transaction: CompileTransaction,
+    context: &WorkspaceContext,
+) -> Result<MetaCompilePlan, String> {
+    if let Some(path) = guard {
+        let path = absolutize(path, &context.cwd);
+        let preimage = fs::read(&path)
+            .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+        transaction.guard_exact_preimage(path, &preimage)?;
+    }
+    let dependencies = semantic_meta_event_subscription_dependencies(&definitions, output_dir);
+    let mut format_dependencies =
+        semantic_meta_format_dependency_paths(&definitions, output_dir, &dependencies);
+    #[cfg(test)]
+    run_meta_compile_after_format_plan_hook();
+    let total = definitions.len();
+    let mut stdout = String::new();
+    let mut artifacts = Vec::new();
+    let mut failed = Vec::new();
+    for (index, definition) in definitions.iter().enumerate() {
+        match compile_semantic_meta_object(
+            definition,
+            output_dir_label,
+            output_dir,
+            context,
+            &mut transaction,
+            &mut format_dependencies,
+        ) {
+            Ok((item_stdout, mut item_artifacts)) => {
+                stdout.push_str(&item_stdout);
+                artifacts.append(&mut item_artifacts);
+            }
+            Err(error) => {
+                failed.push(format!("#{}: {error}", index + 1));
+                stdout.push_str(&format!("[FAIL] #{}: {error}\n", index + 1));
+            }
+        }
+    }
+    if total > 1 {
+        let compiled = total.saturating_sub(failed.len());
+        stdout.push_str(&format!(
+            "\n=== Batch: {total} objects, {compiled} compiled, {} failed ===\n",
+            failed.len()
+        ));
+    }
+    if !failed.is_empty() {
+        return Err(failed.join("\n"));
+    }
+    validate_meta_compile_event_subscription_dependencies(&dependencies, &transaction)?;
+    if let Some((config_path, expected_preimage)) = &config_owner {
+        transaction.guard_or_verify_exact_preimage(config_path, expected_preimage)?;
+    }
+    Ok((
+        stdout,
+        transaction,
+        artifacts,
         config_owner.map(|(path, _)| path),
         format_dependencies,
     ))
@@ -10383,6 +10581,323 @@ fn compile_meta_object(
     }
 
     Ok((stdout, artifacts))
+}
+
+fn compile_semantic_meta_object(
+    definition: &unica_format_core::commands::MetadataDefinition,
+    output_dir_label: &str,
+    output_dir: &Path,
+    context: &WorkspaceContext,
+    transaction: &mut CompileTransaction,
+    format_dependencies: &mut Vec<PathBuf>,
+) -> Result<(String, Vec<PathBuf>), String> {
+    let object_type = metadata_kind_native_name(definition.specific().kind());
+    let type_plural = meta_compile_type_plural(object_type).ok_or_else(|| {
+        format!(
+            "Unsupported type: {object_type}. Supported: {}. Documented pending: {}",
+            META_COMPILE_SUPPORTED_TYPES.join(", "),
+            META_COMPILE_PENDING_TYPES.join(", ")
+        )
+    })?;
+    let object_name = definition.common().name().as_str();
+    validate_meta_compile_name("metadata object", object_name)?;
+    let type_dir = output_dir.join(type_plural);
+    let main_xml_path = type_dir.join(format!("{object_name}.xml"));
+    let object_sub_dir = type_dir.join(object_name);
+    let ext_dir = object_sub_dir.join("Ext");
+
+    match fs::symlink_metadata(&main_xml_path) {
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+            return Ok((
+                format!(
+                    "[SKIP] {object_type} '{object_name}' already exists at {}; no files changed\n",
+                    main_xml_path.display()
+                ),
+                Vec::new(),
+            ));
+        }
+        Ok(_) => {
+            return Err(format!(
+                "existing metadata target is not a regular file: {}",
+                main_xml_path.display()
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "failed to inspect metadata target {}: {error}",
+                main_xml_path.display()
+            ));
+        }
+    }
+
+    let format_version = detect_format_version(output_dir, context)?.to_string();
+    let (mut metadata_xml, uid) =
+        meta_compile_object_xml(&Map::new(), object_type, object_name, &format_version)?;
+    apply_semantic_metadata_definition(
+        &mut metadata_xml,
+        object_type,
+        object_name,
+        definition,
+        false,
+    )?;
+    validate_generated_metadata_enum_contract(&metadata_xml, "meta.compile")?;
+    validate_generated_metadata_boolean_contract(&metadata_xml, "meta.compile")?;
+    transaction.create_utf8_bom_text(&main_xml_path, &metadata_xml)?;
+
+    let mut artifacts = vec![main_xml_path.clone()];
+    let mut modules_created = Vec::new();
+    for module_name in meta_compile_module_files(object_type) {
+        let module_path = ext_dir.join(module_name);
+        if !module_path.is_file() {
+            transaction.create_utf8_bom_text(&module_path, "")?;
+            modules_created.push(module_path.clone());
+            artifacts.push(module_path);
+        }
+    }
+    for (file_name, content) in meta_compile_extra_ext_files(object_type, &format_version) {
+        let file_path = ext_dir.join(file_name);
+        match fs::symlink_metadata(&file_path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                transaction.create_utf8_bom_text(&file_path, &content)?;
+                modules_created.push(file_path.clone());
+                artifacts.push(file_path);
+            }
+            Err(error) => {
+                return Err(format!(
+                    "failed to inspect metadata extra target {}: {error}",
+                    file_path.display()
+                ));
+            }
+            Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+                let snapshot = fs::read(&file_path).map_err(|error| {
+                    format!(
+                        "failed to read metadata extra target {}: {error}",
+                        file_path.display()
+                    )
+                })?;
+                transaction.guard_or_verify_exact_preimage(&file_path, &snapshot)?;
+                format_dependencies.push(file_path);
+            }
+            Ok(_) => {
+                return Err(format!(
+                    "existing metadata extra target is not a regular file: {}",
+                    file_path.display()
+                ));
+            }
+        }
+    }
+    let registration = transaction.register_canonical_child(
+        output_dir.join("Configuration.xml"),
+        object_type,
+        object_name,
+    )?;
+
+    let common = definition.common();
+    let mut stdout = format!(
+        "[OK] {object_type} '{object_name}' compiled\n     UUID: {uid}\n     File: {}/{type_plural}/{object_name}.xml\n",
+        output_dir_label.trim_end_matches(['/', '\\'])
+    );
+    let details = [
+        ("Attributes", common.attributes().len()),
+        ("TabularSections", common.tabular_sections().len()),
+        (
+            "Values",
+            common
+                .children()
+                .iter()
+                .filter(|child| {
+                    child.kind() == unica_format_core::commands::MetadataNamedChildKind::EnumValue
+                })
+                .count(),
+        ),
+        ("Dimensions", common.dimensions().len()),
+        ("Resources", common.resources().len()),
+        ("Columns", common.columns().len()),
+    ]
+    .into_iter()
+    .filter(|(_, count)| *count > 0)
+    .map(|(label, count)| format!("{label}: {count}"))
+    .collect::<Vec<_>>();
+    if !details.is_empty() {
+        stdout.push_str(&format!("     {}\n", details.join(", ")));
+    }
+    for module in modules_created {
+        stdout.push_str(&format!(
+            "     Module: {}/{type_plural}/{object_name}/Ext/{}\n",
+            output_dir_label.trim_end_matches(['/', '\\']),
+            module
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("ObjectModule.bsl")
+        ));
+    }
+    match registration {
+        RegistrationStatus::Added => stdout.push_str(&format!(
+            "     Configuration.xml: <{object_type}>{object_name}</{object_type}> added to ChildObjects\n"
+        )),
+        RegistrationStatus::AlreadyPresent => stdout.push_str(&format!(
+            "     Configuration.xml: <{object_type}>{object_name}</{object_type}> already registered\n"
+        )),
+        RegistrationStatus::MissingTarget => stdout.push_str(&format!(
+            "     Configuration.xml: not found at {}/Configuration.xml (register manually)\n",
+            output_dir_label.trim_end_matches(['/', '\\'])
+        )),
+    }
+    Ok((stdout, artifacts))
+}
+
+fn metadata_kind_native_name(kind: unica_format_core::commands::MetadataKind) -> &'static str {
+    use unica_format_core::commands::MetadataKind;
+    match kind {
+        MetadataKind::CommonModule => "CommonModule",
+        MetadataKind::SessionParameter => "SessionParameter",
+        MetadataKind::Role => "Role",
+        MetadataKind::CommonAttribute => "CommonAttribute",
+        MetadataKind::ExchangePlan => "ExchangePlan",
+        MetadataKind::XdtoPackage => "XDTOPackage",
+        MetadataKind::WebService => "WebService",
+        MetadataKind::HttpService => "HTTPService",
+        MetadataKind::WsReference => "WSReference",
+        MetadataKind::StyleItem => "StyleItem",
+        MetadataKind::CommonPicture => "CommonPicture",
+        MetadataKind::CommonTemplate => "CommonTemplate",
+        MetadataKind::FilterCriterion => "FilterCriterion",
+        MetadataKind::EventSubscription => "EventSubscription",
+        MetadataKind::ScheduledJob => "ScheduledJob",
+        MetadataKind::FunctionalOption => "FunctionalOption",
+        MetadataKind::FunctionalOptionsParameter => "FunctionalOptionsParameter",
+        MetadataKind::DefinedType => "DefinedType",
+        MetadataKind::SettingsStorage => "SettingsStorage",
+        MetadataKind::Language => "Language",
+        MetadataKind::CommandGroup => "CommandGroup",
+        MetadataKind::CommonCommand => "CommonCommand",
+        MetadataKind::DocumentNumerator => "DocumentNumerator",
+        MetadataKind::Sequence => "Sequence",
+        MetadataKind::Constant => "Constant",
+        MetadataKind::Catalog => "Catalog",
+        MetadataKind::Document => "Document",
+        MetadataKind::Enum => "Enum",
+        MetadataKind::Report => "Report",
+        MetadataKind::DataProcessor => "DataProcessor",
+        MetadataKind::ChartOfCharacteristicTypes => "ChartOfCharacteristicTypes",
+        MetadataKind::ChartOfAccounts => "ChartOfAccounts",
+        MetadataKind::ChartOfCalculationTypes => "ChartOfCalculationTypes",
+        MetadataKind::InformationRegister => "InformationRegister",
+        MetadataKind::AccumulationRegister => "AccumulationRegister",
+        MetadataKind::AccountingRegister => "AccountingRegister",
+        MetadataKind::CalculationRegister => "CalculationRegister",
+        MetadataKind::BusinessProcess => "BusinessProcess",
+        MetadataKind::Task => "Task",
+        MetadataKind::DocumentJournal => "DocumentJournal",
+    }
+}
+
+fn metadata_value_type_text(value: unica_format_core::commands::MetadataValueType) -> &'static str {
+    use unica_format_core::commands::MetadataValueType;
+    match value {
+        MetadataValueType::String => "String",
+        MetadataValueType::Number => "Number",
+        MetadataValueType::Boolean => "Boolean",
+        MetadataValueType::Date => "Date",
+        MetadataValueType::Uuid => "UUID",
+        MetadataValueType::Binary => "BinaryData",
+        MetadataValueType::ValueStorage => "ValueStorage",
+        MetadataValueType::Any => "Any",
+        MetadataValueType::CatalogReference => "CatalogRef",
+        MetadataValueType::DocumentReference => "DocumentRef",
+        MetadataValueType::EnumReference => "EnumRef",
+        MetadataValueType::DefinedType => "DefinedType",
+    }
+}
+
+fn meta_compile_attr_from_semantic(
+    value: &unica_format_core::commands::MetadataAttributeDefinition,
+) -> MetaCompileAttr {
+    use unica_format_core::commands::{
+        MetadataChoiceHistory, MetadataFieldFlag, MetadataFillChecking, MetadataIndexing,
+    };
+    let mut type_name = value
+        .type_expression()
+        .map(metadata_type_expression_text)
+        .or_else(|| {
+            value
+                .value_type()
+                .map(metadata_value_type_text)
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    if value.type_expression().is_none() {
+        if type_name == "String" {
+            if let Some(length) = value.length() {
+                type_name = format!("String({length})");
+            }
+        } else if type_name == "Number" && (value.length().is_some() || value.precision().is_some())
+        {
+            type_name = format!(
+                "Number({},{})",
+                value.length().unwrap_or(15),
+                value.precision().unwrap_or(0)
+            );
+            if value.nonnegative() {
+                type_name.insert_str(type_name.len() - 1, ",nonneg");
+            }
+        }
+    }
+    MetaCompileAttr {
+        name: value.name().as_str().to_string(),
+        type_name,
+        synonym: value
+            .synonym()
+            .map(|synonym| synonym.as_str().to_string())
+            .unwrap_or_else(|| split_meta_camel_case(value.name().as_str())),
+        comment: value
+            .comment()
+            .map(|comment| comment.as_str().to_string())
+            .unwrap_or_default(),
+        flags: value
+            .flags()
+            .iter()
+            .map(|flag| match flag {
+                MetadataFieldFlag::Required => "req",
+                MetadataFieldFlag::Index => "index",
+                MetadataFieldFlag::Master => "master",
+                MetadataFieldFlag::MainFilter => "mainfilter",
+                MetadataFieldFlag::DenyIncomplete => "denyincomplete",
+                MetadataFieldFlag::MultiLine => "multiline",
+                MetadataFieldFlag::ExcludeFromTotals => "nouseintotals",
+            })
+            .map(str::to_string)
+            .collect(),
+        fill_checking: value
+            .fill_checking()
+            .map(|value| match value {
+                MetadataFillChecking::None => "DontCheck",
+                MetadataFillChecking::Warning => "ShowWarning",
+                MetadataFillChecking::Error => "ShowError",
+            })
+            .unwrap_or_default()
+            .to_string(),
+        indexing: value
+            .indexing()
+            .map(|value| match value {
+                MetadataIndexing::None => "DontIndex",
+                MetadataIndexing::Index => "Index",
+                MetadataIndexing::IndexWithAdditionalOrder => "IndexWithAdditionalOrder",
+            })
+            .unwrap_or_default()
+            .to_string(),
+        multi_line: value.flags().contains(&MetadataFieldFlag::MultiLine),
+        choice_history_on_input: value
+            .choice_history()
+            .map(|value| match value {
+                MetadataChoiceHistory::Automatic => "Auto",
+                MetadataChoiceHistory::Use => "Use",
+                MetadataChoiceHistory::DoNotUse => "DontUse",
+            })
+            .unwrap_or_default()
+            .to_string(),
+    }
 }
 
 pub(crate) fn meta_compile_collection_count(value: &Value) -> usize {
@@ -14427,6 +14942,7 @@ pub(crate) struct MetaCompileAttr {
     pub(crate) name: String,
     pub(crate) type_name: String,
     pub(crate) synonym: String,
+    pub(crate) comment: String,
     pub(crate) flags: Vec<String>,
     pub(crate) fill_checking: String,
     pub(crate) indexing: String,
@@ -14436,6 +14952,7 @@ pub(crate) struct MetaCompileAttr {
 
 pub(crate) struct MetaCompileTabularSection {
     pub(crate) name: String,
+    pub(crate) synonym: String,
     pub(crate) columns: Vec<MetaCompileAttr>,
 }
 
@@ -14479,6 +14996,7 @@ pub(crate) fn meta_compile_tabular_sections(
                 .to_string();
             result.push(MetaCompileTabularSection {
                 name,
+                synonym: String::new(),
                 columns: meta_compile_attributes(object.get("attributes")),
             });
         }
@@ -14486,6 +15004,7 @@ pub(crate) fn meta_compile_tabular_sections(
         for (name, columns) in object {
             result.push(MetaCompileTabularSection {
                 name: name.to_string(),
+                synonym: String::new(),
                 columns: meta_compile_attributes(Some(columns)),
             });
         }
@@ -14515,6 +15034,7 @@ pub(crate) fn meta_compile_parse_attr(value: &Value) -> MetaCompileAttr {
             name,
             type_name,
             synonym,
+            comment: String::new(),
             flags,
             fill_checking: String::new(),
             indexing: String::new(),
@@ -14549,6 +15069,11 @@ pub(crate) fn meta_compile_parse_attr(value: &Value) -> MetaCompileAttr {
         name,
         type_name,
         synonym,
+        comment: object
+            .and_then(|object| object.get("comment"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
         flags,
         fill_checking: object
             .and_then(|object| object.get("fillChecking"))
@@ -14620,7 +15145,14 @@ pub(crate) fn emit_meta_attribute<F>(
         escape_xml(&attr.name)
     ));
     emit_meta_mltext(lines, &format!("{indent}\t\t"), "Synonym", &attr.synonym);
-    lines.push(format!("{indent}\t\t<Comment/>"));
+    if attr.comment.is_empty() {
+        lines.push(format!("{indent}\t\t<Comment/>"));
+    } else {
+        lines.push(format!(
+            "{indent}\t\t<Comment>{}</Comment>",
+            escape_xml(&attr.comment)
+        ));
+    }
     if attr.type_name.is_empty() {
         lines.push(format!("{indent}\t\t<Type>"));
         lines.push(format!("{indent}\t\t\t<v8:Type>xs:string</v8:Type>"));
@@ -14756,12 +15288,12 @@ pub(crate) fn emit_meta_tabular_section<F>(
         "{indent}\t\t<Name>{}</Name>",
         escape_xml(&section.name)
     ));
-    emit_meta_mltext(
-        lines,
-        &format!("{indent}\t\t"),
-        "Synonym",
-        &split_meta_camel_case(&section.name),
-    );
+    let section_synonym = if section.synonym.is_empty() {
+        split_meta_camel_case(&section.name)
+    } else {
+        section.synonym.clone()
+    };
+    emit_meta_mltext(lines, &format!("{indent}\t\t"), "Synonym", &section_synonym);
     lines.push(format!("{indent}\t\t<Comment/>"));
     lines.push(format!("{indent}\t\t<ToolTip/>"));
     lines.push(format!(
@@ -15265,10 +15797,19 @@ struct MetaEditLineNumberLengthAuthorization {
 
 #[derive(Clone)]
 struct MetaEditInput {
-    definition_file: Option<PathBuf>,
-    operation: Option<String>,
-    value: String,
+    source: MetaEditSource,
     object_path: PathBuf,
+}
+
+#[derive(Clone)]
+enum MetaEditSource {
+    Semantic(unica_format_core::commands::MetadataPatch),
+    #[cfg(test)]
+    Legacy {
+        definition_file: Option<PathBuf>,
+        operation: Option<String>,
+        value: String,
+    },
 }
 
 #[cfg(test)]
@@ -15294,11 +15835,13 @@ fn meta_edit_input(args: &impl ArgumentAccess) -> Result<MetaEditInput, String> 
         return Err("Either -DefinitionFile or -Operation is required".to_string());
     }
     Ok(MetaEditInput {
-        definition_file,
-        operation,
-        value: string_arg(args, &["value", "Value"])
-            .unwrap_or_default()
-            .to_string(),
+        source: MetaEditSource::Legacy {
+            definition_file,
+            operation,
+            value: string_arg(args, &["value", "Value"])
+                .unwrap_or_default()
+                .to_string(),
+        },
         object_path: required_path(args, OBJECT_PATH, "ObjectPath")?,
     })
 }
@@ -15306,13 +15849,10 @@ fn meta_edit_input(args: &impl ArgumentAccess) -> Result<MetaEditInput, String> 
 fn edit_meta_input(input: MetaEditInput, context: &WorkspaceContext) -> NativeWriterResult {
     let edit_result = (|| -> Result<(String, PathBuf, bool, Vec<String>), String> {
         let MetaEditInput {
-            definition_file,
-            operation,
-            value,
+            source,
             object_path: object_path_raw,
         } = input;
         let object_path = resolve_meta_edit_object_path(&object_path_raw, &context.cwd)?;
-        let value = value.as_str();
 
         let original_bytes = fs::read(&object_path)
             .map_err(|err| format!("failed to read {}: {err}", object_path.display()))?;
@@ -15331,66 +15871,94 @@ fn edit_meta_input(input: MetaEditInput, context: &WorkspaceContext) -> NativeWr
         let mut counts = MetaEditCounts::default();
         let mut info_lines = vec![format!("[INFO] Object: {object_type}.{object_name}")];
         let mut transaction = CompileTransaction::new();
-        let line_number_length_provenance = if let Some(definition_file) = definition_file {
-            let definition_path = absolutize(definition_file.clone(), &context.cwd);
-            if !definition_path.exists() {
-                return Err(format!(
-                    "Definition file not found: {}",
-                    definition_file.display()
-                ));
+        let line_number_length_provenance: Option<PlatformXmlOwnerProvenance> = match source {
+            MetaEditSource::Semantic(patch) => {
+                apply_semantic_metadata_patch(
+                    &mut xml_text,
+                    &object_type,
+                    &object_name,
+                    &patch,
+                    &mut counts,
+                )?;
+                info_lines.push("[INFO] Applied semantic metadata patch".to_string());
+                None
             }
-            let definition = FileBackedJson::read(&definition_path, |err| {
-                format!("DefinitionFile JSON parse error: {err}")
-            })?
-            .bind_to(&mut transaction)?;
-            let authorization = if meta_edit_definition_requests_line_number_length(&definition) {
-                meta_edit_line_number_length_policy(
-                    &object_type,
-                    &object_path,
-                    context,
-                    &mut transaction,
-                )?
-            } else {
-                MetaEditLineNumberLengthAuthorization {
-                    policy: MetaEditLineNumberLengthPolicy::UnknownCompatibility,
-                    provenance: None,
+            #[cfg(test)]
+            MetaEditSource::Legacy {
+                definition_file: Some(definition_file),
+                ..
+            } => {
+                let definition_path = absolutize(definition_file.clone(), &context.cwd);
+                if !definition_path.exists() {
+                    return Err(format!(
+                        "Definition file not found: {}",
+                        definition_file.display()
+                    ));
                 }
-            };
-            meta_edit_apply_definition(
-                &mut xml_text,
-                &object_type,
-                &object_name,
-                &definition,
-                authorization.policy,
-                &mut counts,
-            )?;
-            info_lines.extend(meta_edit_definition_info_lines(&definition));
-            authorization.provenance
-        } else {
-            let operation = operation.as_deref().expect("checked above");
-            let authorization = if meta_edit_inline_requests_line_number_length(operation, value) {
-                meta_edit_line_number_length_policy(
+                let definition = FileBackedJson::read(&definition_path, |err| {
+                    format!("DefinitionFile JSON parse error: {err}")
+                })?
+                .bind_to(&mut transaction)?;
+                let authorization = if meta_edit_definition_requests_line_number_length(&definition)
+                {
+                    meta_edit_line_number_length_policy(
+                        &object_type,
+                        &object_path,
+                        context,
+                        &mut transaction,
+                    )?
+                } else {
+                    MetaEditLineNumberLengthAuthorization {
+                        policy: MetaEditLineNumberLengthPolicy::UnknownCompatibility,
+                        provenance: None,
+                    }
+                };
+                meta_edit_apply_definition(
+                    &mut xml_text,
                     &object_type,
-                    &object_path,
-                    context,
-                    &mut transaction,
-                )?
-            } else {
-                MetaEditLineNumberLengthAuthorization {
-                    policy: MetaEditLineNumberLengthPolicy::UnknownCompatibility,
-                    provenance: None,
-                }
-            };
-            meta_edit_apply_inline_operation(
-                &mut xml_text,
-                &object_type,
-                &object_name,
-                operation,
+                    &object_name,
+                    &definition,
+                    authorization.policy,
+                    &mut counts,
+                )?;
+                info_lines.extend(meta_edit_definition_info_lines(&definition));
+                authorization.provenance
+            }
+            #[cfg(test)]
+            MetaEditSource::Legacy {
+                operation: Some(operation),
                 value,
-                authorization.policy,
-                &mut counts,
-            )?;
-            authorization.provenance
+                ..
+            } => {
+                let authorization =
+                    if meta_edit_inline_requests_line_number_length(&operation, &value) {
+                        meta_edit_line_number_length_policy(
+                            &object_type,
+                            &object_path,
+                            context,
+                            &mut transaction,
+                        )?
+                    } else {
+                        MetaEditLineNumberLengthAuthorization {
+                            policy: MetaEditLineNumberLengthPolicy::UnknownCompatibility,
+                            provenance: None,
+                        }
+                    };
+                meta_edit_apply_inline_operation(
+                    &mut xml_text,
+                    &object_type,
+                    &object_name,
+                    &operation,
+                    &value,
+                    authorization.policy,
+                    &mut counts,
+                )?;
+                authorization.provenance
+            }
+            #[cfg(test)]
+            MetaEditSource::Legacy { .. } => {
+                return Err("metadata edit source is incomplete".to_string());
+            }
         };
 
         #[cfg(test)]
@@ -15457,6 +16025,1207 @@ fn meta_edit_failure(error: String) -> NativeWriterResult {
         stdout: None,
         stderr: Some(format!("{error}\n")),
     }
+}
+
+fn metadata_object_property_name(
+    property: unica_format_core::commands::MetadataObjectProperty,
+) -> &'static str {
+    use unica_format_core::commands::MetadataObjectProperty;
+    match property {
+        MetadataObjectProperty::Name => "Name",
+        MetadataObjectProperty::Synonym => "Synonym",
+        MetadataObjectProperty::Comment => "Comment",
+        MetadataObjectProperty::ValueType => "Type",
+        MetadataObjectProperty::Length => "Length",
+        MetadataObjectProperty::Precision => "Precision",
+        MetadataObjectProperty::Nonnegative => "Nonnegative",
+        MetadataObjectProperty::FillChecking => "FillChecking",
+        MetadataObjectProperty::Indexing => "Indexing",
+        MetadataObjectProperty::MultiLine => "MultiLine",
+        MetadataObjectProperty::HierarchyType => "HierarchyType",
+        MetadataObjectProperty::FillValue => "FillValue",
+    }
+}
+
+fn semantic_metadata_child_property_key(
+    property: unica_format_core::commands::MetadataObjectProperty,
+) -> &'static str {
+    use unica_format_core::commands::MetadataObjectProperty;
+    match property {
+        MetadataObjectProperty::Name => "name",
+        MetadataObjectProperty::Synonym => "synonym",
+        MetadataObjectProperty::Comment => "comment",
+        MetadataObjectProperty::ValueType => "type",
+        MetadataObjectProperty::Length => "length",
+        MetadataObjectProperty::Precision => "precision",
+        MetadataObjectProperty::Nonnegative => "nonnegative",
+        MetadataObjectProperty::FillChecking => "fillChecking",
+        MetadataObjectProperty::Indexing => "indexing",
+        MetadataObjectProperty::MultiLine => "multiLine",
+        MetadataObjectProperty::HierarchyType => "hierarchyType",
+        MetadataObjectProperty::FillValue => "fillValue",
+    }
+}
+
+fn metadata_type_expression_text(
+    value: &unica_format_core::commands::MetadataTypeExpression,
+) -> String {
+    use unica_format_core::commands::{MetadataReferenceKind, MetadataTypeExpression};
+    match value {
+        MetadataTypeExpression::String { length: None } => "String".to_string(),
+        MetadataTypeExpression::String {
+            length: Some(length),
+        } => format!("String({length})"),
+        MetadataTypeExpression::Number {
+            length: None,
+            precision: None,
+            nonnegative: false,
+        } => "Number".to_string(),
+        MetadataTypeExpression::Number {
+            length,
+            precision,
+            nonnegative,
+        } => {
+            let mut result = format!(
+                "Number({},{})",
+                length.unwrap_or(15),
+                precision.unwrap_or(0)
+            );
+            if *nonnegative {
+                result.insert_str(result.len() - 1, ",nonneg");
+            }
+            result
+        }
+        MetadataTypeExpression::Boolean => "Boolean".to_string(),
+        MetadataTypeExpression::Date => "Date".to_string(),
+        MetadataTypeExpression::Uuid => "UUID".to_string(),
+        MetadataTypeExpression::Binary => "BinaryData".to_string(),
+        MetadataTypeExpression::ValueStorage => "ValueStorage".to_string(),
+        MetadataTypeExpression::Any => "Any".to_string(),
+        MetadataTypeExpression::Reference { category, target } => format!(
+            "{}.{}",
+            match category {
+                MetadataReferenceKind::Catalog => "CatalogRef",
+                MetadataReferenceKind::Document => "DocumentRef",
+                MetadataReferenceKind::Enum => "EnumRef",
+                MetadataReferenceKind::DefinedType => "DefinedType",
+                MetadataReferenceKind::ChartOfCharacteristicTypes => {
+                    "ChartOfCharacteristicTypesRef"
+                }
+                MetadataReferenceKind::ChartOfAccounts => "ChartOfAccountsRef",
+                MetadataReferenceKind::ChartOfCalculationTypes => {
+                    "ChartOfCalculationTypesRef"
+                }
+                MetadataReferenceKind::BusinessProcess => "BusinessProcessRef",
+                MetadataReferenceKind::Task => "TaskRef",
+                MetadataReferenceKind::ExchangePlan => "ExchangePlanRef",
+            },
+            target.as_str()
+        ),
+    }
+}
+
+fn metadata_property_scalar_text(
+    value: &unica_format_core::commands::MetadataPropertyValue,
+) -> Result<String, String> {
+    use unica_format_core::commands::{
+        MetadataCalculationDependence, MetadataHierarchyType, MetadataModuleContext,
+        MetadataPeriodicity, MetadataPropertyValue, MetadataRegisterKind,
+        MetadataReturnValuesReuse, MetadataSessionReuse,
+    };
+    Ok(match value {
+        MetadataPropertyValue::Name(value) => value.as_str().to_string(),
+        MetadataPropertyValue::Synonym(value) => value.as_str().to_string(),
+        MetadataPropertyValue::Comment(value) => value.as_str().to_string(),
+        MetadataPropertyValue::Text(value) => value.as_str().to_string(),
+        MetadataPropertyValue::Boolean(value) => value.to_string(),
+        MetadataPropertyValue::Integer(value) => value.to_string(),
+        MetadataPropertyValue::Object(value) => value.as_str().to_string(),
+        MetadataPropertyValue::Objects(values) => values
+            .iter()
+            .map(|value| value.as_str())
+            .collect::<Vec<_>>()
+            .join(","),
+        MetadataPropertyValue::Texts(values) => values
+            .iter()
+            .map(|value| value.as_str())
+            .collect::<Vec<_>>()
+            .join(","),
+        MetadataPropertyValue::Type(value) => metadata_type_expression_text(value),
+        MetadataPropertyValue::Types(values) => values
+            .iter()
+            .map(metadata_type_expression_text)
+            .collect::<Vec<_>>()
+            .join(","),
+        MetadataPropertyValue::ModuleContext(value) => match value {
+            MetadataModuleContext::Client => "Client",
+            MetadataModuleContext::Server => "Server",
+            MetadataModuleContext::ClientAndServer => "ClientAndServer",
+            MetadataModuleContext::ExternalConnection => "ExternalConnection",
+        }
+        .to_string(),
+        MetadataPropertyValue::ReturnValuesReuse(value) => match value {
+            MetadataReturnValuesReuse::DoNotUse => "DontUse",
+            MetadataReturnValuesReuse::DuringRequest => "DuringRequest",
+            MetadataReturnValuesReuse::DuringSession => "DuringSession",
+        }
+        .to_string(),
+        MetadataPropertyValue::HierarchyType(value) => match value {
+            MetadataHierarchyType::GroupsAndItems => "HierarchyFoldersAndItems",
+            MetadataHierarchyType::Items => "HierarchyOfItems",
+        }
+        .to_string(),
+        MetadataPropertyValue::FillValue(value) => value.as_str().to_string(),
+        MetadataPropertyValue::FillChecking(value) => match value {
+            unica_format_core::commands::MetadataFillChecking::None => "DontCheck",
+            unica_format_core::commands::MetadataFillChecking::Warning => "ShowWarning",
+            unica_format_core::commands::MetadataFillChecking::Error => "ShowError",
+        }
+        .to_string(),
+        MetadataPropertyValue::Indexing(value) => match value {
+            unica_format_core::commands::MetadataIndexing::None => "DontIndex",
+            unica_format_core::commands::MetadataIndexing::Index => "Index",
+            unica_format_core::commands::MetadataIndexing::IndexWithAdditionalOrder => {
+                "IndexWithAdditionalOrder"
+            }
+        }
+        .to_string(),
+        MetadataPropertyValue::ChoiceHistory(value) => match value {
+            unica_format_core::commands::MetadataChoiceHistory::Automatic => "Auto",
+            unica_format_core::commands::MetadataChoiceHistory::Use => "Use",
+            unica_format_core::commands::MetadataChoiceHistory::DoNotUse => "DontUse",
+        }
+        .to_string(),
+        MetadataPropertyValue::Periodicity(value) => match value {
+            MetadataPeriodicity::Nonperiodical => "Nonperiodical",
+            MetadataPeriodicity::Second => "Second",
+            MetadataPeriodicity::Day => "Day",
+            MetadataPeriodicity::Month => "Month",
+            MetadataPeriodicity::Quarter => "Quarter",
+            MetadataPeriodicity::Year => "Year",
+            MetadataPeriodicity::RecorderPosition => "RecorderPosition",
+        }
+        .to_string(),
+        MetadataPropertyValue::RegisterKind(value) => match value {
+            MetadataRegisterKind::Balance => "Balance",
+            MetadataRegisterKind::Turnovers => "Turnovers",
+        }
+        .to_string(),
+        MetadataPropertyValue::CalculationDependence(value) => match value {
+            MetadataCalculationDependence::DoNotUse => "DontUse",
+            MetadataCalculationDependence::OnActionPeriod => "OnActionPeriod",
+        }
+        .to_string(),
+        MetadataPropertyValue::SessionReuse(value) => match value {
+            MetadataSessionReuse::DoNotUse => "DontUse",
+            MetadataSessionReuse::Automatic => "AutoUse",
+            MetadataSessionReuse::Use => "Use",
+        }
+        .to_string(),
+        MetadataPropertyValue::Method(value) => value.as_str().to_string(),
+        MetadataPropertyValue::Event(value) => value.as_str().to_string(),
+        MetadataPropertyValue::JobKey(value) => value.as_str().to_string(),
+        MetadataPropertyValue::UrlRoot(value) => value.as_str().to_string(),
+        MetadataPropertyValue::ServiceNamespace(value) => value.as_str().to_string(),
+        MetadataPropertyValue::UrlTemplates(_) | MetadataPropertyValue::ServiceOperations(_) => {
+            return Err(
+                "structured service definitions cannot be used as scalar metadata patches"
+                    .to_string(),
+            )
+        }
+    })
+}
+
+fn semantic_metadata_requested_name(
+    changes: &[unica_format_core::commands::MetadataPropertyPatch],
+) -> Result<Option<String>, String> {
+    changes
+        .iter()
+        .find(|change| {
+            change.property() == unica_format_core::commands::MetadataObjectProperty::Name
+        })
+        .map(|change| metadata_property_scalar_text(change.value()))
+        .transpose()
+}
+
+fn meta_edit_modify_top_child_properties_typed(
+    xml_text: &mut String,
+    tag: &str,
+    child_name: &str,
+    changes: &[unica_format_core::commands::MetadataPropertyPatch],
+    target_kind: MetaEditModifyTarget,
+) -> Result<usize, String> {
+    let doc = Document::parse(xml_text.trim_start_matches('\u{feff}'))
+        .map_err(|error| format!("XML parse error: {error}"))?;
+    let object = meta_edit_object_node(&doc)?;
+    let child_objects = meta_info_child(object, "ChildObjects")
+        .ok_or_else(|| format!("{tag} '{child_name}' not found"))?;
+    let target = meta_info_children(child_objects, tag)
+        .into_iter()
+        .find(|child| meta_edit_child_object_name(*child).as_deref() == Some(child_name))
+        .ok_or_else(|| format!("{tag} '{child_name}' not found"))?;
+    if let Some(new_name) = semantic_metadata_requested_name(changes)? {
+        meta_edit_ensure_sibling_name_free(child_objects, tag, target.range(), &new_name, None)?;
+    }
+    let properties = meta_info_child(target, "Properties")
+        .ok_or_else(|| format!("{tag} '{child_name}' has no Properties"))?;
+    let range = properties.range();
+    drop(doc);
+    meta_edit_modify_properties_range_typed(xml_text, range, changes, target_kind)
+}
+
+fn meta_edit_modify_tabular_attribute_properties_typed(
+    xml_text: &mut String,
+    section_name: &str,
+    attribute_name: &str,
+    changes: &[unica_format_core::commands::MetadataPropertyPatch],
+) -> Result<usize, String> {
+    let doc = Document::parse(xml_text.trim_start_matches('\u{feff}'))
+        .map_err(|error| format!("XML parse error: {error}"))?;
+    let object = meta_edit_object_node(&doc)?;
+    let target_kind = MetaEditModifyTarget::Attribute {
+        fill_value_allowed: matches!(object.tag_name().name(), "DataProcessor" | "Report"),
+    };
+    let section = meta_edit_find_tabular_section(object, section_name)
+        .ok_or_else(|| format!("TabularSection '{section_name}' not found"))?;
+    let child_objects = meta_info_child(section, "ChildObjects")
+        .ok_or_else(|| format!("Attribute '{section_name}.{attribute_name}' not found"))?;
+    let target = meta_info_children(child_objects, "Attribute")
+        .into_iter()
+        .find(|child| meta_edit_child_object_name(*child).as_deref() == Some(attribute_name))
+        .ok_or_else(|| format!("Attribute '{section_name}.{attribute_name}' not found"))?;
+    if let Some(new_name) = semantic_metadata_requested_name(changes)? {
+        meta_edit_ensure_sibling_name_free(
+            child_objects,
+            "Attribute",
+            target.range(),
+            &new_name,
+            Some(section_name),
+        )?;
+    }
+    let properties = meta_info_child(target, "Properties")
+        .ok_or_else(|| format!("Attribute '{section_name}.{attribute_name}' has no Properties"))?;
+    let range = properties.range();
+    drop(doc);
+    meta_edit_modify_properties_range_typed(xml_text, range, changes, target_kind)
+}
+
+fn apply_semantic_metadata_child_patch(
+    xml_text: &mut String,
+    patch: &unica_format_core::commands::MetadataChildPatch,
+) -> Result<usize, String> {
+    use unica_format_core::commands::MetadataNamedChildKind;
+
+    let target = patch.target();
+    if let Some(parent) = target.parent() {
+        if target.kind() != MetadataNamedChildKind::Attribute {
+            return Err("only an attribute can identify a parent semantic child".to_string());
+        }
+        return meta_edit_modify_tabular_attribute_properties_typed(
+            xml_text,
+            parent.as_str(),
+            target.name().as_str(),
+            patch.changes(),
+        );
+    }
+    let (tag, target_kind) = match target.kind() {
+        MetadataNamedChildKind::Attribute => {
+            let document = Document::parse(xml_text.trim_start_matches('\u{feff}'))
+                .map_err(|error| format!("XML parse error: {error}"))?;
+            let object = meta_edit_object_node(&document)?;
+            (
+                "Attribute",
+                MetaEditModifyTarget::Attribute {
+                    fill_value_allowed: !matches!(
+                        object.tag_name().name(),
+                        "DataProcessor" | "Report"
+                    ),
+                },
+            )
+        }
+        MetadataNamedChildKind::TabularSection => (
+            "TabularSection",
+            MetaEditModifyTarget::TabularSection {
+                line_number_length: MetaEditLineNumberLengthPolicy::UnknownCompatibility,
+            },
+        ),
+        MetadataNamedChildKind::Dimension => ("Dimension", MetaEditModifyTarget::RegisterField),
+        MetadataNamedChildKind::Resource => ("Resource", MetaEditModifyTarget::RegisterField),
+        MetadataNamedChildKind::EnumValue => ("EnumValue", MetaEditModifyTarget::EnumValue),
+        MetadataNamedChildKind::Column => ("Column", MetaEditModifyTarget::Column),
+        MetadataNamedChildKind::Form
+        | MetadataNamedChildKind::Template
+        | MetadataNamedChildKind::Command
+        | MetadataNamedChildKind::Requisite => {
+            return Err(
+                "selected semantic metadata child does not expose editable properties".to_string(),
+            )
+        }
+    };
+    meta_edit_modify_top_child_properties_typed(
+        xml_text,
+        tag,
+        target.name().as_str(),
+        patch.changes(),
+        target_kind,
+    )
+}
+
+fn apply_semantic_metadata_definition(
+    xml_text: &mut String,
+    object_type: &str,
+    object_name: &str,
+    definition: &unica_format_core::commands::MetadataDefinition,
+    clear_children: bool,
+) -> Result<(), String> {
+    if metadata_kind_native_name(definition.specific().kind()) != object_type {
+        return Err("replacement metadata definition has a different object kind".to_string());
+    }
+    if definition.common().name().as_str() != object_name {
+        return Err("replacement metadata definition has a different object name".to_string());
+    }
+    if let Some(synonym) = definition.common().synonym() {
+        meta_edit_set_semantic_mltext_property(xml_text, "Synonym", synonym.as_str())?;
+    }
+    if let Some(comment) = definition.common().comment() {
+        meta_edit_set_semantic_scalar_property(xml_text, "Comment", comment.as_str())?;
+    }
+    if clear_children {
+        meta_edit_clear_semantic_children(xml_text)?;
+    }
+    for property in definition.specific().properties() {
+        meta_edit_set_semantic_kind_property(xml_text, object_type, property)?;
+    }
+    let common = definition.common();
+    for attribute in common.attributes() {
+        meta_edit_add_semantic_attribute(xml_text, object_type, attribute, "Attribute")?;
+    }
+    for section in common.tabular_sections() {
+        meta_edit_add_semantic_tabular_section(xml_text, object_type, object_name, section)?;
+    }
+    for dimension in common.dimensions() {
+        meta_edit_add_semantic_register_field(xml_text, object_type, "Dimension", dimension)?;
+    }
+    for resource in common.resources() {
+        meta_edit_add_semantic_register_field(xml_text, object_type, "Resource", resource)?;
+    }
+    for attribute in common.addressing_attributes() {
+        meta_edit_add_semantic_addressing_attribute(xml_text, attribute)?;
+    }
+    for column in common.columns() {
+        meta_edit_add_semantic_column(xml_text, column)?;
+    }
+    for child in common.children() {
+        meta_edit_add_semantic_named_child(xml_text, object_type, object_name, child)?;
+    }
+    Ok(())
+}
+
+fn meta_edit_set_semantic_kind_property(
+    xml_text: &mut String,
+    object_type: &str,
+    property: &unica_format_core::commands::MetadataKindProperty,
+) -> Result<(), String> {
+    use unica_format_core::commands::{
+        MetadataKindPropertyName as Name, MetadataModuleContext, MetadataPropertyValue as Value,
+    };
+    let name = property.name();
+    match property.value() {
+        Value::UrlTemplates(values) => {
+            for value in values {
+                meta_edit_add_semantic_url_template(xml_text, value)?;
+            }
+            return Ok(());
+        }
+        Value::ServiceOperations(values) => {
+            for value in values {
+                meta_edit_add_semantic_service_operation(xml_text, value)?;
+            }
+            return Ok(());
+        }
+        Value::ModuleContext(context) => {
+            let (client, server, external) = match context {
+                MetadataModuleContext::Client => (true, false, false),
+                MetadataModuleContext::Server => (false, true, false),
+                MetadataModuleContext::ClientAndServer => (true, true, false),
+                MetadataModuleContext::ExternalConnection => (false, false, true),
+            };
+            for (tag, enabled) in [
+                ("ClientManagedApplication", client),
+                ("ClientOrdinaryApplication", client),
+                ("Server", server),
+                ("ServerCall", server),
+                ("ExternalConnection", external),
+            ] {
+                meta_edit_set_semantic_existing_scalar_property(
+                    xml_text,
+                    tag,
+                    if enabled { "true" } else { "false" },
+                )?;
+            }
+            return Ok(());
+        }
+        Value::Types(values) => {
+            let values = values
+                .iter()
+                .map(metadata_type_expression_text)
+                .collect::<Vec<_>>();
+            let tag = metadata_kind_property_native_name(name);
+            meta_edit_set_semantic_type_property(xml_text, tag, &values)?;
+            return Ok(());
+        }
+        Value::Type(value) => {
+            let tag = metadata_kind_property_native_name(name);
+            meta_edit_set_semantic_type_property(
+                xml_text,
+                tag,
+                &[metadata_type_expression_text(value)],
+            )?;
+            return Ok(());
+        }
+        Value::Objects(values) if name == Name::Source => {
+            let values = values
+                .iter()
+                .map(|value| value.as_str().to_string())
+                .collect::<Vec<_>>();
+            meta_edit_set_semantic_type_property(xml_text, "Source", &values)?;
+            return Ok(());
+        }
+        Value::Objects(values) => {
+            let values = values
+                .iter()
+                .map(|value| value.as_str().to_string())
+                .collect::<Vec<_>>();
+            meta_edit_replace_complex_property(
+                xml_text,
+                metadata_kind_property_native_name(name),
+                &values,
+            )?;
+            return Ok(());
+        }
+        Value::Texts(values)
+            if matches!(
+                name,
+                Name::AccountingFlags | Name::ExtDimensionAccountingFlags
+            ) =>
+        {
+            let tag = if name == Name::AccountingFlags {
+                "AccountingFlag"
+            } else {
+                "ExtDimensionAccountingFlag"
+            };
+            for value in values {
+                let mut lines = Vec::new();
+                let mut next_uuid = fresh_meta_compile_uuid;
+                emit_meta_boolean_child(&mut lines, "\t\t\t", tag, value.as_str(), &mut next_uuid);
+                meta_edit_insert_top_child_object(xml_text, &lines)?;
+            }
+            return Ok(());
+        }
+        Value::Texts(values) => {
+            let values = values
+                .iter()
+                .map(|value| value.as_str().to_string())
+                .collect::<Vec<_>>();
+            meta_edit_replace_complex_property(
+                xml_text,
+                metadata_kind_property_native_name(name),
+                &values,
+            )?;
+            return Ok(());
+        }
+        _ => {}
+    }
+    let tag = metadata_kind_property_native_name(name);
+    let scalar = metadata_property_scalar_text(property.value())?;
+    let scalar = if matches!(
+        (object_type, name),
+        ("ScheduledJob", Name::MethodName) | ("EventSubscription", Name::Handler)
+    ) {
+        meta_compile_common_module_method(&scalar)
+    } else {
+        scalar
+    };
+    let scalar = normalize_meta_edit_scalar_property_value(object_type, tag, &scalar);
+    meta_edit_set_semantic_scalar_property(xml_text, tag, &scalar)
+}
+
+fn metadata_kind_property_native_name(
+    name: unica_format_core::commands::MetadataKindPropertyName,
+) -> &'static str {
+    use unica_format_core::commands::MetadataKindPropertyName as Name;
+    match name {
+        Name::Hierarchical => "Hierarchical",
+        Name::LimitLevelCount => "LimitLevelCount",
+        Name::LevelCount => "LevelCount",
+        Name::FoldersOnTop => "FoldersOnTop",
+        Name::CodeLength => "CodeLength",
+        Name::DescriptionLength => "DescriptionLength",
+        Name::NumberLength => "NumberLength",
+        Name::CheckUnique => "CheckUnique",
+        Name::Autonumbering => "Autonumbering",
+        Name::QuickChoice => "QuickChoice",
+        Name::SequenceFilling => "SequenceFilling",
+        Name::PostInPrivilegedMode => "PostInPrivilegedMode",
+        Name::UnpostInPrivilegedMode => "UnpostInPrivilegedMode",
+        Name::MainFilterOnPeriod => "MainFilterOnPeriod",
+        Name::EnableTotalsSplitting => "EnableTotalsSplitting",
+        Name::Correspondence => "Correspondence",
+        Name::PeriodAdjustmentLength => "PeriodAdjustmentLength",
+        Name::ActionPeriod => "ActionPeriod",
+        Name::BasePeriod => "BasePeriod",
+        Name::MaxExtDimensionCount => "MaxExtDimensionCount",
+        Name::CodeMask => "CodeMask",
+        Name::AutoOrderByCode => "AutoOrderByCode",
+        Name::OrderLength => "OrderLength",
+        Name::ActionPeriodUse => "ActionPeriodUse",
+        Name::DistributedInfoBase => "DistributedInfoBase",
+        Name::IncludeConfigurationExtensions => "IncludeConfigurationExtensions",
+        Name::RestartCountOnFailure => "RestartCountOnFailure",
+        Name::RestartIntervalOnFailure => "RestartIntervalOnFailure",
+        Name::SessionMaxAge => "SessionMaxAge",
+        Name::Length => "Length",
+        Name::Precision => "Precision",
+        Name::Nonnegative => "Nonnegative",
+        Name::CreateTaskInPrivilegedMode => "CreateTaskInPrivilegedMode",
+        Name::ValueType | Name::ValueTypes => "Type",
+        Name::Context => "Context",
+        Name::ReturnValuesReuse => "ReturnValuesReuse",
+        Name::HierarchyType => "HierarchyType",
+        Name::Periodicity => "InformationRegisterPeriodicity",
+        Name::RegisterType => "RegisterType",
+        Name::ChartOfAccounts => "ChartOfAccounts",
+        Name::ChartOfCalculationTypes => "ChartOfCalculationTypes",
+        Name::ExtDimensionTypes => "ExtDimensionTypes",
+        Name::AccountingFlags => "AccountingFlags",
+        Name::ExtDimensionAccountingFlags => "ExtDimensionAccountingFlags",
+        Name::DependenceOnCalculationTypes => "DependenceOnCalculationTypes",
+        Name::BaseCalculationTypes => "BaseCalculationTypes",
+        Name::Task => "Task",
+        Name::Addressing => "Addressing",
+        Name::MainAddressingAttribute => "MainAddressingAttribute",
+        Name::RegisteredDocuments => "RegisteredDocuments",
+        Name::MethodName => "MethodName",
+        Name::Description => "Description",
+        Name::Key => "Key",
+        Name::Use => "Use",
+        Name::Predefined => "Predefined",
+        Name::Source => "Source",
+        Name::Event => "Event",
+        Name::Handler => "Handler",
+        Name::RootUrl => "RootURL",
+        Name::ReuseSessions => "ReuseSessions",
+        Name::UrlTemplates => "URLTemplates",
+        Name::Namespace => "Namespace",
+        Name::Operations => "Operations",
+    }
+}
+
+fn meta_edit_set_semantic_mltext_property(
+    xml_text: &mut String,
+    tag: &str,
+    value: &str,
+) -> Result<(), String> {
+    let mut lines = Vec::new();
+    let indent = meta_edit_object_property_indent(xml_text)?;
+    emit_meta_mltext(&mut lines, &indent, tag, value);
+    meta_edit_replace_semantic_property_fragment(xml_text, tag, &lines.join("\n"))
+}
+
+fn meta_edit_set_semantic_scalar_property(
+    xml_text: &mut String,
+    tag: &str,
+    value: &str,
+) -> Result<(), String> {
+    let indent = meta_edit_object_property_indent(xml_text)?;
+    meta_edit_replace_semantic_property_fragment(
+        xml_text,
+        tag,
+        &format!("{indent}<{tag}>{}</{tag}>", escape_xml(value)),
+    )
+}
+
+fn meta_edit_set_semantic_existing_scalar_property(
+    xml_text: &mut String,
+    tag: &str,
+    value: &str,
+) -> Result<(), String> {
+    if meta_edit_xml_element_range(xml_text, tag)?.is_none() {
+        return Ok(());
+    }
+    meta_edit_set_semantic_scalar_property(xml_text, tag, value)
+}
+
+fn meta_edit_set_semantic_type_property(
+    xml_text: &mut String,
+    tag: &str,
+    values: &[String],
+) -> Result<(), String> {
+    let indent = meta_edit_object_property_indent(xml_text)?;
+    let mut lines = vec![format!("{indent}<{tag}>")];
+    emit_meta_type_contents(
+        &mut lines,
+        &format!("{indent}\t"),
+        values.iter().map(String::as_str),
+    );
+    lines.push(format!("{indent}</{tag}>"));
+    meta_edit_replace_semantic_property_fragment(xml_text, tag, &lines.join("\n"))
+}
+
+fn meta_edit_object_property_indent(xml_text: &str) -> Result<String, String> {
+    let document = Document::parse(xml_text.trim_start_matches('\u{feff}'))
+        .map_err(|error| format!("XML parse error: {error}"))?;
+    let object = meta_edit_object_node(&document)?;
+    let properties = meta_info_child(object, "Properties")
+        .ok_or_else(|| "Object has no Properties".to_string())?;
+    Ok(format!(
+        "{}\t",
+        meta_edit_line_indent(xml_text, properties.range().start)
+    ))
+}
+
+fn meta_edit_replace_semantic_property_fragment(
+    xml_text: &mut String,
+    tag: &str,
+    fragment: &str,
+) -> Result<(), String> {
+    let document = Document::parse(xml_text.trim_start_matches('\u{feff}'))
+        .map_err(|error| format!("XML parse error: {error}"))?;
+    let object = meta_edit_object_node(&document)?;
+    let properties = meta_info_child(object, "Properties")
+        .ok_or_else(|| "Object has no Properties".to_string())?;
+    let range = properties.range();
+    drop(document);
+    let mut properties_text = xml_text[range.clone()].to_string();
+    let child_indent = meta_edit_property_child_indent(&properties_text);
+    meta_edit_replace_or_insert_property(&mut properties_text, tag, fragment, &child_indent)?;
+    xml_text.replace_range(range, &properties_text);
+    Ok(())
+}
+
+fn meta_edit_clear_semantic_children(xml_text: &mut String) -> Result<(), String> {
+    let document = Document::parse(xml_text.trim_start_matches('\u{feff}'))
+        .map_err(|error| format!("XML parse error: {error}"))?;
+    let object = meta_edit_object_node(&document)?;
+    let child_objects = meta_info_child(object, "ChildObjects")
+        .ok_or_else(|| "Object has no ChildObjects".to_string())?;
+    let range = child_objects.range();
+    drop(document);
+    xml_text.replace_range(range, "<ChildObjects/>");
+    Ok(())
+}
+
+fn meta_edit_add_semantic_attribute(
+    xml_text: &mut String,
+    object_type: &str,
+    value: &unica_format_core::commands::MetadataAttributeDefinition,
+    tag: &str,
+) -> Result<(), String> {
+    let attr = meta_compile_attr_from_semantic(value);
+    validate_meta_compile_attr_type(&attr, "semantic metadata attribute")?;
+    meta_edit_ensure_top_child_name_free(xml_text, tag, &attr.name)?;
+    let mut lines = Vec::new();
+    let mut next_uuid = fresh_meta_compile_uuid;
+    if tag == "Attribute" {
+        emit_meta_attribute(
+            &mut lines,
+            "\t\t\t",
+            &attr,
+            meta_edit_attribute_context(object_type),
+            &mut next_uuid,
+        );
+    } else {
+        emit_meta_register_field(
+            &mut lines,
+            "\t\t\t",
+            tag,
+            &attr,
+            object_type,
+            &mut next_uuid,
+        );
+    }
+    meta_edit_insert_top_child_object(xml_text, &lines)
+}
+
+fn meta_edit_add_semantic_tabular_section(
+    xml_text: &mut String,
+    object_type: &str,
+    object_name: &str,
+    value: &unica_format_core::commands::MetadataTabularSectionDefinition,
+) -> Result<(), String> {
+    let section = MetaCompileTabularSection {
+        name: value.name().as_str().to_string(),
+        synonym: value
+            .synonym()
+            .map(|synonym| synonym.as_str().to_string())
+            .unwrap_or_default(),
+        columns: value
+            .attributes()
+            .iter()
+            .map(meta_compile_attr_from_semantic)
+            .collect(),
+    };
+    validate_meta_compile_tabular_section_types(&section, "semantic metadata tabular section")?;
+    meta_edit_ensure_top_child_name_free(xml_text, "TabularSection", &section.name)?;
+    let mut lines = Vec::new();
+    let mut next_uuid = fresh_meta_compile_uuid;
+    emit_meta_tabular_section(
+        &mut lines,
+        "\t\t\t",
+        &section,
+        object_type,
+        object_name,
+        &mut next_uuid,
+    );
+    meta_edit_insert_top_child_object(xml_text, &lines)
+}
+
+fn meta_edit_add_semantic_register_field(
+    xml_text: &mut String,
+    object_type: &str,
+    tag: &str,
+    value: &unica_format_core::commands::MetadataAttributeDefinition,
+) -> Result<(), String> {
+    meta_edit_add_semantic_attribute(xml_text, object_type, value, tag)
+}
+
+fn meta_edit_add_semantic_addressing_attribute(
+    xml_text: &mut String,
+    value: &unica_format_core::commands::MetadataAttributeDefinition,
+) -> Result<(), String> {
+    let attr = meta_compile_attr_from_semantic(value);
+    meta_edit_ensure_top_child_name_free(xml_text, "AddressingAttribute", &attr.name)?;
+    let mut lines = vec![format!(
+        "\t\t\t<AddressingAttribute uuid=\"{}\">",
+        fresh_meta_compile_uuid()
+    )];
+    lines.push("\t\t\t\t<Properties>".to_string());
+    lines.push(format!("\t\t\t\t\t<Name>{}</Name>", escape_xml(&attr.name)));
+    emit_meta_mltext(&mut lines, "\t\t\t\t\t", "Synonym", &attr.synonym);
+    lines.push(if attr.comment.is_empty() {
+        "\t\t\t\t\t<Comment/>".to_string()
+    } else {
+        format!("\t\t\t\t\t<Comment>{}</Comment>", escape_xml(&attr.comment))
+    });
+    emit_meta_value_type(
+        &mut lines,
+        "\t\t\t\t\t",
+        if attr.type_name.is_empty() {
+            "String"
+        } else {
+            &attr.type_name
+        },
+    );
+    if let Some(dimension) = value.addressing_dimension() {
+        lines.push(format!(
+            "\t\t\t\t\t<AddressingDimension>{}</AddressingDimension>",
+            escape_xml(dimension.as_str())
+        ));
+    } else {
+        lines.push("\t\t\t\t\t<AddressingDimension/>".to_string());
+    }
+    lines.push(format!(
+        "\t\t\t\t\t<Indexing>{}</Indexing>",
+        if attr.indexing.is_empty() {
+            "Index"
+        } else {
+            &attr.indexing
+        }
+    ));
+    lines.push("\t\t\t\t\t<FullTextSearch>Use</FullTextSearch>".to_string());
+    lines.push("\t\t\t\t\t<DataHistory>Use</DataHistory>".to_string());
+    lines.push("\t\t\t\t</Properties>".to_string());
+    lines.push("\t\t\t</AddressingAttribute>".to_string());
+    meta_edit_insert_top_child_object(xml_text, &lines)
+}
+
+fn meta_edit_add_semantic_column(
+    xml_text: &mut String,
+    value: &unica_format_core::commands::MetadataAttributeDefinition,
+) -> Result<(), String> {
+    let name = value.name().as_str();
+    meta_edit_ensure_top_child_name_free(xml_text, "Column", name)?;
+    let mut lines = vec![format!(
+        "\t\t\t<Column uuid=\"{}\">",
+        fresh_meta_compile_uuid()
+    )];
+    lines.push("\t\t\t\t<Properties>".to_string());
+    lines.push(format!("\t\t\t\t\t<Name>{}</Name>", escape_xml(name)));
+    emit_meta_mltext(
+        &mut lines,
+        "\t\t\t\t\t",
+        "Synonym",
+        value
+            .synonym()
+            .map(|synonym| synonym.as_str())
+            .unwrap_or(name),
+    );
+    lines.push("\t\t\t\t\t<Comment/>".to_string());
+    lines.push(format!(
+        "\t\t\t\t\t<Indexing>{}</Indexing>",
+        match value.indexing() {
+            Some(unica_format_core::commands::MetadataIndexing::Index) => "Index",
+            Some(unica_format_core::commands::MetadataIndexing::IndexWithAdditionalOrder) =>
+                "IndexWithAdditionalOrder",
+            _ => "DontIndex",
+        }
+    ));
+    let references = value
+        .references()
+        .iter()
+        .map(|reference| reference.as_str().to_string())
+        .collect::<Vec<_>>();
+    emit_meta_md_object_refs(&mut lines, "\t\t\t\t\t", "References", &references);
+    lines.push("\t\t\t\t</Properties>".to_string());
+    lines.push("\t\t\t</Column>".to_string());
+    meta_edit_insert_top_child_object(xml_text, &lines)
+}
+
+fn meta_edit_add_semantic_named_child(
+    xml_text: &mut String,
+    object_type: &str,
+    object_name: &str,
+    value: &unica_format_core::commands::MetadataNamedChildDefinition,
+) -> Result<(), String> {
+    use unica_format_core::commands::MetadataNamedChildKind;
+    let name = value.name().as_str();
+    match value.kind() {
+        MetadataNamedChildKind::Attribute => {
+            let definition = unica_format_core::commands::MetadataAttributeDefinition::new(
+                unica_format_core::commands::MetadataFieldName::new(name)
+                    .map_err(|error| error.to_string())?,
+            );
+            meta_edit_add_semantic_attribute(xml_text, object_type, &definition, "Attribute")
+        }
+        MetadataNamedChildKind::TabularSection => {
+            let definition = unica_format_core::commands::MetadataTabularSectionDefinition::new(
+                value.name().clone(),
+                Vec::new(),
+            );
+            meta_edit_add_semantic_tabular_section(xml_text, object_type, object_name, &definition)
+        }
+        MetadataNamedChildKind::Dimension | MetadataNamedChildKind::Resource => {
+            let definition = unica_format_core::commands::MetadataAttributeDefinition::new(
+                unica_format_core::commands::MetadataFieldName::new(name)
+                    .map_err(|error| error.to_string())?,
+            );
+            meta_edit_add_semantic_register_field(
+                xml_text,
+                object_type,
+                if value.kind() == MetadataNamedChildKind::Dimension {
+                    "Dimension"
+                } else {
+                    "Resource"
+                },
+                &definition,
+            )
+        }
+        MetadataNamedChildKind::Column => {
+            let definition = unica_format_core::commands::MetadataAttributeDefinition::new(
+                unica_format_core::commands::MetadataFieldName::new(name)
+                    .map_err(|error| error.to_string())?,
+            );
+            meta_edit_add_semantic_column(xml_text, &definition)
+        }
+        kind => {
+            let tag = match kind {
+                MetadataNamedChildKind::Form => "Form",
+                MetadataNamedChildKind::Template => "Template",
+                MetadataNamedChildKind::Command => "Command",
+                MetadataNamedChildKind::Requisite => "Requisite",
+                MetadataNamedChildKind::EnumValue => "EnumValue",
+                _ => unreachable!(),
+            };
+            validate_meta_compile_name("semantic metadata child", name)?;
+            meta_edit_ensure_top_child_name_free(xml_text, tag, name)?;
+            let mut lines = Vec::new();
+            let mut next_uuid = fresh_meta_compile_uuid;
+            emit_meta_simple_child(&mut lines, "\t\t\t", tag, name, &mut next_uuid);
+            if let Some(synonym) = value.synonym() {
+                let mut fragment = lines.join("\n");
+                meta_edit_set_child_mltext_in_fragment(&mut fragment, "Synonym", synonym.as_str())?;
+                lines = fragment.lines().map(ToOwned::to_owned).collect();
+            }
+            meta_edit_insert_top_child_object(xml_text, &lines)
+        }
+    }
+}
+
+fn meta_edit_set_child_mltext_in_fragment(
+    fragment: &mut String,
+    tag: &str,
+    value: &str,
+) -> Result<(), String> {
+    let range = meta_edit_xml_element_range(fragment, tag)?
+        .ok_or_else(|| format!("child fragment has no {tag} property"))?;
+    let indent = meta_edit_line_indent(fragment, range.start);
+    let mut lines = Vec::new();
+    emit_meta_mltext(&mut lines, &indent, tag, value);
+    fragment.replace_range(range, &lines.join("\n"));
+    Ok(())
+}
+
+fn meta_edit_add_semantic_url_template(
+    xml_text: &mut String,
+    value: &unica_format_core::commands::MetadataUrlTemplateDefinition,
+) -> Result<(), String> {
+    let name = value.name().as_str();
+    meta_edit_ensure_top_child_name_free(xml_text, "URLTemplate", name)?;
+    let mut next_uuid = fresh_meta_compile_uuid;
+    let mut lines = vec![format!("\t\t\t<URLTemplate uuid=\"{}\">", next_uuid())];
+    lines.push("\t\t\t\t<Properties>".to_string());
+    lines.push(format!("\t\t\t\t\t<Name>{}</Name>", escape_xml(name)));
+    emit_meta_mltext(
+        &mut lines,
+        "\t\t\t\t\t",
+        "Synonym",
+        &split_meta_camel_case(name),
+    );
+    lines.push("\t\t\t\t\t<Comment/>".to_string());
+    lines.push(format!(
+        "\t\t\t\t\t<Template>{}</Template>",
+        escape_xml(value.template().as_str())
+    ));
+    lines.push("\t\t\t\t</Properties>".to_string());
+    if value.methods().is_empty() {
+        lines.push("\t\t\t\t<ChildObjects/>".to_string());
+    } else {
+        lines.push("\t\t\t\t<ChildObjects>".to_string());
+        for method in value.methods() {
+            emit_meta_http_method(
+                &mut lines,
+                "\t\t\t\t\t",
+                name,
+                method.name().as_str(),
+                method.method().as_str(),
+                &mut next_uuid,
+            );
+        }
+        lines.push("\t\t\t\t</ChildObjects>".to_string());
+    }
+    lines.push("\t\t\t</URLTemplate>".to_string());
+    meta_edit_insert_top_child_object(xml_text, &lines)
+}
+
+fn meta_edit_add_semantic_service_operation(
+    xml_text: &mut String,
+    value: &unica_format_core::commands::MetadataServiceOperationDefinition,
+) -> Result<(), String> {
+    use unica_format_core::commands::MetadataServiceParameterDirection;
+    let name = value.name().as_str();
+    meta_edit_ensure_top_child_name_free(xml_text, "Operation", name)?;
+    let next_uuid = fresh_meta_compile_uuid;
+    let mut lines = vec![format!("\t\t\t<Operation uuid=\"{}\">", next_uuid())];
+    lines.push("\t\t\t\t<Properties>".to_string());
+    lines.push(format!("\t\t\t\t\t<Name>{}</Name>", escape_xml(name)));
+    emit_meta_mltext(
+        &mut lines,
+        "\t\t\t\t\t",
+        "Synonym",
+        &split_meta_camel_case(name),
+    );
+    lines.push("\t\t\t\t\t<Comment/>".to_string());
+    lines.push(format!(
+        "\t\t\t\t\t<XDTOReturningValueType>{}</XDTOReturningValueType>",
+        escape_xml(value.return_type().as_str())
+    ));
+    lines.push(format!(
+        "\t\t\t\t\t<Nillable>{}</Nillable>",
+        value.nillable()
+    ));
+    lines.push(format!(
+        "\t\t\t\t\t<Transactioned>{}</Transactioned>",
+        value.transactioned()
+    ));
+    lines.push(format!(
+        "\t\t\t\t\t<ProcedureName>{}</ProcedureName>",
+        escape_xml(value.handler().as_str())
+    ));
+    lines.push("\t\t\t\t\t<DataLockControlMode>Managed</DataLockControlMode>".to_string());
+    lines.push("\t\t\t\t</Properties>".to_string());
+    if value.parameters().is_empty() {
+        lines.push("\t\t\t\t<ChildObjects/>".to_string());
+    } else {
+        lines.push("\t\t\t\t<ChildObjects>".to_string());
+        for parameter in value.parameters() {
+            lines.push(format!("\t\t\t\t\t<Parameter uuid=\"{}\">", next_uuid()));
+            lines.push("\t\t\t\t\t\t<Properties>".to_string());
+            lines.push(format!(
+                "\t\t\t\t\t\t\t<Name>{}</Name>",
+                escape_xml(parameter.name().as_str())
+            ));
+            emit_meta_mltext(
+                &mut lines,
+                "\t\t\t\t\t\t\t",
+                "Synonym",
+                &split_meta_camel_case(parameter.name().as_str()),
+            );
+            lines.push("\t\t\t\t\t\t\t<Comment/>".to_string());
+            lines.push(format!(
+                "\t\t\t\t\t\t\t<XDTOValueType>{}</XDTOValueType>",
+                escape_xml(parameter.value_type().as_str())
+            ));
+            lines.push(format!(
+                "\t\t\t\t\t\t\t<Nillable>{}</Nillable>",
+                parameter.nillable()
+            ));
+            lines.push(format!(
+                "\t\t\t\t\t\t\t<TransferDirection>{}</TransferDirection>",
+                match parameter.direction() {
+                    MetadataServiceParameterDirection::Input => "In",
+                    MetadataServiceParameterDirection::Output => "Out",
+                    MetadataServiceParameterDirection::InputOutput => "InOut",
+                }
+            ));
+            lines.push("\t\t\t\t\t\t</Properties>".to_string());
+            lines.push("\t\t\t\t\t</Parameter>".to_string());
+        }
+        lines.push("\t\t\t\t</ChildObjects>".to_string());
+    }
+    lines.push("\t\t\t</Operation>".to_string());
+    meta_edit_insert_top_child_object(xml_text, &lines)
+}
+
+fn apply_semantic_metadata_patch(
+    xml_text: &mut String,
+    object_type: &str,
+    object_name: &str,
+    patch: &unica_format_core::commands::MetadataPatch,
+    counts: &mut MetaEditCounts,
+) -> Result<(), String> {
+    use unica_format_core::commands::{
+        MetadataChildDefinition, MetadataNamedChildKind, MetadataPatch,
+    };
+
+    match patch {
+        MetadataPatch::Replace(definition) => {
+            let document = Document::parse(xml_text.trim_start_matches('\u{feff}'))
+                .map_err(|error| format!("XML parse error: {error}"))?;
+            let version = document
+                .root_element()
+                .attribute("version")
+                .unwrap_or(ACTIVE_FORMAT_PROFILE.export_format)
+                .to_string();
+            let (mut replacement, _) =
+                meta_compile_object_xml(&Map::new(), object_type, object_name, &version)?;
+            apply_semantic_metadata_definition(
+                &mut replacement,
+                object_type,
+                object_name,
+                definition,
+                false,
+            )?;
+            *xml_text = replacement;
+            counts.modified += 1;
+            Ok(())
+        }
+        MetadataPatch::SetProperties(properties) => {
+            for property in properties.values() {
+                meta_edit_apply_semantic_object_property(xml_text, property)?;
+                counts.modified += 1;
+            }
+            Ok(())
+        }
+        MetadataPatch::ClearProperties(properties) => {
+            for property in properties.values() {
+                meta_edit_clear_semantic_property(
+                    xml_text,
+                    metadata_object_property_name(*property),
+                )?;
+                counts.removed += 1;
+            }
+            Ok(())
+        }
+        MetadataPatch::AddChild(child) => {
+            match child {
+                MetadataChildDefinition::Attribute(value) => {
+                    meta_edit_add_semantic_attribute(xml_text, object_type, value, "Attribute")?
+                }
+                MetadataChildDefinition::TabularSection(value) => {
+                    meta_edit_add_semantic_tabular_section(
+                        xml_text,
+                        object_type,
+                        object_name,
+                        value,
+                    )?
+                }
+                MetadataChildDefinition::Named(value) => {
+                    meta_edit_add_semantic_named_child(xml_text, object_type, object_name, value)?
+                }
+            }
+            counts.added += 1;
+            Ok(())
+        }
+        MetadataPatch::RemoveChild(target) => {
+            let tag = match target.kind() {
+                MetadataNamedChildKind::Attribute => "Attribute",
+                MetadataNamedChildKind::TabularSection => "TabularSection",
+                MetadataNamedChildKind::Form => "Form",
+                MetadataNamedChildKind::Template => "Template",
+                MetadataNamedChildKind::Command => "Command",
+                MetadataNamedChildKind::Dimension => "Dimension",
+                MetadataNamedChildKind::Resource => "Resource",
+                MetadataNamedChildKind::Requisite => "Requisite",
+                MetadataNamedChildKind::EnumValue => "EnumValue",
+                MetadataNamedChildKind::Column => "Column",
+            };
+            if let Some(parent) = target.parent() {
+                meta_edit_remove_tabular_child_by_name(
+                    xml_text,
+                    parent.as_str(),
+                    tag,
+                    target.name().as_str(),
+                )?;
+            } else {
+                meta_edit_remove_top_child_by_name(xml_text, tag, target.name().as_str())?;
+            }
+            counts.removed += 1;
+            Ok(())
+        }
+        MetadataPatch::ModifyChild(child) => {
+            counts.modified += apply_semantic_metadata_child_patch(xml_text, child)?;
+            Ok(())
+        }
+    }
+}
+
+fn meta_edit_apply_semantic_object_property(
+    xml_text: &mut String,
+    property: &unica_format_core::commands::MetadataPropertyPatch,
+) -> Result<(), String> {
+    use unica_format_core::commands::MetadataObjectProperty;
+    match property.property() {
+        MetadataObjectProperty::Synonym => meta_edit_set_semantic_mltext_property(
+            xml_text,
+            "Synonym",
+            &metadata_property_scalar_text(property.value())?,
+        ),
+        MetadataObjectProperty::ValueType => meta_edit_set_semantic_type_property(
+            xml_text,
+            "Type",
+            &[metadata_property_scalar_text(property.value())?],
+        ),
+        other => meta_edit_set_semantic_scalar_property(
+            xml_text,
+            metadata_object_property_name(other),
+            &metadata_property_scalar_text(property.value())?,
+        ),
+    }
+}
+
+fn meta_edit_clear_semantic_property(xml_text: &mut String, tag: &str) -> Result<(), String> {
+    let document = Document::parse(xml_text.trim_start_matches('\u{feff}'))
+        .map_err(|error| format!("XML parse error: {error}"))?;
+    let object = meta_edit_object_node(&document)?;
+    let properties = meta_info_child(object, "Properties")
+        .ok_or_else(|| "Object has no Properties".to_string())?;
+    let Some(property) = meta_info_child(properties, tag) else {
+        return Ok(());
+    };
+    let range = property.range();
+    drop(document);
+    meta_edit_remove_xml_node_range(xml_text, range);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -15544,48 +17313,70 @@ fn validate_meta_edit_preview_input(
     let (object_type, object_name) = meta_edit_object_identity(&xml_text)?;
     validate_generated_metadata_enum_contract(&xml_text, "meta.edit")?;
     let mut counts = MetaEditCounts::default();
-    if let Some(definition_file) = &input.definition_file {
-        let definition_path = absolutize(definition_file.clone(), &context.cwd);
-        let raw = fs::read(&definition_path).map_err(|error| {
-            format!(
-                "Definition file not found or unreadable {}: {error}",
-                definition_path.display()
-            )
-        })?;
-        let definition: Value = serde_json::from_slice(&raw)
-            .map_err(|error| format!("DefinitionFile JSON parse error: {error}"))?;
-        meta_edit_apply_definition(
-            &mut xml_text,
-            &object_type,
-            &object_name,
-            &definition,
-            MetaEditLineNumberLengthPolicy::UnknownCompatibility,
-            &mut counts,
-        )?;
-    } else {
-        meta_edit_apply_inline_operation(
-            &mut xml_text,
-            &object_type,
-            &object_name,
-            input
-                .operation
-                .as_deref()
-                .expect("typed operation is required"),
-            &input.value,
-            MetaEditLineNumberLengthPolicy::UnknownCompatibility,
-            &mut counts,
-        )
-        .map_err(|error| {
-            if error.starts_with("Unsupported meta-edit Operation:") {
-                error.replacen(
-                    "Unsupported meta-edit Operation:",
-                    "unsupported Operation:",
-                    1,
+    match &input.source {
+        MetaEditSource::Semantic(patch) => {
+            apply_semantic_metadata_patch(
+                &mut xml_text,
+                &object_type,
+                &object_name,
+                patch,
+                &mut counts,
+            )?;
+        }
+        #[cfg(test)]
+        MetaEditSource::Legacy {
+            definition_file: Some(definition_file),
+            ..
+        } => {
+            let definition_path = absolutize(definition_file.clone(), &context.cwd);
+            let raw = fs::read(&definition_path).map_err(|error| {
+                format!(
+                    "Definition file not found or unreadable {}: {error}",
+                    definition_path.display()
                 )
-            } else {
-                error
-            }
-        })?;
+            })?;
+            let definition: Value = serde_json::from_slice(&raw)
+                .map_err(|error| format!("DefinitionFile JSON parse error: {error}"))?;
+            meta_edit_apply_definition(
+                &mut xml_text,
+                &object_type,
+                &object_name,
+                &definition,
+                MetaEditLineNumberLengthPolicy::UnknownCompatibility,
+                &mut counts,
+            )?;
+        }
+        #[cfg(test)]
+        MetaEditSource::Legacy {
+            operation: Some(operation),
+            value,
+            ..
+        } => {
+            meta_edit_apply_inline_operation(
+                &mut xml_text,
+                &object_type,
+                &object_name,
+                operation,
+                value,
+                MetaEditLineNumberLengthPolicy::UnknownCompatibility,
+                &mut counts,
+            )
+            .map_err(|error| {
+                if error.starts_with("Unsupported meta-edit Operation:") {
+                    error.replacen(
+                        "Unsupported meta-edit Operation:",
+                        "unsupported Operation:",
+                        1,
+                    )
+                } else {
+                    error
+                }
+            })?;
+        }
+        #[cfg(test)]
+        MetaEditSource::Legacy { .. } => {
+            return Err("metadata edit source is incomplete".to_string());
+        }
     }
     Document::parse(xml_text.trim_start_matches('\u{feff}'))
         .map_err(|error| format!("XML parse error after meta-edit: {error}"))?;
@@ -17108,6 +18899,11 @@ pub(crate) fn meta_edit_tabular_section_from_value(
         .or_else(|| object.get("реквизиты"));
     let section = MetaCompileTabularSection {
         name: name.to_string(),
+        synonym: object
+            .get("synonym")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
         columns: meta_compile_attributes(columns_value),
     };
     validate_meta_compile_tabular_section_types(&section, "meta.edit tabular section")?;
@@ -17316,6 +19112,7 @@ pub(crate) fn meta_edit_parse_tabular_section(
     let Some((name, raw_columns)) = value.split_once(':') else {
         let section = MetaCompileTabularSection {
             name: value.to_string(),
+            synonym: String::new(),
             columns: Vec::new(),
         };
         validate_meta_compile_tabular_section_types(&section, "meta.edit add-ts")?;
@@ -17330,6 +19127,7 @@ pub(crate) fn meta_edit_parse_tabular_section(
     let columns = meta_edit_parse_tabular_section_columns(raw_columns)?;
     let section = MetaCompileTabularSection {
         name: name.to_string(),
+        synonym: String::new(),
         columns,
     };
     validate_meta_compile_tabular_section_types(&section, "meta.edit add-ts")?;
@@ -17710,10 +19508,7 @@ pub(crate) fn meta_edit_modify_properties_range(
     raw_changes: &str,
     target: MetaEditModifyTarget,
 ) -> Result<usize, String> {
-    let mut properties = xml_text[range.clone()].to_string();
-    let child_indent = meta_edit_property_child_indent(&properties);
-    let mut modified = 0usize;
-
+    let mut changes = Vec::new();
     for change in split_meta_edit_commas_outside_parens(raw_changes) {
         let change = change.trim();
         if change.is_empty() {
@@ -17722,9 +19517,45 @@ pub(crate) fn meta_edit_modify_properties_range(
         let (raw_key, raw_value) = change
             .split_once('=')
             .ok_or_else(|| format!("modify attribute change requires key=value, got: {change}"))?;
-        let key = raw_key.trim();
-        let value = raw_value.trim();
-        let canonical = meta_edit_canonical_attribute_property(key, target)?;
+        changes.push((
+            meta_edit_canonical_attribute_property(raw_key.trim(), target)?,
+            raw_value.trim().to_string(),
+        ));
+    }
+    meta_edit_modify_properties_range_values(xml_text, range, &changes)
+}
+
+fn meta_edit_modify_properties_range_typed(
+    xml_text: &mut String,
+    range: std::ops::Range<usize>,
+    changes: &[unica_format_core::commands::MetadataPropertyPatch],
+    target: MetaEditModifyTarget,
+) -> Result<usize, String> {
+    let changes = changes
+        .iter()
+        .map(|change| {
+            Ok((
+                meta_edit_canonical_attribute_property(
+                    semantic_metadata_child_property_key(change.property()),
+                    target,
+                )?,
+                metadata_property_scalar_text(change.value())?,
+            ))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    meta_edit_modify_properties_range_values(xml_text, range, &changes)
+}
+
+fn meta_edit_modify_properties_range_values(
+    xml_text: &mut String,
+    range: std::ops::Range<usize>,
+    changes: &[(String, String)],
+) -> Result<usize, String> {
+    let mut properties = xml_text[range.clone()].to_string();
+    let child_indent = meta_edit_property_child_indent(&properties);
+    let mut modified = 0usize;
+
+    for (canonical, value) in changes {
         match canonical.as_str() {
             "Name" => {
                 validate_meta_compile_name("meta.edit rename", value)?;
@@ -17760,7 +19591,7 @@ pub(crate) fn meta_edit_modify_properties_range(
                 )?;
             }
             "Type" => {
-                validate_meta_type_union(std::iter::once(value)).map_err(|error| {
+                validate_meta_type_union(std::iter::once(value.as_str())).map_err(|error| {
                     format!("invalid 8.3.27 type for meta.edit modify: {error}")
                 })?;
                 let mut lines = Vec::new();
@@ -17829,7 +19660,7 @@ pub(crate) fn meta_edit_modify_properties_range(
                 );
                 meta_edit_replace_or_insert_property(
                     &mut properties,
-                    &canonical,
+                    canonical,
                     &replacement,
                     &child_indent,
                 )?;
@@ -18667,7 +20498,7 @@ pub(crate) fn create_metadata(
     session: &PlatformWriterSession,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
-    match typed_meta_compile_input(session) {
+    match typed_meta_compile_input(command, session) {
         Ok(input) => {
             let _registration_policy =
                 (command.omits_default_role(), command.assigns_default_form());
@@ -18721,7 +20552,7 @@ pub(crate) fn preview_meta_compile_typed(
 ) -> Result<NativeWriterResult, String> {
     let _registration_policy = (command.omits_default_role(), command.assigns_default_form());
     let (_stdout, transaction, _validation_paths, _config_owner, _format_dependencies) =
-        plan_meta_compile_input(typed_meta_compile_input(session)?, context)?;
+        plan_meta_compile_input(typed_meta_compile_input(command, session)?, context)?;
     Ok(NativeWriterResult {
         ok: true,
         summary: "dry run: unica.meta.compile planned native metadata compilation".to_string(),
@@ -18742,14 +20573,17 @@ pub(crate) fn validate_meta_edit_preview_typed(
     validate_meta_edit_preview_input(&typed_meta_edit_input(command, session)?, context)
 }
 
-fn typed_meta_compile_input(session: &PlatformWriterSession) -> Result<MetaCompileInput, String> {
+fn typed_meta_compile_input(
+    command: &unica_format_core::commands::MetadataCreate,
+    session: &PlatformWriterSession,
+) -> Result<MetaCompileInput, String> {
     Ok(MetaCompileInput {
-        definition: session
-            .required_source(
-                unica_format_core::commands::WriterSourceRole::Definition,
-                "metadata definition",
-            )?
-            .to_path_buf(),
+        definition: MetaCompileDefinition::Semantic {
+            definitions: command.definitions().to_vec(),
+            guard: session
+                .source(unica_format_core::commands::WriterSourceRole::Definition)
+                .map(Path::to_path_buf),
+        },
         destination: session
             .required_source(
                 unica_format_core::commands::WriterSourceRole::DestinationDirectory,
@@ -18763,26 +20597,10 @@ fn typed_meta_edit_input(
     command: &unica_format_core::commands::MetadataEdit,
     session: &PlatformWriterSession,
 ) -> Result<MetaEditInput, String> {
-    let definition_file = session
-        .source(unica_format_core::commands::WriterSourceRole::Definition)
-        .map(Path::to_path_buf);
-    let (operation, value) = match command.mutation() {
-        Some(mutation) => {
-            if definition_file.is_some() {
-                return Err("metadata mutation was bound both inline and by definition".to_string());
-            }
-            let (operation, value) = metadata_mutation_parts(mutation);
-            (Some(operation.to_string()), value.to_string())
-        }
-        None if definition_file.is_some() => (None, String::new()),
-        None => return Err("metadata mutation is required".to_string()),
-    };
     let _selected_object = command.object().map(|value| value.as_str());
     let _create_if_missing = command.creates_if_missing();
     Ok(MetaEditInput {
-        definition_file,
-        operation,
-        value,
+        source: MetaEditSource::Semantic(command.patch().clone()),
         object_path: session
             .required_source(
                 unica_format_core::commands::WriterSourceRole::Object,
@@ -18792,45 +20610,16 @@ fn typed_meta_edit_input(
     })
 }
 
-fn metadata_mutation_parts(
-    mutation: &unica_format_core::commands::MetadataMutation,
-) -> (&'static str, &str) {
-    use unica_format_core::commands::MetadataMutation as Mutation;
-    match mutation {
-        Mutation::AddProperty(value) => ("add-property", value.as_str()),
-        Mutation::RemoveProperty(value) => ("remove-property", value.as_str()),
-        Mutation::ModifyProperty(value) => ("modify-property", value.as_str()),
-        Mutation::AddAttribute(value) => ("add-attribute", value.as_str()),
-        Mutation::RemoveAttribute(value) => ("remove-attribute", value.as_str()),
-        Mutation::ModifyAttribute(value) => ("modify-attribute", value.as_str()),
-        Mutation::AddTabularSection(value) => ("add-tabular-section", value.as_str()),
-        Mutation::RemoveTabularSection(value) => ("remove-tabular-section", value.as_str()),
-        Mutation::ModifyTabularSection(value) => ("modify-tabular-section", value.as_str()),
-        Mutation::AddTabularSectionAttribute(value) => ("add-ts-attribute", value.as_str()),
-        Mutation::RemoveTabularSectionAttribute(value) => ("remove-ts-attribute", value.as_str()),
-        Mutation::ModifyTabularSectionAttribute(value) => ("modify-ts-attribute", value.as_str()),
-        Mutation::AddForm(value) => ("add-form", value.as_str()),
-        Mutation::RemoveForm(value) => ("remove-form", value.as_str()),
-        Mutation::ModifyForm(value) => ("modify-form", value.as_str()),
-        Mutation::AddTemplate(value) => ("add-template", value.as_str()),
-        Mutation::RemoveTemplate(value) => ("remove-template", value.as_str()),
-        Mutation::ModifyTemplate(value) => ("modify-template", value.as_str()),
-        Mutation::AddCommand(value) => ("add-command", value.as_str()),
-        Mutation::RemoveCommand(value) => ("remove-command", value.as_str()),
-        Mutation::ModifyCommand(value) => ("modify-command", value.as_str()),
-        Mutation::AddDimension(value) => ("add-dimension", value.as_str()),
-        Mutation::RemoveDimension(value) => ("remove-dimension", value.as_str()),
-        Mutation::ModifyDimension(value) => ("modify-dimension", value.as_str()),
-        Mutation::AddResource(value) => ("add-resource", value.as_str()),
-        Mutation::RemoveResource(value) => ("remove-resource", value.as_str()),
-        Mutation::ModifyResource(value) => ("modify-resource", value.as_str()),
-        Mutation::AddRequisite(value) => ("add-requisite", value.as_str()),
-        Mutation::RemoveRequisite(value) => ("remove-requisite", value.as_str()),
-        Mutation::ModifyRequisite(value) => ("modify-requisite", value.as_str()),
-        Mutation::AddEnumValue(value) => ("add-enum-value", value.as_str()),
-        Mutation::RemoveEnumValue(value) => ("remove-enum-value", value.as_str()),
-        Mutation::ModifyEnumValue(value) => ("modify-enum-value", value.as_str()),
+pub(crate) fn semantic_metadata_owner_parts(owner: &str) -> Result<(&'static str, &str), String> {
+    let (object_kind, object_name) = owner
+        .split_once('.')
+        .ok_or_else(|| "semantic owner must identify an object kind and name".to_string())?;
+    let collection = meta_compile_type_plural(object_kind)
+        .ok_or_else(|| format!("unsupported semantic owner kind: {object_kind}"))?;
+    if object_name.is_empty() || object_name.contains(['/', '\\', '.']) {
+        return Err("semantic owner name is invalid".to_string());
     }
+    Ok((collection, object_name))
 }
 
 #[cfg(test)]

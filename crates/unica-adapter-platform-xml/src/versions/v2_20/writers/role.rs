@@ -70,6 +70,18 @@ pub(crate) struct RoleObject {
     pub(crate) rights: Vec<RoleRight>,
 }
 
+struct RoleCompileModel {
+    name: String,
+    synonym: String,
+    comment: String,
+    set_for_new_objects: bool,
+    set_for_attributes_by_default: bool,
+    independent_rights_of_child_objects: bool,
+    objects: Vec<RoleObject>,
+    templates: Vec<(String, String)>,
+    stderr: String,
+}
+
 pub(crate) struct RoleInfoRightSummary {
     pub(crate) name: String,
     pub(crate) rls: bool,
@@ -1398,75 +1410,83 @@ pub(crate) fn preview_role_compile(
     }
 }
 
-struct RoleCompileInput<'a> {
-    definition: PathBuf,
+enum RoleCompileDefinition {
+    #[cfg(test)]
+    File(PathBuf),
+    Semantic {
+        definition: unica_format_core::commands::RoleDefinition,
+        guard: Option<PathBuf>,
+    },
+}
+
+struct RoleCompileInput {
+    definition: RoleCompileDefinition,
     destination: PathBuf,
-    declared_name: Option<&'a str>,
+    declared_name: Option<String>,
 }
 
 #[cfg(test)]
-fn role_compile_input(args: &impl ArgumentAccess) -> Result<RoleCompileInput<'static>, String> {
+fn role_compile_input(args: &impl ArgumentAccess) -> Result<RoleCompileInput, String> {
     Ok(RoleCompileInput {
-        definition: required_path(args, &["jsonPath", "JsonPath"], "JsonPath")?,
+        definition: RoleCompileDefinition::File(required_path(
+            args,
+            &["jsonPath", "JsonPath"],
+            "JsonPath",
+        )?),
         destination: required_path(args, &["outputDir", "OutputDir"], "OutputDir")?,
         declared_name: None,
     })
 }
 
 fn compile_role_internal(
-    input: RoleCompileInput<'_>,
+    input: RoleCompileInput,
     context: &WorkspaceContext,
     dry_run: bool,
 ) -> NativeWriterResult {
     let write_result = (|| -> Result<RoleCompileResult, String> {
-        let json_path = absolutize(input.definition, &context.cwd);
-        if !json_path.exists() {
-            return Err(format!("File not found: {}", json_path.display()));
-        }
         let mut transaction = CompileTransaction::new();
-        let mut defn = FileBackedJson::read(&json_path, |err| {
-            format!("failed to parse role JSON: {err}")
-        })?
-        .bind_to(&mut transaction)?;
-
-        let definition_name = defn
-            .get("name")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned)
-            .ok_or_else(|| "JSON must have 'name' field (role programmatic name)".to_string())?;
-        let role_name = input
-            .declared_name
-            .map(ToOwned::to_owned)
-            .unwrap_or(definition_name);
-        validate_role_compile_name(&role_name)?;
-        let sfno = role_compile_json_bool(&defn, "setForNewObjects", false)?.to_string();
-        let sfab = role_compile_json_bool(&defn, "setForAttributesByDefault", true)?.to_string();
-        let irco =
-            role_compile_json_bool(&defn, "independentRightsOfChildObjects", false)?.to_string();
-        let synonym = json_string_field(&defn, "synonym").unwrap_or_else(|| role_name.clone());
-        let comment = json_string_field(&defn, "comment").unwrap_or_default();
-
-        if !truthy_json_field(&defn, "objects") && truthy_json_field(&defn, "rights") {
-            let rights = defn.get("rights").cloned().unwrap_or(Value::Null);
-            if let Some(object) = defn.as_object_mut() {
-                object.insert("objects".to_string(), rights);
+        let model = match input.definition {
+            #[cfg(test)]
+            RoleCompileDefinition::File(path) => {
+                let json_path = absolutize(path, &context.cwd);
+                if !json_path.exists() {
+                    return Err(format!("File not found: {}", json_path.display()));
+                }
+                let definition = FileBackedJson::read(&json_path, |err| {
+                    format!("failed to parse role JSON: {err}")
+                })?
+                .bind_to(&mut transaction)?;
+                role_compile_model_from_legacy(definition)?
             }
-        }
+            RoleCompileDefinition::Semantic { definition, guard } => {
+                if let Some(path) = guard {
+                    let path = absolutize(path, &context.cwd);
+                    let preimage = fs::read(&path)
+                        .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+                    transaction.guard_exact_preimage(path, &preimage)?;
+                }
+                role_compile_model_from_semantic(&definition)
+            }
+        };
+
+        let role_name = input.declared_name.unwrap_or_else(|| model.name.clone());
+        validate_role_compile_name(&role_name)?;
+        let sfno = model.set_for_new_objects.to_string();
+        let sfab = model.set_for_attributes_by_default.to_string();
+        let irco = model.independent_rights_of_child_objects.to_string();
+        let synonym = if model.synonym.is_empty() {
+            role_name.clone()
+        } else {
+            model.synonym.clone()
+        };
+        let comment = model.comment.clone();
 
         let output_dir = absolutize(input.destination, &context.cwd);
         let format_version = crate::domain::format_profile::ACTIVE_FORMAT_PROFILE
             .export_format
             .to_string();
-        let mut stderr = String::new();
-        let mut parsed_objects = Vec::<RoleObject>::new();
-        if let Some(objects) = defn.get("objects").and_then(Value::as_array) {
-            for entry in objects {
-                if let Some(parsed) = parse_role_object_entry(entry, &mut stderr) {
-                    parsed_objects.push(parsed);
-                }
-            }
-        }
+        let mut stderr = model.stderr;
+        let parsed_objects = model.objects;
 
         let mut rights_lines = Vec::<String>::new();
         rights_lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
@@ -1511,20 +1531,15 @@ fn compile_role_internal(
         }
 
         let mut template_count = 0usize;
-        if let Some(templates) = defn.get("templates").and_then(Value::as_array) {
-            for template in templates {
-                rights_lines.push("    <restrictionTemplate>".to_string());
-                rights_lines.push(format!(
-                    "        <name>{}</name>",
-                    escape_xml(&json_string_field(template, "name").unwrap_or_default())
-                ));
-                rights_lines.push(format!(
-                    "        <condition>{}</condition>",
-                    escape_xml(&json_string_field(template, "condition").unwrap_or_default())
-                ));
-                rights_lines.push("    </restrictionTemplate>".to_string());
-                template_count += 1;
-            }
+        for (name, condition) in model.templates {
+            rights_lines.push("    <restrictionTemplate>".to_string());
+            rights_lines.push(format!("        <name>{}</name>", escape_xml(&name)));
+            rights_lines.push(format!(
+                "        <condition>{}</condition>",
+                escape_xml(&condition)
+            ));
+            rights_lines.push("    </restrictionTemplate>".to_string());
+            template_count += 1;
         }
         rights_lines.push("</Rights>".to_string());
         let rights_xml = format!("{}\n", rights_lines.join("\n"));
@@ -2096,25 +2111,175 @@ pub(crate) fn preview_role_compile_typed(
     }
 }
 
-fn typed_role_compile_input<'a>(
-    command: &'a unica_format_core::commands::RoleCreate,
+fn typed_role_compile_input(
+    command: &unica_format_core::commands::RoleCreate,
     session: &PlatformWriterSession,
-) -> Result<RoleCompileInput<'a>, String> {
+) -> Result<RoleCompileInput, String> {
     Ok(RoleCompileInput {
-        definition: session
-            .required_source(
-                unica_format_core::commands::WriterSourceRole::Definition,
-                "role definition",
-            )?
-            .to_path_buf(),
+        definition: RoleCompileDefinition::Semantic {
+            definition: command.definition().clone(),
+            guard: session
+                .source(unica_format_core::commands::WriterSourceRole::Definition)
+                .map(Path::to_path_buf),
+        },
         destination: session
             .required_source(
                 unica_format_core::commands::WriterSourceRole::DestinationDirectory,
                 "role destination",
             )?
             .to_path_buf(),
-        declared_name: command.name().map(|value| value.as_str()),
+        declared_name: command.name().map(|value| value.as_str().to_string()),
     })
+}
+
+fn role_compile_model_from_legacy(mut definition: Value) -> Result<RoleCompileModel, String> {
+    let name = definition
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| "JSON must have 'name' field (role programmatic name)".to_string())?;
+    let set_for_new_objects = role_compile_json_bool(&definition, "setForNewObjects", false)?;
+    let set_for_attributes_by_default =
+        role_compile_json_bool(&definition, "setForAttributesByDefault", true)?;
+    let independent_rights_of_child_objects =
+        role_compile_json_bool(&definition, "independentRightsOfChildObjects", false)?;
+    let synonym = json_string_field(&definition, "synonym").unwrap_or_default();
+    let comment = json_string_field(&definition, "comment").unwrap_or_default();
+    if !truthy_json_field(&definition, "objects") && truthy_json_field(&definition, "rights") {
+        let rights = definition.get("rights").cloned().unwrap_or(Value::Null);
+        if let Some(object) = definition.as_object_mut() {
+            object.insert("objects".to_string(), rights);
+        }
+    }
+    let mut stderr = String::new();
+    let objects = definition
+        .get("objects")
+        .and_then(Value::as_array)
+        .map(|objects| {
+            objects
+                .iter()
+                .filter_map(|entry| parse_role_object_entry(entry, &mut stderr))
+                .collect()
+        })
+        .unwrap_or_default();
+    let templates = definition
+        .get("templates")
+        .and_then(Value::as_array)
+        .map(|templates| {
+            templates
+                .iter()
+                .map(|template| {
+                    (
+                        json_string_field(template, "name").unwrap_or_default(),
+                        json_string_field(template, "condition").unwrap_or_default(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(RoleCompileModel {
+        name,
+        synonym,
+        comment,
+        set_for_new_objects,
+        set_for_attributes_by_default,
+        independent_rights_of_child_objects,
+        objects,
+        templates,
+        stderr,
+    })
+}
+
+fn role_compile_model_from_semantic(
+    definition: &unica_format_core::commands::RoleDefinition,
+) -> RoleCompileModel {
+    use unica_format_core::commands::{RoleRight as SemanticRoleRight, RoleRightState};
+
+    fn right_name(right: SemanticRoleRight) -> &'static str {
+        match right {
+            SemanticRoleRight::Read => "Read",
+            SemanticRoleRight::Insert => "Insert",
+            SemanticRoleRight::Update => "Update",
+            SemanticRoleRight::Delete => "Delete",
+            SemanticRoleRight::View => "View",
+            SemanticRoleRight::Edit => "Edit",
+            SemanticRoleRight::InputByString => "InputByString",
+            SemanticRoleRight::InteractiveInsert => "InteractiveInsert",
+            SemanticRoleRight::InteractiveUpdate => "InteractiveUpdate",
+            SemanticRoleRight::InteractiveDelete => "InteractiveDelete",
+            SemanticRoleRight::InteractiveDeleteMarked => "InteractiveDeleteMarked",
+            SemanticRoleRight::InteractiveSetDeletionMark => "InteractiveSetDeletionMark",
+            SemanticRoleRight::InteractiveClearDeletionMark => "InteractiveClearDeletionMark",
+            SemanticRoleRight::Posting => "Posting",
+            SemanticRoleRight::UndoPosting => "UndoPosting",
+            SemanticRoleRight::InteractivePosting => "InteractivePosting",
+            SemanticRoleRight::InteractivePostingRegular => "InteractivePostingRegular",
+            SemanticRoleRight::InteractiveUndoPosting => "InteractiveUndoPosting",
+            SemanticRoleRight::InteractiveChangeOfPosted => "InteractiveChangeOfPosted",
+            SemanticRoleRight::Use => "Use",
+            SemanticRoleRight::Execute => "Execute",
+            SemanticRoleRight::Get => "Get",
+            SemanticRoleRight::Set => "Set",
+            SemanticRoleRight::Administration => "Administration",
+            SemanticRoleRight::DataAdministration => "DataAdministration",
+            SemanticRoleRight::ConfigurationAdministration => "ConfigurationAdministration",
+            SemanticRoleRight::ThinClient => "ThinClient",
+            SemanticRoleRight::WebClient => "WebClient",
+            SemanticRoleRight::MobileClient => "MobileClient",
+            SemanticRoleRight::Output => "Output",
+            SemanticRoleRight::SaveUserData => "SaveUserData",
+            SemanticRoleRight::MainWindowModeNormal => "MainWindowModeNormal",
+        }
+    }
+
+    let objects = definition
+        .objects()
+        .iter()
+        .map(|object| {
+            let rights = object
+                .rights()
+                .iter()
+                .map(|assignment| RoleRight {
+                    name: right_name(assignment.right()).to_string(),
+                    value: matches!(assignment.state(), RoleRightState::Allow).to_string(),
+                    condition: object.restriction().map(|value| value.as_str().to_string()),
+                })
+                .collect();
+            RoleObject {
+                name: object.object().as_str().to_string(),
+                rights,
+            }
+        })
+        .collect();
+    let templates = definition
+        .templates()
+        .iter()
+        .map(|template| {
+            (
+                template.name().as_str().to_string(),
+                template.condition().as_str().to_string(),
+            )
+        })
+        .collect();
+
+    RoleCompileModel {
+        name: definition.name().as_str().to_string(),
+        synonym: definition
+            .synonym()
+            .map(|value| value.as_str().to_string())
+            .unwrap_or_default(),
+        comment: definition
+            .comment()
+            .map(|value| value.as_str().to_string())
+            .unwrap_or_default(),
+        set_for_new_objects: definition.sets_for_new_objects(),
+        set_for_attributes_by_default: definition.sets_for_attributes_by_default(),
+        independent_rights_of_child_objects: definition.has_independent_child_rights(),
+        objects,
+        templates,
+        stderr: String::new(),
+    }
 }
 
 #[cfg(test)]
@@ -2355,7 +2520,7 @@ mod role_compile_contract_tests {
     #[test]
     fn role_compile_rejects_newer_configuration_that_appears_after_owner_probe() {
         let workspace = temp_root("newer-owner-appears-after-probe");
-        let source = temp_root("detached-newer-owner-appears-after-probe");
+        let source = workspace.join("detached-newer-owner-appears-after-probe");
         fs::create_dir_all(&source).unwrap();
         let definition = write_definition(&workspace, &json!({ "name": "Reader" }));
         let newer = String::from_utf8(configuration_bytes())
@@ -2383,7 +2548,7 @@ mod role_compile_contract_tests {
     #[test]
     fn role_compile_rolls_back_if_supported_configuration_appears_during_publication() {
         let workspace = temp_root("supported-owner-appears-during-publication");
-        let source = temp_root("detached-supported-owner-appears-during-publication");
+        let source = workspace.join("detached-supported-owner-appears-during-publication");
         fs::create_dir_all(&source).unwrap();
         let definition = write_definition(&workspace, &json!({ "name": "Reader" }));
         let config_path = source.join("Configuration.xml");
@@ -2410,7 +2575,7 @@ mod role_compile_contract_tests {
     #[test]
     fn role_compile_validates_supported_configuration_that_appears_after_owner_probe() {
         let workspace = temp_root("invalid-owner-appears-after-probe");
-        let source = temp_root("detached-invalid-owner-appears-after-probe");
+        let source = workspace.join("detached-invalid-owner-appears-after-probe");
         fs::create_dir_all(source.join("Languages")).unwrap();
         fs::write(source.join("Languages/English.xml"), b"language marker").unwrap();
         let definition = write_definition(&workspace, &json!({ "name": "Reader" }));

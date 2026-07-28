@@ -151,6 +151,8 @@ fn operation_source_context(
     target: &Path,
     context: &WorkspaceContext,
 ) -> Result<(SourceContext, ProjectSourceMapProvenance), PlatformXmlOwnerError> {
+    let workspace_root = normalize_path_identity(&context.workspace_root)
+        .map_err(|message| PlatformXmlOwnerError { message })?;
     let target = if target.is_absolute() {
         target.to_path_buf()
     } else {
@@ -179,18 +181,26 @@ fn operation_source_context(
             has_explicit_source_map.then(|| configured_kind(source_set.kind)),
             source_root,
         ),
-        None if target.is_dir() => (None, None, target.clone()),
-        None => (
+        None if target.starts_with(&workspace_root) && target.is_dir() => {
+            (None, None, target.clone())
+        }
+        None if target.starts_with(&workspace_root) => (
             None,
             None,
             target
                 .parent()
-                .unwrap_or(context.workspace_root.as_path())
+                .unwrap_or(workspace_root.as_path())
                 .to_path_buf(),
         ),
+        None => {
+            return Err(PlatformXmlOwnerError {
+                message: "platform XML target is outside the workspace containment root"
+                    .to_string(),
+            });
+        }
     };
     let source = SourceContext::new(
-        SourceLocation::new(context.workspace_root.clone(), source_root, target.clone()),
+        SourceLocation::new(workspace_root, source_root, target.clone()),
         configured_source_set,
         SourceFamily::PlatformXml,
         None,

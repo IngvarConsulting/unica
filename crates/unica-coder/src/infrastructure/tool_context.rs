@@ -70,8 +70,21 @@ fn validate_native_source_set_format(
         return Ok(());
     }
 
-    let source_map = discover_project_source_map(&context.workspace_root)
-        .map_err(|_| "project source declaration could not be inspected".to_string())?;
+    let source_map = discover_project_source_map(&context.workspace_root).map_err(|error| {
+        if is_external_init_tool(tool) {
+            let detail = error.to_string();
+            if detail.contains("field `format` must be a string") {
+                detail
+            } else {
+                format!(
+                    "{} requires project format to be the exact `DESIGNER` string",
+                    tool.name
+                )
+            }
+        } else {
+            "project source declaration could not be inspected".to_string()
+        }
+    })?;
     if source_map.source_sets.is_empty() && !is_external_init_tool(tool) {
         return Ok(());
     }
@@ -127,15 +140,20 @@ fn validates_compile_preview_like_apply(tool: ToolSpec) -> bool {
 }
 
 fn validate_external_project_format(
-    _tool: ToolSpec,
+    tool: ToolSpec,
     source_map: &ProjectSourceMap,
 ) -> Result<(), String> {
-    let evidence = match source_map.configured_format_raw.as_deref() {
-        None | Some("DESIGNER") => SourceCompatibilityEvidence::Compatible,
-        Some("EDT") => SourceCompatibilityEvidence::AlternateFamily,
-        Some(_) => SourceCompatibilityEvidence::UnsupportedDeclaration,
-    };
-    enforce_source_compatibility(SourceCompatibilityRequest::new(evidence))
+    match source_map.configured_format_raw.as_deref() {
+        None | Some("DESIGNER") => Ok(()),
+        Some("EDT") => Err(format!(
+            "{} requires project format=DESIGNER; found EDT",
+            tool.name
+        )),
+        Some(_) => Err(format!(
+            "{} requires project format to be the exact `DESIGNER` string",
+            tool.name
+        )),
+    }
 }
 
 fn validate_initializer_destination(
@@ -166,7 +184,7 @@ fn validate_initializer_destination(
         let targets_source_root = target == source_root || aliases_source_root;
         if is_external_init_tool(tool) && aliases_source_root && target != source_root {
             return Err(format!(
-                "{} must target the exact configured source-set root",
+                "{} must target the exact source-set root configured for the project",
                 tool.name
             ));
         }
@@ -186,7 +204,7 @@ fn validate_initializer_destination(
         if source_set.kind == expected_kind && is_external_init_tool(tool) && target != source_root
         {
             return Err(format!(
-                "{} must target the exact configured source-set root",
+                "{} must target the exact source-set root configured for the project",
                 tool.name
             ));
         }
@@ -250,7 +268,7 @@ fn reject_symlink_components(target: &Path, workspace_root: &Path) -> Result<(),
         match std::fs::symlink_metadata(&current) {
             Ok(metadata) if metadata_is_link_or_reparse_point(&metadata) => {
                 return Err(
-                    "external scaffold output must not traverse a link or reparse point"
+                    "external scaffold output must not traverse symlink or reparse-point components"
                         .to_string(),
                 );
             }

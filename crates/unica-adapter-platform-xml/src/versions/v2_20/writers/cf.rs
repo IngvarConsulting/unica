@@ -2013,11 +2013,36 @@ struct CfEditRun {
 }
 
 struct CfEditInput {
-    definition_file: Option<PathBuf>,
-    operation: Option<String>,
-    value: String,
+    source: CfEditSource,
     configuration: PathBuf,
     show_validation_output: bool,
+}
+
+enum CfEditSource {
+    Semantic(Vec<unica_format_core::commands::ConfigurationMutation>),
+    #[cfg(test)]
+    Legacy {
+        definition_file: Option<PathBuf>,
+        operation: Option<String>,
+        value: String,
+    },
+}
+
+enum CfNativeMutation {
+    SetProperty(Vec<(String, String)>),
+    RemoveChild(Vec<String>),
+    AddChild(Vec<String>),
+    SetDefaultRoles(Vec<String>),
+    AddDefaultRole(Vec<String>),
+    RemoveDefaultRole(Vec<String>),
+    SetPanelPlacements(Vec<unica_format_core::commands::ConfigurationPanelPlacement>),
+    SetPanelLayout(unica_format_core::commands::ConfigurationPanelLayout),
+    SetHomePageItems(Vec<unica_format_core::commands::ConfigurationHomePageItem>),
+    SetHomePageLayout(unica_format_core::commands::ConfigurationHomePageLayout),
+    #[cfg(test)]
+    LegacySetPanels(Value),
+    #[cfg(test)]
+    LegacySetHomePage(Value),
 }
 
 #[cfg(test)]
@@ -2035,11 +2060,13 @@ pub(crate) fn edit_cf(
             return Err("Either -DefinitionFile or -Operation is required".to_string());
         }
         Ok(CfEditInput {
-            definition_file,
-            operation,
-            value: string_arg(args, &["value", "Value"])
-                .unwrap_or_default()
-                .to_string(),
+            source: CfEditSource::Legacy {
+                definition_file,
+                operation,
+                value: string_arg(args, &["value", "Value"])
+                    .unwrap_or_default()
+                    .to_string(),
+            },
             configuration: required_path(args, CF_PATH, "ConfigPath")?,
             show_validation_output: !bool_arg(args, &["noValidate", "NoValidate"]),
         })
@@ -2053,9 +2080,7 @@ pub(crate) fn edit_cf(
 fn edit_cf_input(input: CfEditInput, context: &WorkspaceContext) -> NativeWriterResult {
     let edit_result = (|| -> Result<CfEditRun, String> {
         let CfEditInput {
-            definition_file,
-            operation,
-            value,
+            source,
             configuration,
             show_validation_output,
         } = input;
@@ -2072,16 +2097,33 @@ fn edit_cf_input(input: CfEditInput, context: &WorkspaceContext) -> NativeWriter
         let obj_name = cf_edit_config_name(&text)?;
 
         let mut transaction = CompileTransaction::new();
-        let operations = cf_edit_operations_guarded(
-            &context.cwd,
-            operation.as_deref(),
-            &value,
-            definition_file,
-            &mut transaction,
-        )?;
-        cf_edit_validate_child_object_kinds(&operations)?;
+        let operations = match source {
+            CfEditSource::Semantic(operations) => operations
+                .into_iter()
+                .map(cf_native_mutation)
+                .collect::<Result<Vec<_>, _>>()?,
+            #[cfg(test)]
+            CfEditSource::Legacy {
+                definition_file,
+                operation,
+                value,
+            } => {
+                let operations = cf_edit_operations_guarded(
+                    &context.cwd,
+                    operation.as_deref(),
+                    &value,
+                    definition_file,
+                    &mut transaction,
+                )?;
+                cf_edit_validate_child_object_kinds(&operations)?;
+                operations
+                    .into_iter()
+                    .map(|(operation, value)| cf_legacy_mutation(&operation, value))
+                    .collect::<Result<Vec<_>, _>>()?
+            }
+        };
         let format_dependencies =
-            cf_edit_format_dependency_paths_for_operations(&config_path, &operations)?;
+            cf_edit_format_dependency_paths_for_native(&config_path, &operations)?;
         let mut add_count = 0usize;
         let mut remove_count = 0usize;
         let mut modify_count = 0usize;
@@ -2090,36 +2132,24 @@ fn edit_cf_input(input: CfEditInput, context: &WorkspaceContext) -> NativeWriter
         let mut external_files = BTreeMap::<PathBuf, Vec<u8>>::new();
         let mut config_changed = false;
 
-        for (op_name, op_value) in operations {
-            match op_name.as_str() {
-                "modify-property" => {
-                    for item in cf_edit_batch_value(&op_value) {
-                        let Some(eq_idx) = item.find('=') else {
-                            return Err(format!(
-                                "Invalid property format '{item}', expected 'Key=Value'"
-                            ));
-                        };
-                        if eq_idx < 1 {
-                            return Err(format!(
-                                "Invalid property format '{item}', expected 'Key=Value'"
-                            ));
-                        }
-                        let prop_name = item[..eq_idx].trim();
-                        let prop_value = item[eq_idx + 1..].trim();
-                        cf_edit_validate_property_value(prop_name, prop_value)?;
-                        let replacement = if cf_edit_ml_properties().contains(&prop_name) {
-                            cf_edit_ml_property_xml(prop_name, prop_value)
+        for operation in operations {
+            match operation {
+                CfNativeMutation::SetProperty(op_value) => {
+                    for (prop_name, prop_value) in op_value {
+                        cf_edit_validate_property_value(&prop_name, &prop_value)?;
+                        let replacement = if cf_edit_ml_properties().contains(&prop_name.as_str()) {
+                            cf_edit_ml_property_xml(&prop_name, &prop_value)
                         } else {
-                            cf_edit_scalar_property_xml(prop_name, prop_value)
+                            cf_edit_scalar_property_xml(&prop_name, &prop_value)
                         };
-                        text = cf_edit_replace_property(&text, prop_name, &replacement)?;
+                        text = cf_edit_replace_property(&text, &prop_name, &replacement)?;
                         config_changed = true;
                         modify_count += 1;
                         stdout.push_str(&format!("[INFO] Set {prop_name} = \"{prop_value}\"\n"));
                     }
                 }
-                "remove-childObject" => {
-                    for item in cf_edit_batch_value(&op_value) {
+                CfNativeMutation::RemoveChild(op_value) => {
+                    for item in op_value {
                         let (type_name, obj_name_val) = cf_edit_parse_child_object(&item)?;
                         if cf_edit_remove_child_object_text(&mut text, type_name, obj_name_val)? {
                             remove_count += 1;
@@ -2133,8 +2163,8 @@ fn edit_cf_input(input: CfEditInput, context: &WorkspaceContext) -> NativeWriter
                         }
                     }
                 }
-                "add-childObject" => {
-                    for item in cf_edit_batch_value(&op_value) {
+                CfNativeMutation::AddChild(op_value) => {
+                    for item in op_value {
                         let (type_name, obj_name_val) = cf_edit_parse_child_object(&item)?;
                         if cf_validate_child_object_type_index(type_name).is_none() {
                             return Err(format!("Unknown type '{type_name}'"));
@@ -2175,8 +2205,8 @@ fn edit_cf_input(input: CfEditInput, context: &WorkspaceContext) -> NativeWriter
                         }
                     }
                 }
-                "set-defaultRoles" => {
-                    let roles = cf_edit_batch_value(&op_value)
+                CfNativeMutation::SetDefaultRoles(op_value) => {
+                    let roles = op_value
                         .into_iter()
                         .map(|role| cf_edit_role_ref(&role))
                         .collect::<Vec<_>>();
@@ -2190,9 +2220,9 @@ fn edit_cf_input(input: CfEditInput, context: &WorkspaceContext) -> NativeWriter
                             .push_str(&format!("[INFO] Set DefaultRoles: {} roles\n", roles.len()));
                     }
                 }
-                "add-defaultRole" => {
+                CfNativeMutation::AddDefaultRole(op_value) => {
                     let mut roles = cf_edit_default_roles(&text)?;
-                    for role in cf_edit_batch_value(&op_value) {
+                    for role in op_value {
                         let role_name = cf_edit_role_ref(&role);
                         if roles.contains(&role_name) {
                             stdout.push_str(&format!(
@@ -2207,9 +2237,9 @@ fn edit_cf_input(input: CfEditInput, context: &WorkspaceContext) -> NativeWriter
                     text = cf_edit_replace_default_roles(&text, &roles)?;
                     config_changed = true;
                 }
-                "remove-defaultRole" => {
+                CfNativeMutation::RemoveDefaultRole(op_value) => {
                     let mut roles = cf_edit_default_roles(&text)?;
-                    for role in cf_edit_batch_value(&op_value) {
+                    for role in op_value {
                         let role_name = cf_edit_role_ref(&role);
                         if let Some(index) =
                             roles.iter().position(|existing| existing == &role_name)
@@ -2225,7 +2255,46 @@ fn edit_cf_input(input: CfEditInput, context: &WorkspaceContext) -> NativeWriter
                     text = cf_edit_replace_default_roles(&text, &roles)?;
                     config_changed = true;
                 }
-                "set-panels" => {
+                CfNativeMutation::SetPanelPlacements(op_value) => {
+                    let plan = cf_edit_set_panel_placements(&op_value, &config_dir)?;
+                    let path = plan.path.clone();
+                    external_files.insert(plan.path, plan.bytes);
+                    modify_count += 1;
+                    stdout.push_str(&format!("[INFO] Wrote panel layout: {}\n", path.display()));
+                    artifacts.push(path);
+                }
+                CfNativeMutation::SetPanelLayout(op_value) => {
+                    let plan = cf_edit_set_panel_layout(&op_value, &config_dir)?;
+                    let path = plan.path.clone();
+                    external_files.insert(plan.path, plan.bytes);
+                    modify_count += 1;
+                    stdout.push_str(&format!("[INFO] Wrote panel layout: {}\n", path.display()));
+                    artifacts.push(path);
+                }
+                CfNativeMutation::SetHomePageItems(op_value) => {
+                    let plan = cf_edit_set_home_page_items(&op_value, &config_dir)?;
+                    let path = plan.path.clone();
+                    external_files.insert(plan.path, plan.bytes);
+                    modify_count += 1;
+                    stdout.push_str(&format!(
+                        "[INFO] Wrote home page layout: {}\n",
+                        path.display()
+                    ));
+                    artifacts.push(path);
+                }
+                CfNativeMutation::SetHomePageLayout(op_value) => {
+                    let plan = cf_edit_set_home_page_layout(&op_value, &config_dir)?;
+                    let path = plan.path.clone();
+                    external_files.insert(plan.path, plan.bytes);
+                    modify_count += 1;
+                    stdout.push_str(&format!(
+                        "[INFO] Wrote home page layout: {}\n",
+                        path.display()
+                    ));
+                    artifacts.push(path);
+                }
+                #[cfg(test)]
+                CfNativeMutation::LegacySetPanels(op_value) => {
                     let plan = cf_edit_set_panels(&op_value, &config_dir)?;
                     let path = plan.path.clone();
                     external_files.insert(plan.path, plan.bytes);
@@ -2233,7 +2302,8 @@ fn edit_cf_input(input: CfEditInput, context: &WorkspaceContext) -> NativeWriter
                     stdout.push_str(&format!("[INFO] Wrote panel layout: {}\n", path.display()));
                     artifacts.push(path);
                 }
-                "set-home-page" => {
+                #[cfg(test)]
+                CfNativeMutation::LegacySetHomePage(op_value) => {
                     let plan = cf_edit_set_home_page(&op_value, &config_dir)?;
                     let path = plan.path.clone();
                     external_files.insert(plan.path, plan.bytes);
@@ -2244,7 +2314,6 @@ fn edit_cf_input(input: CfEditInput, context: &WorkspaceContext) -> NativeWriter
                     ));
                     artifacts.push(path);
                 }
-                _ => return Err(format!("Unknown operation: {op_name}")),
             }
         }
 
@@ -3211,6 +3280,35 @@ fn cf_edit_format_dependency_paths_for_operations(
     Ok(paths)
 }
 
+fn cf_edit_format_dependency_paths_for_native(
+    config_path: &Path,
+    operations: &[CfNativeMutation],
+) -> Result<Vec<PathBuf>, String> {
+    let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
+    let mut paths = vec![
+        config_path.to_path_buf(),
+        config_dir.join("Ext").join("HomePageWorkArea.xml"),
+    ];
+    for operation in operations {
+        if let CfNativeMutation::AddChild(value) = operation {
+            for item in value {
+                let (type_name, object_name) = cf_edit_parse_child_object(&item)?;
+                let type_dir = cf_validate_child_type_dir(type_name)
+                    .ok_or_else(|| format!("Unknown type '{type_name}'"))?;
+                paths.push(
+                    config_dir
+                        .join(type_dir)
+                        .join(object_name)
+                        .with_extension("xml"),
+                );
+            }
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
 pub(crate) fn cf_edit_validate_child_object_kinds(
     operations: &[(String, Value)],
 ) -> Result<(), String> {
@@ -3894,6 +3992,120 @@ pub(crate) fn cf_edit_panel_uuid(alias: &str) -> Option<&'static str> {
     }
 }
 
+fn cf_edit_panel_name(panel: unica_format_core::commands::ConfigurationPanel) -> &'static str {
+    use unica_format_core::commands::ConfigurationPanel;
+    match panel {
+        ConfigurationPanel::Sections => "sections",
+        ConfigurationPanel::Functions | ConfigurationPanel::Tools => "functions",
+        ConfigurationPanel::Favorites => "favorites",
+        ConfigurationPanel::History => "history",
+        ConfigurationPanel::Open => "open",
+    }
+}
+
+fn cf_edit_typed_panel_entry_xml(
+    entry: &unica_format_core::commands::ConfigurationPanelEntry,
+    indent: &str,
+) -> Result<String, String> {
+    use unica_format_core::commands::ConfigurationPanelEntry;
+    match entry {
+        ConfigurationPanelEntry::Panel(panel) => {
+            let alias = cf_edit_panel_name(*panel);
+            let uuid = cf_edit_panel_uuid(alias)
+                .ok_or_else(|| format!("unsupported semantic panel: {alias}"))?;
+            let instance = fresh_uuid();
+            Ok(format!(
+                "{indent}<panel id=\"{instance}\">\r\n{indent}\t<uuid>{uuid}</uuid>\r\n{indent}</panel>"
+            ))
+        }
+        ConfigurationPanelEntry::Group(entries) => {
+            let group = fresh_uuid();
+            let mut inner = String::new();
+            for child in entries {
+                let child_xml = cf_edit_typed_panel_entry_xml(child, &format!("{indent}\t\t"))?;
+                inner.push_str(&format!(
+                    "{indent}\t<group>\r\n{child_xml}\r\n{indent}\t</group>\r\n"
+                ));
+            }
+            Ok(format!(
+                "{indent}<group id=\"{group}\">\r\n{inner}{indent}</group>"
+            ))
+        }
+    }
+}
+
+fn cf_edit_panel_plan(body_parts: Vec<String>, config_dir: &Path) -> CfEditExternalFilePlan {
+    let body = body_parts.join("\r\n");
+    let body_block = if body.is_empty() {
+        String::new()
+    } else {
+        format!("{body}\r\n")
+    };
+    let declarations = concat!(
+        "\t<panelDef id=\"b553047f-c9aa-4157-978d-448ecad24248\"/>\r\n",
+        "\t<panelDef id=\"13322b22-3960-4d68-93a6-fe2dd7f28ca3\"/>\r\n",
+        "\t<panelDef id=\"c933ac92-92cd-459d-81cc-e0c8a83ced99\"/>\r\n",
+        "\t<panelDef id=\"cbab57f2-a0f3-4f0a-89ea-4cb19570ab75\"/>\r\n",
+        "\t<panelDef id=\"b2735bd3-d822-4430-ba59-c9e869693b24\"/>",
+    );
+    let xml = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n\
+         <ClientApplicationInterface xmlns=\"http://v8.1c.ru/8.2/managed-application/core\" \
+         xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" \
+         xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" \
+         xsi:type=\"InterfaceLayouter\">\r\n\
+         {body_block}{declarations}\r\n\
+         </ClientApplicationInterface>"
+    );
+    CfEditExternalFilePlan {
+        path: config_dir.join("Ext/ClientApplicationInterface.xml"),
+        bytes: utf8_bom_bytes(&xml),
+    }
+}
+
+fn cf_edit_set_panel_layout(
+    layout: &unica_format_core::commands::ConfigurationPanelLayout,
+    config_dir: &Path,
+) -> Result<CfEditExternalFilePlan, String> {
+    use unica_format_core::commands::ConfigurationPanelSide;
+    let mut body_parts = Vec::new();
+    for section in layout.sections() {
+        let side = match section.side() {
+            ConfigurationPanelSide::Top => "top",
+            ConfigurationPanelSide::Left => "left",
+            ConfigurationPanelSide::Right => "right",
+            ConfigurationPanelSide::Bottom => "bottom",
+        };
+        for entry in section.entries() {
+            let entry_xml = cf_edit_typed_panel_entry_xml(entry, "\t\t")?;
+            body_parts.push(format!("\t<{side}>\r\n{entry_xml}\r\n\t</{side}>"));
+        }
+    }
+    Ok(cf_edit_panel_plan(body_parts, config_dir))
+}
+
+fn cf_edit_set_panel_placements(
+    placements: &[unica_format_core::commands::ConfigurationPanelPlacement],
+    config_dir: &Path,
+) -> Result<CfEditExternalFilePlan, String> {
+    let mut placements = placements
+        .iter()
+        .filter(|placement| placement.visible())
+        .collect::<Vec<_>>();
+    placements.sort_by_key(|placement| placement.order());
+    let mut body_parts = Vec::new();
+    for placement in placements {
+        let alias = cf_edit_panel_name(placement.panel());
+        let uuid = cf_edit_panel_uuid(alias)
+            .ok_or_else(|| format!("unsupported semantic panel: {alias}"))?;
+        let instance = fresh_uuid();
+        let entry =
+            format!("\t\t<panel id=\"{instance}\">\r\n\t\t\t<uuid>{uuid}</uuid>\r\n\t\t</panel>");
+        body_parts.push(format!("\t<top>\r\n{entry}\r\n\t</top>"));
+    }
+    Ok(cf_edit_panel_plan(body_parts, config_dir))
+}
+
 pub(crate) fn cf_edit_set_home_page(
     value: &Value,
     config_dir: &Path,
@@ -4048,6 +4260,135 @@ pub(crate) fn cf_edit_home_page_item_xml(entry: &Value, indent: &str) -> Result<
          {indent}\t</Visibility>\r\n\
          {indent}</Item>",
         escape_xml(&form_ref)
+    ))
+}
+
+fn cf_edit_home_page_plan(
+    template: &str,
+    left: Vec<String>,
+    right: Vec<String>,
+    config_dir: &Path,
+) -> CfEditExternalFilePlan {
+    fn column(tag: &str, entries: Vec<String>) -> String {
+        if entries.is_empty() {
+            format!("\t<{tag}/>")
+        } else {
+            format!("\t<{tag}>\r\n{}\r\n\t</{tag}>", entries.join("\r\n"))
+        }
+    }
+
+    let columns = if template == "OneColumn" {
+        column("Column", left)
+    } else {
+        format!(
+            "{}\r\n{}",
+            column("LeftColumn", left),
+            column("RightColumn", right)
+        )
+    };
+    let xml = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n\
+         <HomePageWorkArea xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" \
+         xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" \
+         xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" \
+         xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"{format_version}\">\r\n\
+         \t<WorkingAreaTemplate>{template}</WorkingAreaTemplate>\r\n\
+         {columns}\r\n\
+         </HomePageWorkArea>",
+        format_version = ACTIVE_FORMAT_PROFILE.export_format
+    );
+    CfEditExternalFilePlan {
+        path: config_dir.join("Ext/HomePageWorkArea.xml"),
+        bytes: utf8_bom_bytes(&xml),
+    }
+}
+
+fn cf_edit_typed_home_page_item_xml(
+    entry: &unica_format_core::commands::ConfigurationHomePageEntry,
+    indent: &str,
+) -> String {
+    let common = entry.is_visible();
+    let mut visibility = vec![format!("{indent}\t\t<xr:Common>{common}</xr:Common>")];
+    for role in entry.role_visibility() {
+        let role_name = role.role().as_str();
+        let role_name = if role_name.starts_with("Role.") || cf_edit_uuid_like(role_name) {
+            role_name.to_string()
+        } else {
+            format!("Role.{role_name}")
+        };
+        visibility.push(format!(
+            "{indent}\t\t<xr:Value name=\"{}\">{}</xr:Value>",
+            escape_xml(&role_name),
+            role.visible()
+        ));
+    }
+    format!(
+        "{indent}<Item>\r\n\
+         {indent}\t<Form>{}</Form>\r\n\
+         {indent}\t<Height>{}</Height>\r\n\
+         {indent}\t<Visibility>\r\n\
+         {}\r\n\
+         {indent}\t</Visibility>\r\n\
+         {indent}</Item>",
+        escape_xml(&cf_edit_normalize_form_ref(entry.form().as_str())),
+        entry.height(),
+        visibility.join("\r\n")
+    )
+}
+
+fn cf_edit_set_home_page_layout(
+    layout: &unica_format_core::commands::ConfigurationHomePageLayout,
+    config_dir: &Path,
+) -> Result<CfEditExternalFilePlan, String> {
+    use unica_format_core::commands::ConfigurationHomePageTemplate;
+    let template = match layout.template() {
+        ConfigurationHomePageTemplate::OneColumn => "OneColumn",
+        ConfigurationHomePageTemplate::TwoColumnsEqualWidth => "TwoColumnsEqualWidth",
+        ConfigurationHomePageTemplate::TwoColumnsVariableWidth => "TwoColumnsVariableWidth",
+    };
+    if template == "OneColumn" && !layout.right().is_empty() {
+        return Err("one-column home page cannot contain right-column entries".to_string());
+    }
+    let left = layout
+        .left()
+        .iter()
+        .map(|entry| cf_edit_typed_home_page_item_xml(entry, "\t\t"))
+        .collect();
+    let right = layout
+        .right()
+        .iter()
+        .map(|entry| cf_edit_typed_home_page_item_xml(entry, "\t\t"))
+        .collect();
+    Ok(cf_edit_home_page_plan(template, left, right, config_dir))
+}
+
+fn cf_edit_set_home_page_items(
+    items: &[unica_format_core::commands::ConfigurationHomePageItem],
+    config_dir: &Path,
+) -> Result<CfEditExternalFilePlan, String> {
+    let mut items = items.iter().collect::<Vec<_>>();
+    items.sort_by_key(|item| item.order());
+    let left = items
+        .into_iter()
+        .map(|item| {
+            let form = cf_edit_normalize_form_ref(item.object().as_str());
+            format!(
+                "\t\t<Item>\r\n\
+                 \t\t\t<Form>{}</Form>\r\n\
+                 \t\t\t<Height>10</Height>\r\n\
+                 \t\t\t<Visibility>\r\n\
+                 \t\t\t\t<xr:Common>true</xr:Common>\r\n\
+                 \t\t\t</Visibility>\r\n\
+                 \t\t</Item>",
+                escape_xml(&form)
+            )
+        })
+        .collect();
+    Ok(cf_edit_home_page_plan(
+        "OneColumn",
+        left,
+        Vec::new(),
+        config_dir,
     ))
 }
 
@@ -4874,10 +5215,12 @@ pub(crate) fn initialize_configuration(
                 .source(unica_format_core::commands::WriterSourceRole::DestinationDirectory)
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|| context.cwd.join("src")),
-            compatibility: session
-                .adapter_hint()
-                .unwrap_or("Version8_3_27")
-                .to_string(),
+            compatibility: match command.compatibility() {
+                unica_format_core::commands::CompatibilityIntent::Preserve
+                | unica_format_core::commands::CompatibilityIntent::AdapterDefault => {
+                    "Version8_3_27".to_string()
+                }
+            },
         },
         context,
     )
@@ -4895,27 +5238,9 @@ pub(crate) fn edit_configuration(
         Ok(path) => path.to_path_buf(),
         Err(error) => return cf_edit_failure(error),
     };
-    let definition_file = session
-        .source(unica_format_core::commands::WriterSourceRole::Definition)
-        .map(Path::to_path_buf);
-    let (operation, value) = match command.mutation() {
-        Some(mutation) => {
-            if definition_file.is_some() {
-                return cf_edit_failure(
-                    "configuration mutation was bound both inline and by definition".to_string(),
-                );
-            }
-            let (operation, value) = configuration_mutation_parts(mutation);
-            (Some(operation.to_string()), value.to_string())
-        }
-        None if definition_file.is_some() => (None, String::new()),
-        None => return cf_edit_failure("configuration mutation is required".to_string()),
-    };
     edit_cf_input(
         CfEditInput {
-            definition_file,
-            operation,
-            value,
+            source: CfEditSource::Semantic(command.operations().to_vec()),
             configuration,
             show_validation_output: true,
         },
@@ -4923,18 +5248,92 @@ pub(crate) fn edit_configuration(
     )
 }
 
-fn configuration_mutation_parts(
-    value: &unica_format_core::commands::ConfigurationMutation,
-) -> (&'static str, &str) {
-    use unica_format_core::commands::ConfigurationMutation as Mutation;
-    match value {
-        Mutation::ModifyProperty(value) => ("modify-property", value.as_str()),
-        Mutation::RemoveChild(value) => ("remove-childObject", value.as_str()),
-        Mutation::AddChild(value) => ("add-childObject", value.as_str()),
-        Mutation::SetDefaultRoles(value) => ("set-defaultRoles", value.as_str()),
-        Mutation::AddDefaultRole(value) => ("add-defaultRole", value.as_str()),
-        Mutation::RemoveDefaultRole(value) => ("remove-defaultRole", value.as_str()),
-        Mutation::SetPanels(value) => ("set-panels", value.as_str()),
-        Mutation::SetHomePage(value) => ("set-home-page", value.as_str()),
+#[cfg(test)]
+fn cf_legacy_mutation(operation: &str, value: Value) -> Result<CfNativeMutation, String> {
+    match operation {
+        "modify-property" => Ok(CfNativeMutation::SetProperty(
+            cf_edit_batch_value(&value)
+                .into_iter()
+                .map(|item| {
+                    let (name, value) = item.split_once('=').ok_or_else(|| {
+                        format!("Invalid property format '{item}', expected 'Key=Value'")
+                    })?;
+                    if name.trim().is_empty() {
+                        return Err(format!(
+                            "Invalid property format '{item}', expected 'Key=Value'"
+                        ));
+                    }
+                    Ok((name.trim().to_string(), value.trim().to_string()))
+                })
+                .collect::<Result<Vec<_>, String>>()?,
+        )),
+        "remove-childObject" => Ok(CfNativeMutation::RemoveChild(cf_edit_batch_value(&value))),
+        "add-childObject" => Ok(CfNativeMutation::AddChild(cf_edit_batch_value(&value))),
+        "set-defaultRoles" => Ok(CfNativeMutation::SetDefaultRoles(cf_edit_batch_value(
+            &value,
+        ))),
+        "add-defaultRole" => Ok(CfNativeMutation::AddDefaultRole(cf_edit_batch_value(
+            &value,
+        ))),
+        "remove-defaultRole" => Ok(CfNativeMutation::RemoveDefaultRole(cf_edit_batch_value(
+            &value,
+        ))),
+        "set-panels" => Ok(CfNativeMutation::LegacySetPanels(value)),
+        "set-home-page" => Ok(CfNativeMutation::LegacySetHomePage(value)),
+        _ => Err(format!("Unknown operation: {operation}")),
     }
+}
+
+fn cf_native_mutation(
+    mutation: unica_format_core::commands::ConfigurationMutation,
+) -> Result<CfNativeMutation, String> {
+    use unica_format_core::commands::{
+        ConfigurationMutation as Mutation, ConfigurationProperty, ConfigurationPropertyValue,
+    };
+
+    Ok(match mutation {
+        Mutation::SetProperty(patch) => {
+            let name = match patch.property() {
+                ConfigurationProperty::Name => "Name",
+                ConfigurationProperty::Synonym => "Synonym",
+                ConfigurationProperty::Comment => "Comment",
+                ConfigurationProperty::Vendor => "Vendor",
+                ConfigurationProperty::Version => "Version",
+                ConfigurationProperty::DefaultLanguage => "DefaultLanguage",
+                ConfigurationProperty::BriefInformation => "BriefInformation",
+                ConfigurationProperty::DetailedInformation => "DetailedInformation",
+                ConfigurationProperty::Copyright => "Copyright",
+                ConfigurationProperty::VendorInformationAddress => "VendorInformationAddress",
+                ConfigurationProperty::ConfigurationInformationAddress => {
+                    "ConfigurationInformationAddress"
+                }
+                ConfigurationProperty::UpdateCatalogAddress => "UpdateCatalogAddress",
+            };
+            let value = match patch.value() {
+                ConfigurationPropertyValue::Text(value) => value.as_str().to_string(),
+                ConfigurationPropertyValue::Language(value) => value.as_str().to_string(),
+            };
+            CfNativeMutation::SetProperty(vec![(name.to_string(), value)])
+        }
+        Mutation::RemoveChild(value) => {
+            CfNativeMutation::RemoveChild(vec![value.as_str().to_string()])
+        }
+        Mutation::AddChild(value) => CfNativeMutation::AddChild(vec![value.as_str().to_string()]),
+        Mutation::SetDefaultRoles(values) => CfNativeMutation::SetDefaultRoles(
+            values
+                .into_iter()
+                .map(|value| value.as_str().to_string())
+                .collect(),
+        ),
+        Mutation::AddDefaultRole(value) => {
+            CfNativeMutation::AddDefaultRole(vec![value.as_str().to_string()])
+        }
+        Mutation::RemoveDefaultRole(value) => {
+            CfNativeMutation::RemoveDefaultRole(vec![value.as_str().to_string()])
+        }
+        Mutation::SetPanels(values) => CfNativeMutation::SetPanelPlacements(values),
+        Mutation::SetHomePage(values) => CfNativeMutation::SetHomePageItems(values),
+        Mutation::SetPanelLayout(value) => CfNativeMutation::SetPanelLayout(value),
+        Mutation::SetHomePageLayout(value) => CfNativeMutation::SetHomePageLayout(value),
+    })
 }

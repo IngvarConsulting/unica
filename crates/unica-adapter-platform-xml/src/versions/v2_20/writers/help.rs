@@ -51,6 +51,19 @@ fn add_help_values(
 
         let src_dir = absolutize(src_dir, &context.cwd);
         let target = resolve_help_target(&src_dir, object_name)?;
+        let object_identity = target
+            .object_dir
+            .strip_prefix(&src_dir)
+            .ok()
+            .map(|relative| {
+                relative
+                    .components()
+                    .filter_map(|component| component.as_os_str().to_str())
+                    .collect::<Vec<_>>()
+                    .join("/")
+            })
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| object_name.to_string());
         let ext_dir = target.object_dir.join("Ext");
         if !ext_dir.is_dir() {
             return Err(format!(
@@ -74,7 +87,7 @@ fn add_help_values(
         validate_help_xml(&help_xml_path, &help_xml)?;
         let help_dir = ext_dir.join("Help");
         let help_html_path = help_dir.join(format!("{lang}.html"));
-        let help_html = help_page_html(object_name);
+        let help_html = help_page_html(&object_identity);
         let mut transaction = CompileTransaction::new();
         transaction.create_utf8_bom_text(&help_xml_path, &help_xml)?;
         transaction.create_utf8_bom_text(&help_html_path, &help_html)?;
@@ -145,7 +158,7 @@ fn add_help_values(
             Ok(())
         })?;
 
-        stdout.push_str(&format!("[OK] Создана справка: {object_name}\n"));
+        stdout.push_str(&format!("[OK] Создана справка: {object_identity}\n"));
         stdout.push_str(&format!(
             "     Метаданные: {}\n",
             help_display_path(&help_xml_path, &context.cwd)
@@ -205,8 +218,16 @@ pub(crate) fn create_help(
         .source(unica_format_core::commands::WriterSourceRole::SourceCollection)
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("src"));
+    let object_name = if command.owner().as_str().contains('.') {
+        match super::meta::semantic_metadata_owner_parts(command.owner().as_str()) {
+            Ok((collection, object_name)) => format!("{collection}/{object_name}"),
+            Err(error) => return help_failure(error),
+        }
+    } else {
+        command.owner().as_str().to_string()
+    };
     add_help_values(
-        command.owner().as_str(),
+        &object_name,
         command
             .language()
             .map(|value| value.as_str())

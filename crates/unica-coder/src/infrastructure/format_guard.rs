@@ -129,6 +129,19 @@ fn public_compatibility_message(diagnostic: &FormatDiagnostic) -> &'static str {
 }
 
 fn diagnostic_json(diagnostic: &FormatDiagnostic) -> Value {
+    let code = match diagnostic.code() {
+        unica_format_core::ports::FormatDiagnosticCode::SourceRevisionOlder => {
+            "formatMigrationAvailable"
+        }
+        unica_format_core::ports::FormatDiagnosticCode::SourceRevisionNewer => {
+            "platformVersionUnsupported"
+        }
+        unica_format_core::ports::FormatDiagnosticCode::SourceMalformed => "formatVersionInvalid",
+        unica_format_core::ports::FormatDiagnosticCode::SourceFamilyIncompatible => {
+            "sourceFamilyUnsupported"
+        }
+        _ => diagnostic.code().as_str(),
+    };
     let compatibility = match diagnostic.detail() {
         FormatDiagnosticDetail::Compatibility(kind) => Some(match kind {
             CompatibilityIssueKind::Older => "older",
@@ -138,7 +151,7 @@ fn diagnostic_json(diagnostic: &FormatDiagnostic) -> Value {
         _ => None,
     };
     json!({
-        "code": diagnostic.code().as_str(),
+        "code": code,
         "compatibility": compatibility,
     })
 }
@@ -162,7 +175,7 @@ mod tests {
         })
         .to_string();
 
-        assert!(public.contains("sourceRevisionNewer"));
+        assert!(public.contains("platformVersionUnsupported"));
         for forbidden in [
             "/private/",
             r"C:\private",

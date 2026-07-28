@@ -4847,6 +4847,113 @@ fn cfe_patch_module_target(
     }
 }
 
+fn cfe_patch_semantic_module_target(
+    extension_path: &Path,
+    target: &unica_format_core::commands::ExtensionModuleTarget,
+) -> Result<(String, CfePatchModuleTarget), String> {
+    use unica_format_core::commands::{ExtensionModuleTarget, ExtensionObjectModuleRole};
+
+    match target {
+        ExtensionModuleTarget::Common { module } => {
+            let object_name = module.as_str();
+            cfe_validate_metadata_name("module name", object_name)?;
+            Ok((
+                format!("CommonModule.{object_name}"),
+                CfePatchModuleTarget {
+                    type_name: "CommonModule",
+                    object_name: object_name.to_string(),
+                    role: CfePatchModuleRole::CommonModule,
+                    form_name: None,
+                    descriptor: extension_path
+                        .join("CommonModules")
+                        .join(format!("{object_name}.xml")),
+                    bsl_file: extension_path
+                        .join("CommonModules")
+                        .join(object_name)
+                        .join("Ext")
+                        .join("Module.bsl"),
+                },
+            ))
+        }
+        ExtensionModuleTarget::Object { owner, role } => {
+            let (type_name, object_name) = owner
+                .as_str()
+                .split_once('.')
+                .filter(|(_, name)| !name.contains('.'))
+                .ok_or_else(|| "invalid semantic module owner".to_string())?;
+            cfe_validate_metadata_name("module owner name", object_name)?;
+            let role = match role {
+                ExtensionObjectModuleRole::Object => CfePatchModuleRole::ObjectModule,
+                ExtensionObjectModuleRole::Manager => CfePatchModuleRole::ManagerModule,
+                ExtensionObjectModuleRole::RecordSet => CfePatchModuleRole::RecordSetModule,
+                ExtensionObjectModuleRole::ValueManager => CfePatchModuleRole::ValueManagerModule,
+            };
+            let module_name = role.as_str();
+            let label = format!("{type_name}.{object_name}.{module_name}");
+            if !cfe_patch_direct_role_is_supported(type_name, role) {
+                return Err(cfe_patch_unsupported_role(&label));
+            }
+            let directory = cf_validate_child_type_dir(type_name)
+                .ok_or_else(|| format!("Unknown object type: {type_name}"))?;
+            Ok((
+                label,
+                CfePatchModuleTarget {
+                    type_name: cfe_patch_canonical_type(type_name)
+                        .ok_or_else(|| format!("Unknown object type: {type_name}"))?,
+                    object_name: object_name.to_string(),
+                    role,
+                    form_name: None,
+                    descriptor: extension_path
+                        .join(directory)
+                        .join(format!("{object_name}.xml")),
+                    bsl_file: extension_path
+                        .join(directory)
+                        .join(object_name)
+                        .join("Ext")
+                        .join(format!("{module_name}.bsl")),
+                },
+            ))
+        }
+        ExtensionModuleTarget::Form { owner, form } => {
+            let (type_name, object_name) = owner
+                .as_str()
+                .split_once('.')
+                .filter(|(_, name)| !name.contains('.'))
+                .ok_or_else(|| "invalid semantic form owner".to_string())?;
+            let form_name = form.as_str();
+            cfe_validate_metadata_name("form owner name", object_name)?;
+            cfe_validate_metadata_name("form name", form_name)?;
+            let label = format!("{type_name}.{object_name}.Form.{form_name}");
+            if !cfe_patch_form_role_is_supported(type_name) {
+                return Err(cfe_patch_unsupported_role(&label));
+            }
+            let directory = cf_validate_child_type_dir(type_name)
+                .ok_or_else(|| format!("Unknown object type: {type_name}"))?;
+            Ok((
+                label,
+                CfePatchModuleTarget {
+                    type_name: cfe_patch_canonical_type(type_name)
+                        .ok_or_else(|| format!("Unknown object type: {type_name}"))?,
+                    object_name: object_name.to_string(),
+                    role: CfePatchModuleRole::Form,
+                    form_name: Some(form_name.to_string()),
+                    descriptor: extension_path
+                        .join(directory)
+                        .join(format!("{object_name}.xml")),
+                    bsl_file: extension_path
+                        .join(directory)
+                        .join(object_name)
+                        .join("Forms")
+                        .join(form_name)
+                        .join("Ext")
+                        .join("Form")
+                        .join("Module.bsl"),
+                },
+            ))
+        }
+    }
+}
+
 fn cfe_patch_canonical_type(type_name: &str) -> Option<&'static str> {
     match type_name {
         "Catalog" => Some("Catalog"),
@@ -5626,11 +5733,17 @@ fn cfe_patch_borrowed_snapshots(
 
 struct CfePatchInput {
     extension: PathBuf,
-    module: String,
+    module: CfePatchModuleInput,
     method: String,
     interceptor: InterceptorKind,
     context: Option<ExecutionContext>,
     function: bool,
+}
+
+enum CfePatchModuleInput {
+    #[cfg(test)]
+    Legacy(String),
+    Semantic(unica_format_core::commands::ExtensionModuleTarget),
 }
 
 #[cfg(test)]
@@ -5662,7 +5775,9 @@ pub(crate) fn patch_extension_method_with_emitter(
         };
         Ok(CfePatchInput {
             extension: required_path(args, &["extensionPath", "ExtensionPath"], "ExtensionPath")?,
-            module: required_string(args, &["modulePath", "ModulePath"], "ModulePath")?.to_string(),
+            module: CfePatchModuleInput::Legacy(
+                required_string(args, &["modulePath", "ModulePath"], "ModulePath")?.to_string(),
+            ),
             method: required_string(args, &["methodName", "MethodName"], "MethodName")?.to_string(),
             interceptor,
             context,
@@ -5672,15 +5787,32 @@ pub(crate) fn patch_extension_method_with_emitter(
         Ok(input) => input,
         Err(error) => return cfe_patch_failure(error),
     };
-    patch_extension_method_input(input, context, emitter)
+    patch_extension_method_input(
+        input,
+        context,
+        emitter,
+        unica_format_core::commands::MutationMode::Apply,
+    )
 }
 
 fn patch_extension_method_input(
     input: CfePatchInput,
     context: &WorkspaceContext,
     emitter: &dyn Fn(&ExtensionPatchEmissionPlan, Option<&[u8]>) -> Result<Vec<u8>, String>,
+    mode: unica_format_core::commands::MutationMode,
 ) -> NativeWriterResult {
-    let write_result = (|| -> Result<(String, CommitReport), String> {
+    enum Execution {
+        Preview {
+            changes: Vec<String>,
+            stdout: String,
+        },
+        Applied {
+            stdout: String,
+            report: CommitReport,
+        },
+    }
+
+    let write_result = (|| -> Result<Execution, String> {
         let CfePatchInput {
             extension,
             module,
@@ -5707,7 +5839,17 @@ fn patch_extension_method_input(
         let cfg_preimage = fs::read(&cfg_file)
             .map_err(|error| format!("failed to read {}: {error}", cfg_file.display()))?;
 
-        let module_path = module.as_str();
+        let (module_label, target) = match module {
+            #[cfg(test)]
+            CfePatchModuleInput::Legacy(module_path) => {
+                let target = cfe_patch_module_target(&extension_path, &module_path)?;
+                (module_path, target)
+            }
+            CfePatchModuleInput::Semantic(target) => {
+                cfe_patch_semantic_module_target(&extension_path, &target)?
+            }
+        };
+        let module_path = module_label.as_str();
         let method_name = method.as_str();
 
         cfe_patch_validate_bsl_identifier("MethodName", method_name)?;
@@ -5727,7 +5869,6 @@ fn patch_extension_method_input(
                 ));
             }
         };
-        let target = cfe_patch_module_target(&extension_path, module_path)?;
         let CfePatchBorrowedPrecondition {
             snapshots: borrowed_snapshots,
             name_prefix,
@@ -5860,6 +6001,12 @@ fn patch_extension_method_input(
             &[bsl_file.as_path()],
             context,
         )?;
+        if mode.is_preview() {
+            return Ok(Execution::Preview {
+                changes: transaction.dry_run_changes(),
+                stdout: transaction.dry_run_stdout(),
+            });
+        }
         let report = transaction.commit()?;
 
         if created {
@@ -5877,11 +6024,21 @@ fn patch_extension_method_input(
             ));
         }
 
-        Ok((stdout, report))
+        Ok(Execution::Applied { stdout, report })
     })();
 
     match write_result {
-        Ok((stdout, report)) => {
+        Ok(Execution::Preview { changes, stdout }) => NativeWriterResult {
+            ok: true,
+            summary: "dry run: semantic extension method patch planned".to_string(),
+            changes,
+            warnings: Vec::new(),
+            errors: Vec::new(),
+            artifacts: Vec::new(),
+            stdout: Some(stdout),
+            stderr: None,
+        },
+        Ok(Execution::Applied { stdout, report }) => {
             let mut changes = report
                 .created
                 .iter()
@@ -6495,10 +6652,12 @@ pub(crate) fn initialize_extension(
             base_configuration: session
                 .source(unica_format_core::commands::WriterSourceRole::Configuration)
                 .map(Path::to_path_buf),
-            compatibility: session
-                .adapter_hint()
-                .unwrap_or("Version8_3_24")
-                .to_string(),
+            compatibility: match command.compatibility() {
+                unica_format_core::commands::CompatibilityIntent::Preserve
+                | unica_format_core::commands::CompatibilityIntent::AdapterDefault => {
+                    "Version8_3_24".to_string()
+                }
+            },
             no_role: false,
             vendor: None,
             version: None,
@@ -6530,6 +6689,9 @@ pub(crate) fn borrow_into_extension(
                         configuration: configuration.to_path_buf(),
                         object: command.object().as_str().to_string(),
                         main_attribute: command.main_attribute().map(|scope| match scope {
+                            unica_format_core::commands::BorrowScope::None => {
+                                unreachable!("None is represented by no main attribute")
+                            }
                             unica_format_core::commands::BorrowScope::Form => "Form".to_string(),
                             unica_format_core::commands::BorrowScope::All => "All".to_string(),
                         }),
@@ -6549,6 +6711,7 @@ pub(crate) fn patch_extension_method_typed(
     session: &PlatformWriterSession,
     context: &WorkspaceContext,
     emitter: &dyn Fn(&ExtensionPatchEmissionPlan, Option<&[u8]>) -> Result<Vec<u8>, String>,
+    mode: unica_format_core::commands::MutationMode,
 ) -> NativeWriterResult {
     let extension = match session.required_source(
         unica_format_core::commands::WriterSourceRole::Extension,
@@ -6560,7 +6723,7 @@ pub(crate) fn patch_extension_method_typed(
     patch_extension_method_input(
         CfePatchInput {
             extension,
-            module: command.module().as_str().to_string(),
+            module: CfePatchModuleInput::Semantic(command.module().clone()),
             method: command.method().as_str().to_string(),
             interceptor: command.interceptor(),
             context: match command.context() {
@@ -6571,6 +6734,7 @@ pub(crate) fn patch_extension_method_typed(
         },
         context,
         emitter,
+        mode,
     )
 }
 

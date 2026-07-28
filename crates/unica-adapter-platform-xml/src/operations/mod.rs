@@ -10,9 +10,10 @@ use unica_format_core::{
         BorrowScope, DiagnosticCode, DiagnosticDetail, ExecutionContext,
         ExtensionPatchEmissionPlan, FormElementKind, InspectionPort, InspectionRequest,
         InspectionResult, InterceptorKind, MetadataKindName, MetadataObjectReference, MutationMode,
-        SemanticArtifact, SemanticChange, SupportCapability, SupportObjectRule, TemplateKind,
-        WriterCommand, WriterDiagnostic, WriterEvidence, WriterFailureKind, WriterFamily,
-        WriterLifecycle, WriterResult, WriterSourceRole,
+        SemanticArtifact, SemanticArtifactRef, SemanticChange, SemanticObjectIdentity,
+        SupportCapability, SupportObjectRule, TemplateKind, WriterCommand, WriterDiagnostic,
+        WriterEvidence, WriterFailureKind, WriterFamily, WriterLifecycle, WriterResult,
+        WriterSourceRole,
     },
     ports::{WriterPort, WriterRequest},
     source::{SourceAdapterError, SourceAdapterErrorKind},
@@ -71,8 +72,6 @@ pub(crate) struct WorkspaceContext {
 #[derive(Clone)]
 pub(crate) struct PlatformWriterSession {
     sources: BTreeMap<WriterSourceRole, PathBuf>,
-    inline_definition: Option<Vec<u8>>,
-    adapter_hint: Option<String>,
     context: WorkspaceContext,
     extension_emitter: Option<Arc<ExtensionEmitter>>,
 }
@@ -81,12 +80,7 @@ pub(crate) type ExtensionEmitter =
     dyn Fn(&ExtensionPatchEmissionPlan, Option<&[u8]>) -> Result<Vec<u8>, String> + Send + Sync;
 
 impl PlatformWriterSession {
-    pub(crate) fn new<I>(
-        sources: I,
-        inline_definition: Option<Vec<u8>>,
-        adapter_hint: Option<String>,
-        context: WorkspaceContext,
-    ) -> Result<Self, String>
+    pub(crate) fn new<I>(sources: I, context: WorkspaceContext) -> Result<Self, String>
     where
         I: IntoIterator<Item = (WriterSourceRole, PathBuf)>,
     {
@@ -98,8 +92,6 @@ impl PlatformWriterSession {
         }
         Ok(Self {
             sources: captured,
-            inline_definition,
-            adapter_hint,
             context,
             extension_emitter: None,
         })
@@ -125,14 +117,6 @@ impl PlatformWriterSession {
     ) -> Result<&std::path::Path, String> {
         self.source(role)
             .ok_or_else(|| format!("semantic source is required for {purpose}"))
-    }
-
-    pub(crate) fn inline_definition(&self) -> Option<&[u8]> {
-        self.inline_definition.as_deref()
-    }
-
-    pub(crate) fn adapter_hint(&self) -> Option<&str> {
-        self.adapter_hint.as_deref()
     }
 
     pub(crate) fn context(&self) -> &WorkspaceContext {
@@ -250,7 +234,8 @@ fn core_writer_result(
     }
     let changes = semantic_changes(command, outcome);
     if mode.is_preview() {
-        return WriterResult::previewed_with_changes(changes)
+        let artifacts = external_artifact_refs(command);
+        return WriterResult::new(WriterLifecycle::Previewed, changes, artifacts, [])
             .expect("native preview maps to a valid semantic result")
             .with_evidence(evidence.map(WriterEvidence::FormEdit));
     }
@@ -261,14 +246,61 @@ fn core_writer_result(
     } else {
         0
     };
-    WriterResult::new(
-        WriterLifecycle::Applied,
-        changes,
-        std::iter::repeat_n(artifact, artifact_count),
-        [],
-    )
-    .expect("native writer success maps to a valid semantic result")
-    .with_evidence(evidence.map(WriterEvidence::FormEdit))
+    let artifacts = {
+        let external = external_artifact_refs(command);
+        if changed && !external.is_empty() {
+            external
+        } else {
+            std::iter::repeat_n(SemanticArtifactRef::unidentified(artifact), artifact_count)
+                .collect()
+        }
+    };
+    WriterResult::new(WriterLifecycle::Applied, changes, artifacts, [])
+        .expect("native writer success maps to a valid semantic result")
+        .with_evidence(evidence.map(WriterEvidence::FormEdit))
+}
+
+fn external_artifact_refs(command: &WriterCommand) -> Vec<SemanticArtifactRef> {
+    use unica_format_core::commands::ExternalArtifactKind;
+
+    let (command, kind, artifact) = match command {
+        WriterCommand::ExternalProcessorInitialize(command) => (
+            command,
+            ExternalArtifactKind::Processor,
+            SemanticArtifact::ExternalProcessor,
+        ),
+        WriterCommand::ExternalReportInitialize(command) => (
+            command,
+            ExternalArtifactKind::Report,
+            SemanticArtifact::ExternalReport,
+        ),
+        _ => return Vec::new(),
+    };
+    let mut artifacts = vec![SemanticArtifactRef::new(
+        artifact,
+        SemanticObjectIdentity::ExternalObject {
+            kind,
+            name: command.name().clone(),
+        },
+    )];
+    artifacts.push(match command.primary_form() {
+        Some(form) => SemanticArtifactRef::new(
+            SemanticArtifact::Form,
+            SemanticObjectIdentity::ExternalPrimaryForm {
+                kind,
+                owner: command.name().clone(),
+                form: form.name().clone(),
+            },
+        ),
+        None => SemanticArtifactRef::new(
+            SemanticArtifact::Module,
+            SemanticObjectIdentity::ExternalObjectModule {
+                kind,
+                owner: command.name().clone(),
+            },
+        ),
+    });
+    artifacts
 }
 
 fn semantic_changes(command: &WriterCommand, outcome: &NativeWriterResult) -> Vec<SemanticChange> {

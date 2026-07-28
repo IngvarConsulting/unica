@@ -98,7 +98,6 @@ const CODE_PATCH_REQUIRED: &[&str] = &["path", "operation", "selector", "content
 
 const JSON_PATH: &[&str] = &["JsonPath", "jsonPath"];
 const DEFINITION_FILE: &[&str] = &["DefinitionFile", "definitionFile"];
-const MODULE_PATH: &[&str] = &["ModulePath", "modulePath"];
 const PARENT_PATH: &[&str] = &["Parent", "parent"];
 
 const CF_PATH_GROUP: PathAliasGroup = path_alias_group("ConfigPath", CF_PATH);
@@ -119,7 +118,6 @@ const RIGHTS_PATH_GROUP: PathAliasGroup = path_alias_group("RightsPath", RIGHTS_
 const SUPPORT_PATH_GROUP: PathAliasGroup = path_alias_group("Path", SUPPORT_PATH);
 const JSON_PATH_GROUP: PathAliasGroup = path_alias_group("JsonPath", JSON_PATH);
 const DEFINITION_FILE_GROUP: PathAliasGroup = path_alias_group("DefinitionFile", DEFINITION_FILE);
-const MODULE_PATH_GROUP: PathAliasGroup = path_alias_group("ModulePath", MODULE_PATH);
 const PARENT_PATH_GROUP: PathAliasGroup = path_alias_group("Parent", PARENT_PATH);
 
 const CF_EDIT_PATH_GROUPS: &[PathAliasGroup] = &[CF_PATH_GROUP, DEFINITION_FILE_GROUP];
@@ -128,7 +126,7 @@ const CF_INIT_PATH_GROUPS: &[PathAliasGroup] = &[OUTPUT_DIR_GROUP];
 const SUPPORT_PATH_GROUPS: &[PathAliasGroup] = &[SUPPORT_PATH_GROUP];
 const CFE_TWO_ROOT_PATH_GROUPS: &[PathAliasGroup] = &[EXTENSION_PATH_GROUP, CF_PATH_GROUP];
 const CFE_INIT_PATH_GROUPS: &[PathAliasGroup] = &[CF_PATH_GROUP, CFE_INIT_OUTPUT_GROUP];
-const CFE_PATCH_METHOD_PATH_GROUPS: &[PathAliasGroup] = &[EXTENSION_PATH_GROUP, MODULE_PATH_GROUP];
+const CFE_PATCH_METHOD_PATH_GROUPS: &[PathAliasGroup] = &[EXTENSION_PATH_GROUP];
 const CFE_VALIDATE_PATH_GROUPS: &[PathAliasGroup] = &[CFE_VALIDATE_PATH_GROUP];
 const COMPILE_TO_DIR_PATH_GROUPS: &[PathAliasGroup] = &[JSON_PATH_GROUP, OUTPUT_DIR_GROUP];
 const META_EDIT_PATH_GROUPS: &[PathAliasGroup] = &[OBJECT_PATH_GROUP, DEFINITION_FILE_GROUP];

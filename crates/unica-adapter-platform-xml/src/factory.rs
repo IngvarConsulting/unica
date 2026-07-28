@@ -272,8 +272,6 @@ impl PlatformXmlAdapterFactory {
     pub fn capture_writer_session<I>(
         self,
         sources: I,
-        inline_definition: Option<Vec<u8>>,
-        adapter_hint: Option<String>,
         workspace_root: &Path,
         cwd: &Path,
         cache_root: &Path,
@@ -284,8 +282,6 @@ impl PlatformXmlAdapterFactory {
     {
         let session = crate::operations::PlatformWriterSession::new(
             sources,
-            inline_definition,
-            adapter_hint,
             crate::operations::WorkspaceContext {
                 cwd: cwd.to_path_buf(),
                 workspace_root: workspace_root.to_path_buf(),
@@ -303,8 +299,6 @@ impl PlatformXmlAdapterFactory {
     pub fn capture_writer_session_with_extension_emitter<I, E>(
         self,
         sources: I,
-        inline_definition: Option<Vec<u8>>,
-        adapter_hint: Option<String>,
         workspace_root: &Path,
         cwd: &Path,
         cache_root: &Path,
@@ -323,8 +317,6 @@ impl PlatformXmlAdapterFactory {
     {
         let session = crate::operations::PlatformWriterSession::new(
             sources,
-            inline_definition,
-            adapter_hint,
             crate::operations::WorkspaceContext {
                 cwd: cwd.to_path_buf(),
                 workspace_root: workspace_root.to_path_buf(),

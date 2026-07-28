@@ -2337,8 +2337,17 @@ impl MxlFormatRegistry {
     }
 }
 
+enum MxlCompileDefinition {
+    #[cfg(test)]
+    File(PathBuf),
+    Semantic {
+        document: unica_format_core::commands::SpreadsheetDocument,
+        guard: Option<PathBuf>,
+    },
+}
+
 struct MxlCompileInput {
-    definition: PathBuf,
+    definition: MxlCompileDefinition,
     destination: PathBuf,
 }
 
@@ -2349,7 +2358,11 @@ pub(crate) fn compile_mxl(
 ) -> NativeWriterResult {
     let input = match (|| -> Result<MxlCompileInput, String> {
         Ok(MxlCompileInput {
-            definition: required_path(args, &["jsonPath", "JsonPath"], "JsonPath")?,
+            definition: MxlCompileDefinition::File(required_path(
+                args,
+                &["jsonPath", "JsonPath"],
+                "JsonPath",
+            )?),
             destination: required_path(args, &["outputPath", "OutputPath"], "OutputPath")?,
         })
     })() {
@@ -2359,17 +2372,34 @@ pub(crate) fn compile_mxl(
     compile_mxl_input(input, context)
 }
 
+#[cfg(not(test))]
 fn compile_mxl_input(input: MxlCompileInput, context: &WorkspaceContext) -> NativeWriterResult {
+    let MxlCompileDefinition::Semantic { document, guard } = input.definition;
+    compile_semantic_mxl(&document, guard.as_deref(), &input.destination, context)
+}
+
+#[cfg(test)]
+fn compile_mxl_input(input: MxlCompileInput, context: &WorkspaceContext) -> NativeWriterResult {
+    if let MxlCompileDefinition::Semantic { document, guard } = &input.definition {
+        return compile_semantic_mxl(document, guard.as_deref(), &input.destination, context);
+    }
     let write_result = (|| -> Result<(String, PathBuf, Vec<String>), String> {
-        let json_path = absolutize(input.definition, &context.cwd);
         let output_path_raw = input.destination;
-        if !json_path.exists() {
-            return Err(format!("File not found: {}", json_path.display()));
-        }
         let mut transaction = CompileTransaction::new();
-        let defn =
-            FileBackedJson::read(&json_path, |err| format!("failed to parse MXL JSON: {err}"))?
-                .bind_to(&mut transaction)?;
+        let defn = match input.definition {
+            #[cfg(test)]
+            MxlCompileDefinition::File(path) => {
+                let json_path = absolutize(path, &context.cwd);
+                if !json_path.exists() {
+                    return Err(format!("File not found: {}", json_path.display()));
+                }
+                FileBackedJson::read(&json_path, |err| format!("failed to parse MXL JSON: {err}"))?
+                    .bind_to(&mut transaction)?
+            }
+            MxlCompileDefinition::Semantic { .. } => {
+                unreachable!("semantic MXL is emitted by compile_semantic_mxl")
+            }
+        };
 
         if !truthy_json_field(&defn, "columns") {
             return Err("Required field 'columns' is missing".to_string());
@@ -2887,6 +2917,530 @@ fn compile_mxl_input(input: MxlCompileInput, context: &WorkspaceContext) -> Nati
     }
 }
 
+fn compile_semantic_mxl(
+    document: &unica_format_core::commands::SpreadsheetDocument,
+    guard: Option<&Path>,
+    destination: &Path,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    let write_result = (|| -> Result<(String, PathBuf, Vec<String>), String> {
+        use unica_format_core::commands::{
+            SpreadsheetBorderSide, SpreadsheetBorderStyle, SpreadsheetCellValue,
+            SpreadsheetHorizontalAlignment, SpreadsheetPageOrientation,
+            SpreadsheetVerticalAlignment,
+        };
+
+        let mut transaction = CompileTransaction::new();
+        if let Some(path) = guard {
+            let path = absolutize(path.to_path_buf(), &context.cwd);
+            let preimage = fs::read(&path)
+                .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+            transaction.guard_exact_preimage(path, &preimage)?;
+        }
+
+        let total_columns = i64::from(document.column_count());
+        let mut default_width = i64::from(document.default_width());
+        let mut font_map = std::collections::BTreeMap::<String, usize>::new();
+        let mut font_entries = Vec::<MxlFontEntry>::new();
+        for font in document.fonts() {
+            let index = font_entries.len();
+            font_map.insert(font.name().as_str().to_string(), index);
+            font_entries.push(MxlFontEntry {
+                face: font
+                    .face()
+                    .map(|value| value.as_str().to_string())
+                    .unwrap_or_else(|| "Arial".to_string()),
+                size: i64::from(font.size().unwrap_or(10)),
+                bold: if font.is_bold() { "true" } else { "false" },
+                italic: if font.is_italic() { "true" } else { "false" },
+                underline: if font.is_underlined() {
+                    "true"
+                } else {
+                    "false"
+                },
+                strikeout: if font.is_struck_out() {
+                    "true"
+                } else {
+                    "false"
+                },
+            });
+        }
+        if !font_map.contains_key("default") {
+            let index = font_entries.len();
+            font_map.insert("default".to_string(), index);
+            font_entries.push(MxlFontEntry {
+                face: "Arial".to_string(),
+                size: 10,
+                bold: "false",
+                italic: "false",
+                underline: "false",
+                strikeout: "false",
+            });
+        }
+
+        let has_thin_borders = document
+            .styles()
+            .iter()
+            .any(|style| style.border() == SpreadsheetBorderStyle::Thin);
+        let has_thick_borders = document
+            .styles()
+            .iter()
+            .any(|style| style.border() == SpreadsheetBorderStyle::Thick);
+        let mut line_count = 0usize;
+        let thin_line_index = if has_thin_borders {
+            let index = line_count as i64;
+            line_count += 1;
+            index
+        } else {
+            -1
+        };
+        let thick_line_index = if has_thick_borders {
+            let index = line_count as i64;
+            line_count += 1;
+            index
+        } else {
+            -1
+        };
+
+        let page = document.page().map(|orientation| match orientation {
+            SpreadsheetPageOrientation::Portrait => ("A4-portrait", 540i64),
+            SpreadsheetPageOrientation::Landscape => ("A4-landscape", 780i64),
+        });
+        if let Some((_, target)) = page {
+            let specified = document.column_widths().len() as i64;
+            let absolute = document
+                .column_widths()
+                .iter()
+                .map(|width| i64::from(width.width()))
+                .sum::<i64>();
+            let flexible = total_columns.saturating_sub(specified);
+            if flexible > 0 {
+                default_width = ((target - absolute) as f64 / flexible as f64).round() as i64;
+            }
+        }
+
+        let col_width_map = document
+            .column_widths()
+            .iter()
+            .map(|width| (i64::from(width.column()), i64::from(width.width())))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let mut registry = MxlFormatRegistry::new();
+        let mut col_format_map = std::collections::BTreeMap::<i64, usize>::new();
+        for (column, width) in &col_width_map {
+            let props = MxlFormatProps {
+                width: Some(*width),
+                ..Default::default()
+            };
+            let index = registry.register(mxl_format_key(&props), props);
+            col_format_map.insert(*column, index);
+        }
+
+        fn semantic_fill_type(
+            value: &unica_format_core::commands::SpreadsheetCellValue,
+        ) -> &'static str {
+            use unica_format_core::commands::SpreadsheetCellValue;
+            match value {
+                SpreadsheetCellValue::Parameter(_) => "Parameter",
+                SpreadsheetCellValue::Template(_) => "Template",
+                SpreadsheetCellValue::Text(_) => "Text",
+                SpreadsheetCellValue::Composite(value) if value.parameter().is_some() => {
+                    "Parameter"
+                }
+                SpreadsheetCellValue::Composite(value) if value.template().is_some() => "Template",
+                SpreadsheetCellValue::Composite(value) if value.text().is_some() => "Text",
+                _ => "",
+            }
+        }
+
+        fn semantic_style(
+            style_name: Option<&str>,
+            fill_type: &str,
+            document: &unica_format_core::commands::SpreadsheetDocument,
+            font_map: &std::collections::BTreeMap<String, usize>,
+            thin_line_index: i64,
+            thick_line_index: i64,
+        ) -> MxlFormatProps {
+            use unica_format_core::commands::{
+                SpreadsheetBorderSide, SpreadsheetBorderStyle, SpreadsheetHorizontalAlignment,
+                SpreadsheetVerticalAlignment,
+            };
+            let mut props = MxlFormatProps {
+                font_idx: Some(*font_map.get("default").unwrap_or(&0) as i64),
+                lb: Some(-1),
+                tb: Some(-1),
+                rb: Some(-1),
+                bb: Some(-1),
+                fill_type: fill_type.to_string(),
+                ..Default::default()
+            };
+            let Some(style_name) = style_name else {
+                return props;
+            };
+            let Some(style) = document
+                .styles()
+                .iter()
+                .find(|style| style.name().as_str() == style_name)
+            else {
+                return props;
+            };
+            if let Some(font) = style.font().and_then(|name| font_map.get(name.as_str())) {
+                props.font_idx = Some(*font as i64);
+            }
+            let line = match style.border() {
+                SpreadsheetBorderStyle::None => None,
+                SpreadsheetBorderStyle::Thin => Some(thin_line_index),
+                SpreadsheetBorderStyle::Thick => Some(thick_line_index),
+            };
+            if let Some(line) = line {
+                for side in style.border_sides() {
+                    match side {
+                        SpreadsheetBorderSide::Left => props.lb = Some(line),
+                        SpreadsheetBorderSide::Top => props.tb = Some(line),
+                        SpreadsheetBorderSide::Right => props.rb = Some(line),
+                        SpreadsheetBorderSide::Bottom => props.bb = Some(line),
+                    }
+                }
+            }
+            props.ha = match style.horizontal() {
+                Some(SpreadsheetHorizontalAlignment::Left) => "Left",
+                Some(SpreadsheetHorizontalAlignment::Center) => "Center",
+                Some(SpreadsheetHorizontalAlignment::Right) => "Right",
+                None => "",
+            }
+            .to_string();
+            props.va = match style.vertical() {
+                Some(SpreadsheetVerticalAlignment::Top) => "Top",
+                Some(SpreadsheetVerticalAlignment::Center) => "Center",
+                Some(SpreadsheetVerticalAlignment::Bottom) => "Bottom",
+                None => "",
+            }
+            .to_string();
+            props.wrap = style.wraps();
+            props.number_format = style
+                .number_format()
+                .map(|value| value.as_str().to_string())
+                .unwrap_or_default();
+            props
+        }
+
+        for area in document.areas() {
+            for row in area.rows() {
+                if let Some(height) = row.height() {
+                    let props = MxlFormatProps {
+                        height: Some(i64::from(height)),
+                        ..Default::default()
+                    };
+                    registry.register(mxl_format_key(&props), props);
+                }
+                if let Some(style) = row.style() {
+                    let props = semantic_style(
+                        Some(style.as_str()),
+                        "",
+                        document,
+                        &font_map,
+                        thin_line_index,
+                        thick_line_index,
+                    );
+                    registry.register(mxl_format_key(&props), props);
+                }
+                for cell in row.cells() {
+                    let style = cell
+                        .style()
+                        .or_else(|| row.style())
+                        .map(|value| value.as_str());
+                    let props = semantic_style(
+                        style,
+                        semantic_fill_type(cell.value()),
+                        document,
+                        &font_map,
+                        thin_line_index,
+                        thick_line_index,
+                    );
+                    registry.register(mxl_format_key(&props), props);
+                }
+            }
+        }
+        let default_props = MxlFormatProps {
+            width: Some(default_width),
+            ..Default::default()
+        };
+        let default_format_index = registry.register(mxl_format_key(&default_props), default_props);
+
+        let mut lines = Vec::<String>::new();
+        lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
+        lines.push("<document xmlns=\"http://v8.1c.ru/8.2/data/spreadsheet\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">".to_string());
+        lines.push("\t<languageSettings>".to_string());
+        lines.push("\t\t<currentLanguage>ru</currentLanguage>".to_string());
+        lines.push("\t\t<defaultLanguage>ru</defaultLanguage>".to_string());
+        lines.push("\t\t<languageInfo>".to_string());
+        lines.push("\t\t\t<id>ru</id>".to_string());
+        lines.push("\t\t\t<code>Русский</code>".to_string());
+        lines.push("\t\t\t<description>Русский</description>".to_string());
+        lines.push("\t\t</languageInfo>".to_string());
+        lines.push("\t</languageSettings>".to_string());
+        lines.push("\t<columns>".to_string());
+        lines.push(format!("\t\t<size>{total_columns}</size>"));
+        for (column, format_index) in &col_format_map {
+            lines.push("\t\t<columnsItem>".to_string());
+            lines.push(format!("\t\t\t<index>{}</index>", column - 1));
+            lines.push("\t\t\t<column>".to_string());
+            lines.push(format!("\t\t\t\t<formatIndex>{format_index}</formatIndex>"));
+            lines.push("\t\t\t</column>".to_string());
+            lines.push("\t\t</columnsItem>".to_string());
+        }
+        lines.push("\t</columns>".to_string());
+
+        let mut global_row = 0i64;
+        let mut merges = Vec::<MxlMerge>::new();
+        let mut named_items = Vec::<MxlNamedItem>::new();
+        for area in document.areas() {
+            let area_start_row = global_row;
+            let mut active_rowspans = Vec::<MxlRowspan>::new();
+            let mut local_row = 0i64;
+            for row in area.rows() {
+                let mut rowspan_occupied = std::collections::BTreeMap::<i64, bool>::new();
+                for rowspan in &active_rowspans {
+                    if local_row > rowspan.start_local_row && local_row <= rowspan.end_local_row {
+                        for column in rowspan.col_start..=rowspan.col_end {
+                            rowspan_occupied.insert(column, true);
+                        }
+                    }
+                }
+                let mut row_cells = Vec::<MxlCellInfo>::new();
+                let row_format_idx = row
+                    .height()
+                    .and_then(|height| {
+                        let props = MxlFormatProps {
+                            height: Some(i64::from(height)),
+                            ..Default::default()
+                        };
+                        registry.index_of(&mxl_format_key(&props))
+                    })
+                    .unwrap_or(0);
+                let mut occupied = rowspan_occupied.clone();
+                for cell in row.cells() {
+                    let start = i64::from(cell.column());
+                    let span = i64::from(cell.column_span());
+                    for column in start..(start + span) {
+                        occupied.insert(column, true);
+                    }
+                }
+                for cell in row.cells() {
+                    let start = i64::from(cell.column());
+                    let span = i64::from(cell.column_span());
+                    let row_span = i64::from(cell.row_span());
+                    let style = cell
+                        .style()
+                        .or_else(|| row.style())
+                        .map(|value| value.as_str());
+                    let props = semantic_style(
+                        style,
+                        semantic_fill_type(cell.value()),
+                        document,
+                        &font_map,
+                        thin_line_index,
+                        thick_line_index,
+                    );
+                    let format_idx = registry.register(mxl_format_key(&props), props);
+                    let (text, param, template, detail) = match cell.value() {
+                        SpreadsheetCellValue::Empty => (None, None, None, None),
+                        SpreadsheetCellValue::Text(value) => {
+                            (Some(value.as_str().to_string()), None, None, None)
+                        }
+                        SpreadsheetCellValue::Parameter(value) => {
+                            (None, Some(value.as_str().to_string()), None, None)
+                        }
+                        SpreadsheetCellValue::Template(value) => {
+                            (None, None, Some(value.as_str().to_string()), None)
+                        }
+                        SpreadsheetCellValue::Detail(value) => {
+                            (None, None, None, Some(value.as_str().to_string()))
+                        }
+                        SpreadsheetCellValue::Composite(value) => (
+                            value.text().map(|value| value.as_str().to_string()),
+                            value.parameter().map(|value| value.as_str().to_string()),
+                            value.template().map(|value| value.as_str().to_string()),
+                            value.detail().map(|value| value.as_str().to_string()),
+                        ),
+                    };
+                    row_cells.push(MxlCellInfo {
+                        col: start - 1,
+                        col_span: span,
+                        format_idx,
+                        param,
+                        detail,
+                        text,
+                        template,
+                    });
+                    if row_span > 1 {
+                        active_rowspans.push(MxlRowspan {
+                            col_start: start,
+                            col_end: start + span - 1,
+                            start_local_row: local_row,
+                            end_local_row: local_row + row_span - 1,
+                        });
+                    }
+                    if span > 1 || row_span > 1 {
+                        merges.push(MxlMerge {
+                            row: global_row,
+                            column: start - 1,
+                            width: span - 1,
+                            height: (row_span > 1).then_some(row_span - 1),
+                        });
+                    }
+                }
+                if let Some(row_style) = row.style() {
+                    let props = semantic_style(
+                        Some(row_style.as_str()),
+                        "",
+                        document,
+                        &font_map,
+                        thin_line_index,
+                        thick_line_index,
+                    );
+                    let gap_format = registry.register(mxl_format_key(&props), props);
+                    for column in 1..=total_columns {
+                        if !occupied.contains_key(&column) {
+                            row_cells.push(MxlCellInfo {
+                                col: column - 1,
+                                col_span: 1,
+                                format_idx: gap_format,
+                                param: None,
+                                detail: None,
+                                text: None,
+                                template: None,
+                            });
+                        }
+                    }
+                }
+                row_cells.sort_by_key(|cell| cell.col);
+                lines.push("\t<rowsItem>".to_string());
+                lines.push(format!("\t\t<index>{global_row}</index>"));
+                lines.push("\t\t<row>".to_string());
+                if row_format_idx > 0 {
+                    lines.push(format!("\t\t\t<formatIndex>{row_format_idx}</formatIndex>"));
+                }
+                if row_cells.is_empty() {
+                    lines.push("\t\t\t<empty>true</empty>".to_string());
+                } else {
+                    let mut expected = 0;
+                    for cell in &row_cells {
+                        emit_mxl_cell(&mut lines, cell, expected);
+                        expected = cell.col + cell.col_span;
+                    }
+                }
+                lines.push("\t\t</row>".to_string());
+                lines.push("\t</rowsItem>".to_string());
+                local_row += 1;
+                global_row += 1;
+            }
+            named_items.push(MxlNamedItem {
+                name: area.name().as_str().to_string(),
+                begin_row: area_start_row,
+                end_row: global_row - 1,
+            });
+        }
+        if global_row == 0 {
+            return Err(
+                "MXL definition must contain at least one row; a zero-row definition cannot preserve columns or named areas in the canonical platform 8.3.27 empty sentinel"
+                    .to_string(),
+            );
+        }
+
+        lines.push("\t<templateMode>true</templateMode>".to_string());
+        lines.push(format!(
+            "\t<defaultFormatIndex>{default_format_index}</defaultFormatIndex>"
+        ));
+        lines.push(format!("\t<height>{global_row}</height>"));
+        lines.push(format!("\t<vgRows>{global_row}</vgRows>"));
+        for merge in &merges {
+            lines.push("\t<merge>".to_string());
+            lines.push(format!("\t\t<r>{}</r>", merge.row));
+            lines.push(format!("\t\t<c>{}</c>", merge.column));
+            if let Some(height) = merge.height {
+                lines.push(format!("\t\t<h>{height}</h>"));
+            }
+            lines.push(format!("\t\t<w>{}</w>", merge.width));
+            lines.push("\t</merge>".to_string());
+        }
+        for item in &named_items {
+            lines.push("\t<namedItem xsi:type=\"NamedItemCells\">".to_string());
+            lines.push(format!(
+                "\t\t<name>{}</name>",
+                escape_mxl_xml_text(&item.name)
+            ));
+            lines.push("\t\t<area>".to_string());
+            lines.push("\t\t\t<type>Rows</type>".to_string());
+            lines.push(format!("\t\t\t<beginRow>{}</beginRow>", item.begin_row));
+            lines.push(format!("\t\t\t<endRow>{}</endRow>", item.end_row));
+            lines.push("\t\t\t<beginColumn>-1</beginColumn>".to_string());
+            lines.push("\t\t\t<endColumn>-1</endColumn>".to_string());
+            lines.push("\t\t</area>".to_string());
+            lines.push("\t</namedItem>".to_string());
+        }
+        if has_thin_borders {
+            lines.push("\t<line width=\"1\" gap=\"false\">".to_string());
+            lines.push("\t\t<v8ui:style xsi:type=\"v8ui:SpreadsheetDocumentCellLineType\">Solid</v8ui:style>".to_string());
+            lines.push("\t</line>".to_string());
+        }
+        if has_thick_borders {
+            lines.push("\t<line width=\"2\" gap=\"false\">".to_string());
+            lines.push("\t\t<v8ui:style xsi:type=\"v8ui:SpreadsheetDocumentCellLineType\">Solid</v8ui:style>".to_string());
+            lines.push("\t</line>".to_string());
+        }
+        for font in &font_entries {
+            lines.push(format!(
+                "\t<font faceName=\"{}\" height=\"{}\" bold=\"{}\" italic=\"{}\" underline=\"{}\" strikeout=\"{}\" kind=\"Absolute\" scale=\"100\"/>",
+                escape_mxl_xml_attribute(&font.face), font.size, font.bold, font.italic, font.underline, font.strikeout
+            ));
+        }
+        for (_, format) in &registry.entries {
+            emit_mxl_format(&mut lines, format);
+        }
+        lines.push("</document>".to_string());
+
+        let xml = format!("{}\n", lines.join("\n"));
+        Document::parse(&xml).map_err(|error| format!("compiled MXL is not valid XML: {error}"))?;
+        let output_path = absolutize(destination.to_path_buf(), &context.cwd);
+        stage_mxl_output(&mut transaction, &output_path, utf8_bom_bytes(&xml))?;
+        guard_active_format_owner(&mut transaction, &output_path, context)?;
+        let report = transaction
+            .commit_with_post_validation(|| require_mxl_post_validation(&output_path, context))?;
+
+        let mut stdout = format!("[OK] Compiled: {}\n", destination.display());
+        if let Some((page, target)) = page {
+            stdout.push_str(&format!(
+                "     Page: {page} -> target {target}, defaultWidth={default_width}\n"
+            ));
+        }
+        stdout.push_str(&format!(
+            "     Areas: {}, Rows: {global_row}, Columns: {total_columns}\n",
+            named_items.len()
+        ));
+        stdout.push_str(&format!(
+            "     Fonts: {}, Lines: {line_count}, Formats: {}\n",
+            font_entries.len(),
+            registry.entries.len()
+        ));
+        stdout.push_str(&format!("     Merges: {}\n", merges.len()));
+        Ok((stdout, output_path, report.cleanup_warnings))
+    })();
+
+    match write_result {
+        Ok((stdout, output_path, warnings)) => NativeWriterResult {
+            ok: true,
+            summary: "unica.mxl.compile completed with native spreadsheet writer".to_string(),
+            changes: vec![format!("updated {}", output_path.display())],
+            warnings,
+            errors: Vec::new(),
+            artifacts: vec![output_path.display().to_string()],
+            stdout: Some(stdout),
+            stderr: None,
+        },
+        Err(error) => mxl_compile_failure(error),
+    }
+}
+
 fn mxl_compile_failure(error: String) -> NativeWriterResult {
     NativeWriterResult {
         ok: false,
@@ -3271,30 +3825,35 @@ pub(crate) fn create_spreadsheet(
     session: &PlatformWriterSession,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
-    let definition = session.required_source(
-        unica_format_core::commands::WriterSourceRole::Definition,
-        "spreadsheet definition",
-    );
     let destination = session.required_source(
         unica_format_core::commands::WriterSourceRole::DestinationArtifact,
         "spreadsheet destination",
     );
-    match (definition, destination) {
-        (Ok(definition), Ok(destination)) => {
-            let _resolved_origin = (
-                command.processor().map(|value| value.as_str()),
-                command.template().map(|value| value.as_str()),
-                command.derives_from_object(),
-            );
+    match destination {
+        Ok(destination) => {
+            let document = match command.source() {
+                unica_format_core::commands::SpreadsheetSource::Definition(document) => document,
+                unica_format_core::commands::SpreadsheetSource::Object { .. } => {
+                    return mxl_compile_failure(
+                        "object-derived spreadsheet input must be resolved to a semantic document"
+                            .to_string(),
+                    )
+                }
+            };
             compile_mxl_input(
                 MxlCompileInput {
-                    definition: definition.to_path_buf(),
+                    definition: MxlCompileDefinition::Semantic {
+                        document: document.clone(),
+                        guard: session
+                            .source(unica_format_core::commands::WriterSourceRole::Definition)
+                            .map(Path::to_path_buf),
+                    },
                     destination: destination.to_path_buf(),
                 },
                 context,
             )
         }
-        (Err(error), _) | (_, Err(error)) => mxl_compile_failure(error),
+        Err(error) => mxl_compile_failure(error),
     }
 }
 

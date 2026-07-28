@@ -2347,6 +2347,21 @@ fn bind_operational_compatibility_guard<'a>(
     if matches!(mode, OwnerResolutionMode::ExistingForNewOutput) {
         return require_supported_platform_xml_owners(&metadata_owners);
     }
+    let direct_targets = native_targets
+        .iter()
+        .map(|(target, _)| target.as_path())
+        .collect::<Vec<_>>();
+    let embedded_format_targets = direct_targets
+        .iter()
+        .copied()
+        .filter(|target| {
+            matches!(
+                target.file_name().and_then(|name| name.to_str()),
+                Some("CommandInterface.xml" | "Form.xml" | "Rights.xml" | "Template.xml")
+            )
+        })
+        .collect::<Vec<_>>();
+    reject_existing_incompatible_format_targets(&embedded_format_targets)?;
     let native_workspace_root = context.workspace_root.clone();
     let native_context = context.clone();
     transaction.guard_semantic_check_preserving_error(move || {

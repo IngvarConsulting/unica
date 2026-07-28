@@ -36,7 +36,7 @@ impl NativeOperationAdapter {
             ));
         }
         if dry_run {
-            if !compile_without_payload_preview {
+            if !compile_without_payload_preview && !form_edit_without_payload_preview {
                 if let Some(outcome) = registry::invoke_adapter_writer(
                     operation,
                     tool_name,

@@ -32,7 +32,13 @@ pub(crate) fn execute(
             let emitter = session
                 .extension_emitter()
                 .ok_or_else(|| "extension method patch requires a host BSL emitter".to_string())?;
-            cfe::patch_extension_method_typed(command, session, context, emitter)
+            cfe::patch_extension_method_typed(
+                command,
+                session,
+                context,
+                emitter,
+                MutationMode::Apply,
+            )
         }
         WriterCommand::ExternalProcessorInitialize(command) => {
             external::initialize_processor(command, session, context, MutationMode::Apply)
@@ -94,7 +100,13 @@ fn preview(
             let emitter = session
                 .extension_emitter()
                 .ok_or_else(|| "extension method patch requires a host BSL emitter".to_string())?;
-            cfe::patch_extension_method_typed(command, session, context, emitter)
+            cfe::patch_extension_method_typed(
+                command,
+                session,
+                context,
+                emitter,
+                MutationMode::Preview,
+            )
         }
         WriterCommand::ExternalProcessorInitialize(command) => {
             external::initialize_processor(command, session, context, MutationMode::Preview)
@@ -102,10 +114,10 @@ fn preview(
         WriterCommand::ExternalReportInitialize(command) => {
             external::initialize_report(command, session, context, MutationMode::Preview)
         }
-        WriterCommand::FormCompile(command) if form::has_typed_compile_payload(session) => {
+        WriterCommand::FormCompile(command) => {
             form::preview_form_compile_typed(command, session, context)?
         }
-        WriterCommand::FormEdit(command) if form::has_typed_edit_payload(session) => {
+        WriterCommand::FormEdit(command) => {
             let (outcome, evidence) =
                 form::preview_typed_with_data(command, session, context).into_core_parts();
             return Ok((outcome, evidence));

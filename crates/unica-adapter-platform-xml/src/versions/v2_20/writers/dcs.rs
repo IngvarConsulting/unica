@@ -2765,7 +2765,10 @@ fn resolve_dcs_path(raw_path: PathBuf, context: &WorkspaceContext) -> Result<Pat
 }
 
 enum DcsDefinition {
+    Semantic(unica_format_core::commands::DataCompositionDefinition),
+    #[cfg(test)]
     File(PathBuf),
+    #[cfg(test)]
     Inline(String),
 }
 
@@ -2806,6 +2809,22 @@ fn dcs_compile_input(args: &impl ArgumentAccess) -> Result<DcsCompileInput, Stri
 }
 
 fn compile_dcs_input(input: DcsCompileInput, context: &WorkspaceContext) -> NativeWriterResult {
+    match input {
+        DcsCompileInput {
+            definition: DcsDefinition::Semantic(definition),
+            destination,
+            show_validation,
+        } => compile_semantic_dcs(definition, destination, show_validation, context),
+        #[cfg(test)]
+        legacy => compile_legacy_dcs_input(legacy, context),
+    }
+}
+
+#[cfg(test)]
+fn compile_legacy_dcs_input(
+    input: DcsCompileInput,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
     let write_result = (|| -> Result<(String, PathBuf, Vec<String>, Vec<String>), String> {
         let DcsCompileInput {
             definition,
@@ -2817,6 +2836,10 @@ fn compile_dcs_input(input: DcsCompileInput, context: &WorkspaceContext) -> Nati
 
         let mut transaction = CompileTransaction::new();
         let (mut defn, query_base_dir) = match definition {
+            DcsDefinition::Semantic(_) => {
+                unreachable!("semantic DCS definitions use the typed compiler")
+            }
+            #[cfg(test)]
             DcsDefinition::File(definition_file) => {
                 let definition_file = absolutize(definition_file, &context.cwd);
                 if !definition_file.exists() {
@@ -2835,6 +2858,7 @@ fn compile_dcs_input(input: DcsCompileInput, context: &WorkspaceContext) -> Nati
                 .bind_to(&mut transaction)?;
                 (definition, base_dir)
             }
+            #[cfg(test)]
             DcsDefinition::Inline(value) => {
                 let definition = serde_json::from_str(&value)
                     .map_err(|err| format!("failed to parse DCS JSON: {err}"))?;
@@ -2959,6 +2983,361 @@ fn compile_dcs_input(input: DcsCompileInput, context: &WorkspaceContext) -> Nati
         },
         Err(error) => dcs_compile_failure(error),
     }
+}
+
+fn compile_semantic_dcs(
+    definition: unica_format_core::commands::DataCompositionDefinition,
+    destination: PathBuf,
+    show_validation: bool,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    let write_result = (|| -> Result<(String, PathBuf, Vec<String>, Vec<String>), String> {
+        let output_path_label = destination.display().to_string();
+        let output_path = absolutize(destination, &context.cwd);
+        let content = dcs_compile_semantic_xml(&definition)?;
+        let replacement = utf8_bom_bytes(&content);
+        let file_size = replacement.len();
+        let data_set_count = definition.data_sets().len();
+        let field_count = definition
+            .data_sets()
+            .iter()
+            .map(|data_set| match data_set {
+                unica_format_core::commands::DataCompositionDataSet::Query(value) => {
+                    value.fields().len()
+                }
+                unica_format_core::commands::DataCompositionDataSet::Object(value) => {
+                    value.fields().len()
+                }
+            })
+            .sum::<usize>();
+        let variant_count = definition.variants().len().max(1);
+        let mut stdout = format!(
+            "OK  {output_path_label}\n    DataSets: {data_set_count}  Fields: {field_count}  Calculated: {}  Totals: {}  Params: {}  Variants: {variant_count}\n    Size: {file_size} bytes\n",
+            definition.calculated_fields().len(),
+            definition.totals().len(),
+            definition.parameters().len(),
+        );
+
+        let mut transaction = CompileTransaction::new();
+        stage_dcs_output(&mut transaction, &output_path, replacement)?;
+        guard_active_format_owner(&mut transaction, &output_path, context)?;
+        let mut validation_stdout = None;
+        let report = transaction.commit_with_post_validation(|| {
+            let validation = require_dcs_post_validation(&output_path, context)?;
+            validation_stdout = Some(validation);
+            Ok(())
+        })?;
+
+        if show_validation {
+            stdout.push_str("\n--- Running dcs-validate ---\n");
+            if let Some(validation) = validation_stdout {
+                stdout.push_str(&validation);
+            }
+        }
+        let mut changes = report
+            .created
+            .iter()
+            .map(|path| format!("created {}", path.display()))
+            .collect::<Vec<_>>();
+        changes.extend(
+            report
+                .updated
+                .iter()
+                .map(|path| format!("updated {}", path.display())),
+        );
+        Ok((stdout, output_path, changes, report.cleanup_warnings))
+    })();
+
+    match write_result {
+        Ok((stdout, output_path, changes, warnings)) => NativeWriterResult {
+            ok: true,
+            summary: "unica.dcs.compile completed with native DCS compiler".to_string(),
+            changes,
+            warnings,
+            errors: Vec::new(),
+            artifacts: vec![output_path.display().to_string()],
+            stdout: Some(stdout),
+            stderr: None,
+        },
+        Err(error) => dcs_compile_failure(error),
+    }
+}
+
+fn dcs_compile_semantic_xml(
+    definition: &unica_format_core::commands::DataCompositionDefinition,
+) -> Result<String, String> {
+    use unica_format_core::commands::{
+        DataCompositionDataSet, DataCompositionDataSourceKind, DataCompositionOrderDirection,
+    };
+
+    let mut lines = vec![
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string(),
+        "<DataCompositionSchema xmlns=\"http://v8.1c.ru/8.1/data-composition-system/schema\" xmlns:dcscom=\"http://v8.1c.ru/8.1/data-composition-system/common\" xmlns:dcscor=\"http://v8.1c.ru/8.1/data-composition-system/core\" xmlns:dcsset=\"http://v8.1c.ru/8.1/data-composition-system/settings\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">".to_string(),
+    ];
+    let default_source = definition
+        .data_sources()
+        .first()
+        .map(|value| value.name().as_str())
+        .unwrap_or("ИсточникДанных1");
+    if definition.data_sources().is_empty() {
+        lines.extend([
+            "\t<dataSource>".to_string(),
+            "\t\t<name>ИсточникДанных1</name>".to_string(),
+            "\t\t<dataSourceType>Local</dataSourceType>".to_string(),
+            "\t</dataSource>".to_string(),
+        ]);
+    } else {
+        for source in definition.data_sources() {
+            lines.push("\t<dataSource>".to_string());
+            lines.push(format!(
+                "\t\t<name>{}</name>",
+                escape_xml(source.name().as_str())
+            ));
+            lines.push(format!(
+                "\t\t<dataSourceType>{}</dataSourceType>",
+                match source.kind() {
+                    DataCompositionDataSourceKind::Local => "Local",
+                    DataCompositionDataSourceKind::External => "External",
+                }
+            ));
+            lines.push("\t</dataSource>".to_string());
+        }
+    }
+
+    for data_set in definition.data_sets() {
+        let (kind, name, source, fields, query, object, auto_fill) = match data_set {
+            DataCompositionDataSet::Query(value) => (
+                "DataSetQuery",
+                value.name().as_str(),
+                value
+                    .source()
+                    .map(|source| source.as_str())
+                    .unwrap_or(default_source),
+                value.fields(),
+                Some(value.query().as_str()),
+                None,
+                value.auto_fills_fields(),
+            ),
+            DataCompositionDataSet::Object(value) => (
+                "DataSetObject",
+                value.name().as_str(),
+                default_source,
+                value.fields(),
+                None,
+                Some(value.object().as_str()),
+                true,
+            ),
+        };
+        lines.push(format!("\t<dataSet xsi:type=\"{kind}\">"));
+        lines.push(format!("\t\t<name>{}</name>", escape_xml(name)));
+        for field in fields {
+            dcs_compile_emit_semantic_field(&mut lines, field, "\t\t", kind == "DataSetObject")?;
+        }
+        lines.push(format!(
+            "\t\t<dataSource>{}</dataSource>",
+            escape_xml(source)
+        ));
+        if let Some(query) = query {
+            lines.push(format!("\t\t<query>{}</query>", escape_xml(query)));
+            if !auto_fill {
+                lines.push("\t\t<autoFillFields>false</autoFillFields>".to_string());
+            }
+        }
+        if let Some(object) = object {
+            lines.push(format!(
+                "\t\t<objectName>{}</objectName>",
+                escape_xml(object)
+            ));
+        }
+        lines.push("\t</dataSet>".to_string());
+    }
+
+    for link in definition.data_set_links() {
+        let model = DcsEditDataSetLink {
+            source: link.source().as_str().to_string(),
+            dest: link.destination().as_str().to_string(),
+            source_expr: link.source_expression().as_str().to_string(),
+            dest_expr: link.destination_expression().as_str().to_string(),
+            parameter: String::new(),
+        };
+        lines.extend(
+            dcs_edit_data_set_link_fragment(&model, "\t")
+                .lines()
+                .map(ToOwned::to_owned),
+        );
+        if !link.is_required() {
+            let close = lines
+                .pop()
+                .expect("data set link fragment always has a closing element");
+            lines.push("\t\t<required>false</required>".to_string());
+            lines.push(close);
+        }
+    }
+    for field in definition.calculated_fields() {
+        let model = DcsEditCalcField {
+            data_path: field.path().as_str().to_string(),
+            title: field
+                .title()
+                .map(|value| value.as_str().to_string())
+                .unwrap_or_default(),
+            field_type: field
+                .value_type()
+                .map(dcs_semantic_value_type)
+                .unwrap_or_default()
+                .to_string(),
+            expression: field.expression().as_str().to_string(),
+            type_declared: field.value_type().is_some(),
+        };
+        lines.extend(
+            dcs_edit_calc_field_fragment(&model, "\t")?
+                .lines()
+                .map(ToOwned::to_owned),
+        );
+    }
+    for total in definition.totals() {
+        lines.push("\t<totalField>".to_string());
+        lines.push(format!(
+            "\t\t<dataPath>{}</dataPath>",
+            escape_xml(total.path().as_str())
+        ));
+        lines.push(format!(
+            "\t\t<expression>{}</expression>",
+            escape_xml(total.expression().as_str())
+        ));
+        for group in total.groups() {
+            lines.push(format!("\t\t<group>{}</group>", escape_xml(group.as_str())));
+        }
+        lines.push("\t</totalField>".to_string());
+    }
+    for parameter in definition.parameters() {
+        lines.extend(
+            dcs_edit_parameter_fragment(&dcs_semantic_parameter(parameter), "\t")?
+                .lines()
+                .map(ToOwned::to_owned),
+        );
+    }
+
+    if definition.variants().is_empty() {
+        dcs_compile_emit_default_settings_variant(&mut lines);
+    } else {
+        for variant in definition.variants() {
+            lines.push("\t<settingsVariant>".to_string());
+            lines.push(format!(
+                "\t\t<dcsset:name>{}</dcsset:name>",
+                escape_xml(variant.name().as_str())
+            ));
+            dcs_compile_emit_mltext(
+                &mut lines,
+                "\t\t",
+                "dcsset:presentation",
+                variant
+                    .presentation()
+                    .map(|value| value.as_str())
+                    .unwrap_or_else(|| variant.name().as_str()),
+            );
+            lines.push("\t\t<dcsset:settings xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\">".to_string());
+            let settings = variant.settings();
+            if !settings.selection().is_empty() {
+                lines.push("\t\t\t<dcsset:selection>".to_string());
+                for selection in settings.selection() {
+                    lines.push(
+                        "\t\t\t\t<dcsset:item xsi:type=\"dcsset:SelectedItemField\">".to_string(),
+                    );
+                    if !selection.is_enabled() {
+                        lines.push("\t\t\t\t\t<dcsset:use>false</dcsset:use>".to_string());
+                    }
+                    lines.push(format!(
+                        "\t\t\t\t\t<dcsset:field>{}</dcsset:field>",
+                        escape_xml(selection.field().as_str())
+                    ));
+                    if let Some(title) = selection.title() {
+                        dcs_compile_emit_mltext_ex(
+                            &mut lines,
+                            "\t\t\t\t\t",
+                            "dcsset:lwsTitle",
+                            title.as_str(),
+                            true,
+                        );
+                    }
+                    lines.push("\t\t\t\t</dcsset:item>".to_string());
+                }
+                lines.push("\t\t\t</dcsset:selection>".to_string());
+            }
+            if !settings.filters().is_empty() {
+                lines.push("\t\t\t<dcsset:filter>".to_string());
+                for filter in settings.filters() {
+                    lines.extend(
+                        dcs_edit_filter_fragment(&dcs_semantic_filter(filter), "\t\t\t\t")
+                            .lines()
+                            .map(ToOwned::to_owned),
+                    );
+                }
+                lines.push("\t\t\t</dcsset:filter>".to_string());
+            }
+            if !settings.order().is_empty() {
+                lines.push("\t\t\t<dcsset:order>".to_string());
+                for order in settings.order() {
+                    lines.extend(
+                        dcs_semantic_order_fragment(order, "\t\t\t\t")
+                            .lines()
+                            .map(ToOwned::to_owned),
+                    );
+                }
+                lines.push("\t\t\t</dcsset:order>".to_string());
+            }
+            lines.push("\t\t\t<dcsset:item xsi:type=\"dcsset:StructureItemGroup\">".to_string());
+            lines.push("\t\t\t\t<dcsset:order>".to_string());
+            lines.push("\t\t\t\t\t<dcsset:item xsi:type=\"dcsset:OrderItemAuto\"/>".to_string());
+            lines.push("\t\t\t\t</dcsset:order>".to_string());
+            lines.push("\t\t\t\t<dcsset:selection>".to_string());
+            lines.push("\t\t\t\t\t<dcsset:item xsi:type=\"dcsset:SelectedItemAuto\"/>".to_string());
+            lines.push("\t\t\t\t</dcsset:selection>".to_string());
+            lines.push("\t\t\t</dcsset:item>".to_string());
+            lines.push("\t\t</dcsset:settings>".to_string());
+            lines.push("\t</settingsVariant>".to_string());
+        }
+    }
+    lines.push("</DataCompositionSchema>".to_string());
+    Ok(format!("{}\n", lines.join("\n")))
+}
+
+fn dcs_compile_emit_semantic_field(
+    lines: &mut Vec<String>,
+    field: &unica_format_core::commands::DataCompositionFieldDefinition,
+    indent: &str,
+    emit_value_type: bool,
+) -> Result<(), String> {
+    lines.push(format!("{indent}<field xsi:type=\"DataSetFieldField\">"));
+    lines.push(format!(
+        "{indent}\t<dataPath>{}</dataPath>",
+        escape_xml(field.path().as_str())
+    ));
+    lines.push(format!(
+        "{indent}\t<field>{}</field>",
+        escape_xml(field.path().as_str())
+    ));
+    if let Some(title) = field.title() {
+        dcs_compile_emit_mltext(lines, &format!("{indent}\t"), "title", title.as_str());
+    }
+    if let Some(expression) = field.presentation_expression() {
+        lines.push(format!(
+            "{indent}\t<presentationExpression>{}</presentationExpression>",
+            escape_xml(expression.as_str())
+        ));
+    }
+    if emit_value_type {
+        if let Some(value_type) = field.value_type() {
+            lines.push(format!("{indent}\t<valueType>"));
+            dcs_compile_emit_value_type(
+                lines,
+                dcs_semantic_value_type(value_type),
+                &format!("{indent}\t\t"),
+            )?;
+            lines.push(format!("{indent}\t</valueType>"));
+        }
+    }
+    lines.push(format!("{indent}</field>"));
+    Ok(())
 }
 
 fn dcs_compile_failure(error: String) -> NativeWriterResult {
@@ -4959,12 +5338,59 @@ fn run_dcs_edit_after_read_hook(path: &Path) {
 
 struct DcsEditInput {
     template: PathBuf,
-    operation: String,
-    value: String,
+    source: DcsEditSource,
     data_set: String,
     variant: String,
     no_selection: bool,
     show_validation: bool,
+}
+
+enum DcsEditSource {
+    Semantic(unica_format_core::commands::DataCompositionMutation),
+    #[cfg(test)]
+    Legacy {
+        operation: String,
+        value: String,
+    },
+}
+
+enum DcsNativeMutation {
+    Semantic(unica_format_core::commands::DataCompositionMutation),
+    AddField(String),
+    AddTotal(String),
+    AddCalculatedField(String),
+    AddParameter(String),
+    AddParameterSemantic(unica_format_core::commands::DataCompositionParameter),
+    AddFilter(String),
+    AddDataParameter(String),
+    SetQuery(String),
+    PatchQuery(String),
+    ClearSelection,
+    ClearOrder,
+    ClearFilter,
+    ClearConditionalAppearance,
+    AddSelection(String),
+    AddOrder(String),
+    AddDataSetLink(String),
+    AddDataSet(String),
+    AddVariant(String),
+    AddConditionalAppearance(String),
+    AddDrilldown(String),
+    SetOutputParameter(String),
+    SetStructure(String),
+    ModifyStructure(String),
+    RemoveField(String),
+    RemoveParameter(String),
+    ModifyField(String),
+    SetFieldRole(String),
+    ModifyFilter(String),
+    ModifyDataParameter(String),
+    ModifyParameter(String),
+    RenameParameter(String),
+    ReorderParameters(String),
+    RemoveTotal(String),
+    RemoveCalculatedField(String),
+    RemoveFilter(String),
 }
 
 #[cfg(test)]
@@ -4975,8 +5401,11 @@ pub(crate) fn edit_dcs(
     let input = match (|| -> Result<DcsEditInput, String> {
         Ok(DcsEditInput {
             template: required_path(args, TEMPLATE_PATH, "TemplatePath")?,
-            operation: required_string(args, &["operation", "Operation"], "Operation")?.to_string(),
-            value: required_string(args, &["value", "Value"], "Value")?.to_string(),
+            source: DcsEditSource::Legacy {
+                operation: required_string(args, &["operation", "Operation"], "Operation")?
+                    .to_string(),
+                value: required_string(args, &["value", "Value"], "Value")?.to_string(),
+            },
             data_set: string_arg(args, &["dataSet", "DataSet"])
                 .unwrap_or("")
                 .to_string(),
@@ -4997,22 +5426,19 @@ fn edit_dcs_input(input: DcsEditInput, context: &WorkspaceContext) -> NativeWrit
     let edit_result = (|| -> Result<(String, PathBuf, bool, Vec<String>), String> {
         let DcsEditInput {
             template,
-            operation,
-            value,
+            source,
             data_set,
             variant,
             no_selection,
             show_validation,
         } = input;
         let template_path = resolve_dcs_path(template, context)?;
-        let operation = operation.as_str();
-        let value_arg = value.as_str();
         let data_set = data_set.as_str();
         let variant = variant.as_str();
 
-        let source = read_utf8_sig_snapshot(&template_path)?;
-        let original_bytes = source.raw;
-        let mut xml_text = source.text;
+        let snapshot = read_utf8_sig_snapshot(&template_path)?;
+        let original_bytes = snapshot.raw;
+        let mut xml_text = snapshot.text;
         let document =
             Document::parse(&xml_text).map_err(|err| format!("[ERROR] XML parse error: {err}"))?;
         require_dcs_root(document.root_element()).map_err(|error| format!("[ERROR] {error}"))?;
@@ -5026,13 +5452,29 @@ fn edit_dcs_input(input: DcsEditInput, context: &WorkspaceContext) -> NativeWrit
         #[cfg(test)]
         run_dcs_edit_after_read_hook(&template_path);
         let base_dir = template_path.parent().unwrap_or(context.cwd.as_path());
-        let values = dcs_edit_split_values(operation, value_arg);
+        let mutations = match source {
+            DcsEditSource::Semantic(mutation) => vec![DcsNativeMutation::Semantic(mutation)],
+            #[cfg(test)]
+            DcsEditSource::Legacy { operation, value } => dcs_edit_split_values(&operation, &value)
+                .into_iter()
+                .map(|value| dcs_legacy_mutation(&operation, value))
+                .collect::<Result<Vec<_>, _>>()?,
+        };
         let mut force_save = false;
         let mut stdout = String::new();
         let mut query_inputs = Vec::new();
-        for value in values {
-            match operation {
-                "add-field" => dcs_edit_add_field(
+        for mutation in mutations {
+            match mutation {
+                DcsNativeMutation::Semantic(mutation) => apply_semantic_dcs_mutation(
+                    mutation,
+                    &mut xml_text,
+                    data_set,
+                    variant,
+                    no_selection,
+                    &mut stdout,
+                    &mut force_save,
+                )?,
+                DcsNativeMutation::AddField(value) => dcs_edit_add_field(
                     &mut xml_text,
                     data_set,
                     variant,
@@ -5040,7 +5482,7 @@ fn edit_dcs_input(input: DcsEditInput, context: &WorkspaceContext) -> NativeWrit
                     no_selection,
                     &mut stdout,
                 )?,
-                "add-total" => {
+                DcsNativeMutation::AddTotal(value) => {
                     let (key, expression) = value
                         .split_once(':')
                         .map(|(left, right)| (left.trim(), right.trim()))
@@ -5056,7 +5498,7 @@ fn edit_dcs_input(input: DcsEditInput, context: &WorkspaceContext) -> NativeWrit
                         &mut stdout,
                     )?;
                 }
-                "add-calculated-field" => {
+                DcsNativeMutation::AddCalculatedField(value) => {
                     let parsed = dcs_edit_parse_calc_field(&value);
                     let fragment = dcs_edit_calc_field_fragment(&parsed, "\t")?;
                     dcs_edit_add_top_level_fragment(
@@ -5090,54 +5532,15 @@ fn edit_dcs_input(input: DcsEditInput, context: &WorkspaceContext) -> NativeWrit
                         }
                     }
                 }
-                "add-parameter" => {
+                DcsNativeMutation::AddParameter(value) => {
                     let parsed = dcs_edit_parse_parameter(&value);
-                    let fragment = dcs_edit_parameter_fragment(&parsed, "\t")?;
-                    dcs_edit_add_top_level_fragment(
-                        &mut xml_text,
-                        "parameter",
-                        "name",
-                        &parsed.name,
-                        &fragment,
-                        &format!("[OK] Parameter \"{}\" added\n", parsed.name),
-                        &mut stdout,
-                    )?;
-                    if parsed.auto_dates {
-                        for suffix in ["ДатаНачала", "ДатаОкончания"] {
-                            let auto = DcsEditParameter {
-                                name: suffix.to_string(),
-                                title: if suffix == "ДатаНачала" {
-                                    "Начало периода".to_string()
-                                } else {
-                                    "Конец периода".to_string()
-                                },
-                                type_name: "dateTime".to_string(),
-                                values: vec!["0001-01-01T00:00:00".to_string()],
-                                hidden: true,
-                                always: false,
-                                value_list_allowed: false,
-                                available_values: Vec::new(),
-                                auto_dates: false,
-                                expression: Some(format!("&{}.{}", parsed.name, suffix)),
-                                type_declared: true,
-                            };
-                            let auto_fragment = dcs_edit_parameter_fragment(&auto, "\t")?;
-                            let _ = dcs_edit_add_top_level_fragment(
-                                &mut xml_text,
-                                "parameter",
-                                "name",
-                                &auto.name,
-                                &auto_fragment,
-                                "",
-                                &mut String::new(),
-                            );
-                        }
-                        stdout.push_str(
-                            "[OK] Auto-parameters \"ДатаНачала\", \"ДатаОкончания\" added\n",
-                        );
-                    }
+                    dcs_edit_add_parameter(&mut xml_text, &parsed, &mut stdout)?;
                 }
-                "add-filter" => {
+                DcsNativeMutation::AddParameterSemantic(value) => {
+                    let parsed = dcs_semantic_parameter(&value);
+                    dcs_edit_add_parameter(&mut xml_text, &parsed, &mut stdout)?;
+                }
+                DcsNativeMutation::AddFilter(value) => {
                     let parsed = dcs_edit_parse_filter(&value);
                     dcs_edit_validate_filter_literal(&parsed)?;
                     let indent = dcs_edit_settings_container_child_indent(
@@ -5161,7 +5564,7 @@ fn edit_dcs_input(input: DcsEditInput, context: &WorkspaceContext) -> NativeWrit
                             .unwrap_or_else(|| variant.to_string())
                     ));
                 }
-                "add-dataParameter" => {
+                DcsNativeMutation::AddDataParameter(value) => {
                     let parsed = dcs_edit_parse_data_parameter(&value);
                     let indent = dcs_edit_settings_container_child_indent(
                         &xml_text,
@@ -5183,7 +5586,7 @@ fn edit_dcs_input(input: DcsEditInput, context: &WorkspaceContext) -> NativeWrit
                             .unwrap_or_else(|| variant.to_string())
                     ));
                 }
-                "set-query" => {
+                DcsNativeMutation::SetQuery(value) => {
                     let query = dcs_compile_resolve_query_value_with_inputs(
                         &value,
                         base_dir,
@@ -5197,7 +5600,7 @@ fn edit_dcs_input(input: DcsEditInput, context: &WorkspaceContext) -> NativeWrit
                             .unwrap_or_else(|| data_set.to_string())
                     ));
                 }
-                "patch-query" => {
+                DcsNativeMutation::PatchQuery(value) => {
                     let (value, once) = dcs_edit_extract_once_marker(&value);
                     let Some((old, new)) = value.split_once(" => ") else {
                         return Err(
@@ -5219,7 +5622,7 @@ fn edit_dcs_input(input: DcsEditInput, context: &WorkspaceContext) -> NativeWrit
                         suffix
                     ));
                 }
-                "clear-selection" => {
+                DcsNativeMutation::ClearSelection => {
                     dcs_edit_clear_prefixed_container(&mut xml_text, variant, "dcsset:selection")?;
                     stdout.push_str(&format!(
                         "[OK] Selection cleared in variant \"{}\"\n",
@@ -5227,7 +5630,7 @@ fn edit_dcs_input(input: DcsEditInput, context: &WorkspaceContext) -> NativeWrit
                             .unwrap_or_else(|| variant.to_string())
                     ));
                 }
-                "clear-order" => {
+                DcsNativeMutation::ClearOrder => {
                     dcs_edit_clear_prefixed_container(&mut xml_text, variant, "dcsset:order")?;
                     stdout.push_str(&format!(
                         "[OK] Order cleared in variant \"{}\"\n",
@@ -5235,7 +5638,7 @@ fn edit_dcs_input(input: DcsEditInput, context: &WorkspaceContext) -> NativeWrit
                             .unwrap_or_else(|| variant.to_string())
                     ));
                 }
-                "clear-filter" => {
+                DcsNativeMutation::ClearFilter => {
                     dcs_edit_clear_prefixed_container(&mut xml_text, variant, "dcsset:filter")?;
                     stdout.push_str(&format!(
                         "[OK] Filter cleared in variant \"{}\"\n",
@@ -5243,7 +5646,7 @@ fn edit_dcs_input(input: DcsEditInput, context: &WorkspaceContext) -> NativeWrit
                             .unwrap_or_else(|| variant.to_string())
                     ));
                 }
-                "clear-conditionalAppearance" => {
+                DcsNativeMutation::ClearConditionalAppearance => {
                     dcs_edit_clear_prefixed_container(
                         &mut xml_text,
                         variant,
@@ -5255,7 +5658,7 @@ fn edit_dcs_input(input: DcsEditInput, context: &WorkspaceContext) -> NativeWrit
                             .unwrap_or_else(|| variant.to_string())
                     ));
                 }
-                "add-selection" => {
+                DcsNativeMutation::AddSelection(value) => {
                     let parsed = dcs_edit_parse_selection_value(&value);
                     if let Some(group_name) = &parsed.group {
                         if dcs_edit_insert_selection_into_group(
@@ -5315,7 +5718,7 @@ fn edit_dcs_input(input: DcsEditInput, context: &WorkspaceContext) -> NativeWrit
                         ));
                     }
                 }
-                "add-order" => {
+                DcsNativeMutation::AddOrder(value) => {
                     let indent = dcs_edit_settings_container_child_indent(
                         &xml_text,
                         variant,
@@ -5337,7 +5740,7 @@ fn edit_dcs_input(input: DcsEditInput, context: &WorkspaceContext) -> NativeWrit
                             .unwrap_or_else(|| variant.to_string())
                     ));
                 }
-                "add-dataSetLink" => {
+                DcsNativeMutation::AddDataSetLink(value) => {
                     let parsed = dcs_edit_parse_data_set_link(&value)?;
                     let fragment = dcs_edit_data_set_link_fragment(&parsed, "\t");
                     dcs_edit_insert_top_level_fragment(&mut xml_text, "dataSetLink", &fragment)?;
@@ -5350,7 +5753,7 @@ fn edit_dcs_input(input: DcsEditInput, context: &WorkspaceContext) -> NativeWrit
                     }
                     stdout.push_str(&format!("[OK] DataSetLink \"{desc}\" added\n"));
                 }
-                "add-dataSet" => {
+                DcsNativeMutation::AddDataSet(value) => {
                     let parsed = dcs_edit_parse_data_set_with_inputs(
                         &value,
                         base_dir,
@@ -5373,7 +5776,7 @@ fn edit_dcs_input(input: DcsEditInput, context: &WorkspaceContext) -> NativeWrit
                         ));
                     }
                 }
-                "add-variant" => {
+                DcsNativeMutation::AddVariant(value) => {
                     let parsed = dcs_edit_parse_variant(&value);
                     if dcs_edit_variant_exists(&xml_text, &parsed.name) {
                         stdout.push_str(&format!(
@@ -5389,7 +5792,7 @@ fn edit_dcs_input(input: DcsEditInput, context: &WorkspaceContext) -> NativeWrit
                         ));
                     }
                 }
-                "add-conditionalAppearance" => {
+                DcsNativeMutation::AddConditionalAppearance(value) => {
                     let parsed = dcs_edit_parse_conditional_appearance(&value);
                     for filter in &parsed.filters {
                         dcs_edit_validate_filter_literal(filter)?;
@@ -5415,7 +5818,7 @@ fn edit_dcs_input(input: DcsEditInput, context: &WorkspaceContext) -> NativeWrit
                             .unwrap_or_else(|| variant.to_string())
                     ));
                 }
-                "add-drilldown" => {
+                DcsNativeMutation::AddDrilldown(value) => {
                     match dcs_edit_add_drilldown(&mut xml_text, &value) {
                         DcsEditDrilldownResult::Added => {
                             stdout.push_str(&format!("[OK] DrillDown added for \"{}\"\n", value));
@@ -5427,7 +5830,7 @@ fn edit_dcs_input(input: DcsEditInput, context: &WorkspaceContext) -> NativeWrit
                     }
                     force_save = true;
                 }
-                "set-outputParameter" => {
+                DcsNativeMutation::SetOutputParameter(value) => {
                     let parsed = dcs_edit_parse_output_parameter(&value)?;
                     let mut replaced = false;
                     if let Ok(range) = dcs_edit_prefixed_container_range(
@@ -5472,7 +5875,7 @@ fn edit_dcs_input(input: DcsEditInput, context: &WorkspaceContext) -> NativeWrit
                         ));
                     }
                 }
-                "set-structure" => {
+                DcsNativeMutation::SetStructure(value) => {
                     let parsed = dcs_edit_parse_structure(&value);
                     let fragments = dcs_edit_structure_fragments(&parsed, "\t\t\t");
                     dcs_edit_replace_structure(&mut xml_text, variant, &fragments)?;
@@ -5483,11 +5886,11 @@ fn edit_dcs_input(input: DcsEditInput, context: &WorkspaceContext) -> NativeWrit
                         value
                     ));
                 }
-                "modify-structure" => {
+                DcsNativeMutation::ModifyStructure(value) => {
                     let parsed = dcs_edit_parse_structure(&value);
                     dcs_edit_modify_structure(&mut xml_text, variant, &parsed, &mut stdout)?;
                 }
-                "remove-field" => {
+                DcsNativeMutation::RemoveField(value) => {
                     let removed = dcs_edit_remove_dataset_item(
                         &mut xml_text,
                         data_set,
@@ -5519,7 +5922,7 @@ fn edit_dcs_input(input: DcsEditInput, context: &WorkspaceContext) -> NativeWrit
                         ));
                     }
                 }
-                "remove-parameter" => {
+                DcsNativeMutation::RemoveParameter(value) => {
                     let removed =
                         dcs_edit_remove_top_level_item(&mut xml_text, "parameter", "name", &value)?;
                     if removed {
@@ -5528,7 +5931,7 @@ fn edit_dcs_input(input: DcsEditInput, context: &WorkspaceContext) -> NativeWrit
                         stdout.push_str(&format!("[WARN] Parameter \"{}\" not found\n", value));
                     }
                 }
-                "modify-field" => {
+                DcsNativeMutation::ModifyField(value) => {
                     let parsed = dcs_edit_parse_field(&value);
                     if dcs_edit_replace_dataset_field(&mut xml_text, data_set, &parsed)? {
                         stdout.push_str(&format!(
@@ -5546,16 +5949,16 @@ fn edit_dcs_input(input: DcsEditInput, context: &WorkspaceContext) -> NativeWrit
                         ));
                     }
                 }
-                "set-field-role" => {
+                DcsNativeMutation::SetFieldRole(value) => {
                     dcs_edit_set_field_role(&mut xml_text, data_set, &value, &mut stdout)?;
                 }
-                "modify-filter" => {
+                DcsNativeMutation::ModifyFilter(value) => {
                     let parsed = dcs_edit_parse_filter(&value);
                     dcs_edit_validate_filter_literal(&parsed)?;
                     force_save |=
                         dcs_edit_modify_filter(&mut xml_text, variant, &parsed, &mut stdout)?;
                 }
-                "modify-dataParameter" => {
+                DcsNativeMutation::ModifyDataParameter(value) => {
                     let parsed = dcs_edit_parse_data_parameter(&value);
                     force_save |= dcs_edit_modify_data_parameter(
                         &mut xml_text,
@@ -5564,17 +5967,17 @@ fn edit_dcs_input(input: DcsEditInput, context: &WorkspaceContext) -> NativeWrit
                         &mut stdout,
                     )?;
                 }
-                "modify-parameter" => {
+                DcsNativeMutation::ModifyParameter(value) => {
                     let parsed = dcs_edit_parse_parameter_patch(&value);
                     dcs_edit_modify_parameter(&mut xml_text, &parsed, &mut stdout)?;
                 }
-                "rename-parameter" => {
+                DcsNativeMutation::RenameParameter(value) => {
                     dcs_edit_rename_parameter(&mut xml_text, &value, &mut stdout)?;
                 }
-                "reorder-parameters" => {
+                DcsNativeMutation::ReorderParameters(value) => {
                     dcs_edit_reorder_parameters(&mut xml_text, &value, &mut stdout)?;
                 }
-                "remove-total" => {
+                DcsNativeMutation::RemoveTotal(value) => {
                     let removed = dcs_edit_remove_top_level_item(
                         &mut xml_text,
                         "totalField",
@@ -5587,7 +5990,7 @@ fn edit_dcs_input(input: DcsEditInput, context: &WorkspaceContext) -> NativeWrit
                         stdout.push_str(&format!("[WARN] TotalField \"{}\" not found\n", value));
                     }
                 }
-                "remove-calculated-field" => {
+                DcsNativeMutation::RemoveCalculatedField(value) => {
                     let removed = dcs_edit_remove_top_level_item(
                         &mut xml_text,
                         "calculatedField",
@@ -5609,7 +6012,7 @@ fn edit_dcs_input(input: DcsEditInput, context: &WorkspaceContext) -> NativeWrit
                         ));
                     }
                 }
-                "remove-filter" => {
+                DcsNativeMutation::RemoveFilter(value) => {
                     let filter_range =
                         dcs_edit_prefixed_container_range(&xml_text, variant, "dcsset:filter")?;
                     let removed = dcs_edit_remove_item_by_child(
@@ -5634,11 +6037,6 @@ fn edit_dcs_input(input: DcsEditInput, context: &WorkspaceContext) -> NativeWrit
                                 .unwrap_or_else(|| variant.to_string())
                         ));
                     }
-                }
-                other => {
-                    return Err(format!(
-                        "native dcs-edit does not support Operation '{other}' yet"
-                    ));
                 }
             }
         }
@@ -5749,6 +6147,17 @@ pub(crate) fn dcs_edit_add_field(
     stdout: &mut String,
 ) -> Result<(), String> {
     let parsed = dcs_edit_parse_field(value);
+    dcs_edit_add_field_model(xml_text, data_set, variant, &parsed, no_selection, stdout)
+}
+
+fn dcs_edit_add_field_model(
+    xml_text: &mut String,
+    data_set: &str,
+    variant: &str,
+    parsed: &DcsEditField,
+    no_selection: bool,
+    stdout: &mut String,
+) -> Result<(), String> {
     if parsed.type_declared {
         dcs_compile_parse_value_type(&parsed.field_type)?;
     }
@@ -6235,6 +6644,112 @@ pub(crate) fn dcs_edit_parse_parameter(value: &str) -> DcsEditParameter {
         expression: None,
         type_declared,
     }
+}
+
+fn dcs_semantic_parameter(
+    parameter: &unica_format_core::commands::DataCompositionParameter,
+) -> DcsEditParameter {
+    use unica_format_core::commands::{DataCompositionValue, MetadataValueType};
+
+    let type_name = parameter
+        .value_type()
+        .map(|value| {
+            match value {
+                MetadataValueType::String => "string",
+                MetadataValueType::Number => "decimal",
+                MetadataValueType::Boolean => "boolean",
+                MetadataValueType::Date => "dateTime",
+                MetadataValueType::Uuid => "UUID",
+                MetadataValueType::Binary => "BinaryData",
+                MetadataValueType::ValueStorage => "ValueStorage",
+                MetadataValueType::Any => "Any",
+                MetadataValueType::CatalogReference => "CatalogRef",
+                MetadataValueType::DocumentReference => "DocumentRef",
+                MetadataValueType::EnumReference => "EnumRef",
+                MetadataValueType::DefinedType => "DefinedType",
+            }
+            .to_string()
+        })
+        .unwrap_or_default();
+    let values = parameter
+        .value()
+        .map(|value| {
+            vec![match value {
+                DataCompositionValue::Null => "_".to_string(),
+                DataCompositionValue::Boolean(value) => value.to_string(),
+                DataCompositionValue::Integer(value) => value.to_string(),
+                DataCompositionValue::Text(value) => value.as_str().to_string(),
+            }]
+        })
+        .unwrap_or_default();
+    DcsEditParameter {
+        name: parameter.name().as_str().to_string(),
+        title: parameter
+            .title()
+            .map(|value| value.as_str().to_string())
+            .unwrap_or_default(),
+        type_name,
+        values,
+        hidden: parameter.is_hidden(),
+        always: false,
+        value_list_allowed: false,
+        available_values: Vec::new(),
+        auto_dates: false,
+        expression: parameter
+            .expression()
+            .map(|value| value.as_str().to_string()),
+        type_declared: parameter.value_type().is_some(),
+    }
+}
+
+fn dcs_edit_add_parameter(
+    xml_text: &mut String,
+    parsed: &DcsEditParameter,
+    stdout: &mut String,
+) -> Result<(), String> {
+    let fragment = dcs_edit_parameter_fragment(parsed, "\t")?;
+    dcs_edit_add_top_level_fragment(
+        xml_text,
+        "parameter",
+        "name",
+        &parsed.name,
+        &fragment,
+        &format!("[OK] Parameter \"{}\" added\n", parsed.name),
+        stdout,
+    )?;
+    if parsed.auto_dates {
+        for suffix in ["ДатаНачала", "ДатаОкончания"] {
+            let auto = DcsEditParameter {
+                name: suffix.to_string(),
+                title: if suffix == "ДатаНачала" {
+                    "Начало периода".to_string()
+                } else {
+                    "Конец периода".to_string()
+                },
+                type_name: "dateTime".to_string(),
+                values: vec!["0001-01-01T00:00:00".to_string()],
+                hidden: true,
+                always: false,
+                value_list_allowed: false,
+                available_values: Vec::new(),
+                auto_dates: false,
+                expression: Some(format!("&{}.{}", parsed.name, suffix)),
+                type_declared: true,
+            };
+            let auto_fragment = dcs_edit_parameter_fragment(&auto, "\t")?;
+            let _ = dcs_edit_add_top_level_fragment(
+                xml_text,
+                "parameter",
+                "name",
+                &auto.name,
+                &auto_fragment,
+                "",
+                &mut String::new(),
+            );
+        }
+        stdout.push_str("[OK] Auto-parameters \"ДатаНачала\", \"ДатаОкончания\" added\n");
+    }
+    Ok(())
 }
 
 pub(crate) fn dcs_edit_parameter_fragment(
@@ -8084,6 +8599,33 @@ pub(crate) fn dcs_edit_add_drilldown(
     }
 }
 
+fn dcs_edit_add_semantic_drilldown(
+    xml_text: &mut String,
+    field: &str,
+    target: &str,
+) -> DcsEditDrilldownResult {
+    if !xml_text.contains("<template>") {
+        return DcsEditDrilldownResult::NoNamedTemplates;
+    }
+    if !xml_text.contains(field) {
+        return DcsEditDrilldownResult::NoMatch;
+    }
+    let marker = format!("DrillDown{}", sanitize_xml_identifier(field));
+    if xml_text.contains(&marker) {
+        return DcsEditDrilldownResult::NoMatch;
+    }
+    let fragment = format!(
+        "\t<parameter>\n\t\t<name>{}</name>\n\t\t<expression>{}</expression>\n\t</parameter>",
+        escape_xml(&marker),
+        escape_xml(target)
+    );
+    if dcs_edit_insert_top_level_fragment(xml_text, "parameter", &fragment).is_ok() {
+        DcsEditDrilldownResult::Added
+    } else {
+        DcsEditDrilldownResult::NoMatch
+    }
+}
+
 pub(crate) fn dcs_edit_set_field_role(
     xml_text: &mut String,
     data_set: &str,
@@ -8156,6 +8698,46 @@ pub(crate) fn dcs_edit_set_field_role(
     } else {
         stdout.push_str(&format!("[OK] Field \"{}\" role cleared\n", data_path));
     }
+    Ok(())
+}
+
+fn dcs_edit_set_semantic_field_role(
+    xml_text: &mut String,
+    data_set: &str,
+    assignment: &unica_format_core::commands::DataCompositionFieldRoleAssignment,
+    stdout: &mut String,
+) -> Result<(), String> {
+    use unica_format_core::commands::DataCompositionFieldRole;
+    let data_path = assignment.field().as_str();
+    let range = dcs_edit_dataset_range(xml_text, data_set)?;
+    let Some(field_range) =
+        dcs_edit_find_item_by_child(xml_text, range, "field", "dataPath", data_path)
+    else {
+        stdout.push_str(&format!("[WARN] Field \"{data_path}\" not found\n"));
+        return Ok(());
+    };
+    let role_name = match assignment.role() {
+        DataCompositionFieldRole::Dimension => "dimension",
+        DataCompositionFieldRole::Attribute => "dimensionAttribute",
+        DataCompositionFieldRole::Measure => "balance",
+    };
+    let child_indent = format!("{}\t", dcs_edit_line_indent(xml_text, field_range.0));
+    let role_fragment =
+        dcs_edit_field_role_fragment_with_values(&[role_name.to_string()], &[], &child_indent)?;
+    let _ = dcs_edit_remove_child_block(xml_text, field_range, "role");
+    let range = dcs_edit_dataset_range(xml_text, data_set)?;
+    let field_range = dcs_edit_find_item_by_child(xml_text, range, "field", "dataPath", data_path)
+        .ok_or_else(|| format!("Field \"{data_path}\" not found"))?;
+    let insert = dcs_edit_canonical_child_insert_pos(
+        xml_text,
+        field_range,
+        "role",
+        DCS_EDIT_DATA_SET_FIELD_CHILD_SEQUENCE,
+    )?;
+    xml_text.insert_str(insert, &format!("{role_fragment}\n"));
+    stdout.push_str(&format!(
+        "[OK] Field \"{data_path}\" role set: {role_name}\n"
+    ));
     Ok(())
 }
 
@@ -8406,6 +8988,100 @@ pub(crate) fn dcs_edit_modify_parameter(
             "[OK] Parameter \"{}\": @always applied\n",
             patch.name
         ));
+    }
+    Ok(())
+}
+
+fn dcs_edit_modify_semantic_parameter(
+    xml_text: &mut String,
+    patch: &unica_format_core::commands::DataCompositionParameterPatch,
+    stdout: &mut String,
+) -> Result<(), String> {
+    use unica_format_core::commands::DataCompositionParameterChange;
+    let name = patch.name().as_str();
+    if dcs_edit_parameter_range(xml_text, name).is_none() {
+        stdout.push_str(&format!(
+            "[WARN] Parameter \"{name}\" not found -- skipped\n"
+        ));
+        return Ok(());
+    }
+    for change in patch.changes() {
+        let range = dcs_edit_parameter_range(xml_text, name)
+            .ok_or_else(|| format!("Parameter \"{name}\" not found"))?;
+        let child_indent = format!("{}\t", dcs_edit_line_indent(xml_text, range.0));
+        match change {
+            DataCompositionParameterChange::SetTitle(value) => {
+                let mut lines = Vec::new();
+                dcs_compile_emit_mltext(&mut lines, &child_indent, "title", value.as_str());
+                dcs_edit_replace_or_insert_child_fragment(
+                    xml_text,
+                    range,
+                    "title",
+                    &lines.join("\n"),
+                    DCS_EDIT_PARAMETER_CHILD_SEQUENCE,
+                )?;
+                stdout.push_str(&format!("[OK] Parameter \"{name}\": title updated\n"));
+            }
+            DataCompositionParameterChange::SetValue(value) => {
+                let declared_type = dcs_edit_parameter_declared_type(xml_text, range);
+                dcs_edit_remove_parameter_value_children(xml_text, range);
+                let range = dcs_edit_parameter_range(xml_text, name)
+                    .ok_or_else(|| format!("Parameter \"{name}\" not found"))?;
+                let child_indent = format!("{}\t", dcs_edit_line_indent(xml_text, range.0));
+                let lines = dcs_edit_parameter_value_lines(
+                    &declared_type,
+                    &dcs_semantic_value_text(value),
+                    &child_indent,
+                    "value",
+                )?;
+                dcs_edit_replace_or_insert_child_fragment(
+                    xml_text,
+                    range,
+                    "value",
+                    &lines.join("\n"),
+                    DCS_EDIT_PARAMETER_CHILD_SEQUENCE,
+                )?;
+                stdout.push_str(&format!("[OK] Parameter \"{name}\": value updated\n"));
+            }
+            DataCompositionParameterChange::SetExpression(value) => {
+                dcs_edit_replace_or_insert_child_fragment(
+                    xml_text,
+                    range,
+                    "expression",
+                    &format!(
+                        "{child_indent}<expression>{}</expression>",
+                        escape_xml(value.as_str())
+                    ),
+                    DCS_EDIT_PARAMETER_CHILD_SEQUENCE,
+                )?;
+                stdout.push_str(&format!("[OK] Parameter \"{name}\": expression updated\n"));
+            }
+            DataCompositionParameterChange::SetHidden(value) => {
+                dcs_edit_replace_or_insert_child_fragment(
+                    xml_text,
+                    range,
+                    "useRestriction",
+                    &format!(
+                        "{child_indent}<useRestriction>{}</useRestriction>",
+                        if *value { "true" } else { "false" }
+                    ),
+                    DCS_EDIT_PARAMETER_CHILD_SEQUENCE,
+                )?;
+                let range = dcs_edit_parameter_range(xml_text, name)
+                    .ok_or_else(|| format!("Parameter \"{name}\" not found"))?;
+                dcs_edit_replace_or_insert_child_fragment(
+                    xml_text,
+                    range,
+                    "availableAsField",
+                    &format!(
+                        "{child_indent}<availableAsField>{}</availableAsField>",
+                        if *value { "false" } else { "true" }
+                    ),
+                    DCS_EDIT_PARAMETER_CHILD_SEQUENCE,
+                )?;
+                stdout.push_str(&format!("[OK] Parameter \"{name}\": visibility updated\n"));
+            }
+        }
     }
     Ok(())
 }
@@ -8674,8 +9350,15 @@ pub(crate) fn dcs_edit_rename_parameter(
         ));
         return Ok(());
     };
-    let old = old.trim();
-    let new = new.trim();
+    dcs_edit_rename_parameter_values(xml_text, old.trim(), new.trim(), stdout)
+}
+
+fn dcs_edit_rename_parameter_values(
+    xml_text: &mut String,
+    old: &str,
+    new: &str,
+    stdout: &mut String,
+) -> Result<(), String> {
     if old == new {
         stdout.push_str("[WARN] rename-parameter: old and new names are equal -- skipped\n");
         return Ok(());
@@ -8790,6 +9473,14 @@ pub(crate) fn dcs_edit_reorder_parameters(
         .filter(|item| !item.is_empty())
         .map(ToOwned::to_owned)
         .collect::<Vec<_>>();
+    dcs_edit_reorder_parameter_values(xml_text, &order, stdout)
+}
+
+fn dcs_edit_reorder_parameter_values(
+    xml_text: &mut String,
+    order: &[String],
+    stdout: &mut String,
+) -> Result<(), String> {
     if order.is_empty() {
         stdout.push_str("[WARN] reorder-parameters: empty list -- skipped\n");
         return Ok(());
@@ -10255,34 +10946,20 @@ pub(crate) fn create_data_composition(
     session: &PlatformWriterSession,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
-    let _semantic_command = command;
-    let definition = match (
-        session.source(unica_format_core::commands::WriterSourceRole::Definition),
-        session.inline_definition(),
-    ) {
-        (Some(path), None) => Ok(DcsDefinition::File(path.to_path_buf())),
-        (None, Some(bytes)) => std::str::from_utf8(bytes)
-            .map(|value| DcsDefinition::Inline(value.to_string()))
-            .map_err(|_| "inline data composition definition is invalid".to_string()),
-        (Some(_), Some(_)) => {
-            Err("data composition definition was bound more than once".to_string())
-        }
-        (None, None) => Err("data composition definition is required".to_string()),
-    };
     let destination = session.required_source(
         unica_format_core::commands::WriterSourceRole::DestinationArtifact,
         "data composition destination",
     );
-    match (definition, destination) {
-        (Ok(definition), Ok(destination)) => compile_dcs_input(
+    match destination {
+        Ok(destination) => compile_dcs_input(
             DcsCompileInput {
-                definition,
+                definition: DcsDefinition::Semantic(command.definition().clone()),
                 destination: destination.to_path_buf(),
                 show_validation: true,
             },
             context,
         ),
-        (Err(error), _) | (_, Err(error)) => dcs_compile_failure(error),
+        Err(error) => dcs_compile_failure(error),
     }
 }
 
@@ -10298,33 +10975,10 @@ pub(crate) fn edit_data_composition(
         Ok(path) => path.to_path_buf(),
         Err(error) => return dcs_edit_failure(error),
     };
-    use unica_format_core::commands::DataCompositionMutation as Mutation;
-    let (operation, value) = match command.mutation() {
-        Mutation::AddField(value) => ("add-field", value.as_str()),
-        Mutation::AddTotal(value) => ("add-total", value.as_str()),
-        Mutation::AddCalculatedField(value) => ("add-calculated-field", value.as_str()),
-        Mutation::AddParameter(value) => ("add-parameter", value.as_str()),
-        Mutation::AddFilter(value) => ("add-filter", value.as_str()),
-        Mutation::AddDataParameter(value) => ("add-dataParameter", value.as_str()),
-        Mutation::SetQuery(value) => ("set-query", value.as_str()),
-        Mutation::PatchQuery(value) => ("patch-query", value.as_str()),
-        Mutation::ClearSelection(value) => ("clear-selection", value.as_str()),
-        Mutation::ClearOrder(value) => ("clear-order", value.as_str()),
-        Mutation::ClearFilter(value) => ("clear-filter", value.as_str()),
-        Mutation::ClearConditionalAppearance(value) => {
-            ("clear-conditionalAppearance", value.as_str())
-        }
-        Mutation::AddSelection(value) => ("add-selection", value.as_str()),
-        Mutation::AddOrder(value) => ("add-order", value.as_str()),
-        Mutation::AddDataSetLink(value) => ("add-dataSetLink", value.as_str()),
-        Mutation::AddDataSet(value) => ("add-dataSet", value.as_str()),
-        Mutation::AddVariant(value) => ("add-variant", value.as_str()),
-    };
     edit_dcs_input(
         DcsEditInput {
             template,
-            operation: operation.to_string(),
-            value: value.to_string(),
+            source: DcsEditSource::Semantic(command.mutation().clone()),
             data_set: command
                 .data_set()
                 .map(|value| value.as_str())
@@ -10340,6 +10994,760 @@ pub(crate) fn edit_data_composition(
         },
         context,
     )
+}
+
+fn apply_semantic_dcs_mutation(
+    mutation: unica_format_core::commands::DataCompositionMutation,
+    xml_text: &mut String,
+    data_set: &str,
+    variant: &str,
+    no_selection: bool,
+    stdout: &mut String,
+    force_save: &mut bool,
+) -> Result<(), String> {
+    use unica_format_core::commands::{
+        DataCompositionClearTarget as ClearTarget, DataCompositionDataSet,
+        DataCompositionMutation as Mutation,
+    };
+
+    match mutation {
+        Mutation::AddField(value) => dcs_edit_add_field_model(
+            xml_text,
+            data_set,
+            variant,
+            &dcs_semantic_field(&value),
+            no_selection,
+            stdout,
+        )?,
+        Mutation::AddTotal(value) => {
+            let path = value.path().as_str();
+            let expression = value.expression().as_str();
+            dcs_edit_add_top_level_fragment(
+                xml_text,
+                "totalField",
+                "dataPath",
+                path,
+                &dcs_edit_total_fragment(path, expression),
+                &format!("[OK] TotalField \"{path}\" = {expression} added\n"),
+                stdout,
+            )?;
+        }
+        Mutation::AddCalculatedField(value) => {
+            let parsed = DcsEditCalcField {
+                data_path: value.path().as_str().to_string(),
+                title: value
+                    .title()
+                    .map(|title| title.as_str().to_string())
+                    .unwrap_or_default(),
+                field_type: value
+                    .value_type()
+                    .map(dcs_semantic_value_type)
+                    .unwrap_or_default()
+                    .to_string(),
+                expression: value.expression().as_str().to_string(),
+                type_declared: value.value_type().is_some(),
+            };
+            let fragment = dcs_edit_calc_field_fragment(&parsed, "\t")?;
+            dcs_edit_add_top_level_fragment(
+                xml_text,
+                "calculatedField",
+                "dataPath",
+                &parsed.data_path,
+                &fragment,
+                &format!(
+                    "[OK] CalculatedField \"{}\" = {} added\n",
+                    parsed.data_path, parsed.expression
+                ),
+                stdout,
+            )?;
+            if !no_selection {
+                let indent =
+                    dcs_edit_settings_container_child_indent(xml_text, variant, "dcsset:selection")
+                        .unwrap_or_else(|_| "\t\t\t".to_string());
+                let fragment = dcs_edit_selection_fragment(&parsed.data_path, &indent);
+                let _ = dcs_edit_insert_or_create_settings_item(
+                    xml_text,
+                    variant,
+                    "dcsset:selection",
+                    &fragment,
+                );
+            }
+        }
+        Mutation::AddParameter(value) => {
+            dcs_edit_add_parameter(xml_text, &dcs_semantic_parameter(&value), stdout)?;
+        }
+        Mutation::AddFilter(value) => {
+            let parsed = dcs_semantic_filter(&value);
+            dcs_edit_validate_filter_literal(&parsed)?;
+            let indent =
+                dcs_edit_settings_container_child_indent(xml_text, variant, "dcsset:filter")
+                    .unwrap_or_else(|_| "\t\t\t".to_string());
+            let fragment = dcs_edit_filter_fragment(&parsed, &indent);
+            dcs_edit_insert_or_create_settings_item(xml_text, variant, "dcsset:filter", &fragment)?;
+            stdout.push_str(&format!(
+                "[OK] Filter \"{} {}\" added to variant \"{}\"\n",
+                parsed.field,
+                parsed.operator,
+                dcs_edit_variant_name(xml_text, variant).unwrap_or_else(|| variant.to_string())
+            ));
+        }
+        Mutation::AddDataParameter(value) => {
+            let parsed = dcs_semantic_data_parameter(&value);
+            let indent = dcs_edit_settings_container_child_indent(
+                xml_text,
+                variant,
+                "dcsset:dataParameters",
+            )
+            .unwrap_or_else(|_| "\t\t\t\t".to_string());
+            let fragment = dcs_edit_data_parameter_fragment(&parsed, &indent)?;
+            dcs_edit_insert_or_create_settings_item(
+                xml_text,
+                variant,
+                "dcsset:dataParameters",
+                &fragment,
+            )?;
+            stdout.push_str(&format!(
+                "[OK] DataParameter \"{}\" added to variant \"{}\"\n",
+                parsed.parameter,
+                dcs_edit_variant_name(xml_text, variant).unwrap_or_else(|| variant.to_string())
+            ));
+        }
+        Mutation::SetQuery(value) => {
+            dcs_edit_set_query(xml_text, data_set, value.as_str())?;
+            stdout.push_str(&format!(
+                "[OK] Query replaced in dataset \"{}\"\n",
+                dcs_edit_dataset_name(xml_text, data_set).unwrap_or_else(|| data_set.to_string())
+            ));
+        }
+        Mutation::PatchQuery { find, replace } => {
+            let count =
+                dcs_edit_patch_query(xml_text, data_set, find.as_str(), replace.as_str(), false)?;
+            stdout.push_str(&format!(
+                "[OK] Query patched in dataset \"{}\": replaced '{}' ({} occurrence(s))\n",
+                dcs_edit_dataset_name(xml_text, data_set).unwrap_or_else(|| data_set.to_string()),
+                find.as_str(),
+                count
+            ));
+        }
+        Mutation::Clear { target, scope: _ } => {
+            let container = match target {
+                ClearTarget::Selection => "dcsset:selection",
+                ClearTarget::Order => "dcsset:order",
+                ClearTarget::Filter => "dcsset:filter",
+                ClearTarget::ConditionalAppearance => "dcsset:conditionalAppearance",
+            };
+            dcs_edit_clear_prefixed_container(xml_text, variant, container)?;
+            stdout.push_str(&format!(
+                "[OK] {} cleared in variant \"{}\"\n",
+                container.rsplit(':').next().unwrap_or(container),
+                dcs_edit_variant_name(xml_text, variant).unwrap_or_else(|| variant.to_string())
+            ));
+        }
+        Mutation::AddSelection(value) => {
+            let indent =
+                dcs_edit_settings_container_child_indent(xml_text, variant, "dcsset:selection")
+                    .unwrap_or_else(|_| "\t\t\t\t".to_string());
+            let fragment = dcs_semantic_selection_fragment(&value, &indent);
+            dcs_edit_insert_or_create_settings_item(
+                xml_text,
+                variant,
+                "dcsset:selection",
+                &fragment,
+            )?;
+            stdout.push_str(&format!(
+                "[OK] Selection \"{}\" added to variant \"{}\"\n",
+                value.field().as_str(),
+                dcs_edit_variant_name(xml_text, variant).unwrap_or_else(|| variant.to_string())
+            ));
+        }
+        Mutation::AddOrder(value) => {
+            let indent =
+                dcs_edit_settings_container_child_indent(xml_text, variant, "dcsset:order")
+                    .unwrap_or_else(|_| "\t\t\t\t".to_string());
+            let fragment = dcs_semantic_order_fragment(&value, &indent);
+            dcs_edit_insert_or_create_settings_item(xml_text, variant, "dcsset:order", &fragment)?;
+            stdout.push_str(&format!(
+                "[OK] Order \"{}\" added to variant \"{}\"\n",
+                value.field().as_str(),
+                dcs_edit_variant_name(xml_text, variant).unwrap_or_else(|| variant.to_string())
+            ));
+        }
+        Mutation::AddDataSetLink(value) => {
+            let parsed = DcsEditDataSetLink {
+                source: value.source().as_str().to_string(),
+                dest: value.destination().as_str().to_string(),
+                source_expr: value.source_expression().as_str().to_string(),
+                dest_expr: value.destination_expression().as_str().to_string(),
+                parameter: String::new(),
+            };
+            let mut fragment = dcs_edit_data_set_link_fragment(&parsed, "\t");
+            if !value.is_required() {
+                fragment = fragment.replacen(
+                    "\t</dataSetLink>",
+                    "\t\t<required>false</required>\n\t</dataSetLink>",
+                    1,
+                );
+            }
+            dcs_edit_insert_top_level_fragment(xml_text, "dataSetLink", &fragment)?;
+            stdout.push_str(&format!(
+                "[OK] DataSetLink \"{} > {}\" added\n",
+                parsed.source, parsed.dest
+            ));
+        }
+        Mutation::AddDataSet(value) => {
+            let DataCompositionDataSet::Query(value) = value else {
+                return Err(
+                    "object-backed data sets cannot be added by the current adapter capability"
+                        .to_string(),
+                );
+            };
+            let name = value.name().as_str();
+            if dcs_edit_top_level_contains(xml_text, "dataSet", "name", name) {
+                stdout.push_str(&format!(
+                    "[WARN] DataSet \"{name}\" already exists -- skipped\n"
+                ));
+            } else {
+                let source = value
+                    .source()
+                    .map(|source| source.as_str().to_string())
+                    .or_else(|| dcs_edit_first_data_source(xml_text))
+                    .unwrap_or_else(|| "ИсточникДанных1".to_string());
+                let mut lines = vec![
+                    "\t<dataSet xsi:type=\"DataSetQuery\">".to_string(),
+                    format!("\t\t<name>{}</name>", escape_xml(name)),
+                ];
+                for field in value.fields() {
+                    dcs_compile_emit_semantic_field(&mut lines, field, "\t\t", false)?;
+                }
+                lines.push(format!(
+                    "\t\t<dataSource>{}</dataSource>",
+                    escape_xml(&source)
+                ));
+                lines.push(format!(
+                    "\t\t<query>{}</query>",
+                    escape_xml(value.query().as_str())
+                ));
+                if !value.auto_fills_fields() {
+                    lines.push("\t\t<autoFillFields>false</autoFillFields>".to_string());
+                }
+                lines.push("\t</dataSet>".to_string());
+                dcs_edit_insert_top_level_fragment(xml_text, "dataSet", &lines.join("\n"))?;
+                stdout.push_str(&format!(
+                    "[OK] DataSet \"{name}\" added (dataSource={source})\n"
+                ));
+            }
+        }
+        Mutation::AddVariant(value) => {
+            let name = value.name().as_str();
+            if dcs_edit_variant_exists(xml_text, name) {
+                stdout.push_str(&format!(
+                    "[WARN] Variant \"{name}\" already exists -- skipped\n"
+                ));
+            } else {
+                let fragment = dcs_semantic_variant_fragment(&value, "\t");
+                dcs_edit_insert_before_root_close(xml_text, &fragment)?;
+                stdout.push_str(&format!("[OK] Variant \"{name}\" added\n"));
+            }
+        }
+        Mutation::AddConditionalAppearance(value) => {
+            let parsed = DcsEditConditionalAppearance {
+                parameter: "Presentation".to_string(),
+                value: value
+                    .presentation()
+                    .map(|presentation| presentation.as_str().to_string())
+                    .unwrap_or_else(|| "Appearance".to_string()),
+                fields: value
+                    .fields()
+                    .iter()
+                    .map(|field| field.as_str().to_string())
+                    .collect(),
+                filters: vec![DcsEditFilter {
+                    field: value.condition().as_str().to_string(),
+                    operator: "Equal".to_string(),
+                    value: "true".to_string(),
+                    value_type: "xs:boolean".to_string(),
+                    use_flag: Some(true),
+                    user_setting_id: None,
+                    view_mode: None,
+                }],
+            };
+            let indent = dcs_edit_settings_container_child_indent(
+                xml_text,
+                variant,
+                "dcsset:conditionalAppearance",
+            )
+            .unwrap_or_else(|_| "\t\t\t\t".to_string());
+            let fragment = dcs_edit_conditional_appearance_fragment(&parsed, &indent);
+            dcs_edit_insert_or_create_settings_item(
+                xml_text,
+                variant,
+                "dcsset:conditionalAppearance",
+                &fragment,
+            )?;
+            stdout.push_str(&format!(
+                "[OK] ConditionalAppearance added to variant \"{}\"\n",
+                dcs_edit_variant_name(xml_text, variant).unwrap_or_else(|| variant.to_string())
+            ));
+        }
+        Mutation::AddDrilldown(value) => {
+            let field = value.field().as_str();
+            let target = value.target().as_str();
+            match dcs_edit_add_semantic_drilldown(xml_text, field, target) {
+                DcsEditDrilldownResult::Added => {
+                    stdout.push_str(&format!("[OK] DrillDown added for \"{field}\"\n"));
+                }
+                DcsEditDrilldownResult::NoNamedTemplates => {
+                    stdout.push_str("[WARN] No named templates found in schema\n");
+                }
+                DcsEditDrilldownResult::NoMatch => {}
+            }
+            *force_save = true;
+        }
+        Mutation::SetOutputParameter(value) => {
+            let parsed = DcsEditOutputParameter {
+                key: value.name().as_str().to_string(),
+                value: dcs_semantic_value_text(value.value()),
+            };
+            if let Ok(range) =
+                dcs_edit_prefixed_container_range(xml_text, variant, "dcsset:outputParameters")
+            {
+                let _ = dcs_edit_remove_item_by_child(
+                    xml_text,
+                    (range.start, range.end),
+                    "dcscor:item",
+                    "dcscor:parameter",
+                    &parsed.key,
+                )?;
+            }
+            let indent = dcs_edit_settings_container_child_indent(
+                xml_text,
+                variant,
+                "dcsset:outputParameters",
+            )
+            .unwrap_or_else(|_| "\t\t\t\t".to_string());
+            let fragment = dcs_edit_output_parameter_fragment(&parsed, &indent)?;
+            dcs_edit_insert_or_create_settings_item(
+                xml_text,
+                variant,
+                "dcsset:outputParameters",
+                &fragment,
+            )?;
+            stdout.push_str(&format!(
+                "[OK] OutputParameter \"{}\" set in variant \"{}\"\n",
+                parsed.key,
+                dcs_edit_variant_name(xml_text, variant).unwrap_or_else(|| variant.to_string())
+            ));
+        }
+        Mutation::SetStructure(value) => {
+            let structures = dcs_semantic_structure(&value);
+            let fragments = dcs_edit_structure_fragments(&structures, "\t\t\t");
+            dcs_edit_replace_structure(xml_text, variant, &fragments)?;
+            stdout.push_str(&format!(
+                "[OK] Structure set in variant \"{}\"\n",
+                dcs_edit_variant_name(xml_text, variant).unwrap_or_else(|| variant.to_string())
+            ));
+        }
+        Mutation::ModifyStructure(value) => {
+            dcs_edit_modify_structure(xml_text, variant, &dcs_semantic_structure(&value), stdout)?;
+        }
+        Mutation::RemoveField(value) => {
+            let path = value.as_str();
+            let removed =
+                dcs_edit_remove_dataset_item(xml_text, data_set, "field", "dataPath", path)?;
+            stdout.push_str(&format!(
+                "[{}] Field \"{path}\" {} in dataset \"{}\"\n",
+                if removed { "OK" } else { "WARN" },
+                if removed { "removed" } else { "not found" },
+                dcs_edit_dataset_name(xml_text, data_set).unwrap_or_else(|| data_set.to_string())
+            ));
+            let _ = dcs_edit_remove_prefixed_selection_field(xml_text, variant, path)?;
+        }
+        Mutation::RemoveParameter(value) => {
+            let name = value.as_str();
+            let removed = dcs_edit_remove_top_level_item(xml_text, "parameter", "name", name)?;
+            stdout.push_str(&format!(
+                "[{}] Parameter \"{name}\" {}\n",
+                if removed { "OK" } else { "WARN" },
+                if removed { "removed" } else { "not found" }
+            ));
+        }
+        Mutation::ModifyField(value) => {
+            let parsed = dcs_semantic_field(&value);
+            let changed = dcs_edit_replace_dataset_field(xml_text, data_set, &parsed)?;
+            stdout.push_str(&format!(
+                "[{}] Field \"{}\" {} in dataset \"{}\"\n",
+                if changed { "OK" } else { "WARN" },
+                parsed.data_path,
+                if changed { "modified" } else { "not found" },
+                dcs_edit_dataset_name(xml_text, data_set).unwrap_or_else(|| data_set.to_string())
+            ));
+        }
+        Mutation::SetFieldRole(value) => {
+            dcs_edit_set_semantic_field_role(xml_text, data_set, &value, stdout)?;
+        }
+        Mutation::ModifyFilter(value) => {
+            let parsed = dcs_semantic_filter(&value);
+            dcs_edit_validate_filter_literal(&parsed)?;
+            *force_save |= dcs_edit_modify_filter(xml_text, variant, &parsed, stdout)?;
+        }
+        Mutation::ModifyDataParameter(value) => {
+            let parsed = dcs_semantic_data_parameter(&value);
+            *force_save |= dcs_edit_modify_data_parameter(xml_text, variant, &parsed, stdout)?;
+        }
+        Mutation::ModifyParameter(value) => {
+            dcs_edit_modify_semantic_parameter(xml_text, &value, stdout)?;
+        }
+        Mutation::RenameParameter(value) => {
+            dcs_edit_rename_parameter_values(
+                xml_text,
+                value.from().as_str(),
+                value.to().as_str(),
+                stdout,
+            )?;
+        }
+        Mutation::ReorderParameters(values) => {
+            let order = values
+                .values()
+                .iter()
+                .map(|value| value.as_str().to_string())
+                .collect::<Vec<_>>();
+            dcs_edit_reorder_parameter_values(xml_text, &order, stdout)?;
+        }
+        Mutation::RemoveTotal(value) => {
+            let path = value.as_str();
+            let removed = dcs_edit_remove_top_level_item(xml_text, "totalField", "dataPath", path)?;
+            stdout.push_str(&format!(
+                "[{}] TotalField \"{path}\" {}\n",
+                if removed { "OK" } else { "WARN" },
+                if removed { "removed" } else { "not found" }
+            ));
+        }
+        Mutation::RemoveCalculatedField(value) => {
+            let path = value.as_str();
+            let removed =
+                dcs_edit_remove_top_level_item(xml_text, "calculatedField", "dataPath", path)?;
+            stdout.push_str(&format!(
+                "[{}] CalculatedField \"{path}\" {}\n",
+                if removed { "OK" } else { "WARN" },
+                if removed { "removed" } else { "not found" }
+            ));
+            let _ = dcs_edit_remove_prefixed_selection_field(xml_text, variant, path)?;
+        }
+        Mutation::RemoveFilter(value) => {
+            let filter_range =
+                dcs_edit_prefixed_container_range(xml_text, variant, "dcsset:filter")?;
+            let path = value.as_str();
+            let removed = dcs_edit_remove_item_by_child(
+                xml_text,
+                (filter_range.start, filter_range.end),
+                "dcsset:item",
+                "dcsset:left",
+                path,
+            )?;
+            stdout.push_str(&format!(
+                "[{}] Filter for \"{path}\" {}\n",
+                if removed { "OK" } else { "WARN" },
+                if removed { "removed" } else { "not found" }
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn dcs_semantic_field(
+    value: &unica_format_core::commands::DataCompositionFieldDefinition,
+) -> DcsEditField {
+    DcsEditField {
+        data_path: value.path().as_str().to_string(),
+        field: value.path().as_str().to_string(),
+        title: value
+            .title()
+            .map(|title| title.as_str().to_string())
+            .unwrap_or_default(),
+        field_type: value
+            .value_type()
+            .map(dcs_semantic_value_type)
+            .unwrap_or_default()
+            .to_string(),
+        roles: Vec::new(),
+        restrict: Vec::new(),
+        type_declared: value.value_type().is_some(),
+    }
+}
+
+fn dcs_semantic_filter(
+    value: &unica_format_core::commands::DataCompositionFilter,
+) -> DcsEditFilter {
+    use unica_format_core::commands::DataCompositionFilterOperator;
+    DcsEditFilter {
+        field: value.field().as_str().to_string(),
+        operator: match value.operator() {
+            DataCompositionFilterOperator::Equal => "Equal",
+            DataCompositionFilterOperator::NotEqual => "NotEqual",
+            DataCompositionFilterOperator::Greater => "Greater",
+            DataCompositionFilterOperator::Less => "Less",
+            DataCompositionFilterOperator::InList => "InList",
+            DataCompositionFilterOperator::Contains => "Contains",
+        }
+        .to_string(),
+        value: dcs_semantic_value_text(value.value()),
+        value_type: dcs_semantic_value_xsi_type(value.value()).to_string(),
+        use_flag: Some(value.is_enabled()),
+        user_setting_id: None,
+        view_mode: None,
+    }
+}
+
+fn dcs_semantic_data_parameter(
+    value: &unica_format_core::commands::DataCompositionParameter,
+) -> DcsEditDataParameter {
+    DcsEditDataParameter {
+        parameter: value.name().as_str().to_string(),
+        value: value.value().map(dcs_semantic_value_text).or_else(|| {
+            value
+                .expression()
+                .map(|expression| expression.as_str().to_string())
+        }),
+        use_flag: Some(!value.is_hidden()),
+        user_setting_id: None,
+        view_mode: None,
+    }
+}
+
+fn dcs_semantic_selection_fragment(
+    value: &unica_format_core::commands::DataCompositionSelection,
+    indent: &str,
+) -> String {
+    let mut lines = vec![format!(
+        "{indent}<dcsset:item xsi:type=\"dcsset:SelectedItemField\">"
+    )];
+    if !value.is_enabled() {
+        lines.push(format!("{indent}\t<dcsset:use>false</dcsset:use>"));
+    }
+    lines.push(format!(
+        "{indent}\t<dcsset:field>{}</dcsset:field>",
+        escape_xml(value.field().as_str())
+    ));
+    if let Some(title) = value.title() {
+        dcs_compile_emit_mltext_ex(
+            &mut lines,
+            &format!("{indent}\t"),
+            "dcsset:lwsTitle",
+            title.as_str(),
+            true,
+        );
+    }
+    lines.push(format!("{indent}</dcsset:item>"));
+    lines.join("\n")
+}
+
+fn dcs_semantic_order_fragment(
+    value: &unica_format_core::commands::DataCompositionOrder,
+    indent: &str,
+) -> String {
+    use unica_format_core::commands::DataCompositionOrderDirection;
+    let mut lines = vec![format!(
+        "{indent}<dcsset:item xsi:type=\"dcsset:OrderItemField\">"
+    )];
+    if !value.is_enabled() {
+        lines.push(format!("{indent}\t<dcsset:use>false</dcsset:use>"));
+    }
+    lines.push(format!(
+        "{indent}\t<dcsset:field>{}</dcsset:field>",
+        escape_xml(value.field().as_str())
+    ));
+    lines.push(format!(
+        "{indent}\t<dcsset:orderType>{}</dcsset:orderType>",
+        match value.direction() {
+            DataCompositionOrderDirection::Ascending => "Asc",
+            DataCompositionOrderDirection::Descending => "Desc",
+        }
+    ));
+    lines.push(format!("{indent}</dcsset:item>"));
+    lines.join("\n")
+}
+
+fn dcs_semantic_variant_fragment(
+    value: &unica_format_core::commands::DataCompositionVariant,
+    indent: &str,
+) -> String {
+    let mut lines = vec![
+        format!("{indent}<settingsVariant>"),
+        format!(
+            "{indent}\t<dcsset:name>{}</dcsset:name>",
+            escape_xml(value.name().as_str())
+        ),
+    ];
+    dcs_compile_emit_mltext(
+        &mut lines,
+        &format!("{indent}\t"),
+        "dcsset:presentation",
+        value
+            .presentation()
+            .map(|presentation| presentation.as_str())
+            .unwrap_or_else(|| value.name().as_str()),
+    );
+    lines.push(format!(
+        "{indent}\t<dcsset:settings xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\">"
+    ));
+    let settings = value.settings();
+    if !settings.selection().is_empty() {
+        lines.push(format!("{indent}\t\t<dcsset:selection>"));
+        for selection in settings.selection() {
+            lines.extend(
+                dcs_semantic_selection_fragment(selection, &format!("{indent}\t\t\t"))
+                    .lines()
+                    .map(ToOwned::to_owned),
+            );
+        }
+        lines.push(format!("{indent}\t\t</dcsset:selection>"));
+    }
+    if !settings.filters().is_empty() {
+        lines.push(format!("{indent}\t\t<dcsset:filter>"));
+        for filter in settings.filters() {
+            lines.extend(
+                dcs_edit_filter_fragment(&dcs_semantic_filter(filter), &format!("{indent}\t\t\t"))
+                    .lines()
+                    .map(ToOwned::to_owned),
+            );
+        }
+        lines.push(format!("{indent}\t\t</dcsset:filter>"));
+    }
+    if !settings.order().is_empty() {
+        lines.push(format!("{indent}\t\t<dcsset:order>"));
+        for order in settings.order() {
+            lines.extend(
+                dcs_semantic_order_fragment(order, &format!("{indent}\t\t\t"))
+                    .lines()
+                    .map(ToOwned::to_owned),
+            );
+        }
+        lines.push(format!("{indent}\t\t</dcsset:order>"));
+    }
+    lines.push(format!(
+        "{indent}\t\t<dcsset:item xsi:type=\"dcsset:StructureItemGroup\">"
+    ));
+    lines.push(format!("{indent}\t\t\t<dcsset:order>"));
+    lines.push(format!(
+        "{indent}\t\t\t\t<dcsset:item xsi:type=\"dcsset:OrderItemAuto\"/>"
+    ));
+    lines.push(format!("{indent}\t\t\t</dcsset:order>"));
+    lines.push(format!("{indent}\t\t\t<dcsset:selection>"));
+    lines.push(format!(
+        "{indent}\t\t\t\t<dcsset:item xsi:type=\"dcsset:SelectedItemAuto\"/>"
+    ));
+    lines.push(format!("{indent}\t\t\t</dcsset:selection>"));
+    lines.push(format!("{indent}\t\t</dcsset:item>"));
+    lines.push(format!("{indent}\t</dcsset:settings>"));
+    lines.push(format!("{indent}</settingsVariant>"));
+    lines.join("\n")
+}
+
+fn dcs_semantic_structure(
+    value: &unica_format_core::commands::DataCompositionStructure,
+) -> Vec<DcsEditStructureItem> {
+    use unica_format_core::commands::DataCompositionStructureItem;
+
+    fn convert(value: &DataCompositionStructureItem) -> DcsEditStructureItem {
+        match value {
+            DataCompositionStructureItem::Field(field) => DcsEditStructureItem {
+                name: None,
+                group_by: vec![field.as_str().to_string()],
+                children: Vec::new(),
+            },
+            DataCompositionStructureItem::Group {
+                name,
+                title: _,
+                items,
+            } => DcsEditStructureItem {
+                name: Some(name.as_str().to_string()),
+                group_by: Vec::new(),
+                children: items.iter().map(convert).collect(),
+            },
+        }
+    }
+
+    value.items().iter().map(convert).collect()
+}
+
+fn dcs_semantic_value_xsi_type(
+    value: &unica_format_core::commands::DataCompositionValue,
+) -> &'static str {
+    use unica_format_core::commands::DataCompositionValue;
+    match value {
+        DataCompositionValue::Null => "xs:string",
+        DataCompositionValue::Boolean(_) => "xs:boolean",
+        DataCompositionValue::Integer(_) => "xs:decimal",
+        DataCompositionValue::Text(_) => "xs:string",
+    }
+}
+
+fn dcs_legacy_mutation(operation: &str, value: String) -> Result<DcsNativeMutation, String> {
+    Ok(match operation {
+        "add-field" => DcsNativeMutation::AddField(value),
+        "add-total" => DcsNativeMutation::AddTotal(value),
+        "add-calculated-field" => DcsNativeMutation::AddCalculatedField(value),
+        "add-parameter" => DcsNativeMutation::AddParameter(value),
+        "add-filter" => DcsNativeMutation::AddFilter(value),
+        "add-dataParameter" => DcsNativeMutation::AddDataParameter(value),
+        "set-query" => DcsNativeMutation::SetQuery(value),
+        "patch-query" => DcsNativeMutation::PatchQuery(value),
+        "clear-selection" => DcsNativeMutation::ClearSelection,
+        "clear-order" => DcsNativeMutation::ClearOrder,
+        "clear-filter" => DcsNativeMutation::ClearFilter,
+        "clear-conditionalAppearance" => DcsNativeMutation::ClearConditionalAppearance,
+        "add-selection" => DcsNativeMutation::AddSelection(value),
+        "add-order" => DcsNativeMutation::AddOrder(value),
+        "add-dataSetLink" => DcsNativeMutation::AddDataSetLink(value),
+        "add-dataSet" => DcsNativeMutation::AddDataSet(value),
+        "add-variant" => DcsNativeMutation::AddVariant(value),
+        "add-conditionalAppearance" => DcsNativeMutation::AddConditionalAppearance(value),
+        "add-drilldown" => DcsNativeMutation::AddDrilldown(value),
+        "set-outputParameter" => DcsNativeMutation::SetOutputParameter(value),
+        "set-structure" => DcsNativeMutation::SetStructure(value),
+        "modify-structure" => DcsNativeMutation::ModifyStructure(value),
+        "remove-field" => DcsNativeMutation::RemoveField(value),
+        "remove-parameter" => DcsNativeMutation::RemoveParameter(value),
+        "modify-field" => DcsNativeMutation::ModifyField(value),
+        "set-field-role" => DcsNativeMutation::SetFieldRole(value),
+        "modify-filter" => DcsNativeMutation::ModifyFilter(value),
+        "modify-dataParameter" => DcsNativeMutation::ModifyDataParameter(value),
+        "modify-parameter" => DcsNativeMutation::ModifyParameter(value),
+        "rename-parameter" => DcsNativeMutation::RenameParameter(value),
+        "reorder-parameters" => DcsNativeMutation::ReorderParameters(value),
+        "remove-total" => DcsNativeMutation::RemoveTotal(value),
+        "remove-calculated-field" => DcsNativeMutation::RemoveCalculatedField(value),
+        "remove-filter" => DcsNativeMutation::RemoveFilter(value),
+        _ => return Err(format!("Unknown operation: {operation}")),
+    })
+}
+
+fn dcs_semantic_value_text(value: &unica_format_core::commands::DataCompositionValue) -> String {
+    use unica_format_core::commands::DataCompositionValue;
+    match value {
+        DataCompositionValue::Null => "null".to_string(),
+        DataCompositionValue::Boolean(value) => value.to_string(),
+        DataCompositionValue::Integer(value) => value.to_string(),
+        DataCompositionValue::Text(value) => value.as_str().to_string(),
+    }
+}
+
+fn dcs_semantic_value_type(value: unica_format_core::commands::MetadataValueType) -> &'static str {
+    use unica_format_core::commands::MetadataValueType;
+    match value {
+        MetadataValueType::String => "String",
+        MetadataValueType::Number => "Number",
+        MetadataValueType::Boolean => "Boolean",
+        MetadataValueType::Date => "Date",
+        MetadataValueType::Uuid => "UUID",
+        MetadataValueType::Binary => "BinaryData",
+        MetadataValueType::ValueStorage => "ValueStorage",
+        MetadataValueType::Any => "Any",
+        MetadataValueType::CatalogReference => "CatalogRef",
+        MetadataValueType::DocumentReference => "DocumentRef",
+        MetadataValueType::EnumReference => "EnumRef",
+        MetadataValueType::DefinedType => "DefinedType",
+    }
 }
 
 #[cfg(test)]

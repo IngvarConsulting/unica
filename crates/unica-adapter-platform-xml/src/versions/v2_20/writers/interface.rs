@@ -39,12 +39,38 @@ pub(crate) struct InterfaceEditCounters {
 }
 
 struct InterfaceEditInput {
-    definition_file: Option<PathBuf>,
-    operation: String,
-    value: String,
+    source: InterfaceEditSource,
     interface_path: PathBuf,
     create_if_missing: bool,
     skip_validation_output: bool,
+}
+
+enum InterfaceEditSource {
+    Semantic(unica_format_core::commands::InterfaceEdit),
+    #[cfg(test)]
+    Legacy {
+        definition_file: Option<PathBuf>,
+        operation: String,
+        value: String,
+    },
+}
+
+enum InterfaceNativeEdit {
+    Replace(unica_format_core::commands::CommandInterfaceDefinition),
+    Hide(Vec<String>),
+    Show(Vec<String>),
+    Place(unica_format_core::commands::InterfacePlacement),
+    Order(unica_format_core::commands::InterfaceCommandOrder),
+    OrderSubsystems(Vec<unica_format_core::commands::SubsystemName>),
+    OrderGroups(Vec<unica_format_core::commands::InterfaceGroupName>),
+    #[cfg(test)]
+    LegacyPlace(Value),
+    #[cfg(test)]
+    LegacyOrder(Value),
+    #[cfg(test)]
+    LegacyOrderSubsystems(Value),
+    #[cfg(test)]
+    LegacyOrderGroups(Value),
 }
 
 #[cfg(test)]
@@ -62,11 +88,13 @@ pub(crate) fn edit_interface(
             return Err("Either -DefinitionFile or -Operation is required".to_string());
         }
         Ok(InterfaceEditInput {
-            definition_file,
-            operation: operation.unwrap_or_default().to_string(),
-            value: string_arg(args, &["value", "Value"])
-                .unwrap_or_default()
-                .to_string(),
+            source: InterfaceEditSource::Legacy {
+                definition_file,
+                operation: operation.unwrap_or_default().to_string(),
+                value: string_arg(args, &["value", "Value"])
+                    .unwrap_or_default()
+                    .to_string(),
+            },
             interface_path: required_path(args, &["ciPath", "CIPath", "path", "Path"], "CIPath")?,
             create_if_missing: bool_arg(args, &["createIfMissing", "CreateIfMissing"]),
             skip_validation_output: bool_arg(args, &["noValidate", "NoValidate"]),
@@ -84,14 +112,11 @@ fn edit_interface_input(
 ) -> NativeWriterResult {
     let edit_result = (|| -> Result<(String, PathBuf, Vec<String>), String> {
         let InterfaceEditInput {
-            definition_file,
-            operation,
-            value,
+            source,
             interface_path,
             create_if_missing,
             skip_validation_output,
         } = input;
-        let operation = (!operation.is_empty()).then_some(operation.as_str());
         let mut ci_path = absolutize(interface_path, &context.cwd);
         let format_version = crate::domain::format_profile::ACTIVE_FORMAT_PROFILE
             .export_format
@@ -138,27 +163,76 @@ fn edit_interface_input(
             text = emit_empty_command_interface_document(&format_version);
         }
         let mut transaction = CompileTransaction::new();
-        let operations = interface_edit_operations_guarded(
-            &context.cwd,
-            operation,
-            &value,
-            definition_file,
-            &mut transaction,
-        )?;
+        let operations = match source {
+            InterfaceEditSource::Semantic(edit) => vec![interface_native_edit(edit)],
+            #[cfg(test)]
+            InterfaceEditSource::Legacy {
+                definition_file,
+                operation,
+                value,
+            } => interface_edit_operations_guarded(
+                &context.cwd,
+                (!operation.is_empty()).then_some(operation.as_str()),
+                &value,
+                definition_file,
+                &mut transaction,
+            )?
+            .into_iter()
+            .map(|(operation, value)| interface_legacy_edit(&operation, value))
+            .collect::<Result<Vec<_>, _>>()?,
+        };
         let mut counters = InterfaceEditCounters::default();
-        for (op_name, value) in operations {
-            match op_name.as_str() {
-                "hide" => {
-                    let commands = interface_value_list(&value)?;
+        for operation in operations {
+            match operation {
+                InterfaceNativeEdit::Replace(definition) => {
+                    interface_text_replace_section_items(&mut text, "CommandsPlacement", &[])?;
+                    for placement in definition.items() {
+                        interface_text_do_semantic_place(
+                            &mut text,
+                            placement,
+                            &mut counters,
+                            &mut stdout,
+                        )?;
+                    }
+                }
+                InterfaceNativeEdit::Hide(commands) => {
                     interface_text_do_hide(&mut text, commands, &mut counters, &mut stdout)?;
                 }
-                "show" => {
-                    let commands = interface_value_list(&value)?;
+                InterfaceNativeEdit::Show(commands) => {
                     interface_text_do_show(&mut text, commands, &mut counters, &mut stdout)?;
                 }
-                "place" => interface_text_do_place(&mut text, &value, &mut counters, &mut stdout)?,
-                "order" => interface_text_do_order(&mut text, &value, &mut counters, &mut stdout)?,
-                "subsystem-order" => {
+                InterfaceNativeEdit::Place(value) => {
+                    interface_text_do_semantic_place(&mut text, &value, &mut counters, &mut stdout)?
+                }
+                InterfaceNativeEdit::Order(value) => {
+                    interface_text_do_semantic_order(&mut text, &value, &mut counters, &mut stdout)?
+                }
+                InterfaceNativeEdit::OrderSubsystems(value) => {
+                    interface_text_do_semantic_subsystem_order(
+                        &mut text,
+                        &value,
+                        &mut counters,
+                        &mut stdout,
+                    )?;
+                }
+                InterfaceNativeEdit::OrderGroups(value) => {
+                    interface_text_do_semantic_group_order(
+                        &mut text,
+                        &value,
+                        &mut counters,
+                        &mut stdout,
+                    )?;
+                }
+                #[cfg(test)]
+                InterfaceNativeEdit::LegacyPlace(value) => {
+                    interface_text_do_place(&mut text, &value, &mut counters, &mut stdout)?
+                }
+                #[cfg(test)]
+                InterfaceNativeEdit::LegacyOrder(value) => {
+                    interface_text_do_order(&mut text, &value, &mut counters, &mut stdout)?
+                }
+                #[cfg(test)]
+                InterfaceNativeEdit::LegacyOrderSubsystems(value) => {
                     interface_text_do_subsystem_order(
                         &mut text,
                         &value,
@@ -166,10 +240,10 @@ fn edit_interface_input(
                         &mut stdout,
                     )?;
                 }
-                "group-order" => {
+                #[cfg(test)]
+                InterfaceNativeEdit::LegacyOrderGroups(value) => {
                     interface_text_do_group_order(&mut text, &value, &mut counters, &mut stdout)?;
                 }
-                _ => return Err(format!("Unknown operation: {op_name}")),
             }
         }
 
@@ -491,6 +565,37 @@ pub(crate) fn interface_text_do_place(
     Ok(())
 }
 
+fn interface_text_do_semantic_place(
+    text: &mut String,
+    placement: &unica_format_core::commands::InterfacePlacement,
+    counters: &mut InterfaceEditCounters,
+    stdout: &mut String,
+) -> Result<(), String> {
+    let command = normalize_interface_command_name(placement.item().name().as_str(), stdout);
+    let group = placement.group().as_str();
+    if interface_text_command_bounds_in_section(text, "CommandsPlacement", &command).is_some() {
+        interface_text_replace_command_child(
+            text,
+            "CommandsPlacement",
+            &command,
+            "CommandGroup",
+            group,
+        )?;
+        counters.modified += 1;
+        stdout.push_str(&format!("[INFO] Updated placement: {command} -> {group}\n"));
+    } else {
+        let fragment = format!(
+            "<Command name=\"{}\"><CommandGroup>{}</CommandGroup><Placement>Auto</Placement></Command>",
+            escape_xml(&command),
+            escape_xml(group)
+        );
+        interface_text_append_to_section(text, "CommandsPlacement", &fragment)?;
+        counters.added += 1;
+        stdout.push_str(&format!("[INFO] Placed: {command} -> {group}\n"));
+    }
+    Ok(())
+}
+
 pub(crate) fn interface_text_do_order(
     text: &mut String,
     value: &Value,
@@ -533,6 +638,41 @@ pub(crate) fn interface_text_do_order(
     Ok(())
 }
 
+fn interface_text_do_semantic_order(
+    text: &mut String,
+    order: &unica_format_core::commands::InterfaceCommandOrder,
+    counters: &mut InterfaceEditCounters,
+    stdout: &mut String,
+) -> Result<(), String> {
+    let group = order.group().as_str();
+    let commands = order
+        .commands()
+        .iter()
+        .map(|command| normalize_interface_command_name(command.name().as_str(), stdout))
+        .collect::<Vec<_>>();
+    if commands.is_empty() {
+        return Err("semantic command order requires at least one command".to_string());
+    }
+    counters.removed += interface_text_count_commands_for_group(text, "CommandsOrder", group);
+    counters.added += commands.len();
+    let fragments = commands
+        .iter()
+        .map(|command| {
+            format!(
+                "<Command name=\"{}\"><CommandGroup>{}</CommandGroup></Command>",
+                escape_xml(command),
+                escape_xml(group)
+            )
+        })
+        .collect::<Vec<_>>();
+    interface_text_replace_section_items(text, "CommandsOrder", &fragments)?;
+    stdout.push_str(&format!(
+        "[INFO] Set order for {group} : {} commands\n",
+        commands.len()
+    ));
+    Ok(())
+}
+
 pub(crate) fn interface_text_do_subsystem_order(
     text: &mut String,
     value: &Value,
@@ -558,6 +698,29 @@ pub(crate) fn interface_text_do_subsystem_order(
     Ok(())
 }
 
+fn interface_text_do_semantic_subsystem_order(
+    text: &mut String,
+    subsystems: &[unica_format_core::commands::SubsystemName],
+    counters: &mut InterfaceEditCounters,
+    stdout: &mut String,
+) -> Result<(), String> {
+    if subsystems.is_empty() {
+        return Err("semantic subsystem order requires at least one subsystem".to_string());
+    }
+    counters.removed += interface_text_count_direct_items(text, "SubsystemsOrder", "Subsystem");
+    counters.added += subsystems.len();
+    let fragments = subsystems
+        .iter()
+        .map(|subsystem| format!("<Subsystem>{}</Subsystem>", escape_xml(subsystem.as_str())))
+        .collect::<Vec<_>>();
+    interface_text_replace_section_items(text, "SubsystemsOrder", &fragments)?;
+    stdout.push_str(&format!(
+        "[INFO] Set subsystem order: {} entries\n",
+        subsystems.len()
+    ));
+    Ok(())
+}
+
 pub(crate) fn interface_text_do_group_order(
     text: &mut String,
     value: &Value,
@@ -574,6 +737,29 @@ pub(crate) fn interface_text_do_group_order(
     let fragments = groups
         .iter()
         .map(|group| format!("<Group>{}</Group>", escape_xml(group)))
+        .collect::<Vec<_>>();
+    interface_text_replace_section_items(text, "GroupsOrder", &fragments)?;
+    stdout.push_str(&format!(
+        "[INFO] Set group order: {} entries\n",
+        groups.len()
+    ));
+    Ok(())
+}
+
+fn interface_text_do_semantic_group_order(
+    text: &mut String,
+    groups: &[unica_format_core::commands::InterfaceGroupName],
+    counters: &mut InterfaceEditCounters,
+    stdout: &mut String,
+) -> Result<(), String> {
+    if groups.is_empty() {
+        return Err("semantic group order requires at least one group".to_string());
+    }
+    counters.removed += interface_text_count_direct_items(text, "GroupsOrder", "Group");
+    counters.added += groups.len();
+    let fragments = groups
+        .iter()
+        .map(|group| format!("<Group>{}</Group>", escape_xml(group.as_str())))
         .collect::<Vec<_>>();
     interface_text_replace_section_items(text, "GroupsOrder", &fragments)?;
     stdout.push_str(&format!(
@@ -676,6 +862,23 @@ pub(crate) fn interface_text_append_to_section(
     section: &str,
     fragment: &str,
 ) -> Result<(), String> {
+    let empty = format!("<{section}/>");
+    if let Some(start) = text.find(&empty) {
+        let line_start = text[..start]
+            .rfind(['\r', '\n'])
+            .map_or(0, |index| index + 1);
+        let parent_indent = text[line_start..start]
+            .chars()
+            .all(|character| character == '\t' || character == ' ')
+            .then(|| text[line_start..start].to_string())
+            .unwrap_or_else(|| "\t".to_string());
+        let child_indent = format!("{parent_indent}\t");
+        text.replace_range(
+            start..start + empty.len(),
+            &format!("<{section}>\r\n{child_indent}{fragment}\r\n{parent_indent}</{section}>"),
+        );
+        return Ok(());
+    }
     if find_element_bounds(text, section, 0).is_none() {
         interface_text_insert_section(text, section, &[])?;
     }
@@ -1552,30 +1755,42 @@ pub(crate) fn edit_interface_typed(
         Ok(path) => path.to_path_buf(),
         Err(error) => return interface_edit_failure(error),
     };
-    use unica_format_core::commands::InterfaceEdit as Edit;
-    let definition_file = session
-        .source(unica_format_core::commands::WriterSourceRole::Definition)
-        .map(Path::to_path_buf);
-    let (operation, value) = match command {
-        Edit::FromDefinition => (String::new(), String::new()),
-        Edit::Hide(value) => ("hide".to_string(), value.as_str().to_string()),
-        Edit::Show(value) => ("show".to_string(), value.as_str().to_string()),
-        Edit::Place(value) => ("place".to_string(), value.as_str().to_string()),
-        Edit::Order(value) => ("order".to_string(), value.as_str().to_string()),
-        Edit::OrderSubsystems(value) => ("subsystem-order".to_string(), value.as_str().to_string()),
-        Edit::OrderGroups(value) => ("group-order".to_string(), value.as_str().to_string()),
-    };
     edit_interface_input(
         InterfaceEditInput {
-            definition_file,
-            operation,
-            value,
+            source: InterfaceEditSource::Semantic(command.clone()),
             interface_path,
             create_if_missing: false,
             skip_validation_output: false,
         },
         context,
     )
+}
+
+#[cfg(test)]
+fn interface_legacy_edit(operation: &str, value: Value) -> Result<InterfaceNativeEdit, String> {
+    match operation {
+        "hide" => Ok(InterfaceNativeEdit::Hide(interface_value_list(&value)?)),
+        "show" => Ok(InterfaceNativeEdit::Show(interface_value_list(&value)?)),
+        "place" => Ok(InterfaceNativeEdit::LegacyPlace(value)),
+        "order" => Ok(InterfaceNativeEdit::LegacyOrder(value)),
+        "subsystem-order" => Ok(InterfaceNativeEdit::LegacyOrderSubsystems(value)),
+        "group-order" => Ok(InterfaceNativeEdit::LegacyOrderGroups(value)),
+        _ => Err(format!("Unknown operation: {operation}")),
+    }
+}
+
+fn interface_native_edit(edit: unica_format_core::commands::InterfaceEdit) -> InterfaceNativeEdit {
+    use unica_format_core::commands::InterfaceEdit as Edit;
+
+    match edit {
+        Edit::Replace(definition) => InterfaceNativeEdit::Replace(definition),
+        Edit::Hide(value) => InterfaceNativeEdit::Hide(vec![value.name().as_str().to_string()]),
+        Edit::Show(value) => InterfaceNativeEdit::Show(vec![value.name().as_str().to_string()]),
+        Edit::Place(value) => InterfaceNativeEdit::Place(value),
+        Edit::Order(value) => InterfaceNativeEdit::Order(value),
+        Edit::OrderSubsystems(value) => InterfaceNativeEdit::OrderSubsystems(value),
+        Edit::OrderGroups(value) => InterfaceNativeEdit::OrderGroups(value),
+    }
 }
 
 #[cfg(test)]

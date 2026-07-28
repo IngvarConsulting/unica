@@ -6111,12 +6111,12 @@ mod tests {
                         diagnostic["code"], "platformVersionUnsupported",
                         "{tool}: {result:?}"
                     );
-                    assert_eq!(diagnostic["actualFormat"], "2.21", "{tool}: {result:?}");
-                    assert_eq!(
-                        diagnostic["root"],
-                        normalized_path(&second).display().to_string(),
+                    assert_eq!(diagnostic["compatibility"], "newer", "{tool}: {result:?}");
+                    assert!(
+                        diagnostic.get("actualFormat").is_none(),
                         "{tool}: {result:?}"
                     );
+                    assert!(diagnostic.get("root").is_none(), "{tool}: {result:?}");
                     assert!(!external.join("Created.xml").exists(), "{tool}");
                     assert!(result.changes.is_empty(), "{tool}: {result:?}");
                     assert!(result.artifacts.is_empty(), "{tool}: {result:?}");
@@ -10019,6 +10019,40 @@ mod tests {
 
     #[test]
     fn external_init_preview_is_path_guarded_and_source_set_typed() {
+        fn assert_neutral_strings(value: &Value) {
+            match value {
+                Value::String(text) => {
+                    let normalized = text.to_ascii_lowercase();
+                    for forbidden in [
+                        ".xml",
+                        ".bsl",
+                        "version8_",
+                        "mdclass",
+                        "configurationextension",
+                        "urn:",
+                        "/users/",
+                        "\\users\\",
+                    ] {
+                        assert!(
+                            !normalized.contains(forbidden),
+                            "public external outcome leaked `{forbidden}` in {text:?}"
+                        );
+                    }
+                }
+                Value::Array(items) => {
+                    for item in items {
+                        assert_neutral_strings(item);
+                    }
+                }
+                Value::Object(fields) => {
+                    for item in fields.values() {
+                        assert_neutral_strings(item);
+                    }
+                }
+                Value::Null | Value::Bool(_) | Value::Number(_) => {}
+            }
+        }
+
         let root = std::env::temp_dir().join(format!(
             "unica-external-init-contract-{}",
             std::process::id()
@@ -10057,6 +10091,7 @@ mod tests {
             .unwrap();
         assert!(preview.ok, "{:?}", preview.errors);
         assert_eq!(preview.artifacts.len(), 2);
+        assert_neutral_strings(&serde_json::to_value(&preview).unwrap());
         assert!(!workspace.join("epf").exists());
 
         args.insert("OutputDir".to_string(), Value::String("EPF".to_string()));
@@ -10098,7 +10133,7 @@ mod tests {
         let error = UnicaApplication::new()
             .call_tool("unica.epf.init", &args)
             .unwrap_err();
-        assert!(error.contains("outside workspace root"), "{error}");
+        assert_eq!(error, "requested output path is not authorized");
         assert!(!root.join("outside").exists());
 
         std::fs::write(

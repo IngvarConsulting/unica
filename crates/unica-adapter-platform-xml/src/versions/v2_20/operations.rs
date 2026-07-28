@@ -1296,7 +1296,9 @@ fn resolve_target_dependencies(
 fn descriptor_candidates(target_key: &str) -> Vec<String> {
     let target = Path::new(target_key);
     let mut candidates = Vec::new();
-    if target.extension().and_then(|value| value.to_str()) == Some("xml") {
+    if target.extension().and_then(|value| value.to_str()) == Some("xml")
+        && embedded_content_capture_root(target).is_none()
+    {
         candidates.push(target_key.to_string());
     }
     let mut current = if target.extension().is_some() {

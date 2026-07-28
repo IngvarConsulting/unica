@@ -299,6 +299,7 @@ fn metadata_wrapper_for_content_path(target: &Path) -> Option<PathBuf> {
         "Form.xml" => "Forms",
         "Template.xml" => "Templates",
         "Rights.xml" => "Roles",
+        "CommandInterface.xml" => "Subsystems",
         _ => return None,
     };
     let ext_dir = target.parent()?;

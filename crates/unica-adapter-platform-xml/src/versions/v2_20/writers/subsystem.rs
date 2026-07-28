@@ -387,11 +387,38 @@ fn require_subsystem_registration_owner_validation(
 }
 
 struct SubsystemEditInput {
-    definition_file: Option<PathBuf>,
-    operation: String,
-    value: String,
+    source: SubsystemEditSource,
     subsystem_path: PathBuf,
     skip_validation_output: bool,
+}
+
+enum SubsystemEditSource {
+    Semantic(unica_format_core::commands::SubsystemEdit),
+    #[cfg(test)]
+    Legacy {
+        definition_file: Option<PathBuf>,
+        operation: String,
+        value: String,
+    },
+}
+
+enum SubsystemNativeEdit {
+    Replace(unica_format_core::commands::SubsystemDefinition),
+    AddContent(unica_format_core::commands::MetadataObjectReference),
+    RemoveContent(unica_format_core::commands::MetadataObjectReference),
+    AddChild(unica_format_core::commands::SubsystemName),
+    RemoveChild(unica_format_core::commands::SubsystemName),
+    SetProperty(unica_format_core::commands::SubsystemPropertyPatch),
+    #[cfg(test)]
+    LegacyAddContent(Value),
+    #[cfg(test)]
+    LegacyRemoveContent(Value),
+    #[cfg(test)]
+    LegacyAddChild(Value),
+    #[cfg(test)]
+    LegacyRemoveChild(Value),
+    #[cfg(test)]
+    LegacySetProperty(Value),
 }
 
 #[cfg(test)]
@@ -409,11 +436,13 @@ pub(crate) fn edit_subsystem(
             return Err("Either -DefinitionFile or -Operation is required".to_string());
         }
         Ok(SubsystemEditInput {
-            definition_file,
-            operation: operation.unwrap_or_default().to_string(),
-            value: string_arg(args, &["value", "Value"])
-                .unwrap_or_default()
-                .to_string(),
+            source: SubsystemEditSource::Legacy {
+                definition_file,
+                operation: operation.unwrap_or_default().to_string(),
+                value: string_arg(args, &["value", "Value"])
+                    .unwrap_or_default()
+                    .to_string(),
+            },
             subsystem_path: required_path(args, SUBSYSTEM_PATH, "SubsystemPath")?,
             skip_validation_output: bool_arg(args, &["noValidate", "NoValidate"]),
         })
@@ -430,41 +459,127 @@ fn edit_subsystem_input(
 ) -> NativeWriterResult {
     let edit_result = (|| -> Result<SubsystemEditResult, String> {
         let SubsystemEditInput {
-            definition_file,
-            operation,
-            value,
+            source,
             subsystem_path,
             skip_validation_output,
         } = input;
-        let operation = (!operation.is_empty()).then_some(operation.as_str());
         let resolved_path = resolve_subsystem_edit_xml(absolutize(subsystem_path, &context.cwd))?;
         let original = fs::read(&resolved_path)
             .map_err(|err| format!("failed to read {}: {err}", resolved_path.display()))?;
         let mut model = load_subsystem_edit_model(&resolved_path)?;
         let obj_name = model.name.clone();
         let mut transaction = CompileTransaction::new();
-        let operations = subsystem_edit_operations_guarded(
-            &context.cwd,
-            operation,
-            &value,
-            definition_file,
-            &mut transaction,
-        )?;
+        let operations = match source {
+            SubsystemEditSource::Semantic(edit) => vec![subsystem_native_edit(edit)?],
+            #[cfg(test)]
+            SubsystemEditSource::Legacy {
+                definition_file,
+                operation,
+                value,
+            } => subsystem_edit_operations_guarded(
+                &context.cwd,
+                (!operation.is_empty()).then_some(operation.as_str()),
+                &value,
+                definition_file,
+                &mut transaction,
+            )?
+            .into_iter()
+            .map(|(operation, value)| subsystem_legacy_edit(&operation, value))
+            .collect::<Result<Vec<_>, _>>()?,
+        };
         let mut counters = SubsystemEditCounters::default();
         let mut stdout = String::new();
         let mut child_stubs = BTreeMap::<PathBuf, String>::new();
         let mut reused_child_subsystems = BTreeMap::<PathBuf, Vec<u8>>::new();
 
         stdout.push_str(&format!("[INFO] Subsystem: {obj_name}\n"));
-        for (op_name, value) in operations {
-            match op_name.as_str() {
-                "add-content" => {
+        for operation in operations {
+            match operation {
+                SubsystemNativeEdit::Replace(definition) => {
+                    model.name = definition.name().as_str().to_string();
+                    model.synonym = definition
+                        .synonym()
+                        .map(|value| value.as_str())
+                        .unwrap_or_else(|| definition.name().as_str())
+                        .to_string();
+                    model.comment = definition
+                        .comment()
+                        .map(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    model.explanation = definition
+                        .explanation()
+                        .map(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    model.content = definition
+                        .content()
+                        .iter()
+                        .map(|value| value.as_str().to_string())
+                        .collect();
+                    model.children.clear();
+                    for child in definition.children() {
+                        subsystem_edit_add_child(
+                            &mut model,
+                            &resolved_path,
+                            child.as_str(),
+                            &mut counters,
+                            &mut stdout,
+                            &mut child_stubs,
+                            &mut reused_child_subsystems,
+                        )?;
+                    }
+                    counters.modified += 1;
+                }
+                SubsystemNativeEdit::AddContent(value) => {
+                    subsystem_edit_add_content_reference(
+                        &mut model,
+                        value.as_str(),
+                        &mut counters,
+                        &mut stdout,
+                    );
+                }
+                SubsystemNativeEdit::RemoveContent(value) => {
+                    subsystem_edit_remove_content_reference(
+                        &mut model,
+                        value.as_str(),
+                        &mut counters,
+                        &mut stdout,
+                    );
+                }
+                SubsystemNativeEdit::AddChild(value) => subsystem_edit_add_child(
+                    &mut model,
+                    &resolved_path,
+                    value.as_str(),
+                    &mut counters,
+                    &mut stdout,
+                    &mut child_stubs,
+                    &mut reused_child_subsystems,
+                )?,
+                SubsystemNativeEdit::RemoveChild(value) => subsystem_edit_remove_child_name(
+                    &mut model,
+                    value.as_str(),
+                    &mut counters,
+                    &mut stdout,
+                )?,
+                SubsystemNativeEdit::SetProperty(value) => {
+                    subsystem_edit_set_semantic_property(
+                        &mut model,
+                        &value,
+                        &mut counters,
+                        &mut stdout,
+                    );
+                }
+                #[cfg(test)]
+                SubsystemNativeEdit::LegacyAddContent(value) => {
                     subsystem_edit_add_content(&mut model, &value, &mut counters, &mut stdout)?;
                 }
-                "remove-content" => {
+                #[cfg(test)]
+                SubsystemNativeEdit::LegacyRemoveContent(value) => {
                     subsystem_edit_remove_content(&mut model, &value, &mut counters, &mut stdout)?;
                 }
-                "add-child" => subsystem_edit_add_child(
+                #[cfg(test)]
+                SubsystemNativeEdit::LegacyAddChild(value) => subsystem_edit_add_child_legacy(
                     &mut model,
                     &resolved_path,
                     &value,
@@ -473,13 +588,14 @@ fn edit_subsystem_input(
                     &mut child_stubs,
                     &mut reused_child_subsystems,
                 )?,
-                "remove-child" => {
+                #[cfg(test)]
+                SubsystemNativeEdit::LegacyRemoveChild(value) => {
                     subsystem_edit_remove_child(&mut model, &value, &mut counters, &mut stdout)?
                 }
-                "set-property" => {
+                #[cfg(test)]
+                SubsystemNativeEdit::LegacySetProperty(value) => {
                     subsystem_edit_set_property(&mut model, &value, &mut counters, &mut stdout)?
                 }
-                _ => return Err(format!("Unknown operation: {op_name}")),
             }
         }
 
@@ -622,6 +738,33 @@ fn subsystem_edit_failure(error: String) -> NativeWriterResult {
         stdout: None,
         stderr: Some(format!("{error}\n")),
     }
+}
+
+#[cfg(test)]
+fn subsystem_legacy_edit(operation: &str, value: Value) -> Result<SubsystemNativeEdit, String> {
+    match operation {
+        "add-content" => Ok(SubsystemNativeEdit::LegacyAddContent(value)),
+        "remove-content" => Ok(SubsystemNativeEdit::LegacyRemoveContent(value)),
+        "add-child" => Ok(SubsystemNativeEdit::LegacyAddChild(value)),
+        "remove-child" => Ok(SubsystemNativeEdit::LegacyRemoveChild(value)),
+        "set-property" => Ok(SubsystemNativeEdit::LegacySetProperty(value)),
+        _ => Err(format!("Unknown operation: {operation}")),
+    }
+}
+
+fn subsystem_native_edit(
+    edit: unica_format_core::commands::SubsystemEdit,
+) -> Result<SubsystemNativeEdit, String> {
+    use unica_format_core::commands::SubsystemEdit as Edit;
+
+    Ok(match edit {
+        Edit::Replace(definition) => SubsystemNativeEdit::Replace(definition),
+        Edit::AddContent(value) => SubsystemNativeEdit::AddContent(value),
+        Edit::RemoveContent(value) => SubsystemNativeEdit::RemoveContent(value),
+        Edit::AddChild(value) => SubsystemNativeEdit::AddChild(value),
+        Edit::RemoveChild(value) => SubsystemNativeEdit::RemoveChild(value),
+        Edit::SetProperty(patch) => SubsystemNativeEdit::SetProperty(patch),
+    })
 }
 
 pub(crate) fn subsystem_edit_operations(
@@ -780,6 +923,22 @@ pub(crate) fn subsystem_edit_add_content(
     Ok(())
 }
 
+fn subsystem_edit_add_content_reference(
+    model: &mut SubsystemEditModel,
+    raw: &str,
+    counters: &mut SubsystemEditCounters,
+    stdout: &mut String,
+) {
+    let item = normalize_subsystem_content_ref(raw);
+    if model.content.iter().any(|existing| existing == &item) {
+        stdout.push_str(&format!("[WARN] Content already contains: {item}\n"));
+        return;
+    }
+    model.content.push(item.clone());
+    counters.added += 1;
+    stdout.push_str(&format!("[INFO] Added content: {item}\n"));
+}
+
 pub(crate) fn subsystem_edit_remove_content(
     model: &mut SubsystemEditModel,
     value: &Value,
@@ -798,7 +957,22 @@ pub(crate) fn subsystem_edit_remove_content(
     Ok(())
 }
 
-pub(crate) fn subsystem_edit_add_child(
+fn subsystem_edit_remove_content_reference(
+    model: &mut SubsystemEditModel,
+    item: &str,
+    counters: &mut SubsystemEditCounters,
+    stdout: &mut String,
+) {
+    if let Some(index) = model.content.iter().position(|value| value == item) {
+        model.content.remove(index);
+        counters.removed += 1;
+        stdout.push_str(&format!("[INFO] Removed content: {item}\n"));
+    } else {
+        stdout.push_str(&format!("[WARN] Content item not found: {item}\n"));
+    }
+}
+
+fn subsystem_edit_add_child_legacy(
     model: &mut SubsystemEditModel,
     resolved_path: &Path,
     value: &Value,
@@ -809,8 +983,27 @@ pub(crate) fn subsystem_edit_add_child(
 ) -> Result<(), String> {
     let child_name = value
         .as_str()
-        .ok_or_else(|| "Child subsystem name must be a string".to_string())?
-        .to_string();
+        .ok_or_else(|| "Child subsystem name must be a string".to_string())?;
+    subsystem_edit_add_child(
+        model,
+        resolved_path,
+        child_name,
+        counters,
+        stdout,
+        child_stubs,
+        reused_child_subsystems,
+    )
+}
+
+pub(crate) fn subsystem_edit_add_child(
+    model: &mut SubsystemEditModel,
+    resolved_path: &Path,
+    child_name: &str,
+    counters: &mut SubsystemEditCounters,
+    stdout: &mut String,
+    child_stubs: &mut BTreeMap<PathBuf, String>,
+    reused_child_subsystems: &mut BTreeMap<PathBuf, Vec<u8>>,
+) -> Result<(), String> {
     validate_subsystem_metadata_name("Child subsystem name", &child_name)?;
     if model.children.iter().any(|value| value == &child_name) {
         stdout.push_str(&format!(
@@ -819,7 +1012,7 @@ pub(crate) fn subsystem_edit_add_child(
         return Ok(());
     }
 
-    model.children.push(child_name.clone());
+    model.children.push(child_name.to_string());
     counters.added += 1;
     stdout.push_str(&format!("[INFO] Added child subsystem: {child_name}\n"));
 
@@ -874,8 +1067,16 @@ pub(crate) fn subsystem_edit_remove_child(
 ) -> Result<(), String> {
     let child_name = value
         .as_str()
-        .ok_or_else(|| "Child subsystem name must be a string".to_string())?
-        .to_string();
+        .ok_or_else(|| "Child subsystem name must be a string".to_string())?;
+    subsystem_edit_remove_child_name(model, child_name, counters, stdout)
+}
+
+fn subsystem_edit_remove_child_name(
+    model: &mut SubsystemEditModel,
+    child_name: &str,
+    counters: &mut SubsystemEditCounters,
+    stdout: &mut String,
+) -> Result<(), String> {
     validate_subsystem_metadata_name("Child subsystem name", &child_name)?;
     if let Some(index) = model.children.iter().position(|value| value == &child_name) {
         model.children.remove(index);
@@ -885,6 +1086,37 @@ pub(crate) fn subsystem_edit_remove_child(
         stdout.push_str(&format!("[WARN] Child subsystem not found: {child_name}\n"));
     }
     Ok(())
+}
+
+fn subsystem_edit_set_semantic_property(
+    model: &mut SubsystemEditModel,
+    patch: &unica_format_core::commands::SubsystemPropertyPatch,
+    counters: &mut SubsystemEditCounters,
+    stdout: &mut String,
+) {
+    use unica_format_core::commands::SubsystemPropertyPatch;
+    match patch {
+        SubsystemPropertyPatch::SetSynonym(value) => {
+            model.synonym = value.as_str().to_string();
+            stdout.push_str(&format!("[INFO] Set Synonym = \"{}\"\n", value.as_str()));
+        }
+        SubsystemPropertyPatch::SetComment(value) => {
+            model.comment = value.as_str().to_string();
+            stdout.push_str(&format!("[INFO] Set Comment = \"{}\"\n", value.as_str()));
+        }
+        SubsystemPropertyPatch::SetExplanation(value) => {
+            model.explanation = value.as_str().to_string();
+            stdout.push_str(&format!(
+                "[INFO] Set Explanation = \"{}\"\n",
+                value.as_str()
+            ));
+        }
+        SubsystemPropertyPatch::SetCommandInterfaceVisibility(value) => {
+            model.include_ci = value.to_string();
+            stdout.push_str(&format!("[INFO] Set IncludeInCommandInterface = {value}\n"));
+        }
+    }
+    counters.modified += 1;
 }
 
 pub(crate) fn subsystem_edit_set_property(
@@ -1768,8 +2000,25 @@ struct SubsystemCompileResult {
     warnings: Vec<String>,
 }
 
+struct SubsystemCompileModel {
+    name: String,
+    synonym: Option<String>,
+    comment: String,
+    include_help_in_contents: String,
+    include_in_command_interface: String,
+    use_one_command: String,
+    explanation: String,
+    picture: String,
+    uuid: String,
+    content: Vec<String>,
+    children: Vec<String>,
+}
+
 enum SubsystemDefinition {
+    Semantic(unica_format_core::commands::SubsystemDefinition),
+    #[cfg(test)]
     File(PathBuf),
+    #[cfg(test)]
     Inline(String),
 }
 
@@ -1835,7 +2084,11 @@ fn compile_subsystem_internal(
             parent,
             declared_name,
         } = input;
-        let defn = match definition {
+        let model = match definition {
+            SubsystemDefinition::Semantic(definition) => {
+                subsystem_compile_model_from_semantic(&definition)
+            }
+            #[cfg(test)]
             SubsystemDefinition::File(definition_file) => {
                 let definition_file = absolutize(definition_file, &context.cwd);
                 if !definition_file.exists() {
@@ -1844,24 +2097,21 @@ fn compile_subsystem_internal(
                         definition_file.display()
                     ));
                 }
-                FileBackedJson::read(&definition_file, |err| {
+                let definition = FileBackedJson::read(&definition_file, |err| {
                     format!("failed to parse subsystem JSON: {err}")
                 })?
-                .bind_to(&mut transaction)?
+                .bind_to(&mut transaction)?;
+                subsystem_compile_model_from_legacy(&definition)?
             }
+            #[cfg(test)]
             SubsystemDefinition::Inline(value) => {
-                serde_json::from_str(value.trim_start_matches('\u{feff}'))
-                    .map_err(|err| format!("failed to parse subsystem JSON: {err}"))?
+                let definition = serde_json::from_str(value.trim_start_matches('\u{feff}'))
+                    .map_err(|err| format!("failed to parse subsystem JSON: {err}"))?;
+                subsystem_compile_model_from_legacy(&definition)?
             }
         };
 
-        let definition_name = defn
-            .get("name")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| "JSON must have non-empty string 'name' field".to_string())?
-            .to_string();
-        let obj_name = declared_name.unwrap_or(definition_name);
+        let obj_name = declared_name.unwrap_or_else(|| model.name.clone());
         validate_subsystem_metadata_name("Name", &obj_name)?;
 
         let output_dir = absolutize(destination, &context.cwd);
@@ -1869,41 +2119,28 @@ fn compile_subsystem_internal(
             .export_format
             .to_string();
 
-        let synonym = json_string_field(&defn, "synonym")
+        let synonym = model
+            .synonym
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| split_camel_case(&obj_name));
-        let comment = json_string_field(&defn, "comment").unwrap_or_default();
-        let include_help_in_contents =
-            subsystem_boolean_field(&defn, "includeHelpInContents", true)?;
-        let include_in_ci = subsystem_boolean_field(&defn, "includeInCommandInterface", true)?;
-        let use_one_command = subsystem_boolean_field(&defn, "useOneCommand", false)?;
-        let explanation = json_string_field(&defn, "explanation").unwrap_or_default();
-        let picture = json_string_field(&defn, "picture").unwrap_or_default();
-        let subsystem_uuid = match defn.get("uuid") {
-            None => fresh_uuid(),
-            Some(Value::String(value)) if is_valid_uuid(value) => value.clone(),
-            Some(value) => {
-                return Err(format!(
-                    "UUID must be an exact valid UUID string when provided: {value}"
-                ));
-            }
-        };
+        let comment = model.comment;
+        let include_help_in_contents = model.include_help_in_contents;
+        let include_in_ci = model.include_in_command_interface;
+        let use_one_command = model.use_one_command;
+        let explanation = model.explanation;
+        let picture = model.picture;
+        let subsystem_uuid = model.uuid;
 
         let mut stdout = String::new();
         let mut normalized_count = 0usize;
         let mut content_items = Vec::new();
-        if let Some(content) = defn.get("content").or_else(|| defn.get("objects")) {
-            if let Some(items) = content.as_array() {
-                for item in items {
-                    let raw = json_value_to_python_string(item);
-                    let normalized = normalize_subsystem_content_ref(&raw);
-                    if normalized != raw {
-                        stdout.push_str(&format!("[NORM] Content: {raw} -> {normalized}\n"));
-                        normalized_count += 1;
-                    }
-                    content_items.push(normalized);
-                }
+        for raw in model.content {
+            let normalized = normalize_subsystem_content_ref(&raw);
+            if normalized != raw {
+                stdout.push_str(&format!("[NORM] Content: {raw} -> {normalized}\n"));
+                normalized_count += 1;
             }
+            content_items.push(normalized);
         }
         if normalized_count > 0 {
             stdout.push_str(&format!(
@@ -1911,22 +2148,10 @@ fn compile_subsystem_internal(
             ));
         }
 
-        let children = match defn.get("children") {
-            None => Vec::new(),
-            Some(Value::Array(items)) => {
-                let mut children = Vec::with_capacity(items.len());
-                for item in items {
-                    let child = item
-                        .as_str()
-                        .ok_or_else(|| "each child subsystem name must be a string".to_string())?
-                        .to_string();
-                    validate_subsystem_metadata_name("Child subsystem name", &child)?;
-                    children.push(child);
-                }
-                children
-            }
-            Some(_) => return Err("children must be an array of strings".to_string()),
-        };
+        let children = model.children;
+        for child in &children {
+            validate_subsystem_metadata_name("Child subsystem name", child)?;
+        }
 
         let mut lines = Vec::new();
         lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
@@ -2471,23 +2696,9 @@ pub(crate) fn edit_subsystem_typed(
         Ok(path) => path.to_path_buf(),
         Err(error) => return subsystem_edit_failure(error),
     };
-    use unica_format_core::commands::SubsystemEdit as Edit;
-    let definition_file = session
-        .source(unica_format_core::commands::WriterSourceRole::Definition)
-        .map(Path::to_path_buf);
-    let (operation, value) = match command {
-        Edit::FromDefinition => (String::new(), String::new()),
-        Edit::AddContent(value) => ("add-content".to_string(), value.as_str().to_string()),
-        Edit::RemoveContent(value) => ("remove-content".to_string(), value.as_str().to_string()),
-        Edit::AddChild(value) => ("add-child".to_string(), value.as_str().to_string()),
-        Edit::RemoveChild(value) => ("remove-child".to_string(), value.as_str().to_string()),
-        Edit::SetProperty(value) => ("set-property".to_string(), value.as_str().to_string()),
-    };
     edit_subsystem_input(
         SubsystemEditInput {
-            definition_file,
-            operation,
-            value,
+            source: SubsystemEditSource::Semantic(command.clone()),
             subsystem_path,
             skip_validation_output: false,
         },
@@ -2516,23 +2727,8 @@ fn typed_subsystem_compile_input(
     command: &unica_format_core::commands::SubsystemCreate,
     session: &PlatformWriterSession,
 ) -> Result<SubsystemCompileInput, String> {
-    let definition = match (
-        session.source(unica_format_core::commands::WriterSourceRole::Definition),
-        session.inline_definition(),
-    ) {
-        (Some(path), None) => SubsystemDefinition::File(path.to_path_buf()),
-        (None, Some(bytes)) => SubsystemDefinition::Inline(
-            std::str::from_utf8(bytes)
-                .map_err(|_| "inline subsystem definition is invalid".to_string())?
-                .to_string(),
-        ),
-        (Some(_), Some(_)) => {
-            return Err("subsystem definition was bound more than once".to_string())
-        }
-        (None, None) => return Err("subsystem definition is required".to_string()),
-    };
     Ok(SubsystemCompileInput {
-        definition,
+        definition: SubsystemDefinition::Semantic(command.definition().clone()),
         destination: session
             .required_source(
                 unica_format_core::commands::WriterSourceRole::DestinationDirectory,
@@ -2544,6 +2740,97 @@ fn typed_subsystem_compile_input(
             .map(Path::to_path_buf),
         declared_name: command.name().map(|value| value.as_str().to_string()),
     })
+}
+
+fn subsystem_compile_model_from_legacy(
+    definition: &Value,
+) -> Result<SubsystemCompileModel, String> {
+    let name = definition
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "JSON must have non-empty string 'name' field".to_string())?
+        .to_string();
+    let uuid = match definition.get("uuid") {
+        None => fresh_uuid(),
+        Some(Value::String(value)) if is_valid_uuid(value) => value.clone(),
+        Some(value) => {
+            return Err(format!(
+                "UUID must be an exact valid UUID string when provided: {value}"
+            ));
+        }
+    };
+    let content = definition
+        .get("content")
+        .or_else(|| definition.get("objects"))
+        .and_then(Value::as_array)
+        .map(|items| items.iter().map(json_value_to_python_string).collect())
+        .unwrap_or_default();
+    let children = match definition.get("children") {
+        None => Vec::new(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| {
+                item.as_str()
+                    .map(ToOwned::to_owned)
+                    .ok_or_else(|| "each child subsystem name must be a string".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        Some(_) => return Err("children must be an array of strings".to_string()),
+    };
+    Ok(SubsystemCompileModel {
+        name,
+        synonym: json_string_field(definition, "synonym"),
+        comment: json_string_field(definition, "comment").unwrap_or_default(),
+        include_help_in_contents: subsystem_boolean_field(
+            definition,
+            "includeHelpInContents",
+            true,
+        )?,
+        include_in_command_interface: subsystem_boolean_field(
+            definition,
+            "includeInCommandInterface",
+            true,
+        )?,
+        use_one_command: subsystem_boolean_field(definition, "useOneCommand", false)?,
+        explanation: json_string_field(definition, "explanation").unwrap_or_default(),
+        picture: json_string_field(definition, "picture").unwrap_or_default(),
+        uuid,
+        content,
+        children,
+    })
+}
+
+fn subsystem_compile_model_from_semantic(
+    definition: &unica_format_core::commands::SubsystemDefinition,
+) -> SubsystemCompileModel {
+    SubsystemCompileModel {
+        name: definition.name().as_str().to_string(),
+        synonym: definition.synonym().map(|value| value.as_str().to_string()),
+        comment: definition
+            .comment()
+            .map(|value| value.as_str().to_string())
+            .unwrap_or_default(),
+        include_help_in_contents: "true".to_string(),
+        include_in_command_interface: "true".to_string(),
+        use_one_command: "false".to_string(),
+        explanation: definition
+            .explanation()
+            .map(|value| value.as_str().to_string())
+            .unwrap_or_default(),
+        picture: String::new(),
+        uuid: fresh_uuid(),
+        content: definition
+            .content()
+            .iter()
+            .map(|item| item.as_str().to_string())
+            .collect(),
+        children: definition
+            .children()
+            .iter()
+            .map(|item| item.as_str().to_string())
+            .collect(),
+    }
 }
 
 #[cfg(test)]
@@ -2819,8 +3106,7 @@ mod tests {
     #[test]
     fn root_subsystem_compile_rejects_newer_configuration_that_appears_after_probe() {
         let context = temp_context("root-owner-appears-after-probe");
-        let detached = temp_context("detached-root-owner-appears-after-probe");
-        let source = detached.cwd.clone();
+        let source = context.cwd.join("detached-root-owner-appears-after-probe");
         fs::create_dir_all(&source).unwrap();
         let newer = String::from_utf8(configuration_bytes())
             .unwrap()
@@ -2853,8 +3139,9 @@ mod tests {
     #[test]
     fn root_subsystem_compile_rolls_back_if_supported_configuration_appears_during_publication() {
         let context = temp_context("root-owner-appears-during-publication");
-        let detached = temp_context("detached-root-owner-appears-during-publication");
-        let source = detached.cwd.clone();
+        let source = context
+            .cwd
+            .join("detached-root-owner-appears-during-publication");
         fs::create_dir_all(&source).unwrap();
         let config_path = source.join("Configuration.xml");
         let config_for_hook = config_path.clone();
@@ -2886,8 +3173,9 @@ mod tests {
     #[test]
     fn root_subsystem_compile_validates_supported_configuration_that_appears_after_probe() {
         let context = temp_context("root-invalid-owner-appears-after-probe");
-        let detached = temp_context("detached-root-invalid-owner-appears-after-probe");
-        let source = detached.cwd.clone();
+        let source = context
+            .cwd
+            .join("detached-root-invalid-owner-appears-after-probe");
         fs::create_dir_all(source.join("Languages")).unwrap();
         fs::write(source.join("Languages/Russian.xml"), b"language marker").unwrap();
         let invalid = String::from_utf8(configuration_bytes())

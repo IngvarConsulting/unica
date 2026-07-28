@@ -2427,9 +2427,15 @@ fn add_form_input(input: FormCreateInput, context: &WorkspaceContext) -> NativeW
     }
 }
 
+enum FormRemoveOwner {
+    Semantic(unica_format_core::commands::FormOwnerReference),
+    #[cfg(test)]
+    Legacy(String),
+}
+
 struct FormRemoveInput {
     source_collection: PathBuf,
-    object_name: String,
+    owner: FormRemoveOwner,
     form_name: String,
 }
 
@@ -2453,12 +2459,14 @@ pub(crate) fn remove_form(
 ) -> NativeWriterResult {
     let input = (|| -> Result<FormRemoveInput, String> {
         Ok(FormRemoveInput {
-            object_name: required_string(
-                args,
-                &["objectName", "ObjectName", "processorName", "ProcessorName"],
-                "ObjectName",
-            )?
-            .to_string(),
+            owner: FormRemoveOwner::Legacy(
+                required_string(
+                    args,
+                    &["objectName", "ObjectName", "processorName", "ProcessorName"],
+                    "ObjectName",
+                )?
+                .to_string(),
+            ),
             form_name: required_string(args, &["formName", "FormName"], "FormName")?.to_string(),
             source_collection: PathBuf::from(
                 string_arg(args, &["srcDir", "SrcDir"]).unwrap_or("src"),
@@ -2473,15 +2481,30 @@ pub(crate) fn remove_form(
 
 fn remove_form_input(input: FormRemoveInput, context: &WorkspaceContext) -> NativeWriterResult {
     let result = (|| -> Result<(String, Vec<String>, Vec<String>), String> {
-        let object_name = input.object_name.as_str();
+        let (object_name, owner_collection) = match &input.owner {
+            FormRemoveOwner::Semantic(owner) if owner.as_str().contains('.') => {
+                let (owner_collection, object_name) =
+                    super::meta::semantic_metadata_owner_parts(owner.as_str())?;
+                (object_name, Some(owner_collection))
+            }
+            FormRemoveOwner::Semantic(owner) => (owner.as_str(), None),
+            #[cfg(test)]
+            FormRemoveOwner::Legacy(object_name) => (object_name.as_str(), None),
+        };
         let form_name = input.form_name.as_str();
         validate_form_metadata_path_name("ObjectName", object_name)?;
         validate_form_metadata_path_name("FormName", form_name)?;
         let src_dir_display = input.source_collection;
         let src_dir_abs = absolutize(src_dir_display.clone(), &context.cwd);
+        let owner_dir_display = owner_collection
+            .map(|collection| src_dir_display.join(collection))
+            .unwrap_or_else(|| src_dir_display.clone());
+        let owner_dir_abs = owner_collection
+            .map(|collection| src_dir_abs.join(collection))
+            .unwrap_or_else(|| src_dir_abs.clone());
 
-        let root_xml_display = src_dir_display.join(format!("{object_name}.xml"));
-        let root_xml_path = src_dir_abs.join(format!("{object_name}.xml"));
+        let root_xml_display = owner_dir_display.join(format!("{object_name}.xml"));
+        let root_xml_path = owner_dir_abs.join(format!("{object_name}.xml"));
         if !root_xml_path.exists() {
             return Err(format!(
                 "Корневой файл обработки не найден: {}",
@@ -2490,8 +2513,8 @@ fn remove_form_input(input: FormRemoveInput, context: &WorkspaceContext) -> Nati
         }
         validate_semantic_metadata_artifact(&root_xml_path, context, "form.remove")?;
 
-        let processor_dir_display = src_dir_display.join(object_name);
-        let processor_dir_abs = src_dir_abs.join(object_name);
+        let processor_dir_display = owner_dir_display.join(object_name);
+        let processor_dir_abs = owner_dir_abs.join(object_name);
         let forms_dir_display = processor_dir_display.join("Forms");
         let forms_dir_abs = processor_dir_abs.join("Forms");
         let form_meta_display = forms_dir_display.join(format!("{form_name}.xml"));
@@ -3891,12 +3914,23 @@ struct FormParentRegistrationPlan {
 }
 
 #[derive(Debug, Clone)]
+enum FormCompileInputSource {
+    Semantic {
+        definition: unica_format_core::commands::ManagedFormDefinition,
+        guard: Option<PathBuf>,
+    },
+    Object {
+        object_path: Option<PathBuf>,
+        purpose: Option<String>,
+    },
+    #[cfg(test)]
+    LegacyFile(PathBuf),
+}
+
+#[derive(Debug, Clone)]
 struct FormCompileInput {
-    definition_path: Option<PathBuf>,
-    object_path: Option<PathBuf>,
+    source: FormCompileInputSource,
     output_path: PathBuf,
-    from_object: bool,
-    purpose: Option<String>,
     _skip_validation: bool,
 }
 
@@ -3924,14 +3958,20 @@ fn form_compile_input_from_args(args: &impl ArgumentAccess) -> Result<FormCompil
         return Err("Either -JsonPath or -FromObject is required.".to_string());
     }
     Ok(FormCompileInput {
-        definition_path: json_path,
-        object_path: path_arg(args, &["objectPath", "ObjectPath"]),
+        source: if from_object {
+            FormCompileInputSource::Object {
+                object_path: path_arg(args, &["objectPath", "ObjectPath"]),
+                purpose: string_arg(args, &["purpose", "Purpose"]).map(str::to_string),
+            }
+        } else {
+            FormCompileInputSource::LegacyFile(
+                json_path.expect("legacy form definition was checked above"),
+            )
+        },
         output_path: PathBuf::from(
             string_arg(args, &["outputPath", "OutputPath"])
                 .ok_or_else(|| "missing required OutputPath argument".to_string())?,
         ),
-        from_object,
-        purpose: string_arg(args, &["purpose", "Purpose"]).map(str::to_string),
         _skip_validation: bool_arg(args, &["noValidate", "NoValidate"]),
     })
 }
@@ -4136,16 +4176,9 @@ fn plan_form_compile_input(
     context: &WorkspaceContext,
     inspect_existing_output_owner: bool,
 ) -> Result<FormCompilePlan, String> {
-    if input.from_object && input.definition_path.is_some() {
-        return Err("Cannot use both -JsonPath and -FromObject. Choose one mode.".to_string());
-    }
-    if !input.from_object && input.definition_path.is_none() {
-        return Err("Either -JsonPath or -FromObject is required.".to_string());
-    }
-
     let mut output_label = input.output_path.display().to_string();
     let mut stdout = String::new();
-    if input.from_object {
+    if matches!(input.source, FormCompileInputSource::Object { .. }) {
         if let Some((normalized, resolved_line)) =
             form_compile_normalize_from_object_output_label(&output_label)
         {
@@ -4156,39 +4189,56 @@ fn plan_form_compile_input(
     let output_path = absolutize(PathBuf::from(&output_label), &context.cwd);
     validate_form_compile_output_path(&output_path)?;
     let mut derivation_inputs = Vec::new();
-    let defn = if input.from_object {
-        let (defn, from_object_stdout, object_path, object_snapshot) =
-            form_compile_definition_from_object_input(
-                input.object_path.as_deref(),
-                input.purpose.as_deref(),
-                context,
-                &output_path,
-            )?;
-        stdout.push_str(&from_object_stdout);
-        derivation_inputs.push(FormCompileDerivationInput {
-            path: object_path,
-            snapshot: object_snapshot,
-            platform_xml: true,
-        });
-        defn
-    } else {
-        let json_path_raw = input
-            .definition_path
-            .as_ref()
-            .ok_or_else(|| "Either -JsonPath or -FromObject is required.".to_string())?;
-        let json_path = absolutize(json_path_raw.clone(), &context.cwd);
-        if !json_path.exists() {
-            return Err(format!("File not found: {}", json_path_raw.display()));
+    let mut semantic_definition = None;
+    let defn = match &input.source {
+        FormCompileInputSource::Object {
+            object_path,
+            purpose,
+        } => {
+            let (defn, from_object_stdout, object_path, object_snapshot) =
+                form_compile_definition_from_object_input(
+                    object_path.as_deref(),
+                    purpose.as_deref(),
+                    context,
+                    &output_path,
+                )?;
+            stdout.push_str(&from_object_stdout);
+            derivation_inputs.push(FormCompileDerivationInput {
+                path: object_path,
+                snapshot: object_snapshot,
+                platform_xml: true,
+            });
+            defn
         }
-        let json_snapshot = read_utf8_sig_snapshot(&json_path)?;
-        let definition = serde_json::from_str(json_snapshot.text.as_str())
-            .map_err(|err| format!("failed to parse Form JSON: {err}"))?;
-        derivation_inputs.push(FormCompileDerivationInput {
-            path: json_path,
-            snapshot: json_snapshot,
-            platform_xml: false,
-        });
-        definition
+        FormCompileInputSource::Semantic { definition, guard } => {
+            if let Some(definition_path) = guard.as_ref() {
+                let definition_path = absolutize(definition_path.to_path_buf(), &context.cwd);
+                let snapshot = read_utf8_sig_snapshot(&definition_path)?;
+                derivation_inputs.push(FormCompileDerivationInput {
+                    path: definition_path,
+                    snapshot,
+                    platform_xml: false,
+                });
+            }
+            semantic_definition = Some(definition);
+            Value::Null
+        }
+        #[cfg(test)]
+        FormCompileInputSource::LegacyFile(json_path_raw) => {
+            let json_path = absolutize(json_path_raw.clone(), &context.cwd);
+            if !json_path.exists() {
+                return Err(format!("File not found: {}", json_path_raw.display()));
+            }
+            let json_snapshot = read_utf8_sig_snapshot(&json_path)?;
+            let definition = serde_json::from_str(json_snapshot.text.as_str())
+                .map_err(|err| format!("failed to parse Form JSON: {err}"))?;
+            derivation_inputs.push(FormCompileDerivationInput {
+                path: json_path,
+                snapshot: json_snapshot,
+                platform_xml: false,
+            });
+            definition
+        }
     };
 
     let format_version = if inspect_existing_output_owner {
@@ -4198,7 +4248,10 @@ fn plan_form_compile_input(
             .export_format
             .to_string()
     };
-    let (xml, stats) = form_compile_xml(&defn, &format_version)?;
+    let (xml, stats) = match semantic_definition {
+        Some(definition) => form_compile_semantic_xml(definition, &format_version)?,
+        None => form_compile_xml(&defn, &format_version)?,
+    };
     Ok(FormCompilePlan {
         output_label,
         output_path,
@@ -4273,7 +4326,10 @@ fn append_form_compile_stats(stdout: &mut String, stats: &FormCompileStats) {
 }
 
 enum FormEditDefinitionInput {
+    Semantic(unica_format_core::commands::FormEdit),
+    #[cfg(test)]
     Inline(Value),
+    #[cfg(test)]
     File(PathBuf),
 }
 
@@ -4513,11 +4569,25 @@ fn form_edit_with_mode_data(
     }
 }
 
+#[cfg(not(test))]
 fn form_edit_with_mode_data_input(
     input: FormEditInput,
     context: &WorkspaceContext,
     mode: FormEditMode,
 ) -> FormEditExecution {
+    let FormEditDefinitionInput::Semantic(command) = input.definition;
+    form_edit_semantic_with_mode(&input.form_path, &command, context, mode)
+}
+
+#[cfg(test)]
+fn form_edit_with_mode_data_input(
+    input: FormEditInput,
+    context: &WorkspaceContext,
+    mode: FormEditMode,
+) -> FormEditExecution {
+    if let FormEditDefinitionInput::Semantic(command) = &input.definition {
+        return form_edit_semantic_with_mode(&input.form_path, command, context, mode);
+    }
     let edit_result = (|| -> Result<FormEditSuccess, String> {
         let form_path_raw = input.form_path;
         let form_path = absolutize(form_path_raw.clone(), &context.cwd);
@@ -4869,6 +4939,370 @@ fn form_edit_with_mode_data_input(
                 removed: form_edit_removed_elements(&removals),
                 validation: FormEditValidation::Passed,
             }),
+        },
+        Err(error) => form_edit_failure(error),
+    }
+}
+
+fn form_edit_semantic_named_range(
+    xml_text: &str,
+    name: &str,
+    tag: Option<&str>,
+) -> Result<Option<(Range<usize>, String, Vec<FormEditRemovedElement>)>, String> {
+    let document =
+        Document::parse(xml_text).map_err(|error| format!("[ERROR] XML parse error: {error}"))?;
+    let matches = document
+        .descendants()
+        .filter(|node| {
+            node.is_element()
+                && node.attribute("name") == Some(name)
+                && match tag {
+                    Some(tag) => node.tag_name().name() == tag,
+                    None => form_edit_is_semantic_removable_tag(node.tag_name().name()),
+                }
+        })
+        .collect::<Vec<_>>();
+    if matches.len() > 1 {
+        return Err(format!(
+            "[ERROR] Semantic form target '{name}' is ambiguous: {} matching nodes",
+            matches.len()
+        ));
+    }
+    let Some(node) = matches.first() else {
+        return Ok(None);
+    };
+    let kind = node.tag_name().name().to_string();
+    let contained = node
+        .descendants()
+        .skip(1)
+        .filter(|child| {
+            child.is_element() && form_edit_is_semantic_removable_tag(child.tag_name().name())
+        })
+        .filter_map(|child| {
+            child.attribute("name").map(|name| FormEditRemovedElement {
+                name: name.to_string(),
+                kind: child.tag_name().name().to_string(),
+                reason: FormEditRemovalReason::Contained,
+            })
+        })
+        .collect();
+    Ok(Some((node.range(), kind, contained)))
+}
+
+fn form_edit_is_semantic_removable_tag(tag: &str) -> bool {
+    FormElementKind::from_xml_tag(tag).is_some() || matches!(tag, "ContextMenu" | "Group")
+}
+
+fn form_edit_semantic_remove(
+    xml_text: &mut String,
+    name: &str,
+    tag: Option<&str>,
+    required: bool,
+) -> Result<Vec<FormEditRemovedElement>, String> {
+    let Some((range, kind, mut contained)) = form_edit_semantic_named_range(xml_text, name, tag)?
+    else {
+        if required {
+            return Err(format!(
+                "[FORM_EDIT_REMOVE_NOT_FOUND] target '{name}' was not found"
+            ));
+        }
+        return Ok(Vec::new());
+    };
+    xml_text.replace_range(range, "");
+    let mut removed = vec![FormEditRemovedElement {
+        name: name.to_string(),
+        kind,
+        reason: FormEditRemovalReason::Requested,
+    }];
+    removed.append(&mut contained);
+    Ok(removed)
+}
+
+fn form_edit_semantic_command_lines(
+    command: &unica_format_core::commands::FormCommandDefinition,
+    id: usize,
+    indent: &str,
+) -> Vec<String> {
+    let mut lines = vec![format!(
+        "{indent}<Command name=\"{}\" id=\"{id}\">",
+        escape_xml(command.name().as_str())
+    )];
+    let inner = format!("{indent}\t");
+    if let Some(title) = command.title() {
+        emit_form_mltext(&mut lines, &inner, "Title", title.as_str());
+    }
+    if let Some(action) = command.action() {
+        lines.push(format!(
+            "{inner}<Action>{}</Action>",
+            escape_xml(action.as_str())
+        ));
+    }
+    lines.push(format!("{indent}</Command>"));
+    lines
+}
+
+fn form_edit_semantic_with_mode(
+    form_path_raw: &Path,
+    command: &unica_format_core::commands::FormEdit,
+    context: &WorkspaceContext,
+    mode: FormEditMode,
+) -> FormEditExecution {
+    use unica_format_core::commands::FormPatch;
+
+    let result = (|| -> Result<(NativeWriterResult, FormEditData), String> {
+        let form_path = absolutize(form_path_raw.to_path_buf(), &context.cwd);
+        let original_bytes = fs::read(&form_path)
+            .map_err(|error| format!("failed to read {}: {error}", form_path.display()))?;
+        let bom = if original_bytes.starts_with(&[0xef, 0xbb, 0xbf]) {
+            Utf8Bom::Present
+        } else {
+            Utf8Bom::Absent
+        };
+        let content = if bom == Utf8Bom::Present {
+            &original_bytes[3..]
+        } else {
+            original_bytes.as_slice()
+        };
+        let mut xml_text = String::from_utf8(content.to_vec())
+            .map_err(|error| format!("{} is not valid UTF-8: {error}", form_path.display()))?;
+        let original_xml_text = xml_text.clone();
+        let source_document = Document::parse(&xml_text)
+            .map_err(|error| format!("[ERROR] XML parse error: {error}"))?;
+        let root = source_document.root_element();
+        require_form_root(root).map_err(|error| format!("[ERROR] {error}"))?;
+        let format_version = root
+            .attribute("version")
+            .unwrap_or(crate::domain::format_profile::ACTIVE_FORMAT_PROFILE.export_format);
+        let format_version = format_version.to_string();
+
+        let mut element_ids = FormIdAllocator {
+            next: form_edit_next_id(
+                &xml_text,
+                &[
+                    "InputField",
+                    "ContextMenu",
+                    "ExtendedTooltip",
+                    "UsualGroup",
+                    "Table",
+                    "Button",
+                    "CommandBar",
+                    "Pages",
+                    "Page",
+                    "LabelField",
+                    "PictureField",
+                    "CalendarField",
+                ],
+            ),
+        };
+        let mut attribute_ids = FormIdAllocator {
+            next: form_edit_next_id(&xml_text, &["Attribute", "Column"]),
+        };
+        let mut command_ids = FormIdAllocator {
+            next: form_edit_next_id(&xml_text, &["Command"]),
+        };
+        if form_edit_is_extension_form(&xml_text) {
+            element_ids.next = element_ids.next.max(999_999);
+            attribute_ids.next = attribute_ids.next.max(999_999);
+            command_ids.next = command_ids.next.max(999_999);
+        }
+
+        let mut emitted_fragments = String::new();
+        let mut removed = Vec::<FormEditRemovedElement>::new();
+        let mut descriptions = Vec::<String>::new();
+        for patch in command.patches() {
+            match patch {
+                FormPatch::NoOp => {}
+                FormPatch::Replace(definition) => {
+                    let (replacement, _) = form_compile_semantic_xml(definition, &format_version)?;
+                    xml_text =
+                        lxml_tree_serialized_text_like_source(&replacement, &original_xml_text);
+                    descriptions.push("replaced managed form definition".to_string());
+                }
+                FormPatch::AddElement(element) => {
+                    if form_edit_semantic_named_range(&xml_text, element.name().as_str(), None)?
+                        .is_some()
+                    {
+                        return Err(format!(
+                            "[ERROR] Element '{}' already exists in form",
+                            element.name().as_str()
+                        ));
+                    }
+                    let target = form_edit_target_child_items_range(&xml_text, None, None)?;
+                    let mut lines = Vec::new();
+                    emit_form_semantic_element(
+                        &mut lines,
+                        element,
+                        target.child_indent(),
+                        &mut element_ids,
+                    )?;
+                    emitted_fragments.push_str(&lines.join("\n"));
+                    form_edit_insert_lines_into_target(&mut xml_text, target, &lines)?;
+                    descriptions.push(format!("added element {}", element.name().as_str()));
+                }
+                FormPatch::RemoveElement(name) => {
+                    removed.extend(form_edit_semantic_remove(
+                        &mut xml_text,
+                        name.as_str(),
+                        None,
+                        true,
+                    )?);
+                    descriptions.push(format!("removed element {}", name.as_str()));
+                }
+                FormPatch::UpsertAttribute(attribute) => {
+                    let existing = form_edit_semantic_remove(
+                        &mut xml_text,
+                        attribute.name().as_str(),
+                        Some("Attribute"),
+                        false,
+                    )?;
+                    if !existing.is_empty() {
+                        removed.extend(existing);
+                    }
+                    let mut lines = Vec::new();
+                    emit_form_semantic_attribute(
+                        &mut lines,
+                        attribute,
+                        "\t\t",
+                        &mut attribute_ids,
+                        false,
+                    )?;
+                    emitted_fragments.push_str(&lines.join("\n"));
+                    form_edit_insert_section_items(&mut xml_text, "Attributes", &lines)?;
+                    descriptions.push(format!("upserted attribute {}", attribute.name().as_str()));
+                }
+                FormPatch::RemoveAttribute(name) => {
+                    removed.extend(form_edit_semantic_remove(
+                        &mut xml_text,
+                        name.as_str(),
+                        Some("Attribute"),
+                        true,
+                    )?);
+                    descriptions.push(format!("removed attribute {}", name.as_str()));
+                }
+                FormPatch::UpsertCommand(value) => {
+                    let existing = form_edit_semantic_remove(
+                        &mut xml_text,
+                        value.name().as_str(),
+                        Some("Command"),
+                        false,
+                    )?;
+                    if !existing.is_empty() {
+                        removed.extend(existing);
+                    }
+                    let id = command_ids.next();
+                    let lines = form_edit_semantic_command_lines(value, id, "\t\t");
+                    emitted_fragments.push_str(&lines.join("\n"));
+                    form_edit_insert_section_items(&mut xml_text, "Commands", &lines)?;
+                    descriptions.push(format!("upserted command {}", value.name().as_str()));
+                }
+                FormPatch::RemoveCommand(name) => {
+                    removed.extend(form_edit_semantic_remove(
+                        &mut xml_text,
+                        name.as_str(),
+                        Some("Command"),
+                        true,
+                    )?);
+                    descriptions.push(format!("removed command {}", name.as_str()));
+                }
+                FormPatch::BindEvent(event) => {
+                    let planned = FormEditPlannedEvent {
+                        owner: FormEditEventOwner::Form,
+                        name: event.event().as_str().to_string(),
+                        handler: event.handler().as_str().to_string(),
+                        call_type: None,
+                    };
+                    form_edit_apply_planned_event(&mut xml_text, &planned)?;
+                    descriptions.push(format!("bound event {}", event.event().as_str()));
+                }
+            }
+        }
+
+        let root_start = Document::parse(&xml_text)
+            .map_err(|error| format!("[ERROR] XML parse error after edit: {error}"))?
+            .root_element()
+            .range()
+            .start;
+        form_edit_ensure_emitted_namespaces(&mut xml_text, root_start, &emitted_fragments)?;
+        let edited = Document::parse(&xml_text)
+            .map_err(|error| format!("[ERROR] XML parse error after edit: {error}"))?;
+        require_form_root(edited.root_element()).map_err(|error| format!("[ERROR] {error}"))?;
+        form_edit_require_valid(validate_form_with_source(
+            &DefaultValidationArguments,
+            context,
+            Some((&form_path, &xml_text)),
+        ))?;
+
+        let changed = xml_text != original_xml_text;
+        let warnings = if changed && !mode.is_preview() {
+            form_edit_publish_preserving_bom(
+                CompileTransaction::new(),
+                &form_path,
+                &original_bytes,
+                &xml_text,
+                bom,
+                context,
+            )?
+        } else {
+            Vec::new()
+        };
+        let mut stdout = format!("=== form-edit: {} ===\n\n", form_edit_form_name(&form_path));
+        for description in &descriptions {
+            stdout.push_str(&format!("  {description}\n"));
+        }
+        stdout.push_str("---\n");
+        if changed {
+            stdout.push_str(&format!(
+                "Total: {} semantic patch(es)\n",
+                descriptions.len()
+            ));
+        } else {
+            stdout.push_str("Total: idempotent no-op; source bytes preserved.\n");
+        }
+        stdout.push_str("Run /form-validate to verify.\n");
+        let outcome = NativeWriterResult {
+            ok: true,
+            summary: if mode.is_preview() && !changed {
+                "dry run: unica.form.edit found an idempotent no-op".to_string()
+            } else if !changed {
+                "unica.form.edit completed with idempotent no-op".to_string()
+            } else if mode.is_preview() {
+                "dry run: unica.form.edit planned native managed form changes".to_string()
+            } else {
+                "unica.form.edit completed with native managed form editor".to_string()
+            },
+            changes: if changed {
+                vec![format!(
+                    "{} {}",
+                    if mode.is_preview() {
+                        "would update"
+                    } else {
+                        "updated"
+                    },
+                    form_path.display()
+                )]
+            } else {
+                Vec::new()
+            },
+            warnings,
+            errors: Vec::new(),
+            artifacts: vec![form_path.display().to_string()],
+            stdout: Some(stdout),
+            stderr: None,
+        };
+        Ok((
+            outcome,
+            FormEditData {
+                changed,
+                removed,
+                validation: FormEditValidation::Passed,
+            },
+        ))
+    })();
+
+    match result {
+        Ok((outcome, data)) => FormEditExecution {
+            outcome,
+            data: Some(data),
         },
         Err(error) => form_edit_failure(error),
     }
@@ -5336,16 +5770,22 @@ impl FormEditPlannedEvent {
     }
 }
 
+#[cfg(test)]
 fn form_edit_resolve_definition_guarded(
     input: FormEditDefinitionInput,
     context: &WorkspaceContext,
     transaction: &mut CompileTransaction,
 ) -> Result<Value, String> {
     match input {
+        FormEditDefinitionInput::Semantic(_) => {
+            unreachable!("semantic form edits are applied by form_edit_semantic_with_mode")
+        }
+        #[cfg(test)]
         FormEditDefinitionInput::Inline(definition) => {
             validate_form_edit_definition(&definition)?;
             Ok(definition)
         }
+        #[cfg(test)]
         FormEditDefinitionInput::File(json_path_raw) => {
             let json_path = absolutize(json_path_raw.clone(), &context.cwd);
             if !json_path.exists() {
@@ -6570,13 +7010,19 @@ pub(crate) fn form_edit_target_child_items_range(
             pos: after_element.range().end,
         });
     }
-    let Some(child_items) = root_child_items else {
-        return Err("No <ChildItems> section found in form".to_string());
-    };
-    Ok(FormEditInsertTarget::ExistingChildItems {
-        child_indent: form_edit_child_indent_for_section(xml_text, child_items.range()),
-        range: child_items.range(),
-    })
+    match root_child_items {
+        Some(child_items) => Ok(FormEditInsertTarget::ExistingChildItems {
+            child_indent: form_edit_child_indent_for_section(xml_text, child_items.range()),
+            range: child_items.range(),
+        }),
+        None => Ok(FormEditInsertTarget::ElementNeedsChildItems {
+            range: root.range(),
+            tag: root.tag_name().name().to_string(),
+            element_indent: String::new(),
+            child_items_indent: "\t".to_string(),
+            child_indent: "\t\t".to_string(),
+        }),
+    }
 }
 
 pub(crate) fn form_edit_find_element<'a>(
@@ -7273,6 +7719,322 @@ pub(crate) fn form_compile_xml(
             attributes,
             commands,
             parameters,
+        },
+    ))
+}
+
+fn form_semantic_value_type(value: unica_format_core::commands::MetadataValueType) -> &'static str {
+    use unica_format_core::commands::MetadataValueType;
+    match value {
+        MetadataValueType::String => "String",
+        MetadataValueType::Number => "Number",
+        MetadataValueType::Boolean => "Boolean",
+        MetadataValueType::Date => "Date",
+        MetadataValueType::Uuid => "UUID",
+        MetadataValueType::Binary => "BinaryData",
+        MetadataValueType::ValueStorage => "ValueStorage",
+        MetadataValueType::Any => "Any",
+        MetadataValueType::CatalogReference => "CatalogRef",
+        MetadataValueType::DocumentReference => "DocumentRef",
+        MetadataValueType::EnumReference => "EnumRef",
+        MetadataValueType::DefinedType => "DefinedType",
+    }
+}
+
+fn emit_form_semantic_events(
+    lines: &mut Vec<String>,
+    events: &[unica_format_core::commands::FormEventBinding],
+    indent: &str,
+) {
+    if events.is_empty() {
+        return;
+    }
+    lines.push(format!("{indent}<Events>"));
+    for event in events {
+        lines.push(format!(
+            "{indent}\t<Event name=\"{}\">{}</Event>",
+            escape_xml(event.event().as_str()),
+            escape_xml(event.handler().as_str())
+        ));
+    }
+    lines.push(format!("{indent}</Events>"));
+}
+
+fn emit_form_semantic_flags(
+    lines: &mut Vec<String>,
+    element: &unica_format_core::commands::FormElementDefinition,
+    indent: &str,
+) {
+    if !element.is_visible() {
+        lines.push(format!("{indent}<Visible>false</Visible>"));
+    }
+    if !element.is_enabled() {
+        lines.push(format!("{indent}<Enabled>false</Enabled>"));
+    }
+    if element.is_read_only() {
+        lines.push(format!("{indent}<ReadOnly>true</ReadOnly>"));
+    }
+}
+
+fn emit_form_semantic_element(
+    lines: &mut Vec<String>,
+    element: &unica_format_core::commands::FormElementDefinition,
+    indent: &str,
+    ids: &mut FormIdAllocator,
+) -> Result<(), String> {
+    use unica_format_core::commands::FormElementType;
+    let tag = match element.element_type() {
+        FormElementType::Input => "InputField",
+        FormElementType::Group => "UsualGroup",
+        FormElementType::Table => "Table",
+        FormElementType::Button => "Button",
+        FormElementType::CommandBar => "CommandBar",
+        FormElementType::Label => "LabelField",
+        FormElementType::Picture => "PictureField",
+        FormElementType::Calendar => "CalendarField",
+        FormElementType::Pages => "Pages",
+        FormElementType::Page => "Page",
+    };
+    let name = element.name().as_str();
+    let id = ids.next();
+    lines.push(format!(
+        "{indent}<{tag} name=\"{}\" id=\"{id}\">",
+        escape_xml(name)
+    ));
+    let inner = format!("{indent}\t");
+    if let Some(path) = element.data_path() {
+        lines.push(format!(
+            "{inner}<DataPath>{}</DataPath>",
+            escape_xml(path.as_str())
+        ));
+    }
+    if let Some(command) = element.command() {
+        let command = if command.as_str().starts_with("Form.") {
+            command.as_str().to_string()
+        } else {
+            format!("Form.Command.{}", command.as_str())
+        };
+        lines.push(format!(
+            "{inner}<CommandName>{}</CommandName>",
+            escape_xml(&command)
+        ));
+    }
+    if let Some(title) = element.title() {
+        emit_form_mltext(lines, &inner, "Title", title.as_str());
+    }
+    emit_form_semantic_flags(lines, element, &inner);
+    emit_form_semantic_companions(lines, element.element_type(), name, &inner, ids);
+    emit_form_semantic_events(lines, element.events(), &inner);
+    if !element.children().is_empty() {
+        lines.push(format!("{inner}<ChildItems>"));
+        for child in element.children() {
+            emit_form_semantic_element(lines, child, &format!("{inner}\t"), ids)?;
+        }
+        lines.push(format!("{inner}</ChildItems>"));
+    }
+    lines.push(format!("{indent}</{tag}>"));
+    Ok(())
+}
+
+fn emit_form_semantic_companions(
+    lines: &mut Vec<String>,
+    element_type: unica_format_core::commands::FormElementType,
+    name: &str,
+    indent: &str,
+    ids: &mut FormIdAllocator,
+) {
+    use unica_format_core::commands::FormElementType;
+
+    if matches!(
+        element_type,
+        FormElementType::Input
+            | FormElementType::Table
+            | FormElementType::Label
+            | FormElementType::Picture
+            | FormElementType::Calendar
+    ) {
+        emit_form_companion(
+            lines,
+            "ContextMenu",
+            &format!("{name}КонтекстноеМеню"),
+            indent,
+            ids,
+        );
+    }
+    if element_type == FormElementType::Table {
+        emit_form_companion(
+            lines,
+            "AutoCommandBar",
+            &format!("{name}КоманднаяПанель"),
+            indent,
+            ids,
+        );
+    }
+    if matches!(
+        element_type,
+        FormElementType::Input
+            | FormElementType::Group
+            | FormElementType::Table
+            | FormElementType::Button
+            | FormElementType::Label
+            | FormElementType::Picture
+            | FormElementType::Calendar
+            | FormElementType::Pages
+            | FormElementType::Page
+    ) {
+        emit_form_companion(
+            lines,
+            "ExtendedTooltip",
+            &format!("{name}РасширеннаяПодсказка"),
+            indent,
+            ids,
+        );
+    }
+    if element_type == FormElementType::Table {
+        emit_form_table_addition(
+            lines,
+            "SearchStringAddition",
+            name,
+            "СтрокаПоиска",
+            "SearchStringRepresentation",
+            indent,
+            ids,
+        );
+        emit_form_table_addition(
+            lines,
+            "ViewStatusAddition",
+            name,
+            "СостояниеПросмотра",
+            "ViewStatusRepresentation",
+            indent,
+            ids,
+        );
+        emit_form_table_addition(
+            lines,
+            "SearchControlAddition",
+            name,
+            "УправлениеПоиском",
+            "SearchControl",
+            indent,
+            ids,
+        );
+    }
+}
+
+fn emit_form_semantic_attribute(
+    lines: &mut Vec<String>,
+    attribute: &unica_format_core::commands::FormAttributeDefinition,
+    indent: &str,
+    ids: &mut FormIdAllocator,
+    column: bool,
+) -> Result<(), String> {
+    let tag = if column { "Column" } else { "Attribute" };
+    let id = ids.next();
+    lines.push(format!(
+        "{indent}<{tag} name=\"{}\" id=\"{id}\">",
+        escape_xml(attribute.name().as_str())
+    ));
+    let inner = format!("{indent}\t");
+    if let Some(title) = attribute.title() {
+        emit_form_mltext(lines, &inner, "Title", title.as_str());
+    }
+    if let Some(value_type) = attribute.value_type() {
+        emit_form_type(lines, form_semantic_value_type(value_type), &inner)?;
+    } else {
+        lines.push(format!("{inner}<Type/>"));
+    }
+    if attribute.is_main() && !column {
+        lines.push(format!("{inner}<MainAttribute>true</MainAttribute>"));
+    }
+    if !attribute.columns().is_empty() {
+        lines.push(format!("{inner}<Columns>"));
+        for child in attribute.columns() {
+            emit_form_semantic_attribute(lines, child, &format!("{inner}\t"), ids, true)?;
+        }
+        lines.push(format!("{inner}</Columns>"));
+    }
+    lines.push(format!("{indent}</{tag}>"));
+    Ok(())
+}
+
+fn form_compile_semantic_xml(
+    definition: &unica_format_core::commands::ManagedFormDefinition,
+    format_version: &str,
+) -> Result<(String, FormCompileStats), String> {
+    let mut ids = FormIdAllocator::new();
+    let mut lines = Vec::<String>::new();
+    lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
+    lines.push(format!(
+        "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" xmlns:app=\"http://v8.1c.ru/8.2/managed-application/core\" xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\" xmlns:dcscor=\"http://v8.1c.ru/8.1/data-composition-system/core\" xmlns:dcssch=\"http://v8.1c.ru/8.1/data-composition-system/schema\" xmlns:dcsset=\"http://v8.1c.ru/8.1/data-composition-system/settings\" xmlns:ent=\"http://v8.1c.ru/8.1/data/enterprise\" xmlns:lf=\"http://v8.1c.ru/8.2/managed-application/logform\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"{format_version}\">"
+    ));
+    if let Some(title) = definition.title() {
+        emit_form_mltext(&mut lines, "\t", "Title", title.as_str());
+        lines.push("\t<AutoTitle>false</AutoTitle>".to_string());
+    }
+    lines.push("\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>".to_string());
+    emit_form_semantic_events(&mut lines, definition.events(), "\t");
+    if !definition.elements().is_empty() {
+        lines.push("\t<ChildItems>".to_string());
+        for element in definition.elements() {
+            emit_form_semantic_element(&mut lines, element, "\t\t", &mut ids)?;
+        }
+        lines.push("\t</ChildItems>".to_string());
+    }
+    if !definition.attributes().is_empty() {
+        lines.push("\t<Attributes>".to_string());
+        for attribute in definition.attributes() {
+            emit_form_semantic_attribute(&mut lines, attribute, "\t\t", &mut ids, false)?;
+        }
+        lines.push("\t</Attributes>".to_string());
+    }
+    if !definition.parameters().is_empty() {
+        lines.push("\t<Parameters>".to_string());
+        for parameter in definition.parameters() {
+            lines.push(format!(
+                "\t\t<Parameter name=\"{}\">",
+                escape_xml(parameter.name().as_str())
+            ));
+            if let Some(value_type) = parameter.value_type() {
+                emit_form_type(&mut lines, form_semantic_value_type(value_type), "\t\t\t")?;
+            } else {
+                lines.push("\t\t\t<Type/>".to_string());
+            }
+            lines.push("\t\t</Parameter>".to_string());
+        }
+        lines.push("\t</Parameters>".to_string());
+    }
+    if !definition.commands().is_empty() {
+        lines.push("\t<Commands>".to_string());
+        for command in definition.commands() {
+            let id = ids.next();
+            lines.push(format!(
+                "\t\t<Command name=\"{}\" id=\"{id}\">",
+                escape_xml(command.name().as_str())
+            ));
+            if let Some(title) = command.title() {
+                emit_form_mltext(&mut lines, "\t\t\t", "Title", title.as_str());
+            }
+            if let Some(action) = command.action() {
+                lines.push(format!(
+                    "\t\t\t<Action>{}</Action>",
+                    escape_xml(action.as_str())
+                ));
+            }
+            lines.push("\t\t</Command>".to_string());
+        }
+        lines.push("\t</Commands>".to_string());
+    }
+    lines.push("</Form>".to_string());
+    let xml = format!("{}\n", lines.join("\n"));
+    Document::parse(&xml)
+        .map_err(|error| format!("compiled semantic form is not valid XML: {error}"))?;
+    Ok((
+        xml,
+        FormCompileStats {
+            element_ids: ids.next,
+            attributes: definition.attributes().len(),
+            commands: definition.commands().len(),
+            parameters: definition.parameters().len(),
         },
     ))
 }
@@ -10380,7 +11142,7 @@ pub(crate) fn remove_form_typed(
     remove_form_input(
         FormRemoveInput {
             source_collection,
-            object_name: command.owner().as_str().to_string(),
+            owner: FormRemoveOwner::Semantic(command.owner().clone()),
             form_name: command.name().as_str().to_string(),
         },
         context,
@@ -10399,36 +11161,25 @@ fn form_compile_input_from_typed(
             "managed form compilation",
         )?
         .to_path_buf();
-    let (from_object, purpose) = match command.source() {
-        FormCompileSource::Definition => (false, None),
-        FormCompileSource::Object { purpose } => {
-            (true, purpose.map(|value| value.as_str().to_string()))
-        }
+    let source = match command.source() {
+        FormCompileSource::Definition(definition) => FormCompileInputSource::Semantic {
+            definition: definition.clone(),
+            guard: session
+                .source(WriterSourceRole::Definition)
+                .map(Path::to_path_buf),
+        },
+        FormCompileSource::Object { purpose } => FormCompileInputSource::Object {
+            object_path: session
+                .source(WriterSourceRole::Object)
+                .map(Path::to_path_buf),
+            purpose: purpose.map(|value| value.as_str().to_string()),
+        },
     };
     Ok(FormCompileInput {
-        definition_path: session
-            .source(WriterSourceRole::Definition)
-            .map(Path::to_path_buf),
-        object_path: session
-            .source(WriterSourceRole::Object)
-            .map(Path::to_path_buf),
+        source,
         output_path,
-        from_object,
-        purpose,
         _skip_validation: command.skips_validation(),
     })
-}
-
-pub(crate) fn has_typed_compile_payload(session: &PlatformWriterSession) -> bool {
-    use unica_format_core::commands::WriterSourceRole;
-
-    [
-        WriterSourceRole::Definition,
-        WriterSourceRole::Object,
-        WriterSourceRole::DestinationArtifact,
-    ]
-    .into_iter()
-    .any(|role| session.source(role).is_some())
 }
 
 pub(crate) fn preview_form_compile_typed(
@@ -10451,36 +11202,11 @@ fn form_edit_input_from_typed(
     let form_path = session
         .required_source(WriterSourceRole::Form, "managed form editing")?
         .to_path_buf();
-    let definition_path = session
-        .source(WriterSourceRole::Definition)
-        .map(Path::to_path_buf);
-    let inline = session.inline_definition();
-    let definition = match (inline, definition_path) {
-        (Some(_), Some(_)) => {
-            return Err(
-                "form edit accepts exactly one definition source or inline definition".to_string(),
-            )
-        }
-        (Some(bytes), None) => FormEditDefinitionInput::Inline(
-            serde_json::from_slice(bytes)
-                .map_err(|error| format!("failed to parse form edit definition: {error}"))?,
-        ),
-        (None, Some(path)) => FormEditDefinitionInput::File(path),
-        (None, None) => return Err("form edit requires a definition".to_string()),
-    };
     Ok(FormEditInput {
         form_path,
-        definition,
+        definition: FormEditDefinitionInput::Semantic(command.clone()),
         _skip_validation: command.skips_validation(),
     })
-}
-
-pub(crate) fn has_typed_edit_payload(session: &PlatformWriterSession) -> bool {
-    use unica_format_core::commands::WriterSourceRole;
-
-    session.source(WriterSourceRole::Form).is_some()
-        || session.source(WriterSourceRole::Definition).is_some()
-        || session.inline_definition().is_some()
 }
 
 pub(crate) fn apply_typed_with_data(
