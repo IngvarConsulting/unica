@@ -1323,3 +1323,256 @@ Logs: `/tmp/task8-fix4-windows-core-adapter.log`, `/tmp/task8-fix4-windows-host.
 - The 28 host unit failures and one host corpus failure above remain; they are reported per test and were not relabeled as inherited success.
 - Task 5 oracle regeneration requires Python 3.12 `lxml`; it is not declared by this Rust change and was supplied only in `/tmp` for validation.
 - A complete Windows host build still requires a real MinGW-compatible C sysroot providing both the `ring/assert.h` and SQLite standard-library headers.
+
+## Fix Round 5
+
+### Baseline and commits
+
+- Requested base: `6ee536956731b6c79a2418157249bb4d9743866f`.
+- Branch: `codex/versioned-source-adapter-design`.
+- Implementation commit: `65c29a5f20e03108961e2c3c90ec3733f1306d8e` (`fix(adapter): close Task 8 round 5 findings`).
+- This report is committed separately without amend.
+- Controller-owned `.superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/progress.md` remained modified, unstaged, and uncommitted.
+
+### Approved prerequisite test-data correction
+
+During the initial DCS fixture rewrite, one affected Task 8 test fixture contained a duplicated `xmlns:xsi` declaration. The controller explicitly approved correcting that test data before continuing. The duplicate declaration was removed without changing the genuine native DCS root local name, default namespace, or namespace set. This was a prerequisite fixture correction, not a production-format change, and is covered by the final XML parse and generated-root assertions.
+
+### Finding 1: genuine DCS/MXL schema identity
+
+The invented DCS/MXL root `version` attribute has been removed from classification, writer validation, fixtures, and generated output. XML declarations such as `<?xml version="1.0"?>` remain; only the nonexistent root attribute was removed.
+
+The adapter-private policy now starts from the captured qualified root and complete schema signature:
+
+| Family | Current native signature | Decision |
+|---|---|---|
+| DCS | `DataCompositionSchema` in `http://v8.1c.ru/8.1/data-composition-system/schema`, using only the reviewed DCS/data/schema namespaces | compatible |
+| MXL | `document` in `http://v8.1c.ru/8.2/data/spreadsheet`, using only the reviewed spreadsheet/data/schema namespaces | compatible |
+| Either | current root namespace plus an unknown descendant or attribute namespace | `SourceRevisionNewer`, fail closed before preview/apply |
+| Either | unknown root namespace or missing root namespace | `SourceRevisionNewer`, fail closed as unsupported/possibly newer |
+| Either | wrong root local name or malformed XML | `SourceMalformed`, fail closed before preview/apply |
+
+No tracked native spec or local legacy fixture identifies a genuine older DCS/MXL namespace signature. Therefore the reviewed older-signature lists are deliberately empty: this round does not relabel invented `0.x` root attributes as historical evidence. If a genuine older signature is added later, it has a separate explicit `Older` policy and cannot silently downgrade or overwrite. Unknown signatures remain denied rather than guessed.
+
+DCS/MXL create commands now use strict existing-XML-target preflight. An existing malformed destination is no longer skipped as if absent; preview and apply both return the typed malformed rejection. Generic template creation retains its separate arbitrary-payload behavior.
+
+`task8_fix_round4_contract` covers, for both families:
+
+- current spec-shaped no-version input;
+- unknown root namespace;
+- unknown child schema namespace;
+- missing namespace;
+- wrong root;
+- malformed XML;
+- preview/apply parity;
+- newly generated output with exact root name/namespace and no root `version` attribute.
+
+The real private DCS/MXL writer tests are included in the final `838/838` writer result.
+
+### Finding 2: published form-add owner selection
+
+`unica.form.add` again works with documented `ObjectPath` alone. Ownership direction is now:
+
+1. Host binds `ObjectPath` only as opaque `WriterSourceRole::Object` evidence.
+2. Core carries `FormOwnerSelection::CapturedObject`; it has no path, XML class, directory, or platform vocabulary.
+3. Adapter resolves file/directory form-add paths, reads the captured metadata descriptor, derives the neutral `FormOwnerReference`, and validates it before mutation.
+4. The public optional `ObjectName` contract is preserved as validated `FormOwnerName`. When supplied, the adapter compares it with the captured owner name after path resolution; when omitted, the captured owner is sufficient.
+
+The host no longer requires `ObjectName` and no longer parses native metadata paths. The public schema proves `ObjectPath` is present, `ObjectName` remains optional, and both path-only and path-plus-name requests validate. The host mapper test proves the optional name reaches the typed DTO. The previously failing corpus case `cfe_patch_method_inventory_covers_atomic_xml_and_bsl_change` is green, and the complete 27-case corpus is `26 passed; 1 ignored`.
+
+### Finding 3: verified readable semantic fixture provenance
+
+All 25 command-variant oracle files remain explicit counted semantic fact JSON. They no longer contain workspace/session IDs, source/object/relation/group keys, parser ordinals, semantic hash placeholders, semantic ID placeholders, document indexes, or captured UUID values.
+
+The documented normalization now:
+
+- retains envelope status, root identity, consistency, coverage, and diagnostics;
+- retains semantic identities, kinds, properties, values, states, facets, relations, namespaces, roots, and standalone domain structures;
+- recursively unwraps Task 5 typed-value envelopes into readable semantic values;
+- omits only transport-generated UUID properties and standalone generated ID elements;
+- cancels identical facts from both delta directions, because an unchanged fact is not a semantic delta.
+
+The fixture guard rejects any unchanged fact appearing in both `added` and `removed`. It also rejects missing/unapproved provenance, hash drift, invalid line ranges, unverified claims, and every reader-internal marker above.
+
+Every provenance path is tracked and exists. SHA-256 is recomputed during the architecture test; the reviewed sources are:
+
+```text
+spec/designs/2026-07-26-versioned-source-adapter-architecture.md
+  87f85c9346b031287041a05cb90238aba6a070e74ee9dd26d0f0467398b4a3db
+crates/unica-adapter-platform-xml/tests/legacy_parity.rs
+  d901fffef0ca68ef2ee749bdb1c60177a125082e9625b2942e109ee7034c0d3d
+crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/legacy-semantic-oracle.json
+  75feda9cab247618c221c35777046681033d1883c3814b21cdb42dc420d1dcbd
+plugins/unica/references/specs/1c-dcs-spec.md
+  8d97d7be34a41a5493b45030e4f70144b99b25c1204bb0f4279e45aea2ec8bf0
+plugins/unica/references/specs/1c-spreadsheet-spec.md
+  ffe3648707528e76f03a71c18132ce45485ab67b8efcce4a0120d79663cd5052
+```
+
+Each fixture records exact source line ranges and claims; tests verify that every range exists. No production reader/writer update or dump path generates expected files. The committed expectations are readable facts, while production reader observations are created only at test execution and compared as typed multisets.
+
+The preservation matrix remains exhaustive: all 25 `WriterCommand` variants execute success, dry run, idempotent repeat, genuine denial, post-mutation cancellation/rollback, and deterministic same-lock concurrency. Final coverage is exactly `25 * 6 = 150` rows. Mutation tests still prove that wrong value, type, relation, namespace, addition, or removal fails comparison.
+
+### RED evidence
+
+| Scope | RED result |
+|---|---|
+| Public corpus | `cfe_patch_method_inventory_covers_atomic_xml_and_bsl_change`: `unica.form.add` failed with `missing required ObjectName argument` |
+| DCS/MXL source guard | artificial root `version="1.0"` remained in classifier/validators/emitters/fixtures |
+| Provenance audit | 97 invalid markers/sources, including nonexistent provenance and reader-internal IDs/hashes |
+| First genuine-schema contract | valid no-version create/apply was rejected because private DCS/MXL root validators still required the invented attribute |
+| Second genuine-schema contract | malformed existing DCS create target previewed as no-change because create-only preflight skipped malformed XML |
+| First provenance architecture run | `<semantic-id>` remained and an overbroad static guard rejected legitimate metadata version handling |
+| First full preservation run | stale FormCompile unchanged facts and noncanonical fixture ordering failed exact multiset comparison |
+| Public optional-owner contract | schema still published optional `ObjectName`, while the new test incorrectly asserted it absent and the host mapper ignored it |
+
+The approved duplicated-`xmlns:xsi` test-data error was corrected before the GREEN runs and is explicitly recorded above.
+
+### GREEN validation
+
+| Scope | Command/result |
+|---|---|
+| Formatting | `cargo fmt --all -- --check`: exit 0 |
+| Diff hygiene | `git diff --check`: exit 0 |
+| Private writer namespace | `cargo test -p unica-adapter-platform-xml --lib versions::v2_20::writers:: -- --quiet`: `838 passed; 0 failed` |
+| Preservation matrix | `cargo test -p unica-adapter-platform-xml --features test-support --test task8_fix_round1_preservation_matrix -- --quiet`: 2 harness tests green; `150/150` rows |
+| Task 8 core contracts | four targets: `17 passed; 0 failed` |
+| Task 8 adapter architecture/contracts/ports | seven targets: `28 passed; 0 failed` |
+| Task 5 parity | `legacy_parity`: `26 passed; 0 failed` |
+| Task 6 relations | `specialized_relations`: `7 passed; 0 failed` |
+| Task 7 adapter scopes | six targets: `50 passed; 0 failed` |
+| Task 7 core scopes | seven targets: `35 passed; 0 failed` |
+| Host platform corpus | `format_8_3_27_xml_corpus`: `26 passed; 0 failed; 1 ignored` |
+| Host form-add typed mapping | exact registry test: `1 passed; 0 failed` |
+| Host form-add public contract | exact tool-contract test: `1 passed; 0 failed` |
+| Touched Windows crates | `cargo check --target x86_64-pc-windows-gnu -p unica-format-core -p unica-adapter-platform-xml`: exit 0 |
+
+The broad adapter diagnostic command was also rerun:
+
+```text
+cargo test -p unica-adapter-platform-xml --features test-support -- --nocapture
+1020 passed; 13 failed
+```
+
+All 13 failures are outside the writer namespace; the exact names match the base report:
+
+```text
+versions::v2_20::decoder::direct_type_property_tests::direct_foreign_qname_fails_closed_instead_of_becoming_a_scalar
+versions::v2_20::decoder::direct_type_property_tests::unbound_direct_qname_is_rejected_by_type_namespace_resolution
+versions::v2_20::decoder::tests::duplicate_inline_child_names_are_identity_collisions
+versions::v2_20::decoder::tests::scalar_annotation_rejects_alien_or_conflicting_qnames_locally
+versions::v2_20::probe::tests::configuration_unknown_child_fails_closed
+versions::v2_20::probe::tests::unknown_metadata_class_fails_closed
+versions::v2_20::probe::tests::unknown_nested_structural_features_fail_closed_for_representative_classes
+versions::v2_20::projector::tests::empty_annotated_fill_value_preserves_string_but_not_invalid_decimal
+versions::v2_20::projector::tests::fill_value_accepts_only_lossless_decimal_or_string_annotations
+versions::v2_20::projector::tests::fill_value_uses_exact_native_scalar_annotation_not_text
+versions::v2_20::projector::tests::fill_value_without_a_known_annotation_is_unresolved
+versions::v2_20::projector::tests::form_is_always_partial_and_inspection_only_before_form_internals_exist
+versions::v2_20::projector::tests::malformed_decimal_and_local_scalar_failure_remain_property_local
+```
+
+Full core diagnostic retains one exact base failure:
+
+```text
+property_contract::property_definition_registry_is_complete_unique_and_finite
+actual includes EmptyReference; the older test-owned expected list omits it
+```
+
+Full host library result is `582 passed; 28 failed; 2 ignored`. The additional pass versus the base count is the new form-add mapping test. The exact 28 failure names are unchanged from the base report:
+
+```text
+application::tests::ambiguous_source_set_owner_has_same_structured_failure_for_preview_and_apply
+application::tests::cf_edit_add_child_object_prioritizes_newer_existing_target_descriptor
+application::tests::cf_edit_rejects_symlink_configuration_without_touching_referent
+application::tests::cf_edit_validation_dependencies_block_incompatible_home_page_file
+application::tests::cfe_borrow_rejects_edt_config_source_set_target
+application::tests::code_patch_apply_is_blocked_for_a_locked_supported_object
+application::tests::create_only_initializers_prioritize_exact_newer_planned_xml_targets
+application::tests::declared_existing_dcs_output_rejects_wrong_root_before_handler
+application::tests::declared_existing_form_output_rejects_wrong_root_before_handler
+application::tests::declared_existing_mxl_output_rejects_wrong_root_before_handler
+application::tests::declared_form_output_with_nonstandard_suffix_still_blocks_newer_owner
+application::tests::detailed_compile_dry_run_rejects_edt_source_set_like_apply
+application::tests::detailed_compile_dry_run_rejects_output_escape_like_apply
+application::tests::entity_spelled_supported_format_is_invalid_at_the_public_boundary
+application::tests::form_compile_dry_run_rejects_edt_source_set_like_apply
+application::tests::form_compile_dry_run_rejects_output_escape_like_apply
+application::tests::meta_edit_rejects_ambiguous_or_empty_standalone_metadata_owner_before_handler
+application::tests::mutating_cf_edit_blocks_locked_configuration_directory_target
+application::tests::mutating_meta_edit_blocks_locked_vendor_object_by_default
+application::tests::mutating_native_operation_rejects_output_escape_before_backend_execution
+application::tests::mxl_compile_blocks_write_inside_older_dump_with_structured_diagnostic
+application::tests::native_xml_metadata_tools_reject_edt_source_set_targets
+application::tests::numeric_equivalent_noncanonical_format_warns_on_read_and_blocks_public_mutator
+application::tests::read_only_path_aliases_warn_for_older_directory_owned_inputs
+application::tool_contracts::tests::every_native_path_alias_group_normalizes_to_one_canonical_argument
+application::tool_contracts::tests::every_published_argument_is_described
+infrastructure::source_adapters::registry::registry_tests::pinned_format_and_foreign_probe_identity_fail_closed
+infrastructure::source_adapters::registry::registry_tests::typed_identity_fields_fail_closed_without_inspecting_ordinary_data_keys
+```
+
+### Windows cross-check
+
+Touched core and adapter crates are green for `x86_64-pc-windows-gnu`.
+
+The current full host check is environment-blocked before Rust host code is checked:
+
+- default compiler discovery fails because `x86_64-w64-mingw32-gcc` is absent;
+- with `CC_x86_64_pc_windows_gnu=clang`, `ring 0.17.14` reaches `fatal error: 'assert.h' file not found`;
+- the separately established bundled `libsqlite3-sys 0.30.1` probe remains blocked by the missing Windows CRT headers, including `stdlib.h` (and initially `stdio.h`). That isolated SQLite probe was not rerun in Fix Round 5; the wording is retained from the verified Fix Round 4 evidence rather than presented as a new run.
+
+### Files in implementation commit
+
+```text
+crates/unica-adapter-platform-xml/src/owner.rs
+crates/unica-adapter-platform-xml/src/publication.rs
+crates/unica-adapter-platform-xml/src/versions/v2_20/operations.rs
+crates/unica-adapter-platform-xml/src/versions/v2_20/writers/common.rs
+crates/unica-adapter-platform-xml/src/versions/v2_20/writers/dcs.rs
+crates/unica-adapter-platform-xml/src/versions/v2_20/writers/form.rs
+crates/unica-adapter-platform-xml/src/versions/v2_20/writers/mxl.rs
+crates/unica-adapter-platform-xml/src/versions/v2_20/writers/registry.rs
+crates/unica-adapter-platform-xml/tests/fixtures/task8-writer-semantic-facts/ConfigurationEdit.json
+crates/unica-adapter-platform-xml/tests/fixtures/task8-writer-semantic-facts/ConfigurationInitialize.json
+crates/unica-adapter-platform-xml/tests/fixtures/task8-writer-semantic-facts/DataCompositionCreate.json
+crates/unica-adapter-platform-xml/tests/fixtures/task8-writer-semantic-facts/DataCompositionEdit.json
+crates/unica-adapter-platform-xml/tests/fixtures/task8-writer-semantic-facts/ExtensionBorrow.json
+crates/unica-adapter-platform-xml/tests/fixtures/task8-writer-semantic-facts/ExtensionInitialize.json
+crates/unica-adapter-platform-xml/tests/fixtures/task8-writer-semantic-facts/ExtensionPatchMethod.json
+crates/unica-adapter-platform-xml/tests/fixtures/task8-writer-semantic-facts/ExternalProcessorInitialize.json
+crates/unica-adapter-platform-xml/tests/fixtures/task8-writer-semantic-facts/ExternalReportInitialize.json
+crates/unica-adapter-platform-xml/tests/fixtures/task8-writer-semantic-facts/FormCompile.json
+crates/unica-adapter-platform-xml/tests/fixtures/task8-writer-semantic-facts/FormCreate.json
+crates/unica-adapter-platform-xml/tests/fixtures/task8-writer-semantic-facts/FormEdit.json
+crates/unica-adapter-platform-xml/tests/fixtures/task8-writer-semantic-facts/FormRemove.json
+crates/unica-adapter-platform-xml/tests/fixtures/task8-writer-semantic-facts/HelpCreate.json
+crates/unica-adapter-platform-xml/tests/fixtures/task8-writer-semantic-facts/InterfaceEdit.json
+crates/unica-adapter-platform-xml/tests/fixtures/task8-writer-semantic-facts/MetadataCreate.json
+crates/unica-adapter-platform-xml/tests/fixtures/task8-writer-semantic-facts/MetadataEdit.json
+crates/unica-adapter-platform-xml/tests/fixtures/task8-writer-semantic-facts/MetadataRemove.json
+crates/unica-adapter-platform-xml/tests/fixtures/task8-writer-semantic-facts/RoleCreate.json
+crates/unica-adapter-platform-xml/tests/fixtures/task8-writer-semantic-facts/SpreadsheetCreate.json
+crates/unica-adapter-platform-xml/tests/fixtures/task8-writer-semantic-facts/SubsystemCreate.json
+crates/unica-adapter-platform-xml/tests/fixtures/task8-writer-semantic-facts/SubsystemEdit.json
+crates/unica-adapter-platform-xml/tests/fixtures/task8-writer-semantic-facts/SupportEdit.json
+crates/unica-adapter-platform-xml/tests/fixtures/task8-writer-semantic-facts/TemplateCreate.json
+crates/unica-adapter-platform-xml/tests/fixtures/task8-writer-semantic-facts/TemplateRemove.json
+crates/unica-adapter-platform-xml/tests/task8_fix_round1_preservation_matrix.rs
+crates/unica-adapter-platform-xml/tests/task8_fix_round3_contract.rs
+crates/unica-adapter-platform-xml/tests/task8_fix_round4_architecture.rs
+crates/unica-adapter-platform-xml/tests/task8_fix_round4_contract.rs
+crates/unica-coder/src/application/tool_contracts.rs
+crates/unica-coder/src/infrastructure/native_operations/registry.rs
+crates/unica-format-core/src/commands/writer_payloads.rs
+crates/unica-format-core/tests/task8_fix_round2_contract.rs
+tests/fixtures/platform_8_3_27/mxl/Template.xml
+```
+
+### Residual risks
+
+- No reviewed source currently identifies a genuine older DCS/MXL namespace signature. Older-signature handling is closed and explicit, but evidence must precede adding any signature.
+- The private official-doc corpus was unavailable as a complete local manifest in this worktree. The attempted downloader was stopped before publication because its projected run was hours; this round relies on tracked native specs and legacy fixtures and records that evidence limitation rather than inventing a format marker.
+- Semantic normalization intentionally excludes transport-generated UUID values while retaining user-meaningful identities and relations. The exclusion is statically guarded and documented.
+- The 13 adapter reader/projection failures, one core finite-list mismatch, and 28 host boundary failures above remain exact non-writer residuals.
+- Full host Windows GNU validation requires a MinGW-compatible compiler and CRT/sysroot satisfying both `ring/assert.h` and `libsqlite3-sys/stdlib.h`.
