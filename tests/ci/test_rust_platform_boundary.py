@@ -389,6 +389,120 @@ class RustPlatformBoundaryTests(unittest.TestCase):
 
         self.assertEqual(diagnostics, [])
 
+    def test_rejects_host_names_outside_the_host_facade(self) -> None:
+        checker = load_checker_module()
+
+        diagnostics = checker.check_source(
+            "crates/unica-bootstrap/src/main.rs",
+            "let data = env::var_os(\"CLAUDE_PLUGIN_DATA\");\n"
+            "let manifest = plugin_root.join(\".codex-plugin\").join(\"plugin.json\");\n"
+            "fn codex_home_root() -> Result<PathBuf> { unimplemented!() }\n"
+            "let home = env::var_os(\"CODEX_HOME\");\n"
+            "let root = env::var_os(\"CLAUDE_PLUGIN_ROOT\");\n",
+        )
+
+        self.assertEqual(
+            diagnostics,
+            [
+                "crates/unica-bootstrap/src/main.rs:1: "
+                "host environment variable CLAUDE_PLUGIN_DATA is outside the host facade",
+                "crates/unica-bootstrap/src/main.rs:2: "
+                "host manifest directory .codex-plugin is outside the host facade",
+                "crates/unica-bootstrap/src/main.rs:3: "
+                "host name codex is outside the host facade",
+                "crates/unica-bootstrap/src/main.rs:4: "
+                "host environment variable CODEX_HOME is outside the host facade",
+                "crates/unica-bootstrap/src/main.rs:5: "
+                "host environment variable CLAUDE_PLUGIN_ROOT is outside the host facade",
+            ],
+        )
+
+    def test_allows_host_names_only_in_the_host_facade_and_nested_host_tests(self) -> None:
+        checker = load_checker_module()
+        source = (
+            "const HOME: &str = \"CODEX_HOME\";\n"
+            "let manifest = root.join(\".claude-plugin\");\n"
+            "fn codex_home_root() -> Result<PathBuf> { unimplemented!() }\n"
+        )
+
+        for path in (
+            "crates/unica-bootstrap/src/host/mod.rs",
+            "crates/unica-bootstrap/src/host/descriptor/codex.rs",
+            "crates/unica-bootstrap/tests/host/cli_contract.rs",
+        ):
+            self.assertEqual(checker.check_source(path, source), [])
+
+    def test_rejects_top_level_host_test_file(self) -> None:
+        checker = load_checker_module()
+
+        diagnostics = checker.check_source(
+            "crates/unica-bootstrap/tests/host.rs",
+            "let _ = env::var_os(\"CODEX_HOME\");\n",
+        )
+
+        self.assertEqual(
+            diagnostics,
+            [
+                "crates/unica-bootstrap/tests/host.rs:1: "
+                "host environment variable CODEX_HOME is outside the host facade"
+            ],
+        )
+
+    def test_host_names_are_detected_in_literals_and_comments(self) -> None:
+        checker = load_checker_module()
+
+        diagnostics = checker.check_source(
+            "crates/unica-bootstrap/src/main.rs",
+            "// The package points the cache at ${CLAUDE_PLUGIN_DATA}.\n"
+            "/* Claude Code scans skills/ on its own. */\n"
+            "let variable = \"CODEX_HOME\";\n"
+            "let raw = r#\".claude-plugin\"#;\n",
+        )
+
+        self.assertEqual(
+            diagnostics,
+            [
+                "crates/unica-bootstrap/src/main.rs:1: "
+                "host environment variable CLAUDE_PLUGIN_DATA is outside the host facade",
+                "crates/unica-bootstrap/src/main.rs:2: "
+                "host name Claude is outside the host facade",
+                "crates/unica-bootstrap/src/main.rs:3: "
+                "host environment variable CODEX_HOME is outside the host facade",
+                "crates/unica-bootstrap/src/main.rs:4: "
+                "host manifest directory .claude-plugin is outside the host facade",
+            ],
+        )
+
+    def test_host_facade_root_is_not_granted_to_other_crates(self) -> None:
+        checker = load_checker_module()
+
+        diagnostics = checker.check_source(
+            "crates/unica-coder/src/host/codex.rs",
+            "let home = env::var_os(\"CODEX_HOME\");\n",
+        )
+
+        self.assertEqual(
+            diagnostics,
+            [
+                "crates/unica-coder/src/host/codex.rs:1: "
+                "host environment variable CODEX_HOME is outside the host facade"
+            ],
+        )
+
+    def test_host_neutral_names_do_not_trip_the_host_boundary(self) -> None:
+        checker = load_checker_module()
+
+        diagnostics = checker.check_source(
+            "crates/unica-coder/src/infrastructure/plugin_runtime.rs",
+            "let root = env::var_os(\"UNICA_PLUGIN_ROOT\");\n"
+            "let cache = env::var_os(\"UNICA_RUNTIME_CACHE_DIR\");\n"
+            "let target = HostTarget::current()?;\n"
+            "let fixture = root.join(\"marketplace/plugins/unica\");\n"
+            "let manifest = root.join(\"third-party/manifest.json\");\n",
+        )
+
+        self.assertEqual(diagnostics, [])
+
     def test_collects_tracked_and_nonignored_untracked_rust_sources_only(self) -> None:
         checker = load_checker_module()
         with tempfile.TemporaryDirectory() as temporary_directory:

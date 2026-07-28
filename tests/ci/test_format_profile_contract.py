@@ -3,7 +3,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MATRIX = ROOT / "spec/0126-platform-8-3-27-deviation-matrix.md"
+MATRIX = ROOT / "spec/architecture/format-profile-8-3-27.md"
 DESIGN = (
     ROOT
     / "docs/design/2026-07-23-platform-8-3-27-format-2-20-design.md"

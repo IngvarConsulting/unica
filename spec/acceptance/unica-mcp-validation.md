@@ -5,7 +5,7 @@
 Validate that the Unica plugin exposes one public MCP server, routes developer
 workflows through that server, and keeps cache/state coordination inside the
 orchestrator. One plugin directory serves both supported hosts, so host-facing
-steps are run once per host (INV-PRODUCT-01, ADR-0012).
+steps are run once per host (INV-PRODUCT-SINGLE-PLUGIN-TREE, ADR-0012).
 
 Each section names the invariants it exercises. The normative wording of those
 rules lives in [../architecture/invariants.md](../architecture/invariants.md)
@@ -24,26 +24,26 @@ cargo run --quiet --bin unica -- --help
 
 Expected:
 
-- `.mcp.json` has exactly one key under `mcpServers`: `unica` (INV-MCP-02).
+- `.mcp.json` has exactly one key under `mcpServers`: `unica` (INV-MCP-SINGLE-ENTRY).
 - `cargo run --quiet --bin unica -- --help` prints `unica <version>` and describes the stdio MCP
   orchestrator.
-- Old adapter names are not public MCP registrations (INV-MCP-01).
+- Old adapter names are not public MCP registrations (INV-MCP-NO-ENGINE-SERVERS).
 - Hidden workspace analyzer services are internal implementation details and do
-  not add keys under `mcpServers` (INV-APP-07).
+  not add keys under `mcpServers` (INV-APP-LAZY-HIDDEN-SERVICES).
 - Bundled-tool versions come from `plugins/unica/third-party/tools.lock.json`.
   Contract tests must load the locked entry and validate the corresponding
   artifact/interface; they must not hardcode a second `bsl-analyzer` version
-  (INV-PRODUCT-05).
+  (INV-PRODUCT-TOOL-VERSION-SOURCE).
 - Skill-local operation files do not exist. The only execution path is MCP
-  `unica`; runtime shell/PowerShell wrappers are not shipped (INV-SKILL-03,
-  INV-APP-04).
+  `unica`; runtime shell/PowerShell wrappers are not shipped (INV-SKILL-NO-SCRIPT-ROUTE,
+  INV-APP-NO-SCRIPT-BACKEND).
 
 ## Mandatory MCP Smoke
 
 Use a temporary cache directory and call the stdio server. The run checks server
-identity on the wire (INV-MCP-03), the public tool namespace (INV-MCP-04), the
-overridable volatile cache root (INV-CACHE-03), and dry-run reporting without
-written state (INV-CACHE-04):
+identity on the wire (INV-MCP-SERVER-NAME), the public tool namespace (INV-MCP-NAMESPACE), the
+overridable volatile cache root (INV-CACHE-WORKSPACE-ROOT), and dry-run reporting without
+written state (INV-CACHE-WRITE-FREE-PREVIEW):
 
 ```sh
 python3.12 - <<'PY'
@@ -144,7 +144,7 @@ user source. `git diff --check` remains required for the rest of the tree.
 
 The migration to native `unica.*` handlers is complete: no skill ships or
 references a skill-local Python/PowerShell operation file, and the runtime keeps
-no script fallback (INV-SKILL-03, INV-APP-04). Use a check that avoids matching
+no script fallback (INV-SKILL-NO-SCRIPT-ROUTE, INV-APP-NO-SCRIPT-BACKEND). Use a check that avoids matching
 package launchers:
 
 ```sh
@@ -152,13 +152,13 @@ rg -n 'powershell[.]exe|skills/.+[.]ps1|skills/.+[.]py' plugins/unica/skills
 ```
 
 Expected: no matches anywhere under `plugins/unica/skills`. A match is a
-regression against INV-SKILL-03 and needs a superseding decision, not a tracked
+regression against INV-SKILL-NO-SCRIPT-ROUTE and needs a superseding decision, not a tracked
 migration task.
 
 ## Packaging Smoke
 
 For the thin public package and its three runtime assets, the normal CI scripts
-must satisfy (INV-PRODUCT-04, INV-PKG-02, INV-PKG-03, INV-PKG-05):
+must satisfy (INV-PRODUCT-PACKAGE-PARITY, INV-PKG-THIN-PACKAGE, INV-PKG-VERIFIED-ATOMIC-INSTALL, INV-PKG-VERSION-LOCKSTEP):
 
 - packaged `.mcp.json` exposes exactly `unica`;
 - packaged `.mcp.json` uses only the command-scoped Git alias and target-neutral
@@ -178,16 +178,16 @@ must satisfy (INV-PRODUCT-04, INV-PKG-02, INV-PKG-03, INV-PKG-05):
 ## Fresh Host Visibility
 
 One plugin directory serves both hosts, so this section is run twice, once per
-host (INV-PRODUCT-01). On both hosts the acceptance signal is the same: a fresh
+host (INV-PRODUCT-SINGLE-PLUGIN-TREE). On both hosts the acceptance signal is the same: a fresh
 prompt showing Unica skills and only the public MCP server provided by the
-plugin, not stale cached registrations (INV-MCP-01, INV-MCP-02).
+plugin, not stale cached registrations (INV-MCP-NO-ENGINE-SERVERS, INV-MCP-SINGLE-ENTRY).
 
 Codex: use a clean `CODEX_HOME`, add `IngvarConsulting/unica-marketplace` at
 `main`, install `unica@unica`, and start a new Codex task.
 
 Claude Code: uninstall `unica@unica`, remove the marketplace, and delete the
 runtime cache under `${CLAUDE_PLUGIN_DATA}/runtimes` — it deliberately survives
-a plugin update (INV-CACHE-07). Then add the same marketplace, run
+a plugin update (INV-CACHE-RUNTIME-ROOT-ORDER). Then add the same marketplace, run
 `claude plugin install unica@unica`, and start a new session or reload plugins.
 Skills appear under the plugin prefix, for example `/unica:meta-validate`, and
 public tools appear as `mcp__plugin_unica_unica__<tool>` with every character
@@ -199,10 +199,10 @@ with `claude --plugin-dir ./plugins/unica`.
 
 ## Workspace Service Acceptance
 
-This section exercises INV-APP-07 (hidden, workspace-scoped services),
-INV-SOURCE-05 (source-root selection), INV-MCP-06 and INV-MCP-07 (transport
-ownership and bounded admission), INV-CACHE-05 (live services are notified by
-applied mutations), and INV-PLATFORM-04 (process-tree ownership).
+This section exercises INV-APP-LAZY-HIDDEN-SERVICES (hidden, workspace-scoped services),
+INV-SOURCE-SINGLE-RESOLVED-ROOT (source-root selection), INV-MCP-SDK-TRANSPORT and INV-MCP-BOUNDED-ADMISSION (transport
+ownership and bounded admission), INV-CACHE-PERSISTED-STALENESS (live services are notified by
+applied mutations), and INV-PLATFORM-NO-ORPHAN-PROCESSES (process-tree ownership).
 
 - `unica.code.grep` must not create `.build/unica/services`.
 - Analyzer-backed tools may create `.build/unica/services/<service-key>`.
@@ -214,7 +214,7 @@ applied mutations), and INV-PLATFORM-04 (process-tree ownership).
   otherwise the sole `CONFIGURATION` source set is used. Multiple configuration
   source sets without `main` must fail with `invalid_source_root:`. An explicit
   `sourceDir` is resolved relative to request `cwd`, normalized, and rejected if
-  it escapes the workspace (INV-SOURCE-05).
+  it escapes the workspace (INV-SOURCE-SINGLE-RESOLVED-ROOT).
 - `project.status` and `project.map`, analyzer commands, RLM commands, and the
   workspace-service identity must agree on that effective source root.
 - Analyzer and RLM work requests carry unique internal operation IDs. A public
@@ -223,7 +223,7 @@ applied mutations), and INV-PLATFORM-04 (process-tree ownership).
   specification prescribes (ADR-0013); the internal operation still observes
   cancellation exactly once.
 - The public transport is the official Rust SDK (`rmcp`, ADR-0013,
-  INV-MCP-06). It enforces the handshake: the first request must be a
+  INV-MCP-SDK-TRANSPORT). It enforces the handshake: the first request must be a
   well-formed `initialize` (`ping` may precede it), and `protocolVersion` is
   negotiated with the client instead of being pinned.
 - On EOF the SDK drains finishing calls (bounded at 5 seconds); the process
@@ -231,7 +231,7 @@ applied mutations), and INV-PLATFORM-04 (process-tree ownership).
   for them, and exits, closing stdout. Verify with
   `cargo test -p unica-coder eof_cancels_active_calls`.
 - At most 32 `tools/call` workers are admitted; excess calls return `-32603`
-  with `overloaded` without delaying `ping` or cancellation (INV-MCP-07).
+  with `overloaded` without delaying `ping` or cancellation (INV-MCP-BOUNDED-ADMISSION).
   Public input line length is delegated to the SDK transport; the 8 MiB line
   bound below applies to the internal workspace-service protocol.
 - `ping`, cancellation, and shutdown must remain responsive while analyzer or
@@ -259,7 +259,7 @@ applied mutations), and INV-PLATFORM-04 (process-tree ownership).
   their child process trees. On Windows this guarantee is implemented by
   suspended start followed by Job Object assignment; on Unix by a dedicated
   process group. Other targets guarantee only immediate-child termination
-  (INV-PLATFORM-04).
+  (INV-PLATFORM-NO-ORPHAN-PROCESSES).
 
 The issue-89 end-to-end regression exercises a workspace with `main` and
 `TESTS` source sets, concurrent analyzer/RLM calls, cancellation, ping, a

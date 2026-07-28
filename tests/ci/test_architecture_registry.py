@@ -28,7 +28,10 @@ DECISIONS_INDEX = DECISIONS_DIR / "README.md"
 SPEC_INDEX = REPO_ROOT / "spec" / "README.md"
 
 RECORD_HEADING = re.compile(r"^### (?P<id>\S+) — (?P<name>.+)$")
-RECORD_ID = re.compile(r"^(INV|REQ)-[A-Z][A-Z0-9]*-[0-9]{2}$")
+# `INV-<ОБЛАСТЬ>-<КОД>`: код смысловой, без цифр, потому что реестр — множество,
+# а не последовательность, и номер сообщал бы несуществующий приоритет.
+RECORD_ID = re.compile(r"^(?:INV|REQ)-[A-Z]+(?:-[A-Z]+)+$")
+MAX_ID_LENGTH = 40
 FIELD_START = re.compile(r"^- \*\*(?P<field>Rule|Decision|Check|Scope):\*\* (?P<value>.*)$")
 CHECK_HEAD = re.compile(r"^`(?P<cls>[a-z][a-z-]*)` — (?P<target>.+)$", re.DOTALL)
 BACKTICKED = re.compile(r"^`(?P<target>[^`]+)`$")
@@ -44,7 +47,7 @@ SCOPES = {"source", "packaged", "ci", "release", "runtime"}
 # automated. It must never be raised: a new rule without an automated check is
 # a decision to accept documentation drift, and it belongs in a risk record
 # (spec/architecture/risks.md), not here.
-MAX_MANUAL_CHECKS = 6
+MAX_MANUAL_CHECKS = 5
 
 # An architecture document may cite a decision record to explain a choice.
 # Linking most of the catalogue turns the document into a second decision index,
@@ -53,7 +56,7 @@ MAX_MANUAL_CHECKS = 6
 MAX_DECISION_LINKS_PER_DOCUMENT = 3
 
 # Registry fields carry normative text, and normative text is Russian
-# (INV-DOC-07). Identifiers stay Latin, so a rule may legitimately be almost all
+# (INV-DOC-RUSSIAN-NORMATIVE). Identifiers stay Latin, so a rule may legitimately be almost all
 # backticked names; only the prose around them is checked.
 CYRILLIC = re.compile(r"[Ѐ-ӿ]")
 BACKTICKED_SPAN = re.compile(r"`[^`]*`")
@@ -162,6 +165,15 @@ class RegistryFormatTests(unittest.TestCase):
         ]
         self.assertEqual(offenders, [], "level-3 headings in the registry must be records")
 
+    def test_record_ids_carry_meaning_not_a_number(self) -> None:
+        """Коды смысловые: цифра в идентификаторе вернула бы ложный приоритет."""
+        offenders = [
+            record.where
+            for record in self.records
+            if any(char.isdigit() for char in record.id) or len(record.id) > MAX_ID_LENGTH
+        ]
+        self.assertEqual(offenders, [])
+
     def test_record_ids_are_unique(self) -> None:
         seen: dict[str, str] = {}
         duplicates = []
@@ -268,7 +280,7 @@ class IdentifierLedgerTests(unittest.TestCase):
         )
         retired = set(
             re.findall(
-                r"\b((?:INV|REQ)-[A-Z][A-Z0-9]*-[0-9]{2})\b", section.group("body")
+                r"\b((?:INV|REQ)-[A-Z]+(?:-[A-Z]+)+)\b", section.group("body")
             )
         )
         active = set(self.declared_ids())
@@ -398,7 +410,7 @@ class IndexSynchronizationTests(unittest.TestCase):
         checklist = (
             REPO_ROOT / "spec" / "architecture" / "change-checklist.md"
         ).read_text(encoding="utf-8")
-        cited = set(re.findall(r"\b((?:INV|REQ)-[A-Z][A-Z0-9]*-[0-9]{2})\b", checklist))
+        cited = set(re.findall(r"\b((?:INV|REQ)-[A-Z]+(?:-[A-Z]+)+)\b", checklist))
         declared = {record.id for record in all_records()}
 
         self.assertTrue(cited, "the checklist must attribute its items to records")

@@ -14,7 +14,7 @@ REQ-* из spec/architecture/quality-requirements.md.
 - Решение (ADR), если публичный или архитектурный контракт меняется:
 
 Изменение публичной поверхности `unica.*` требует записи решения, записи
-реестра и проверки в одном наборе изменений (`INV-MCP-08`). Это проверяет
+реестра и проверки в одном наборе изменений (`INV-MCP-SURFACE-SYNC`). Это проверяет
 `scripts/ci/check-architecture-sync.py`.
 
 - [ ] Пройден [чек-лист изменений](../spec/architecture/change-checklist.md)

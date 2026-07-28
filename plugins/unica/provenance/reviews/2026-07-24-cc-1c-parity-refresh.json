@@ -97,7 +97,7 @@
         "caseId": "cfe-borrow/catalog",
         "contentDigest": "5b8a060c52304900e67962f6db21c5ad03e1f5b70a4c3a98a0b5c34a76fc7477",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/cfe.rs"
         ],
@@ -125,7 +125,7 @@
         "caseId": "cfe-borrow/common-module",
         "contentDigest": "7c575818f61707347809ab69c960378a85ff58e5ef1bcd6cd54f1ee7888becce",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/cfe.rs"
         ],
@@ -153,7 +153,7 @@
         "caseId": "cfe-borrow/document",
         "contentDigest": "a6100f52716c9ebbb0da685e489d034dbda5a27d08ee90e56ee7904785361d14",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/cfe.rs"
         ],
@@ -181,7 +181,7 @@
         "caseId": "cfe-borrow/enum",
         "contentDigest": "36945bfc0148269a467edafd4e8459dc8651a6d60ba476f8aed6ba9679850673",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/cfe.rs"
         ],
@@ -209,7 +209,7 @@
         "caseId": "cfe-borrow/form-bindings",
         "contentDigest": "ca7d267670b5e1a9e2a0ff786381d9910b4c1b0adf622582da8d9e179b6a039f",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/cfe.rs"
         ],
@@ -237,7 +237,7 @@
         "caseId": "cfe-borrow/multiple-objects",
         "contentDigest": "085d50b5f914fb52943ad58695bdfd3b7c598ecac89bb04def186e32c8b4d2de",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/cfe.rs"
         ],
@@ -419,7 +419,7 @@
         "caseId": "form-compile-from-object/catalog-item-simple",
         "contentDigest": "39beae436557d28423db7216023f44cc02982ac68694c36bd691233d1ffbcac5",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/form.rs"
         ],
@@ -447,7 +447,7 @@
         "caseId": "form-compile-from-object/catalog-list-simple",
         "contentDigest": "ba7316ff5f74adcc1c31a45910b9854c1298cff16b7568b56daec648748a6b81",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/form.rs"
         ],
@@ -562,7 +562,7 @@
         "caseId": "form-compile-from-object/document-item-medium",
         "contentDigest": "d75bef1a39971e7aafa0ac7a5cbd193cf74c3a1f7f66468f2a7877305194931b",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/form.rs"
         ],
@@ -590,7 +590,7 @@
         "caseId": "form-compile-from-object/document-list-medium",
         "contentDigest": "da96e559dc0846e97a5cd136b277bae313f98c90d71d3fb7a523ac49b5029f36",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/form.rs"
         ],
@@ -763,7 +763,7 @@
         "caseId": "form-compile/attributes-types",
         "contentDigest": "3579d852ff145af4cc83d6829391c07d5068cdc09b1c16ee80f612000ed9026d",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/form.rs"
         ],
@@ -791,7 +791,7 @@
         "caseId": "form-compile/auto-cmd-bar",
         "contentDigest": "b35bb890b9b9098188837d18029a86d799b53541f384ef9c305012cfab63d650",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/form.rs"
         ],
@@ -877,7 +877,7 @@
         "caseId": "form-compile/catalog-form",
         "contentDigest": "dd93193b18e1eb45de32d2410482e247cece3f07821948478c451403aea7443b",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/form.rs"
         ],
@@ -1019,7 +1019,7 @@
         "caseId": "form-compile/column-group",
         "contentDigest": "4cd0f0f67efb8dadbac3ca0ec382d56b1c55b0e31d292f04c4656acce924c391",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/form.rs"
         ],
@@ -1047,7 +1047,7 @@
         "caseId": "form-compile/commands",
         "contentDigest": "e86476a3bab9cb2aec205bcfe40a1d29754041bb8bc23462d0810121df8d614c",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/form.rs"
         ],
@@ -1133,7 +1133,7 @@
         "caseId": "form-compile/dynamic-list-form",
         "contentDigest": "0729b5c126992b33bb335760505b1d9f70794a6acb7613902d127fba84fcc5a6",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/form.rs"
         ],
@@ -1161,7 +1161,7 @@
         "caseId": "form-compile/dynamic-list-parameters",
         "contentDigest": "5368ad39b4325ea4deca462600e3a0ef65bce9f22e3061bab5cbdfb64ffd312c",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/form.rs"
         ],
@@ -1247,7 +1247,7 @@
         "caseId": "form-compile/file-dialog",
         "contentDigest": "59c0f046d4c711b6b3968cb6871c40aa9d42b62ef0379fcae3231b540c281faf",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/form.rs"
         ],
@@ -1275,7 +1275,7 @@
         "caseId": "form-compile/groups",
         "contentDigest": "9cf13c566ef57651dfe99d5e84f159c84376e222c6f40e22edcaae1dadc58a38",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/form.rs"
         ],
@@ -1359,7 +1359,7 @@
         "caseId": "form-compile/minimal",
         "contentDigest": "38d395dbd87898a4131f9db06efff7fe03fe15347490cd30c4c8200898448f33",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/form.rs"
         ],
@@ -1387,7 +1387,7 @@
         "caseId": "form-compile/namespace-collision-ok",
         "contentDigest": "a2fa5c12569984cd8383b00a5d01681e43a1f8c32d4a96359c326e740e5ab641",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/form.rs"
         ],
@@ -1415,7 +1415,7 @@
         "caseId": "form-compile/pages",
         "contentDigest": "6008711e1c4934b0d32c3e7f2d3a6f25f75491ab182805876d5384e604732605",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/form.rs"
         ],
@@ -1588,7 +1588,7 @@
         "caseId": "form-compile/synonyms",
         "contentDigest": "2634e123e3416ae3e97972d81bb024d92c9b49f0c3a80b63f6f2adf8d19ca17a",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/form.rs"
         ],
@@ -1616,7 +1616,7 @@
         "caseId": "form-compile/table",
         "contentDigest": "cf8c0c42326cddc02d51ba729b4a254f2a080c7f035890d548547f185c10059b",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/form.rs"
         ],
@@ -1644,7 +1644,7 @@
         "caseId": "form-compile/text-edit-flag",
         "contentDigest": "8ad278a4cd9ea0245acedfb94f3624ad19be92e434a096f0d5c0900656f8dff2",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/form.rs"
         ],
@@ -1672,7 +1672,7 @@
         "caseId": "meta-compile/accounting-register",
         "contentDigest": "f4cd2fceaea801de978e8edfb7b1cb679ba7b1b8b23ff8ce97e904852a5a0dff",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -1706,7 +1706,7 @@
         "caseId": "meta-compile/accumulation-register",
         "contentDigest": "bc7b073133696d07b6cb01910a4e4558743440278bbc8b1437a5ed58110e0f0f",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -1740,7 +1740,7 @@
         "caseId": "meta-compile/batch",
         "contentDigest": "8696daab0fc4b4ac2a816e95e6b50c8b75a0208e117fd3cc6215637e0004f3df",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -1776,7 +1776,7 @@
         "caseId": "meta-compile/business-process",
         "contentDigest": "35027db2bbfed09bd34272919d24b12851fd18df1e28343f74da23cff1cecf19",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -1812,7 +1812,7 @@
         "caseId": "meta-compile/calculation-register",
         "contentDigest": "461b3502413d4ae18bb275f44e06c9a3d37cea1faa0df5fdea59b09c19c98b44",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -1846,7 +1846,7 @@
         "caseId": "meta-compile/catalog-attr-choice-params",
         "contentDigest": "42fd5f778f3a50a9834ea361b434709a767cf4e47b2900dc42b0de71692cf88b",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -1878,7 +1878,7 @@
         "caseId": "meta-compile/catalog-attr-fillvalue",
         "contentDigest": "5b1cd315be270394e9c74ec9329999589e3ab3ae2731886a84887387968f4051",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -1910,7 +1910,7 @@
         "caseId": "meta-compile/catalog-attr-ml",
         "contentDigest": "7c7d62a191cf0119195838b247c07bb97e6b74e3e108374c2f6c92333fba9ecb",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -2037,7 +2037,7 @@
         "caseId": "meta-compile/catalog-basic",
         "contentDigest": "b134887b66d4cd3a42a5e2f83f7d2e61c5cc2d880d1b85d1ce0cbc99f124381b",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -2104,7 +2104,7 @@
         "caseId": "meta-compile/catalog-command",
         "contentDigest": "c61146f996288d0dc8c2fbd0fa544e955903a40c74f70c456745f785abc67baf",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -2138,7 +2138,7 @@
         "caseId": "meta-compile/catalog-command-groups",
         "contentDigest": "95cf433f3eb638a46dcc48c6c8ebb359c04dd12018c17eadf36337f23dd4419e",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -2170,7 +2170,7 @@
         "caseId": "meta-compile/catalog-hierarchical",
         "contentDigest": "c2f624bc115ee482a45bfce66afdb86686c9ee8b4316bf979897d444d422f4d7",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -2202,7 +2202,7 @@
         "caseId": "meta-compile/catalog-inputbystring-datalock",
         "contentDigest": "3e35c1bf3809604678f53b1e8ad27980d99fa6dca191bfb43aefe45fdd16bee3",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -2234,7 +2234,7 @@
         "caseId": "meta-compile/catalog-minimal",
         "contentDigest": "2abad6799d761fbfe8cc544f952d7097944272ae712333e41863cdc8440f3306",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -2295,7 +2295,7 @@
         "caseId": "meta-compile/catalog-object-props",
         "contentDigest": "8046493cb059ecab0ef0d37d579eab9fc6d337e5e0db9472a14b213e48eae365",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -2327,7 +2327,7 @@
         "caseId": "meta-compile/catalog-predefined",
         "contentDigest": "6684f0da9536687ad2673b9761b0745fec9ad3b5a616c483026e85784719532d",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -2361,7 +2361,7 @@
         "caseId": "meta-compile/catalog-standard-attributes",
         "contentDigest": "e79e46abe551fbdc91dc55350a3a6ba03e8ebcdf5f7565e99feeb203d6216645",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -2393,7 +2393,7 @@
         "caseId": "meta-compile/catalog-stdattr-custom",
         "contentDigest": "d6c0c663564cce81ebc83763f3aa3170e664aedc609fb756a09a74b207cd6212",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -2425,7 +2425,7 @@
         "caseId": "meta-compile/catalog-tabparts",
         "contentDigest": "681bd5f867c9d748121fc1006617b97cf06ff56b96062ef4b758e10050646eab",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -2492,7 +2492,7 @@
         "caseId": "meta-compile/chart-of-accounts",
         "contentDigest": "6004fb8c570492bca80869b505c0404188bae729433bbe41ed3be8d09dc61a8f",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -2526,7 +2526,7 @@
         "caseId": "meta-compile/chart-of-calculation-types",
         "contentDigest": "b79ade657e5c714453e59578596383a008feb02e2e2a37d4c3393f9e15ee7b0a",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -2560,7 +2560,7 @@
         "caseId": "meta-compile/chart-of-characteristic-types",
         "contentDigest": "825d9dc9fbc97a248907459818f306b48fad94491113cfbcc089c51327ee9569",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -2814,7 +2814,7 @@
         "caseId": "meta-compile/constant",
         "contentDigest": "3f38ce1ddbd5aa94ee5a10d55720eba1cdd1ecd8d9e175ea9c42c304464fc65c",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -2846,7 +2846,7 @@
         "caseId": "meta-compile/constant-full",
         "contentDigest": "4b5f104ef2db4051d436f0ed51785939920c3d8305cac14ecb1fa7b732cd0b10",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -2878,7 +2878,7 @@
         "caseId": "meta-compile/data-processor",
         "contentDigest": "8db80e1572e5aa28e6abbf2e96d8f80d8c52babad50e064b46a8693ac18e3eda",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -2945,7 +2945,7 @@
         "caseId": "meta-compile/defined-type",
         "contentDigest": "08b0c1dc3f2492226a4d4fa153f40e1a1220170f0e51c868e358b25637f7f45e",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -2977,7 +2977,7 @@
         "caseId": "meta-compile/defined-type-full",
         "contentDigest": "22bcc446cced610e91069e9373fd202379a3001b289357b5ce74a659e914df23",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -3009,7 +3009,7 @@
         "caseId": "meta-compile/document-basic",
         "contentDigest": "cad1e311523633b2cfd2c1f6f2439289864f538ccb8b87e01ebcb1223a7e5f85",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -3041,7 +3041,7 @@
         "caseId": "meta-compile/document-full",
         "contentDigest": "e50668e058931706b8bc79f75af45263b7b01ffe6ca12f69a7f5bfe9b53e56ea",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -3075,7 +3075,7 @@
         "caseId": "meta-compile/document-journal",
         "contentDigest": "2110bad6523fe15b9c0d054775e12e8ca693a5f003913c4f49881f73d1bf0b20",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -3107,7 +3107,7 @@
         "caseId": "meta-compile/document-journal-full",
         "contentDigest": "ebc208f8a0dca563b47243b9c573d0eb5f676dab980892ea86af54bc4570935a",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -3139,7 +3139,7 @@
         "caseId": "meta-compile/document-multiple-tabparts",
         "contentDigest": "7967c10c51129ba7e85b99ca7abd59f5649423b944ce791cf6d0a7d280d6cbde",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -3204,7 +3204,7 @@
         "caseId": "meta-compile/enum",
         "contentDigest": "d09ad8ed62e7747b21bf8c6f8425c173a61eba1955d73b86fe2cccd30ba6ec93",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -3236,7 +3236,7 @@
         "caseId": "meta-compile/enum-full",
         "contentDigest": "e44e55c0728a0748ce6ed0f3164671ac5af3da314ce860008514f89af432df7a",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -3427,7 +3427,7 @@
         "caseId": "meta-compile/exchange-plan",
         "contentDigest": "59ecae64780166600504631ab011d889c9743081d6ff4460357a1315f59906ef",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -3463,7 +3463,7 @@
         "caseId": "meta-compile/exchange-plan-content",
         "contentDigest": "dc8d45d38619bdc9fcd10ec792dc19937438fe7c7628f9a51e97a48a6dfb42b8",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -3623,7 +3623,7 @@
         "caseId": "meta-compile/http-service",
         "contentDigest": "275fbdbf1d6c8f686804bb6372d88d164cec8d3ae8064fce98a0035b43776818",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -3657,7 +3657,7 @@
         "caseId": "meta-compile/information-register",
         "contentDigest": "9fac75d0db408394c5683795c76468cf4734b988b33b8f7bf172202f0f6f8ef6",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -3732,7 +3732,7 @@
         "caseId": "meta-compile/scheduled-job",
         "contentDigest": "09d9eb23d48240e47483bab6edf62accb8a5edf797b2cc3e9ba5e02ba4867b49",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -3863,7 +3863,7 @@
         "caseId": "meta-compile/task",
         "contentDigest": "09e006032bb95bf19ef87f0dd37e9ef98f5d1c9664ae3633e1b64bd0090259a5",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -3897,7 +3897,7 @@
         "caseId": "meta-compile/web-service",
         "contentDigest": "ae24ff2c48ab7c9f654c9e1af941e934daa8e00f3a84587ef08c1bad07556756",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/meta.rs"
         ],
@@ -3964,7 +3964,7 @@
         "caseId": "skd-compile/auto-data-parameters",
         "contentDigest": "7c971493b837ac1da9742962130ae3b9fdfe64e14b8563061b2554c793806103",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
         ],
@@ -3996,7 +3996,7 @@
         "caseId": "skd-compile/available-values-and-folders",
         "contentDigest": "9b7694c88d2b534a67e6a571b2eaad730d58ec347f3909a8a05514c352e7f1d4",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
         ],
@@ -4028,7 +4028,7 @@
         "caseId": "skd-compile/calc-object-name-restrict-string",
         "contentDigest": "81dc37df58c13db19a05addf6eff206292e233877abc31a8bffb68de972b0c68",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
         ],
@@ -4060,7 +4060,7 @@
         "caseId": "skd-compile/calc-shorthand-extended",
         "contentDigest": "f0a44227c75c0723606adc1e7e36621cb9d52598c85bc364f34000a745f0a6e6",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
         ],
@@ -4092,7 +4092,7 @@
         "caseId": "skd-compile/calculated-fields",
         "contentDigest": "9cf9895dc643ab5e9ca6f58f95dcd60b92c6b09f990dbad4f58aa552037fdc6b",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
         ],
@@ -4190,7 +4190,7 @@
         "caseId": "skd-compile/field-appearance-and-presentation",
         "contentDigest": "586f6616908ffe08bd251fb0250b5c30078ca9552c9d7bb04754184b58c9f6a0",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
         ],
@@ -4253,7 +4253,7 @@
         "caseId": "skd-compile/field-restrictions",
         "contentDigest": "1c3271ff4880c090ee17df7318960dd3a04545d2f0dfa78ebe1751da84f0ac12",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
         ],
@@ -4285,7 +4285,7 @@
         "caseId": "skd-compile/full-example",
         "contentDigest": "62c494d0f5d7be263aeb113cc00608950375de5b5ce1bd3b42ac667d95137bd4",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
         ],
@@ -4317,7 +4317,7 @@
         "caseId": "skd-compile/grouping-and-totals",
         "contentDigest": "331e9303aa04afcefc0fa9923f0227d504f530731cfec94f4749b4394f851fb5",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
         ],
@@ -4376,7 +4376,7 @@
         "caseId": "skd-compile/horizontal-merge",
         "contentDigest": "030c8e1a1b6dfb6fb32d747da505ad48eb0fbe9a43ec0b3710d33b30c3d29c97",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
         ],
@@ -4439,7 +4439,7 @@
         "caseId": "skd-compile/multi-lang-title",
         "contentDigest": "6ca53c308dd912efc6479904470bbff889f959718dcf238407e65710d80df730",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
         ],
@@ -4471,7 +4471,7 @@
         "caseId": "skd-compile/multiple-datasets",
         "contentDigest": "f83f554a10314a649146fbf0f90da0a0f0b9eff21a302f663a09a3df7208ab38",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
         ],
@@ -4503,7 +4503,7 @@
         "caseId": "skd-compile/orgroup-string-items",
         "contentDigest": "a207a4fdaba8c73f072ed60ce29997b82a8a3e3b8310561bc964ccaa9479bf9e",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
         ],
@@ -4535,7 +4535,7 @@
         "caseId": "skd-compile/parameter-title-presentation-synonyms",
         "contentDigest": "80a17f63d04d9e64457d41084e5e3104c8f0c80fbaa1d61309cd5bd7fdeb9d92",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
         ],
@@ -4567,7 +4567,7 @@
         "caseId": "skd-compile/parameter-value-list",
         "contentDigest": "4fa9f6afd0cb85318cd80c7227b398d26ae41543e905552f8be434bdaaa31c09",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
         ],
@@ -4630,7 +4630,7 @@
         "caseId": "skd-compile/structure-chart",
         "contentDigest": "14b5dfafa0122370017597d2bf347599b304c23d2ba554e19e6e9ca0f9027b49",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
         ],
@@ -4662,7 +4662,7 @@
         "caseId": "skd-compile/structure-object-form",
         "contentDigest": "14667230e3989416ee409523aa6b2c4ed9fa1b3809791d266b457994524db902",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
         ],
@@ -4694,7 +4694,7 @@
         "caseId": "skd-compile/structure-object-group-no-selection",
         "contentDigest": "b7e7dc0160c1bab7308bad6b308f008db9e78c97558543fd9462c46de22eb2bf",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
         ],
@@ -4726,7 +4726,7 @@
         "caseId": "skd-compile/structure-table-pivot",
         "contentDigest": "9f87bb252f5f87d2971ac8242453fa258ada6a644ea1be6e052665d4834c5fbc",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
         ],
@@ -4758,7 +4758,7 @@
         "caseId": "skd-compile/userestriction-object-form",
         "contentDigest": "1ea99bda166de6f5526021a3d963522e4fd870917ca1ae16e4eec7e0cc2f0606",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
         ],
@@ -4790,7 +4790,7 @@
         "caseId": "skd-compile/with-filters",
         "contentDigest": "52b75e1def962835e8ddb1376e30cc79564148d674c6973dfebc19e7a08b169c",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
         ],
@@ -4822,7 +4822,7 @@
         "caseId": "skd-compile/with-parameters",
         "contentDigest": "556d4c677523fa5d36568df504b0bc2f19a21bd120af86c31fd58853b07ea36d",
         "evidence": [
-          "spec/0126-platform-8-3-27-deviation-matrix.md",
+          "spec/architecture/format-profile-8-3-27.md",
           "docs/design/2026-07-24-updatable-donor-parity-relations-design.md",
           "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
         ],

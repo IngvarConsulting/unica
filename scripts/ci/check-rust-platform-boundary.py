@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Enforce ADR-0009's Rust platform and dependency boundaries."""
+"""Enforce ADR-0009's platform and dependency boundaries and ADR-0014's host boundary."""
 
 from __future__ import annotations
 
@@ -21,10 +21,30 @@ WINDOWS_SYS_PATH = re.compile(
 WINDOWS_SYS_ROOT_IMPORT = re.compile(
     r"\b(?:use|extern\s+crate)\s+(?:::)?(?P<crate>windows_sys)\b"
 )
+HOST_FACADE_ROOTS = ("crates/unica-bootstrap/src/host/",)
+HOST_ENVIRONMENT_VARIABLES = ("CODEX_HOME", "CLAUDE_PLUGIN_DATA", "CLAUDE_PLUGIN_ROOT")
+HOST_MANIFEST_DIRECTORIES = (".codex-plugin", ".claude-plugin")
+HOST_NAMES = ("codex", "claude")
+# Host knowledge travels as names: environment variables, manifest directories
+# and the host names themselves. In Rust those names live almost only inside
+# string literals and prose, so this marker is matched against the raw source.
+# Masking literals the way the platform rules do would leave the guard blind to
+# `env::var_os("CODEX_HOME")` and `join(".codex-plugin")` — the very call sites
+# the host facade exists to absorb.
+HOST_MARKER = re.compile(
+    rf"(?P<environment>{'|'.join(HOST_ENVIRONMENT_VARIABLES)})"
+    rf"|(?P<manifest>{'|'.join(re.escape(name) for name in HOST_MANIFEST_DIRECTORIES)})"
+    rf"|(?P<name>(?i:{'|'.join(HOST_NAMES)}))"
+)
+HOST_MARKER_KINDS = {
+    "environment": "host environment variable",
+    "manifest": "host manifest directory",
+    "name": "host name",
+}
 FORBIDDEN_DOMAIN_IMPORTS = ("application", "infrastructure", "interfaces")
 FORBIDDEN_APPLICATION_IMPORTS = ("infrastructure", "interfaces")
 # An adapter that reached into `interfaces` could render an MCP response itself
-# and bypass application cache reporting and event handling (INV-APP-03).
+# and bypass application cache reporting and event handling (INV-APP-NO-ADAPTER-BYPASS).
 FORBIDDEN_INFRASTRUCTURE_IMPORTS = ("interfaces",)
 RUST_IDENTIFIER_PATTERN = r"[A-Za-z_][A-Za-z0-9_]*"
 DOMAIN_STD_IO_MODULES = frozenset({"fs", "env", "process"})
@@ -65,6 +85,21 @@ def _is_platform_facade(path: PurePosixPath) -> bool:
     return normalized.startswith("crates/unica-coder/src/infrastructure/platform/") or normalized.startswith(
         "crates/unica-bootstrap/src/platform/"
     )
+
+
+def _is_host_test(path: PurePosixPath) -> bool:
+    parts = path.parts
+    return (
+        len(parts) >= 5
+        and parts[0] == "crates"
+        and parts[2] == "tests"
+        and parts[3] == "host"
+    )
+
+
+def _is_host_facade(path: PurePosixPath) -> bool:
+    normalized = path.as_posix()
+    return any(normalized.startswith(root) for root in HOST_FACADE_ROOTS)
 
 
 def _line_number(source: str, index: int) -> int:
@@ -249,6 +284,24 @@ def _platform_diagnostics(path: PurePosixPath, source: str, masked: str) -> list
                 path,
                 _line_number(source, index),
                 "windows_sys is outside a platform facade",
+            )
+        )
+    return diagnostics
+
+
+def _host_diagnostics(path: PurePosixPath, source: str) -> list[str]:
+    """Report host names outside the host facade, literals and comments included."""
+    if _is_host_test(path) or _is_host_facade(path):
+        return []
+
+    diagnostics: list[str] = []
+    for match in HOST_MARKER.finditer(source):
+        kind = HOST_MARKER_KINDS[match.lastgroup]
+        diagnostics.append(
+            _diagnostic(
+                path,
+                _line_number(source, match.start()),
+                f"{kind} {match.group()} is outside the host facade",
             )
         )
     return diagnostics
@@ -616,13 +669,14 @@ def _domain_io_diagnostics(path: PurePosixPath, source: str, masked: str) -> lis
 
 
 def check_source(path: str, source: str) -> list[str]:
-    """Return stable ADR-0009 diagnostics for one repository-relative Rust file."""
+    """Return stable boundary diagnostics for one repository-relative Rust file."""
     repository_path = _repository_path(path)
     if repository_path.suffix != ".rs":
         raise ValueError(f"path must name a Rust source file: {path}")
     masked = _mask_non_code(source)
     diagnostics = (
         _platform_diagnostics(repository_path, source, masked)
+        + _host_diagnostics(repository_path, source)
         + _dependency_diagnostics(repository_path, source, masked)
         + _domain_io_diagnostics(repository_path, source, masked)
     )

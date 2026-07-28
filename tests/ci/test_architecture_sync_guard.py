@@ -233,7 +233,7 @@ if __name__ == "__main__":
 
 
 class DecisionRecordImmutabilityTests(unittest.TestCase):
-    """INV-DOC-09: an accepted record is superseded, never rewritten."""
+    """INV-DOC-SUPERSEDE-NOT-EDIT: an accepted record is superseded, never rewritten."""
 
     def setUp(self) -> None:
         self.guard = load_guard()

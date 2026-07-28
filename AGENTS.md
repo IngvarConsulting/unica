@@ -28,12 +28,12 @@
 
 | Задача | Что читать сначала | Где менять код |
 | --- | --- | --- |
-| Новый или изменённый публичный инструмент `unica.*` | `architecture/invariants.md` (`INV-MCP-04`, `INV-MCP-08`), `architecture/change-checklist.md` | `crates/unica-coder/src/application/mod.rs` (`tools()`), `application/tool_contracts.rs`, `application/operation_descriptors.rs`, `crates/unica-coder/src/infrastructure/native_operations/<группа>.rs`, `plugins/unica/skills/<имя>/SKILL.md` |
-| Изменение формата XML 1С или DSL | `0126-platform-8-3-27-deviation-matrix.md` и `plugins/unica/references/specs/` | `crates/unica-coder/src/infrastructure/native_operations/` |
-| Кеш, состояние рабочего пространства, доменные события | ADR-0003, `INV-CACHE-01`…`INV-CACHE-07` | `crates/unica-coder/src/domain/events.rs`, `domain/cache.rs`, `infrastructure/workspace_state.rs`, `infrastructure/workspace.rs` |
-| Скрытый сервис рабочего пространства или задание runtime | ADR-0006, `architecture/runtime.md`, `INV-APP-07` | `crates/unica-coder/src/infrastructure/workspace_services.rs`, `infrastructure/runtime_jobs.rs` |
-| Упаковка или релиз | ADR-0008, ADR-0012, `INV-PKG-01`…`INV-PKG-08`, а также `docs/release-runbook.md` | `scripts/ci/package-unica-plugin.py`, `crates/unica-bootstrap/src/`, `.github/workflows/unica-plugin-release.yml` |
-| Поведение, зависящее от ОС | ADR-0009, `INV-PLATFORM-01`…`INV-PLATFORM-04` | `crates/unica-coder/src/infrastructure/platform/`, `crates/unica-bootstrap/src/platform/`, страж `scripts/ci/check-rust-platform-boundary.py` |
+| Новый или изменённый публичный инструмент `unica.*` | `architecture/invariants.md` (`INV-MCP-NAMESPACE`, `INV-MCP-SURFACE-SYNC`), `architecture/change-checklist.md` | `crates/unica-coder/src/application/mod.rs` (`tools()`), `application/tool_contracts.rs`, `application/operation_descriptors.rs`, `crates/unica-coder/src/infrastructure/native_operations/<группа>.rs`, `plugins/unica/skills/<имя>/SKILL.md` |
+| Изменение формата XML 1С или DSL | `architecture/format-profile-8-3-27.md` и `plugins/unica/references/specs/` | `crates/unica-coder/src/infrastructure/native_operations/` |
+| Кеш, состояние рабочего пространства, доменные события | ADR-0003, область `CACHE` реестра | `crates/unica-coder/src/domain/events.rs`, `domain/cache.rs`, `infrastructure/workspace_state.rs`, `infrastructure/workspace.rs` |
+| Скрытый сервис рабочего пространства или задание runtime | ADR-0006, `architecture/runtime.md`, `INV-APP-LAZY-HIDDEN-SERVICES` | `crates/unica-coder/src/infrastructure/workspace_services.rs`, `infrastructure/runtime_jobs.rs` |
+| Упаковка или релиз | ADR-0008, ADR-0012, область `PKG` реестра, а также `docs/release-runbook.md` | `scripts/ci/package-unica-plugin.py`, `crates/unica-bootstrap/src/`, `.github/workflows/unica-plugin-release.yml` |
+| Поведение, зависящее от ОС | ADR-0009, область `PLATFORM` реестра | `crates/unica-coder/src/infrastructure/platform/`, `crates/unica-bootstrap/src/platform/`, страж `scripts/ci/check-rust-platform-boundary.py` |
 | Само архитектурное правило | `architecture/invariants.md` или `architecture/quality-requirements.md` плюс запись в `spec/decisions/` | проверка, названная в поле `Check` этой записи |
 
 **Строки комбинируются.** Одна задача обычно попадает сразу в несколько:
@@ -142,6 +142,50 @@
 `Decision: none` — это утверждение, которое ревью может отклонить, а не значение
 по умолчанию. Формат проверяет `tests/ci/test_design_documents.py`.
 
+## Именование записей
+
+Идентификатор записи — это устойчивая ручка: его цитируют в описаниях PR, в
+коммитах и в ветках обсуждений. Поэтому он не переименовывается вслед за
+формулировкой и не переиспользуется после удаления записи.
+
+Схемы у реестра и у решений разные, и различает их один признак: **номер уместен
+там, где порядок несёт смысл, и вреден там, где не несёт.**
+
+### Записи реестра — смысловой код без цифр
+
+Формат: `INV-<ОБЛАСТЬ>-<КОД>` для инвариантов и `REQ-<ОБЛАСТЬ>-<КОД>` для
+требований к качеству. Например `INV-MCP-NAMESPACE`, `REQ-PERF-DEADLINE`.
+
+- Код — от одного до трёх слов заглавными через дефис, не длиннее 24 символов.
+- Код называет **то, что правило защищает**, а не то, как оно реализовано.
+  Реализация меняется, защищаемое свойство — нет: `INV-MCP-DATA-DRIVEN-SCHEMA`
+  переживёт переезд дескрипторов в другой модуль, а `INV-MCP-TOOL-CONTRACTS-RS`
+  не переживёт.
+- Цифр в коде нет. Реестр — это множество, а не последовательность: порядок
+  записей внутри области не значит ничего, и номер сообщал бы читателю
+  несуществующий приоритет.
+- Код уникален во всём корпусе спецификаций и после вывода записи из обращения
+  другому правилу не достаётся.
+- Смена смысла правила — это новая запись, а не переименование прежней. Иначе
+  цитата из старого обсуждения начнёт указывать на правило, которого автор
+  ссылки не имел в виду.
+
+Шаблон, длину и уникальность проверяет
+`tests/ci/test_architecture_registry.py`.
+
+### Записи решений — номер и слаг
+
+Формат: файл `NNNN-<слаг>.md`, цитирование — `ADR-NNNN`.
+
+- Номер остаётся, потому что каталог решений — это хроника: по номеру видно, что
+  одно решение принято после другого, и цепочки замещения читаются в порядке.
+- Смысл несёт слаг в имени файла, а не номер.
+- Номера монотонны, израсходованный номер не выдаётся повторно, а решение,
+  переставшее действовать, получает статус `superseded` и остаётся на месте.
+
+Подробности жизненного цикла решений — в
+[`spec/decisions/README.md`](spec/decisions/README.md).
+
 ## Локальная документация платформы 1Ci
 
 По вопросам об официальном поведении платформы 1С сначала ищите в приватном
@@ -197,5 +241,15 @@
   ревью и как он будет закрыт.
 - Если агент не может пушить в head существующего PR, он обязан предоставить
   патч или попросить доступ; создавать дочерний PR в обход нельзя.
-- Отдельный дефект, найденный во время ревью, идёт независимым PR с базой `main`
-  или заводится задачей, но никогда не превращается в неявный стек PR.
+- Дефект, найденный во время ревью, разбирается по его происхождению.
+  - **Привнесённый этим же PR** — правится в нём же, коммитом в его head-ветку.
+    Отдельный PR на собственную регрессию оставляет в истории заведомо сломанный
+    коммит и делит ревью одного изменения на два.
+  - **Существовавший до него** — идёт независимым PR с базой `main` или
+    заводится задачей. В текущий PR он не втягивается: это расширяет его границу,
+    смешивает несвязанные изменения в одном ревью и задерживает то, что уже
+    готово.
+  - Когда происхождение неочевидно, решает `git log -S` или `git blame` по
+    строке дефекта, а не ощущение. Если и после этого неясно — дефект считается
+    существовавшим ранее и выносится наружу.
+  - Ни в одном из двух случаев дефект не превращается в неявный стек PR.

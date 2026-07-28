@@ -1,7 +1,7 @@
 #!/usr/bin/env python3.12
 """Fail a change that moves the public MCP surface without moving the spec layer.
 
-The rule this guard enforces is INV-MCP-08: adding, removing, or renaming a
+The rule this guard enforces is INV-MCP-SURFACE-SYNC: adding, removing, or renaming a
 public `unica.*` tool is an architecture change, so it lands together with the
 decision record, registry entry, or acceptance plan that describes it.
 
@@ -54,7 +54,7 @@ DIFF_FILE_HEADER = re.compile(r"^\+\+\+ b/(?P<path>.+)$")
 DIFF_OLD_HEADER = re.compile(r"^--- a/(?P<path>.+)$")
 
 # An accepted decision record is a dated statement of what was chosen, not a
-# description of current code (INV-DOC-09). Two edits give the rewrite away and
+# description of current code (INV-DOC-SUPERSEDE-NOT-EDIT). Two edits give the rewrite away and
 # are cheap to spot in a diff: moving the acceptance date, and walking the status
 # backwards. Prose edits stay legal, so translations and typo fixes pass.
 DECISION_RECORD = re.compile(r"^spec/decisions/\d{4}-.+\.md$")
@@ -96,7 +96,7 @@ class SurfaceChange:
 
 
 def analyze_decision_records(diff_text: str) -> list[str]:
-    """Report accepted decision records that the diff rewrites (INV-DOC-09).
+    """Report accepted decision records that the diff rewrites (INV-DOC-SUPERSEDE-NOT-EDIT).
 
     Pure function over a unified diff: no git, no filesystem. A file that the
     diff creates is skipped -- a brand new record may say anything. Only edits
@@ -279,7 +279,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {violation}")
         print()
         print(
-            "INV-DOC-09: a record states what was chosen on its date. When the\n"
+            "INV-DOC-SUPERSEDE-NOT-EDIT: a record states what was chosen on its date. When the\n"
             "choice stops applying, supersede it with a new record instead of\n"
             "editing it to match the code."
         )
@@ -299,7 +299,7 @@ def main(argv: list[str] | None = None) -> int:
     print(change.describe())
     print()
     print(
-        "INV-MCP-08 requires the owning decision record, the registry entry that\n"
+        "INV-MCP-SURFACE-SYNC requires the owning decision record, the registry entry that\n"
         "derives from it, and the check named by that entry to change together.\n"
         "Update one of: spec/decisions/, spec/architecture/, spec/acceptance/."
     )

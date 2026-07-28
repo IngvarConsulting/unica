@@ -17,13 +17,13 @@
 | `crates/unica-bootstrap` | `unica_bootstrap` | `unica-bootstrap` | Тонкий пусковой бинарник публичного пакета: разрешает закреплённый runtime, публикует его в проверенный кеш и передаёт ему stdio. |
 
 `unica` — единственный бинарник, который хост видит как MCP-сервер
-(INV-MCP-01, INV-MCP-02); в публичном пакете перед ним стоит `unica-bootstrap`,
-который сам MCP-сервером не является (INV-PKG-02).
+(INV-MCP-NO-ENGINE-SERVERS, INV-MCP-SINGLE-ENTRY); в публичном пакете перед ним стоит `unica-bootstrap`,
+который сам MCP-сервером не является (INV-PKG-THIN-PACKAGE).
 
 У `unica` нет подкоманд. `main.rs` разбирает аргументы в фиксированном порядке:
 `--workspace-service`, затем `--runtime-job-worker`, затем `--help`/`-h`, иначе
 процесс становится stdio MCP-сервером. Первые два — скрытые внутренние режимы
-(INV-APP-07), их поведение описано в [runtime](runtime.md).
+(INV-APP-LAZY-HIDDEN-SERVICES), их поведение описано в [runtime](runtime.md).
 
 ### Ограничения, заданные извне
 
@@ -31,7 +31,7 @@
   подключённом с `default-features = false` и признаками `server` и
   `transport-io` (ADR-0013). Макросы SDK для объявления инструментов не
   используются: имена, описания и входные схемы задаются данными
-  (INV-MCP-05, INV-MCP-06). Вместе с SDK в ранее полностью синхронный бинарник
+  (INV-MCP-DATA-DRIVEN-SCHEMA, INV-MCP-SDK-TRANSPORT). Вместе с SDK в ранее полностью синхронный бинарник
   приходит рантайм `tokio`.
 - Сервер отвечает на `initialize`, `ping`, `tools/list` и `tools/call`,
   объявляет только возможность tools, а версию протокола берёт из константы SDK
@@ -40,7 +40,7 @@
   запускает `unica-bootstrap`, который скачивает закреплённый runtime для
   текущего хоста с утверждённого источника релизов
   `https://github.com/IngvarConsulting/unica/releases/download/<tag>/` и
-  проверяет его до запуска (ADR-0008, INV-PKG-02, INV-PKG-03).
+  проверяет его до запуска (ADR-0008, INV-PKG-THIN-PACKAGE, INV-PKG-VERIFIED-ATOMIC-INSTALL).
 - Поставляемые движки запускаются напрямую: путь к бинарнику разрешается через
   сгенерированный `plugins/unica/third-party/manifest.json`, а его SHA-256
   сверяется до старта процесса. Скрипта-обёртки между runtime и поставляемым
@@ -53,7 +53,7 @@
 Таблица ниже перечисляет группы и указывает, в каком модуле лежит их
 реализация; конкретные имена инструментов, их схемы и количество читаются из
 реестра, а не отсюда. Каждый публичный инструмент называется
-`unica.<группа>.<операция>` (INV-MCP-04).
+`unica.<группа>.<операция>` (INV-MCP-NAMESPACE).
 
 | Группа | Назначение | Где реализована |
 | --- | --- | --- |
@@ -81,7 +81,7 @@ runtime для операций платформы, поставляемый а�
 типизированный `git grep` как одна секция поиска, внутрипроцессные нативные
 операции над XML и DSL, удалённый эндпоинт стандартов по HTTP. Ни одна из них не
 является публичной MCP-регистрацией, и видимый модели текст никогда не называет
-их целью вызова (INV-MCP-01, INV-PRODUCT-03).
+их целью вызова (INV-MCP-NO-ENGINE-SERVERS, INV-PRODUCT-NO-ENGINE-ROUTING).
 
 ## Уровень 2 — `unica-coder`
 
@@ -110,14 +110,14 @@ runtime для операций платформы, поставляемый а�
   `ProjectSourceSet`, `SourceFormat`, `SourceSetKind`.
 - `source_roots` — `ResolvedSourceRoot` и детерминированный выбор набора
   исходников по умолчанию, общий для всех потребителей корня исходников
-  (INV-SOURCE-05).
+  (INV-SOURCE-SINGLE-RESOLVED-ROOT).
 - `workspace` — `WorkspaceContext`: пассивная запись о `cwd`, `workspace_root`,
   `cache_root` и `workspace_epoch`.
 
 `WorkspaceContext` ничего не обнаруживает: это структура данных. Обнаружение
 рабочего пространства выполняет `infrastructure::workspace::discover_workspace`,
 потому что домену запрещён доступ к файловой системе и окружению
-(ADR-0009, INV-APP-05).
+(ADR-0009, INV-APP-DEPENDENCY-DIRECTION).
 
 ### Слой `application`
 
@@ -127,7 +127,7 @@ runtime для операций платформы, поставляемый а�
   `OperationResult`, канонический реестр `tools()` и диспетчер
   `call_tool` / `call_tool_cancellable`.
 - `tool_contracts` — входные JSON-схемы, нормализация алиасов путей и проверка
-  аргументов для каждого зарегистрированного инструмента (INV-MCP-05).
+  аргументов для каждого зарегистрированного инструмента (INV-MCP-DATA-DRIVEN-SCHEMA).
 - `operation_descriptors` — описатели нативных операций, включая политики
   стража поддержки и стража формата и группы алиасов путей.
 - `ports` — трейт `ApplicationPorts` и типы `HandlerOutcome`,
@@ -151,7 +151,7 @@ runtime для операций платформы, поставляемый а�
 - `mcp` — публичный stdio MCP-сервер `unica` на `rmcp` (ADR-0013): `run_stdio()`
   обслуживает `rmcp::transport::stdio()` и реализует
   `ServerHandler::list_tools` и `ServerHandler::call_tool`, делегируя работу
-  `UnicaApplication` (INV-APP-02, INV-MCP-06).
+  `UnicaApplication` (INV-APP-THIN-TRANSPORT, INV-MCP-SDK-TRANSPORT).
 - `workspace_service` — точка входа скрытого режима `--workspace-service`; она
   только передаёт аргументы процесса в
   `infrastructure::workspace_services::run_workspace_service_from_args`.
@@ -159,19 +159,19 @@ runtime для операций платформы, поставляемый а�
   только передаёт управление в `infrastructure::runtime_jobs::run_worker_from_args`.
 
 Оба служебных модуля — делегаты в несколько строк: логики в них нет, и
-публичными MCP-серверами они не регистрируются (INV-APP-07).
+публичными MCP-серверами они не регистрируются (INV-APP-LAZY-HIDDEN-SERVICES).
 
 ### Слой `infrastructure`
 
 Адаптеры, файловое состояние и всё, что знает об операционной системе.
 
 - `application_ports` — `InfrastructureApplicationPorts`, единственная
-  реализация `ApplicationPorts`, связываемая композиционным корнем (INV-APP-03).
+  реализация `ApplicationPorts`, связываемая композиционным корнем (INV-APP-NO-ADAPTER-BYPASS).
 - `internal_adapters` — `CliAdapter`, `RuntimeAdapter`, `RuntimeJobAdapter`,
   `GitTrackingAdapter`, `CodeSearchAdapter`, `CodeNavigationAdapter`,
   `BslAnalyzerMcpAdapter` и `StandardsAdapter`. `GitTrackingAdapter`
   крейт-приватен: `unica.project.status` и `unica.project.map` читают состояние
-  отслеживания в git через него, а не запускают `git` сами (INV-APP-06).
+  отслеживания в git через него, а не запускают `git` сами (INV-APP-NO-DIRECT-GIT).
 - `native_operations` — фасад над нативными операциями над XML и DSL,
   разложенными по семействам; разобран ниже.
 - `platform` — фасад платформы из ADR-0009; разобран ниже.
@@ -181,13 +181,13 @@ runtime для операций платформы, поставляемый а�
   каталог `.git` маркером не считается, поэтому в рядовом чекауте без
   `v8project.yaml` корнем рабочего пространства остаётся сам рабочий каталог.
   Корень кеша берётся из `UNICA_CACHE_DIR` либо из `<workspaceRoot>/.build/unica`
-  (INV-CACHE-03), а эпоха рабочего пространства считается из пути корня, размера
+  (INV-CACHE-WORKSPACE-ROOT), а эпоха рабочего пространства считается из пути корня, размера
   и времени изменения `v8project.yaml`, `Configuration.xml` и
   `src/Configuration.xml`, а также из байтов git-файла `HEAD`, найденного через
   каталог `.git` или через файл-указатель worktree, — так связанный worktree
-  остаётся изолированным (INV-CACHE-06).
+  остаётся изолированным (INV-CACHE-WORKTREE-ISOLATION).
 - `workspace_state` — `WorkspaceStateRepository` хранит состояние кеша и записи
-  об упреждающих обновлениях под корнем кеша (INV-CACHE-01).
+  об упреждающих обновлениях под корнем кеша (INV-CACHE-ORCHESTRATOR-OWNED).
 - `workspace_services` — `WorkspaceServiceManager` и
   `run_workspace_service_from_args`: жизненный цикл скрытого сервиса рабочего
   пространства и его внутренний протокол JSONL (ADR-0006).
@@ -206,7 +206,7 @@ runtime для операций платформы, поставляемый а�
   рабочего каталога.
 - `tool_context` — `validate_tool_context` отклоняет вызов, чьи пути выходят за
   рабочее пространство или чей набор исходников не несёт формат, который нужен
-  операции (INV-SOURCE-04).
+  операции (INV-SOURCE-PLATFORM-XML-ONLY).
 - `path_policy` — `WorkspacePathPolicy`, общее правило удержания разрешённых
   путей внутри рабочего пространства.
 - `support_guard` — `evaluate_support_guard` блокирует мутирующую операцию или
@@ -261,8 +261,8 @@ runtime для операций платформы, поставляемый а�
 справкой, макетами и внешними обработками реализованы нативно на Rust за
 инструментами `unica.*`. Пути исполнения через файл операции у runtime нет: нет
 ни обработчика унаследованных скриптов, ни продуктового запуска интерпретатора
-(INV-APP-04). Эталонные модели на Python и PowerShell существуют только как
-эталоны паритета в тестах (INV-SKILL-04).
+(INV-APP-NO-SCRIPT-BACKEND). Эталонные модели на Python и PowerShell существуют только как
+эталоны паритета в тестах (INV-SKILL-SCRIPTS-AS-FIXTURES).
 
 #### Где на самом деле лежит работа
 
@@ -308,10 +308,10 @@ runtime для операций платформы, поставляемый а�
    по которому оно превращается во влияние на кеш.
 7. `tests/ci/test_unica_mcp_script_parity.py` — стенд паритета: добавление,
    удаление или переименование публичного инструмента синхронно меняет реестр в
-   Rust, стенд и архитектурный слой (INV-MCP-08).
+   Rust, стенд и архитектурный слой (INV-MCP-SURFACE-SYNC).
 8. Скилл в `plugins/unica/skills/`, если операция должна попасть в
    маршрутизацию: скилл описывает операцию разработчика, а не внутренний
-   инвентарь инструментов (INV-PRODUCT-02, INV-SKILL-01).
+   инвентарь инструментов (INV-PRODUCT-DEVELOPER-OPERATIONS, INV-SKILL-DECLARED-ROUTING).
 
 Инструмент, который обслуживается адаптером, а не нативной операцией, вместо
 шагов 4 и 5 требует ветки в `infrastructure/internal_adapters.rs`.
@@ -319,7 +319,7 @@ runtime для операций платформы, поставляемый а�
 #### `infrastructure::platform`
 
 Единственное место, где допустима специфика операционной системы
-(ADR-0009, INV-PLATFORM-01).
+(ADR-0009, INV-PLATFORM-OS-BEHIND-FACADE).
 
 - `entrypoint` — `run_platform_main`, который даёт главному потоку в Windows
   стек 8 МиБ.
@@ -328,7 +328,7 @@ runtime для операций платформы, поставляемый а�
   префиксом расширенной длины пути.
 - `process` — `ManagedChild`, `ManagedCommand` и
   `cancel_runtime_job_process_tree`: дочерний процесс принадлежит нам целиком,
-  вместе со своим деревом (INV-PLATFORM-04).
+  вместе со своим деревом (INV-PLATFORM-NO-ORPHAN-PROCESSES).
 - `target` — `current_target_id`, отображение операционной системы и
   архитектуры на поддерживаемые идентификаторы целей.
 - `full_dump_publication` — публикация синхронной полной выгрузки конфигурации
@@ -336,11 +336,11 @@ runtime для операций платформы, поставляемый а�
 - `testing` — помощники под `cfg(test)` для фикстур ссылок и прав.
 
 Тесты платформенного поведения живут рядом с адаптерами, в
-`crates/<crate>/tests/platform/` (INV-PLATFORM-03).
+`crates/<crate>/tests/platform/` (INV-PLATFORM-COLOCATED-TESTS).
 
 ### Правила зависимостей между слоями
 
-Направление зависимостей нормировано в INV-APP-05 (ADR-0009, ADR-0002) и
+Направление зависимостей нормировано в INV-APP-DEPENDENCY-DIRECTION (ADR-0009, ADR-0002) и
 проверяется скриптом
 [`scripts/ci/check-rust-platform-boundary.py`](../../scripts/ci/check-rust-platform-boundary.py),
 который исполняется тестами
@@ -366,10 +366,17 @@ runtime для операций платформы, поставляемый а�
 внутри платформенных фасадов
 `crates/unica-coder/src/infrastructure/platform/` и
 `crates/unica-bootstrap/src/platform/` либо в платформенных тестах; исключений
-по путям у стража нет (INV-PLATFORM-02).
+по путям у стража нет (INV-PLATFORM-NO-PATH-EXEMPTIONS).
+
+Тот же страж удерживает и границу хоста. Host-маркеры — имена хостов, каталоги
+манифестов `.codex-plugin` и `.claude-plugin`, переменные окружения
+`CODEX_HOME`, `CLAUDE_PLUGIN_DATA` и `CLAUDE_PLUGIN_ROOT` — допускаются только
+внутри host-фасада `crates/unica-bootstrap/src/host/` и в host-тестах
+`crates/<crate>/tests/host/`, поэтому в `unica-coder` их нет ни в одном слое
+(INV-HOST-NEUTRAL-ORCHESTRATOR, INV-HOST-KNOWLEDGE-BEHIND-FACADE).
 
 `infrastructure` не рендерит MCP-ответы и не обходит отчётность кеша: он
-доступен приложению только через трейт `ApplicationPorts` (INV-APP-03), а
+доступен приложению только через трейт `ApplicationPorts` (INV-APP-NO-ADAPTER-BYPASS), а
 продуктовое связывание происходит только в `composition.rs`.
 
 ### Внешняя граница стандартов
@@ -386,7 +393,7 @@ runtime для операций платформы, поставляемый а�
 или `idOrAliasOrUrl` — в `v8std_get_page`, а с одним лишь `query` — снова в
 `v8std_search`. `explain` без единого из этих аргументов отклоняется. Наружу
 этот сервер не выставляется: он остаётся внутренним адаптером за
-`unica.standards.*` (INV-MCP-01, INV-SKILL-02).
+`unica.standards.*` (INV-MCP-NO-ENGINE-SERVERS, INV-SKILL-NO-ADAPTER-TARGETS).
 
 ## Уровень 2 — `unica-bootstrap`
 
@@ -399,7 +406,7 @@ CLI принимает ровно две команды: `run --plugin-root <pat
 - `cache` — `RuntimeInstaller::ensure`: исключительная блокировка на пару
   «версия и цель», транзакционный каталог с именем UUID, запись готовности
   `.ready.json` и атомарное переименование в
-  `<cacheRoot>/<pluginVersion>/<target>` (INV-PKG-03, INV-CACHE-07).
+  `<cacheRoot>/<pluginVersion>/<target>` (INV-PKG-VERIFIED-ATOMIC-INSTALL, INV-CACHE-RUNTIME-ROOT-ORDER).
 - `download` — `HttpDownloader`, единственный сетевой клиент крейта.
 - `archive` — `sha256_file`, `extract_verified_tar_gz`, `verify_runtime_files`:
   отпечаток архива, безопасное к обходу каталогов извлечение и пофайловая
@@ -413,13 +420,42 @@ CLI принимает ровно две команды: `run --plugin-root <pat
 - `platform` — фасад ADR-0009 этого крейта: `entrypoint`
   (`run_platform_main`), `filesystem` (`set_executable`), `process`
   (`launch_runtime`), `target` (`HostTarget::current`).
+- `host` — host-фасад ADR-0014: единственное место крейта, которое знает имена
+  хостов, их каталоги манифестов и их переменные окружения (INV-HOST-KNOWLEDGE-BEHIND-FACADE).
+  Разобран ниже.
 
 `verify` дополнительно проверяет установленный пакет до запуска runtime: каждый
 каталог `skills/<dir>` обязан содержать `SKILL.md`, набор видимых модели скиллов
 обязан включать `code-search`, `platform-help`, `release-support` и `v8-runner`,
 а пакет обязан нести хотя бы один манифест хоста — Codex, Claude Code или оба.
 Каждый присутствующий манифест обязан объявлять имя `unica` и версию крейта
-(INV-PKG-05); сверх этого манифест Codex обязан объявлять указатель
+(INV-PKG-VERSION-LOCKSTEP); сверх этого манифест Codex обязан объявлять указатель
 `skills: "./skills/"`, а манифест Claude Code — не объявлять ключ `skills`
 вовсе, потому что Claude Code сканирует `skills/` сам и иначе загрузил бы
-каталог дважды.
+каталог дважды. Различия между хостами приходят сюда из дескрипторов host-фасада
+— сам цикл проверки о конкретном хосте не знает.
+
+### Host-фасад `unica-bootstrap`
+
+Хост описан дескриптором-данными, а не ветвлением в месте вызова: фасад несёт
+реестр дескрипторов, и вызывающий код перебирает его целиком. Поэтому поддержка
+третьего хоста — добавление дескриптора и его тестов, а не правка `main.rs`
+(INV-HOST-UNIFORM-CALL-SITES). Приём тот же, что у `target` в платформенном фасаде, где выбор
+сведён к данным и `match` по варианту.
+
+Дескриптор отвечает за две вещи. Первая — каталог манифеста хоста и контракт
+этого манифеста: `.codex-plugin` требует указателя `skills: "./skills/"`,
+`.claude-plugin` требует его отсутствия. Вторая — источник корня кеша runtime:
+переменная окружения хоста и сегменты пути, которые к ней дописываются.
+
+Общий override корня кеша дескрипторам не принадлежит и стоит перед ними:
+`UNICA_RUNTIME_CACHE_DIR` выставляет пакет, а не хост, и значение с
+неразвёрнутой подстрокой `${` отбрасывается, после чего цепочка продолжается
+(INV-CACHE-RUNTIME-ROOT-ORDER). Полный порядок разрешения описан в
+[развёртывании](deployment.md).
+
+Наружу фасад отдаёт только host-нейтральные типы, поэтому оркестратор
+`unica-coder` о хостах не знает вовсе и доходит до корня плагина через
+host-нейтральную `UNICA_PLUGIN_ROOT` (INV-HOST-NEUTRAL-ORCHESTRATOR). Тесты фасада живут рядом с
+ним, а host-специфичный тест верхнего уровня — под
+`crates/<crate>/tests/host/` (INV-HOST-KNOWLEDGE-BEHIND-FACADE).
