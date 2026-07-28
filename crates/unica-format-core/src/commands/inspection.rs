@@ -1,8 +1,82 @@
 use crate::{
-    commands::WriterResult,
     ports::{OperationCancellation, OperationalSourceSession},
     source::SourceAdapterError,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InspectionResult {
+    ok: bool,
+    summary: String,
+    changes: Vec<String>,
+    warnings: Vec<String>,
+    errors: Vec<String>,
+    artifacts: Vec<String>,
+    stdout: Option<String>,
+    stderr: Option<String>,
+}
+
+impl InspectionResult {
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts(
+        ok: bool,
+        summary: String,
+        changes: Vec<String>,
+        warnings: Vec<String>,
+        errors: Vec<String>,
+        artifacts: Vec<String>,
+        stdout: Option<String>,
+        stderr: Option<String>,
+    ) -> Self {
+        Self {
+            ok,
+            summary,
+            changes,
+            warnings,
+            errors,
+            artifacts,
+            stdout,
+            stderr,
+        }
+    }
+
+    pub fn cancelled() -> Self {
+        Self::from_parts(
+            false,
+            "operation cancelled".to_string(),
+            Vec::new(),
+            Vec::new(),
+            vec!["operation cancelled".to_string()],
+            Vec::new(),
+            None,
+            None,
+        )
+    }
+
+    pub const fn ok(&self) -> bool {
+        self.ok
+    }
+    pub fn summary(&self) -> &str {
+        &self.summary
+    }
+    pub fn changes(&self) -> &[String] {
+        &self.changes
+    }
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+    pub fn errors(&self) -> &[String] {
+        &self.errors
+    }
+    pub fn artifacts(&self) -> &[String] {
+        &self.artifacts
+    }
+    pub fn stdout(&self) -> Option<&str> {
+        self.stdout.as_deref()
+    }
+    pub fn stderr(&self) -> Option<&str> {
+        self.stderr.as_deref()
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigurationInspection {
@@ -143,5 +217,5 @@ impl InspectionRequest {
 }
 
 pub trait InspectionPort: Send + Sync {
-    fn inspect(&self, request: &InspectionRequest) -> Result<WriterResult, SourceAdapterError>;
+    fn inspect(&self, request: &InspectionRequest) -> Result<InspectionResult, SourceAdapterError>;
 }

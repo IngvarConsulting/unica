@@ -1,15 +1,20 @@
+#[cfg(test)]
+use super::inspection_arguments::ArgumentAccess;
 use crate::application::NativeWriterResult;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
+use crate::operations::PlatformWriterSession;
 use roxmltree::Document;
+#[cfg(test)]
 use serde_json::{Map, Value};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+use super::common::path_arg;
 use super::common::{
-    absolutize, guard_active_format_dependencies, guard_exact_preimage_if_unprotected,
-    is_uuid_text, path_arg,
+    absolutize, guard_active_format_dependencies, guard_exact_preimage_if_unprotected, is_uuid_text,
 };
 use super::compile_transaction::{CompileTransaction, DirectoryMembershipSelector};
 
@@ -176,10 +181,11 @@ enum SupportEditAction {
     Set(SupportObjectRule),
 }
 
+#[cfg(test)]
 pub(crate) fn invoke_mutation(
     operation: &str,
     _tool_name: &str,
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Option<NativeWriterResult> {
     match operation {
@@ -188,8 +194,47 @@ pub(crate) fn invoke_mutation(
     }
 }
 
-fn edit_support(args: &Map<String, Value>, context: &WorkspaceContext) -> NativeWriterResult {
-    match edit_support_result(args, context) {
+pub(crate) fn edit_support_typed(
+    command: &unica_format_core::commands::SupportEdit,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    let action = match command {
+        unica_format_core::commands::SupportEdit::Capability(capability) => {
+            SupportEditAction::Capability(match capability {
+                unica_format_core::commands::SupportCapability::Enable => SupportCapability::On,
+                unica_format_core::commands::SupportCapability::Disable => SupportCapability::Off,
+            })
+        }
+        unica_format_core::commands::SupportEdit::ObjectRule(rule) => {
+            SupportEditAction::Set(match rule {
+                unica_format_core::commands::SupportObjectRule::Locked => SupportObjectRule::Locked,
+                unica_format_core::commands::SupportObjectRule::Editable => {
+                    SupportObjectRule::Editable
+                }
+                unica_format_core::commands::SupportObjectRule::OffSupport => {
+                    SupportObjectRule::OffSupport
+                }
+            })
+        }
+    };
+    let result = session
+        .required_source(
+            unica_format_core::commands::WriterSourceRole::SupportTarget,
+            "support mutation target",
+        )
+        .map(|path| absolutize(path.to_path_buf(), &context.cwd))
+        .and_then(|path| edit_support_typed_result(action, path, context));
+    support_outcome(result)
+}
+
+#[cfg(test)]
+fn edit_support(args: &impl ArgumentAccess, context: &WorkspaceContext) -> NativeWriterResult {
+    support_outcome(edit_support_result(args, context))
+}
+
+fn support_outcome(result: Result<NativeWriterResult, String>) -> NativeWriterResult {
+    match result {
         Ok(outcome) => outcome,
         Err(error) => NativeWriterResult {
             ok: false,
@@ -204,12 +249,11 @@ fn edit_support(args: &Map<String, Value>, context: &WorkspaceContext) -> Native
     }
 }
 
-fn edit_support_result(
-    args: &Map<String, Value>,
+fn edit_support_typed_result(
+    action: SupportEditAction,
+    target_path: PathBuf,
     context: &WorkspaceContext,
 ) -> Result<NativeWriterResult, String> {
-    let action = support_edit_action(args)?;
-    let target_path = support_target_path(args, context)?;
     if !target_path.exists() {
         return Err(format!("Путь не найден: {}", target_path.display()));
     }
@@ -374,8 +418,19 @@ fn edit_support_result(
     Ok(outcome)
 }
 
+#[cfg(test)]
+fn edit_support_result(
+    args: &impl ArgumentAccess,
+    context: &WorkspaceContext,
+) -> Result<NativeWriterResult, String> {
+    support_edit_action(args)
+        .and_then(|action| support_target_path(args, context).map(|path| (action, path)))
+        .and_then(|(action, path)| edit_support_typed_result(action, path, context))
+}
+
+#[cfg(test)]
 fn support_target_path(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
     path_arg(args, &["Path", "path", "TargetPath", "targetPath"])
@@ -383,7 +438,8 @@ fn support_target_path(
         .ok_or_else(|| "missing required argument: Path".to_string())
 }
 
-fn support_edit_action(args: &Map<String, Value>) -> Result<SupportEditAction, String> {
+#[cfg(test)]
+fn support_edit_action(args: &impl ArgumentAccess) -> Result<SupportEditAction, String> {
     let capability = string_arg(args, &["Capability", "capability"]);
     let set = string_arg(args, &["Set", "set"]);
     match (capability, set) {
@@ -400,7 +456,8 @@ fn support_edit_action(args: &Map<String, Value>) -> Result<SupportEditAction, S
     }
 }
 
-fn string_arg(args: &Map<String, Value>, names: &[&str]) -> Option<String> {
+#[cfg(test)]
+fn string_arg(args: &impl ArgumentAccess, names: &[&str]) -> Option<String> {
     names
         .iter()
         .find_map(|name| args.get(*name).and_then(Value::as_str))

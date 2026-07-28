@@ -19,6 +19,7 @@ use unica_application::{
     CurrentSourceAuthorization, LocatedSource, MetadataNavigationService,
     SourceRegistrationResolver,
 };
+use unica_format_core::ports::OperationCancellation;
 use unica_format_core::source::{
     ConfiguredSourceSetKind, SourceAdapterError, SourceAdapterErrorKind, SourceContext,
     SourceFamily, SourceId, SourceLocation, TargetIdentity,
@@ -37,6 +38,7 @@ impl NativeOperationAdapter {
         context: &WorkspaceContext,
         dry_run: bool,
         mutating: bool,
+        cancellation: &OperationCancellation,
     ) -> Result<NativeOperationResult, String> {
         if !mutating && operation == "meta-validate" {
             let validation = meta::validate_meta_with_data(args, context);
@@ -66,9 +68,9 @@ impl NativeOperationAdapter {
             match registry::typed_mutation_handler(operation) {
                 Some(registry::TypedMutationHandler::CodePatch) => {
                     let execution = if dry_run {
-                        code::preview_with_data(args, context)
+                        code::preview_with_data(args, context, cancellation)
                     } else {
-                        code::apply_with_data(args, context)
+                        code::apply_with_data(args, context, cancellation)
                     };
                     return typed_mutation_result(execution.outcome, execution.data, "code patch");
                 }
@@ -81,7 +83,12 @@ impl NativeOperationAdapter {
                         unica_format_core::commands::MutationMode::Apply
                     };
                     let (adapter, evidence) = registry::invoke_adapter_writer_with_evidence(
-                        operation, tool_name, args, context, mode,
+                        operation,
+                        tool_name,
+                        args,
+                        context,
+                        mode,
+                        cancellation,
                     )
                     .ok_or_else(|| "form edit writer is not registered".to_string())?;
                     let data = match evidence {
@@ -99,11 +106,18 @@ impl NativeOperationAdapter {
             }
         }
 
-        Self::invoke(operation, tool_name, args, context, dry_run, mutating).map(|adapter| {
-            NativeOperationResult {
-                adapter,
-                data: None,
-            }
+        Self::invoke(
+            operation,
+            tool_name,
+            args,
+            context,
+            dry_run,
+            mutating,
+            cancellation,
+        )
+        .map(|adapter| NativeOperationResult {
+            adapter,
+            data: None,
         })
     }
 }
@@ -131,8 +145,7 @@ impl SourceRegistrationResolver for HostMetadataSourceResolver<'_> {
         } else {
             self.context.cwd.join(requested)
         };
-        let target = meta::resolve_meta_info_path(requested)
-            .map_err(|_| source_unavailable("metadata target cannot be resolved"))?;
+        let target = requested;
         let source_map = crate::infrastructure::project_sources::discover_project_source_map(
             &self.context.workspace_root,
         )
@@ -351,6 +364,7 @@ mod tests {
             &context,
             false,
             false,
+            &OperationCancellation::new(),
         )
         .unwrap();
         let data = result
@@ -390,6 +404,7 @@ mod tests {
                 &context,
                 dry_run,
                 false,
+                &OperationCancellation::new(),
             )
             .unwrap();
             assert!(result.adapter.ok);
@@ -431,6 +446,7 @@ mod tests {
             &unsupported_context,
             false,
             false,
+            &OperationCancellation::new(),
         )
         .unwrap();
         assert!(unavailable.adapter.ok);
@@ -472,6 +488,7 @@ mod tests {
                 &context,
                 false,
                 false,
+                &OperationCancellation::new(),
             )
             .expect("runtime gateway failures must stay inside data.navigation");
             let navigation = &result.data.unwrap()["navigation"];
@@ -560,6 +577,7 @@ mod tests {
             context,
             false,
             false,
+            &OperationCancellation::new(),
         )
         .unwrap()
         .data

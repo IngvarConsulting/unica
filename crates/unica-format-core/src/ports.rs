@@ -13,7 +13,7 @@ use std::{
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
-    commands::{ModuleArtifactLocation, MutationMode, WriterCommand, WriterFamily, WriterResult},
+    commands::{MutationMode, WriterCommand, WriterFamily, WriterResult},
     navigation::{
         Authorability, CapabilityVector, NavigationEnvelope, NavigationQuery, ObjectKey, ObjectRef,
         PropertyValue, SourceAdapterDiagnostic,
@@ -2553,6 +2553,132 @@ pub trait WriterPort: Send + Sync {
     fn execute(&self, request: &WriterRequest) -> Result<WriterResult, SourceAdapterError>;
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactContent(Vec<u8>);
+
+impl ArtifactContent {
+    pub fn new(bytes: Vec<u8>) -> Result<Self, OperationalContractError> {
+        if bytes.len() > 16 * 1024 * 1024 {
+            return Err(OperationalContractError::InvalidSemanticValue);
+        }
+        Ok(Self(bytes))
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ArtifactReadRequest {
+    lease: SemanticArtifactLease,
+    cancellation: OperationCancellation,
+}
+
+impl ArtifactReadRequest {
+    pub const fn new(lease: SemanticArtifactLease, cancellation: OperationCancellation) -> Self {
+        Self {
+            lease,
+            cancellation,
+        }
+    }
+
+    pub const fn lease(&self) -> &SemanticArtifactLease {
+        &self.lease
+    }
+
+    pub const fn cancellation(&self) -> &OperationCancellation {
+        &self.cancellation
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactReadResult {
+    content: ArtifactContent,
+}
+
+impl ArtifactReadResult {
+    pub const fn new(content: ArtifactContent) -> Self {
+        Self { content }
+    }
+
+    pub const fn content(&self) -> &ArtifactContent {
+        &self.content
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArtifactWriteIntent {
+    ModulePatch,
+    ExtensionMethodPatch(crate::commands::ExtensionPatchMethod),
+    SemanticSourceTransaction,
+}
+
+#[derive(Debug, Clone)]
+pub struct ArtifactWriteRequest {
+    session: OperationalSourceSession,
+    lease: Option<SemanticArtifactLease>,
+    intent: ArtifactWriteIntent,
+    replacement: Option<ArtifactContent>,
+    mode: MutationMode,
+    cancellation: OperationCancellation,
+}
+
+impl ArtifactWriteRequest {
+    pub const fn new(
+        session: OperationalSourceSession,
+        lease: Option<SemanticArtifactLease>,
+        intent: ArtifactWriteIntent,
+        replacement: Option<ArtifactContent>,
+        mode: MutationMode,
+        cancellation: OperationCancellation,
+    ) -> Self {
+        Self {
+            session,
+            lease,
+            intent,
+            replacement,
+            mode,
+            cancellation,
+        }
+    }
+
+    pub const fn session(&self) -> &OperationalSourceSession {
+        &self.session
+    }
+
+    pub const fn lease(&self) -> Option<&SemanticArtifactLease> {
+        self.lease.as_ref()
+    }
+
+    pub const fn intent(&self) -> &ArtifactWriteIntent {
+        &self.intent
+    }
+
+    pub const fn replacement(&self) -> Option<&ArtifactContent> {
+        self.replacement.as_ref()
+    }
+
+    pub const fn mode(&self) -> MutationMode {
+        self.mode
+    }
+
+    pub const fn cancellation(&self) -> &OperationCancellation {
+        &self.cancellation
+    }
+}
+
+pub trait ArtifactWritePort: Send + Sync {
+    fn read(&self, request: &ArtifactReadRequest)
+        -> Result<ArtifactReadResult, SourceAdapterError>;
+
+    fn write(&self, request: &ArtifactWriteRequest) -> Result<WriterResult, SourceAdapterError>;
+}
+
 #[derive(Debug, Clone)]
 pub struct ModuleArtifactLocatorRequest {
     session: OperationalSourceSession,
@@ -2583,7 +2709,7 @@ pub trait ModuleArtifactLocatorPort: Send + Sync {
     fn locate(
         &self,
         request: &ModuleArtifactLocatorRequest,
-    ) -> Result<ModuleArtifactLocation, SourceAdapterError>;
+    ) -> Result<crate::commands::LocatedModuleArtifact, SourceAdapterError>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2621,6 +2747,7 @@ pub struct OperationalAdapterRegistration {
     publication: Arc<dyn PublicationPort>,
     writer: Arc<dyn WriterPort>,
     module_artifacts: Arc<dyn ModuleArtifactLocatorPort>,
+    artifact_write: Arc<dyn ArtifactWritePort>,
 }
 
 impl OperationalAdapterRegistration {
@@ -2635,6 +2762,7 @@ impl OperationalAdapterRegistration {
         publication: Arc<dyn PublicationPort>,
         writer: Arc<dyn WriterPort>,
         module_artifacts: Arc<dyn ModuleArtifactLocatorPort>,
+        artifact_write: Arc<dyn ArtifactWritePort>,
     ) -> Self {
         Self {
             compatibility,
@@ -2647,6 +2775,7 @@ impl OperationalAdapterRegistration {
             publication,
             writer,
             module_artifacts,
+            artifact_write,
         }
     }
 
@@ -2688,5 +2817,9 @@ impl OperationalAdapterRegistration {
 
     pub fn module_artifacts(&self) -> &dyn ModuleArtifactLocatorPort {
         self.module_artifacts.as_ref()
+    }
+
+    pub fn artifact_write(&self) -> &dyn ArtifactWritePort {
+        self.artifact_write.as_ref()
     }
 }

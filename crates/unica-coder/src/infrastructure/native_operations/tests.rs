@@ -4,6 +4,7 @@ use serde_json::{json, Map};
 use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
+use unica_format_core::ports::OperationCancellation;
 
 #[test]
 fn missing_native_mutation_handler_is_contract_error() {
@@ -18,6 +19,7 @@ fn missing_native_mutation_handler_is_contract_error() {
         &context,
         false,
         true,
+        &OperationCancellation::new(),
     );
 
     assert!(result.is_err());
@@ -38,6 +40,7 @@ fn code_patch_cannot_use_the_data_dropping_plain_dispatch_path() {
         &context,
         true,
         true,
+        &OperationCancellation::new(),
     )
     .unwrap_err();
 
@@ -57,6 +60,7 @@ fn compile_preview_without_payload_uses_the_safe_dry_run_placeholder() {
         &context,
         true,
         true,
+        &OperationCancellation::new(),
     )
     .expect("a missing preview payload must preserve the legacy dry-run contract");
 
@@ -94,6 +98,7 @@ fn subsystem_preview_with_unavailable_parent_uses_the_legacy_placeholder() {
         &context,
         true,
         true,
+        &OperationCancellation::new(),
     )
     .unwrap();
 
@@ -126,9 +131,16 @@ fn read_only_native_dispatch_does_not_honor_legacy_outfile() {
     }))
     .unwrap();
 
-    let result =
-        NativeOperationAdapter::invoke("cf-info", "unica.cf.info", &args, &context, false, false)
-            .unwrap();
+    let result = NativeOperationAdapter::invoke(
+        "cf-info",
+        "unica.cf.info",
+        &args,
+        &context,
+        false,
+        false,
+        &OperationCancellation::new(),
+    )
+    .unwrap();
 
     assert!(result.ok, "{result:?}");
     assert_eq!(fs::read(&config_path).unwrap(), original);

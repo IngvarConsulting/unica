@@ -1,4 +1,5 @@
 #![allow(dead_code, unused_imports)]
+use super::inspection_arguments::ArgumentAccess;
 
 use crate::application::operation_descriptors::{CFE_VALIDATE_PATH, CF_PATH, RIGHTS_PATH};
 use crate::application::{NativeWriterResult, SupportGuardRequirement};
@@ -973,7 +974,7 @@ pub(crate) fn build_subsystem_tree_entry(
 
 pub(crate) fn paginate_subsystem_info(
     lines: &mut Vec<String>,
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
 ) -> Option<String> {
     let total_lines = lines.len();
     let offset = int_arg(args, &["offset", "Offset"]).unwrap_or(0);
@@ -1155,7 +1156,7 @@ pub(crate) fn resolve_role_validate_rights_path(path: PathBuf) -> PathBuf {
 }
 
 pub(crate) fn resolve_role_read_rights_path(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
     let raw = required_path(args, RIGHTS_PATH, "RightsPath")?;
@@ -1208,7 +1209,7 @@ pub(crate) fn insert_meta_property_before_child_objects(
 }
 
 pub(crate) fn resolve_cf_edit_config_path(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
     let mut config_path =
@@ -1228,21 +1229,21 @@ pub(crate) fn resolve_cf_edit_config_path(
 }
 
 pub(crate) fn resolve_cf_read_config_path(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
     resolve_configuration_read_path(args, CF_PATH, "ConfigPath", context)
 }
 
 pub(crate) fn resolve_cfe_validate_config_path(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
     resolve_configuration_read_path(args, CFE_VALIDATE_PATH, "ExtensionPath", context)
 }
 
 fn resolve_configuration_read_path(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     names: &[&str],
     label: &str,
     context: &WorkspaceContext,
@@ -1343,7 +1344,7 @@ pub(crate) fn unescape_xml(value: &str) -> String {
 }
 
 pub(crate) fn output_dir_arg(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
     names: &[&str],
     default: &str,
@@ -1856,7 +1857,7 @@ pub(crate) fn validation_warnings(operation: &str, doc: &Document<'_>) -> Vec<St
 
 pub(crate) fn resolve_target(
     operation: &str,
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
     let path = if operation.starts_with("cf-") {
@@ -1965,7 +1966,7 @@ pub(crate) fn special_file(operation: &str) -> &'static str {
 }
 
 pub(crate) fn required_path(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     names: &[&str],
     label: &str,
 ) -> Result<PathBuf, String> {
@@ -1973,14 +1974,14 @@ pub(crate) fn required_path(
 }
 
 pub(crate) fn required_string<'a>(
-    args: &'a Map<String, Value>,
+    args: &'a impl ArgumentAccess,
     names: &[&str],
     label: &str,
 ) -> Result<&'a str, String> {
     string_arg(args, names).ok_or_else(|| format!("missing required {label} argument"))
 }
 
-pub(crate) fn path_arg(args: &Map<String, Value>, names: &[&str]) -> Option<PathBuf> {
+pub(crate) fn path_arg(args: &impl ArgumentAccess, names: &[&str]) -> Option<PathBuf> {
     names
         .iter()
         .find_map(|name| args.get(*name).and_then(Value::as_str))
@@ -1988,26 +1989,26 @@ pub(crate) fn path_arg(args: &Map<String, Value>, names: &[&str]) -> Option<Path
         .map(PathBuf::from)
 }
 
-pub(crate) fn string_arg<'a>(args: &'a Map<String, Value>, names: &[&str]) -> Option<&'a str> {
+pub(crate) fn string_arg<'a>(args: &'a impl ArgumentAccess, names: &[&str]) -> Option<&'a str> {
     names
         .iter()
         .find_map(|name| args.get(*name).and_then(Value::as_str))
         .filter(|value| !value.trim().is_empty())
 }
 
-pub(crate) fn bool_arg(args: &Map<String, Value>, names: &[&str]) -> bool {
+pub(crate) fn bool_arg(args: &impl ArgumentAccess, names: &[&str]) -> bool {
     names
         .iter()
         .any(|name| args.get(*name).and_then(Value::as_bool).unwrap_or(false))
 }
 
-pub(crate) fn optional_bool_arg(args: &Map<String, Value>, names: &[&str]) -> Option<bool> {
+pub(crate) fn optional_bool_arg(args: &impl ArgumentAccess, names: &[&str]) -> Option<bool> {
     names
         .iter()
         .find_map(|name| args.get(*name).and_then(Value::as_bool))
 }
 
-pub(crate) fn int_arg(args: &Map<String, Value>, names: &[&str]) -> Option<i64> {
+pub(crate) fn int_arg(args: &impl ArgumentAccess, names: &[&str]) -> Option<i64> {
     names
         .iter()
         .find_map(|name| args.get(*name).and_then(json_i64_value))

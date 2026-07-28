@@ -2,16 +2,22 @@ use std::{
     collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
+    sync::{mpsc, Arc, Barrier},
+    thread,
+    time::Duration,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
 use unica_format_core::{
     commands::{
-        ConfigurationCommand, ModuleOwner, ModuleRole, MutationMode, WriterCommand, WriterFamily,
-        WriterSourceRole, WriterStatus,
+        ConfigurationInitialize, ConfigurationName, ModuleOwner, ModuleRole, MutationMode,
+        WriterCommand, WriterFamily, WriterLifecycle, WriterSourceRole,
     },
-    ports::{ModuleArtifactLocatorRequest, OperationCancellation, WriterRequest},
+    ports::{
+        ModuleArtifactLocatorRequest, OperationCancellation, PublicationCancellation,
+        PublicationRollback, WriterRequest,
+    },
     semantic_ids::SemanticObjectKind,
 };
 
@@ -51,7 +57,9 @@ fn task8_cancelled_writer_cannot_publish_or_validate_native_arguments() {
     cancellation.cancel();
     let request = WriterRequest::new(
         session,
-        WriterCommand::configuration(ConfigurationCommand::Initialize),
+        WriterCommand::ConfigurationInitialize(ConfigurationInitialize::new(
+            ConfigurationName::new("Cancelled").unwrap(),
+        )),
         MutationMode::Apply,
         cancellation,
     );
@@ -62,8 +70,120 @@ fn task8_cancelled_writer_cannot_publish_or_validate_native_arguments() {
         .execute(&request)
         .unwrap();
 
-    assert_eq!(result.status(), WriterStatus::Cancelled);
+    assert!(matches!(result.lifecycle(), WriterLifecycle::Cancelled(_)));
     assert!(!output.exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+#[cfg(feature = "test-support")]
+fn task8_writer_cancellation_while_waiting_for_shared_publication_lock_is_typed() {
+    let root = fixture_root("cancelled-lock-wait");
+    fs::create_dir_all(&root).unwrap();
+    let output = root.join("output");
+    let factory = PlatformXmlAdapterFactory::new();
+
+    let session_a = factory
+        .capture_writer_session(
+            [(WriterSourceRole::DestinationDirectory, output.clone())],
+            None,
+            None,
+            &root,
+            &root,
+            &root.join(".cache-a"),
+            0,
+        )
+        .unwrap();
+    let request_a = WriterRequest::new(
+        session_a,
+        WriterCommand::ConfigurationInitialize(ConfigurationInitialize::new(
+            ConfigurationName::new("LockOwner").unwrap(),
+        )),
+        MutationMode::Apply,
+        OperationCancellation::new(),
+    );
+    let acquired = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    let acquired_by_a = Arc::clone(&acquired);
+    let release_by_a = Arc::clone(&release);
+    let thread_a = thread::spawn(move || {
+        PlatformXmlAdapterFactory::new().with_publication_lock_pause(
+            acquired_by_a,
+            release_by_a,
+            || {
+                PlatformXmlAdapterFactory::new()
+                    .operational_registration()
+                    .writer()
+                    .execute(&request_a)
+            },
+        )
+    });
+    acquired.wait();
+
+    let cancellation = OperationCancellation::new();
+    let session_b = factory
+        .capture_writer_session(
+            [(WriterSourceRole::DestinationDirectory, output.clone())],
+            None,
+            None,
+            &root,
+            &root,
+            &root.join(".cache-b"),
+            0,
+        )
+        .unwrap();
+    let request_b = WriterRequest::new(
+        session_b,
+        WriterCommand::ConfigurationInitialize(ConfigurationInitialize::new(
+            ConfigurationName::new("CancelledWaiter").unwrap(),
+        )),
+        MutationMode::Apply,
+        cancellation.clone(),
+    );
+    let (contended_sender, contended_receiver) = mpsc::channel();
+    let thread_b = thread::spawn(move || {
+        PlatformXmlAdapterFactory::new().with_publication_lock_contention_signal(
+            contended_sender,
+            || {
+                PlatformXmlAdapterFactory::new()
+                    .operational_registration()
+                    .writer()
+                    .execute(&request_b)
+            },
+        )
+    });
+
+    contended_receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("the second public writer must contend on the shared lock");
+    cancellation.cancel();
+    let cancelled = thread_b
+        .join()
+        .expect("cancelled writer thread must not panic")
+        .expect("lock-wait cancellation is a typed writer result");
+    release.wait();
+    let applied = thread_a
+        .join()
+        .expect("lock owner thread must not panic")
+        .expect("lock owner must return a writer result");
+
+    match cancelled.lifecycle() {
+        WriterLifecycle::Cancelled(interruption) => {
+            assert_eq!(
+                interruption.cancellation(),
+                PublicationCancellation::DuringExecution
+            );
+            assert_eq!(interruption.rollback(), PublicationRollback::NotNeeded);
+        }
+        lifecycle => panic!("expected typed cancellation, got {lifecycle:?}"),
+    }
+    assert!(matches!(applied.lifecycle(), WriterLifecycle::Applied));
+    let descriptor = fs::read_to_string(output.join("Configuration.xml")).unwrap();
+    assert!(
+        descriptor.contains("<Name>LockOwner</Name>"),
+        "{descriptor}"
+    );
+    assert!(!descriptor.contains("CancelledWaiter"), "{descriptor}");
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -85,10 +205,16 @@ fn task8_bsl_artifact_locator_is_semantic_and_failure_closed() {
         .locate(&request)
         .unwrap();
 
-    assert_eq!(location.owner().kind(), SemanticObjectKind::Catalog);
-    assert_eq!(location.owner().name(), Some("Items"));
-    assert_eq!(location.role(), ModuleRole::Object);
-    assert!(matches!(location.owner(), ModuleOwner::Object { .. }));
+    assert_eq!(
+        location.location().owner().kind(),
+        SemanticObjectKind::Catalog
+    );
+    assert_eq!(location.location().owner().name(), Some("Items"));
+    assert_eq!(location.location().role(), ModuleRole::Object);
+    assert!(matches!(
+        location.location().owner(),
+        ModuleOwner::Object { .. }
+    ));
 
     let cancellation = OperationCancellation::new();
     cancellation.cancel();

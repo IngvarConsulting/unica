@@ -225,6 +225,7 @@ impl CompileTransaction {
         verify: impl Fn() -> Result<(), String> + Send + Sync + 'static,
         preserve_error: bool,
     ) -> Result<(), String> {
+        super::cancellation::checkpoint()?;
         verify()?;
         self.semantic_guards.push(PlannedSemanticGuard {
             verify: Box::new(verify),
@@ -255,6 +256,7 @@ impl CompileTransaction {
         path: impl Into<PathBuf>,
         bytes: impl Into<Vec<u8>>,
     ) -> Result<(), String> {
+        super::cancellation::checkpoint()?;
         let path = path.into();
         let identity = self.reject_duplicate_plan_path(&path)?;
         match fs::symlink_metadata(&path) {
@@ -318,6 +320,7 @@ impl CompileTransaction {
         path: impl Into<PathBuf>,
         expected_preimage: impl AsRef<[u8]>,
     ) -> Result<(), String> {
+        super::cancellation::checkpoint()?;
         let path = path.into();
         let identity = self.reject_duplicate_plan_path(&path)?;
         let expected_preimage = expected_preimage.as_ref().to_vec();
@@ -338,6 +341,7 @@ impl CompileTransaction {
     /// semantic owner so a concurrently appearing owner cannot be left
     /// unregistered.
     pub(crate) fn guard_path_absent(&mut self, path: impl Into<PathBuf>) -> Result<(), String> {
+        super::cancellation::checkpoint()?;
         let requested_path = path.into();
         let identity = normalize_transaction_path_identity(&requested_path)?;
         if self.absence_guards.contains(&identity) {
@@ -403,6 +407,7 @@ impl CompileTransaction {
         selector: DirectoryMembershipSelector,
         expected_entries: Vec<DirectoryTopologyEntry>,
     ) -> Result<(), String> {
+        super::cancellation::checkpoint()?;
         let expected_entries = normalize_expected_directory_entries(selector, expected_entries)?;
         validate_directory_membership_guard(
             &requested_directory,
@@ -539,6 +544,7 @@ impl CompileTransaction {
         expected_preimage: impl AsRef<[u8]>,
         replacement: impl Into<Vec<u8>>,
     ) -> Result<(), String> {
+        super::cancellation::checkpoint()?;
         let path = path.into();
         let identity = self.reject_duplicate_plan_path(&path)?;
         let metadata = fs::symlink_metadata(&path).map_err(|error| {
@@ -589,6 +595,7 @@ impl CompileTransaction {
     /// is snapshotted before commit and moved to a same-filesystem recovery
     /// location during publication, allowing byte-exact rollback.
     pub(crate) fn remove_path(&mut self, path: impl Into<PathBuf>) -> Result<(), String> {
+        super::cancellation::checkpoint()?;
         let path = path.into();
         let removal_identity = self.reject_duplicate_plan_path(&path)?;
         if self
@@ -616,6 +623,7 @@ impl CompileTransaction {
         path: impl Into<PathBuf>,
         expected_names: Vec<OsString>,
     ) -> Result<bool, String> {
+        super::cancellation::checkpoint()?;
         let path = path.into();
         let expected_names = normalize_direct_entry_names(expected_names)?;
         if snapshot_direct_entry_names(&path)? != expected_names {
@@ -651,6 +659,7 @@ impl CompileTransaction {
         type_name: &str,
         object_name: &str,
     ) -> Result<RegistrationStatus, String> {
+        super::cancellation::checkpoint()?;
         let target = target.into();
         let normalized_target = normalize_transaction_path_identity(&target)?;
         if self.absence_guards.contains(&normalized_target) {
@@ -881,15 +890,18 @@ impl CompileTransaction {
         F: FnOnce() -> Result<(), String>,
     {
         let mut state = PublishState::default();
+        super::cancellation::checkpoint()?;
         self.semantic_preflight()?;
 
         for create in &self.creates {
+            super::cancellation::checkpoint()?;
             if let Err(error) = ensure_parent_directories(&create.path, &mut state.created_dirs) {
                 let cleanup_errors = cleanup_created_directories(&mut state.created_dirs);
                 return Err(with_cleanup_diagnostics(error, cleanup_errors));
             }
         }
         for registration in self.registrations.values().filter(|item| item.changed()) {
+            super::cancellation::checkpoint()?;
             if let Err(error) =
                 ensure_parent_directories(&registration.path, &mut state.created_dirs)
             {
@@ -959,16 +971,19 @@ impl CompileTransaction {
             VecDeque::new();
 
         let operation = (|| -> Result<CommitReport, String> {
+            super::cancellation::checkpoint()?;
             self.recheck_exact_read_guards("before publication")?;
             self.recheck_absence_guards("before publication")?;
             self.recheck_directory_membership_guards(false, &[], "before publication")?;
             self.recheck_semantic_guards()?;
 
             for removal in &self.removals {
+                super::cancellation::checkpoint()?;
                 recheck_removal(removal)?;
             }
 
             for create in &self.creates {
+                super::cancellation::checkpoint()?;
                 let publication = prepare(
                     lock,
                     PublishRequest {
@@ -1003,6 +1018,7 @@ impl CompileTransaction {
             }
 
             for registration in self.registrations.values() {
+                super::cancellation::checkpoint()?;
                 let publication = prepare(
                     lock,
                     PublishRequest {
@@ -1047,6 +1063,7 @@ impl CompileTransaction {
             }
 
             for removal in &self.removals {
+                super::cancellation::checkpoint()?;
                 prepared_removals.push_back((removal, reserve_removal_recovery(&removal.path)?));
             }
 
@@ -1066,6 +1083,7 @@ impl CompileTransaction {
                 .collect::<Vec<_>>();
             let mut final_guard_pending = true;
             while let Some((create, prepared)) = prepared_creates.pop_front() {
+                super::cancellation::checkpoint()?;
                 let published_identity = match prepared.staged_file_identity() {
                     Ok(identity) => identity,
                     Err(error) => {
@@ -1096,11 +1114,13 @@ impl CompileTransaction {
                         create.bytes.clone(),
                     ),
                 });
+                super::cancellation::publication_started();
             }
 
             failpoint_after_object_files()?;
 
             while let Some((registration, prepared)) = prepared_registrations.pop_front() {
+                super::cancellation::checkpoint()?;
                 let published_identity = match prepared.staged_file_identity() {
                     Ok(identity) => identity,
                     Err(error) => {
@@ -1158,12 +1178,15 @@ impl CompileTransaction {
                     PublishedFileExpectation::new(published_identity, registration.updated.clone()),
                     permissions,
                 ));
+                super::cancellation::publication_started();
             }
 
             if std::mem::take(&mut final_guard_pending) {
+                super::cancellation::checkpoint()?;
                 self.recheck_final_precommit_guards(&final_guard_transients)?;
             }
             while let Some((removal, recovery)) = prepared_removals.pop_front() {
+                super::cancellation::checkpoint()?;
                 recheck_removal(removal)?;
                 rename_no_replace(&removal.path, &recovery.path).map_err(|error| {
                     format!(
@@ -1175,6 +1198,7 @@ impl CompileTransaction {
                 state
                     .published_removals
                     .push(recovery.into_published(removal.path.clone(), removal.snapshot.clone()));
+                super::cancellation::publication_started();
                 let published = state
                     .published_removals
                     .last()
@@ -1188,11 +1212,13 @@ impl CompileTransaction {
                 }
             }
 
+            super::cancellation::checkpoint()?;
             self.post_validate()?;
             let validate = post_validation.take().ok_or_else(|| {
                 "compile transaction post-validation was already consumed".to_string()
             })?;
             validate()?;
+            super::cancellation::checkpoint()?;
             failpoint_post_write_validation()?;
             self.recheck_exact_read_guards("before successful completion")?;
             self.recheck_absence_guards("before successful completion")?;
@@ -1234,6 +1260,7 @@ impl CompileTransaction {
                 discard_prepared_removals(state, &mut prepared_removals);
                 let mut rollback_errors = rollback(state);
                 rollback_errors.extend(std::mem::take(&mut state.cleanup_warnings));
+                super::cancellation::publication_rollback_completed(!rollback_errors.is_empty());
                 Err(with_rollback_diagnostics(primary, rollback_errors))
             }
         }
@@ -3128,6 +3155,7 @@ fn bytes_hex(bytes: &[u8]) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CommitFailpoint {
     AfterObjectFiles,
+    CancelAfterObjectFiles,
     AfterRegistrationBackup,
     PostWriteValidation,
 }
@@ -3258,8 +3286,14 @@ fn pause_after_registration_recovery() {
 
 fn failpoint_after_object_files() -> Result<(), String> {
     #[cfg(test)]
-    if TEST_FAILPOINT.with(|slot| slot.get()) == Some(CommitFailpoint::AfterObjectFiles) {
-        return Err("injected compile transaction failure after object files".to_string());
+    match TEST_FAILPOINT.with(|slot| slot.get()) {
+        Some(CommitFailpoint::AfterObjectFiles) => {
+            return Err("injected compile transaction failure after object files".to_string());
+        }
+        Some(CommitFailpoint::CancelAfterObjectFiles) => {
+            super::cancellation::cancel_active_for_test();
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -3360,6 +3394,75 @@ mod tests {
         UnicaApplication::new()
             .call_tool("unica.meta.compile", &args)
             .unwrap()
+    }
+
+    #[test]
+    fn cancellation_during_planning_is_observed_before_any_write() {
+        use super::super::cancellation::{self, CancellationOutcome};
+        use unica_format_core::ports::OperationCancellation;
+
+        let root = temp_root("cancel-during-planning");
+        let target = root.join("target.bin");
+        let original = b"original";
+        fs::write(&target, original).unwrap();
+        let cancellation = OperationCancellation::new();
+
+        let (error, outcome) = cancellation::with_cancellation(&cancellation, || {
+            cancellation.cancel();
+            let mut transaction = CompileTransaction::new();
+            let error = transaction
+                .replace_bytes(&target, original, b"replacement".to_vec())
+                .expect_err("cancelled planning must stop");
+            (error, cancellation::outcome())
+        });
+
+        assert!(error.contains("cancelled"), "{error}");
+        assert_eq!(outcome, Some(CancellationOutcome::DuringExecution));
+        assert_eq!(fs::read(&target).unwrap(), original);
+        assert!(transaction_debris(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancellation_after_first_publication_rolls_back_before_reporting_cancelled() {
+        use super::super::cancellation::{self, CancellationOutcome};
+        use unica_format_core::ports::OperationCancellation;
+
+        let root = temp_root("cancel-after-first-publication");
+        let config = root.join("Configuration.xml");
+        let object = root.join("Roles/Reader.xml");
+        let original =
+            b"<MetaDataObject><Configuration><ChildObjects/></Configuration></MetaDataObject>";
+        fs::write(&config, original).unwrap();
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .create_bytes(
+                &object,
+                b"<MetaDataObject><Role/></MetaDataObject>".to_vec(),
+            )
+            .unwrap();
+        transaction
+            .register_canonical_child(&config, "Role", "Reader")
+            .unwrap();
+        let cancellation = OperationCancellation::new();
+
+        let (error, outcome) = cancellation::with_cancellation(&cancellation, || {
+            let error = with_commit_failpoint(CommitFailpoint::CancelAfterObjectFiles, || {
+                transaction.commit()
+            })
+            .expect_err("mid-publication cancellation must stop and roll back");
+            (error, cancellation::outcome())
+        });
+
+        assert!(error.contains("cancelled"), "{error}");
+        assert_eq!(
+            outcome,
+            Some(CancellationOutcome::DuringPublicationRolledBack)
+        );
+        assert!(!object.exists());
+        assert_eq!(fs::read(&config).unwrap(), original);
+        assert!(transaction_debris(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

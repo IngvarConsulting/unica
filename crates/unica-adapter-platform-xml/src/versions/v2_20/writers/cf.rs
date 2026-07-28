@@ -1,5 +1,8 @@
 #![allow(dead_code, unused_imports)]
+use super::inspection_arguments::ArgumentAccess;
 
+#[cfg(test)]
+use crate::application::operation_descriptors::CF_PATH;
 use crate::application::NativeWriterResult;
 use crate::domain::format_profile::{FormatCompatibility, ACTIVE_FORMAT_PROFILE};
 use crate::domain::workspace::WorkspaceContext;
@@ -9,6 +12,7 @@ use crate::infrastructure::platform_xml_owner::{
     task8_metadata_kind_display_name_ru, task8_metadata_kind_index, task8_metadata_kind_tag,
     task8_metadata_kind_tags,
 };
+use crate::operations::PlatformWriterSession;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -120,7 +124,7 @@ enum CfValidationScope {
 }
 
 pub(crate) fn validate_cf(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
     validate_cf_with_scope(args, context, CfValidationScope::Full)
@@ -145,7 +149,7 @@ pub(crate) fn validate_cf_owner_path(
 }
 
 fn validate_cf_with_scope(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
     scope: CfValidationScope,
 ) -> NativeWriterResult {
@@ -875,7 +879,7 @@ pub(crate) fn cf_validate_form_ref(config_dir: &Path, form_ref: &str) -> bool {
 }
 
 pub(crate) fn analyze_cf_info(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
@@ -1682,7 +1686,7 @@ pub(crate) fn cf_append_full_child_objects(
     }
 }
 
-pub(crate) fn cf_paginate(lines: Vec<String>, args: &Map<String, Value>) -> String {
+pub(crate) fn cf_paginate(lines: Vec<String>, args: &impl ArgumentAccess) -> String {
     let total = lines.len();
     let limit = int_arg(args, &["limit", "Limit"]).unwrap_or(150).max(0) as usize;
     let offset = int_arg(args, &["offset", "Offset"]).unwrap_or(0).max(0) as usize;
@@ -2008,18 +2012,54 @@ struct CfEditRun {
     warnings: Vec<String>,
 }
 
-pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> NativeWriterResult {
-    let edit_result = (|| -> Result<CfEditRun, String> {
+struct CfEditInput {
+    definition_file: Option<PathBuf>,
+    operation: Option<String>,
+    value: String,
+    configuration: PathBuf,
+    show_validation_output: bool,
+}
+
+#[cfg(test)]
+pub(crate) fn edit_cf(
+    args: &impl ArgumentAccess,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    let input = match (|| -> Result<CfEditInput, String> {
         let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
-        let operation = string_arg(args, &["operation", "Operation"]);
+        let operation = string_arg(args, &["operation", "Operation"]).map(ToOwned::to_owned);
         if definition_file.is_some() && operation.is_some() {
             return Err("Cannot use both -DefinitionFile and -Operation".to_string());
         }
         if definition_file.is_none() && operation.is_none() {
             return Err("Either -DefinitionFile or -Operation is required".to_string());
         }
+        Ok(CfEditInput {
+            definition_file,
+            operation,
+            value: string_arg(args, &["value", "Value"])
+                .unwrap_or_default()
+                .to_string(),
+            configuration: required_path(args, CF_PATH, "ConfigPath")?,
+            show_validation_output: !bool_arg(args, &["noValidate", "NoValidate"]),
+        })
+    })() {
+        Ok(input) => input,
+        Err(error) => return cf_edit_failure(error),
+    };
+    edit_cf_input(input, context)
+}
 
-        let config_path = resolve_cf_edit_config_path(args, context)?;
+fn edit_cf_input(input: CfEditInput, context: &WorkspaceContext) -> NativeWriterResult {
+    let edit_result = (|| -> Result<CfEditRun, String> {
+        let CfEditInput {
+            definition_file,
+            operation,
+            value,
+            configuration,
+            show_validation_output,
+        } = input;
+        let config_path = resolve_cf_edit_path(configuration, context)?;
         let config_dir = config_path
             .parent()
             .map(Path::to_path_buf)
@@ -2033,9 +2073,9 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
 
         let mut transaction = CompileTransaction::new();
         let operations = cf_edit_operations_guarded(
-            args,
             &context.cwd,
-            operation,
+            operation.as_deref(),
+            &value,
             definition_file,
             &mut transaction,
         )?;
@@ -2231,7 +2271,6 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                 .collect::<Vec<_>>(),
             context,
         )?;
-        let show_validation_output = !bool_arg(args, &["noValidate", "NoValidate"]);
         let mut validation_stdout = None;
         let validate_args = Map::from_iter([(
             "ConfigPath".to_string(),
@@ -2319,17 +2358,40 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                 stderr: None,
             }
         }
-        Err(error) => NativeWriterResult {
-            ok: false,
-            summary: "unica.cf.edit failed in native Configuration.xml editor".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-        },
+        Err(error) => cf_edit_failure(error),
     }
+}
+
+fn cf_edit_failure(error: String) -> NativeWriterResult {
+    NativeWriterResult {
+        ok: false,
+        summary: "unica.cf.edit failed in native Configuration.xml editor".to_string(),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec![error.clone()],
+        artifacts: Vec::new(),
+        stdout: None,
+        stderr: Some(format!("{error}\n")),
+    }
+}
+
+fn resolve_cf_edit_path(
+    configuration: PathBuf,
+    context: &WorkspaceContext,
+) -> Result<PathBuf, String> {
+    let mut config_path = absolutize(configuration, &context.cwd);
+    if config_path.is_dir() {
+        let candidate = config_path.join("Configuration.xml");
+        if candidate.is_file() {
+            config_path = candidate;
+        } else {
+            return Err("No Configuration.xml in directory".to_string());
+        }
+    }
+    if !config_path.is_file() {
+        return Err(format!("File not found: {}", config_path.display()));
+    }
+    Ok(config_path)
 }
 
 fn cf_edit_transaction_error(error: String) -> String {
@@ -2999,7 +3061,7 @@ mod cf_edit_transaction_tests {
 }
 
 pub(crate) fn cf_edit_operations(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     cwd: &Path,
     operation: Option<&str>,
     definition_file: Option<PathBuf>,
@@ -3024,9 +3086,9 @@ pub(crate) fn cf_edit_operations(
 }
 
 fn cf_edit_operations_guarded(
-    args: &Map<String, Value>,
     cwd: &Path,
     operation: Option<&str>,
+    value: &str,
     definition_file: Option<PathBuf>,
     transaction: &mut CompileTransaction,
 ) -> Result<Vec<(String, Value)>, String> {
@@ -3038,7 +3100,10 @@ fn cf_edit_operations_guarded(
         .bind_to(transaction)?;
         Ok(cf_edit_operations_from_value(parsed, operation))
     } else {
-        cf_edit_operations(args, cwd, operation, None)
+        Ok(vec![(
+            operation.unwrap_or("").to_string(),
+            Value::String(value.to_string()),
+        )])
     }
 }
 
@@ -3065,7 +3130,7 @@ fn cf_edit_operations_from_value(parsed: Value, operation: Option<&str>) -> Vec<
 }
 
 pub(crate) fn cf_edit_format_dependency_paths(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Result<Vec<PathBuf>, String> {
     let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
@@ -3083,7 +3148,7 @@ pub(crate) fn cf_edit_format_dependency_paths(
 }
 
 pub(crate) fn cf_read_format_dependency_paths(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
     operation: &str,
 ) -> Result<Vec<PathBuf>, String> {
@@ -4132,10 +4197,14 @@ pub(crate) struct CfInitPlannedXml {
 }
 
 pub(crate) fn cf_init_planned_xml(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> CfInitPlannedXml {
     let output_dir = output_dir_arg(args, context, &["outputDir", "OutputDir"], "src");
+    cf_init_planned_xml_for(output_dir)
+}
+
+fn cf_init_planned_xml_for(output_dir: PathBuf) -> CfInitPlannedXml {
     CfInitPlannedXml {
         configuration: output_dir.join("Configuration.xml"),
         language: output_dir.join("Languages/Русский.xml"),
@@ -4148,32 +4217,60 @@ pub(crate) fn cf_init_post_validation_dependency_paths(planned: &CfInitPlannedXm
     vec![planned.output_dir.join("Ext/HomePageWorkArea.xml")]
 }
 
+struct CfInitInput {
+    name: String,
+    synonym: String,
+    vendor: Option<String>,
+    version: Option<String>,
+    output_directory: PathBuf,
+    compatibility: String,
+}
+
+#[cfg(test)]
 pub(crate) fn create_configuration_scaffold(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
     let name = string_arg(args, &["name", "Name"]).unwrap_or("");
     if name.is_empty() {
-        return NativeWriterResult {
-            ok: false,
-            summary: "unica.cf.init failed in native XML scaffold writer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec!["missing required Name argument".to_string()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some("missing required Name argument\n".to_string()),
-        };
+        return cf_init_failure("missing required Name argument".to_string());
     }
-    let synonym = string_arg(args, &["synonym", "Synonym"]).unwrap_or(name);
-    let planned = cf_init_planned_xml(args, context);
+    let input = CfInitInput {
+        name: name.to_string(),
+        synonym: string_arg(args, &["synonym", "Synonym"])
+            .unwrap_or(name)
+            .to_string(),
+        vendor: string_arg(args, &["vendor", "Vendor"]).map(ToOwned::to_owned),
+        version: string_arg(args, &["version", "Version"]).map(ToOwned::to_owned),
+        output_directory: output_dir_arg(args, context, &["outputDir", "OutputDir"], "src"),
+        compatibility: string_arg(args, &["compatibilityMode", "CompatibilityMode"])
+            .unwrap_or("Version8_3_27")
+            .to_string(),
+    };
+    create_configuration_scaffold_input(input, context)
+}
+
+fn create_configuration_scaffold_input(
+    input: CfInitInput,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    let CfInitInput {
+        name,
+        synonym,
+        vendor,
+        version,
+        output_directory,
+        compatibility,
+    } = input;
+    let name = name.as_str();
+    let synonym = synonym.as_str();
+    let planned = cf_init_planned_xml_for(absolutize(output_directory, &context.cwd));
     let post_validation_dependencies = cf_init_post_validation_dependency_paths(&planned);
     let out_dir = planned.output_dir;
     let config = planned.configuration;
     let language = planned.language;
     let cai = planned.client_application_interface;
-    let compatibility =
-        string_arg(args, &["compatibilityMode", "CompatibilityMode"]).unwrap_or("Version8_3_27");
+    let compatibility = compatibility.as_str();
 
     let write_result = (|| -> Result<Vec<String>, String> {
         cf_edit_validate_property_value("CompatibilityMode", compatibility)?;
@@ -4184,12 +4281,8 @@ pub(crate) fn create_configuration_scaffold(
         let open_panel_inst = stable_uuid(9);
         let sections_panel_inst = stable_uuid(10);
         let compatibility_xml = escape_xml(compatibility);
-        let vendor_xml = string_arg(args, &["vendor", "Vendor"])
-            .map(escape_xml)
-            .unwrap_or_default();
-        let version_xml = string_arg(args, &["version", "Version"])
-            .map(escape_xml)
-            .unwrap_or_default();
+        let vendor_xml = vendor.as_deref().map(escape_xml).unwrap_or_default();
+        let version_xml = version.as_deref().map(escape_xml).unwrap_or_default();
         let synonym_xml = format!(
             "\r\n\t\t\t\t<v8:item>\r\n\t\t\t\t\t<v8:lang>ru</v8:lang>\r\n\t\t\t\t\t<v8:content>{}</v8:content>\r\n\t\t\t\t</v8:item>\r\n\t\t\t",
             escape_xml(synonym)
@@ -4404,16 +4497,20 @@ pub(crate) fn create_configuration_scaffold(
             )),
             stderr: None,
         },
-        Err(error) => NativeWriterResult {
-            ok: false,
-            summary: "unica.cf.init failed in native XML scaffold writer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-        },
+        Err(error) => cf_init_failure(error),
+    }
+}
+
+fn cf_init_failure(error: String) -> NativeWriterResult {
+    NativeWriterResult {
+        ok: false,
+        summary: "unica.cf.init failed in native XML scaffold writer".to_string(),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec![error.clone()],
+        artifacts: Vec::new(),
+        stdout: None,
+        stderr: Some(format!("{error}\n")),
     }
 }
 
@@ -4734,7 +4831,7 @@ pub(crate) fn contained_objects_xml(object_ids: &[String]) -> String {
 pub(crate) fn invoke_read(
     operation: &str,
     _tool_name: &str,
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Option<Result<NativeWriterResult, String>> {
     match operation {
@@ -4744,15 +4841,100 @@ pub(crate) fn invoke_read(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn invoke_mutation(
     operation: &str,
     _tool_name: &str,
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Option<NativeWriterResult> {
     match operation {
         "cf-init" => Some(create_configuration_scaffold(args, context)),
         "cf-edit" => Some(edit_cf(args, context)),
         _ => None,
+    }
+}
+
+pub(crate) fn initialize_configuration(
+    command: &unica_format_core::commands::ConfigurationInitialize,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    create_configuration_scaffold_input(
+        CfInitInput {
+            name: command.name().as_str().to_string(),
+            synonym: command
+                .synonym()
+                .map(|value| value.as_str())
+                .unwrap_or_else(|| command.name().as_str())
+                .to_string(),
+            vendor: command.vendor().map(|value| value.as_str().to_string()),
+            version: command.version().map(|value| value.as_str().to_string()),
+            output_directory: session
+                .source(unica_format_core::commands::WriterSourceRole::DestinationDirectory)
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| context.cwd.join("src")),
+            compatibility: session
+                .adapter_hint()
+                .unwrap_or("Version8_3_27")
+                .to_string(),
+        },
+        context,
+    )
+}
+
+pub(crate) fn edit_configuration(
+    command: &unica_format_core::commands::ConfigurationEdit,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    let configuration = match session.required_source(
+        unica_format_core::commands::WriterSourceRole::Configuration,
+        "configuration mutation target",
+    ) {
+        Ok(path) => path.to_path_buf(),
+        Err(error) => return cf_edit_failure(error),
+    };
+    let definition_file = session
+        .source(unica_format_core::commands::WriterSourceRole::Definition)
+        .map(Path::to_path_buf);
+    let (operation, value) = match command.mutation() {
+        Some(mutation) => {
+            if definition_file.is_some() {
+                return cf_edit_failure(
+                    "configuration mutation was bound both inline and by definition".to_string(),
+                );
+            }
+            let (operation, value) = configuration_mutation_parts(mutation);
+            (Some(operation.to_string()), value.to_string())
+        }
+        None if definition_file.is_some() => (None, String::new()),
+        None => return cf_edit_failure("configuration mutation is required".to_string()),
+    };
+    edit_cf_input(
+        CfEditInput {
+            definition_file,
+            operation,
+            value,
+            configuration,
+            show_validation_output: true,
+        },
+        context,
+    )
+}
+
+fn configuration_mutation_parts(
+    value: &unica_format_core::commands::ConfigurationMutation,
+) -> (&'static str, &str) {
+    use unica_format_core::commands::ConfigurationMutation as Mutation;
+    match value {
+        Mutation::ModifyProperty(value) => ("modify-property", value.as_str()),
+        Mutation::RemoveChild(value) => ("remove-childObject", value.as_str()),
+        Mutation::AddChild(value) => ("add-childObject", value.as_str()),
+        Mutation::SetDefaultRoles(value) => ("set-defaultRoles", value.as_str()),
+        Mutation::AddDefaultRole(value) => ("add-defaultRole", value.as_str()),
+        Mutation::RemoveDefaultRole(value) => ("remove-defaultRole", value.as_str()),
+        Mutation::SetPanels(value) => ("set-panels", value.as_str()),
+        Mutation::SetHomePage(value) => ("set-home-page", value.as_str()),
     }
 }

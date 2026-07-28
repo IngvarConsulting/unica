@@ -1,4 +1,5 @@
 #![allow(dead_code, unused_imports)]
+use super::inspection_arguments::ArgumentAccess;
 
 use crate::application::operation_descriptors::OBJECT_PATH;
 use crate::application::{NativeWriterResult, SupportGuardRequirement};
@@ -37,6 +38,7 @@ use crate::infrastructure::platform_xml_owner::{
     task8_metadata_kind, task8_metadata_kind_directory,
 };
 use crate::infrastructure::project_sources::discover_project_source_map;
+use crate::operations::PlatformWriterSession;
 use roxmltree::Document;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -6054,14 +6056,14 @@ pub(crate) struct MetaValidationOptions {
 }
 
 pub(crate) fn validate_meta(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
     validate_meta_with_data(args, context).adapter
 }
 
 pub(crate) fn validate_meta_with_data(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> MetaValidationInvocation {
     let run = (|| -> Result<MetaValidationRun, String> {
@@ -6158,7 +6160,7 @@ fn meta_validation_public_data(
     })
 }
 
-pub(crate) fn meta_validation_options(args: &Map<String, Value>) -> MetaValidationOptions {
+pub(crate) fn meta_validation_options(args: &impl ArgumentAccess) -> MetaValidationOptions {
     MetaValidationOptions {
         detailed: bool_arg(args, &["detailed", "Detailed"]),
         max_errors: int_arg(args, &["maxErrors", "MaxErrors"])
@@ -7796,7 +7798,7 @@ pub(crate) fn meta_info_enum_values(parent_node: Option<roxmltree::Node<'_, '_>>
         .collect()
 }
 
-pub(crate) fn meta_info_paginate(lines: Vec<String>, args: &Map<String, Value>) -> String {
+pub(crate) fn meta_info_paginate(lines: Vec<String>, args: &impl ArgumentAccess) -> String {
     let total_lines = lines.len();
     let offset = int_arg(args, &["offset", "Offset"]).unwrap_or(0).max(0) as usize;
     let limit = int_arg(args, &["limit", "Limit"]).unwrap_or(150).max(0) as usize;
@@ -8523,15 +8525,50 @@ fn meta_remove_payload_file_count(path: &Path) -> Result<Option<usize>, String> 
     }
 }
 
+struct MetaRemoveInput {
+    configuration_directory: PathBuf,
+    object: String,
+    dry_run: bool,
+    keep_files: bool,
+    force: bool,
+}
+
+#[cfg(test)]
 pub(crate) fn remove_metadata_object(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
+    let input = match (|| -> Result<MetaRemoveInput, String> {
+        Ok(MetaRemoveInput {
+            configuration_directory: PathBuf::from(required_string(
+                args,
+                &["configDir", "ConfigDir"],
+                "ConfigDir",
+            )?),
+            object: required_string(args, &["object", "Object"], "Object")?.to_string(),
+            dry_run: bool_arg(args, &["DryRun"]),
+            keep_files: bool_arg(args, &["KeepFiles", "keepFiles"]),
+            force: bool_arg(args, &["Force", "force"]),
+        })
+    })() {
+        Ok(input) => input,
+        Err(error) => {
+            return meta_remove_result(Err(meta_remove_stdout_error(format!("[ERROR] {error}"))))
+        }
+    };
+    remove_metadata_input(input, context)
+}
+
+fn remove_metadata_input(input: MetaRemoveInput, context: &WorkspaceContext) -> NativeWriterResult {
     let result = (|| -> Result<MetaRemoveSuccess, MetaRemoveError> {
-        let config_dir_raw = required_string(args, &["configDir", "ConfigDir"], "ConfigDir")
-            .map_err(|err| meta_remove_stdout_error(format!("[ERROR] {err}")))?;
-        let object = required_string(args, &["object", "Object"], "Object")
-            .map_err(|err| meta_remove_stdout_error(format!("[ERROR] {err}")))?;
+        let MetaRemoveInput {
+            configuration_directory: config_dir_display,
+            object,
+            dry_run,
+            keep_files,
+            force,
+        } = input;
+        let object = object.as_str();
 
         let Some((obj_type, obj_name)) = object.split_once('.') else {
             return Err(meta_remove_stdout_error(format!(
@@ -8552,7 +8589,6 @@ pub(crate) fn remove_metadata_object(
             )));
         };
 
-        let config_dir_display = PathBuf::from(config_dir_raw);
         let config_dir = absolutize(config_dir_display.clone(), &context.cwd);
         if !config_dir.is_dir() {
             return Err(meta_remove_stdout_error(format!(
@@ -8570,10 +8606,6 @@ pub(crate) fn remove_metadata_object(
         }
         require_meta_configuration_owner_validation(&config_xml, context, "meta.remove")
             .map_err(meta_remove_stdout_error)?;
-
-        let dry_run = bool_arg(args, &["DryRun"]);
-        let keep_files = bool_arg(args, &["KeepFiles", "keepFiles"]);
-        let force = bool_arg(args, &["Force", "force"]);
 
         let type_dir = config_dir.join(type_plural);
         let obj_xml = type_dir.join(format!("{obj_name}.xml"));
@@ -8960,6 +8992,10 @@ pub(crate) fn remove_metadata_object(
         })
     })();
 
+    meta_remove_result(result)
+}
+
+fn meta_remove_result(result: Result<MetaRemoveSuccess, MetaRemoveError>) -> NativeWriterResult {
     match result {
         Ok(success) => NativeWriterResult {
             ok: true,
@@ -9604,7 +9640,7 @@ pub(crate) fn meta_compile_extra_ext_files(
 }
 
 pub(crate) fn meta_compile_format_dependency_paths(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Result<Vec<PathBuf>, String> {
     let output_dir_label = string_arg(args, &["outputDir", "OutputDir"])
@@ -9808,11 +9844,25 @@ fn meta_compile_definition_format_dependency_paths(
     paths
 }
 
+struct MetaCompileInput {
+    definition: PathBuf,
+    destination: PathBuf,
+}
+
+#[cfg(test)]
 pub(crate) fn compile_meta(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
-    let write_result = plan_meta_compile(args, context).and_then(
+    let input = match meta_compile_input(args) {
+        Ok(input) => input,
+        Err(error) => return meta_compile_failure(error),
+    };
+    compile_meta_input(input, context)
+}
+
+fn compile_meta_input(input: MetaCompileInput, context: &WorkspaceContext) -> NativeWriterResult {
+    let write_result = plan_meta_compile_input(input, context).and_then(
         |(stdout, mut transaction, validation_paths, config_owner, format_dependencies)| {
             let format_dependencies = format_dependencies
                 .iter()
@@ -9858,25 +9908,30 @@ pub(crate) fn compile_meta(
             stdout: Some(stdout),
             stderr: None,
         },
-        Err(error) => NativeWriterResult {
-            ok: false,
-            summary: "unica.meta.compile failed in native metadata compiler".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-        },
+        Err(error) => meta_compile_failure(error),
     }
 }
 
+fn meta_compile_failure(error: String) -> NativeWriterResult {
+    NativeWriterResult {
+        ok: false,
+        summary: "unica.meta.compile failed in native metadata compiler".to_string(),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec![error.clone()],
+        artifacts: Vec::new(),
+        stdout: None,
+        stderr: Some(format!("{error}\n")),
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn preview_meta_compile(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Result<NativeWriterResult, String> {
     let (_stdout, transaction, _validation_paths, _config_owner, _format_dependencies) =
-        plan_meta_compile(args, context)?;
+        plan_meta_compile_input(meta_compile_input(args)?, context)?;
     Ok(NativeWriterResult {
         ok: true,
         summary: "dry run: unica.meta.compile planned native metadata compilation".to_string(),
@@ -9897,14 +9952,29 @@ type MetaCompilePlan = (
     Vec<PathBuf>,
 );
 
+#[cfg(test)]
+fn meta_compile_input(args: &impl ArgumentAccess) -> Result<MetaCompileInput, String> {
+    Ok(MetaCompileInput {
+        definition: required_path(args, &["jsonPath", "JsonPath"], "JsonPath")?,
+        destination: path_arg(args, &["outputDir", "OutputDir"])
+            .ok_or_else(|| "missing required OutputDir argument".to_string())?,
+    })
+}
+
+#[cfg(test)]
 fn plan_meta_compile(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Result<MetaCompilePlan, String> {
-    let output_dir_label = string_arg(args, &["outputDir", "OutputDir"])
-        .ok_or_else(|| "missing required OutputDir argument".to_string())?
-        .to_string();
-    let output_dir = absolutize(PathBuf::from(&output_dir_label), &context.cwd);
+    plan_meta_compile_input(meta_compile_input(args)?, context)
+}
+
+fn plan_meta_compile_input(
+    input: MetaCompileInput,
+    context: &WorkspaceContext,
+) -> Result<MetaCompilePlan, String> {
+    let output_dir_label = input.destination.display().to_string();
+    let output_dir = absolutize(input.destination, &context.cwd);
     let config_path = output_dir.join("Configuration.xml");
     let config_owner = if config_path.is_file() {
         let snapshot = read_utf8_sig_snapshot(&config_path)?;
@@ -9925,7 +9995,8 @@ fn plan_meta_compile(
         None
     };
     let mut transaction = CompileTransaction::new();
-    let defn = read_meta_compile_definition_guarded(args, context, &mut transaction)?;
+    let defn =
+        read_meta_compile_definition_guarded_path(input.definition, context, &mut transaction)?;
     let event_subscription_dependencies =
         meta_compile_event_subscription_dependencies(&defn, &output_dir);
     let mut format_dependencies =
@@ -9957,7 +10028,7 @@ fn plan_meta_compile(
 }
 
 fn read_meta_compile_definition(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Result<Value, String> {
     let json_path_raw = required_path(args, &["jsonPath", "JsonPath"], "JsonPath")?;
@@ -9972,12 +10043,21 @@ fn read_meta_compile_definition(
         .map_err(|err| format!("failed to parse metadata JSON: {err}"))
 }
 
+#[cfg(test)]
 fn read_meta_compile_definition_guarded(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
     transaction: &mut CompileTransaction,
 ) -> Result<Value, String> {
     let json_path_raw = required_path(args, &["jsonPath", "JsonPath"], "JsonPath")?;
+    read_meta_compile_definition_guarded_path(json_path_raw, context, transaction)
+}
+
+fn read_meta_compile_definition_guarded_path(
+    json_path_raw: PathBuf,
+    context: &WorkspaceContext,
+    transaction: &mut CompileTransaction,
+) -> Result<Value, String> {
     let json_path = absolutize(json_path_raw.clone(), &context.cwd);
     if !json_path.is_file() {
         return Err(format!("File not found: {}", json_path_raw.display()));
@@ -10004,7 +10084,34 @@ fn validate_meta_compile_post_state(
         if path.extension().and_then(|value| value.to_str()) != Some("xml") {
             continue;
         }
-        validate_semantic_metadata_artifact(path, context, "meta.compile")?;
+        match path.file_name().and_then(|value| value.to_str()) {
+            Some("Flowchart.xml") => {
+                validate_meta_auxiliary_artifact(path, "GraphicalSchema")?;
+            }
+            Some("Content.xml") => {
+                validate_meta_auxiliary_artifact(path, "ExchangePlanContent")?;
+            }
+            _ => validate_semantic_metadata_artifact(path, context, "meta.compile")?,
+        }
+    }
+    Ok(())
+}
+
+fn validate_meta_auxiliary_artifact(path: &Path, expected_root: &str) -> Result<(), String> {
+    let bytes = fs::read(path)
+        .map_err(|error| format!("failed to read auxiliary metadata artifact: {error}"))?;
+    let text = std::str::from_utf8(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes))
+        .map_err(|error| format!("auxiliary metadata artifact is not UTF-8: {error}"))?;
+    let document = roxmltree::Document::parse(text)
+        .map_err(|error| format!("auxiliary metadata artifact is malformed: {error}"))?;
+    let root = document.root_element();
+    if root.tag_name().name() != expected_root {
+        return Err(format!(
+            "auxiliary metadata artifact has unexpected semantic root: expected {expected_root}"
+        ));
+    }
+    if root.attribute("version") != Some(ACTIVE_FORMAT_PROFILE.export_format) {
+        return Err("auxiliary metadata artifact has an unsupported format revision".to_string());
     }
     Ok(())
 }
@@ -15156,22 +15263,56 @@ struct MetaEditLineNumberLengthAuthorization {
     provenance: Option<PlatformXmlOwnerProvenance>,
 }
 
+#[derive(Clone)]
+struct MetaEditInput {
+    definition_file: Option<PathBuf>,
+    operation: Option<String>,
+    value: String,
+    object_path: PathBuf,
+}
+
+#[cfg(test)]
 pub(crate) fn edit_meta(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
+    let input = match meta_edit_input(args) {
+        Ok(input) => input,
+        Err(error) => return meta_edit_failure(error),
+    };
+    edit_meta_input(input, context)
+}
+
+#[cfg(test)]
+fn meta_edit_input(args: &impl ArgumentAccess) -> Result<MetaEditInput, String> {
+    let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
+    let operation = string_arg(args, &["operation", "Operation"]).map(ToOwned::to_owned);
+    if definition_file.is_some() && operation.is_some() {
+        return Err("Cannot use both -DefinitionFile and -Operation".to_string());
+    }
+    if definition_file.is_none() && operation.is_none() {
+        return Err("Either -DefinitionFile or -Operation is required".to_string());
+    }
+    Ok(MetaEditInput {
+        definition_file,
+        operation,
+        value: string_arg(args, &["value", "Value"])
+            .unwrap_or_default()
+            .to_string(),
+        object_path: required_path(args, OBJECT_PATH, "ObjectPath")?,
+    })
+}
+
+fn edit_meta_input(input: MetaEditInput, context: &WorkspaceContext) -> NativeWriterResult {
     let edit_result = (|| -> Result<(String, PathBuf, bool, Vec<String>), String> {
-        let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
-        let operation = string_arg(args, &["operation", "Operation"]);
-        if definition_file.is_some() && operation.is_some() {
-            return Err("Cannot use both -DefinitionFile and -Operation".to_string());
-        }
-        if definition_file.is_none() && operation.is_none() {
-            return Err("Either -DefinitionFile or -Operation is required".to_string());
-        }
-        let object_path_raw = required_path(args, OBJECT_PATH, "ObjectPath")?;
+        let MetaEditInput {
+            definition_file,
+            operation,
+            value,
+            object_path: object_path_raw,
+        } = input;
         let object_path = resolve_meta_edit_object_path(&object_path_raw, &context.cwd)?;
-        let value = string_arg(args, &["value", "Value"]).unwrap_or_default();
+        let value = value.as_str();
 
         let original_bytes = fs::read(&object_path)
             .map_err(|err| format!("failed to read {}: {err}", object_path.display()))?;
@@ -15226,7 +15367,7 @@ pub(crate) fn edit_meta(
             info_lines.extend(meta_edit_definition_info_lines(&definition));
             authorization.provenance
         } else {
-            let operation = operation.expect("checked above");
+            let operation = operation.as_deref().expect("checked above");
             let authorization = if meta_edit_inline_requests_line_number_length(operation, value) {
                 meta_edit_line_number_length_policy(
                     &object_type,
@@ -15301,21 +15442,26 @@ pub(crate) fn edit_meta(
             stdout: Some(stdout),
             stderr: None,
         },
-        Err(error) => NativeWriterResult {
-            ok: false,
-            summary: "unica.meta.edit failed in native metadata editor".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-        },
+        Err(error) => meta_edit_failure(error),
     }
 }
 
+fn meta_edit_failure(error: String) -> NativeWriterResult {
+    NativeWriterResult {
+        ok: false,
+        summary: "unica.meta.edit failed in native metadata editor".to_string(),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec![error.clone()],
+        artifacts: Vec::new(),
+        stdout: None,
+        stderr: Some(format!("{error}\n")),
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn validate_meta_edit_preview(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Result<(), String> {
     let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
@@ -15363,6 +15509,69 @@ pub(crate) fn validate_meta_edit_preview(
             &object_name,
             operation.expect("checked above"),
             string_arg(args, &["value", "Value"]).unwrap_or_default(),
+            MetaEditLineNumberLengthPolicy::UnknownCompatibility,
+            &mut counts,
+        )
+        .map_err(|error| {
+            if error.starts_with("Unsupported meta-edit Operation:") {
+                error.replacen(
+                    "Unsupported meta-edit Operation:",
+                    "unsupported Operation:",
+                    1,
+                )
+            } else {
+                error
+            }
+        })?;
+    }
+    Document::parse(xml_text.trim_start_matches('\u{feff}'))
+        .map_err(|error| format!("XML parse error after meta-edit: {error}"))?;
+    validate_generated_metadata_boolean_contract(&xml_text, "meta.edit")
+}
+
+fn validate_meta_edit_preview_input(
+    input: &MetaEditInput,
+    context: &WorkspaceContext,
+) -> Result<(), String> {
+    let object_path = resolve_meta_edit_object_path(&input.object_path, &context.cwd)?;
+    let original_bytes = fs::read(&object_path)
+        .map_err(|error| format!("failed to read {}: {error}", object_path.display()))?;
+    let mut xml_text = String::from_utf8(original_bytes)
+        .map_err(|error| format!("failed to read {}: {error}", object_path.display()))?;
+    if xml_text.starts_with('\u{feff}') {
+        xml_text = xml_text.trim_start_matches('\u{feff}').to_string();
+    }
+    let (object_type, object_name) = meta_edit_object_identity(&xml_text)?;
+    validate_generated_metadata_enum_contract(&xml_text, "meta.edit")?;
+    let mut counts = MetaEditCounts::default();
+    if let Some(definition_file) = &input.definition_file {
+        let definition_path = absolutize(definition_file.clone(), &context.cwd);
+        let raw = fs::read(&definition_path).map_err(|error| {
+            format!(
+                "Definition file not found or unreadable {}: {error}",
+                definition_path.display()
+            )
+        })?;
+        let definition: Value = serde_json::from_slice(&raw)
+            .map_err(|error| format!("DefinitionFile JSON parse error: {error}"))?;
+        meta_edit_apply_definition(
+            &mut xml_text,
+            &object_type,
+            &object_name,
+            &definition,
+            MetaEditLineNumberLengthPolicy::UnknownCompatibility,
+            &mut counts,
+        )?;
+    } else {
+        meta_edit_apply_inline_operation(
+            &mut xml_text,
+            &object_type,
+            &object_name,
+            input
+                .operation
+                .as_deref()
+                .expect("typed operation is required"),
+            &input.value,
             MetaEditLineNumberLengthPolicy::UnknownCompatibility,
             &mut counts,
         )
@@ -18429,7 +18638,7 @@ fn normalize_meta_edit_scalar_property_value(object_type: &str, key: &str, value
 pub(crate) fn invoke_read(
     operation: &str,
     _tool_name: &str,
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Option<Result<NativeWriterResult, String>> {
     match operation {
@@ -18438,10 +18647,11 @@ pub(crate) fn invoke_read(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn invoke_mutation(
     operation: &str,
     _tool_name: &str,
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Option<NativeWriterResult> {
     match operation {
@@ -18449,6 +18659,177 @@ pub(crate) fn invoke_mutation(
         "meta-edit" => Some(edit_meta(args, context)),
         "meta-remove" => Some(remove_metadata_object(args, context)),
         _ => None,
+    }
+}
+
+pub(crate) fn create_metadata(
+    command: &unica_format_core::commands::MetadataCreate,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    match typed_meta_compile_input(session) {
+        Ok(input) => {
+            let _registration_policy =
+                (command.omits_default_role(), command.assigns_default_form());
+            compile_meta_input(input, context)
+        }
+        Err(error) => meta_compile_failure(error),
+    }
+}
+
+pub(crate) fn edit_metadata(
+    command: &unica_format_core::commands::MetadataEdit,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    match typed_meta_edit_input(command, session) {
+        Ok(input) => edit_meta_input(input, context),
+        Err(error) => meta_edit_failure(error),
+    }
+}
+
+pub(crate) fn remove_metadata(
+    command: &unica_format_core::commands::MetadataRemove,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    let configuration_directory = match session.required_source(
+        unica_format_core::commands::WriterSourceRole::ConfigurationDirectory,
+        "metadata removal configuration",
+    ) {
+        Ok(path) => path.to_path_buf(),
+        Err(error) => {
+            return meta_remove_result(Err(meta_remove_stdout_error(format!("[ERROR] {error}"))))
+        }
+    };
+    remove_metadata_input(
+        MetaRemoveInput {
+            configuration_directory,
+            object: command.object().as_str().to_string(),
+            dry_run: false,
+            keep_files: command.keeps_files(),
+            force: false,
+        },
+        context,
+    )
+}
+
+pub(crate) fn preview_meta_compile_typed(
+    command: &unica_format_core::commands::MetadataCreate,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+) -> Result<NativeWriterResult, String> {
+    let _registration_policy = (command.omits_default_role(), command.assigns_default_form());
+    let (_stdout, transaction, _validation_paths, _config_owner, _format_dependencies) =
+        plan_meta_compile_input(typed_meta_compile_input(session)?, context)?;
+    Ok(NativeWriterResult {
+        ok: true,
+        summary: "dry run: unica.meta.compile planned native metadata compilation".to_string(),
+        changes: transaction.dry_run_changes(),
+        warnings: Vec::new(),
+        errors: Vec::new(),
+        artifacts: Vec::new(),
+        stdout: Some(transaction.dry_run_stdout()),
+        stderr: None,
+    })
+}
+
+pub(crate) fn validate_meta_edit_preview_typed(
+    command: &unica_format_core::commands::MetadataEdit,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+) -> Result<(), String> {
+    validate_meta_edit_preview_input(&typed_meta_edit_input(command, session)?, context)
+}
+
+fn typed_meta_compile_input(session: &PlatformWriterSession) -> Result<MetaCompileInput, String> {
+    Ok(MetaCompileInput {
+        definition: session
+            .required_source(
+                unica_format_core::commands::WriterSourceRole::Definition,
+                "metadata definition",
+            )?
+            .to_path_buf(),
+        destination: session
+            .required_source(
+                unica_format_core::commands::WriterSourceRole::DestinationDirectory,
+                "metadata destination",
+            )?
+            .to_path_buf(),
+    })
+}
+
+fn typed_meta_edit_input(
+    command: &unica_format_core::commands::MetadataEdit,
+    session: &PlatformWriterSession,
+) -> Result<MetaEditInput, String> {
+    let definition_file = session
+        .source(unica_format_core::commands::WriterSourceRole::Definition)
+        .map(Path::to_path_buf);
+    let (operation, value) = match command.mutation() {
+        Some(mutation) => {
+            if definition_file.is_some() {
+                return Err("metadata mutation was bound both inline and by definition".to_string());
+            }
+            let (operation, value) = metadata_mutation_parts(mutation);
+            (Some(operation.to_string()), value.to_string())
+        }
+        None if definition_file.is_some() => (None, String::new()),
+        None => return Err("metadata mutation is required".to_string()),
+    };
+    let _selected_object = command.object().map(|value| value.as_str());
+    let _create_if_missing = command.creates_if_missing();
+    Ok(MetaEditInput {
+        definition_file,
+        operation,
+        value,
+        object_path: session
+            .required_source(
+                unica_format_core::commands::WriterSourceRole::Object,
+                "metadata mutation target",
+            )?
+            .to_path_buf(),
+    })
+}
+
+fn metadata_mutation_parts(
+    mutation: &unica_format_core::commands::MetadataMutation,
+) -> (&'static str, &str) {
+    use unica_format_core::commands::MetadataMutation as Mutation;
+    match mutation {
+        Mutation::AddProperty(value) => ("add-property", value.as_str()),
+        Mutation::RemoveProperty(value) => ("remove-property", value.as_str()),
+        Mutation::ModifyProperty(value) => ("modify-property", value.as_str()),
+        Mutation::AddAttribute(value) => ("add-attribute", value.as_str()),
+        Mutation::RemoveAttribute(value) => ("remove-attribute", value.as_str()),
+        Mutation::ModifyAttribute(value) => ("modify-attribute", value.as_str()),
+        Mutation::AddTabularSection(value) => ("add-tabular-section", value.as_str()),
+        Mutation::RemoveTabularSection(value) => ("remove-tabular-section", value.as_str()),
+        Mutation::ModifyTabularSection(value) => ("modify-tabular-section", value.as_str()),
+        Mutation::AddTabularSectionAttribute(value) => ("add-ts-attribute", value.as_str()),
+        Mutation::RemoveTabularSectionAttribute(value) => ("remove-ts-attribute", value.as_str()),
+        Mutation::ModifyTabularSectionAttribute(value) => ("modify-ts-attribute", value.as_str()),
+        Mutation::AddForm(value) => ("add-form", value.as_str()),
+        Mutation::RemoveForm(value) => ("remove-form", value.as_str()),
+        Mutation::ModifyForm(value) => ("modify-form", value.as_str()),
+        Mutation::AddTemplate(value) => ("add-template", value.as_str()),
+        Mutation::RemoveTemplate(value) => ("remove-template", value.as_str()),
+        Mutation::ModifyTemplate(value) => ("modify-template", value.as_str()),
+        Mutation::AddCommand(value) => ("add-command", value.as_str()),
+        Mutation::RemoveCommand(value) => ("remove-command", value.as_str()),
+        Mutation::ModifyCommand(value) => ("modify-command", value.as_str()),
+        Mutation::AddDimension(value) => ("add-dimension", value.as_str()),
+        Mutation::RemoveDimension(value) => ("remove-dimension", value.as_str()),
+        Mutation::ModifyDimension(value) => ("modify-dimension", value.as_str()),
+        Mutation::AddResource(value) => ("add-resource", value.as_str()),
+        Mutation::RemoveResource(value) => ("remove-resource", value.as_str()),
+        Mutation::ModifyResource(value) => ("modify-resource", value.as_str()),
+        Mutation::AddRequisite(value) => ("add-requisite", value.as_str()),
+        Mutation::RemoveRequisite(value) => ("remove-requisite", value.as_str()),
+        Mutation::ModifyRequisite(value) => ("modify-requisite", value.as_str()),
+        Mutation::AddEnumValue(value) => ("add-enum-value", value.as_str()),
+        Mutation::RemoveEnumValue(value) => ("remove-enum-value", value.as_str()),
+        Mutation::ModifyEnumValue(value) => ("modify-enum-value", value.as_str()),
     }
 }
 

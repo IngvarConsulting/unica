@@ -7,10 +7,7 @@ use super::common::{absolutize, bool_arg, int_arg, required_path};
 use crate::{application::AdapterOutcome, domain::workspace::WorkspaceContext};
 use serde::Serialize;
 use serde_json::{Map, Value};
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::path::PathBuf;
 use unica_format_core::ports::{
     OperationalValidationRequest, ValidationCoverage, ValidationFinding, ValidationFindingCode,
     ValidationFindingSeverity, ValidationOptions, ValidationReport, ValidationStatus,
@@ -344,63 +341,4 @@ fn finding_code(code: ValidationFindingCode) -> &'static str {
         ValidationFindingCode::CommandPresentationTooLong => "commandPresentationTooLong",
         ValidationFindingCode::UnsupportedCombination => "unsupportedCombination",
     }
-}
-
-pub(crate) fn resolve_meta_info_path(mut object_path: PathBuf) -> Result<PathBuf, String> {
-    if object_path.is_dir() {
-        let name = object_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default();
-        let nested = object_path.join(format!("{name}.xml"));
-        let sibling = object_path
-            .parent()
-            .unwrap_or_else(|| Path::new(""))
-            .join(format!("{name}.xml"));
-        if nested.is_file() {
-            object_path = nested;
-        } else if sibling.is_file() {
-            object_path = sibling;
-        } else {
-            let mut candidates = fs::read_dir(&object_path)
-                .map_err(|error| format!("failed to read {}: {error}", object_path.display()))?
-                .filter_map(Result::ok)
-                .map(|entry| entry.path())
-                .filter(|path| {
-                    path.extension()
-                        .and_then(|extension| extension.to_str())
-                        .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
-                })
-                .collect::<Vec<_>>();
-            candidates.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
-            object_path = candidates.into_iter().next().ok_or_else(|| {
-                format!(
-                    "[ERROR] No XML file found in directory: {}",
-                    object_path.display()
-                )
-            })?;
-        }
-    }
-    if !object_path.exists() {
-        let stem = object_path.file_stem().and_then(|name| name.to_str());
-        let parent = object_path.parent();
-        let parent_name = parent
-            .and_then(|path| path.file_name())
-            .and_then(|name| name.to_str());
-        if stem == parent_name {
-            if let (Some(parent), Some(stem)) = (parent, stem) {
-                let sibling = parent
-                    .parent()
-                    .unwrap_or_else(|| Path::new(""))
-                    .join(format!("{stem}.xml"));
-                if sibling.exists() {
-                    object_path = sibling;
-                }
-            }
-        }
-    }
-    if !object_path.exists() {
-        return Err(format!("[ERROR] File not found: {}", object_path.display()));
-    }
-    Ok(object_path)
 }

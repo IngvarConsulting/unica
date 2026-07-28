@@ -1,4 +1,5 @@
 #![allow(dead_code, unused_imports)]
+use super::inspection_arguments::ArgumentAccess;
 
 use crate::application::operation_descriptors::{FORM_PATH, OBJECT_PATH};
 use crate::application::NativeWriterResult;
@@ -7,6 +8,7 @@ use crate::domain::format_profile::FormatCompatibility;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform_xml_owner::inspect_platform_xml_compatibility;
 use crate::infrastructure::source_roots::normalize_path_identity;
+use crate::operations::PlatformWriterSession;
 use roxmltree::Document;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -164,14 +166,14 @@ pub(crate) struct FormElementInfo<'a> {
 }
 
 pub(crate) fn validate_form(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
     validate_form_with_source(args, context, None)
 }
 
 fn validate_form_with_source(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
     source_override: Option<(&Path, &str)>,
 ) -> NativeWriterResult {
@@ -1410,7 +1412,7 @@ pub(crate) fn form_valid_cfg_prefixes() -> &'static [&'static str] {
 }
 
 pub(crate) fn analyze_form_info(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
     let result = (|| -> Result<(String, PathBuf), String> {
@@ -2222,17 +2224,60 @@ fn validate_form_metadata_path_name(argument: &str, value: &str) -> Result<(), S
     }
 }
 
+struct FormCreateInput {
+    object_path: PathBuf,
+    form_name: String,
+    synonym: String,
+    purpose: String,
+    set_default: Option<bool>,
+}
+
+fn form_add_failure(error: String) -> NativeWriterResult {
+    NativeWriterResult {
+        ok: false,
+        summary: "unica.form.add failed in native form scaffold writer".to_string(),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec![error.clone()],
+        artifacts: Vec::new(),
+        stdout: None,
+        stderr: Some(format!("{error}\n")),
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn add_form(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
+    let input = (|| -> Result<FormCreateInput, String> {
+        let form_name = required_string(args, &["formName", "FormName"], "FormName")?.to_string();
+        Ok(FormCreateInput {
+            object_path: required_path(args, OBJECT_PATH, "ObjectPath")?,
+            synonym: string_arg(args, &["synonym", "Synonym"])
+                .unwrap_or(&form_name)
+                .to_string(),
+            purpose: string_arg(args, &["purpose", "Purpose"])
+                .unwrap_or("Object")
+                .to_string(),
+            set_default: optional_bool_arg(args, &["setDefault", "SetDefault"]),
+            form_name,
+        })
+    })();
+    match input {
+        Ok(input) => add_form_input(input, context),
+        Err(error) => form_add_failure(error),
+    }
+}
+
+fn add_form_input(input: FormCreateInput, context: &WorkspaceContext) -> NativeWriterResult {
     let result = (|| -> Result<(String, Vec<PathBuf>, Vec<String>), String> {
-        let object_path_raw = required_path(args, OBJECT_PATH, "ObjectPath")?;
-        let form_name = required_string(args, &["formName", "FormName"], "FormName")?;
+        let object_path_raw = input.object_path;
+        let form_name = input.form_name.as_str();
         validate_form_metadata_path_name("FormName", form_name)?;
-        let synonym = string_arg(args, &["synonym", "Synonym"]).unwrap_or(form_name);
-        let purpose_raw = string_arg(args, &["purpose", "Purpose"]).unwrap_or("Object");
-        let set_default = optional_bool_arg(args, &["setDefault", "SetDefault"]);
+        let synonym = input.synonym.as_str();
+        let purpose_raw = input.purpose.as_str();
+        let set_default = input.set_default;
 
         let object_xml_full =
             resolve_form_add_object_path(absolutize(object_path_raw, &context.cwd))?;
@@ -2378,34 +2423,61 @@ pub(crate) fn add_form(
             stdout: Some(stdout),
             stderr: None,
         },
-        Err(error) => NativeWriterResult {
-            ok: false,
-            summary: "unica.form.add failed in native form scaffold writer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-        },
+        Err(error) => form_add_failure(error),
     }
 }
 
+struct FormRemoveInput {
+    source_collection: PathBuf,
+    object_name: String,
+    form_name: String,
+}
+
+fn form_remove_failure(error: String) -> NativeWriterResult {
+    NativeWriterResult {
+        ok: false,
+        summary: "unica.form.remove failed in native form remover".to_string(),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec![error.clone()],
+        artifacts: Vec::new(),
+        stdout: None,
+        stderr: Some(format!("{error}\n")),
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn remove_form(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
+    let input = (|| -> Result<FormRemoveInput, String> {
+        Ok(FormRemoveInput {
+            object_name: required_string(
+                args,
+                &["objectName", "ObjectName", "processorName", "ProcessorName"],
+                "ObjectName",
+            )?
+            .to_string(),
+            form_name: required_string(args, &["formName", "FormName"], "FormName")?.to_string(),
+            source_collection: PathBuf::from(
+                string_arg(args, &["srcDir", "SrcDir"]).unwrap_or("src"),
+            ),
+        })
+    })();
+    match input {
+        Ok(input) => remove_form_input(input, context),
+        Err(error) => form_remove_failure(error),
+    }
+}
+
+fn remove_form_input(input: FormRemoveInput, context: &WorkspaceContext) -> NativeWriterResult {
     let result = (|| -> Result<(String, Vec<String>, Vec<String>), String> {
-        let object_name = required_string(
-            args,
-            &["objectName", "ObjectName", "processorName", "ProcessorName"],
-            "ObjectName",
-        )?;
-        let form_name = required_string(args, &["formName", "FormName"], "FormName")?;
+        let object_name = input.object_name.as_str();
+        let form_name = input.form_name.as_str();
         validate_form_metadata_path_name("ObjectName", object_name)?;
         validate_form_metadata_path_name("FormName", form_name)?;
-        let src_dir_raw = string_arg(args, &["srcDir", "SrcDir"]).unwrap_or("src");
-        let src_dir_display = PathBuf::from(src_dir_raw);
+        let src_dir_display = input.source_collection;
         let src_dir_abs = absolutize(src_dir_display.clone(), &context.cwd);
 
         let root_xml_display = src_dir_display.join(format!("{object_name}.xml"));
@@ -2576,16 +2648,7 @@ pub(crate) fn remove_form(
             stdout: Some(stdout),
             stderr: Some(String::new()),
         },
-        Err(error) => NativeWriterResult {
-            ok: false,
-            summary: "unica.form.remove failed in native form remover".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-        },
+        Err(error) => form_remove_failure(error),
     }
 }
 
@@ -2944,17 +3007,16 @@ pub(crate) fn form_compile_infer_from_object_target(
     }
 }
 
-pub(crate) fn form_compile_definition_from_object(
-    args: &Map<String, Value>,
+fn form_compile_definition_from_object_input(
+    object_path_input: Option<&Path>,
+    purpose_input: Option<&str>,
     context: &WorkspaceContext,
     output_path: &Path,
 ) -> Result<(Value, String, PathBuf, Utf8TextSnapshot), String> {
     let (inferred_object_path, inferred_purpose) =
         form_compile_infer_from_object_target(output_path, context);
-    let (object_path, mut stdout) = if let Some(object_path_raw) =
-        path_arg(args, &["objectPath", "ObjectPath"])
-    {
-        let mut object_path = absolutize(object_path_raw, &context.cwd);
+    let (object_path, mut stdout) = if let Some(object_path_raw) = object_path_input {
+        let mut object_path = absolutize(object_path_raw.to_path_buf(), &context.cwd);
         if object_path.extension().is_none() {
             object_path.set_extension("xml");
         }
@@ -2974,10 +3036,8 @@ pub(crate) fn form_compile_definition_from_object(
     }
     let object_snapshot = read_utf8_sig_snapshot(&object_path)?;
     let meta = form_compile_parse_object_meta(&object_snapshot.text)?;
-    let purpose = string_arg(args, &["purpose", "Purpose"])
-        .or(inferred_purpose)
-        .unwrap_or("Item");
-    if string_arg(args, &["purpose", "Purpose"]).is_none() && inferred_purpose.is_some() {
+    let purpose = purpose_input.or(inferred_purpose).unwrap_or("Item");
+    if purpose_input.is_none() && inferred_purpose.is_some() {
         stdout.push_str(&format!("[resolved] Purpose -> {purpose}\n"));
     }
 
@@ -3830,11 +3890,65 @@ struct FormParentRegistrationPlan {
     stdout: String,
 }
 
+#[derive(Debug, Clone)]
+struct FormCompileInput {
+    definition_path: Option<PathBuf>,
+    object_path: Option<PathBuf>,
+    output_path: PathBuf,
+    from_object: bool,
+    purpose: Option<String>,
+    _skip_validation: bool,
+}
+
+fn form_compile_failure(error: String) -> NativeWriterResult {
+    NativeWriterResult {
+        ok: false,
+        summary: "unica.form.compile failed in native managed form compiler".to_string(),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec![error.clone()],
+        artifacts: Vec::new(),
+        stdout: None,
+        stderr: Some(format!("{error}\n")),
+    }
+}
+
+#[cfg(test)]
+fn form_compile_input_from_args(args: &impl ArgumentAccess) -> Result<FormCompileInput, String> {
+    let json_path = path_arg(args, &["jsonPath", "JsonPath"]);
+    let from_object = bool_arg(args, &["fromObject", "FromObject"]);
+    if from_object && json_path.is_some() {
+        return Err("Cannot use both -JsonPath and -FromObject. Choose one mode.".to_string());
+    }
+    if !from_object && json_path.is_none() {
+        return Err("Either -JsonPath or -FromObject is required.".to_string());
+    }
+    Ok(FormCompileInput {
+        definition_path: json_path,
+        object_path: path_arg(args, &["objectPath", "ObjectPath"]),
+        output_path: PathBuf::from(
+            string_arg(args, &["outputPath", "OutputPath"])
+                .ok_or_else(|| "missing required OutputPath argument".to_string())?,
+        ),
+        from_object,
+        purpose: string_arg(args, &["purpose", "Purpose"]).map(str::to_string),
+        _skip_validation: bool_arg(args, &["noValidate", "NoValidate"]),
+    })
+}
+
+#[cfg(test)]
 pub(crate) fn compile_form(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
-    let write_result = plan_form_compile(args, context, false).and_then(|mut plan| {
+    match form_compile_input_from_args(args) {
+        Ok(input) => compile_form_input(&input, context),
+        Err(error) => form_compile_failure(error),
+    }
+}
+
+fn compile_form_input(input: &FormCompileInput, context: &WorkspaceContext) -> NativeWriterResult {
+    let write_result = plan_form_compile_input(input, context, false).and_then(|mut plan| {
         let output_path = plan.output_path.clone();
         let owner_candidate = form_parent_metadata_owner_candidate(&output_path)?;
         let owner_validation_snapshot = match owner_candidate.as_deref() {
@@ -3963,37 +4077,29 @@ pub(crate) fn compile_form(
             stdout: Some(stdout),
             stderr: None,
         },
-        Err(error) => NativeWriterResult {
-            ok: false,
-            summary: "unica.form.compile failed in native managed form compiler".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-        },
+        Err(error) => form_compile_failure(error),
     }
 }
 
+#[cfg(test)]
 pub(crate) fn preview_form_compile(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Result<NativeWriterResult, String> {
-    let mut plan = match plan_form_compile(args, context, false) {
+    let input = match form_compile_input_from_args(args) {
+        Ok(input) => input,
+        Err(error) => return Ok(form_compile_failure(error)),
+    };
+    preview_form_compile_input(&input, context)
+}
+
+fn preview_form_compile_input(
+    input: &FormCompileInput,
+    context: &WorkspaceContext,
+) -> Result<NativeWriterResult, String> {
+    let mut plan = match plan_form_compile_input(input, context, false) {
         Ok(plan) => plan,
-        Err(error) => {
-            return Ok(NativeWriterResult {
-                ok: false,
-                summary: "unica.form.compile failed in native managed form compiler".to_string(),
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: vec![error.clone()],
-                artifacts: Vec::new(),
-                stdout: None,
-                stderr: Some(format!("{error}\n")),
-            });
-        }
+        Err(error) => return Ok(form_compile_failure(error)),
     };
     plan.stdout
         .push_str(&format!("[DRY-RUN] Would compile: {}\n", plan.output_label));
@@ -4010,7 +4116,8 @@ pub(crate) fn preview_form_compile(
     })
 }
 
-pub(crate) fn has_compile_payload(args: &Map<String, Value>) -> bool {
+#[cfg(test)]
+pub(crate) fn has_compile_payload(args: &impl ArgumentAccess) -> bool {
     const KEYS: &[&str] = &[
         "JsonPath",
         "jsonPath",
@@ -4024,25 +4131,21 @@ pub(crate) fn has_compile_payload(args: &Map<String, Value>) -> bool {
     KEYS.iter().any(|key| args.contains_key(*key))
 }
 
-fn plan_form_compile(
-    args: &Map<String, Value>,
+fn plan_form_compile_input(
+    input: &FormCompileInput,
     context: &WorkspaceContext,
     inspect_existing_output_owner: bool,
 ) -> Result<FormCompilePlan, String> {
-    let json_path_raw = path_arg(args, &["jsonPath", "JsonPath"]);
-    let from_object = bool_arg(args, &["fromObject", "FromObject"]);
-    if from_object && json_path_raw.is_some() {
+    if input.from_object && input.definition_path.is_some() {
         return Err("Cannot use both -JsonPath and -FromObject. Choose one mode.".to_string());
     }
-    if !from_object && json_path_raw.is_none() {
+    if !input.from_object && input.definition_path.is_none() {
         return Err("Either -JsonPath or -FromObject is required.".to_string());
     }
 
-    let mut output_label = string_arg(args, &["outputPath", "OutputPath"])
-        .ok_or_else(|| "missing required OutputPath argument".to_string())?
-        .to_string();
+    let mut output_label = input.output_path.display().to_string();
     let mut stdout = String::new();
-    if from_object {
+    if input.from_object {
         if let Some((normalized, resolved_line)) =
             form_compile_normalize_from_object_output_label(&output_label)
         {
@@ -4053,9 +4156,14 @@ fn plan_form_compile(
     let output_path = absolutize(PathBuf::from(&output_label), &context.cwd);
     validate_form_compile_output_path(&output_path)?;
     let mut derivation_inputs = Vec::new();
-    let defn = if from_object {
+    let defn = if input.from_object {
         let (defn, from_object_stdout, object_path, object_snapshot) =
-            form_compile_definition_from_object(args, context, &output_path)?;
+            form_compile_definition_from_object_input(
+                input.object_path.as_deref(),
+                input.purpose.as_deref(),
+                context,
+                &output_path,
+            )?;
         stdout.push_str(&from_object_stdout);
         derivation_inputs.push(FormCompileDerivationInput {
             path: object_path,
@@ -4064,7 +4172,9 @@ fn plan_form_compile(
         });
         defn
     } else {
-        let json_path_raw = json_path_raw
+        let json_path_raw = input
+            .definition_path
+            .as_ref()
             .ok_or_else(|| "Either -JsonPath or -FromObject is required.".to_string())?;
         let json_path = absolutize(json_path_raw.clone(), &context.cwd);
         if !json_path.exists() {
@@ -4162,35 +4272,104 @@ fn append_form_compile_stats(stdout: &mut String, stats: &FormCompileStats) {
     }
 }
 
+enum FormEditDefinitionInput {
+    Inline(Value),
+    File(PathBuf),
+}
+
+struct FormEditInput {
+    form_path: PathBuf,
+    definition: FormEditDefinitionInput,
+    _skip_validation: bool,
+}
+
+struct DefaultValidationArguments;
+
+impl ArgumentAccess for DefaultValidationArguments {
+    fn get(&self, _key: &str) -> Option<&Value> {
+        None
+    }
+
+    fn keys<'a>(&'a self) -> Box<dyn Iterator<Item = &'a str> + 'a> {
+        Box::new(std::iter::empty())
+    }
+}
+
+fn form_edit_failure(error: String) -> FormEditExecution {
+    FormEditExecution {
+        outcome: NativeWriterResult {
+            ok: false,
+            summary: "unica.form.edit failed in native managed form editor".to_string(),
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: vec![error.clone()],
+            artifacts: Vec::new(),
+            stdout: None,
+            stderr: Some(format!("{error}\n")),
+        },
+        data: None,
+    }
+}
+
+#[cfg(test)]
+fn form_edit_input_from_args(args: &impl ArgumentAccess) -> Result<FormEditInput, String> {
+    let inline = args.get("definition").cloned();
+    let definition_path = path_arg(args, &["jsonPath", "JsonPath"]);
+    let definition = match (inline, definition_path) {
+        (Some(_), Some(_)) => {
+            return Err(
+                "unica.form.edit accepts exactly one of JsonPath or inline definition".to_string(),
+            )
+        }
+        (Some(value), None) => FormEditDefinitionInput::Inline(value),
+        (None, Some(path)) => FormEditDefinitionInput::File(path),
+        (None, None) => {
+            return Err(
+                "unica.form.edit requires exactly one of JsonPath or definition".to_string(),
+            )
+        }
+    };
+    Ok(FormEditInput {
+        form_path: required_path(args, FORM_PATH, "FormPath")?,
+        definition,
+        _skip_validation: bool_arg(args, &["noValidate", "NoValidate"]),
+    })
+}
+
+#[cfg(test)]
 pub(crate) fn edit_form(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
     apply_with_data(args, context).outcome
 }
 
+#[cfg(test)]
 pub(crate) fn preview_form_edit(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
     preview_with_data(args, context).outcome
 }
 
+#[cfg(test)]
 pub(crate) fn apply_with_data(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> FormEditExecution {
     form_edit_with_mode_data(args, context, FormEditMode::Apply)
 }
 
+#[cfg(test)]
 pub(crate) fn preview_with_data(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> FormEditExecution {
     form_edit_with_mode_data(args, context, FormEditMode::Preview)
 }
 
-pub(crate) fn has_edit_payload(args: &Map<String, Value>) -> bool {
+#[cfg(test)]
+pub(crate) fn has_edit_payload(args: &impl ArgumentAccess) -> bool {
     const KEYS: &[&str] = &[
         "FormPath",
         "formPath",
@@ -4200,7 +4379,7 @@ pub(crate) fn has_edit_payload(args: &Map<String, Value>) -> bool {
         "jsonPath",
         "definition",
     ];
-    args.keys().any(|key| KEYS.contains(&key.as_str()))
+    args.keys().any(|key| KEYS.contains(&key))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4215,8 +4394,9 @@ impl FormEditMode {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn edit_form_with_mode(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
     mode: FormEditMode,
 ) -> NativeWriterResult {
@@ -4241,8 +4421,29 @@ impl FormEditExecution {
                 .into_iter()
                 .map(|removed| {
                     unica_format_core::commands::FormEditRemoval::new(
-                        removed.name,
-                        removed.kind,
+                        unica_format_core::commands::FormElementName::new(removed.name)
+                            .expect("form writer emitted a validated element name"),
+                        match removed.kind.as_str() {
+                            "InputField" => unica_format_core::commands::FormElementKind::Input,
+                            "ContextMenu" => {
+                                unica_format_core::commands::FormElementKind::ContextMenu
+                            }
+                            "ExtendedTooltip" => {
+                                unica_format_core::commands::FormElementKind::Tooltip
+                            }
+                            "UsualGroup" | "Group" => {
+                                unica_format_core::commands::FormElementKind::Group
+                            }
+                            "Table" => unica_format_core::commands::FormElementKind::Table,
+                            "Button" => unica_format_core::commands::FormElementKind::Button,
+                            "CommandBar" | "AutoCommandBar" => {
+                                unica_format_core::commands::FormElementKind::CommandBar
+                            }
+                            "attribute" => unica_format_core::commands::FormElementKind::Attribute,
+                            "command" => unica_format_core::commands::FormElementKind::Command,
+                            "parameter" => unica_format_core::commands::FormElementKind::Parameter,
+                            _ => unica_format_core::commands::FormElementKind::Element,
+                        },
                         match removed.reason {
                             FormEditRemovalReason::Requested => {
                                 unica_format_core::commands::FormEditRemovalReason::Requested
@@ -4300,20 +4501,33 @@ struct FormEditSuccess {
     removals: Vec<FormEditPlannedRemoval>,
 }
 
+#[cfg(test)]
 fn form_edit_with_mode_data(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
+    context: &WorkspaceContext,
+    mode: FormEditMode,
+) -> FormEditExecution {
+    match form_edit_input_from_args(args) {
+        Ok(input) => form_edit_with_mode_data_input(input, context, mode),
+        Err(error) => form_edit_failure(error),
+    }
+}
+
+fn form_edit_with_mode_data_input(
+    input: FormEditInput,
     context: &WorkspaceContext,
     mode: FormEditMode,
 ) -> FormEditExecution {
     let edit_result = (|| -> Result<FormEditSuccess, String> {
-        let form_path_raw = required_path(args, FORM_PATH, "FormPath")?;
+        let form_path_raw = input.form_path;
         let form_path = absolutize(form_path_raw.clone(), &context.cwd);
         if !form_path.exists() {
             return Err(format!("File not found: {}", form_path_raw.display()));
         }
 
         let mut transaction = CompileTransaction::new();
-        let defn = form_edit_resolve_definition_guarded(args, context, &mut transaction)?;
+        let defn =
+            form_edit_resolve_definition_guarded(input.definition, context, &mut transaction)?;
         let original_bytes = fs::read(&form_path)
             .map_err(|err| format!("failed to read {}: {err}", form_path.display()))?;
         let bom = if original_bytes.starts_with(&[0xef, 0xbb, 0xbf]) {
@@ -4470,7 +4684,7 @@ fn form_edit_with_mode_data(
         form_edit_validate_surviving_removal_references(edited_root, &planned_removals)?;
         form_edit_validate_emitted_type_qnames(edited_root, &emitted_type_qnames)?;
         form_edit_require_valid(validate_form_with_source(
-            args,
+            &DefaultValidationArguments,
             context,
             Some((&form_path, &xml_text)),
         ))?;
@@ -4656,19 +4870,7 @@ fn form_edit_with_mode_data(
                 validation: FormEditValidation::Passed,
             }),
         },
-        Err(error) => FormEditExecution {
-            outcome: NativeWriterResult {
-                ok: false,
-                summary: "unica.form.edit failed in native managed form editor".to_string(),
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: vec![error.clone()],
-                artifacts: Vec::new(),
-                stdout: None,
-                stderr: Some(format!("{error}\n")),
-            },
-            data: None,
-        },
+        Err(error) => form_edit_failure(error),
     }
 }
 
@@ -5135,21 +5337,16 @@ impl FormEditPlannedEvent {
 }
 
 fn form_edit_resolve_definition_guarded(
-    args: &Map<String, Value>,
+    input: FormEditDefinitionInput,
     context: &WorkspaceContext,
     transaction: &mut CompileTransaction,
 ) -> Result<Value, String> {
-    let inline = args.get("definition");
-    let json_path_raw = path_arg(args, &["jsonPath", "JsonPath"]);
-    match (inline, json_path_raw) {
-        (Some(_), Some(_)) => {
-            Err("unica.form.edit accepts exactly one of JsonPath or inline definition".to_string())
+    match input {
+        FormEditDefinitionInput::Inline(definition) => {
+            validate_form_edit_definition(&definition)?;
+            Ok(definition)
         }
-        (Some(definition), None) => {
-            validate_form_edit_definition(definition)?;
-            Ok(definition.clone())
-        }
-        (None, Some(json_path_raw)) => {
+        FormEditDefinitionInput::File(json_path_raw) => {
             let json_path = absolutize(json_path_raw.clone(), &context.cwd);
             if !json_path.exists() {
                 return Err(format!("File not found: {}", json_path_raw.display()));
@@ -5160,9 +5357,6 @@ fn form_edit_resolve_definition_guarded(
             .bind_to(transaction)?;
             validate_form_edit_definition(&definition)?;
             Ok(definition)
-        }
-        (None, None) => {
-            Err("unica.form.edit requires exactly one of JsonPath or definition".to_string())
         }
     }
 }
@@ -10103,7 +10297,7 @@ pub(crate) fn form_parent_metadata_owner_candidate(
 pub(crate) fn invoke_read(
     operation: &str,
     _tool_name: &str,
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Option<Result<NativeWriterResult, String>> {
     match operation {
@@ -10113,10 +10307,11 @@ pub(crate) fn invoke_read(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn invoke_mutation(
     operation: &str,
     _tool_name: &str,
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Option<NativeWriterResult> {
     match operation {
@@ -10125,6 +10320,188 @@ pub(crate) fn invoke_mutation(
         "form-compile" => Some(compile_form(args, context)),
         "form-edit" => Some(edit_form(args, context)),
         _ => None,
+    }
+}
+
+pub(crate) fn create_form(
+    command: &unica_format_core::commands::FormCreate,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    use unica_format_core::commands::{DefaultFormAssignment, WriterSourceRole};
+
+    let object_path = match session.required_source(WriterSourceRole::Object, "form creation") {
+        Ok(path) => path.to_path_buf(),
+        Err(error) => return form_add_failure(error),
+    };
+    add_form_input(
+        FormCreateInput {
+            object_path,
+            form_name: command.name().as_str().to_string(),
+            synonym: command
+                .synonym()
+                .map(|value| value.as_str())
+                .unwrap_or_else(|| command.name().as_str())
+                .to_string(),
+            purpose: command.purpose().as_str().to_string(),
+            set_default: match command.default_assignment() {
+                DefaultFormAssignment::IfVacant => None,
+                DefaultFormAssignment::Always => Some(true),
+                DefaultFormAssignment::Never => Some(false),
+            },
+        },
+        context,
+    )
+}
+
+pub(crate) fn compile_form_typed(
+    command: &unica_format_core::commands::FormCompile,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    match form_compile_input_from_typed(command, session) {
+        Ok(input) => compile_form_input(&input, context),
+        Err(error) => form_compile_failure(error),
+    }
+}
+
+pub(crate) fn remove_form_typed(
+    command: &unica_format_core::commands::FormRemove,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    use unica_format_core::commands::WriterSourceRole;
+
+    let source_collection =
+        match session.required_source(WriterSourceRole::SourceCollection, "form removal") {
+            Ok(path) => path.to_path_buf(),
+            Err(error) => return form_remove_failure(error),
+        };
+    remove_form_input(
+        FormRemoveInput {
+            source_collection,
+            object_name: command.owner().as_str().to_string(),
+            form_name: command.name().as_str().to_string(),
+        },
+        context,
+    )
+}
+
+fn form_compile_input_from_typed(
+    command: &unica_format_core::commands::FormCompile,
+    session: &PlatformWriterSession,
+) -> Result<FormCompileInput, String> {
+    use unica_format_core::commands::{FormCompileSource, WriterSourceRole};
+
+    let output_path = session
+        .required_source(
+            WriterSourceRole::DestinationArtifact,
+            "managed form compilation",
+        )?
+        .to_path_buf();
+    let (from_object, purpose) = match command.source() {
+        FormCompileSource::Definition => (false, None),
+        FormCompileSource::Object { purpose } => {
+            (true, purpose.map(|value| value.as_str().to_string()))
+        }
+    };
+    Ok(FormCompileInput {
+        definition_path: session
+            .source(WriterSourceRole::Definition)
+            .map(Path::to_path_buf),
+        object_path: session
+            .source(WriterSourceRole::Object)
+            .map(Path::to_path_buf),
+        output_path,
+        from_object,
+        purpose,
+        _skip_validation: command.skips_validation(),
+    })
+}
+
+pub(crate) fn has_typed_compile_payload(session: &PlatformWriterSession) -> bool {
+    use unica_format_core::commands::WriterSourceRole;
+
+    [
+        WriterSourceRole::Definition,
+        WriterSourceRole::Object,
+        WriterSourceRole::DestinationArtifact,
+    ]
+    .into_iter()
+    .any(|role| session.source(role).is_some())
+}
+
+pub(crate) fn preview_form_compile_typed(
+    command: &unica_format_core::commands::FormCompile,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+) -> Result<NativeWriterResult, String> {
+    match form_compile_input_from_typed(command, session) {
+        Ok(input) => preview_form_compile_input(&input, context),
+        Err(error) => Ok(form_compile_failure(error)),
+    }
+}
+
+fn form_edit_input_from_typed(
+    command: &unica_format_core::commands::FormEdit,
+    session: &PlatformWriterSession,
+) -> Result<FormEditInput, String> {
+    use unica_format_core::commands::WriterSourceRole;
+
+    let form_path = session
+        .required_source(WriterSourceRole::Form, "managed form editing")?
+        .to_path_buf();
+    let definition_path = session
+        .source(WriterSourceRole::Definition)
+        .map(Path::to_path_buf);
+    let inline = session.inline_definition();
+    let definition = match (inline, definition_path) {
+        (Some(_), Some(_)) => {
+            return Err(
+                "form edit accepts exactly one definition source or inline definition".to_string(),
+            )
+        }
+        (Some(bytes), None) => FormEditDefinitionInput::Inline(
+            serde_json::from_slice(bytes)
+                .map_err(|error| format!("failed to parse form edit definition: {error}"))?,
+        ),
+        (None, Some(path)) => FormEditDefinitionInput::File(path),
+        (None, None) => return Err("form edit requires a definition".to_string()),
+    };
+    Ok(FormEditInput {
+        form_path,
+        definition,
+        _skip_validation: command.skips_validation(),
+    })
+}
+
+pub(crate) fn has_typed_edit_payload(session: &PlatformWriterSession) -> bool {
+    use unica_format_core::commands::WriterSourceRole;
+
+    session.source(WriterSourceRole::Form).is_some()
+        || session.source(WriterSourceRole::Definition).is_some()
+        || session.inline_definition().is_some()
+}
+
+pub(crate) fn apply_typed_with_data(
+    command: &unica_format_core::commands::FormEdit,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+) -> FormEditExecution {
+    match form_edit_input_from_typed(command, session) {
+        Ok(input) => form_edit_with_mode_data_input(input, context, FormEditMode::Apply),
+        Err(error) => form_edit_failure(error),
+    }
+}
+
+pub(crate) fn preview_typed_with_data(
+    command: &unica_format_core::commands::FormEdit,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+) -> FormEditExecution {
+    match form_edit_input_from_typed(command, session) {
+        Ok(input) => form_edit_with_mode_data_input(input, context, FormEditMode::Preview),
+        Err(error) => form_edit_failure(error),
     }
 }
 

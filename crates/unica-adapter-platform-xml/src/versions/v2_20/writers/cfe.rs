@@ -1,9 +1,11 @@
 #![allow(dead_code, unused_imports)]
+use super::inspection_arguments::ArgumentAccess;
 
 use crate::application::NativeWriterResult;
 use crate::domain::format_profile::{FormatCompatibility, ACTIVE_FORMAT_PROFILE};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform_xml_owner::inspect_platform_xml_compatibility;
+use crate::operations::PlatformWriterSession;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::cell::RefCell;
@@ -14,6 +16,9 @@ use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use unica_format_core::commands::{
+    ExecutionContext, ExtensionPatchEmissionPlan, InterceptorKind, MethodName, NamePrefix,
+};
 
 use super::common::*;
 use super::compile_transaction::{CommitReport, CompileTransaction};
@@ -325,28 +330,46 @@ impl PreparedCfeBorrow {
     }
 }
 
+struct CfeBorrowInput {
+    extension: PathBuf,
+    configuration: PathBuf,
+    object: String,
+    main_attribute: Option<String>,
+}
+
+#[cfg(test)]
 fn prepare_cfe_borrow(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Result<PreparedCfeBorrow, String> {
     prepare_cfe_borrow_with_trace(args, context, CfeBorrowReadTrace::default())
 }
 
+#[cfg(test)]
 fn prepare_cfe_borrow_with_trace(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
     read_trace: CfeBorrowReadTrace,
 ) -> Result<PreparedCfeBorrow, String> {
-    let ext_path = cfe_borrow_resolve_path(
-        args,
-        context,
-        &["extensionPath", "ExtensionPath"],
-        "extension",
-    )?;
-    let cfg_path = cfe_borrow_resolve_path(args, context, &["configPath", "ConfigPath"], "config")?;
+    let input = CfeBorrowInput {
+        extension: required_path(args, &["extensionPath", "ExtensionPath"], "ExtensionPath")?,
+        configuration: required_path(args, &["configPath", "ConfigPath"], "ConfigPath")?,
+        object: required_string(args, &["object", "Object"], "Object")?.to_string(),
+        main_attribute: cfe_borrow_main_attribute_mode(args)?,
+    };
+    prepare_cfe_borrow_input(input, context, read_trace)
+}
+
+fn prepare_cfe_borrow_input(
+    input: CfeBorrowInput,
+    context: &WorkspaceContext,
+    read_trace: CfeBorrowReadTrace,
+) -> Result<PreparedCfeBorrow, String> {
+    let ext_path = cfe_borrow_resolve_bound_path(input.extension, context, "extension")?;
+    let cfg_path = cfe_borrow_resolve_bound_path(input.configuration, context, "config")?;
     cfe_borrow_validate_extension(&ext_path, context)?;
-    let object_spec = required_string(args, &["object", "Object"], "Object")?;
-    let borrow_main_attribute = cfe_borrow_main_attribute_mode(args)?;
+    let object_spec = input.object;
+    let borrow_main_attribute = input.main_attribute;
 
     let ext_dir = ext_path
         .parent()
@@ -504,20 +527,23 @@ fn prepare_cfe_borrow_with_trace(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn cfe_borrow_format_dependency_paths(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Result<Vec<PathBuf>, String> {
     Ok(prepare_cfe_borrow(args, context)?.format_dependency_paths())
 }
 
+#[cfg(test)]
 pub(crate) struct CfeBorrowFormatDependencyInspection {
     pub(crate) paths: Vec<PathBuf>,
     pub(crate) planning_error: Option<String>,
 }
 
+#[cfg(test)]
 pub(crate) fn cfe_borrow_format_dependency_inspection(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> CfeBorrowFormatDependencyInspection {
     let read_trace = CfeBorrowReadTrace::default();
@@ -533,8 +559,16 @@ pub(crate) fn cfe_borrow_format_dependency_inspection(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn borrow_cfe(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    borrow_cfe_prepared(prepare_cfe_borrow(args, context), context)
+}
+
+fn borrow_cfe_prepared(
+    prepared: Result<PreparedCfeBorrow, String>,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
     let result = (|| -> Result<(String, Vec<PathBuf>, Vec<String>), String> {
@@ -548,7 +582,7 @@ pub(crate) fn borrow_cfe(
             mut artifacts,
             borrowed_count,
             registered_format_dependencies,
-        } = prepare_cfe_borrow(args, context)?;
+        } = prepared?;
         let mut format_owner_targets = vec![cfg_path.as_path(), ext_path.as_path()];
         format_owner_targets.extend(registered_format_dependencies.iter().map(PathBuf::as_path));
         format_owner_targets.sort();
@@ -586,16 +620,20 @@ pub(crate) fn borrow_cfe(
             stdout: Some(stdout),
             stderr: None,
         },
-        Err(error) => NativeWriterResult {
-            ok: false,
-            summary: "unica.cfe.borrow failed in native extension borrower".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-        },
+        Err(error) => cfe_borrow_failure(error),
+    }
+}
+
+fn cfe_borrow_failure(error: String) -> NativeWriterResult {
+    NativeWriterResult {
+        ok: false,
+        summary: "unica.cfe.borrow failed in native extension borrower".to_string(),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec![error.clone()],
+        artifacts: Vec::new(),
+        stdout: None,
+        stderr: Some(format!("{error}\n")),
     }
 }
 
@@ -888,7 +926,7 @@ impl CfeBorrowWritePlan {
 }
 
 pub(crate) fn cfe_borrow_resolve_path(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
     names: &[&str],
     kind: &str,
@@ -902,6 +940,14 @@ pub(crate) fn cfe_borrow_resolve_path(
             "ConfigPath"
         },
     )?;
+    cfe_borrow_resolve_bound_path(raw, context, kind)
+}
+
+fn cfe_borrow_resolve_bound_path(
+    raw: PathBuf,
+    context: &WorkspaceContext,
+    kind: &str,
+) -> Result<PathBuf, String> {
     let mut path = absolutize(raw, &context.cwd);
     if path.is_dir() {
         let candidate = path.join("Configuration.xml");
@@ -929,7 +975,7 @@ pub(crate) fn cfe_borrow_resolve_path(
 }
 
 pub(crate) fn cfe_borrow_main_attribute_mode(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
 ) -> Result<Option<String>, String> {
     for name in ["borrowMainAttribute", "BorrowMainAttribute"] {
         if let Some(value) = args.get(name) {
@@ -3106,7 +3152,7 @@ pub(crate) fn cfe_borrow_prefixed_name(namespace: Option<&str>, local_name: &str
 }
 
 pub(crate) fn diff_cfe(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
@@ -3664,7 +3710,7 @@ pub(crate) fn cfe_diff_normalized_ws(text: &str) -> String {
 }
 
 pub(crate) fn validate_cfe(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
@@ -4525,14 +4571,14 @@ pub(crate) struct CfeInitPlannedXml {
     pub(crate) role: Option<PathBuf>,
 }
 
-fn cfe_init_name_prefix(args: &Map<String, Value>, name: &str) -> String {
+fn cfe_init_name_prefix(args: &impl ArgumentAccess, name: &str) -> String {
     string_arg(args, &["namePrefix", "NamePrefix"])
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| format!("{name}_"))
 }
 
 pub(crate) fn cfe_init_planned_xml(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> CfeInitPlannedXml {
     let name = string_arg(args, &["name", "Name"]).unwrap_or("");
@@ -4544,6 +4590,19 @@ pub(crate) fn cfe_init_planned_xml(
         "src",
     );
     let role = (!bool_arg(args, &["noRole", "NoRole"])).then(|| {
+        output_dir
+            .join("Roles")
+            .join(format!("{name_prefix}ОсновнаяРоль.xml"))
+    });
+    cfe_init_planned_xml_for(output_dir, &name_prefix, role.is_none())
+}
+
+fn cfe_init_planned_xml_for(
+    output_dir: PathBuf,
+    name_prefix: &str,
+    no_role: bool,
+) -> CfeInitPlannedXml {
+    let role = (!no_role).then(|| {
         output_dir
             .join("Roles")
             .join(format!("{name_prefix}ОсновнаяРоль.xml"))
@@ -5565,14 +5624,72 @@ fn cfe_patch_borrowed_snapshots(
     })
 }
 
-pub(crate) fn patch_extension_method(
-    args: &Map<String, Value>,
+struct CfePatchInput {
+    extension: PathBuf,
+    module: String,
+    method: String,
+    interceptor: InterceptorKind,
+    context: Option<ExecutionContext>,
+    function: bool,
+}
+
+#[cfg(test)]
+pub(crate) fn patch_extension_method_with_emitter(
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
+    emitter: &dyn Fn(&ExtensionPatchEmissionPlan, Option<&[u8]>) -> Result<Vec<u8>, String>,
+) -> NativeWriterResult {
+    let input = match (|| -> Result<CfePatchInput, String> {
+        let interceptor = match required_string(
+            args,
+            &["interceptorType", "InterceptorType"],
+            "InterceptorType",
+        )? {
+            "Before" => InterceptorKind::Before,
+            "After" => InterceptorKind::After,
+            "Instead" => InterceptorKind::Instead,
+            "ModificationAndControl" => InterceptorKind::Instead,
+            value => return Err(format!("unsupported InterceptorType value: {value}")),
+        };
+        let context = match string_arg(args, &["context", "Context"]) {
+            None => None,
+            Some("НаКлиенте") => Some(ExecutionContext::Client),
+            Some("НаСервере") => Some(ExecutionContext::Server),
+            Some("НаСервереБезКонтекста") => {
+                Some(ExecutionContext::ServerWithoutContext)
+            }
+            Some(value) => return Err(format!("unsupported Context value: {value}")),
+        };
+        Ok(CfePatchInput {
+            extension: required_path(args, &["extensionPath", "ExtensionPath"], "ExtensionPath")?,
+            module: required_string(args, &["modulePath", "ModulePath"], "ModulePath")?.to_string(),
+            method: required_string(args, &["methodName", "MethodName"], "MethodName")?.to_string(),
+            interceptor,
+            context,
+            function: bool_arg(args, &["isFunction", "IsFunction"]),
+        })
+    })() {
+        Ok(input) => input,
+        Err(error) => return cfe_patch_failure(error),
+    };
+    patch_extension_method_input(input, context, emitter)
+}
+
+fn patch_extension_method_input(
+    input: CfePatchInput,
+    context: &WorkspaceContext,
+    emitter: &dyn Fn(&ExtensionPatchEmissionPlan, Option<&[u8]>) -> Result<Vec<u8>, String>,
 ) -> NativeWriterResult {
     let write_result = (|| -> Result<(String, CommitReport), String> {
-        let mut extension_path =
-            required_path(args, &["extensionPath", "ExtensionPath"], "ExtensionPath")
-                .map(|path| absolutize(path, &context.cwd))?;
+        let CfePatchInput {
+            extension,
+            module,
+            method,
+            interceptor,
+            context: requested_context,
+            function,
+        } = input;
+        let mut extension_path = absolutize(extension, &context.cwd);
         if extension_path.is_file() {
             extension_path = extension_path
                 .parent()
@@ -5590,39 +5707,23 @@ pub(crate) fn patch_extension_method(
         let cfg_preimage = fs::read(&cfg_file)
             .map_err(|error| format!("failed to read {}: {error}", cfg_file.display()))?;
 
-        let module_path = required_string(args, &["modulePath", "ModulePath"], "ModulePath")?;
-        let method_name = required_string(args, &["methodName", "MethodName"], "MethodName")?;
-        let interceptor_type = required_string(
-            args,
-            &["interceptorType", "InterceptorType"],
-            "InterceptorType",
-        )?;
-        let context_name = string_arg(args, &["context", "Context"]);
-        let is_function = bool_arg(args, &["isFunction", "IsFunction"]);
+        let module_path = module.as_str();
+        let method_name = method.as_str();
 
         cfe_patch_validate_bsl_identifier("MethodName", method_name)?;
-        if let Some(context_name) = context_name {
-            if !matches!(
-                context_name,
-                "НаСервере" | "НаКлиенте" | "НаСервереБезКонтекста"
-            ) {
-                return Err(format!(
-                    "Context must be one of: НаСервере, НаКлиенте, НаСервереБезКонтекста; got {context_name:?}"
-                ));
-            }
-        }
-        if is_function {
+        if function {
             return Err(
                 "cfe.patch_method v1 requires a parameterless procedure; a base method signature resolver for functions and parameterized methods is not implemented"
                     .to_string(),
             );
         }
-        let decorator = match interceptor_type {
-            "Before" => "&Перед",
-            "After" => "&После",
-            _ => {
+        let interceptor = match interceptor {
+            InterceptorKind::Before => InterceptorKind::Before,
+            InterceptorKind::After => InterceptorKind::After,
+            InterceptorKind::Instead => {
                 return Err(format!(
-                    "cfe.patch_method v1 supports only Before and After for a parameterless procedure; an exact base method body/signature resolver required for {interceptor_type:?} is not implemented"
+                    "cfe.patch_method v1 supports only Before and After for a parameterless procedure; an exact base method body/signature resolver required for {:?} is not implemented",
+                    InterceptorKind::Instead
                 ));
             }
         };
@@ -5653,7 +5754,7 @@ pub(crate) fn patch_extension_method(
             property_state_preimage,
             target.role.extended_property(),
         )?;
-        let context_annotation = match target.role {
+        let effective_context = match target.role {
             CfePatchModuleRole::CommonModule => {
                 let capabilities = common_module_capabilities.ok_or_else(|| {
                     cfe_patch_precondition_error(
@@ -5661,42 +5762,48 @@ pub(crate) fn patch_extension_method(
                         "CommonModule execution capabilities were not validated",
                     )
                 })?;
-                match context_name {
-                    None => None,
-                    Some("НаСервере") if capabilities.server => Some("&НаСервере"),
-                    Some("НаСервере") => {
+                match requested_context {
+                    None | Some(ExecutionContext::Automatic) => None,
+                    Some(ExecutionContext::Server) if capabilities.server => {
+                        Some(ExecutionContext::Server)
+                    }
+                    Some(ExecutionContext::Server) => {
                         return Err(
                             "Context НаСервере requires Server=true in the borrowed CommonModule"
                                 .to_string(),
                         );
                     }
-                    Some("НаКлиенте") if capabilities.client() => Some("&НаКлиенте"),
-                    Some("НаКлиенте") => {
+                    Some(ExecutionContext::Client) if capabilities.client() => {
+                        Some(ExecutionContext::Client)
+                    }
+                    Some(ExecutionContext::Client) => {
                         return Err(
                             "Context НаКлиенте requires ClientManagedApplication=true or ClientOrdinaryApplication=true in the borrowed CommonModule"
                                 .to_string(),
                         );
                     }
-                    Some("НаСервереБезКонтекста") => {
+                    Some(ExecutionContext::ServerWithoutContext) => {
                         return Err(
                             "Context НаСервереБезКонтекста is not available in a CommonModule on platform 1C 8.3.27"
                                 .to_string(),
                         );
                     }
-                    Some(_) => unreachable!("Context was validated above"),
                 }
             }
-            CfePatchModuleRole::Form => match context_name.unwrap_or("НаСервере") {
-                "НаСервере" => Some("&НаСервере"),
-                "НаКлиенте" => Some("&НаКлиенте"),
-                "НаСервереБезКонтекста" => Some("&НаСервереБезКонтекста"),
-                _ => unreachable!("Context was validated above"),
+            CfePatchModuleRole::Form => match requested_context {
+                None | Some(ExecutionContext::Automatic) | Some(ExecutionContext::Server) => {
+                    Some(ExecutionContext::Server)
+                }
+                Some(ExecutionContext::Client) => Some(ExecutionContext::Client),
+                Some(ExecutionContext::ServerWithoutContext) => {
+                    Some(ExecutionContext::ServerWithoutContext)
+                }
             },
             CfePatchModuleRole::ObjectModule
             | CfePatchModuleRole::ManagerModule
             | CfePatchModuleRole::RecordSetModule
             | CfePatchModuleRole::ValueManagerModule => {
-                if context_name.is_some() {
+                if requested_context.is_some_and(|value| value != ExecutionContext::Automatic) {
                     return Err(format!(
                         "Context is not available for {} in platform 1C 8.3.27; omit Context so no compilation directive is emitted",
                         target.role.as_str()
@@ -5707,47 +5814,30 @@ pub(crate) fn patch_extension_method(
         };
         run_cfe_patch_after_borrowed_read_hook();
         let bsl_file = target.bsl_file;
-        let proc_name = format!("{name_prefix}{method_name}");
-        cfe_patch_validate_bsl_identifier("generated interceptor procedure name", &proc_name)?;
-
-        let body_line = match interceptor_type {
-            "Before" => "\t// TODO: код перед вызовом оригинального метода",
-            "After" => "\t// TODO: код после вызова оригинального метода",
-            _ => unreachable!("InterceptorType was validated above"),
-        };
-        let mut bsl_code = Vec::new();
-        if let Some(context_annotation) = context_annotation {
-            bsl_code.push(context_annotation.to_string());
-        }
-        bsl_code.extend([
-            format!("{decorator}(\"{method_name}\")"),
-            format!("Процедура {proc_name}()"),
-            body_line.to_string(),
-            "КонецПроцедуры".to_string(),
-        ]);
-        let bsl_text = format!("{}\r\n", bsl_code.join("\r\n"));
-
         let mut stdout = String::new();
         let mut transaction = CompileTransaction::new();
-        let created = if bsl_file.is_file() {
-            let original = fs::read(&bsl_file)
-                .map_err(|err| format!("failed to read {}: {err}", bsl_file.display()))?;
-            let existing = std::str::from_utf8(&original)
-                .map_err(|error| format!("{} is not valid UTF-8: {error}", bsl_file.display()))?
-                .trim_start_matches('\u{feff}');
-            let separator = if !existing.is_empty() && !existing.ends_with('\n') {
-                "\r\n\r\n"
-            } else {
-                "\r\n"
-            };
-            transaction.replace_bytes(
-                &bsl_file,
-                &original,
-                utf8_bom_bytes(&format!("{existing}{separator}{bsl_text}")),
-            )?;
+        let existing = if bsl_file.is_file() {
+            Some(
+                fs::read(&bsl_file)
+                    .map_err(|err| format!("failed to read {}: {err}", bsl_file.display()))?,
+            )
+        } else {
+            None
+        };
+        let emission = ExtensionPatchEmissionPlan::new(
+            NamePrefix::new(name_prefix.to_string())
+                .map_err(|error| format!("invalid extension name prefix: {error}"))?,
+            MethodName::new(method_name.to_string())
+                .map_err(|error| format!("invalid extension method name: {error}"))?,
+            interceptor,
+            effective_context,
+        );
+        let replacement = emitter(&emission, existing.as_deref())?;
+        let created = if let Some(original) = existing {
+            transaction.replace_bytes(&bsl_file, &original, replacement)?;
             false
         } else {
-            transaction.create_utf8_bom_text(&bsl_file, &bsl_text)?;
+            transaction.create_bytes(&bsl_file, replacement)?;
             true
         };
         let descriptor_changed =
@@ -5778,15 +5868,7 @@ pub(crate) fn patch_extension_method(
             stdout.push_str("[OK] Добавлен перехватчик в существующий файл\n");
         }
         stdout.push_str(&format!("     Файл:         {}\n", bsl_file.display()));
-        stdout.push_str(&format!(
-            "     Декоратор:    {decorator}(\"{method_name}\")\n"
-        ));
-        stdout.push_str(&format!("     Процедура:    {proc_name}()\n"));
-        if let Some(context_annotation) = context_annotation {
-            stdout.push_str(&format!("     Контекст:     {context_annotation}\n"));
-        } else {
-            stdout.push_str("     Контекст:     без директивы компиляции\n");
-        }
+        stdout.push_str("     Содержимое:    подготовлено BSL-слоем приложения\n");
         if descriptor_changed {
             stdout.push_str(&format!(
                 "     XML-состояние: {} = Extended ({})\n",
@@ -5829,46 +5911,157 @@ pub(crate) fn patch_extension_method(
                 stderr: None,
             }
         }
-        Err(error) => NativeWriterResult {
-            ok: false,
-            summary: "unica.cfe.patch_method failed in native BSL interceptor writer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-        },
+        Err(error) => cfe_patch_failure(error),
     }
 }
 
+fn cfe_patch_failure(error: String) -> NativeWriterResult {
+    NativeWriterResult {
+        ok: false,
+        summary: "unica.cfe.patch_method failed in native BSL interceptor writer".to_string(),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec![error.clone()],
+        artifacts: Vec::new(),
+        stdout: None,
+        stderr: Some(format!("{error}\n")),
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn patch_extension_method(
+    args: &impl ArgumentAccess,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    let emitter = |plan: &ExtensionPatchEmissionPlan, existing: Option<&[u8]>| {
+        let mut lines = Vec::new();
+        if let Some(context) = plan.context() {
+            lines.push(
+                match context {
+                    ExecutionContext::Client => "&НаКлиенте",
+                    ExecutionContext::Server => "&НаСервере",
+                    ExecutionContext::ServerWithoutContext => "&НаСервереБезКонтекста",
+                    ExecutionContext::Automatic => {
+                        return Err("unresolved test execution context".to_string())
+                    }
+                }
+                .to_string(),
+            );
+        }
+        let (decorator, body) = match plan.interceptor() {
+            InterceptorKind::Before => (
+                "&Перед",
+                "\t// TODO: код перед вызовом оригинального метода",
+            ),
+            InterceptorKind::After => {
+                ("&После", "\t// TODO: код после вызова оригинального метода")
+            }
+            InterceptorKind::Instead => return Err("unsupported test interceptor".to_string()),
+        };
+        let procedure = format!("{}{}", plan.prefix(), plan.method());
+        lines.extend([
+            format!("{decorator}(\"{}\")", plan.method()),
+            format!("Процедура {procedure}()"),
+            body.to_string(),
+            "КонецПроцедуры".to_string(),
+        ]);
+        let existing = existing
+            .map(|bytes| {
+                std::str::from_utf8(bytes)
+                    .map(|text| text.trim_start_matches('\u{feff}'))
+                    .map_err(|_| "existing test BSL is not UTF-8".to_string())
+            })
+            .transpose()?
+            .unwrap_or("");
+        let separator = if existing.is_empty() {
+            ""
+        } else if existing.ends_with('\n') {
+            "\r\n"
+        } else {
+            "\r\n\r\n"
+        };
+        Ok(utf8_bom_bytes(&format!(
+            "{existing}{separator}{}\r\n",
+            lines.join("\r\n")
+        )))
+    };
+    patch_extension_method_with_emitter(args, context, &emitter)
+}
+
+struct CfeInitInput {
+    name: String,
+    synonym: String,
+    prefix: String,
+    purpose: String,
+    destination: PathBuf,
+    base_configuration: Option<PathBuf>,
+    compatibility: String,
+    no_role: bool,
+    vendor: Option<String>,
+    version: Option<String>,
+}
+
+#[cfg(test)]
 pub(crate) fn create_extension_scaffold(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
     let name = string_arg(args, &["name", "Name"]).unwrap_or("");
     if name.is_empty() {
-        return NativeWriterResult {
-            ok: false,
-            summary: "unica.cfe.init failed in native XML scaffold writer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec!["missing required Name argument".to_string()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some("missing required Name argument\n".to_string()),
-        };
+        return cfe_init_failure("missing required Name argument".to_string());
     }
-    let synonym = string_arg(args, &["synonym", "Synonym"]).unwrap_or(name);
-    let name_prefix = cfe_init_name_prefix(args, name);
-    let planned = cfe_init_planned_xml(args, context);
+    let input = CfeInitInput {
+        name: name.to_string(),
+        synonym: string_arg(args, &["synonym", "Synonym"])
+            .unwrap_or(name)
+            .to_string(),
+        prefix: cfe_init_name_prefix(args, name),
+        purpose: string_arg(args, &["purpose", "Purpose"])
+            .unwrap_or("Customization")
+            .to_string(),
+        destination: output_dir_arg(
+            args,
+            context,
+            &["outputDir", "OutputDir", "extensionPath", "ExtensionPath"],
+            "src",
+        ),
+        base_configuration: path_arg(args, &["configPath", "ConfigPath"]),
+        compatibility: string_arg(args, &["compatibilityMode", "CompatibilityMode"])
+            .unwrap_or("Version8_3_24")
+            .to_string(),
+        no_role: bool_arg(args, &["noRole", "NoRole"]),
+        vendor: string_arg(args, &["vendor", "Vendor"]).map(ToOwned::to_owned),
+        version: string_arg(args, &["version", "Version"]).map(ToOwned::to_owned),
+    };
+    create_extension_scaffold_input(input, context)
+}
+
+fn create_extension_scaffold_input(
+    input: CfeInitInput,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    let CfeInitInput {
+        name,
+        synonym,
+        prefix: name_prefix,
+        purpose,
+        destination,
+        base_configuration,
+        compatibility,
+        no_role,
+        vendor,
+        version,
+    } = input;
+    let name = name.as_str();
+    let synonym = synonym.as_str();
+    let purpose = purpose.as_str();
+    let planned =
+        cfe_init_planned_xml_for(absolutize(destination, &context.cwd), &name_prefix, no_role);
     let out_dir = planned.output_dir;
     let config = planned.configuration;
     let language = planned.language;
-    let no_role = planned.role.is_none();
     let role_name = format!("{name_prefix}ОсновнаяРоль");
     let role = planned.role;
-    let purpose = string_arg(args, &["purpose", "Purpose"]).unwrap_or("Customization");
 
     let write_result = (|| -> Result<(String, Vec<String>), String> {
         cfe_validate_metadata_name("Name", name)?;
@@ -5883,16 +6076,12 @@ pub(crate) fn create_extension_scaffold(
 
         let mut stdout_prefix = String::new();
         let mut base_lang_uuid = "00000000-0000-0000-0000-000000000000".to_string();
-        let mut compatibility = string_arg(args, &["compatibilityMode", "CompatibilityMode"])
-            .unwrap_or("Version8_3_24")
-            .to_string();
+        let mut compatibility = compatibility;
         let mut base_config_path = None;
         let mut base_config_preimage = None;
         let mut base_language_preimage = None;
         cfe_init_validate_enum("ConfigurationExtensionCompatibilityMode", &compatibility)?;
-        let interface_mode = if let Some(config_path) =
-            path_arg(args, &["configPath", "ConfigPath"])
-        {
+        let interface_mode = if let Some(config_path) = base_configuration {
             let mut config_path = absolutize(config_path, &context.cwd);
             if config_path.is_dir() {
                 let candidate = config_path.join("Configuration.xml");
@@ -6042,12 +6231,8 @@ pub(crate) fn create_extension_scaffold(
         let purpose_xml = escape_xml(purpose);
         let compatibility_xml = escape_xml(&compatibility);
         let interface_mode_xml = escape_xml(&interface_mode);
-        let vendor_xml = string_arg(args, &["vendor", "Vendor"])
-            .map(escape_xml)
-            .unwrap_or_default();
-        let version_xml = string_arg(args, &["version", "Version"])
-            .map(escape_xml)
-            .unwrap_or_default();
+        let vendor_xml = vendor.as_deref().map(escape_xml).unwrap_or_default();
+        let version_xml = version.as_deref().map(escape_xml).unwrap_or_default();
         let synonym_xml = format!(
             "\r\n\t\t\t\t<v8:item>\r\n\t\t\t\t\t<v8:lang>ru</v8:lang>\r\n\t\t\t\t\t<v8:content>{}</v8:content>\r\n\t\t\t\t</v8:item>\r\n\t\t\t",
             escape_xml(synonym)
@@ -6219,16 +6404,20 @@ pub(crate) fn create_extension_scaffold(
                 stderr: None,
             }
         }
-        Err(error) => NativeWriterResult {
-            ok: false,
-            summary: "unica.cfe.init failed in native XML scaffold writer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-        },
+        Err(error) => cfe_init_failure(error),
+    }
+}
+
+fn cfe_init_failure(error: String) -> NativeWriterResult {
+    NativeWriterResult {
+        ok: false,
+        summary: "unica.cfe.init failed in native XML scaffold writer".to_string(),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec![error.clone()],
+        artifacts: Vec::new(),
+        stdout: None,
+        stderr: Some(format!("{error}\n")),
     }
 }
 
@@ -6242,7 +6431,7 @@ pub(crate) fn bsl_file_for_module_path(
 pub(crate) fn invoke_read(
     operation: &str,
     _tool_name: &str,
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Option<Result<NativeWriterResult, String>> {
     match operation {
@@ -6252,18 +6441,137 @@ pub(crate) fn invoke_read(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn invoke_mutation(
     operation: &str,
     _tool_name: &str,
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Option<NativeWriterResult> {
     match operation {
         "cfe-borrow" => Some(borrow_cfe(args, context)),
         "cfe-init" => Some(create_extension_scaffold(args, context)),
-        "cfe-patch-method" => Some(patch_extension_method(args, context)),
+        "cfe-patch-method" => {
+            #[cfg(test)]
+            {
+                Some(patch_extension_method(args, context))
+            }
+            #[cfg(not(test))]
+            {
+                None
+            }
+        }
         _ => None,
     }
+}
+
+pub(crate) fn initialize_extension(
+    command: &unica_format_core::commands::ExtensionInitialize,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    let name = command.name().as_str();
+    create_extension_scaffold_input(
+        CfeInitInput {
+            name: name.to_string(),
+            synonym: command
+                .synonym()
+                .map(|value| value.as_str())
+                .unwrap_or(name)
+                .to_string(),
+            prefix: command
+                .prefix()
+                .map(|value| value.as_str().to_string())
+                .unwrap_or_else(|| format!("{name}_")),
+            purpose: command
+                .purpose()
+                .map(|value| value.as_str())
+                .unwrap_or("Customization")
+                .to_string(),
+            destination: session
+                .source(unica_format_core::commands::WriterSourceRole::DestinationDirectory)
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| context.cwd.join("src")),
+            base_configuration: session
+                .source(unica_format_core::commands::WriterSourceRole::Configuration)
+                .map(Path::to_path_buf),
+            compatibility: session
+                .adapter_hint()
+                .unwrap_or("Version8_3_24")
+                .to_string(),
+            no_role: false,
+            vendor: None,
+            version: None,
+        },
+        context,
+    )
+}
+
+pub(crate) fn borrow_into_extension(
+    command: &unica_format_core::commands::ExtensionBorrow,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    let extension = session.required_source(
+        unica_format_core::commands::WriterSourceRole::Extension,
+        "extension borrow destination",
+    );
+    let configuration = session.required_source(
+        unica_format_core::commands::WriterSourceRole::Configuration,
+        "extension borrow source",
+    );
+    match (extension, configuration) {
+        (Ok(extension), Ok(configuration)) => {
+            let _selection_policy = (command.excludes_selection(), command.is_forced());
+            borrow_cfe_prepared(
+                prepare_cfe_borrow_input(
+                    CfeBorrowInput {
+                        extension: extension.to_path_buf(),
+                        configuration: configuration.to_path_buf(),
+                        object: command.object().as_str().to_string(),
+                        main_attribute: command.main_attribute().map(|scope| match scope {
+                            unica_format_core::commands::BorrowScope::Form => "Form".to_string(),
+                            unica_format_core::commands::BorrowScope::All => "All".to_string(),
+                        }),
+                    },
+                    context,
+                    CfeBorrowReadTrace::default(),
+                ),
+                context,
+            )
+        }
+        (Err(error), _) | (_, Err(error)) => cfe_borrow_failure(error),
+    }
+}
+
+pub(crate) fn patch_extension_method_typed(
+    command: &unica_format_core::commands::ExtensionPatchMethod,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+    emitter: &dyn Fn(&ExtensionPatchEmissionPlan, Option<&[u8]>) -> Result<Vec<u8>, String>,
+) -> NativeWriterResult {
+    let extension = match session.required_source(
+        unica_format_core::commands::WriterSourceRole::Extension,
+        "extension method patch target",
+    ) {
+        Ok(path) => path.to_path_buf(),
+        Err(error) => return cfe_patch_failure(error),
+    };
+    patch_extension_method_input(
+        CfePatchInput {
+            extension,
+            module: command.module().as_str().to_string(),
+            method: command.method().as_str().to_string(),
+            interceptor: command.interceptor(),
+            context: match command.context() {
+                ExecutionContext::Automatic => None,
+                value => Some(value),
+            },
+            function: command.is_function(),
+        },
+        context,
+        emitter,
+    )
 }
 
 #[cfg(test)]

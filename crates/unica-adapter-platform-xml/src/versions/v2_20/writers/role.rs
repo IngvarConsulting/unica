@@ -1,7 +1,9 @@
 #![allow(dead_code, unused_imports)]
+use super::inspection_arguments::ArgumentAccess;
 
 use crate::application::NativeWriterResult;
 use crate::domain::workspace::WorkspaceContext;
+use crate::operations::PlatformWriterSession;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -117,7 +119,7 @@ fn role_read_layout(rights_path: &Path) -> RoleReadLayout {
 }
 
 pub(crate) fn role_read_format_dependency_paths(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
     operation: &str,
 ) -> Result<Vec<PathBuf>, String> {
@@ -135,7 +137,7 @@ pub(crate) fn role_read_format_dependency_paths(
 }
 
 pub(crate) fn analyze_role_info(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
     let result = (|| -> Result<(String, PathBuf), String> {
@@ -508,7 +510,7 @@ impl RoleValidationReport {
 }
 
 pub(crate) fn validate_role(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
     let result = (|| -> Result<(bool, String, PathBuf), String> {
@@ -1370,18 +1372,25 @@ fn require_role_configuration_owner_validation(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn compile_role(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
-    compile_role_internal(args, context, false)
+    let input = match role_compile_input(args) {
+        Ok(input) => input,
+        Err(error) => return role_compile_failure(error),
+    };
+    compile_role_internal(input, context, false)
 }
 
+#[cfg(test)]
 pub(crate) fn preview_role_compile(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Result<NativeWriterResult, String> {
-    let outcome = compile_role_internal(args, context, true);
+    let input = role_compile_input(args)?;
+    let outcome = compile_role_internal(input, context, true);
     if outcome.ok {
         Ok(outcome)
     } else {
@@ -1389,14 +1398,28 @@ pub(crate) fn preview_role_compile(
     }
 }
 
+struct RoleCompileInput<'a> {
+    definition: PathBuf,
+    destination: PathBuf,
+    declared_name: Option<&'a str>,
+}
+
+#[cfg(test)]
+fn role_compile_input(args: &impl ArgumentAccess) -> Result<RoleCompileInput<'static>, String> {
+    Ok(RoleCompileInput {
+        definition: required_path(args, &["jsonPath", "JsonPath"], "JsonPath")?,
+        destination: required_path(args, &["outputDir", "OutputDir"], "OutputDir")?,
+        declared_name: None,
+    })
+}
+
 fn compile_role_internal(
-    args: &Map<String, Value>,
+    input: RoleCompileInput<'_>,
     context: &WorkspaceContext,
     dry_run: bool,
 ) -> NativeWriterResult {
     let write_result = (|| -> Result<RoleCompileResult, String> {
-        let json_path_raw = required_path(args, &["jsonPath", "JsonPath"], "JsonPath")?;
-        let json_path = absolutize(json_path_raw, &context.cwd);
+        let json_path = absolutize(input.definition, &context.cwd);
         if !json_path.exists() {
             return Err(format!("File not found: {}", json_path.display()));
         }
@@ -1406,12 +1429,16 @@ fn compile_role_internal(
         })?
         .bind_to(&mut transaction)?;
 
-        let role_name = defn
+        let definition_name = defn
             .get("name")
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned)
             .ok_or_else(|| "JSON must have 'name' field (role programmatic name)".to_string())?;
+        let role_name = input
+            .declared_name
+            .map(ToOwned::to_owned)
+            .unwrap_or(definition_name);
         validate_role_compile_name(&role_name)?;
         let sfno = role_compile_json_bool(&defn, "setForNewObjects", false)?.to_string();
         let sfab = role_compile_json_bool(&defn, "setForAttributesByDefault", true)?.to_string();
@@ -1427,8 +1454,7 @@ fn compile_role_internal(
             }
         }
 
-        let output_dir_raw = required_path(args, &["outputDir", "OutputDir"], "OutputDir")?;
-        let output_dir = absolutize(output_dir_raw.clone(), &context.cwd);
+        let output_dir = absolutize(input.destination, &context.cwd);
         let format_version = crate::domain::format_profile::ACTIVE_FORMAT_PROFILE
             .export_format
             .to_string();
@@ -1668,6 +1694,19 @@ fn compile_role_internal(
             stdout: None,
             stderr: Some(format!("{error}\n")),
         },
+    }
+}
+
+fn role_compile_failure(error: String) -> NativeWriterResult {
+    NativeWriterResult {
+        ok: false,
+        summary: "unica.role.compile failed in native role compiler".to_string(),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec![error.clone()],
+        artifacts: Vec::new(),
+        stdout: None,
+        stderr: Some(format!("{error}\n")),
     }
 }
 
@@ -2009,7 +2048,7 @@ pub(crate) fn role_preset_rights(
 pub(crate) fn invoke_read(
     operation: &str,
     _tool_name: &str,
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Option<Result<NativeWriterResult, String>> {
     match operation {
@@ -2019,16 +2058,63 @@ pub(crate) fn invoke_read(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn invoke_mutation(
     operation: &str,
     _tool_name: &str,
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Option<NativeWriterResult> {
     match operation {
         "role-compile" => Some(compile_role(args, context)),
         _ => None,
     }
+}
+
+pub(crate) fn create_role(
+    command: &unica_format_core::commands::RoleCreate,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    let input = typed_role_compile_input(command, session);
+    match input {
+        Ok(input) => compile_role_internal(input, context, false),
+        Err(error) => role_compile_failure(error),
+    }
+}
+
+pub(crate) fn preview_role_compile_typed(
+    command: &unica_format_core::commands::RoleCreate,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+) -> Result<NativeWriterResult, String> {
+    let outcome = compile_role_internal(typed_role_compile_input(command, session)?, context, true);
+    if outcome.ok {
+        Ok(outcome)
+    } else {
+        Err(outcome.errors.join("; "))
+    }
+}
+
+fn typed_role_compile_input<'a>(
+    command: &'a unica_format_core::commands::RoleCreate,
+    session: &PlatformWriterSession,
+) -> Result<RoleCompileInput<'a>, String> {
+    Ok(RoleCompileInput {
+        definition: session
+            .required_source(
+                unica_format_core::commands::WriterSourceRole::Definition,
+                "role definition",
+            )?
+            .to_path_buf(),
+        destination: session
+            .required_source(
+                unica_format_core::commands::WriterSourceRole::DestinationDirectory,
+                "role destination",
+            )?
+            .to_path_buf(),
+        declared_name: command.name().map(|value| value.as_str()),
+    })
 }
 
 #[cfg(test)]

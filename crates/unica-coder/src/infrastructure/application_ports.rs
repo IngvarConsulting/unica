@@ -12,9 +12,6 @@ use crate::infrastructure::internal_adapters::{
     CodeSearchAdapter, ConfigDumpInfoGitCheck, GitTrackingAdapter, ProcessCommand, RuntimeAdapter,
     RuntimeJobAdapter, StandardsAdapter,
 };
-use crate::infrastructure::native_operations::single_file_publisher::{
-    with_publication_locks_mode, PublicationTreeLockMode,
-};
 use crate::infrastructure::native_operations::NativeOperationAdapter;
 use crate::infrastructure::plugin_runtime::find_plugin_root;
 use crate::infrastructure::workspace_services::WorkspaceServiceManager;
@@ -92,6 +89,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     context,
                     dry_run,
                     spec.mutating,
+                    cancellation,
                 )
                 .map(|outcome| match outcome.data {
                     Some(data) => HandlerOutcome::with_data(outcome.adapter, data),
@@ -268,10 +266,6 @@ fn invoke_verified_full_dump(
                 .ok_or_else(|| "publication runtime is unavailable".to_string())?;
             resolve_bundled_tool(&plugin_root, tool, require_executable)
                 .map(|resolved| (resolved.program, resolved.warnings))
-        },
-        |targets, action| {
-            with_publication_locks_mode(targets, PublicationTreeLockMode::Exclusive, |_| action())
-                .map_err(|_| "publication lock failed".to_string())
         },
     );
     let request = PublicationRequest::new(session, invocation, cancellation.clone());

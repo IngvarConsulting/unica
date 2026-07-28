@@ -1,11 +1,7 @@
 use crate::application::AdapterOutcome;
-use crate::domain::project_sources::{SourceFormat, SourceSetKind};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::path_policy::WorkspacePathPolicy;
 use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
-use crate::infrastructure::platform_xml_owner::task8_metadata_kind_tag;
-use crate::infrastructure::project_sources::discover_project_source_map;
-use crate::infrastructure::source_roots::{normalize_path_identity, resolve_source_root};
 use bsl_syntax::ast::{AstNode, FunctionDef, ProcedureDef};
 use diffy::{apply, DiffOptions, Patch};
 use serde::Serialize;
@@ -15,25 +11,95 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
 use unica_format_core::{
-    commands::ModuleOwner,
-    ports::{ModuleArtifactLocatorRequest, OperationCancellation},
+    commands::{
+        ExecutionContext, ExtensionPatchEmissionPlan, InterceptorKind, ModuleOwner, MutationMode,
+        WriterLifecycle,
+    },
+    ports::{
+        ArtifactContent, ArtifactReadRequest, ArtifactWriteIntent, ArtifactWriteRequest,
+        ModuleArtifactLocatorRequest, OperationCancellation, SemanticArtifactLease,
+    },
 };
-
-use super::common::guard_active_format_owner;
-use super::compile_transaction::CompileTransaction;
 
 pub(crate) fn apply_with_data(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
+    cancellation: &OperationCancellation,
 ) -> CodePatchExecution {
-    patch_inner(args, context, PatchMode::Apply)
+    patch_inner_cancellable(args, context, PatchMode::Apply, cancellation)
 }
 
 pub(crate) fn preview_with_data(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
+    cancellation: &OperationCancellation,
 ) -> CodePatchExecution {
-    patch_inner(args, context, PatchMode::Preview)
+    patch_inner_cancellable(args, context, PatchMode::Preview, cancellation)
+}
+
+pub(crate) fn render_extension_method_patch(
+    plan: &ExtensionPatchEmissionPlan,
+    existing: Option<&[u8]>,
+) -> Result<Vec<u8>, String> {
+    let method = plan.method().as_str();
+    let procedure = format!("{}{}", plan.prefix().as_str(), method);
+    if !crate::domain::identifiers::is_1c_identifier(method)
+        || !crate::domain::identifiers::is_1c_identifier(&procedure)
+    {
+        return Err("extension method patch contains an invalid BSL identifier".to_string());
+    }
+    let mut lines = Vec::new();
+    if let Some(context) = plan.context() {
+        lines.push(
+            match context {
+                ExecutionContext::Automatic => {
+                    return Err(
+                        "automatic execution context must be resolved before BSL emission"
+                            .to_string(),
+                    )
+                }
+                ExecutionContext::Client => "&НаКлиенте",
+                ExecutionContext::Server => "&НаСервере",
+                ExecutionContext::ServerWithoutContext => "&НаСервереБезКонтекста",
+            }
+            .to_string(),
+        );
+    }
+    let (decorator, body) = match plan.interceptor() {
+        InterceptorKind::Before => (
+            "&Перед",
+            "\t// TODO: код перед вызовом оригинального метода",
+        ),
+        InterceptorKind::After => ("&После", "\t// TODO: код после вызова оригинального метода"),
+        InterceptorKind::Instead => {
+            return Err(
+                "replacement interception is not supported for parameterless emission".to_string(),
+            )
+        }
+    };
+    lines.extend([
+        format!("{decorator}(\"{method}\")"),
+        format!("Процедура {procedure}()"),
+        body.to_string(),
+        "КонецПроцедуры".to_string(),
+    ]);
+    let snippet = format!("{}\r\n", lines.join("\r\n"));
+    let existing = match existing {
+        Some(bytes) => std::str::from_utf8(bytes)
+            .map_err(|_| "existing BSL module must be UTF-8".to_string())?
+            .trim_start_matches('\u{feff}'),
+        None => "",
+    };
+    let separator = if existing.is_empty() {
+        ""
+    } else if existing.ends_with('\n') {
+        "\r\n"
+    } else {
+        "\r\n\r\n"
+    };
+    let mut result = b"\xef\xbb\xbf".to_vec();
+    result.extend_from_slice(format!("{existing}{separator}{snippet}").as_bytes());
+    Ok(result)
 }
 
 pub(crate) struct CodePatchExecution {
@@ -190,15 +256,28 @@ struct InsertionSite {
     leading_separator: LeadingSeparator,
 }
 
+fn patch_inner_cancellable(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+    mode: PatchMode,
+    cancellation: &OperationCancellation,
+) -> CodePatchExecution {
+    if cancellation.is_cancelled() {
+        return CodePatchExecution::failure("operation cancelled".to_string(), None);
+    }
+    match build_patch(args, context, cancellation) {
+        Ok(plan) => finish_patch(plan, mode, cancellation),
+        Err(error) => CodePatchExecution::failure(error, None),
+    }
+}
+
+#[cfg(test)]
 fn patch_inner(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
     mode: PatchMode,
 ) -> CodePatchExecution {
-    match build_patch(args, context) {
-        Ok(plan) => finish_patch(plan, mode, context),
-        Err(error) => CodePatchExecution::failure(error, None),
-    }
+    patch_inner_cancellable(args, context, mode, &OperationCancellation::new())
 }
 
 struct PatchPlan {
@@ -212,10 +291,21 @@ struct PatchPlan {
     no_op: bool,
 }
 
-fn build_patch(args: &Map<String, Value>, context: &WorkspaceContext) -> Result<PatchPlan, String> {
-    let target = resolve_target(args, context)?;
-    let before = fs::read(&target.path)
-        .map_err(|error| format!("failed to read {}: {error}", target.path.display()))?;
+fn build_patch(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+    cancellation: &OperationCancellation,
+) -> Result<PatchPlan, String> {
+    let target = resolve_target(args, context, cancellation)?;
+    let read = ArtifactReadRequest::new(target.lease.clone(), cancellation.clone());
+    let before = PlatformXmlAdapterFactory::new()
+        .operational_registration()
+        .artifact_write()
+        .read(&read)
+        .map_err(|error| error.message)?
+        .content()
+        .as_bytes()
+        .to_vec();
     let text = std::str::from_utf8(&before).map_err(|_| "BSL module must be UTF-8".to_string())?;
     let selector = Selector::parse(args)?;
     let position = Position::parse(string_arg(args, "position")?)?;
@@ -247,8 +337,11 @@ fn build_patch(args: &Map<String, Value>, context: &WorkspaceContext) -> Result<
 fn finish_patch(
     plan: PatchPlan,
     mode: PatchMode,
-    context: &WorkspaceContext,
+    cancellation: &OperationCancellation,
 ) -> CodePatchExecution {
+    if cancellation.is_cancelled() {
+        return CodePatchExecution::failure("operation cancelled".to_string(), None);
+    }
     let postimage = match std::str::from_utf8(&plan.after) {
         Ok(postimage) => postimage,
         Err(_) => {
@@ -297,10 +390,26 @@ fn finish_patch(
     }
     if mode == PatchMode::Apply && !plan.no_op {
         let publish_result = (|| -> Result<(), String> {
-            let mut transaction = CompileTransaction::new();
-            transaction.replace_bytes(&plan.target.path, &plan.before, plan.after.clone())?;
-            guard_active_format_owner(&mut transaction, &plan.target.path, context)?;
-            transaction.commit()?;
+            let factory = PlatformXmlAdapterFactory::new();
+            let session = factory
+                .capture_artifact_write_session(None, Vec::new(), Vec::new(), Vec::new())
+                .map_err(|error| error.message)?;
+            let request = ArtifactWriteRequest::new(
+                session,
+                Some(plan.target.lease.clone()),
+                ArtifactWriteIntent::ModulePatch,
+                Some(ArtifactContent::new(plan.after.clone()).map_err(|error| error.to_string())?),
+                MutationMode::Apply,
+                cancellation.clone(),
+            );
+            let result = factory
+                .operational_registration()
+                .artifact_write()
+                .write(&request)
+                .map_err(|error| error.message)?;
+            if !matches!(result.lifecycle(), WriterLifecycle::Applied) {
+                return Err("atomic module publication was rejected".to_string());
+            }
             Ok(())
         })();
         if let Err(error) = publish_result {
@@ -405,11 +514,13 @@ struct ResolvedTarget {
     source_set: String,
     owner: String,
     module_role: String,
+    lease: SemanticArtifactLease,
 }
 
 fn resolve_target(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
+    cancellation: &OperationCancellation,
 ) -> Result<ResolvedTarget, String> {
     let requested = Path::new(string_arg(args, "path")?);
     if requested.is_absolute() {
@@ -421,60 +532,36 @@ fn resolve_target(
     if metadata_is_link_or_reparse_point(&target_metadata) || !target_metadata.is_file() {
         return Err("unica.code.patch v1 accepts only an existing regular *Module.bsl".to_string());
     }
-    let source_root = resolve_source_root(context, args.get("sourceDir").and_then(Value::as_str))?;
-    let source_name = source_root
-        .source_set
-        .as_deref()
-        .ok_or_else(|| "sourceDir must select a configured Configuration source set".to_string())?;
-    let source_map = discover_project_source_map(&context.workspace_root)?;
-    let source_set = source_map
-        .source_sets
-        .iter()
-        .find(|set| set.name == source_name)
-        .ok_or_else(|| "effective source set is unavailable".to_string())?;
-    if source_set.kind != SourceSetKind::Configuration
-        || source_set.source_format != SourceFormat::PlatformXml
-    {
-        return Err(
-            "unica.code.patch v1 requires a platform XML Configuration source set".to_string(),
-        );
-    }
-    let target_identity = normalize_path_identity(&target)?;
-    if !target_identity.starts_with(&source_root.path) {
-        return Err("BSL module is outside the selected Configuration source set".to_string());
-    }
     let factory = PlatformXmlAdapterFactory::new();
-    let locator_session = factory.capture_module_artifact_source(
-        &source_root.path,
-        &target_identity,
+    let locator_session = factory.capture_workspace_module_artifact_source(
         &context.workspace_root,
+        &context.cwd,
+        &target,
+        args.get("sourceDir").and_then(Value::as_str),
     );
-    let locator_request =
-        ModuleArtifactLocatorRequest::new(locator_session, OperationCancellation::new());
+    let locator_request = ModuleArtifactLocatorRequest::new(locator_session, cancellation.clone());
     let location = factory
         .operational_registration()
         .module_artifacts()
         .locate(&locator_request)
         .map_err(|error| error.message)?;
-    let owner = match location.owner() {
+    let owner = match location.location().owner() {
         ModuleOwner::Configuration => "Configuration".to_string(),
-        ModuleOwner::Object { kind, name } => {
-            let category = task8_metadata_kind_tag(*kind)
-                .ok_or_else(|| "module owner kind has no public projection".to_string())?;
-            format!("{category}.{name}")
-        }
+        ModuleOwner::Object { kind, name } => format!("{kind:?}.{name}"),
     };
-    let workspace_identity = normalize_path_identity(&context.workspace_root)?;
-    let workspace_relative = target_identity
-        .strip_prefix(&workspace_identity)
-        .map_err(|_| "BSL module is outside the normalized workspace root".to_string())?;
-    let relative_path = portable_relative_path(workspace_relative)?;
+    let source_name = location
+        .location()
+        .source_set()
+        .map(|name| name.as_str())
+        .unwrap_or("selected");
+    let relative_path = portable_relative_path(requested)?;
     Ok(ResolvedTarget {
         path: target,
         relative_path,
         source_set: source_name.to_string(),
         owner,
-        module_role: location.role().public_label().to_string(),
+        module_role: location.location().role().public_label().to_string(),
+        lease: location.lease().clone(),
     })
 }
 
@@ -876,12 +963,11 @@ fn unified_diff(path: &str, before: &str, after: &str) -> Result<String, String>
 #[cfg(test)]
 mod tests {
     use super::{
-        analyze_module, hash, insertion_is_present, line_column, locate_insertion,
-        normalized_content, patch_inner, unified_diff, Eol, LeadingSeparator, PatchMode, Position,
-        ValidationStatus,
+        analyze_module, build_patch, finish_patch, hash, insertion_is_present, line_column,
+        locate_insertion, normalized_content, patch_inner, unified_diff, Eol, LeadingSeparator,
+        PatchMode, Position, ValidationStatus,
     };
     use crate::domain::workspace::WorkspaceContext;
-    use crate::infrastructure::native_operations::single_file_publisher::with_before_commit_hook;
     use crate::infrastructure::platform::testing::{
         create_file_link_fixture_for_test, FileLinkFixtureOutcome,
     };
@@ -1638,10 +1724,10 @@ mod tests {
         );
         let replacement = "Procedure Run()\n    Message(\"concurrent\");\nEndProcedure\n";
 
-        let result = with_before_commit_hook(
-            move |path| fs::write(path, replacement).unwrap(),
-            || patch_inner(&args, &context, PatchMode::Apply),
-        );
+        let cancellation = unica_format_core::ports::OperationCancellation::new();
+        let plan = build_patch(&args, &context, &cancellation).unwrap();
+        fs::write(&module, replacement).unwrap();
+        let result = finish_patch(plan, PatchMode::Apply, &cancellation);
 
         assert!(!result.outcome.ok);
         assert!(result.outcome.errors[0].contains("publish BSL module"));
@@ -1672,24 +1758,18 @@ mod tests {
             "Run",
             "Procedure Added()\nEndProcedure",
         );
-        let v8project = context.workspace_root.join("v8project.yaml");
-        let concurrent_source_map = "format: DESIGNER\nsource-set:\n  - name: main\n    type: EXTERNAL_DATA_PROCESSORS\n    path: src\n";
-        let v8project_for_hook = v8project.clone();
-
-        let result = with_before_commit_hook(
-            move |_| fs::write(&v8project_for_hook, concurrent_source_map).unwrap(),
-            || patch_inner(&args, &context, PatchMode::Apply),
-        );
+        let cancellation = unica_format_core::ports::OperationCancellation::new();
+        let plan = build_patch(&args, &context, &cancellation).unwrap();
+        let owner = context.workspace_root.join("src/CommonModules.xml");
+        let concurrent_owner = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration/></MetaDataObject>"#;
+        fs::write(&owner, concurrent_owner).unwrap();
+        let result = finish_patch(plan, PatchMode::Apply, &cancellation);
 
         assert!(!result.outcome.ok);
         let error = result.outcome.errors.join("\n");
-        assert!(error.contains("guard changed before commit"), "{error}");
-        assert!(error.contains("v8project.yaml"), "{error}");
+        assert!(error.contains("owner evidence changed"), "{error}");
         assert_eq!(fs::read(&module).unwrap(), before);
-        assert_eq!(
-            fs::read_to_string(&v8project).unwrap(),
-            concurrent_source_map
-        );
+        assert_eq!(fs::read_to_string(&owner).unwrap(), concurrent_owner);
         fs::remove_dir_all(&context.workspace_root).unwrap();
     }
 

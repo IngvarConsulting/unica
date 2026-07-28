@@ -35,6 +35,29 @@ impl PlatformXmlAdapterFactory {
         Self
     }
 
+    #[cfg(feature = "test-support")]
+    pub fn with_publication_lock_pause<T>(
+        self,
+        acquired: Arc<std::sync::Barrier>,
+        release: Arc<std::sync::Barrier>,
+        action: impl FnOnce() -> T,
+    ) -> T {
+        v2_20::writers::single_file_publisher::with_publication_lock_pause(
+            acquired, release, action,
+        )
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn with_publication_lock_contention_signal<T>(
+        self,
+        sender: std::sync::mpsc::Sender<()>,
+        action: impl FnOnce() -> T,
+    ) -> T {
+        v2_20::writers::single_file_publisher::with_publication_lock_contention_signal(
+            sender, action,
+        )
+    }
+
     pub fn registration(self) -> SourceAdapterRegistration {
         let adapter = Arc::new(PlatformXmlAdapter);
         SourceAdapterRegistration {
@@ -64,6 +87,7 @@ impl PlatformXmlAdapterFactory {
             Arc::new(crate::publication::PlatformXmlPublication::new()),
             Arc::new(crate::operations::PlatformXmlWriter),
             Arc::new(v2_20::writers::module_locator::PlatformModuleArtifactLocator),
+            Arc::new(v2_20::writers::artifact_write::PlatformArtifactWriter),
         )
     }
 
@@ -181,6 +205,23 @@ impl PlatformXmlAdapterFactory {
         )
     }
 
+    pub fn capture_workspace_module_artifact_source(
+        self,
+        workspace_root: &Path,
+        cwd: &Path,
+        target: &Path,
+        explicit_source: Option<&str>,
+    ) -> OperationalSourceSession {
+        OperationalSourceSession::new(
+            v2_20::writers::module_locator::PlatformModuleLocatorSession::from_workspace(
+                workspace_root,
+                cwd,
+                target,
+                explicit_source,
+            ),
+        )
+    }
+
     pub fn inspect_source_set(
         self,
         source_root: &Path,
@@ -195,7 +236,7 @@ impl PlatformXmlAdapterFactory {
     }
 
     #[allow(clippy::type_complexity, clippy::too_many_arguments)]
-    pub fn capture_publication_session<R, S, L>(
+    pub fn capture_publication_session<R, S>(
         self,
         operation_name: &str,
         args: &serde_json::Map<String, serde_json::Value>,
@@ -203,7 +244,6 @@ impl PlatformXmlAdapterFactory {
         cwd: &Path,
         run: R,
         resolve: S,
-        lock: L,
     ) -> OperationalSourceSession
     where
         R: Fn(
@@ -217,13 +257,6 @@ impl PlatformXmlAdapterFactory {
             + Sync
             + 'static,
         S: Fn(&Path, &str, bool) -> Result<(PathBuf, Vec<String>), String> + Send + Sync + 'static,
-        L: Fn(
-                &[PathBuf],
-                &mut dyn FnMut() -> Result<Vec<String>, String>,
-            ) -> Result<Result<Vec<String>, String>, String>
-            + Send
-            + Sync
-            + 'static,
     {
         crate::publication::capture_publication_session(
             operation_name,
@@ -232,7 +265,6 @@ impl PlatformXmlAdapterFactory {
             cwd,
             run,
             resolve,
-            lock,
         )
     }
 
@@ -264,6 +296,90 @@ impl PlatformXmlAdapterFactory {
         .map_err(|message| {
             SourceAdapterError::new(SourceAdapterErrorKind::CapabilityBlocked, message)
         })?;
+        Ok(OperationalSourceSession::new(session))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn capture_writer_session_with_extension_emitter<I, E>(
+        self,
+        sources: I,
+        inline_definition: Option<Vec<u8>>,
+        adapter_hint: Option<String>,
+        workspace_root: &Path,
+        cwd: &Path,
+        cache_root: &Path,
+        workspace_epoch: u64,
+        emitter: E,
+    ) -> Result<OperationalSourceSession, SourceAdapterError>
+    where
+        I: IntoIterator<Item = (WriterSourceRole, PathBuf)>,
+        E: Fn(
+                &unica_format_core::commands::ExtensionPatchEmissionPlan,
+                Option<&[u8]>,
+            ) -> Result<Vec<u8>, String>
+            + Send
+            + Sync
+            + 'static,
+    {
+        let session = crate::operations::PlatformWriterSession::new(
+            sources,
+            inline_definition,
+            adapter_hint,
+            crate::operations::WorkspaceContext {
+                cwd: cwd.to_path_buf(),
+                workspace_root: workspace_root.to_path_buf(),
+                cache_root: cache_root.to_path_buf(),
+                workspace_epoch,
+            },
+        )
+        .map_err(|message| {
+            SourceAdapterError::new(SourceAdapterErrorKind::CapabilityBlocked, message)
+        })?
+        .with_extension_emitter(Arc::new(emitter));
+        Ok(OperationalSourceSession::new(session))
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub fn capture_artifact_write_session(
+        self,
+        replacement: Option<(PathBuf, Vec<u8>, Vec<u8>)>,
+        exact_guards: Vec<(PathBuf, Vec<u8>)>,
+        absence_guards: Vec<PathBuf>,
+        membership_guards: Vec<(PathBuf, u8, Vec<std::ffi::OsString>)>,
+    ) -> Result<OperationalSourceSession, SourceAdapterError> {
+        use crate::versions::v2_20::writers::artifact_write::{
+            ArtifactMembershipSelector, PlatformArtifactWriteSession, StagedArtifactReplacement,
+        };
+        let replacement =
+            replacement.map(
+                |(path, expected_preimage, replacement)| StagedArtifactReplacement {
+                    path,
+                    expected_preimage,
+                    replacement,
+                },
+            );
+        let mut session = PlatformArtifactWriteSession {
+            replacement,
+            exact_guards: exact_guards.into_iter().collect(),
+            absence_guards: absence_guards.into_iter().collect(),
+            membership_guards: Default::default(),
+        };
+        for (directory, selector, expected) in membership_guards {
+            let selector = match selector {
+                0 => ArtifactMembershipSelector::StructuredDescriptors,
+                1 => ArtifactMembershipSelector::ConfigurationArtifacts,
+                2 => ArtifactMembershipSelector::DirectEntries,
+                _ => {
+                    return Err(SourceAdapterError::new(
+                        SourceAdapterErrorKind::CapabilityBlocked,
+                        "unknown semantic directory-membership selector",
+                    ))
+                }
+            };
+            session
+                .membership_guards
+                .insert((directory, selector), expected);
+        }
         Ok(OperationalSourceSession::new(session))
     }
 

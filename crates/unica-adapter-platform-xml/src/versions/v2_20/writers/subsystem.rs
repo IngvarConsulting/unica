@@ -1,4 +1,5 @@
 #![allow(dead_code, unused_imports)]
+use super::inspection_arguments::ArgumentAccess;
 
 use crate::application::operation_descriptors::SUBSYSTEM_PATH;
 use crate::application::NativeWriterResult;
@@ -6,6 +7,7 @@ use crate::domain::format_profile::FormatCompatibility;
 use crate::domain::identifiers::is_1c_identifier;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform_xml_owner::inspect_platform_xml_compatibility;
+use crate::operations::PlatformWriterSession;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -246,7 +248,7 @@ fn collect_subsystem_tree_format_dependency_paths(
 /// Return the exact platform XML documents whose contents the public
 /// subsystem read handlers inspect for the requested mode.
 pub(crate) fn subsystem_read_format_dependency_paths(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
     operation: &str,
 ) -> Result<Vec<PathBuf>, String> {
@@ -384,11 +386,20 @@ fn require_subsystem_registration_owner_validation(
     })
 }
 
+struct SubsystemEditInput {
+    definition_file: Option<PathBuf>,
+    operation: String,
+    value: String,
+    subsystem_path: PathBuf,
+    skip_validation_output: bool,
+}
+
+#[cfg(test)]
 pub(crate) fn edit_subsystem(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
-    let edit_result = (|| -> Result<SubsystemEditResult, String> {
+    let parsed = (|| -> Result<SubsystemEditInput, String> {
         let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
         let operation = string_arg(args, &["operation", "Operation"]);
         if definition_file.is_some() && operation.is_some() {
@@ -397,18 +408,45 @@ pub(crate) fn edit_subsystem(
         if definition_file.is_none() && operation.is_none() {
             return Err("Either -DefinitionFile or -Operation is required".to_string());
         }
+        Ok(SubsystemEditInput {
+            definition_file,
+            operation: operation.unwrap_or_default().to_string(),
+            value: string_arg(args, &["value", "Value"])
+                .unwrap_or_default()
+                .to_string(),
+            subsystem_path: required_path(args, SUBSYSTEM_PATH, "SubsystemPath")?,
+            skip_validation_output: bool_arg(args, &["noValidate", "NoValidate"]),
+        })
+    })();
+    match parsed {
+        Ok(input) => edit_subsystem_input(input, context),
+        Err(error) => subsystem_edit_failure(error),
+    }
+}
 
-        let raw_path = required_path(args, SUBSYSTEM_PATH, "SubsystemPath")?;
-        let resolved_path = resolve_subsystem_edit_xml(absolutize(raw_path, &context.cwd))?;
+fn edit_subsystem_input(
+    input: SubsystemEditInput,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    let edit_result = (|| -> Result<SubsystemEditResult, String> {
+        let SubsystemEditInput {
+            definition_file,
+            operation,
+            value,
+            subsystem_path,
+            skip_validation_output,
+        } = input;
+        let operation = (!operation.is_empty()).then_some(operation.as_str());
+        let resolved_path = resolve_subsystem_edit_xml(absolutize(subsystem_path, &context.cwd))?;
         let original = fs::read(&resolved_path)
             .map_err(|err| format!("failed to read {}: {err}", resolved_path.display()))?;
         let mut model = load_subsystem_edit_model(&resolved_path)?;
         let obj_name = model.name.clone();
         let mut transaction = CompileTransaction::new();
         let operations = subsystem_edit_operations_guarded(
-            args,
             &context.cwd,
             operation,
+            &value,
             definition_file,
             &mut transaction,
         )?;
@@ -518,7 +556,7 @@ pub(crate) fn edit_subsystem(
             stdout.push_str(&format!("[INFO] Created stub: {}\n", path.display()));
         }
 
-        if !bool_arg(args, &["noValidate", "NoValidate"]) {
+        if !skip_validation_output {
             stdout.push('\n');
             stdout.push_str("--- Running subsystem-validate ---\n");
             if let Some(validate_stdout) = validation_stdout {
@@ -569,21 +607,25 @@ pub(crate) fn edit_subsystem(
             stdout: Some(result.stdout),
             stderr: None,
         },
-        Err(error) => NativeWriterResult {
-            ok: false,
-            summary: "unica.subsystem.edit failed in native subsystem editor".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-        },
+        Err(error) => subsystem_edit_failure(error),
+    }
+}
+
+fn subsystem_edit_failure(error: String) -> NativeWriterResult {
+    NativeWriterResult {
+        ok: false,
+        summary: "unica.subsystem.edit failed in native subsystem editor".to_string(),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec![error.clone()],
+        artifacts: Vec::new(),
+        stdout: None,
+        stderr: Some(format!("{error}\n")),
     }
 }
 
 pub(crate) fn subsystem_edit_operations(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     cwd: &Path,
     operation: Option<&str>,
     definition_file: Option<PathBuf>,
@@ -608,9 +650,9 @@ pub(crate) fn subsystem_edit_operations(
 }
 
 fn subsystem_edit_operations_guarded(
-    args: &Map<String, Value>,
     cwd: &Path,
     operation: Option<&str>,
+    value: &str,
     definition_file: Option<PathBuf>,
     transaction: &mut CompileTransaction,
 ) -> Result<Vec<(String, Value)>, String> {
@@ -622,7 +664,10 @@ fn subsystem_edit_operations_guarded(
         .bind_to(transaction)?;
         Ok(subsystem_edit_operations_from_value(parsed, operation))
     } else {
-        subsystem_edit_operations(args, cwd, operation, None)
+        Ok(vec![(
+            operation.unwrap_or("").to_string(),
+            Value::String(value.to_string()),
+        )])
     }
 }
 
@@ -927,7 +972,7 @@ pub(crate) fn subsystem_edit_set_property(
 }
 
 pub(crate) fn validate_subsystem(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
     let result = (|| -> Result<(bool, String, PathBuf), String> {
@@ -1344,7 +1389,7 @@ pub(crate) fn validate_subsystem_owner_path(
 }
 
 pub(crate) fn analyze_subsystem_info(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
     let result = (|| -> Result<(String, PathBuf), String> {
@@ -1723,18 +1768,35 @@ struct SubsystemCompileResult {
     warnings: Vec<String>,
 }
 
-pub(crate) fn compile_subsystem(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> NativeWriterResult {
-    compile_subsystem_internal(args, context, false)
+enum SubsystemDefinition {
+    File(PathBuf),
+    Inline(String),
 }
 
+struct SubsystemCompileInput {
+    definition: SubsystemDefinition,
+    destination: PathBuf,
+    parent: Option<PathBuf>,
+    declared_name: Option<String>,
+}
+
+#[cfg(test)]
+pub(crate) fn compile_subsystem(
+    args: &impl ArgumentAccess,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    match subsystem_compile_input(args) {
+        Ok(input) => compile_subsystem_internal(input, context, false),
+        Err(error) => subsystem_compile_failure(error),
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn preview_subsystem_compile(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Result<NativeWriterResult, String> {
-    let outcome = compile_subsystem_internal(args, context, true);
+    let outcome = compile_subsystem_internal(subsystem_compile_input(args)?, context, true);
     if outcome.ok {
         Ok(outcome)
     } else {
@@ -1742,49 +1804,67 @@ pub(crate) fn preview_subsystem_compile(
     }
 }
 
+#[cfg(test)]
+fn subsystem_compile_input(args: &impl ArgumentAccess) -> Result<SubsystemCompileInput, String> {
+    let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
+    let value = string_arg(args, &["value", "Value"]).map(ToOwned::to_owned);
+    let definition = match (definition_file, value) {
+        (Some(path), None) => SubsystemDefinition::File(path),
+        (None, Some(value)) => SubsystemDefinition::Inline(value),
+        (Some(_), Some(_)) => return Err("Cannot use both -DefinitionFile and -Value".to_string()),
+        (None, None) => return Err("Either -DefinitionFile or -Value is required".to_string()),
+    };
+    Ok(SubsystemCompileInput {
+        definition,
+        destination: required_path(args, &["outputDir", "OutputDir"], "OutputDir")?,
+        parent: path_arg(args, &["parent", "Parent"]),
+        declared_name: string_arg(args, &["name", "Name"]).map(ToOwned::to_owned),
+    })
+}
+
 fn compile_subsystem_internal(
-    args: &Map<String, Value>,
+    input: SubsystemCompileInput,
     context: &WorkspaceContext,
     dry_run: bool,
 ) -> NativeWriterResult {
     let write_result = (|| -> Result<SubsystemCompileResult, String> {
         let mut transaction = CompileTransaction::new();
-        let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
-        let value_arg = string_arg(args, &["value", "Value"]);
-        if definition_file.is_some() && value_arg.is_some() {
-            return Err("Cannot use both -DefinitionFile and -Value".to_string());
-        }
-        if definition_file.is_none() && value_arg.is_none() {
-            return Err("Either -DefinitionFile or -Value is required".to_string());
-        }
-
-        let defn = if let Some(definition_file) = definition_file {
-            let definition_file = absolutize(definition_file, &context.cwd);
-            if !definition_file.exists() {
-                return Err(format!(
-                    "Definition file not found: {}",
-                    definition_file.display()
-                ));
+        let SubsystemCompileInput {
+            definition,
+            destination,
+            parent,
+            declared_name,
+        } = input;
+        let defn = match definition {
+            SubsystemDefinition::File(definition_file) => {
+                let definition_file = absolutize(definition_file, &context.cwd);
+                if !definition_file.exists() {
+                    return Err(format!(
+                        "Definition file not found: {}",
+                        definition_file.display()
+                    ));
+                }
+                FileBackedJson::read(&definition_file, |err| {
+                    format!("failed to parse subsystem JSON: {err}")
+                })?
+                .bind_to(&mut transaction)?
             }
-            FileBackedJson::read(&definition_file, |err| {
-                format!("failed to parse subsystem JSON: {err}")
-            })?
-            .bind_to(&mut transaction)?
-        } else {
-            serde_json::from_str(value_arg.unwrap_or_default().trim_start_matches('\u{feff}'))
-                .map_err(|err| format!("failed to parse subsystem JSON: {err}"))?
+            SubsystemDefinition::Inline(value) => {
+                serde_json::from_str(value.trim_start_matches('\u{feff}'))
+                    .map_err(|err| format!("failed to parse subsystem JSON: {err}"))?
+            }
         };
 
-        let obj_name = defn
+        let definition_name = defn
             .get("name")
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
             .ok_or_else(|| "JSON must have non-empty string 'name' field".to_string())?
             .to_string();
+        let obj_name = declared_name.unwrap_or(definition_name);
         validate_subsystem_metadata_name("Name", &obj_name)?;
 
-        let output_dir = required_path(args, &["outputDir", "OutputDir"], "OutputDir")
-            .map(|path| absolutize(path, &context.cwd))?;
+        let output_dir = absolutize(destination, &context.cwd);
         let format_version = crate::domain::format_profile::ACTIVE_FORMAT_PROFILE
             .export_format
             .to_string();
@@ -1911,7 +1991,6 @@ fn compile_subsystem_internal(
         lines.push("\t</Subsystem>".to_string());
         lines.push("</MetaDataObject>".to_string());
 
-        let parent = path_arg(args, &["parent", "Parent"]);
         let subs_dir = if let Some(parent_path) = &parent {
             let parent_path = absolutize(parent_path.clone(), &context.cwd);
             if !parent_path.exists() {
@@ -2177,6 +2256,19 @@ fn compile_subsystem_internal(
     }
 }
 
+fn subsystem_compile_failure(error: String) -> NativeWriterResult {
+    NativeWriterResult {
+        ok: false,
+        summary: "unica.subsystem.compile failed in native XML writer".to_string(),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec![error.clone()],
+        artifacts: Vec::new(),
+        stdout: None,
+        stderr: Some(format!("{error}\n")),
+    }
+}
+
 pub(crate) fn write_child_subsystem_stub(
     child_path: &Path,
     child_name: &str,
@@ -2332,7 +2424,7 @@ pub(crate) fn subsystem_content_type(type_part: &str) -> Option<&'static str> {
 pub(crate) fn invoke_read(
     operation: &str,
     _tool_name: &str,
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Option<Result<NativeWriterResult, String>> {
     match operation {
@@ -2342,10 +2434,11 @@ pub(crate) fn invoke_read(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn invoke_mutation(
     operation: &str,
     _tool_name: &str,
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Option<NativeWriterResult> {
     match operation {
@@ -2353,6 +2446,104 @@ pub(crate) fn invoke_mutation(
         "subsystem-edit" => Some(edit_subsystem(args, context)),
         _ => None,
     }
+}
+
+pub(crate) fn create_subsystem(
+    command: &unica_format_core::commands::SubsystemCreate,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    match typed_subsystem_compile_input(command, session) {
+        Ok(input) => compile_subsystem_internal(input, context, false),
+        Err(error) => subsystem_compile_failure(error),
+    }
+}
+
+pub(crate) fn edit_subsystem_typed(
+    command: &unica_format_core::commands::SubsystemEdit,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    let subsystem_path = match session.required_source(
+        unica_format_core::commands::WriterSourceRole::Subsystem,
+        "subsystem mutation target",
+    ) {
+        Ok(path) => path.to_path_buf(),
+        Err(error) => return subsystem_edit_failure(error),
+    };
+    use unica_format_core::commands::SubsystemEdit as Edit;
+    let definition_file = session
+        .source(unica_format_core::commands::WriterSourceRole::Definition)
+        .map(Path::to_path_buf);
+    let (operation, value) = match command {
+        Edit::FromDefinition => (String::new(), String::new()),
+        Edit::AddContent(value) => ("add-content".to_string(), value.as_str().to_string()),
+        Edit::RemoveContent(value) => ("remove-content".to_string(), value.as_str().to_string()),
+        Edit::AddChild(value) => ("add-child".to_string(), value.as_str().to_string()),
+        Edit::RemoveChild(value) => ("remove-child".to_string(), value.as_str().to_string()),
+        Edit::SetProperty(value) => ("set-property".to_string(), value.as_str().to_string()),
+    };
+    edit_subsystem_input(
+        SubsystemEditInput {
+            definition_file,
+            operation,
+            value,
+            subsystem_path,
+            skip_validation_output: false,
+        },
+        context,
+    )
+}
+
+pub(crate) fn preview_subsystem_compile_typed(
+    command: &unica_format_core::commands::SubsystemCreate,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+) -> Result<NativeWriterResult, String> {
+    let outcome = compile_subsystem_internal(
+        typed_subsystem_compile_input(command, session)?,
+        context,
+        true,
+    );
+    if outcome.ok {
+        Ok(outcome)
+    } else {
+        Err(outcome.errors.join("; "))
+    }
+}
+
+fn typed_subsystem_compile_input(
+    command: &unica_format_core::commands::SubsystemCreate,
+    session: &PlatformWriterSession,
+) -> Result<SubsystemCompileInput, String> {
+    let definition = match (
+        session.source(unica_format_core::commands::WriterSourceRole::Definition),
+        session.inline_definition(),
+    ) {
+        (Some(path), None) => SubsystemDefinition::File(path.to_path_buf()),
+        (None, Some(bytes)) => SubsystemDefinition::Inline(
+            std::str::from_utf8(bytes)
+                .map_err(|_| "inline subsystem definition is invalid".to_string())?
+                .to_string(),
+        ),
+        (Some(_), Some(_)) => {
+            return Err("subsystem definition was bound more than once".to_string())
+        }
+        (None, None) => return Err("subsystem definition is required".to_string()),
+    };
+    Ok(SubsystemCompileInput {
+        definition,
+        destination: session
+            .required_source(
+                unica_format_core::commands::WriterSourceRole::DestinationDirectory,
+                "subsystem destination",
+            )?
+            .to_path_buf(),
+        parent: session
+            .source(unica_format_core::commands::WriterSourceRole::ParentSubsystem)
+            .map(Path::to_path_buf),
+        declared_name: command.name().map(|value| value.as_str().to_string()),
+    })
 }
 
 #[cfg(test)]

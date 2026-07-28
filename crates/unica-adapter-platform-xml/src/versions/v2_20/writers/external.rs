@@ -1,15 +1,18 @@
 use super::cf::cf_validate_identifier;
-use super::common::{
-    escape_xml, guard_active_format_containing_owner_for_new_output, path_arg, string_arg,
-};
+use super::common::{escape_xml, guard_active_format_containing_owner_for_new_output};
+#[cfg(test)]
+use super::common::{path_arg, string_arg};
 use super::compile_transaction::CompileTransaction;
 use super::form::{
     form_add_content_xml, form_add_metadata_xml, form_add_module_bsl, validate_form,
 };
+#[cfg(test)]
+use super::inspection_arguments::ArgumentAccess;
 use super::meta::validate_meta;
 use crate::application::NativeWriterResult;
 use crate::domain::format_profile::ACTIVE_FORMAT_PROFILE;
 use crate::domain::workspace::WorkspaceContext;
+use crate::operations::PlatformWriterSession;
 use serde_json::{Map, Value};
 use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
@@ -24,6 +27,7 @@ enum ExternalArtifactKind {
 }
 
 impl ExternalArtifactKind {
+    #[cfg(test)]
     fn from_operation(operation: &str) -> Option<Self> {
         match operation {
             "epf-init" => Some(Self::Processor),
@@ -85,28 +89,31 @@ enum ScaffoldMode {
     Apply,
 }
 
+#[cfg(test)]
 pub(crate) fn preview(
     operation: &str,
     tool_name: &str,
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Option<NativeWriterResult> {
     invoke(operation, tool_name, args, context, ScaffoldMode::Preview)
 }
 
+#[cfg(test)]
 pub(crate) fn apply(
     operation: &str,
     tool_name: &str,
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Option<NativeWriterResult> {
     invoke(operation, tool_name, args, context, ScaffoldMode::Apply)
 }
 
+#[cfg(test)]
 fn invoke(
     operation: &str,
     tool_name: &str,
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
     mode: ScaffoldMode,
 ) -> Option<NativeWriterResult> {
@@ -125,40 +132,138 @@ fn invoke(
     })
 }
 
-fn prepare_plan(
+pub(crate) fn initialize_processor(
+    command: &unica_format_core::commands::ExternalArtifactInitialize,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+    mode: unica_format_core::commands::MutationMode,
+) -> NativeWriterResult {
+    invoke_kind(
+        ExternalArtifactKind::Processor,
+        "external processor initialization",
+        command,
+        session,
+        context,
+        mode,
+    )
+}
+
+pub(crate) fn initialize_report(
+    command: &unica_format_core::commands::ExternalArtifactInitialize,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+    mode: unica_format_core::commands::MutationMode,
+) -> NativeWriterResult {
+    invoke_kind(
+        ExternalArtifactKind::Report,
+        "external report initialization",
+        command,
+        session,
+        context,
+        mode,
+    )
+}
+
+fn invoke_kind(
     kind: ExternalArtifactKind,
-    args: &Map<String, Value>,
+    label: &str,
+    command: &unica_format_core::commands::ExternalArtifactInitialize,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+    mode: unica_format_core::commands::MutationMode,
+) -> NativeWriterResult {
+    let mode = if mode.is_preview() {
+        ScaffoldMode::Preview
+    } else {
+        ScaffoldMode::Apply
+    };
+    match (prepare_typed_plan(kind, command, session, context), mode) {
+        (Ok(plan), ScaffoldMode::Preview) => {
+            success_outcome(label, &plan, ScaffoldMode::Preview, Vec::new())
+        }
+        (Ok(plan), ScaffoldMode::Apply) => match create_scaffold(&plan, context) {
+            Ok(warnings) => success_outcome(label, &plan, ScaffoldMode::Apply, warnings),
+            Err(error) => failure_outcome(label, error),
+        },
+        (Err(error), ScaffoldMode::Preview | ScaffoldMode::Apply) => failure_outcome(label, error),
+    }
+}
+
+fn prepare_typed_plan(
+    kind: ExternalArtifactKind,
+    command: &unica_format_core::commands::ExternalArtifactInitialize,
+    session: &PlatformWriterSession,
     context: &WorkspaceContext,
 ) -> Result<ScaffoldPlan, String> {
-    let plan = plan_scaffold(kind, args, context)?;
+    let output_dir = session.required_source(
+        unica_format_core::commands::WriterSourceRole::DestinationDirectory,
+        "external artifact destination",
+    )?;
+    let plan = plan_scaffold_values(
+        kind,
+        command.name().as_str(),
+        command.synonym().map(|value| value.as_str()),
+        command.form().map(|value| value.as_str()),
+        output_dir.to_path_buf(),
+        context,
+    )?;
+    validate_new_targets(&plan)?;
+    Ok(plan)
+}
+
+fn validate_new_targets(plan: &ScaffoldPlan) -> Result<(), String> {
     for target in [&plan.descriptor, &plan.object_dir] {
         if target.exists() {
             return Err(format!("target already exists: {}", target.display()));
         }
     }
+    Ok(())
+}
+
+#[cfg(test)]
+fn prepare_plan(
+    kind: ExternalArtifactKind,
+    args: &impl ArgumentAccess,
+    context: &WorkspaceContext,
+) -> Result<ScaffoldPlan, String> {
+    let plan = plan_scaffold(kind, args, context)?;
+    validate_new_targets(&plan)?;
     Ok(plan)
 }
 
+#[cfg(test)]
 fn plan_scaffold(
     kind: ExternalArtifactKind,
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Result<ScaffoldPlan, String> {
     let name =
         string_arg(args, &["Name"]).ok_or_else(|| "missing required Name argument".to_string())?;
-    validate_identifier("Name", name)?;
-    let synonym = string_arg(args, &["Synonym"]).unwrap_or(name);
-    let form_name = string_arg(args, &["FormName"])
-        .map(str::to_string)
-        .filter(|value| !value.is_empty());
-    if let Some(form_name) = form_name.as_deref() {
-        validate_identifier("FormName", form_name)?;
-    } else if args.get("FormName").is_some() {
+    let synonym = string_arg(args, &["Synonym"]);
+    let form_name = string_arg(args, &["FormName"]).filter(|value| !value.is_empty());
+    if form_name.is_none() && args.get("FormName").is_some() {
         return Err("FormName must be a non-empty 1C identifier".to_string());
     }
 
     let output_dir = path_arg(args, &["OutputDir"])
         .ok_or_else(|| "missing required OutputDir argument".to_string())?;
+    plan_scaffold_values(kind, name, synonym, form_name, output_dir, context)
+}
+
+fn plan_scaffold_values(
+    kind: ExternalArtifactKind,
+    name: &str,
+    synonym: Option<&str>,
+    form_name: Option<&str>,
+    output_dir: PathBuf,
+    context: &WorkspaceContext,
+) -> Result<ScaffoldPlan, String> {
+    validate_identifier("Name", name)?;
+    if let Some(form_name) = form_name {
+        validate_identifier("FormName", form_name)?;
+    }
+    let synonym = synonym.unwrap_or(name);
+    let form_name = form_name.map(str::to_string);
     let output_dir = if output_dir.is_absolute() {
         output_dir
     } else {

@@ -4,8 +4,10 @@ use std::{
 };
 
 use unica_format_core::{
-    commands::{ModuleArtifactLocation, ModuleOwner, ModuleRole},
-    ports::{ModuleArtifactLocatorPort, ModuleArtifactLocatorRequest},
+    commands::{
+        LocatedModuleArtifact, ModuleArtifactLocation, ModuleOwner, ModuleRole, SourceSetName,
+    },
+    ports::{ModuleArtifactLocatorPort, ModuleArtifactLocatorRequest, SemanticArtifactLease},
     semantic_ids::SemanticObjectKind,
     source::{SourceAdapterError, SourceAdapterErrorKind},
 };
@@ -13,24 +15,54 @@ use unica_format_core::{
 use super::{
     filesystem::metadata_is_link_or_reparse_point,
     platform_xml_owner::{task8_metadata_kind_by_directory, task8_metadata_kind_tag},
-    source_roots::{normalize_contained_source_root, normalize_path_identity},
+    source_roots::{normalize_contained_source_root, normalize_path_identity, resolve_source_root},
 };
 
 pub(crate) struct PlatformModuleArtifactLocator;
 
 #[derive(Debug, Clone)]
 pub(crate) struct PlatformModuleLocatorSession {
-    source_root: PathBuf,
+    source_root: Option<PathBuf>,
+    source_set: Option<String>,
+    explicit_source: Option<String>,
+    cwd: PathBuf,
     target: PathBuf,
     authorized_root: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PlatformModuleArtifactLease {
+    pub(crate) target: PathBuf,
+    pub(crate) expected_preimage: Vec<u8>,
+    pub(crate) descriptor_preimages: Vec<(PathBuf, Vec<u8>)>,
+    pub(crate) source_declaration_preimages: Vec<(PathBuf, Vec<u8>)>,
 }
 
 impl PlatformModuleLocatorSession {
     pub(crate) fn new(source_root: &Path, target: &Path, authorized_root: &Path) -> Self {
         Self {
-            source_root: source_root.to_path_buf(),
+            source_root: Some(source_root.to_path_buf()),
+            source_set: None,
+            explicit_source: None,
+            cwd: authorized_root.to_path_buf(),
             target: target.to_path_buf(),
             authorized_root: authorized_root.to_path_buf(),
+        }
+    }
+
+    pub(crate) fn from_workspace(
+        workspace_root: &Path,
+        cwd: &Path,
+        target: &Path,
+        explicit_source: Option<&str>,
+    ) -> Self {
+        Self {
+            source_root: None,
+            source_set: None,
+            explicit_source: explicit_source.map(str::to_string),
+            cwd: cwd.to_path_buf(),
+            target: target.to_path_buf(),
+            authorized_root: workspace_root.to_path_buf(),
         }
     }
 }
@@ -39,7 +71,7 @@ impl ModuleArtifactLocatorPort for PlatformModuleArtifactLocator {
     fn locate(
         &self,
         request: &ModuleArtifactLocatorRequest,
-    ) -> Result<ModuleArtifactLocation, SourceAdapterError> {
+    ) -> Result<LocatedModuleArtifact, SourceAdapterError> {
         if request.cancellation().is_cancelled() {
             return Err(error("cancelled: module artifact location was cancelled"));
         }
@@ -51,12 +83,42 @@ impl ModuleArtifactLocatorPort for PlatformModuleArtifactLocator {
     }
 }
 
-fn locate(session: &PlatformModuleLocatorSession) -> Result<ModuleArtifactLocation, String> {
-    let source_root =
-        normalize_contained_source_root(&session.authorized_root, &session.source_root)?;
+fn locate(session: &PlatformModuleLocatorSession) -> Result<LocatedModuleArtifact, String> {
+    let mut source_declaration_preimages = Vec::new();
+    let (source_root, source_set) = if let Some(source_root) = &session.source_root {
+        (
+            normalize_contained_source_root(&session.authorized_root, source_root)?,
+            session.source_set.clone(),
+        )
+    } else {
+        let declaration = session.authorized_root.join("v8project.yaml");
+        ensure_regular_non_link_path(
+            &session.authorized_root,
+            &declaration,
+            "project source declaration",
+        )?;
+        source_declaration_preimages.push((
+            declaration.clone(),
+            fs::read(&declaration)
+                .map_err(|error| format!("project source declaration is unavailable: {error}"))?,
+        ));
+        let context = crate::operations::WorkspaceContext {
+            cwd: session.cwd.clone(),
+            workspace_root: session.authorized_root.clone(),
+            cache_root: session.authorized_root.join(".build/unica"),
+            workspace_epoch: 0,
+        };
+        let resolved = resolve_source_root(&context, session.explicit_source.as_deref())?;
+        (resolved.path, resolved.source_set)
+    };
     let relative = session
         .target
-        .strip_prefix(&session.source_root)
+        .strip_prefix(
+            session
+                .source_root
+                .as_deref()
+                .unwrap_or(source_root.as_path()),
+        )
         .map_err(|_| "BSL module is outside the selected source set".to_string())?;
     let bound_target = source_root.join(relative);
     ensure_regular_non_link_path(&source_root, &bound_target, "BSL module")?;
@@ -68,11 +130,51 @@ fn locate(session: &PlatformModuleLocatorSession) -> Result<ModuleArtifactLocati
         .strip_prefix(&source_root)
         .map_err(|_| "failed to derive BSL module identity".to_string())?;
     let identity = module_identity(relative)?;
+    let mut descriptor_preimages = Vec::with_capacity(identity.descriptors.len());
     for descriptor in &identity.descriptors {
         let path = source_root.join(descriptor);
         ensure_regular_non_link_path(&source_root, &path, "BSL module metadata descriptor")?;
+        descriptor_preimages.push((
+            path.clone(),
+            fs::read(&path).map_err(|error| {
+                format!("BSL module metadata descriptor is unavailable: {error}")
+            })?,
+        ));
     }
-    Ok(ModuleArtifactLocation::new(identity.owner, identity.role))
+    if let Some(Component::Normal(directory)) = relative.components().next() {
+        let root_owner = source_root.join(directory).with_extension("xml");
+        if root_owner.exists()
+            && !descriptor_preimages
+                .iter()
+                .any(|(path, _)| path == &root_owner)
+        {
+            ensure_regular_non_link_path(&source_root, &root_owner, "source set owner descriptor")?;
+            descriptor_preimages.push((
+                root_owner.clone(),
+                fs::read(&root_owner).map_err(|error| {
+                    format!("source set owner descriptor is unavailable: {error}")
+                })?,
+            ));
+        }
+    }
+    let expected_preimage =
+        fs::read(&target).map_err(|error| format!("BSL module is unavailable: {error}"))?;
+    let mut location = ModuleArtifactLocation::new(identity.owner, identity.role);
+    if let Some(source_set) = source_set {
+        location = location.with_source_set(
+            SourceSetName::new(source_set)
+                .map_err(|error| format!("invalid module source set: {error}"))?,
+        );
+    }
+    Ok(LocatedModuleArtifact::new(
+        location,
+        SemanticArtifactLease::new(PlatformModuleArtifactLease {
+            target,
+            expected_preimage,
+            descriptor_preimages,
+            source_declaration_preimages,
+        }),
+    ))
 }
 
 fn ensure_regular_non_link_path(root: &Path, target: &Path, label: &str) -> Result<(), String> {

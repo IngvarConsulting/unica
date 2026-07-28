@@ -4,6 +4,8 @@
 //! names, layout rules, parser/serializer code, and publication machinery are
 //! confined to this version module.
 
+pub(crate) mod artifact_write;
+pub(crate) mod cancellation;
 pub(crate) mod cf;
 pub(crate) mod cfe;
 pub(crate) mod common;
@@ -15,7 +17,11 @@ pub(crate) mod form;
 pub(crate) mod form_edit;
 pub(crate) mod form_event_registry;
 pub(crate) mod help;
+pub(crate) mod inspection_arguments;
+pub(crate) mod inspection_registry;
 pub(crate) mod interface;
+#[cfg(test)]
+pub(crate) mod legacy_registry;
 pub(crate) mod meta;
 pub(crate) mod module_locator;
 pub(crate) mod mxl;

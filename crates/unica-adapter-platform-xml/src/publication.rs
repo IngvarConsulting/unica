@@ -42,6 +42,10 @@ use unica_format_core::{
 };
 use uuid::Uuid;
 
+use crate::versions::v2_20::writers::single_file_publisher::{
+    with_publication_locks_mode, PublicationTreeLockMode,
+};
+
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd};
 #[cfg(unix)]
@@ -237,6 +241,19 @@ impl PublicationGate for DirectPublicationGate {
     }
 }
 
+struct AdapterPublicationGate;
+
+impl PublicationGate for AdapterPublicationGate {
+    fn exclusive(
+        &self,
+        targets: &[PathBuf],
+        action: &mut dyn FnMut() -> Result<Vec<String>, String>,
+    ) -> Result<Result<Vec<String>, String>, String> {
+        with_publication_locks_mode(targets, PublicationTreeLockMode::Exclusive, |_| action())
+            .map_err(|_| "publication lock failed".to_string())
+    }
+}
+
 pub(crate) struct PlatformXmlPublication;
 
 impl PlatformXmlPublication {
@@ -304,35 +321,14 @@ where
     }
 }
 
-struct CallbackPublicationGate<L>(L);
-
-impl<L> PublicationGate for CallbackPublicationGate<L>
-where
-    L: Fn(
-            &[PathBuf],
-            &mut dyn FnMut() -> Result<Vec<String>, String>,
-        ) -> Result<Result<Vec<String>, String>, String>
-        + Send
-        + Sync,
-{
-    fn exclusive(
-        &self,
-        targets: &[PathBuf],
-        action: &mut dyn FnMut() -> Result<Vec<String>, String>,
-    ) -> Result<Result<Vec<String>, String>, String> {
-        (self.0)(targets, action)
-    }
-}
-
 #[allow(clippy::type_complexity)]
-pub(crate) fn capture_publication_session<R, S, L>(
+pub(crate) fn capture_publication_session<R, S>(
     operation_name: &str,
     args: &Map<String, Value>,
     workspace_root: &Path,
     cwd: &Path,
     run: R,
     resolve: S,
-    lock: L,
 ) -> OperationalSourceSession
 where
     R: Fn(
@@ -346,13 +342,6 @@ where
         + Sync
         + 'static,
     S: Fn(&Path, &str, bool) -> Result<(PathBuf, Vec<String>), String> + Send + Sync + 'static,
-    L: Fn(
-            &[PathBuf],
-            &mut dyn FnMut() -> Result<Vec<String>, String>,
-        ) -> Result<Result<Vec<String>, String>, String>
-        + Send
-        + Sync
-        + 'static,
 {
     let mut captured_args = args.clone();
     captured_args.insert("mode".to_string(), Value::String("full".to_string()));
@@ -365,7 +354,7 @@ where
             workspace_root: workspace_root.to_path_buf(),
         },
         runner: Arc::new(CallbackProcessRunner { run, resolve }),
-        gate: Arc::new(CallbackPublicationGate(lock)),
+        gate: Arc::new(AdapterPublicationGate),
     })
 }
 

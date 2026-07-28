@@ -1,7 +1,9 @@
 #![allow(dead_code, unused_imports)]
+use super::inspection_arguments::ArgumentAccess;
 
 use crate::application::NativeWriterResult;
 use crate::domain::workspace::WorkspaceContext;
+use crate::operations::PlatformWriterSession;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -166,7 +168,7 @@ impl MxlValidationReporter {
 }
 
 pub(crate) fn analyze_mxl_info(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
     let result = (|| -> Result<(String, PathBuf), String> {
@@ -575,7 +577,7 @@ pub(crate) fn analyze_mxl_info(
 }
 
 pub(crate) fn validate_mxl(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
     const NS_D: &str = "http://v8.1c.ru/8.2/data/spreadsheet";
@@ -937,7 +939,7 @@ pub(crate) fn validate_mxl(
 }
 
 pub(crate) fn decompile_mxl(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
     const NS_D: &str = "http://v8.1c.ru/8.2/data/spreadsheet";
@@ -1992,7 +1994,7 @@ pub(crate) fn non_empty_string(value: String) -> Option<String> {
 }
 
 pub(crate) fn resolve_mxl_info_path(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
     if let Some(path) = path_arg(args, &["templatePath", "TemplatePath", "path", "Path"]) {
@@ -2016,7 +2018,7 @@ pub(crate) fn resolve_mxl_info_path(
 }
 
 pub(crate) fn resolve_mxl_validate_path(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
     let mut template_path = if let Some(path) =
@@ -2254,7 +2256,7 @@ pub(crate) fn truncate_mxl_list(items: &[String], max_count: usize) -> String {
     format!("{shown}, ... (+{})", items.len() - max_count)
 }
 
-pub(crate) fn paginate_mxl_info(mut lines: Vec<String>, args: &Map<String, Value>) -> String {
+pub(crate) fn paginate_mxl_info(mut lines: Vec<String>, args: &impl ArgumentAccess) -> String {
     let total_lines = lines.len();
     let offset = int_arg(args, &["offset", "Offset"]).unwrap_or(0);
     let limit = int_arg(args, &["limit", "Limit"]).unwrap_or(150);
@@ -2335,14 +2337,32 @@ impl MxlFormatRegistry {
     }
 }
 
+struct MxlCompileInput {
+    definition: PathBuf,
+    destination: PathBuf,
+}
+
+#[cfg(test)]
 pub(crate) fn compile_mxl(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
+    let input = match (|| -> Result<MxlCompileInput, String> {
+        Ok(MxlCompileInput {
+            definition: required_path(args, &["jsonPath", "JsonPath"], "JsonPath")?,
+            destination: required_path(args, &["outputPath", "OutputPath"], "OutputPath")?,
+        })
+    })() {
+        Ok(input) => input,
+        Err(error) => return mxl_compile_failure(error),
+    };
+    compile_mxl_input(input, context)
+}
+
+fn compile_mxl_input(input: MxlCompileInput, context: &WorkspaceContext) -> NativeWriterResult {
     let write_result = (|| -> Result<(String, PathBuf, Vec<String>), String> {
-        let json_path_raw = required_path(args, &["jsonPath", "JsonPath"], "JsonPath")?;
-        let output_path_raw = required_path(args, &["outputPath", "OutputPath"], "OutputPath")?;
-        let json_path = absolutize(json_path_raw, &context.cwd);
+        let json_path = absolutize(input.definition, &context.cwd);
+        let output_path_raw = input.destination;
         if !json_path.exists() {
             return Err(format!("File not found: {}", json_path.display()));
         }
@@ -2863,16 +2883,20 @@ pub(crate) fn compile_mxl(
             stdout: Some(stdout),
             stderr: None,
         },
-        Err(error) => NativeWriterResult {
-            ok: false,
-            summary: "unica.mxl.compile failed in native spreadsheet writer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-        },
+        Err(error) => mxl_compile_failure(error),
+    }
+}
+
+fn mxl_compile_failure(error: String) -> NativeWriterResult {
+    NativeWriterResult {
+        ok: false,
+        summary: "unica.mxl.compile failed in native spreadsheet writer".to_string(),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec![error.clone()],
+        artifacts: Vec::new(),
+        stdout: None,
+        stderr: Some(format!("{error}\n")),
     }
 }
 
@@ -3218,7 +3242,7 @@ pub(crate) fn emit_mxl_format(lines: &mut Vec<String>, format: &MxlFormatProps) 
 pub(crate) fn invoke_read(
     operation: &str,
     _tool_name: &str,
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Option<Result<NativeWriterResult, String>> {
     match operation {
@@ -3229,15 +3253,48 @@ pub(crate) fn invoke_read(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn invoke_mutation(
     operation: &str,
     _tool_name: &str,
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Option<NativeWriterResult> {
     match operation {
         "mxl-compile" => Some(compile_mxl(args, context)),
         _ => None,
+    }
+}
+
+pub(crate) fn create_spreadsheet(
+    command: &unica_format_core::commands::SpreadsheetCreate,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    let definition = session.required_source(
+        unica_format_core::commands::WriterSourceRole::Definition,
+        "spreadsheet definition",
+    );
+    let destination = session.required_source(
+        unica_format_core::commands::WriterSourceRole::DestinationArtifact,
+        "spreadsheet destination",
+    );
+    match (definition, destination) {
+        (Ok(definition), Ok(destination)) => {
+            let _resolved_origin = (
+                command.processor().map(|value| value.as_str()),
+                command.template().map(|value| value.as_str()),
+                command.derives_from_object(),
+            );
+            compile_mxl_input(
+                MxlCompileInput {
+                    definition: definition.to_path_buf(),
+                    destination: destination.to_path_buf(),
+                },
+                context,
+            )
+        }
+        (Err(error), _) | (_, Err(error)) => mxl_compile_failure(error),
     }
 }
 

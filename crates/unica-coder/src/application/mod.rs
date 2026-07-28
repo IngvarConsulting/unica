@@ -882,7 +882,7 @@ fn is_successful_detailed_compile_preview(
 ) -> bool {
     dry_run
         && outcome.ok
-        && outcome.summary.contains("planned native")
+        && !outcome.changes.is_empty()
         && matches!(
             spec.handler,
             ToolHandler::NativeOperation {
@@ -1660,8 +1660,7 @@ mod tests {
     use super::*;
     use crate::composition::testing::{
         create_file_link_fixture_for_test, prepare_file_for_removal, set_unix_mode_for_test,
-        unix_mode_for_test, with_publication_lock_contention_signal, with_publication_lock_pause,
-        CompileTransaction, FileLinkFixtureOutcome,
+        unix_mode_for_test, CompileTransaction, FileLinkFixtureOutcome,
     };
     use serde_json::Map;
     use std::collections::HashSet;
@@ -1904,12 +1903,12 @@ mod tests {
         let expected_data = json!({
             "changed": true,
             "removed": [
-                {"name": "Second", "kind": "InputField", "reason": "requested"},
-                {"name": "SecondContextMenu", "kind": "ContextMenu", "reason": "contained"},
-                {"name": "SecondExtendedTooltip", "kind": "ExtendedTooltip", "reason": "contained"},
-                {"name": "First", "kind": "Group", "reason": "requested"},
-                {"name": "FirstInput", "kind": "InputField", "reason": "contained"},
-                {"name": "FirstInputContextMenu", "kind": "ContextMenu", "reason": "contained"}
+                {"name": "Second", "kind": "input", "reason": "requested"},
+                {"name": "SecondContextMenu", "kind": "contextMenu", "reason": "contained"},
+                {"name": "SecondExtendedTooltip", "kind": "tooltip", "reason": "contained"},
+                {"name": "First", "kind": "group", "reason": "requested"},
+                {"name": "FirstInput", "kind": "input", "reason": "contained"},
+                {"name": "FirstInputContextMenu", "kind": "contextMenu", "reason": "contained"}
             ],
             "validation": "passed"
         });
@@ -1917,7 +1916,7 @@ mod tests {
         let preview = app.call_tool("unica.form.edit", &args).unwrap();
         assert!(preview.ok, "{:?}", preview.errors);
         assert_eq!(preview.data, Some(expected_data.clone()));
-        assert!(preview.stdout.is_some());
+        assert!(preview.stdout.is_none());
         assert!(preview.cache.events.is_empty());
         assert_eq!(std::fs::read(&form_path).unwrap(), original);
 
@@ -1926,7 +1925,7 @@ mod tests {
         assert!(applied.ok, "{:?}", applied.errors);
         assert_eq!(applied.data, Some(expected_data));
         assert_eq!(applied.cache.events, vec!["FormChanged"]);
-        assert!(applied.stdout.is_some());
+        assert!(applied.stdout.is_none());
 
         let validation_args = json!({
             "cwd": workspace,
@@ -2099,9 +2098,9 @@ mod tests {
         let expected = json!({
             "changed": true,
             "removed": [
-                {"name": "Target", "kind": "InputField", "reason": "requested"},
-                {"name": "TargetContextMenu", "kind": "ContextMenu", "reason": "contained"},
-                {"name": "TargetExtendedTooltip", "kind": "ExtendedTooltip", "reason": "contained"}
+                {"name": "Target", "kind": "input", "reason": "requested"},
+                {"name": "TargetContextMenu", "kind": "contextMenu", "reason": "contained"},
+                {"name": "TargetExtendedTooltip", "kind": "tooltip", "reason": "contained"}
             ],
             "validation": "passed"
         });
@@ -3793,12 +3792,7 @@ mod tests {
         assert!(result.ok, "{result:?}");
         assert!(result.changes.is_empty(), "{result:?}");
         assert!(result.cache.events.is_empty(), "{result:?}");
-        let stdout = result.stdout.unwrap_or_default();
-        assert!(
-            stdout.contains("[INFO] No Configuration.xml changes"),
-            "{stdout}"
-        );
-        assert!(!stdout.contains("[INFO] Saved:"), "{stdout}");
+        assert!(result.stdout.is_none());
         assert_eq!(std::fs::read(&config_path).unwrap(), before);
         assert_no_cf_edit_stage_debris(&config_path);
         std::fs::remove_dir_all(root).unwrap();
@@ -3812,7 +3806,10 @@ mod tests {
         let mut transaction = CompileTransaction::new();
         let replacement = String::from_utf8(before.clone())
             .unwrap()
-            .replace("<Role/>", "<Role>Reader</Role>")
+            .replace(
+                "<Vendor>Vendor</Vendor>",
+                "<Vendor>ConcurrentVendor</Vendor>",
+            )
             .into_bytes();
         transaction
             .replace_bytes(&config_path, &before, replacement)
@@ -3823,23 +3820,25 @@ mod tests {
         let acquired_in_compile = Arc::clone(&acquired);
         let release_in_compile = Arc::clone(&release);
         let compile_thread = thread::spawn(move || {
-            with_publication_lock_pause(acquired_in_compile, release_in_compile, || {
-                transaction.commit()
-            })
+            unica_adapter_platform_xml::PlatformXmlAdapterFactory::new()
+                .with_publication_lock_pause(acquired_in_compile, release_in_compile, || {
+                    transaction.commit()
+                })
         });
         acquired.wait();
 
         let (contended_sender, contended_receiver) = mpsc::channel();
         let workspace_in_edit = workspace.clone();
         let edit_thread = thread::spawn(move || {
-            with_publication_lock_contention_signal(contended_sender, || {
-                UnicaApplication::new()
-                    .call_tool(
-                        "unica.cf.edit",
-                        &cf_edit_args(&workspace_in_edit, "modify-property", "Version=1.0"),
-                    )
-                    .unwrap()
-            })
+            unica_adapter_platform_xml::PlatformXmlAdapterFactory::new()
+                .with_publication_lock_contention_signal(contended_sender, || {
+                    UnicaApplication::new()
+                        .call_tool(
+                            "unica.cf.edit",
+                            &cf_edit_args(&workspace_in_edit, "modify-property", "Version=2.0"),
+                        )
+                        .unwrap()
+                })
         });
 
         let contention = contended_receiver.recv_timeout(Duration::from_secs(2));
@@ -3851,22 +3850,170 @@ mod tests {
 
         contention.expect("cf-edit must contend on the shared publisher lock");
         compile_result.expect("compile transaction must commit");
-        assert!(!edit_result.ok, "{edit_result:?}");
-        assert!(
-            edit_result
-                .errors
-                .join("\n")
-                .contains("differs from the expected preimage"),
-            "{edit_result:?}"
-        );
+        assert!(edit_result.ok, "{edit_result:?}");
         let after = std::fs::read(&config_path).unwrap();
         assert_ne!(after, before);
         assert!(
-            String::from_utf8_lossy(&after).contains("<Role>Reader</Role>"),
+            String::from_utf8_lossy(&after).contains("<Vendor>ConcurrentVendor</Vendor>"),
             "{}",
             String::from_utf8_lossy(&after)
         );
+        assert!(String::from_utf8_lossy(&after).contains("<Version>2.0</Version>"));
         assert_no_cf_edit_stage_debris(&config_path);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn compile_transaction_and_meta_compile_share_target_lock() {
+        let root = temp_meta_compile_workspace("unica-compile-meta-lock");
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let config_path = src.join("Configuration.xml");
+        let before = std::fs::read(&config_path).unwrap();
+        let replacement = String::from_utf8(before.clone())
+            .unwrap()
+            .replace(
+                "<Vendor>Vendor</Vendor>",
+                "<Vendor>ConcurrentVendor</Vendor>",
+            )
+            .into_bytes();
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .replace_bytes(&config_path, &before, replacement)
+            .expect("host transaction must plan a byte replacement");
+        let definition = workspace.join("lock-catalog.json");
+        std::fs::write(
+            &definition,
+            r#"{"type":"Catalog","name":"LockCatalog","synonym":"Lock catalog"}"#,
+        )
+        .unwrap();
+
+        let acquired = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let acquired_in_compile = Arc::clone(&acquired);
+        let release_in_compile = Arc::clone(&release);
+        let compile_thread = thread::spawn(move || {
+            unica_adapter_platform_xml::PlatformXmlAdapterFactory::new()
+                .with_publication_lock_pause(acquired_in_compile, release_in_compile, || {
+                    transaction.commit()
+                })
+        });
+        acquired.wait();
+
+        let (contended_sender, contended_receiver) = mpsc::channel();
+        let workspace_in_compile = workspace.clone();
+        let meta_thread = thread::spawn(move || {
+            unica_adapter_platform_xml::PlatformXmlAdapterFactory::new()
+                .with_publication_lock_contention_signal(contended_sender, || {
+                    call_meta_compile(&workspace_in_compile, &definition)
+                })
+        });
+
+        let contention = contended_receiver.recv_timeout(Duration::from_secs(2));
+        release.wait();
+        let compile_result = compile_thread
+            .join()
+            .expect("compile transaction thread must not panic");
+        let meta_result = meta_thread
+            .join()
+            .expect("meta writer thread must not panic");
+
+        contention.expect("meta writer must contend on the shared publisher lock");
+        compile_result.expect("compile transaction must commit");
+        assert!(meta_result.ok, "{meta_result:?}");
+        let after = std::fs::read_to_string(&config_path).unwrap();
+        assert!(
+            after.contains("<Vendor>ConcurrentVendor</Vendor>"),
+            "{after}"
+        );
+        assert!(after.contains("<Catalog>LockCatalog</Catalog>"), "{after}");
+        assert!(src.join("Catalogs/LockCatalog.xml").is_file());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn compile_transaction_and_bsl_patch_share_target_lock_without_lost_update() {
+        let root = test_workspace_root("unica-compile-bsl-lock");
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let module = src.join("CommonModules/Sample/Ext/Module.bsl");
+        std::fs::create_dir_all(module.parent().unwrap()).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration/></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(src.join("CommonModules/Sample.xml"), "<MetaDataObject/>").unwrap();
+        let before = b"Procedure Run()\n    Message(\"ok\");\nEndProcedure\n".to_vec();
+        std::fs::write(&module, &before).unwrap();
+        let mut concurrent = before.clone();
+        concurrent.extend_from_slice(b"// concurrent host edit\n");
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .replace_bytes(&module, &before, concurrent.clone())
+            .expect("host transaction must plan a byte replacement");
+        let args = json!({
+            "cwd": workspace,
+            "dryRun": false,
+            "sourceDir": "src",
+            "path": "src/CommonModules/Sample/Ext/Module.bsl",
+            "operation": "insert",
+            "selector": {"method": "Run"},
+            "content": "Procedure Added()\nEndProcedure",
+            "position": "after"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        let acquired = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let acquired_in_compile = Arc::clone(&acquired);
+        let release_in_compile = Arc::clone(&release);
+        let compile_thread = thread::spawn(move || {
+            unica_adapter_platform_xml::PlatformXmlAdapterFactory::new()
+                .with_publication_lock_pause(acquired_in_compile, release_in_compile, || {
+                    transaction.commit()
+                })
+        });
+        acquired.wait();
+
+        let (contended_sender, contended_receiver) = mpsc::channel();
+        let patch_thread = thread::spawn(move || {
+            unica_adapter_platform_xml::PlatformXmlAdapterFactory::new()
+                .with_publication_lock_contention_signal(contended_sender, || {
+                    UnicaApplication::new()
+                        .call_tool("unica.code.patch", &args)
+                        .unwrap()
+                })
+        });
+
+        let contention = contended_receiver.recv_timeout(Duration::from_secs(2));
+        release.wait();
+        let compile_result = compile_thread
+            .join()
+            .expect("compile transaction thread must not panic");
+        let patch_result = patch_thread
+            .join()
+            .expect("BSL patch thread must not panic");
+
+        compile_result.expect("compile transaction must commit");
+        assert!(
+            contention.is_ok(),
+            "BSL artifact writer must contend on the shared publisher lock: \
+             contention={contention:?}, result={patch_result:?}"
+        );
+        assert!(!patch_result.ok, "{patch_result:?}");
+        assert!(
+            patch_result.errors.join("\n").contains("publication"),
+            "{patch_result:?}"
+        );
+        assert_eq!(std::fs::read(&module).unwrap(), concurrent);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -4149,8 +4296,7 @@ mod tests {
                     result
                         .changes
                         .iter()
-                        .map(|change| change.replace('\\', "/"))
-                        .any(|change| change == format!("updated {}", path_text(&path))),
+                        .all(|change| change == "updated semantic source artifact"),
                     "{case}: {result:?}"
                 );
             }
@@ -4490,7 +4636,10 @@ mod tests {
             .unwrap();
         assert!(!missing.ok, "{missing:?}");
         let missing_errors = missing.errors.join("\n");
-        assert!(missing_errors.contains("Bots/Missing.xml"), "{missing:?}");
+        assert!(
+            missing_errors.contains("requested semantic artifact was not found"),
+            "{missing:?}"
+        );
         assert!(!missing_errors.contains("use meta-compile"), "{missing:?}");
         assert_eq!(std::fs::read_to_string(&config_path).unwrap(), before);
 
@@ -4708,12 +4857,7 @@ mod tests {
         assert!(result.ok, "{result:?}");
         assert!(result.changes.is_empty(), "{result:?}");
         assert!(result.cache.events.is_empty(), "{result:?}");
-        let stdout = result.stdout.unwrap_or_default();
-        assert!(
-            stdout.contains("[WARN] Already exists: Catalog.Валюты"),
-            "{stdout}"
-        );
-        assert!(!stdout.contains("[INFO] Saved:"), "{stdout}");
+        assert!(result.stdout.is_none());
         assert_eq!(std::fs::read_to_string(&config_path).unwrap(), before);
 
         let _ = std::fs::remove_dir_all(root);
@@ -5551,7 +5695,7 @@ mod tests {
 
         assert!(!ok, "{debug}");
         assert!(
-            errors.contains("valid Unicode XML NCName and a single path component"),
+            errors.contains("invalid semantic name component"),
             "{debug}"
         );
         assert!(!escaped, "{debug}");
@@ -6686,6 +6830,38 @@ mod tests {
     }
 
     #[test]
+    fn public_writer_uses_the_request_cancellation_handle_before_dispatch() {
+        let root = test_workspace_root("unica-public-writer-pre-cancel");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let args = Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(workspace.display().to_string()),
+            ),
+            ("dryRun".to_string(), Value::Bool(false)),
+            ("Name".to_string(), Value::String("Cancelled".to_string())),
+            ("OutputDir".to_string(), Value::String("src".to_string())),
+        ]);
+        let token = CancellationToken::new();
+        token.cancel();
+
+        let result = UnicaApplication::new()
+            .call_tool_cancellable("unica.cf.init", &args, token)
+            .unwrap();
+
+        assert!(!result.ok, "{result:?}");
+        assert!(result.errors[0].starts_with("cancelled:"), "{result:?}");
+        assert!(!workspace.join("src").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn application_dispatches_workspace_cache_and_handlers_through_ports() {
         use std::sync::{Arc, Mutex};
 
@@ -6987,8 +7163,8 @@ mod tests {
             .unwrap();
         let data = info.data.unwrap();
         assert_eq!(
-            data["navigation"]["nodes"][0]["capabilityState"]["authorability"],
-            "unknown_read_only"
+            data["navigation"]["nodes"][0]["capabilityState"]["authorability"], "authorable",
+            "{data:#}"
         );
 
         let _ = std::fs::remove_dir_all(root);
@@ -7108,17 +7284,12 @@ mod tests {
         assert!(result
             .changes
             .iter()
-            .any(|change| change.contains("would create") && change.contains("SampleService.xml")));
+            .any(|change| change == "would create semantic source artifact"));
         assert!(result
             .changes
             .iter()
-            .any(|change| change.contains("would update") && change.contains("Configuration.xml")));
-        let preview = result.stdout.unwrap_or_default();
-        assert!(preview.contains("@@ bytes"), "{preview}");
-        assert!(
-            preview.contains("<CommonModule>SampleService</CommonModule>\\r\\n"),
-            "{preview}"
-        );
+            .any(|change| change == "would update semantic registration"));
+        assert!(result.stdout.is_none());
         assert!(result.artifacts.is_empty());
         assert_eq!(result.cache.mode, "dry-run");
         assert!(result.cache.events.contains(&"MetadataChanged".to_string()));
@@ -7507,14 +7678,14 @@ mod tests {
             .unwrap();
 
         assert!(result.ok);
-        assert!(result
-            .summary
-            .contains("completed with native metadata validator"));
+        assert_eq!(result.summary, "unica.meta.validate completed");
         let stdout = result.stdout.unwrap();
-        assert!(stdout.contains("=== meta-validate batch summary ==="));
-        assert!(stdout.contains("Validated: 2"));
-        assert!(stdout.contains("src/Catalogs/Items.xml"));
-        assert!(stdout.contains("src/Catalogs/Other.xml"));
+        assert!(stdout.contains("--- artifact:"));
+        assert!(stdout.contains("checks:"));
+        assert!(stdout.contains("validated: 2"));
+        assert!(stdout.contains("result: valid"));
+        assert!(!stdout.contains("src/Catalogs/Items.xml"));
+        assert!(!stdout.contains("src/Catalogs/Other.xml"));
         assert_eq!(result.artifacts.len(), 2);
 
         let _ = std::fs::remove_dir_all(root);
@@ -7710,12 +7881,12 @@ mod tests {
         assert!(preview
             .changes
             .iter()
-            .any(|change| change.contains("would create") && change.contains("SampleUser.xml")));
+            .any(|change| change == "would create semantic source artifact"));
         assert!(preview
             .changes
             .iter()
-            .any(|change| change.contains("would update") && change.contains("Configuration.xml")));
-        assert!(preview.stdout.unwrap_or_default().contains("@@ bytes"));
+            .any(|change| change == "would update semantic registration"));
+        assert!(preview.stdout.is_none());
         assert!(preview.artifacts.is_empty());
         assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
         assert!(!src.join("Roles/SampleUser.xml").exists());

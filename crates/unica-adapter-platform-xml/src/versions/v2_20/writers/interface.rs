@@ -1,7 +1,9 @@
 #![allow(dead_code, unused_imports)]
+use super::inspection_arguments::ArgumentAccess;
 
 use crate::application::NativeWriterResult;
 use crate::domain::workspace::WorkspaceContext;
+use crate::operations::PlatformWriterSession;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -36,11 +38,21 @@ pub(crate) struct InterfaceEditCounters {
     pub(crate) modified: usize,
 }
 
+struct InterfaceEditInput {
+    definition_file: Option<PathBuf>,
+    operation: String,
+    value: String,
+    interface_path: PathBuf,
+    create_if_missing: bool,
+    skip_validation_output: bool,
+}
+
+#[cfg(test)]
 pub(crate) fn edit_interface(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
-    let edit_result = (|| -> Result<(String, PathBuf, Vec<String>), String> {
+    let parsed = (|| -> Result<InterfaceEditInput, String> {
         let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
         let operation = string_arg(args, &["operation", "Operation"]);
         if definition_file.is_some() && operation.is_some() {
@@ -49,9 +61,38 @@ pub(crate) fn edit_interface(
         if definition_file.is_none() && operation.is_none() {
             return Err("Either -DefinitionFile or -Operation is required".to_string());
         }
+        Ok(InterfaceEditInput {
+            definition_file,
+            operation: operation.unwrap_or_default().to_string(),
+            value: string_arg(args, &["value", "Value"])
+                .unwrap_or_default()
+                .to_string(),
+            interface_path: required_path(args, &["ciPath", "CIPath", "path", "Path"], "CIPath")?,
+            create_if_missing: bool_arg(args, &["createIfMissing", "CreateIfMissing"]),
+            skip_validation_output: bool_arg(args, &["noValidate", "NoValidate"]),
+        })
+    })();
+    match parsed {
+        Ok(input) => edit_interface_input(input, context),
+        Err(error) => interface_edit_failure(error),
+    }
+}
 
-        let mut ci_path = required_path(args, &["ciPath", "CIPath", "path", "Path"], "CIPath")
-            .map(|path| absolutize(path, &context.cwd))?;
+fn edit_interface_input(
+    input: InterfaceEditInput,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    let edit_result = (|| -> Result<(String, PathBuf, Vec<String>), String> {
+        let InterfaceEditInput {
+            definition_file,
+            operation,
+            value,
+            interface_path,
+            create_if_missing,
+            skip_validation_output,
+        } = input;
+        let operation = (!operation.is_empty()).then_some(operation.as_str());
+        let mut ci_path = absolutize(interface_path, &context.cwd);
         let format_version = crate::domain::format_profile::ACTIVE_FORMAT_PROFILE
             .export_format
             .to_string();
@@ -59,7 +100,7 @@ pub(crate) fn edit_interface(
         let mut stdout = String::new();
         let source_exists = ci_path.is_file();
         let created_new = if !source_exists {
-            if bool_arg(args, &["createIfMissing", "CreateIfMissing"]) {
+            if create_if_missing {
                 stdout.push_str(&format!(
                     "[INFO] Created new CommandInterface.xml: {}\n",
                     ci_path.display()
@@ -98,9 +139,9 @@ pub(crate) fn edit_interface(
         }
         let mut transaction = CompileTransaction::new();
         let operations = interface_edit_operations_guarded(
-            args,
             &context.cwd,
             operation,
+            &value,
             definition_file,
             &mut transaction,
         )?;
@@ -149,7 +190,7 @@ pub(crate) fn edit_interface(
         )?;
         validate_semantic_metadata_artifact(&metadata_owner_path, context, "interface.edit")?;
 
-        let show_validation = !bool_arg(args, &["noValidate", "NoValidate"]);
+        let show_validation = !skip_validation_output;
         let validate_args = Map::from_iter([(
             "CIPath".to_string(),
             Value::String(ci_path.display().to_string()),
@@ -205,21 +246,25 @@ pub(crate) fn edit_interface(
             stdout: Some(stdout),
             stderr: None,
         },
-        Err(error) => NativeWriterResult {
-            ok: false,
-            summary: "unica.interface.edit failed in native command interface editor".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-        },
+        Err(error) => interface_edit_failure(error),
+    }
+}
+
+fn interface_edit_failure(error: String) -> NativeWriterResult {
+    NativeWriterResult {
+        ok: false,
+        summary: "unica.interface.edit failed in native command interface editor".to_string(),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec![error.clone()],
+        artifacts: Vec::new(),
+        stdout: None,
+        stderr: Some(format!("{error}\n")),
     }
 }
 
 pub(crate) fn interface_edit_operations(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     cwd: &Path,
     operation: Option<&str>,
     definition_file: Option<PathBuf>,
@@ -244,9 +289,9 @@ pub(crate) fn interface_edit_operations(
 }
 
 fn interface_edit_operations_guarded(
-    args: &Map<String, Value>,
     cwd: &Path,
     operation: Option<&str>,
+    value: &str,
     definition_file: Option<PathBuf>,
     transaction: &mut CompileTransaction,
 ) -> Result<Vec<(String, Value)>, String> {
@@ -258,7 +303,10 @@ fn interface_edit_operations_guarded(
         .bind_to(transaction)?;
         Ok(interface_edit_operations_from_value(parsed, operation))
     } else {
-        interface_edit_operations(args, cwd, operation, None)
+        Ok(vec![(
+            operation.unwrap_or("").to_string(),
+            Value::String(value.to_string()),
+        )])
     }
 }
 
@@ -986,7 +1034,7 @@ pub(crate) fn interface_type_norm(value: &str) -> Option<&'static str> {
 }
 
 pub(crate) fn validate_interface(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
     const NS_CI: &str = "http://v8.1c.ru/8.3/xcf/extrnprops";
@@ -1368,7 +1416,7 @@ pub(crate) fn validate_interface(
 /// Missing targets are returned unchanged so the handler retains its
 /// established file-not-found diagnostic.
 pub(crate) fn resolve_interface_validate_path(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
     let raw_path = required_path(args, &["ciPath", "CIPath", "path", "Path"], "CIPath")?;
@@ -1470,7 +1518,7 @@ pub(crate) fn interface_word(value: &str) -> bool {
 pub(crate) fn invoke_read(
     operation: &str,
     _tool_name: &str,
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Option<Result<NativeWriterResult, String>> {
     match operation {
@@ -1479,16 +1527,55 @@ pub(crate) fn invoke_read(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn invoke_mutation(
     operation: &str,
     _tool_name: &str,
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Option<NativeWriterResult> {
     match operation {
         "interface-edit" => Some(edit_interface(args, context)),
         _ => None,
     }
+}
+
+pub(crate) fn edit_interface_typed(
+    command: &unica_format_core::commands::InterfaceEdit,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    let interface_path = match session.required_source(
+        unica_format_core::commands::WriterSourceRole::Interface,
+        "command interface mutation",
+    ) {
+        Ok(path) => path.to_path_buf(),
+        Err(error) => return interface_edit_failure(error),
+    };
+    use unica_format_core::commands::InterfaceEdit as Edit;
+    let definition_file = session
+        .source(unica_format_core::commands::WriterSourceRole::Definition)
+        .map(Path::to_path_buf);
+    let (operation, value) = match command {
+        Edit::FromDefinition => (String::new(), String::new()),
+        Edit::Hide(value) => ("hide".to_string(), value.as_str().to_string()),
+        Edit::Show(value) => ("show".to_string(), value.as_str().to_string()),
+        Edit::Place(value) => ("place".to_string(), value.as_str().to_string()),
+        Edit::Order(value) => ("order".to_string(), value.as_str().to_string()),
+        Edit::OrderSubsystems(value) => ("subsystem-order".to_string(), value.as_str().to_string()),
+        Edit::OrderGroups(value) => ("group-order".to_string(), value.as_str().to_string()),
+    };
+    edit_interface_input(
+        InterfaceEditInput {
+            definition_file,
+            operation,
+            value,
+            interface_path,
+            create_if_missing: false,
+            skip_validation_output: false,
+        },
+        context,
+    )
 }
 
 #[cfg(test)]

@@ -1,7 +1,9 @@
 #![allow(dead_code, unused_imports)]
+use super::inspection_arguments::ArgumentAccess;
 
 use crate::application::NativeWriterResult;
 use crate::domain::workspace::WorkspaceContext;
+use crate::operations::PlatformWriterSession;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -21,11 +23,21 @@ struct TemplateAddResult {
     warnings: Vec<String>,
 }
 
+struct TemplateAddInput<'a> {
+    object_name: &'a str,
+    template_name: &'a str,
+    template_type: &'static str,
+    synonym: &'a str,
+    set_main_dcs: bool,
+    source_directory: PathBuf,
+}
+
+#[cfg(test)]
 pub(crate) fn add_template(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
-    let result = (|| -> Result<TemplateAddResult, String> {
+    let parsed = (|| -> Result<TemplateAddInput<'_>, String> {
         let object_name = required_string(
             args,
             &["objectName", "ObjectName", "processorName", "ProcessorName"],
@@ -33,15 +45,41 @@ pub(crate) fn add_template(
         )?;
         let template_name =
             required_string(args, &["templateName", "TemplateName"], "TemplateName")?;
-        validate_template_metadata_name("ObjectName", object_name)?;
-        validate_template_metadata_name("TemplateName", template_name)?;
         let template_type =
             required_string(args, &["templateType", "TemplateType"], "TemplateType")?;
+        Ok(TemplateAddInput {
+            object_name,
+            template_name,
+            template_type: legacy_template_kind(template_type)?,
+            synonym: string_arg(args, &["synonym", "Synonym"]).unwrap_or(template_name),
+            set_main_dcs: bool_arg(args, &["setMainSKD", "SetMainSKD"]),
+            source_directory: path_arg(args, &["srcDir", "SrcDir"])
+                .unwrap_or_else(|| PathBuf::from("src")),
+        })
+    })();
+    match parsed {
+        Ok(input) => add_template_input(input, context),
+        Err(error) => template_add_failure(error),
+    }
+}
+
+fn add_template_input(
+    input: TemplateAddInput<'_>,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    let result = (|| -> Result<TemplateAddResult, String> {
+        let TemplateAddInput {
+            object_name,
+            template_name,
+            template_type,
+            synonym,
+            set_main_dcs,
+            source_directory,
+        } = input;
+        validate_template_metadata_name("ObjectName", object_name)?;
+        validate_template_metadata_name("TemplateName", template_name)?;
         let (metadata_type, extension) = template_type_info(template_type)?;
-        let synonym = string_arg(args, &["synonym", "Synonym"]).unwrap_or(template_name);
-        let set_main_dcs = bool_arg(args, &["setMainSKD", "SetMainSKD"]);
-        let mut src_dir_display =
-            path_arg(args, &["srcDir", "SrcDir"]).unwrap_or_else(|| PathBuf::from("src"));
+        let mut src_dir_display = source_directory;
         let mut src_dir_abs = absolutize(src_dir_display.clone(), &context.cwd);
         let mut stdout = String::new();
 
@@ -231,24 +269,35 @@ pub(crate) fn add_template(
             stdout: Some(result.stdout),
             stderr: Some(String::new()),
         },
-        Err(error) => NativeWriterResult {
-            ok: false,
-            summary: "unica.template.add failed in native template writer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-        },
+        Err(error) => template_add_failure(error),
     }
 }
 
+fn template_add_failure(error: String) -> NativeWriterResult {
+    NativeWriterResult {
+        ok: false,
+        summary: "unica.template.add failed in native template writer".to_string(),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec![error.clone()],
+        artifacts: Vec::new(),
+        stdout: None,
+        stderr: Some(format!("{error}\n")),
+    }
+}
+
+struct TemplateRemoveInput<'a> {
+    object_name: &'a str,
+    template_name: &'a str,
+    source_directory: PathBuf,
+}
+
+#[cfg(test)]
 pub(crate) fn remove_template(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
-    let result = (|| -> Result<(String, Vec<String>, Vec<String>), String> {
+    let parsed = (|| -> Result<TemplateRemoveInput<'_>, String> {
         let object_name = required_string(
             args,
             &["objectName", "ObjectName", "processorName", "ProcessorName"],
@@ -256,10 +305,32 @@ pub(crate) fn remove_template(
         )?;
         let template_name =
             required_string(args, &["templateName", "TemplateName"], "TemplateName")?;
+        Ok(TemplateRemoveInput {
+            object_name,
+            template_name,
+            source_directory: PathBuf::from(
+                string_arg(args, &["srcDir", "SrcDir"]).unwrap_or("src"),
+            ),
+        })
+    })();
+    match parsed {
+        Ok(input) => remove_template_input(input, context),
+        Err(error) => template_remove_failure(error),
+    }
+}
+
+fn remove_template_input(
+    input: TemplateRemoveInput<'_>,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    let result = (|| -> Result<(String, Vec<String>, Vec<String>), String> {
+        let TemplateRemoveInput {
+            object_name,
+            template_name,
+            source_directory: src_dir_display,
+        } = input;
         validate_template_metadata_name("ObjectName", object_name)?;
         validate_template_metadata_name("TemplateName", template_name)?;
-        let src_dir_raw = string_arg(args, &["srcDir", "SrcDir"]).unwrap_or("src");
-        let src_dir_display = PathBuf::from(src_dir_raw);
         let src_dir_abs = absolutize(src_dir_display.clone(), &context.cwd);
 
         let root_xml_display = src_dir_display.join(format!("{object_name}.xml"));
@@ -426,16 +497,20 @@ pub(crate) fn remove_template(
             stdout: Some(stdout),
             stderr: Some(String::new()),
         },
-        Err(error) => NativeWriterResult {
-            ok: false,
-            summary: "unica.template.remove failed in native template remover".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-        },
+        Err(error) => template_remove_failure(error),
+    }
+}
+
+fn template_remove_failure(error: String) -> NativeWriterResult {
+    NativeWriterResult {
+        ok: false,
+        summary: "unica.template.remove failed in native template remover".to_string(),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec![error.clone()],
+        artifacts: Vec::new(),
+        stdout: None,
+        stderr: Some(format!("{error}\n")),
     }
 }
 
@@ -451,6 +526,29 @@ pub(crate) fn template_type_info(
         other => Err(format!(
             "argument -TemplateType: invalid choice: '{other}' (choose from 'HTML', 'Text', 'SpreadsheetDocument', 'BinaryData', 'DataCompositionSchema')"
         )),
+    }
+}
+
+#[cfg(test)]
+fn legacy_template_kind(value: &str) -> Result<&'static str, String> {
+    match value {
+        "HTML" => Ok("HTML"),
+        "Text" => Ok("Text"),
+        "SpreadsheetDocument" => Ok("SpreadsheetDocument"),
+        "BinaryData" => Ok("BinaryData"),
+        "DataCompositionSchema" => Ok("DataCompositionSchema"),
+        other => Err(format!("unsupported template kind: {other}")),
+    }
+}
+
+fn semantic_template_kind(value: unica_format_core::commands::TemplateKind) -> &'static str {
+    match value {
+        unica_format_core::commands::TemplateKind::DataComposition => "DataCompositionSchema",
+        unica_format_core::commands::TemplateKind::Spreadsheet => "SpreadsheetDocument",
+        unica_format_core::commands::TemplateKind::Text => "Text",
+        unica_format_core::commands::TemplateKind::Html => "HTML",
+        unica_format_core::commands::TemplateKind::Binary => "BinaryData",
+        unica_format_core::commands::TemplateKind::Graphical => "GraphicalSchema",
     }
 }
 
@@ -873,16 +971,17 @@ fn remove_owner_template_child_text(xml_text: &str, template_name: &str) -> Opti
 pub(crate) fn invoke_read(
     _operation: &str,
     _tool_name: &str,
-    _args: &Map<String, Value>,
+    _args: &impl ArgumentAccess,
     _context: &WorkspaceContext,
 ) -> Option<Result<NativeWriterResult, String>> {
     None
 }
 
+#[cfg(test)]
 pub(crate) fn invoke_mutation(
     operation: &str,
     _tool_name: &str,
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Option<NativeWriterResult> {
     match operation {
@@ -890,6 +989,50 @@ pub(crate) fn invoke_mutation(
         "template-remove" => Some(remove_template(args, context)),
         _ => None,
     }
+}
+
+pub(crate) fn create_template(
+    command: &unica_format_core::commands::TemplateCreate,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    let source_directory = session
+        .source(unica_format_core::commands::WriterSourceRole::SourceCollection)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("src"));
+    add_template_input(
+        TemplateAddInput {
+            object_name: command.owner().as_str(),
+            template_name: command.name().as_str(),
+            template_type: semantic_template_kind(command.kind()),
+            synonym: command
+                .synonym()
+                .map(|value| value.as_str())
+                .unwrap_or_else(|| command.name().as_str()),
+            set_main_dcs: command.assigns_main_data_composition(),
+            source_directory,
+        },
+        context,
+    )
+}
+
+pub(crate) fn remove_template_typed(
+    command: &unica_format_core::commands::TemplateRemove,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    let source_directory = session
+        .source(unica_format_core::commands::WriterSourceRole::SourceCollection)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("src"));
+    remove_template_input(
+        TemplateRemoveInput {
+            object_name: command.owner().as_str(),
+            template_name: command.name().as_str(),
+            source_directory,
+        },
+        context,
+    )
 }
 
 #[cfg(test)]

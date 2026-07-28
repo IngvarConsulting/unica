@@ -465,7 +465,6 @@ fn task7_publication_cancellation_is_explicit_and_public_result_is_path_free() {
             Err("runner must not be called".to_string())
         },
         |_, _, _| Err("resolver must not be called".to_string()),
-        |_, _| Err("lock must not be called".to_string()),
     );
     let result = factory
         .operational_registration()

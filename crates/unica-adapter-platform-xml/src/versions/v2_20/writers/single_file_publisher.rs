@@ -6,7 +6,6 @@
 
 use fs2::FileExt;
 use sha2::{Digest, Sha256};
-#[cfg(test)]
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
@@ -17,7 +16,6 @@ use std::io::{self, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(test)]
 use std::sync::{mpsc::Sender, Barrier};
 use std::sync::{
     Arc, Mutex, MutexGuard, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockError, Weak,
@@ -34,11 +32,36 @@ static STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static PUBLICATION_PROCESS_LOCKS: OnceLock<Mutex<HashMap<String, Weak<Mutex<()>>>>> =
     OnceLock::new();
 static PUBLICATION_TREE_PROCESS_LOCK: OnceLock<RwLock<()>> = OnceLock::new();
+thread_local! {
+    static ACTIVE_PUBLICATION_SCOPE: RefCell<Option<ActivePublicationScope>> =
+        const { RefCell::new(None) };
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PublicationTreeLockMode {
     Shared,
     Exclusive,
+}
+
+#[derive(Clone)]
+struct ActivePublicationScope {
+    tree_mode: PublicationTreeLockMode,
+    allowed_identities: HashSet<String>,
+}
+
+struct ActivePublicationScopeReset(Option<ActivePublicationScope>);
+
+impl Drop for ActivePublicationScopeReset {
+    fn drop(&mut self) {
+        ACTIVE_PUBLICATION_SCOPE.with(|slot| {
+            slot.replace(self.0.take());
+        });
+    }
+}
+
+fn enter_publication_scope(scope: ActivePublicationScope) -> ActivePublicationScopeReset {
+    let previous = ACTIVE_PUBLICATION_SCOPE.with(|slot| slot.replace(Some(scope)));
+    ActivePublicationScopeReset(previous)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -306,7 +329,6 @@ impl PublishCheckpoint {
     }
 }
 
-#[cfg(test)]
 #[derive(Clone)]
 struct PublicationLockPause {
     acquired: Arc<Barrier>,
@@ -316,12 +338,15 @@ struct PublicationLockPause {
 #[cfg(test)]
 type BeforeCommitHook = Box<dyn FnOnce(&Path)>;
 
+thread_local! {
+    static TEST_PUBLICATION_LOCK_PAUSE: RefCell<Option<PublicationLockPause>> = const { RefCell::new(None) };
+    static TEST_PUBLICATION_LOCK_CONTENDED: RefCell<Option<Sender<()>>> = const { RefCell::new(None) };
+}
+
 #[cfg(test)]
 thread_local! {
     static TEST_PUBLISH_FAILPOINTS: RefCell<Vec<PublishCheckpoint>> = const { RefCell::new(Vec::new()) };
     static TEST_BEFORE_COMMIT_HOOK: RefCell<Option<BeforeCommitHook>> = const { RefCell::new(None) };
-    static TEST_PUBLICATION_LOCK_PAUSE: RefCell<Option<PublicationLockPause>> = const { RefCell::new(None) };
-    static TEST_PUBLICATION_LOCK_CONTENDED: RefCell<Option<Sender<()>>> = const { RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -362,7 +387,6 @@ pub(crate) fn with_before_commit_hook<T>(
     action()
 }
 
-#[cfg(test)]
 pub(crate) fn with_publication_lock_pause<T>(
     acquired: Arc<Barrier>,
     release: Arc<Barrier>,
@@ -383,7 +407,6 @@ pub(crate) fn with_publication_lock_pause<T>(
     action()
 }
 
-#[cfg(test)]
 pub(crate) fn with_publication_lock_contention_signal<T>(
     sender: Sender<()>,
     action: impl FnOnce() -> T,
@@ -446,6 +469,15 @@ pub(crate) fn with_publication_locks_mode<T>(
     with_publication_locks_mode_and_guard_targets(targets, &[], tree_mode, action)
 }
 
+/// Hold the single adapter-owned publication gate across a complete semantic
+/// read-modify-write operation. Exact target locks are added by nested
+/// transactions while this exclusive tree lease remains held.
+pub(crate) fn with_writer_publication_scope<T>(
+    action: impl FnOnce() -> T,
+) -> Result<T, PublishError> {
+    with_publication_locks_mode(&[], PublicationTreeLockMode::Exclusive, |_| action())
+}
+
 /// Acquire normal publication locks plus lock-only identities for provenance
 /// guards. Guard targets may have missing parent directories because their
 /// purpose is to keep an observed absence stable; actual write targets retain
@@ -456,6 +488,7 @@ pub(crate) fn with_publication_locks_mode_and_guard_targets<T>(
     tree_mode: PublicationTreeLockMode,
     action: impl FnOnce(&PublicationLockToken<'_>) -> T,
 ) -> Result<T, PublishError> {
+    cancellation_checkpoint()?;
     let mut identities = targets
         .iter()
         .map(|target| publication_identity(target))
@@ -469,20 +502,65 @@ pub(crate) fn with_publication_locks_mode_and_guard_targets<T>(
     identities.sort();
     identities.dedup();
 
-    let tree_process_guard = lock_publication_tree_process(tree_mode);
+    if let Some(active) = ACTIVE_PUBLICATION_SCOPE.with(|slot| slot.borrow().clone()) {
+        if matches!(tree_mode, PublicationTreeLockMode::Exclusive)
+            && !matches!(active.tree_mode, PublicationTreeLockMode::Exclusive)
+        {
+            return Err(PublishError::new(
+                PublishErrorKind::PrecommitGuardRejected {
+                    message:
+                        "publication lock scope cannot upgrade a shared tree lease to exclusive"
+                            .to_string(),
+                },
+            ));
+        }
+        let missing = identities
+            .iter()
+            .filter(|identity| !active.allowed_identities.contains(*identity))
+            .cloned()
+            .collect::<Vec<_>>();
+        let process_locks = publication_process_locks(&missing);
+        let process_guards = process_locks
+            .iter()
+            .map(|lock| lock_publication_process_mutex(lock))
+            .collect::<Result<Vec<MutexGuard<'_, ()>>, PublishError>>()?;
+        let file_locks = acquire_publication_file_locks(&missing)?;
+        let mut allowed_identities = active.allowed_identities;
+        allowed_identities.extend(identities);
+        let token = PublicationLockToken {
+            allowed_identities: allowed_identities.clone(),
+            _scope: PhantomData,
+        };
+        let _scope = enter_publication_scope(ActivePublicationScope {
+            tree_mode: active.tree_mode,
+            allowed_identities,
+        });
+        cancellation_checkpoint()?;
+        let result = action(&token);
+        drop(file_locks);
+        drop(process_guards);
+        return Ok(result);
+    }
+
+    let tree_process_guard = lock_publication_tree_process(tree_mode)?;
     let tree_file_guard = acquire_publication_tree_file_lock(tree_mode)?;
     let process_locks = publication_process_locks(&identities);
     let process_guards = process_locks
         .iter()
         .map(|lock| lock_publication_process_mutex(lock))
-        .collect::<Vec<MutexGuard<'_, ()>>>();
+        .collect::<Result<Vec<MutexGuard<'_, ()>>, PublishError>>()?;
     let file_locks = acquire_publication_file_locks(&identities)?;
     let token = PublicationLockToken {
         allowed_identities: identities.into_iter().collect(),
         _scope: PhantomData,
     };
+    let _scope = enter_publication_scope(ActivePublicationScope {
+        tree_mode,
+        allowed_identities: token.allowed_identities.clone(),
+    });
 
     pause_after_publication_locks();
+    cancellation_checkpoint()?;
     let result = action(&token);
 
     // Both guard layers intentionally remain alive through the callback. Lock
@@ -850,45 +928,70 @@ enum PublicationTreeProcessGuard<'a> {
 
 fn lock_publication_tree_process(
     mode: PublicationTreeLockMode,
-) -> PublicationTreeProcessGuard<'static> {
+) -> Result<PublicationTreeProcessGuard<'static>, PublishError> {
     let lock = PUBLICATION_TREE_PROCESS_LOCK.get_or_init(|| RwLock::new(()));
+    let mut signalled = false;
     match mode {
-        PublicationTreeLockMode::Shared => {
-            let guard = match lock.try_read() {
-                Ok(guard) => guard,
-                Err(TryLockError::WouldBlock) => {
-                    signal_publication_lock_contention();
-                    lock.read()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        PublicationTreeLockMode::Shared => loop {
+            cancellation_checkpoint()?;
+            match lock.try_read() {
+                Ok(guard) => {
+                    return Ok(PublicationTreeProcessGuard::Shared { _guard: guard });
                 }
-                Err(TryLockError::Poisoned(error)) => error.into_inner(),
-            };
-            PublicationTreeProcessGuard::Shared { _guard: guard }
-        }
-        PublicationTreeLockMode::Exclusive => {
-            let guard = match lock.try_write() {
-                Ok(guard) => guard,
                 Err(TryLockError::WouldBlock) => {
-                    signal_publication_lock_contention();
-                    lock.write()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    if !signalled {
+                        signal_publication_lock_contention();
+                        signalled = true;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(2));
                 }
-                Err(TryLockError::Poisoned(error)) => error.into_inner(),
-            };
-            PublicationTreeProcessGuard::Exclusive { _guard: guard }
-        }
+                Err(TryLockError::Poisoned(error)) => {
+                    return Ok(PublicationTreeProcessGuard::Shared {
+                        _guard: error.into_inner(),
+                    });
+                }
+            }
+        },
+        PublicationTreeLockMode::Exclusive => loop {
+            cancellation_checkpoint()?;
+            match lock.try_write() {
+                Ok(guard) => {
+                    return Ok(PublicationTreeProcessGuard::Exclusive { _guard: guard });
+                }
+                Err(TryLockError::WouldBlock) => {
+                    if !signalled {
+                        signal_publication_lock_contention();
+                        signalled = true;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                Err(TryLockError::Poisoned(error)) => {
+                    return Ok(PublicationTreeProcessGuard::Exclusive {
+                        _guard: error.into_inner(),
+                    });
+                }
+            }
+        },
     }
 }
 
 fn acquire_publication_tree_file_lock(mode: PublicationTreeLockMode) -> Result<File, PublishError> {
     let path = publication_lock_path("unica-publication-tree-gate-v1");
     let file = open_publication_lock_file(&path)?;
-    let result = match mode {
-        PublicationTreeLockMode::Shared => FileExt::lock_shared(&file),
-        PublicationTreeLockMode::Exclusive => FileExt::lock_exclusive(&file),
-    };
-    result.map_err(|source| PublishError::io(PublishPhase::Lock, &path, source))?;
-    Ok(file)
+    loop {
+        cancellation_checkpoint()?;
+        let result = match mode {
+            PublicationTreeLockMode::Shared => FileExt::try_lock_shared(&file),
+            PublicationTreeLockMode::Exclusive => FileExt::try_lock_exclusive(&file),
+        };
+        match result {
+            Ok(()) => return Ok(file),
+            Err(source) if source.kind() == ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            Err(source) => return Err(PublishError::io(PublishPhase::Lock, &path, source)),
+        }
+    }
 }
 
 fn publication_process_locks(identities: &[String]) -> Vec<Arc<Mutex<()>>> {
@@ -910,22 +1013,26 @@ fn publication_process_locks(identities: &[String]) -> Vec<Arc<Mutex<()>>> {
         .collect()
 }
 
-fn lock_publication_process_mutex(lock: &Mutex<()>) -> MutexGuard<'_, ()> {
-    match lock.try_lock() {
-        Ok(guard) => guard,
-        Err(TryLockError::WouldBlock) => {
-            signal_publication_lock_contention();
-            lock.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+fn lock_publication_process_mutex(lock: &Mutex<()>) -> Result<MutexGuard<'_, ()>, PublishError> {
+    let mut signalled = false;
+    loop {
+        cancellation_checkpoint()?;
+        match lock.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(TryLockError::WouldBlock) => {
+                if !signalled {
+                    signal_publication_lock_contention();
+                    signalled = true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            Err(TryLockError::Poisoned(error)) => return Ok(error.into_inner()),
         }
-        Err(TryLockError::Poisoned(error)) => error.into_inner(),
     }
 }
 
 fn pause_after_publication_locks() {
-    #[cfg(test)]
     let pause = TEST_PUBLICATION_LOCK_PAUSE.with(|slot| slot.borrow_mut().take());
-    #[cfg(test)]
     if let Some(pause) = pause {
         pause.acquired.wait();
         pause.release.wait();
@@ -933,7 +1040,6 @@ fn pause_after_publication_locks() {
 }
 
 fn signal_publication_lock_contention() {
-    #[cfg(test)]
     TEST_PUBLICATION_LOCK_CONTENDED.with(|slot| {
         if let Some(sender) = slot.borrow_mut().take() {
             let _ = sender.send(());
@@ -947,11 +1053,25 @@ fn acquire_publication_file_locks(identities: &[String]) -> Result<Vec<File>, Pu
         .map(|identity| {
             let path = publication_lock_path(identity);
             let file = open_publication_lock_file(&path)?;
-            FileExt::lock_exclusive(&file)
-                .map_err(|source| PublishError::io(PublishPhase::Lock, &path, source))?;
-            Ok(file)
+            loop {
+                cancellation_checkpoint()?;
+                match FileExt::try_lock_exclusive(&file) {
+                    Ok(()) => return Ok(file),
+                    Err(source) if source.kind() == ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                    }
+                    Err(source) => {
+                        return Err(PublishError::io(PublishPhase::Lock, &path, source));
+                    }
+                }
+            }
         })
         .collect()
+}
+
+fn cancellation_checkpoint() -> Result<(), PublishError> {
+    super::cancellation::checkpoint()
+        .map_err(|message| PublishError::new(PublishErrorKind::PrecommitGuardRejected { message }))
 }
 
 fn publication_lock_path(identity: &str) -> PathBuf {

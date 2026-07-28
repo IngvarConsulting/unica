@@ -9,13 +9,13 @@ use crate::infrastructure::platform::filesystem::path_lock_identity;
 use crate::infrastructure::platform::{
     ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedOutput,
 };
-use crate::infrastructure::platform_xml_owner::{
-    task8_metadata_kind, task8_metadata_kind_by_directory, task8_metadata_kind_tag,
-};
 use crate::infrastructure::plugin_runtime::{find_plugin_root, value_to_cli_string};
 use crate::infrastructure::redaction::{is_secret_key, redactor};
 use crate::infrastructure::runtime_jobs::{
     self, RuntimeJobOperation, RuntimeJobRequest, RuntimeJobService,
+};
+use crate::infrastructure::semantic_object_kinds::{
+    task8_metadata_kind, task8_metadata_kind_by_directory, task8_metadata_kind_tag,
 };
 use crate::infrastructure::source_roots::normalize_path_identity;
 use crate::infrastructure::source_roots::resolve_source_root;
@@ -4248,7 +4248,7 @@ mod tests {
     use super::*;
     use crate::application::UnicaApplication;
     use crate::infrastructure::platform::testing;
-    use crate::infrastructure::platform_xml_owner::{
+    use crate::infrastructure::semantic_object_kinds::{
         task8_metadata_kind_directory, task8_metadata_kind_tags,
     };
     use crate::infrastructure::workspace_index::{IndexBackgroundJob, IndexCommand, IndexOutput};

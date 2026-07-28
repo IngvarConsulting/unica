@@ -156,6 +156,9 @@ fn support_guard_session(
     match policy {
         SupportGuardPolicy::PathArgs { names, requirement } => {
             let target = support_guard_path_arg(args, context, names)?;
+            if operation == "mxl-compile" && !target.exists() {
+                return None;
+            }
             let policy_root = target
                 .parent()
                 .unwrap_or_else(|| Path::new(""))

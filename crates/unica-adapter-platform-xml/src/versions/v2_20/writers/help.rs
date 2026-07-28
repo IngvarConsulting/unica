@@ -1,7 +1,11 @@
+#[cfg(test)]
+use super::inspection_arguments::ArgumentAccess;
 use crate::application::NativeWriterResult;
 use crate::domain::format_profile::ACTIVE_FORMAT_PROFILE;
 use crate::domain::workspace::WorkspaceContext;
+use crate::operations::PlatformWriterSession;
 use roxmltree::Document;
+#[cfg(test)]
 use serde_json::{Map, Value};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -18,20 +22,33 @@ struct HelpAddRun {
     warnings: Vec<String>,
 }
 
+#[cfg(test)]
 pub(crate) fn add_help(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    let object_name = match required_string(
+        args,
+        &["objectName", "ObjectName", "processorName", "ProcessorName"],
+        "ObjectName",
+    ) {
+        Ok(value) => value,
+        Err(error) => return help_failure(error),
+    };
+    let lang = string_arg(args, &["lang", "Lang", "language", "Language"]).unwrap_or("ru");
+    let src_dir = path_arg(args, &["srcDir", "SrcDir"]).unwrap_or_else(|| PathBuf::from("src"));
+    add_help_values(object_name, lang, src_dir, context)
+}
+
+fn add_help_values(
+    object_name: &str,
+    lang: &str,
+    src_dir: PathBuf,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
     let result = (|| -> Result<HelpAddRun, String> {
-        let object_name = required_string(
-            args,
-            &["objectName", "ObjectName", "processorName", "ProcessorName"],
-            "ObjectName",
-        )?;
-        let lang = string_arg(args, &["lang", "Lang", "language", "Language"]).unwrap_or("ru");
         validate_help_lang(lang)?;
 
-        let src_dir = path_arg(args, &["srcDir", "SrcDir"]).unwrap_or_else(|| PathBuf::from("src"));
         let src_dir = absolutize(src_dir, &context.cwd);
         let target = resolve_help_target(&src_dir, object_name)?;
         let ext_dir = target.object_dir.join("Ext");
@@ -162,17 +179,41 @@ pub(crate) fn add_help(
             stdout: Some(stdout),
             stderr: None,
         },
-        Err(error) => NativeWriterResult {
-            ok: false,
-            summary: "unica.help.add failed".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-        },
+        Err(error) => help_failure(error),
     }
+}
+
+fn help_failure(error: String) -> NativeWriterResult {
+    NativeWriterResult {
+        ok: false,
+        summary: "unica.help.add failed".to_string(),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec![error.clone()],
+        artifacts: Vec::new(),
+        stdout: None,
+        stderr: Some(format!("{error}\n")),
+    }
+}
+
+pub(crate) fn create_help(
+    command: &unica_format_core::commands::HelpCreate,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    let src_dir = session
+        .source(unica_format_core::commands::WriterSourceRole::SourceCollection)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("src"));
+    add_help_values(
+        command.owner().as_str(),
+        command
+            .language()
+            .map(|value| value.as_str())
+            .unwrap_or("ru"),
+        src_dir,
+        context,
+    )
 }
 
 fn help_display_path(path: &Path, cwd: &Path) -> String {

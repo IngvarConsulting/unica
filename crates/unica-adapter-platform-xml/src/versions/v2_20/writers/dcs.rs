@@ -1,8 +1,10 @@
 #![allow(dead_code, unused_imports)]
+use super::inspection_arguments::ArgumentAccess;
 
 use crate::application::operation_descriptors::TEMPLATE_PATH;
 use crate::application::NativeWriterResult;
 use crate::domain::workspace::WorkspaceContext;
+use crate::operations::PlatformWriterSession;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -116,7 +118,7 @@ impl DcsValidationReporter {
 }
 
 pub(crate) fn analyze_dcs_info(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
     const NS_SCHEMA: &str = DCS_SCHEMA_NS;
@@ -1422,7 +1424,7 @@ struct DcsInfoPathInspection {
 }
 
 fn inspect_dcs_info_path(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> DcsInfoPathInspection {
     let raw_path = match required_path(args, TEMPLATE_PATH, "TemplatePath") {
@@ -1554,21 +1556,21 @@ fn inspect_dcs_info_path(
 }
 
 pub(crate) fn resolve_dcs_info_path_for_script(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
     inspect_dcs_info_path(args, context).resolution
 }
 
 pub(crate) fn dcs_info_format_dependency_paths(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Vec<PathBuf> {
     inspect_dcs_info_path(args, context).dependencies
 }
 
 pub(crate) fn validate_dcs(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
     const NS_SCHEMA: &str = DCS_SCHEMA_NS;
@@ -2697,10 +2699,14 @@ pub(crate) fn dcs_all_text(node: roxmltree::Node<'_, '_>) -> String {
 }
 
 pub(crate) fn resolve_dcs_validate_path(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
     let raw_path = required_path(args, TEMPLATE_PATH, "TemplatePath")?;
+    resolve_dcs_path(raw_path, context)
+}
+
+fn resolve_dcs_path(raw_path: PathBuf, context: &WorkspaceContext) -> Result<PathBuf, String> {
     let mut display_path = raw_path.clone();
     let mut template_path = absolutize(raw_path, &context.cwd);
 
@@ -2758,48 +2764,82 @@ pub(crate) fn resolve_dcs_validate_path(
     Ok(template_path)
 }
 
+enum DcsDefinition {
+    File(PathBuf),
+    Inline(String),
+}
+
+struct DcsCompileInput {
+    definition: DcsDefinition,
+    destination: PathBuf,
+    show_validation: bool,
+}
+
+#[cfg(test)]
 pub(crate) fn compile_dcs(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
-    let write_result = (|| -> Result<(String, PathBuf, Vec<String>, Vec<String>), String> {
-        let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
-        let value = string_arg(args, &["value", "Value"]);
-        if definition_file.is_some() && value.is_some() {
-            return Err("Cannot use both -DefinitionFile and -Value".to_string());
-        }
-        if definition_file.is_none() && value.is_none() {
-            return Err("Either -DefinitionFile or -Value is required".to_string());
-        }
+    let input = match dcs_compile_input(args) {
+        Ok(input) => input,
+        Err(error) => return dcs_compile_failure(error),
+    };
+    compile_dcs_input(input, context)
+}
 
-        let output_path_label = string_arg(args, &["outputPath", "OutputPath"])
-            .ok_or_else(|| "missing required OutputPath argument".to_string())?
-            .to_string();
-        let output_path = absolutize(PathBuf::from(&output_path_label), &context.cwd);
-        let show_validation = !bool_arg(args, &["noValidate", "NoValidate"]);
+#[cfg(test)]
+fn dcs_compile_input(args: &impl ArgumentAccess) -> Result<DcsCompileInput, String> {
+    let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
+    let value = string_arg(args, &["value", "Value"]).map(ToOwned::to_owned);
+    let definition = match (definition_file, value) {
+        (Some(path), None) => DcsDefinition::File(path),
+        (None, Some(value)) => DcsDefinition::Inline(value),
+        (Some(_), Some(_)) => return Err("Cannot use both -DefinitionFile and -Value".to_string()),
+        (None, None) => return Err("Either -DefinitionFile or -Value is required".to_string()),
+    };
+    Ok(DcsCompileInput {
+        definition,
+        destination: path_arg(args, &["outputPath", "OutputPath"])
+            .ok_or_else(|| "missing required OutputPath argument".to_string())?,
+        show_validation: !bool_arg(args, &["noValidate", "NoValidate"]),
+    })
+}
+
+fn compile_dcs_input(input: DcsCompileInput, context: &WorkspaceContext) -> NativeWriterResult {
+    let write_result = (|| -> Result<(String, PathBuf, Vec<String>, Vec<String>), String> {
+        let DcsCompileInput {
+            definition,
+            destination,
+            show_validation,
+        } = input;
+        let output_path_label = destination.display().to_string();
+        let output_path = absolutize(destination, &context.cwd);
 
         let mut transaction = CompileTransaction::new();
-        let (mut defn, query_base_dir) = if let Some(definition_file) = definition_file {
-            let definition_file = absolutize(definition_file, &context.cwd);
-            if !definition_file.exists() {
-                return Err(format!(
-                    "Definition file not found: {}",
-                    definition_file.display()
-                ));
+        let (mut defn, query_base_dir) = match definition {
+            DcsDefinition::File(definition_file) => {
+                let definition_file = absolutize(definition_file, &context.cwd);
+                if !definition_file.exists() {
+                    return Err(format!(
+                        "Definition file not found: {}",
+                        definition_file.display()
+                    ));
+                }
+                let base_dir = definition_file
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| context.cwd.clone());
+                let definition = FileBackedJson::read(&definition_file, |err| {
+                    format!("failed to parse DCS JSON: {err}")
+                })?
+                .bind_to(&mut transaction)?;
+                (definition, base_dir)
             }
-            let base_dir = definition_file
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| context.cwd.clone());
-            let definition = FileBackedJson::read(&definition_file, |err| {
-                format!("failed to parse DCS JSON: {err}")
-            })?
-            .bind_to(&mut transaction)?;
-            (definition, base_dir)
-        } else {
-            let definition = serde_json::from_str(value.unwrap_or(""))
-                .map_err(|err| format!("failed to parse DCS JSON: {err}"))?;
-            (definition, context.cwd.clone())
+            DcsDefinition::Inline(value) => {
+                let definition = serde_json::from_str(&value)
+                    .map_err(|err| format!("failed to parse DCS JSON: {err}"))?;
+                (definition, context.cwd.clone())
+            }
         };
 
         {
@@ -2917,16 +2957,20 @@ pub(crate) fn compile_dcs(
             stdout: Some(stdout),
             stderr: None,
         },
-        Err(error) => NativeWriterResult {
-            ok: false,
-            summary: "unica.dcs.compile failed in native DCS compiler".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-        },
+        Err(error) => dcs_compile_failure(error),
+    }
+}
+
+fn dcs_compile_failure(error: String) -> NativeWriterResult {
+    NativeWriterResult {
+        ok: false,
+        summary: "unica.dcs.compile failed in native DCS compiler".to_string(),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec![error.clone()],
+        artifacts: Vec::new(),
+        stdout: None,
+        stderr: Some(format!("{error}\n")),
     }
 }
 
@@ -4913,18 +4957,58 @@ fn run_dcs_edit_after_read_hook(path: &Path) {
     }
 }
 
+struct DcsEditInput {
+    template: PathBuf,
+    operation: String,
+    value: String,
+    data_set: String,
+    variant: String,
+    no_selection: bool,
+    show_validation: bool,
+}
+
+#[cfg(test)]
 pub(crate) fn edit_dcs(
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> NativeWriterResult {
+    let input = match (|| -> Result<DcsEditInput, String> {
+        Ok(DcsEditInput {
+            template: required_path(args, TEMPLATE_PATH, "TemplatePath")?,
+            operation: required_string(args, &["operation", "Operation"], "Operation")?.to_string(),
+            value: required_string(args, &["value", "Value"], "Value")?.to_string(),
+            data_set: string_arg(args, &["dataSet", "DataSet"])
+                .unwrap_or("")
+                .to_string(),
+            variant: string_arg(args, &["variant", "Variant"])
+                .unwrap_or("")
+                .to_string(),
+            no_selection: bool_arg(args, &["noSelection", "NoSelection"]),
+            show_validation: !bool_arg(args, &["noValidate", "NoValidate"]),
+        })
+    })() {
+        Ok(input) => input,
+        Err(error) => return dcs_edit_failure(error),
+    };
+    edit_dcs_input(input, context)
+}
+
+fn edit_dcs_input(input: DcsEditInput, context: &WorkspaceContext) -> NativeWriterResult {
     let edit_result = (|| -> Result<(String, PathBuf, bool, Vec<String>), String> {
-        let template_path = resolve_dcs_validate_path(args, context)?;
-        let operation = required_string(args, &["operation", "Operation"], "Operation")?;
-        let value_arg = required_string(args, &["value", "Value"], "Value")?;
-        let data_set = string_arg(args, &["dataSet", "DataSet"]).unwrap_or("");
-        let variant = string_arg(args, &["variant", "Variant"]).unwrap_or("");
-        let no_selection = bool_arg(args, &["noSelection", "NoSelection"]);
-        let show_validation = !bool_arg(args, &["noValidate", "NoValidate"]);
+        let DcsEditInput {
+            template,
+            operation,
+            value,
+            data_set,
+            variant,
+            no_selection,
+            show_validation,
+        } = input;
+        let template_path = resolve_dcs_path(template, context)?;
+        let operation = operation.as_str();
+        let value_arg = value.as_str();
+        let data_set = data_set.as_str();
+        let variant = variant.as_str();
 
         let source = read_utf8_sig_snapshot(&template_path)?;
         let original_bytes = source.raw;
@@ -5616,16 +5700,20 @@ pub(crate) fn edit_dcs(
             stdout: Some(stdout),
             stderr: None,
         },
-        Err(error) => NativeWriterResult {
-            ok: false,
-            summary: "unica.dcs.edit failed in native DCS editor".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-        },
+        Err(error) => dcs_edit_failure(error),
+    }
+}
+
+fn dcs_edit_failure(error: String) -> NativeWriterResult {
+    NativeWriterResult {
+        ok: false,
+        summary: "unica.dcs.edit failed in native DCS editor".to_string(),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec![error.clone()],
+        artifacts: Vec::new(),
+        stdout: None,
+        stderr: Some(format!("{error}\n")),
     }
 }
 
@@ -10138,7 +10226,7 @@ pub(crate) fn dcs_edit_remove_prefixed_selection_field(
 pub(crate) fn invoke_read(
     operation: &str,
     _tool_name: &str,
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Option<Result<NativeWriterResult, String>> {
     match operation {
@@ -10148,10 +10236,11 @@ pub(crate) fn invoke_read(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn invoke_mutation(
     operation: &str,
     _tool_name: &str,
-    args: &Map<String, Value>,
+    args: &impl ArgumentAccess,
     context: &WorkspaceContext,
 ) -> Option<NativeWriterResult> {
     match operation {
@@ -10159,6 +10248,98 @@ pub(crate) fn invoke_mutation(
         "dcs-edit" => Some(edit_dcs(args, context)),
         _ => None,
     }
+}
+
+pub(crate) fn create_data_composition(
+    command: &unica_format_core::commands::DataCompositionCreate,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    let _semantic_command = command;
+    let definition = match (
+        session.source(unica_format_core::commands::WriterSourceRole::Definition),
+        session.inline_definition(),
+    ) {
+        (Some(path), None) => Ok(DcsDefinition::File(path.to_path_buf())),
+        (None, Some(bytes)) => std::str::from_utf8(bytes)
+            .map(|value| DcsDefinition::Inline(value.to_string()))
+            .map_err(|_| "inline data composition definition is invalid".to_string()),
+        (Some(_), Some(_)) => {
+            Err("data composition definition was bound more than once".to_string())
+        }
+        (None, None) => Err("data composition definition is required".to_string()),
+    };
+    let destination = session.required_source(
+        unica_format_core::commands::WriterSourceRole::DestinationArtifact,
+        "data composition destination",
+    );
+    match (definition, destination) {
+        (Ok(definition), Ok(destination)) => compile_dcs_input(
+            DcsCompileInput {
+                definition,
+                destination: destination.to_path_buf(),
+                show_validation: true,
+            },
+            context,
+        ),
+        (Err(error), _) | (_, Err(error)) => dcs_compile_failure(error),
+    }
+}
+
+pub(crate) fn edit_data_composition(
+    command: &unica_format_core::commands::DataCompositionEdit,
+    session: &PlatformWriterSession,
+    context: &WorkspaceContext,
+) -> NativeWriterResult {
+    let template = match session.required_source(
+        unica_format_core::commands::WriterSourceRole::Template,
+        "data composition mutation target",
+    ) {
+        Ok(path) => path.to_path_buf(),
+        Err(error) => return dcs_edit_failure(error),
+    };
+    use unica_format_core::commands::DataCompositionMutation as Mutation;
+    let (operation, value) = match command.mutation() {
+        Mutation::AddField(value) => ("add-field", value.as_str()),
+        Mutation::AddTotal(value) => ("add-total", value.as_str()),
+        Mutation::AddCalculatedField(value) => ("add-calculated-field", value.as_str()),
+        Mutation::AddParameter(value) => ("add-parameter", value.as_str()),
+        Mutation::AddFilter(value) => ("add-filter", value.as_str()),
+        Mutation::AddDataParameter(value) => ("add-dataParameter", value.as_str()),
+        Mutation::SetQuery(value) => ("set-query", value.as_str()),
+        Mutation::PatchQuery(value) => ("patch-query", value.as_str()),
+        Mutation::ClearSelection(value) => ("clear-selection", value.as_str()),
+        Mutation::ClearOrder(value) => ("clear-order", value.as_str()),
+        Mutation::ClearFilter(value) => ("clear-filter", value.as_str()),
+        Mutation::ClearConditionalAppearance(value) => {
+            ("clear-conditionalAppearance", value.as_str())
+        }
+        Mutation::AddSelection(value) => ("add-selection", value.as_str()),
+        Mutation::AddOrder(value) => ("add-order", value.as_str()),
+        Mutation::AddDataSetLink(value) => ("add-dataSetLink", value.as_str()),
+        Mutation::AddDataSet(value) => ("add-dataSet", value.as_str()),
+        Mutation::AddVariant(value) => ("add-variant", value.as_str()),
+    };
+    edit_dcs_input(
+        DcsEditInput {
+            template,
+            operation: operation.to_string(),
+            value: value.to_string(),
+            data_set: command
+                .data_set()
+                .map(|value| value.as_str())
+                .unwrap_or("")
+                .to_string(),
+            variant: command
+                .variant()
+                .map(|value| value.as_str())
+                .unwrap_or("")
+                .to_string(),
+            no_selection: command.omits_selection(),
+            show_validation: !command.skips_validation(),
+        },
+        context,
+    )
 }
 
 #[cfg(test)]

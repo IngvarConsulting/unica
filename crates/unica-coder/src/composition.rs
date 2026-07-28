@@ -17,9 +17,6 @@ impl Default for UnicaApplication {
 #[cfg(test)]
 pub(crate) mod testing {
     pub(crate) use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
-    pub(crate) use crate::infrastructure::native_operations::single_file_publisher::{
-        with_publication_lock_contention_signal, with_publication_lock_pause,
-    };
     pub(crate) use crate::infrastructure::platform::filesystem::prepare_file_for_removal;
     pub(crate) use crate::infrastructure::platform::testing::{
         create_file_link_fixture_for_test, set_unix_mode_for_test, unix_mode_for_test,

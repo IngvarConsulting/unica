@@ -1,35 +1,27 @@
-//! BSL-only failure-atomic publication transaction.
+//! Host-side staging facade for BSL/application artifacts.
 //!
-//! Platform XML mutation transactions live in `unica-adapter-platform-xml`.
-//! This host transaction exists solely for `unica.code.patch` and binds
-//! adapter-provided source-owner evidence before publishing one BSL module.
+//! It deliberately owns no locks, stages or rollback implementation. Commit
+//! delegates to the adapter's format-neutral [`ArtifactWritePort`], so host
+//! artifacts contend with Platform XML writers on the same lock registry.
 
-use super::single_file_publisher::{
-    prepare, with_publication_locks_mode_and_guard_targets, PublicationTreeLockMode, PublishMode,
-    PublishRequest,
-};
 use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    ffi::OsString,
     fs,
     io::ErrorKind,
     path::{Path, PathBuf},
 };
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum DirectoryMembershipSelector {
-    XmlFiles,
-    CfFilesAsciiCaseInsensitive,
-    AllDirectEntries,
-}
+use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
+use unica_format_core::{
+    commands::{MutationMode, WriterLifecycle},
+    ports::{ArtifactWriteIntent, ArtifactWritePort, ArtifactWriteRequest, OperationCancellation},
+};
 
 #[derive(Debug, Default)]
 pub(crate) struct CompileTransaction {
     replacement: Option<PlannedReplacement>,
     exact_guards: BTreeMap<PathBuf, Vec<u8>>,
     absence_guards: BTreeSet<PathBuf>,
-    membership_guards: BTreeMap<(PathBuf, DirectoryMembershipSelector), Vec<OsString>>,
 }
 
 #[derive(Debug)]
@@ -63,14 +55,14 @@ impl CompileTransaction {
         replacement: impl Into<Vec<u8>>,
     ) -> Result<(), String> {
         if self.replacement.is_some() {
-            return Err("BSL publication transaction accepts exactly one replacement".to_string());
+            return Err("artifact publication accepts exactly one replacement".to_string());
         }
         let path = path.into();
         let metadata = fs::symlink_metadata(&path)
             .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?;
         if metadata_is_link_or_reparse_point(&metadata) || !metadata.is_file() {
             return Err(format!(
-                "BSL publication target must be a regular non-link file: {}",
+                "artifact publication target must be a regular non-link file: {}",
                 path.display()
             ));
         }
@@ -78,7 +70,7 @@ impl CompileTransaction {
             .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
         if before != expected_preimage.as_ref() {
             return Err(format!(
-                "BSL publication target changed while planning: {}",
+                "artifact publication target changed while planning: {}",
                 path.display()
             ));
         }
@@ -121,160 +113,66 @@ impl CompileTransaction {
                 Ok(())
             }
             Ok(_) => Err(format!(
-                "compile transaction absence guard was violated while planning: {}",
+                "artifact transaction absence guard was violated while planning: {}",
                 path.display()
             )),
             Err(error) => Err(format!("failed to inspect {}: {error}", path.display())),
         }
     }
 
-    pub(crate) fn guard_or_verify_directory_membership(
-        &mut self,
-        directory: impl Into<PathBuf>,
-        selector: DirectoryMembershipSelector,
-        expected_names: Vec<OsString>,
-    ) -> Result<(), String> {
-        let directory = directory.into();
-        let actual = selected_names(&directory, selector)?;
-        let expected = normalized_names(expected_names);
-        if actual != expected {
-            let unexpected = actual
-                .iter()
-                .filter(|name| !expected.contains(name))
-                .map(|name| name.to_string_lossy())
-                .collect::<Vec<_>>();
-            let missing = expected
-                .iter()
-                .filter(|name| !actual.contains(name))
-                .map(|name| name.to_string_lossy())
-                .collect::<Vec<_>>();
-            return Err(format!(
-                "directory membership changed while planning: {}; unexpected: [{}]; missing: [{}]",
-                directory.display(),
-                unexpected.join(", "),
-                missing.join(", ")
-            ));
-        }
-        self.membership_guards
-            .insert((directory, selector), expected);
-        Ok(())
+    pub(crate) fn commit(self) -> Result<CommitReport, String> {
+        self.commit_cancellable(&OperationCancellation::new())
     }
 
-    pub(crate) fn commit(self) -> Result<CommitReport, String> {
-        let targets = self
+    pub(crate) fn commit_cancellable(
+        self,
+        cancellation: &OperationCancellation,
+    ) -> Result<CommitReport, String> {
+        let updated_paths = self
             .replacement
             .iter()
+            .filter(|replacement| replacement.before != replacement.after)
             .map(|replacement| replacement.path.clone())
             .collect::<Vec<_>>();
-        let mut guard_targets = self.exact_guards.keys().cloned().collect::<Vec<_>>();
-        guard_targets.extend(self.absence_guards.iter().cloned());
-        guard_targets.extend(
-            self.membership_guards
-                .keys()
-                .map(|(directory, _)| directory.clone()),
+        let replacement = self
+            .replacement
+            .map(|replacement| (replacement.path, replacement.before, replacement.after));
+        let factory = PlatformXmlAdapterFactory::new();
+        let session = factory
+            .capture_artifact_write_session(
+                replacement,
+                self.exact_guards.into_iter().collect(),
+                self.absence_guards.into_iter().collect(),
+                Vec::new(),
+            )
+            .map_err(|error| error.message)?;
+        let request = ArtifactWriteRequest::new(
+            session,
+            None,
+            ArtifactWriteIntent::SemanticSourceTransaction,
+            None,
+            MutationMode::Apply,
+            cancellation.clone(),
         );
-        let result = with_publication_locks_mode_and_guard_targets(
-            &targets,
-            &guard_targets,
-            PublicationTreeLockMode::Shared,
-            |lock| -> Result<CommitReport, String> {
-                self.verify_guards()?;
-                let mut updated_paths = Vec::new();
-                if let Some(replacement) = &self.replacement {
-                    prepare(
-                        lock,
-                        PublishRequest {
-                            target: &replacement.path,
-                            replacement: &replacement.after,
-                            mode: PublishMode::ReplaceExisting {
-                                expected_preimage: &replacement.before,
-                            },
-                        },
-                    )
-                    .map_err(|error| error.to_string())?
-                    .commit_with_guard(|| self.verify_guards())
-                    .map_err(|error| error.to_string())?;
-                    if replacement.before != replacement.after {
-                        updated_paths.push(replacement.path.clone());
-                    }
-                }
-                Ok(CommitReport { updated_paths })
-            },
-        )
-        .map_err(|error| error.to_string())?;
-        result
-    }
-
-    fn verify_guards(&self) -> Result<(), String> {
-        for (path, expected) in &self.exact_guards {
-            let actual = fs::read(path)
-                .map_err(|error| format!("failed to recheck {}: {error}", path.display()))?;
-            if &actual != expected {
-                return Err(format!("guard changed before commit: {}", path.display()));
-            }
-        }
-        for path in &self.absence_guards {
-            match fs::symlink_metadata(path) {
-                Err(error) if error.kind() == ErrorKind::NotFound => {}
-                Ok(_) => return Err(format!("guarded path appeared: {}", path.display())),
-                Err(error) => return Err(format!("failed to recheck {}: {error}", path.display())),
-            }
-        }
-        for ((directory, selector), expected) in &self.membership_guards {
-            if &selected_names(directory, *selector)? != expected {
-                return Err(format!(
-                    "directory membership changed before commit: {}",
-                    directory.display()
-                ));
-            }
-        }
-        Ok(())
+        commit_through_port(
+            factory.operational_registration().artifact_write(),
+            &request,
+        )?;
+        Ok(CommitReport { updated_paths })
     }
 }
 
-fn normalized_names(mut names: Vec<OsString>) -> Vec<OsString> {
-    names.sort();
-    names.dedup();
-    names
-}
-
-fn selected_names(
-    directory: &Path,
-    selector: DirectoryMembershipSelector,
-) -> Result<Vec<OsString>, String> {
-    let mut names = Vec::new();
-    for entry in fs::read_dir(directory)
-        .map_err(|error| format!("failed to read {}: {error}", directory.display()))?
-    {
-        let entry = entry.map_err(|error| format!("failed to read directory entry: {error}"))?;
-        let metadata = fs::symlink_metadata(entry.path())
-            .map_err(|error| format!("failed to inspect {}: {error}", entry.path().display()))?;
-        if metadata_is_link_or_reparse_point(&metadata) {
-            return Err(format!(
-                "directory membership contains a link or reparse point: {}",
-                entry.path().display()
-            ));
-        }
-        let selected = match selector {
-            DirectoryMembershipSelector::XmlFiles => {
-                metadata.is_file()
-                    && entry.path().extension().and_then(|value| value.to_str()) == Some("xml")
-            }
-            DirectoryMembershipSelector::CfFilesAsciiCaseInsensitive => {
-                metadata.is_file()
-                    && entry
-                        .path()
-                        .extension()
-                        .and_then(|value| value.to_str())
-                        .is_some_and(|value| value.eq_ignore_ascii_case("cf"))
-            }
-            DirectoryMembershipSelector::AllDirectEntries => {
-                metadata.is_file() || metadata.is_dir()
-            }
-        };
-        if selected {
-            names.push(entry.file_name());
+fn commit_through_port(
+    port: &dyn ArtifactWritePort,
+    request: &ArtifactWriteRequest,
+) -> Result<(), String> {
+    let result = port.write(request).map_err(|error| error.message)?;
+    match result.lifecycle() {
+        WriterLifecycle::Applied => Ok(()),
+        WriterLifecycle::Cancelled(_) => Err("artifact publication cancelled".to_string()),
+        WriterLifecycle::Rejected(_) => Err("artifact publication failed".to_string()),
+        WriterLifecycle::Previewed => {
+            Err("artifact publication unexpectedly previewed".to_string())
         }
     }
-    Ok(normalized_names(names))
 }

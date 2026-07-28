@@ -94,14 +94,38 @@ impl PlatformOperationSession {
         authorized_root: &Path,
         mode: OwnerResolutionMode,
     ) -> Self {
-        if !crate::domain::identifiers::is_1c_identifier(object_name) {
-            return Self::failed(CaptureFailure::UnauthorizedOrUnreadable);
-        }
         let root = match SafeSourceRoot::capture(authorized_root, source_root) {
             Ok(root) => root,
             Err(_) => return Self::failed(CaptureFailure::UnauthorizedOrUnreadable),
         };
-        let direct = format!("{object_name}.xml");
+        let normalized = object_name.replace('\\', "/");
+        if let Some((directory, name)) = normalized.split_once('/') {
+            if directory.contains('/')
+                || !crate::domain::identifiers::is_1c_identifier(name)
+                || !semantic_map::top_level_descriptor_profiles()
+                    .any(|profile| profile.native_directory.as_deref() == Some(directory))
+            {
+                return Self::failed(CaptureFailure::UnauthorizedOrUnreadable);
+            }
+            let relative = format!("{directory}/{name}.xml");
+            let target = match root.exists_regular(&relative) {
+                Ok(true) => source_root.join(relative),
+                _ => return Self::failed(CaptureFailure::UnauthorizedOrUnreadable),
+            };
+            return Self::capture_paths(
+                &target,
+                source_root,
+                authorized_root,
+                None,
+                false,
+                matches!(mode, OwnerResolutionMode::ExistingForNewOutput),
+                EvidenceScope::Operation,
+            );
+        }
+        if !crate::domain::identifiers::is_1c_identifier(&normalized) {
+            return Self::failed(CaptureFailure::UnauthorizedOrUnreadable);
+        }
+        let direct = format!("{normalized}.xml");
         let mut candidates = match root.exists_regular(&direct) {
             Ok(true) => vec![source_root.join(&direct)],
             Ok(false) => Vec::new(),
@@ -110,7 +134,7 @@ impl PlatformOperationSession {
         let nested = semantic_map::top_level_descriptor_profiles()
             .filter_map(|profile| {
                 let directory = profile.native_directory.as_deref()?;
-                let relative = format!("{directory}/{object_name}.xml");
+                let relative = format!("{directory}/{normalized}.xml");
                 match root.exists_regular(&relative) {
                     Ok(true) => Some(Ok(source_root.join(relative))),
                     Ok(false) => None,
@@ -1533,7 +1557,10 @@ fn method_reference_status(
 fn bsl_has_export(source: &str, procedure: &str) -> bool {
     let procedure = procedure.to_ascii_lowercase();
     source.lines().any(|line| {
-        let normalized = line.trim().to_ascii_lowercase();
+        let normalized = line
+            .trim_start_matches('\u{feff}')
+            .trim()
+            .to_ascii_lowercase();
         (normalized.starts_with(&format!("procedure {procedure}("))
             && normalized.contains(" export"))
             || (normalized.starts_with(&format!("процедура {procedure}("))
