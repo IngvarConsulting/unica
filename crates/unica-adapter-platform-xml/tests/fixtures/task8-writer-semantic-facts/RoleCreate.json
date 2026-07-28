@@ -1,0 +1,288 @@
+{
+  "schemaVersion": 1,
+  "variant": "RoleCreate",
+  "provenance": {
+    "source": "Approved Task 8 design, Task 5 semantic contract, and the pre-migration v2_20 legacy semantic oracle; exact facts were reviewed against the command DTO and legacy writer behavior.",
+    "reviewedEvidence": [
+      ".superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/task-8-brief.md",
+      "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/legacy-semantic-oracle.json",
+      "crates/unica-adapter-platform-xml/tests/task5_legacy_parity.rs"
+    ]
+  },
+  "removed": [],
+  "added": [
+    {
+      "fact": {
+        "Envelope": {
+          "status": "\"ready\"",
+          "root": [
+            "sourceRoot",
+            "Source"
+          ],
+          "consistency": "\"consistent\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Identity": {
+          "kind": "role",
+          "name": "Reader",
+          "reference_kind": "role",
+          "reference_name": "Reader",
+          "capability_state": "{\"resolutionState\":\"resolved\",\"authorability\":\"authorable\"}",
+          "capability": "{\"resolution\":\"resolved\",\"identity\":\"persistent\",\"consistency\":\"consistent\",\"coverage\":\"complete\",\"format\":\"compatible\",\"sourceAccess\":\"readOnly\",\"authorability\":\"authorable\"}",
+          "action_profile": "\"generic_metadata_object\"",
+          "facet_visibility": "Full"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Identity": {
+          "kind": "sourceRoot",
+          "name": "Source",
+          "reference_kind": "sourceRoot",
+          "reference_name": "Source",
+          "capability_state": "{\"resolutionState\":\"resolved\",\"authorability\":\"derived_read_only\"}",
+          "capability": "{\"resolution\":\"resolved\",\"identity\":\"derived\",\"consistency\":\"consistent\",\"coverage\":\"complete\",\"format\":\"compatible\",\"sourceAccess\":\"readOnly\",\"authorability\":\"derived_read_only\"}",
+          "action_profile": "\"generic_metadata_object\"",
+          "facet_visibility": "Full"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "role",
+          "owner_name": "Reader",
+          "id": "access.attributes.defaultAllowed",
+          "value_type": "\"boolean\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"boolean\",\"value\":true}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "role",
+          "owner_name": "Reader",
+          "id": "access.childObjects.independent",
+          "value_type": "\"boolean\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"boolean\",\"value\":false}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "role",
+          "owner_name": "Reader",
+          "id": "access.newObjects.defaultAllowed",
+          "value_type": "\"boolean\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"boolean\",\"value\":false}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "role",
+          "owner_name": "Reader",
+          "id": "backing.content.available",
+          "value_type": "\"boolean\"",
+          "value_state": "\"computed\"",
+          "value": "{\"type\":\"boolean\",\"value\":true}",
+          "provenance": "\"derived\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "role",
+          "owner_name": "Reader",
+          "id": "metadata.comment",
+          "value_type": "\"string\"",
+          "value_state": "\"absent\"",
+          "value": null,
+          "provenance": "\"declared\"",
+          "capability": "\"unavailable\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "role",
+          "owner_name": "Reader",
+          "id": "metadata.kind",
+          "value_type": "\"string\"",
+          "value_state": "\"computed\"",
+          "value": "{\"type\":\"string\",\"value\":\"role\"}",
+          "provenance": "\"derived\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "role",
+          "owner_name": "Reader",
+          "id": "metadata.name",
+          "value_type": "\"string\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"string\",\"value\":\"Reader\"}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "role",
+          "owner_name": "Reader",
+          "id": "metadata.synonym",
+          "value_type": "\"localizedString\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"localizedString\",\"value\":{\"ru\":\"Reader\"}}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "role",
+          "owner_name": "Reader",
+          "id": "metadata.uuid",
+          "value_type": "\"uuid\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"uuid\",\"value\":\"<semantic-id>\"}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "role",
+          "owner_name": "Reader",
+          "id": "support.authorability",
+          "value_type": "\"string\"",
+          "value_state": "\"computed\"",
+          "value": "{\"type\":\"string\",\"value\":\"authorable\"}",
+          "provenance": "\"derived\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "role",
+          "owner_name": "Reader",
+          "id": "support.editCapability",
+          "value_type": "\"string\"",
+          "value_state": "\"computed\"",
+          "value": "{\"type\":\"string\",\"value\":\"authorable\"}",
+          "provenance": "\"derived\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "role",
+          "owner_name": "Reader",
+          "id": "support.state",
+          "value_type": "\"enum\"",
+          "value_state": "\"computed\"",
+          "value": "{\"type\":\"enum\",\"value\":\"notSupported\"}",
+          "provenance": "\"derived\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facets": {
+          "owner_kind": "role",
+          "owner_name": "Reader",
+          "members": "{\"access\":[\"access.newObjects.defaultAllowed\",\"access.attributes.defaultAllowed\",\"access.childObjects.independent\"],\"backing\":[\"backing.content.available\"],\"identity\":[\"metadata.kind\",\"metadata.name\",\"metadata.uuid\",\"metadata.synonym\",\"metadata.comment\"],\"support\":[\"support.state\",\"support.authorability\",\"support.editCapability\"]}"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facets": {
+          "owner_kind": "sourceRoot",
+          "owner_name": "Source",
+          "members": "{\"structure\":[\"children\"]}"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Actions": {
+          "owner_kind": "role",
+          "owner_name": "Reader",
+          "semantic": "[]",
+          "available": "[{\"kind\":\"inspect\",\"target\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"uuid:<semantic-id>\",\"identityStrength\":\"persistent\",\"kind\":\"role\",\"displayName\":\"Reader\"},\"owningRelation\":{\"sourceId\":\"workspace:task8-preservation\",\"relationKey\":\"derived:sha256:<semantic-hash>\",\"kind\":\"contains\"},\"availability\":\"modeled\",\"blockingReasons\":[],\"operationBinding\":null,\"atomicity\":\"read_only\"}]"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Actions": {
+          "owner_kind": "sourceRoot",
+          "owner_name": "Source",
+          "semantic": "[]",
+          "available": "[{\"kind\":\"inspect\",\"target\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"derived:sha256:<semantic-hash>\",\"identityStrength\":\"derived\",\"kind\":\"sourceRoot\",\"displayName\":\"Source\"},\"owningRelation\":null,\"availability\":\"modeled\",\"blockingReasons\":[],\"operationBinding\":null,\"atomicity\":\"read_only\"}]"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Relation": {
+          "value": "{\"relationRef\":{\"sourceId\":\"workspace:task8-preservation\",\"relationKey\":\"derived:sha256:<semantic-hash>\",\"kind\":\"contains\"},\"groupRef\":{\"sourceId\":\"workspace:task8-preservation\",\"groupKey\":\"group:sha256:<semantic-hash>\",\"owner\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"derived:sha256:<semantic-hash>\",\"identityStrength\":\"derived\",\"kind\":\"sourceRoot\",\"displayName\":\"Source\"},\"role\":\"children\",\"kind\":\"contains\"},\"identityStrength\":\"derived\",\"kind\":\"contains\",\"role\":\"children\",\"source\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"derived:sha256:<semantic-hash>\",\"identityStrength\":\"derived\",\"kind\":\"sourceRoot\",\"displayName\":\"Source\"},\"target\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"uuid:<semantic-id>\",\"identityStrength\":\"persistent\",\"kind\":\"role\",\"displayName\":\"Reader\"},\"capability\":{\"resolution\":\"resolved\",\"identity\":\"derived\",\"consistency\":\"consistent\",\"coverage\":\"complete\",\"format\":\"compatible\",\"sourceAccess\":\"readOnly\",\"authorability\":\"derived_read_only\"}}"
+        }
+      },
+      "count": 1
+    }
+  ]
+}

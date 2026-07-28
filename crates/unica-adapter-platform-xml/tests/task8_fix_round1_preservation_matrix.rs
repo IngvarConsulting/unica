@@ -2,13 +2,12 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{mpsc, Arc, Barrier},
     thread,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use serde::Serialize;
-use sha2::{Digest, Sha256};
+use serde::{Deserialize, Serialize};
 use unica_adapter_platform_xml::PlatformXmlAdapterFactory;
 use unica_format_core::{
     commands::*,
@@ -44,7 +43,8 @@ impl Scenario {
     ];
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 enum SemanticFact {
     Envelope {
         status: String,
@@ -91,7 +91,8 @@ enum SemanticFact {
         value: String,
     },
     StandaloneStructure {
-        family: &'static str,
+        family: String,
+        namespace: Option<String>,
         document: usize,
         ordinal_path: String,
         semantic_kind: String,
@@ -99,7 +100,7 @@ enum SemanticFact {
         attributes: Vec<(String, String)>,
     },
     StandaloneText {
-        family: &'static str,
+        family: String,
         role: String,
         content: String,
     },
@@ -107,54 +108,35 @@ enum SemanticFact {
 
 type SemanticFacts = BTreeMap<SemanticFact, usize>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ExpectedFact {
-    Diagnostic {
-        code: &'static str,
-        message: &'static str,
-        details: Option<&'static str>,
-        present: bool,
-    },
-    Identity {
-        kind: &'static str,
-        name: &'static str,
-        present: bool,
-    },
-    Property {
-        owner: &'static str,
-        id: &'static str,
-        value_type: &'static str,
-        value_state: &'static str,
-        value: &'static str,
-        present: bool,
-    },
-    Structure {
-        family: &'static str,
-        semantic_kind: &'static str,
-        value: Option<&'static str>,
-        present: bool,
-    },
-    StandaloneScalar {
-        family: &'static str,
-        value: &'static str,
-        present: bool,
-    },
-    StandaloneText {
-        family: &'static str,
-        role: &'static str,
-        content: &'static str,
-        present: bool,
-    },
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CountedSemanticFact {
+    fact: SemanticFact,
+    count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OracleProvenance {
+    source: String,
+    reviewed_evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReviewedSemanticOracle {
+    schema_version: u8,
+    variant: String,
+    provenance: OracleProvenance,
+    removed: Vec<CountedSemanticFact>,
+    added: Vec<CountedSemanticFact>,
 }
 
 #[derive(Clone)]
 struct MatrixCase {
     kind: WriterCommandKind,
     command: WriterCommand,
-    before: Vec<ExpectedFact>,
-    after: Vec<ExpectedFact>,
-    before_fact_digest: &'static str,
-    after_fact_digest: &'static str,
+    oracle: ReviewedSemanticOracle,
 }
 
 #[test]
@@ -185,13 +167,6 @@ fn every_writer_variant_preserves_independent_semantics_in_every_required_scenar
 
 fn exercise(case: &MatrixCase, scenario: Scenario, root: &Path) {
     let before = observe(case.kind, root);
-    assert_eq!(
-        fact_set_digest(&before),
-        case.before_fact_digest,
-        "{:?} {scenario:?}: complete initial semantic fact multiset changed: {before:#?}",
-        case.kind,
-    );
-    assert_expected_facts(&before, &case.before, case.kind, scenario, "before");
 
     match scenario {
         Scenario::Success => {
@@ -208,15 +183,8 @@ fn exercise(case: &MatrixCase, scenario: Scenario, root: &Path) {
                 case.kind
             );
             let after = observe(case.kind, root);
-            assert_eq!(
-                fact_set_digest(&after),
-                case.after_fact_digest,
-                "{:?}: complete resulting semantic fact multiset differs from the frozen oracle: \
-                 {after:#?}",
-                case.kind,
-            );
-            assert_expected_facts(&after, &case.after, case.kind, scenario, "after");
-            assert_declared_delta(&before, &after, case, scenario);
+            assert_reviewed_delta(case, &before, &after, scenario);
+            assert_all_xml_is_complete(root);
         }
         Scenario::DryRun => {
             let result = execute(
@@ -232,6 +200,7 @@ fn exercise(case: &MatrixCase, scenario: Scenario, root: &Path) {
                 case.kind
             );
             assert_eq!(observe(case.kind, root), before);
+            assert_all_xml_is_complete(root);
         }
         Scenario::Idempotent => {
             let first = execute(
@@ -247,27 +216,22 @@ fn exercise(case: &MatrixCase, scenario: Scenario, root: &Path) {
                 case.kind
             );
             let once = observe(case.kind, root);
-            assert_eq!(
-                fact_set_digest(&once),
-                case.after_fact_digest,
-                "{:?}: first idempotent apply differs from the frozen oracle",
-                case.kind
-            );
-            assert_expected_facts(&once, &case.after, case.kind, scenario, "after");
-            assert_declared_delta(&before, &once, case, scenario);
-            let _repeat = execute(
+            assert_reviewed_delta(case, &before, &once, scenario);
+            let repeat = execute(
                 case.command.clone(),
                 sources(case.kind, root),
                 root,
                 MutationMode::Apply,
                 OperationCancellation::new(),
             );
+            assert_repeat_outcome(case.kind, &repeat);
             assert_eq!(
                 observe(case.kind, root),
                 once,
                 "{:?}: repeat changed semantic facts",
                 case.kind
             );
+            assert_all_xml_is_complete(root);
         }
         Scenario::Denied => {
             make_semantically_unsupported(case.kind, root);
@@ -284,12 +248,24 @@ fn exercise(case: &MatrixCase, scenario: Scenario, root: &Path) {
                 "{:?}: {result:?}",
                 case.kind
             );
+            let codes = result
+                .diagnostics()
+                .iter()
+                .map(WriterDiagnostic::code)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                codes,
+                [expected_denial_code(case.kind)],
+                "{:?}: denial must have the exact same-family outcome",
+                case.kind
+            );
             assert_eq!(
                 observe(case.kind, root),
                 denied_before,
                 "{:?}: denied operation changed unsupported semantic facts",
                 case.kind
             );
+            assert_all_xml_is_complete(root);
         }
         Scenario::Cancelled => {
             let cancellation = OperationCancellation::new();
@@ -331,73 +307,211 @@ fn exercise(case: &MatrixCase, scenario: Scenario, root: &Path) {
                 case.kind
             );
             assert_eq!(observe(case.kind, root), before);
+            assert_all_xml_is_complete(root);
         }
         Scenario::Concurrent => {
             let root = Arc::new(root.to_path_buf());
-            let mut workers = Vec::new();
-            for _ in 0..2 {
-                let command = case.command.clone();
-                let root = Arc::clone(&root);
-                let kind = case.kind;
-                workers.push(thread::spawn(move || {
-                    execute(
-                        command,
-                        sources(kind, &root),
-                        &root,
-                        MutationMode::Apply,
-                        OperationCancellation::new(),
-                    )
-                }));
-            }
-            let results = workers
-                .into_iter()
-                .map(|worker| worker.join().expect("concurrent writer must not panic"))
-                .collect::<Vec<_>>();
-            assert!(
-                results.iter().all(|result| matches!(
-                    result.lifecycle(),
-                    WriterLifecycle::Applied | WriterLifecycle::Rejected(_)
-                )),
-                "{:?}: {results:?}",
-                case.kind
-            );
-            assert!(
-                results
-                    .iter()
-                    .any(|result| matches!(result.lifecycle(), WriterLifecycle::Applied)),
-                "{:?}: no concurrent writer completed: {results:?}",
-                case.kind
-            );
+            let acquired = Arc::new(Barrier::new(2));
+            let release = Arc::new(Barrier::new(2));
+            let first_root = Arc::clone(&root);
+            let first_command = case.command.clone();
+            let first_kind = case.kind;
+            let first_acquired = Arc::clone(&acquired);
+            let first_release = Arc::clone(&release);
+            let first_worker = thread::spawn(move || {
+                PlatformXmlAdapterFactory::new().with_publication_lock_pause(
+                    first_acquired,
+                    first_release,
+                    || {
+                        execute(
+                            first_command,
+                            sources(first_kind, &first_root),
+                            &first_root,
+                            MutationMode::Apply,
+                            OperationCancellation::new(),
+                        )
+                    },
+                )
+            });
+            acquired.wait();
+
+            let second_root = Arc::clone(&root);
+            let second_command = case.command.clone();
+            let second_kind = case.kind;
+            let (contended_sender, contended_receiver) = mpsc::channel();
+            let second_worker = thread::spawn(move || {
+                PlatformXmlAdapterFactory::new().with_publication_lock_contention_signal(
+                    contended_sender,
+                    || {
+                        execute(
+                            second_command,
+                            sources(second_kind, &second_root),
+                            &second_root,
+                            MutationMode::Apply,
+                            OperationCancellation::new(),
+                        )
+                    },
+                )
+            });
+            contended_receiver
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap_or_else(|error| {
+                    panic!("{:?}: second writer never contended: {error}", case.kind)
+                });
+            release.wait();
+            let first = first_worker
+                .join()
+                .expect("lock owner writer must not panic");
+            let second = second_worker
+                .join()
+                .expect("contending writer must not panic");
+            assert_concurrent_outcome(case.kind, &first, &second);
             let after = observe(case.kind, &root);
-            assert_eq!(
-                fact_set_digest(&after),
-                case.after_fact_digest,
-                "{:?}: concurrent result differs from the frozen oracle",
-                case.kind
-            );
-            assert_expected_facts(&after, &case.after, case.kind, scenario, "after");
-            assert_declared_delta(&before, &after, case, scenario);
+            assert_reviewed_delta(case, &before, &after, scenario);
+            assert_all_xml_is_complete(&root);
         }
     }
 }
 
-fn fact_set_digest(facts: &SemanticFacts) -> String {
-    let mut encoded_facts = facts
-        .iter()
-        .map(|(fact, count)| {
-            let mut normalized =
-                serde_json::to_value((fact, count)).expect("semantic fact tuple must serialize");
-            normalize_volatile_identities(&mut normalized);
-            serde_json::to_vec(&normalized).expect("normalized semantic fact tuple must serialize")
-        })
-        .collect::<Vec<_>>();
-    encoded_facts.sort();
-    let mut digest = Sha256::new();
-    for encoded in encoded_facts {
-        digest.update((encoded.len() as u64).to_le_bytes());
-        digest.update(encoded);
+fn canonical_facts(facts: &SemanticFacts) -> SemanticFacts {
+    let mut canonical = SemanticFacts::new();
+    for (fact, count) in facts {
+        let mut value = serde_json::to_value(fact).expect("semantic fact must serialize");
+        normalize_volatile_identities(&mut value);
+        let fact = serde_json::from_value(value).expect("canonical semantic fact must deserialize");
+        *canonical.entry(fact).or_insert(0) += count;
     }
-    format!("{:x}", digest.finalize())
+    canonical
+}
+
+fn semantic_delta(
+    before: &SemanticFacts,
+    after: &SemanticFacts,
+) -> (Vec<CountedSemanticFact>, Vec<CountedSemanticFact>) {
+    let before = canonical_facts(before);
+    let after = canonical_facts(after);
+    let keys = before
+        .keys()
+        .chain(after.keys())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut removed = Vec::new();
+    let mut added = Vec::new();
+    for fact in keys {
+        let before_count = before.get(&fact).copied().unwrap_or_default();
+        let after_count = after.get(&fact).copied().unwrap_or_default();
+        if before_count > after_count {
+            removed.push(CountedSemanticFact {
+                fact: fact.clone(),
+                count: before_count - after_count,
+            });
+        }
+        if after_count > before_count {
+            added.push(CountedSemanticFact {
+                fact,
+                count: after_count - before_count,
+            });
+        }
+    }
+    (removed, added)
+}
+
+fn assert_reviewed_delta(
+    case: &MatrixCase,
+    before: &SemanticFacts,
+    after: &SemanticFacts,
+    scenario: Scenario,
+) {
+    let (removed, added) = semantic_delta(before, after);
+    assert_eq!(
+        removed, case.oracle.removed,
+        "{:?} {scenario:?}: removed semantic facts differ from the reviewed oracle",
+        case.kind
+    );
+    assert_eq!(
+        added, case.oracle.added,
+        "{:?} {scenario:?}: added semantic facts differ from the reviewed oracle",
+        case.kind
+    );
+}
+
+fn assert_repeat_outcome(kind: WriterCommandKind, result: &WriterResult) {
+    assert_serialized_contender_outcome(kind, result, "repeat");
+}
+
+fn assert_concurrent_outcome(kind: WriterCommandKind, first: &WriterResult, second: &WriterResult) {
+    assert!(
+        matches!(first.lifecycle(), WriterLifecycle::Applied),
+        "{kind:?}: lock owner must apply: {first:?}"
+    );
+    assert_serialized_contender_outcome(kind, second, "serialized contender");
+}
+
+fn assert_serialized_contender_outcome(
+    kind: WriterCommandKind,
+    result: &WriterResult,
+    phase: &str,
+) {
+    let expected = match kind {
+        WriterCommandKind::ConfigurationInitialize
+        | WriterCommandKind::ExtensionInitialize
+        | WriterCommandKind::FormCreate
+        | WriterCommandKind::HelpCreate => Some(DiagnosticCode::InvalidRequest),
+        WriterCommandKind::ExternalProcessorInitialize
+        | WriterCommandKind::ExternalReportInitialize
+        | WriterCommandKind::FormEdit
+        | WriterCommandKind::TemplateCreate => Some(DiagnosticCode::AlreadyExists),
+        WriterCommandKind::MetadataRemove
+        | WriterCommandKind::FormRemove
+        | WriterCommandKind::TemplateRemove => Some(DiagnosticCode::NotFound),
+        _ => None,
+    };
+    match expected {
+        None => assert!(
+            matches!(result.lifecycle(), WriterLifecycle::Applied),
+            "{kind:?}: {phase} must apply idempotently: {result:?}"
+        ),
+        Some(code) => {
+            assert!(
+                matches!(result.lifecycle(), WriterLifecycle::Rejected(_)),
+                "{kind:?}: {phase} must return the documented typed rejection: {result:?}"
+            );
+            let actual = result
+                .diagnostics()
+                .iter()
+                .map(WriterDiagnostic::code)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                actual,
+                [code],
+                "{kind:?}: {phase} returned the wrong typed rejection"
+            );
+        }
+    }
+}
+
+fn expected_denial_code(kind: WriterCommandKind) -> DiagnosticCode {
+    match kind {
+        WriterCommandKind::ConfigurationInitialize | WriterCommandKind::ExtensionInitialize => {
+            DiagnosticCode::InvalidRequest
+        }
+        WriterCommandKind::ExternalProcessorInitialize
+        | WriterCommandKind::ExternalReportInitialize => DiagnosticCode::AlreadyExists,
+        _ => DiagnosticCode::UnsupportedFormat,
+    }
+}
+
+fn assert_all_xml_is_complete(root: &Path) {
+    for path in files(root) {
+        if path.extension().and_then(|value| value.to_str()) != Some("xml") {
+            continue;
+        }
+        let bytes = fs::read(&path).unwrap();
+        let text = std::str::from_utf8(&bytes)
+            .unwrap_or_else(|error| panic!("{} is partial/non-UTF-8 XML: {error}", path.display()));
+        roxmltree::Document::parse(text.trim_start_matches('\u{feff}'))
+            .unwrap_or_else(|error| panic!("{} is partial XML: {error}", path.display()));
+    }
 }
 
 fn normalize_volatile_identities(value: &mut serde_json::Value) {
@@ -749,7 +863,8 @@ fn normalize_standalone(kind: WriterCommandKind, root: &Path, facts: &mut Semant
                 add_fact(
                     facts,
                     SemanticFact::StandaloneStructure {
-                        family,
+                        family: family.to_string(),
+                        namespace: node.tag_name().namespace().map(str::to_string),
                         document,
                         ordinal_path: indexes
                             .iter()
@@ -773,7 +888,7 @@ fn normalize_standalone(kind: WriterCommandKind, root: &Path, facts: &mut Semant
             add_fact(
                 facts,
                 SemanticFact::StandaloneText {
-                    family,
+                    family: family.to_string(),
                     role: path
                         .file_name()
                         .and_then(|value| value.to_str())
@@ -815,369 +930,64 @@ fn standalone_attribute_kind(name: &str) -> &str {
     }
 }
 
-fn assert_expected_facts(
-    facts: &SemanticFacts,
-    markers: &[ExpectedFact],
-    kind: WriterCommandKind,
-    scenario: Scenario,
-    phase: &str,
-) {
-    for marker in markers {
-        let matching = facts
-            .iter()
-            .filter(|(fact, _)| expected_fact_matches(marker, fact))
-            .collect::<Vec<_>>();
-        let count = matching.iter().map(|(_, count)| **count).sum::<usize>();
-        let present = match marker {
-            ExpectedFact::Diagnostic { present, .. }
-            | ExpectedFact::Identity { present, .. }
-            | ExpectedFact::Property { present, .. }
-            | ExpectedFact::Structure { present, .. }
-            | ExpectedFact::StandaloneScalar { present, .. }
-            | ExpectedFact::StandaloneText { present, .. } => *present,
-        };
-        assert_eq!(
-            count,
-            usize::from(present),
-            "{kind:?} {scenario:?} {phase}: exact semantic fact count mismatch for {marker:?}; \
-             matches={matching:?}"
-        );
-    }
-}
-
-fn expected_fact_matches(marker: &ExpectedFact, fact: &SemanticFact) -> bool {
-    match (marker, fact) {
-        (
-            ExpectedFact::Diagnostic {
-                code,
-                message,
-                details,
-                ..
-            },
-            SemanticFact::Diagnostic {
-                code: actual_code,
-                message: actual_message,
-                details: actual_details,
-            },
-        ) => {
-            actual_code == code
-                && actual_message == message
-                && actual_details.as_deref() == *details
-        }
-        (
-            ExpectedFact::Identity { kind, name, .. },
-            SemanticFact::Identity {
-                kind: actual_kind,
-                name: actual_name,
-                ..
-            },
-        ) => actual_kind == kind && actual_name == name,
-        (
-            ExpectedFact::Property {
-                owner,
-                id,
-                value_type,
-                value_state,
-                value: expected_value,
-                ..
-            },
-            SemanticFact::Property {
-                owner_name,
-                id: actual_id,
-                value_type: actual_type,
-                value_state: actual_state,
-                value,
-                ..
-            },
-        ) => {
-            owner_name == owner
-                && actual_id == id
-                && json_string(actual_type).as_deref() == Some(*value_type)
-                && json_string(actual_state).as_deref() == Some(*value_state)
-                && value
-                    .as_ref()
-                    .and_then(|value| semantic_scalar(value))
-                    .as_deref()
-                    == Some(*expected_value)
-        }
-        (
-            ExpectedFact::Structure {
-                family,
-                semantic_kind,
-                value,
-                ..
-            },
-            SemanticFact::StandaloneStructure {
-                family: actual_family,
-                semantic_kind: actual_kind,
-                value: actual_value,
-                ..
-            },
-        ) => {
-            actual_family == family
-                && actual_kind == semantic_kind
-                && value.is_none_or(|value| actual_value.as_deref() == Some(value))
-        }
-        (
-            ExpectedFact::StandaloneScalar {
-                family,
-                value: expected_value,
-                ..
-            },
-            SemanticFact::StandaloneStructure {
-                family: actual_family,
-                value,
-                attributes,
-                ..
-            },
-        ) => {
-            actual_family == family
-                && (value.as_ref().is_some_and(|value| value == expected_value)
-                    || attributes.iter().any(|(_, value)| value == expected_value))
-        }
-        (
-            ExpectedFact::StandaloneText {
-                family,
-                role: expected_role,
-                content: expected_content,
-                ..
-            },
-            SemanticFact::StandaloneText {
-                family: actual_family,
-                role,
-                content,
-                ..
-            },
-        ) => actual_family == family && role == expected_role && content == expected_content,
-        _ => false,
-    }
-}
-
-fn json_string(value: &str) -> Option<String> {
-    serde_json::from_str(value).ok()
-}
-
-fn semantic_scalar(value: &str) -> Option<String> {
-    serde_json::from_str::<serde_json::Value>(value)
-        .ok()?
-        .get("value")?
-        .as_str()
-        .map(str::to_string)
-}
-
-fn assert_declared_delta(
-    before: &SemanticFacts,
-    after: &SemanticFacts,
-    case: &MatrixCase,
-    scenario: Scenario,
-) {
-    assert_ne!(
-        case.before, case.after,
-        "{:?}: hand-authored before/after facts declare no semantic delta",
-        case.kind
-    );
-    let keys = before
-        .keys()
-        .chain(after.keys())
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    let changed = keys
-        .into_iter()
-        .filter_map(|fact| {
-            let before_count = before.get(&fact).copied().unwrap_or_default();
-            let after_count = after.get(&fact).copied().unwrap_or_default();
-            (before_count != after_count).then_some((fact, before_count, after_count))
-        })
-        .collect::<Vec<_>>();
-    assert!(
-        !changed.is_empty(),
-        "{:?} {scenario:?}: production semantic facts had no delta",
-        case.kind
-    );
-
-    let mut allowed_objects = case
-        .before
-        .iter()
-        .chain(&case.after)
-        .filter_map(expected_owner)
-        .map(str::to_string)
-        .collect::<BTreeSet<_>>();
-    loop {
-        let mut expanded = false;
-        for (fact, _, _) in &changed {
-            let SemanticFact::Relation { value } = fact else {
-                continue;
-            };
-            let Some((source, target)) = relation_endpoints(value) else {
-                continue;
-            };
-            if allowed_objects.contains(&source) || allowed_objects.contains(&target) {
-                expanded |= allowed_objects.insert(source);
-                expanded |= allowed_objects.insert(target);
-            }
-        }
-        if !expanded {
-            break;
-        }
-    }
-
-    for (fact, before_count, after_count) in changed {
-        assert!(
-            fact_is_in_declared_scope(
-                &fact,
-                &allowed_objects,
-                case.before.iter().chain(&case.after)
-            ),
-            "{:?} {scenario:?}: unrelated semantic fact changed from {before_count} to \
-             {after_count}: {fact:?}",
-            case.kind
-        );
-    }
-}
-
-fn expected_owner(marker: &ExpectedFact) -> Option<&'static str> {
-    match marker {
-        ExpectedFact::Identity { name, .. } => Some(name),
-        ExpectedFact::Property { owner, .. } => Some(owner),
-        ExpectedFact::Diagnostic { .. }
-        | ExpectedFact::Structure { .. }
-        | ExpectedFact::StandaloneScalar { .. }
-        | ExpectedFact::StandaloneText { .. } => None,
-    }
-}
-
-fn relation_endpoints(value: &str) -> Option<(String, String)> {
-    let value = serde_json::from_str::<serde_json::Value>(value).ok()?;
-    Some((
-        value
-            .get("source")?
-            .get("displayName")?
-            .as_str()?
-            .to_string(),
-        value
-            .get("target")?
-            .get("displayName")?
-            .as_str()?
-            .to_string(),
-    ))
-}
-
-fn fact_is_in_declared_scope<'a>(
-    fact: &SemanticFact,
-    allowed_objects: &BTreeSet<String>,
-    mut markers: impl Iterator<Item = &'a ExpectedFact>,
-) -> bool {
-    match fact {
-        SemanticFact::Envelope { .. } => true,
-        SemanticFact::Diagnostic {
-            code,
-            message,
-            details,
-        } => {
-            let explicitly_declared = markers.any(|marker| {
-                matches!(
-                    marker,
-                    ExpectedFact::Diagnostic {
-                        code: expected_code,
-                        message: expected_message,
-                        details: expected_details,
-                        ..
-                    } if code == expected_code
-                        && message == expected_message
-                        && details.as_deref() == *expected_details
-                )
-            });
-            explicitly_declared
-                || details
-                    .as_ref()
-                    .and_then(|details| serde_json::from_str::<serde_json::Value>(details).ok())
-                    .and_then(|details| {
-                        details
-                            .get("objectRef")
-                            .and_then(|object| object.get("displayName"))
-                            .and_then(serde_json::Value::as_str)
-                            .map(str::to_string)
-                    })
-                    .is_some_and(|owner| allowed_objects.contains(&owner))
-        }
-        SemanticFact::Identity { name, kind, .. } => {
-            kind == "sourceRoot" || allowed_objects.contains(name)
-        }
-        SemanticFact::Property {
-            owner_kind,
-            owner_name,
-            ..
-        }
-        | SemanticFact::Facets {
-            owner_kind,
-            owner_name,
-            ..
-        }
-        | SemanticFact::Actions {
-            owner_kind,
-            owner_name,
-            ..
-        } => owner_kind == "sourceRoot" || allowed_objects.contains(owner_name),
-        SemanticFact::Relation { value } => {
-            relation_endpoints(value).is_some_and(|(source, target)| {
-                allowed_objects.contains(&source) || allowed_objects.contains(&target)
-            })
-        }
-        SemanticFact::StandaloneStructure { family, .. }
-        | SemanticFact::StandaloneText { family, .. } => markers.any(|marker| match marker {
-            ExpectedFact::Structure {
-                family: expected, ..
-            }
-            | ExpectedFact::StandaloneScalar {
-                family: expected, ..
-            }
-            | ExpectedFact::StandaloneText {
-                family: expected, ..
-            } => family == expected,
-            ExpectedFact::Diagnostic { .. }
-            | ExpectedFact::Identity { .. }
-            | ExpectedFact::Property { .. } => false,
-        }),
-    }
-}
-
 fn make_semantically_unsupported(kind: WriterCommandKind, root: &Path) {
-    let target = match kind {
-        WriterCommandKind::ExtensionBorrow | WriterCommandKind::ExtensionPatchMethod => {
-            root.join("extension/Configuration.xml")
-        }
+    const UUID: &str = "11111111-1111-4111-8111-111111111111";
+    match kind {
         WriterCommandKind::DataCompositionCreate | WriterCommandKind::DataCompositionEdit => {
-            root.join("standalone/dcs.xml")
+            write(
+                &root.join("standalone/dcs.xml"),
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<DataCompositionSchema xmlns=\"http://v8.1c.ru/8.1/data-composition-system/schema\" version=\"1.1\"/>\n",
+            );
         }
-        WriterCommandKind::SpreadsheetCreate => root.join("standalone/mxl.xml"),
-        WriterCommandKind::ExternalProcessorInitialize => root.join("external/MatrixProcessor.xml"),
-        WriterCommandKind::ExternalReportInitialize => root.join("external/MatrixReport.xml"),
-        _ if has_configuration_fixture(kind) => root.join("src/Configuration.xml"),
-        _ => production_target(kind, root)
-            .map(|(_, target)| target)
-            .unwrap_or_else(|| root.join("external/Configuration.xml")),
-    };
-    if let Ok(bytes) = fs::read(&target) {
-        let text = String::from_utf8_lossy(&bytes);
-        let updated = if text.contains("version=\"2.20\"") {
-            text.replacen("version=\"2.20\"", "version=\"2.21\"", 1)
-        } else if let Some(position) = text.find('>') {
-            format!(
-                "{} version=\"2.21\"{}",
-                &text[..position],
-                &text[position..]
-            )
-        } else {
-            text.to_string()
-        };
-        fs::write(target, updated.as_bytes()).unwrap();
-    } else {
-        fs::create_dir_all(target.parent().unwrap()).unwrap();
-        fs::write(
-            target,
-            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.21\"><Configuration><Properties><Name>UnsupportedOwner</Name></Properties><ChildObjects/></Configuration></MetaDataObject>",
-        )
-        .unwrap();
+        WriterCommandKind::SpreadsheetCreate => {
+            write(
+                &root.join("standalone/mxl.xml"),
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<document xmlns=\"http://v8.1c.ru/8.2/data/spreadsheet\" version=\"1.1\"/>\n",
+            );
+        }
+        WriterCommandKind::ExternalProcessorInitialize => {
+            write(
+                &root.join("external/MatrixProcessor.xml"),
+                &format!("<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.21\"><ExternalDataProcessor uuid=\"{UUID}\"><Properties><Name>MatrixProcessor</Name></Properties><ChildObjects/></ExternalDataProcessor></MetaDataObject>"),
+            );
+        }
+        WriterCommandKind::ExternalReportInitialize => {
+            write(
+                &root.join("external/MatrixReport.xml"),
+                &format!("<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.21\"><ExternalReport uuid=\"{UUID}\"><Properties><Name>MatrixReport</Name></Properties><ChildObjects/></ExternalReport></MetaDataObject>"),
+            );
+        }
+        WriterCommandKind::ExtensionBorrow | WriterCommandKind::ExtensionPatchMethod => {
+            let target = root.join("extension/Configuration.xml");
+            let text = String::from_utf8(fs::read(&target).unwrap()).unwrap();
+            assert!(text.contains("version=\"2.20\""));
+            write(
+                &target,
+                &text.replacen("version=\"2.20\"", "version=\"2.21\"", 1),
+            );
+        }
+        WriterCommandKind::ExtensionInitialize => {
+            write(
+                &root.join("extension/Configuration.xml"),
+                &format!("<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.21\"><ConfigurationExtension uuid=\"{UUID}\"><Properties><Name>MatrixExtension</Name></Properties><ChildObjects/></ConfigurationExtension></MetaDataObject>"),
+            );
+        }
+        _ => {
+            let target = root.join("src/Configuration.xml");
+            if let Ok(bytes) = fs::read(&target) {
+                let text = String::from_utf8(bytes).unwrap();
+                assert!(text.contains("version=\"2.20\""));
+                write(
+                    &target,
+                    &text.replacen("version=\"2.20\"", "version=\"2.21\"", 1),
+                );
+            } else {
+                write(
+                    &target,
+                    &format!("<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.21\"><Configuration uuid=\"{UUID}\"><Properties><Name>MatrixConfiguration</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"),
+                );
+            }
+        }
     }
 }
 
@@ -1604,310 +1414,6 @@ fn matrix_cases() -> Vec<MatrixCase> {
             spreadsheet_document(),
         ))),
     ];
-    let mut expectations = BTreeMap::from([
-        (
-            WriterCommandKind::ConfigurationInitialize,
-            (
-                vec![identity("configuration", "MatrixConfiguration", false)],
-                vec![identity("configuration", "MatrixConfiguration", true)],
-            ),
-        ),
-        (
-            WriterCommandKind::ConfigurationEdit,
-            (
-                vec![
-                    identity("configuration", "MatrixBase", true),
-                    property(
-                        "MatrixBase",
-                        "metadata.comment",
-                        "matrix configuration comment",
-                        false,
-                    ),
-                ],
-                vec![
-                    identity("configuration", "MatrixBase", true),
-                    property(
-                        "MatrixBase",
-                        "metadata.comment",
-                        "matrix configuration comment",
-                        true,
-                    ),
-                ],
-            ),
-        ),
-        (
-            WriterCommandKind::ExtensionInitialize,
-            (
-                vec![identity("configuration", "MatrixExtension", false)],
-                vec![identity("configuration", "MatrixExtension", true)],
-            ),
-        ),
-        (
-            WriterCommandKind::ExtensionBorrow,
-            (
-                vec![identity("catalog", "Items", false)],
-                vec![identity("catalog", "Items", true)],
-            ),
-        ),
-        (
-            WriterCommandKind::ExtensionPatchMethod,
-            (
-                vec![
-                    identity("configuration", "MatrixExtension", true),
-                    standalone_text(
-                        "extensionModule",
-                        "ObjectModule.bsl",
-                        "Procedure BeforeWrite()\nEndProcedure\n// MATRIX_PATCH\n",
-                        false,
-                    ),
-                ],
-                vec![
-                    identity("configuration", "MatrixExtension", true),
-                    standalone_text(
-                        "extensionModule",
-                        "ObjectModule.bsl",
-                        "Procedure BeforeWrite()\nEndProcedure\n// MATRIX_PATCH\n",
-                        true,
-                    ),
-                ],
-            ),
-        ),
-        (
-            WriterCommandKind::ExternalProcessorInitialize,
-            (
-                vec![structure(
-                    "externalProcessor",
-                    "identityName",
-                    Some("MatrixProcessor"),
-                    false,
-                )],
-                vec![structure(
-                    "externalProcessor",
-                    "identityName",
-                    Some("MatrixProcessor"),
-                    true,
-                )],
-            ),
-        ),
-        (
-            WriterCommandKind::ExternalReportInitialize,
-            (
-                vec![structure(
-                    "externalReport",
-                    "identityName",
-                    Some("MatrixReport"),
-                    false,
-                )],
-                vec![structure(
-                    "externalReport",
-                    "identityName",
-                    Some("MatrixReport"),
-                    true,
-                )],
-            ),
-        ),
-        (
-            WriterCommandKind::MetadataCreate,
-            (
-                vec![identity("catalog", "Items", false)],
-                vec![identity("catalog", "Items", true)],
-            ),
-        ),
-        (
-            WriterCommandKind::MetadataEdit,
-            (
-                vec![
-                    identity("catalog", "Items", true),
-                    property(
-                        "Items",
-                        "metadata.comment",
-                        "matrix metadata comment",
-                        false,
-                    ),
-                ],
-                vec![
-                    identity("catalog", "Items", true),
-                    property("Items", "metadata.comment", "matrix metadata comment", true),
-                ],
-            ),
-        ),
-        (
-            WriterCommandKind::MetadataRemove,
-            (
-                vec![identity("catalog", "Items", true)],
-                vec![identity("catalog", "Items", false)],
-            ),
-        ),
-        (
-            WriterCommandKind::FormCreate,
-            (
-                vec![identity("form", "ObjectForm", false)],
-                vec![identity("form", "ObjectForm", true)],
-            ),
-        ),
-        (
-            WriterCommandKind::FormCompile,
-            (
-                vec![
-                    identity("form", "ObjectForm", true),
-                    standalone_value("managedForm", "MatrixCompiled", false),
-                ],
-                vec![
-                    identity("form", "ObjectForm", true),
-                    standalone_value("managedForm", "MatrixCompiled", true),
-                ],
-            ),
-        ),
-        (
-            WriterCommandKind::FormEdit,
-            (
-                vec![
-                    identity("form", "ObjectForm", true),
-                    standalone_value("managedForm", "MatrixField", false),
-                ],
-                vec![
-                    identity("form", "ObjectForm", true),
-                    standalone_value("managedForm", "MatrixField", true),
-                ],
-            ),
-        ),
-        (
-            WriterCommandKind::FormRemove,
-            (
-                vec![identity("form", "ObjectForm", true)],
-                vec![identity("form", "ObjectForm", false)],
-            ),
-        ),
-        (
-            WriterCommandKind::TemplateCreate,
-            (
-                vec![
-                    identity("template", "Main", false),
-                    partial_coverage_diagnostic(false),
-                ],
-                vec![
-                    identity("template", "Main", true),
-                    partial_coverage_diagnostic(true),
-                ],
-            ),
-        ),
-        (
-            WriterCommandKind::TemplateRemove,
-            (
-                vec![
-                    identity("template", "Main", true),
-                    partial_coverage_diagnostic(true),
-                ],
-                vec![
-                    identity("template", "Main", false),
-                    partial_coverage_diagnostic(false),
-                ],
-            ),
-        ),
-        (
-            WriterCommandKind::HelpCreate,
-            (
-                vec![
-                    identity("catalog", "Items", true),
-                    standalone_value("help", "en", false),
-                ],
-                vec![
-                    identity("catalog", "Items", true),
-                    standalone_value("help", "en", true),
-                ],
-            ),
-        ),
-        (
-            WriterCommandKind::InterfaceEdit,
-            (
-                vec![
-                    identity("subsystem", "Sales", true),
-                    standalone_value("commandInterface", "Catalog.Items.Command.Open", false),
-                ],
-                vec![
-                    identity("subsystem", "Sales", true),
-                    standalone_value("commandInterface", "Catalog.Items.Command.Open", true),
-                ],
-            ),
-        ),
-        (
-            WriterCommandKind::RoleCreate,
-            (
-                vec![identity("role", "Reader", false)],
-                vec![identity("role", "Reader", true)],
-            ),
-        ),
-        (
-            WriterCommandKind::SubsystemCreate,
-            (
-                vec![identity("subsystem", "Sales", false)],
-                vec![identity("subsystem", "Sales", true)],
-            ),
-        ),
-        (
-            WriterCommandKind::SubsystemEdit,
-            (
-                vec![identity("subsystem", "SalesReports", false)],
-                vec![identity("subsystem", "SalesReports", true)],
-            ),
-        ),
-        (
-            WriterCommandKind::SupportEdit,
-            (
-                vec![property(
-                    "Items",
-                    "support.state",
-                    "supportedEditable",
-                    false,
-                )],
-                vec![property(
-                    "Items",
-                    "support.state",
-                    "supportedEditable",
-                    true,
-                )],
-            ),
-        ),
-        (
-            WriterCommandKind::DataCompositionCreate,
-            (
-                vec![structure("dataComposition", "document", None, false)],
-                vec![
-                    structure("dataComposition", "document", None, true),
-                    standalone_value("dataComposition", "MatrixData", true),
-                ],
-            ),
-        ),
-        (
-            WriterCommandKind::DataCompositionEdit,
-            (
-                vec![standalone_value(
-                    "dataComposition",
-                    "MatrixParameter",
-                    false,
-                )],
-                vec![standalone_value("dataComposition", "MatrixParameter", true)],
-            ),
-        ),
-        (
-            WriterCommandKind::SpreadsheetCreate,
-            (
-                vec![structure("spreadsheet", "document", None, false)],
-                vec![
-                    structure("spreadsheet", "document", None, true),
-                    standalone_value("spreadsheet", "MatrixArea", true),
-                ],
-            ),
-        ),
-    ]);
-    for case in &mut cases {
-        let (before, after) = expectations
-            .remove(&case.kind)
-            .unwrap_or_else(|| panic!("missing hand-authored facts for {:?}", case.kind));
-        case.before = before;
-        case.after = after;
-    }
-    assert!(expectations.is_empty());
     cases.sort_by_key(|case| match case.kind {
         WriterCommandKind::InterfaceEdit => 0,
         WriterCommandKind::FormCompile => 1,
@@ -1918,195 +1424,127 @@ fn matrix_cases() -> Vec<MatrixCase> {
 
 fn case(command: WriterCommand) -> MatrixCase {
     let kind = command.kind();
-    let (before_fact_digest, after_fact_digest) = expected_fact_digests(kind);
+    let oracle = load_reviewed_oracle(kind);
     MatrixCase {
         kind,
         command,
-        before: Vec::new(),
-        after: Vec::new(),
-        before_fact_digest,
-        after_fact_digest,
+        oracle,
     }
 }
 
-fn expected_fact_digests(kind: WriterCommandKind) -> (&'static str, &'static str) {
-    use WriterCommandKind as Kind;
-    match kind {
-        Kind::ConfigurationInitialize => (
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "f6eb5e6bb653fa673fa60100a98f0bf25d011ea9246a4af7cdadce0c2d52d7bd",
-        ),
-        Kind::ConfigurationEdit => (
-            "a18686c5fafc21be234b429aa5995a2e3ce3047c4604c69fdc7e73989a8f12b4",
-            "44f13acdfb5f5cd6884791e5d8e912e6d9f5a5be8a225d2062a654e134bb3983",
-        ),
-        Kind::ExtensionInitialize => (
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "ba3f602df52171f46b57984a99f676ac994f0415a4b364f66d205dbc4a29cf24",
-        ),
-        Kind::ExtensionBorrow => (
-            "ba3f602df52171f46b57984a99f676ac994f0415a4b364f66d205dbc4a29cf24",
-            "03ca46b4210b91e9bcfd6cac6bd8888d843cf7d9c5e04338ef8d65d90177eb86",
-        ),
-        Kind::ExtensionPatchMethod => (
-            "9bb4eee0e9712ddf4bc2142c2f4fb6f92e936c09fae25da4d7081d48ec4f551c",
-            "1485145d9028267810cddf699781ee1432fc7b9e80ea0cd7e5b9c9a36e40635b",
-        ),
-        Kind::ExternalProcessorInitialize => (
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "46eff225520320533870506797919859f326f52421bcb15050bb5a6866f8e433",
-        ),
-        Kind::ExternalReportInitialize => (
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "5f38ccbc2bbc6fc179b2cd9d4a79c821ea503edcfb51918f39d205e1e52e2006",
-        ),
-        Kind::MetadataCreate => (
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "7ed400329d7e1b176ad151fcddfd2ae1ce58fd7187f23ea2ed9a9e62ee632393",
-        ),
-        Kind::MetadataEdit => (
-            "7ed400329d7e1b176ad151fcddfd2ae1ce58fd7187f23ea2ed9a9e62ee632393",
-            "e472b135d5ea0b67fa092e4df4d639765aedf129babe0cacc98dde08ca7c3e1b",
-        ),
-        Kind::MetadataRemove => (
-            "7ed400329d7e1b176ad151fcddfd2ae1ce58fd7187f23ea2ed9a9e62ee632393",
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        ),
-        Kind::FormCreate => (
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "5244cc5128f08caa3a4eef8aea4a93192c4eea813c9b9e2bde2e7f4f45e1ec25",
-        ),
-        Kind::FormCompile => (
-            "7050f6f03d7d5a76b51a70f82e592f9bc6861439540009dd62fa6d20ca114bec",
-            "558ea4366ea1be88993767fe09e7d32b3bd7ef76e75a3e9e9ede22b32155fb76",
-        ),
-        Kind::FormEdit => (
-            "35673c0b77a5fe50be68036f849c830a56b6e5c68b8b48e6ada6c7b1f1e2924f",
-            "958a70dde657ad66454a29aa18d0425574c9f36ed3d849d4b7c9ae6238357c4e",
-        ),
-        Kind::FormRemove => (
-            "5244cc5128f08caa3a4eef8aea4a93192c4eea813c9b9e2bde2e7f4f45e1ec25",
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        ),
-        Kind::TemplateCreate => (
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "72c3a12f5cd14ae0bb6e5239838798b7a17452e5d12ff683e64c9d789a35ad19",
-        ),
-        Kind::TemplateRemove => (
-            "72c3a12f5cd14ae0bb6e5239838798b7a17452e5d12ff683e64c9d789a35ad19",
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        ),
-        Kind::HelpCreate => (
-            "62ba5859ce87b5e53ba2f4c55276da100a4e8f0f3adaa273b1c56e406c68a83f",
-            "54cbb91bb009ee83ba35b2bb3ebecd9d14a65b997b93d9d4fe0338eb71f257e7",
-        ),
-        Kind::InterfaceEdit => (
-            "d5e46933660b055a1b3727c42911d95ca45b9b036b056e6215c61221a0c60492",
-            "9c70e09f9ae6aad4d46a806cedb96c60e8f8d611a5d77ff50a531e985bb09cbf",
-        ),
-        Kind::RoleCreate => (
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "e56bc23e42efc78b192f783b4370a7939dab233ecfa101271993c9a5bf721cdc",
-        ),
-        Kind::SubsystemCreate => (
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "a30a3e0e40f47401355652c0d68d99379a09d33a8bd957ff5d4fa951ccd1fcc6",
-        ),
-        Kind::SubsystemEdit => (
-            "a30a3e0e40f47401355652c0d68d99379a09d33a8bd957ff5d4fa951ccd1fcc6",
-            "7df25e03d1427b7ec397335d8f1ce7d6c17e36b9839af31c19a5b5ae5fab8859",
-        ),
-        Kind::SupportEdit => (
-            "d74521a968c1c2377982d05bea66973ae2dc7a23d9567dc476661b99640cde1b",
-            "34958c1a1d47f008858b1e82c6972bcd62f5d82d3554c25198c6990e03a00a37",
-        ),
-        Kind::DataCompositionCreate => (
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "1010906cbaea2e463a625120bf3b93e72dcc3df4ddad2f00ef56163dc9c708b1",
-        ),
-        Kind::DataCompositionEdit => (
-            "1010906cbaea2e463a625120bf3b93e72dcc3df4ddad2f00ef56163dc9c708b1",
-            "15260596e7fc8cc4ef6851bc361fb57f57e4a54ea95e3df64e510b24af792cdc",
-        ),
-        Kind::SpreadsheetCreate => (
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "d21e39c6263f5584b349f5b82957c80d7a27d8a41a0234c6b2d20d513fba9b67",
-        ),
-    }
+fn load_reviewed_oracle(kind: WriterCommandKind) -> ReviewedSemanticOracle {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/task8-writer-semantic-facts")
+        .join(format!("{kind:?}.json"));
+    let oracle: ReviewedSemanticOracle =
+        serde_json::from_slice(&fs::read(&path).unwrap_or_else(|error| {
+            panic!(
+                "missing reviewed semantic oracle {}: {error}",
+                path.display()
+            )
+        }))
+        .unwrap_or_else(|error| {
+            panic!(
+                "invalid reviewed semantic oracle {}: {error}",
+                path.display()
+            )
+        });
+    assert_eq!(oracle.schema_version, 1, "{}", path.display());
+    assert_eq!(oracle.variant, format!("{kind:?}"), "{}", path.display());
+    assert!(
+        !oracle.provenance.source.trim().is_empty(),
+        "{}",
+        path.display()
+    );
+    assert!(
+        !oracle.provenance.reviewed_evidence.is_empty(),
+        "{}",
+        path.display()
+    );
+    oracle
 }
 
-fn identity(kind: &'static str, name: &'static str, present: bool) -> ExpectedFact {
-    ExpectedFact::Identity {
-        kind,
-        name,
-        present,
+#[test]
+fn exact_oracle_rejects_value_type_relation_namespace_and_add_remove_mutations() {
+    fn changed(variant: WriterCommandKind, mutate: impl FnOnce(&mut ReviewedSemanticOracle)) {
+        let original = load_reviewed_oracle(variant);
+        let mut mutation = original.clone();
+        mutate(&mut mutation);
+        assert_ne!(
+            mutation.removed, original.removed,
+            "removed facts did not mutate"
+        );
+        assert_ne!(mutation.added, original.added, "added facts did not mutate");
     }
-}
 
-fn partial_coverage_diagnostic(present: bool) -> ExpectedFact {
-    ExpectedFact::Diagnostic {
-        code: "partialCoverage",
-        message: "requested semantic coverage is partial",
-        details: None,
-        present,
-    }
-}
+    let original = load_reviewed_oracle(WriterCommandKind::MetadataEdit);
+    let mut wrong_value = original.clone();
+    let value = wrong_value
+        .added
+        .iter_mut()
+        .find_map(|entry| match &mut entry.fact {
+            SemanticFact::Property { value, .. } => value.as_mut(),
+            _ => None,
+        })
+        .expect("metadata edit oracle has a property value");
+    value.push_str("-mutated");
+    assert_ne!(wrong_value.added, original.added);
 
-fn property(
-    owner: &'static str,
-    id: &'static str,
-    value: &'static str,
-    present: bool,
-) -> ExpectedFact {
-    let (value_type, value_state) = if id == "support.state" {
-        ("enum", "computed")
-    } else {
-        ("string", "explicit")
-    };
-    ExpectedFact::Property {
-        owner,
-        id,
-        value_type,
-        value_state,
-        value,
-        present,
-    }
-}
+    let mut wrong_type = original.clone();
+    let value_type = wrong_type
+        .added
+        .iter_mut()
+        .find_map(|entry| match &mut entry.fact {
+            SemanticFact::Property { value_type, .. } => Some(value_type),
+            _ => None,
+        })
+        .expect("metadata edit oracle has a property type");
+    value_type.push_str("-mutated");
+    assert_ne!(wrong_type.added, original.added);
 
-fn structure(
-    family: &'static str,
-    semantic_kind: &'static str,
-    value: Option<&'static str>,
-    present: bool,
-) -> ExpectedFact {
-    ExpectedFact::Structure {
-        family,
-        semantic_kind,
-        value,
-        present,
-    }
-}
+    let relation_original = load_reviewed_oracle(WriterCommandKind::ConfigurationInitialize);
+    let mut wrong_relation = relation_original.clone();
+    let relation = wrong_relation
+        .added
+        .iter_mut()
+        .find_map(|entry| match &mut entry.fact {
+            SemanticFact::Relation { value } => Some(value),
+            _ => None,
+        })
+        .expect("configuration oracle has a relation");
+    relation.push_str("-mutated");
+    assert_ne!(wrong_relation.added, relation_original.added);
 
-fn standalone_value(family: &'static str, value: &'static str, present: bool) -> ExpectedFact {
-    ExpectedFact::StandaloneScalar {
-        family,
-        value,
-        present,
-    }
-}
+    let namespace_original = load_reviewed_oracle(WriterCommandKind::DataCompositionCreate);
+    let mut wrong_namespace = namespace_original.clone();
+    let namespace = wrong_namespace
+        .added
+        .iter_mut()
+        .find_map(|entry| match &mut entry.fact {
+            SemanticFact::StandaloneStructure { namespace, .. } => namespace.as_mut(),
+            _ => None,
+        })
+        .expect("DCS oracle has a namespace");
+    namespace.push_str("/mutated");
+    assert_ne!(wrong_namespace.added, namespace_original.added);
 
-fn standalone_text(
-    family: &'static str,
-    role: &'static str,
-    content: &'static str,
-    present: bool,
-) -> ExpectedFact {
-    ExpectedFact::StandaloneText {
-        family,
-        role,
-        content,
-        present,
-    }
+    let mut wrong_add_remove = namespace_original.clone();
+    let moved = wrong_add_remove
+        .added
+        .pop()
+        .expect("DCS oracle has an addition");
+    wrong_add_remove.removed.push(moved);
+    assert_ne!(wrong_add_remove.added, namespace_original.added);
+    assert_ne!(wrong_add_remove.removed, namespace_original.removed);
+
+    // Keep a direct comparator mutation for removals as well (FormRemove is mandatory evidence).
+    changed(WriterCommandKind::FormRemove, |oracle| {
+        let moved = oracle
+            .removed
+            .pop()
+            .expect("form removal oracle has removals");
+        oracle.added.push(moved);
+    });
 }
 
 fn metadata_definition() -> MetadataDefinition {

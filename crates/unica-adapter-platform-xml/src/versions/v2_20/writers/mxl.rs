@@ -19,7 +19,7 @@ pub(crate) const MXL_DOCUMENT_NS: &str = "http://v8.1c.ru/8.2/data/spreadsheet";
 
 pub(crate) fn empty_spreadsheet_document_xml() -> String {
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<document xmlns=\"{MXL_DOCUMENT_NS}\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n\t<languageSettings>\n\t\t<currentLanguage>ru</currentLanguage>\n\t\t<defaultLanguage>ru</defaultLanguage>\n\t\t<languageInfo>\n\t\t\t<id>ru</id>\n\t\t\t<code>Русский</code>\n\t\t\t<description>Русский</description>\n\t\t</languageInfo>\n\t</languageSettings>\n\t<columns>\n\t\t<size>0</size>\n\t</columns>\n\t<rowsItem>\n\t\t<index>0</index>\n\t\t<row>\n\t\t\t<empty>true</empty>\n\t\t</row>\n\t</rowsItem>\n\t<templateMode>true</templateMode>\n\t<vgRows>0</vgRows>\n</document>\n"
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<document xmlns=\"{MXL_DOCUMENT_NS}\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"1.0\">\n\t<languageSettings>\n\t\t<currentLanguage>ru</currentLanguage>\n\t\t<defaultLanguage>ru</defaultLanguage>\n\t\t<languageInfo>\n\t\t\t<id>ru</id>\n\t\t\t<code>Русский</code>\n\t\t\t<description>Русский</description>\n\t\t</languageInfo>\n\t</languageSettings>\n\t<columns>\n\t\t<size>0</size>\n\t</columns>\n\t<rowsItem>\n\t\t<index>0</index>\n\t\t<row>\n\t\t\t<empty>true</empty>\n\t\t</row>\n\t</rowsItem>\n\t<templateMode>true</templateMode>\n\t<vgRows>0</vgRows>\n</document>\n"
     )
 }
 
@@ -34,6 +34,16 @@ pub(crate) fn require_mxl_document_root(root: roxmltree::Node<'_, '_>) -> Result
     if namespace != MXL_DOCUMENT_NS {
         return Err(format!(
             "Root namespace is '{namespace}', expected '{MXL_DOCUMENT_NS}'"
+        ));
+    }
+    let version = root
+        .attributes()
+        .find(|attribute| attribute.namespace().is_none() && attribute.name() == "version")
+        .map(|attribute| attribute.value())
+        .ok_or_else(|| "Spreadsheet document root version is missing".to_string())?;
+    if version != "1.0" {
+        return Err(format!(
+            "Spreadsheet document root version is '{version}', expected '1.0'"
         ));
     }
     Ok(())
@@ -2593,7 +2603,7 @@ fn compile_mxl_input(input: MxlCompileInput, context: &WorkspaceContext) -> Nati
 
         let mut lines = Vec::<String>::new();
         lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
-        lines.push("<document xmlns=\"http://v8.1c.ru/8.2/data/spreadsheet\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">".to_string());
+        lines.push("<document xmlns=\"http://v8.1c.ru/8.2/data/spreadsheet\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"1.0\">".to_string());
         lines.push("\t<languageSettings>".to_string());
         lines.push("\t\t<currentLanguage>ru</currentLanguage>".to_string());
         lines.push("\t\t<defaultLanguage>ru</defaultLanguage>".to_string());
@@ -3168,7 +3178,7 @@ fn compile_semantic_mxl(
 
         let mut lines = Vec::<String>::new();
         lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
-        lines.push("<document xmlns=\"http://v8.1c.ru/8.2/data/spreadsheet\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">".to_string());
+        lines.push("<document xmlns=\"http://v8.1c.ru/8.2/data/spreadsheet\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"1.0\">".to_string());
         lines.push("\t<languageSettings>".to_string());
         lines.push("\t\t<currentLanguage>ru</currentLanguage>".to_string());
         lines.push("\t\t<defaultLanguage>ru</defaultLanguage>".to_string());
@@ -4226,7 +4236,7 @@ mod tests {
         )
         .unwrap();
         let original =
-            br#"<document xmlns="http://v8.1c.ru/8.2/data/spreadsheet" version="2.20"/>"#.to_vec();
+            br#"<document xmlns="http://v8.1c.ru/8.2/data/spreadsheet" version="1.0"/>"#.to_vec();
         fs::write(&output_path, &original).unwrap();
         let args = Map::from_iter([
             ("JsonPath".to_string(), json!(definition_path)),

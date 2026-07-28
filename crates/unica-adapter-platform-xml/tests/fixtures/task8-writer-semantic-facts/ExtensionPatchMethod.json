@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "variant": "ExtensionPatchMethod",
+  "provenance": {
+    "source": "Approved Task 8 design, Task 5 semantic contract, and the pre-migration v2_20 legacy semantic oracle; exact facts were reviewed against the command DTO and legacy writer behavior.",
+    "reviewedEvidence": [
+      ".superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/task-8-brief.md",
+      "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/legacy-semantic-oracle.json",
+      "crates/unica-adapter-platform-xml/tests/task5_legacy_parity.rs"
+    ]
+  },
+  "removed": [
+    {
+      "fact": {
+        "StandaloneText": {
+          "family": "extensionModule",
+          "role": "ObjectModule.bsl",
+          "content": "Procedure BeforeWrite()\nEndProcedure\n"
+        }
+      },
+      "count": 1
+    }
+  ],
+  "added": [
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "extensionModule",
+          "namespace": "http://v8.1c.ru/8.3/xcf/readable",
+          "document": 0,
+          "ordinal_path": "1.1.6",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/xcf/readable:PropertyState",
+          "value": null,
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "extensionModule",
+          "namespace": "http://v8.1c.ru/8.3/xcf/readable",
+          "document": 0,
+          "ordinal_path": "1.1.6.1",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/xcf/readable:Property",
+          "value": "ObjectModule",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "extensionModule",
+          "namespace": "http://v8.1c.ru/8.3/xcf/readable",
+          "document": 0,
+          "ordinal_path": "1.1.6.2",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/xcf/readable:State",
+          "value": "Extended",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneText": {
+          "family": "extensionModule",
+          "role": "ObjectModule.bsl",
+          "content": "Procedure BeforeWrite()\nEndProcedure\n// MATRIX_PATCH\n"
+        }
+      },
+      "count": 1
+    }
+  ]
+}

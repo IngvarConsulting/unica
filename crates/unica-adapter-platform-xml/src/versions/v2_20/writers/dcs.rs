@@ -39,6 +39,16 @@ pub(crate) fn require_dcs_root(root: roxmltree::Node<'_, '_>) -> Result<(), Stri
             "Root namespace is '{namespace}' for DataCompositionSchema, expected '{DCS_SCHEMA_NS}'"
         ));
     }
+    let version = root
+        .attributes()
+        .find(|attribute| attribute.namespace().is_none() && attribute.name() == "version")
+        .map(|attribute| attribute.value())
+        .ok_or_else(|| "DataCompositionSchema root version is missing".to_string())?;
+    if version != "1.0" {
+        return Err(format!(
+            "DataCompositionSchema root version is '{version}', expected '1.0'"
+        ));
+    }
     Ok(())
 }
 
@@ -3073,7 +3083,7 @@ fn dcs_compile_semantic_xml(
 
     let mut lines = vec![
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string(),
-        "<DataCompositionSchema xmlns=\"http://v8.1c.ru/8.1/data-composition-system/schema\" xmlns:dcscom=\"http://v8.1c.ru/8.1/data-composition-system/common\" xmlns:dcscor=\"http://v8.1c.ru/8.1/data-composition-system/core\" xmlns:dcsset=\"http://v8.1c.ru/8.1/data-composition-system/settings\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">".to_string(),
+        "<DataCompositionSchema xmlns=\"http://v8.1c.ru/8.1/data-composition-system/schema\" xmlns:dcscom=\"http://v8.1c.ru/8.1/data-composition-system/common\" xmlns:dcscor=\"http://v8.1c.ru/8.1/data-composition-system/core\" xmlns:dcsset=\"http://v8.1c.ru/8.1/data-composition-system/settings\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"1.0\">".to_string(),
     ];
     let default_source = definition
         .data_sources()
@@ -3411,7 +3421,7 @@ fn dcs_compile_xml_with_inputs(
         .unwrap_or_else(|| "ИсточникДанных1".to_string());
     let mut lines = vec![
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string(),
-        "<DataCompositionSchema xmlns=\"http://v8.1c.ru/8.1/data-composition-system/schema\" xmlns:dcscom=\"http://v8.1c.ru/8.1/data-composition-system/common\" xmlns:dcscor=\"http://v8.1c.ru/8.1/data-composition-system/core\" xmlns:dcsset=\"http://v8.1c.ru/8.1/data-composition-system/settings\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">".to_string(),
+        "<DataCompositionSchema xmlns=\"http://v8.1c.ru/8.1/data-composition-system/schema\" xmlns:dcscom=\"http://v8.1c.ru/8.1/data-composition-system/common\" xmlns:dcscor=\"http://v8.1c.ru/8.1/data-composition-system/core\" xmlns:dcsset=\"http://v8.1c.ru/8.1/data-composition-system/settings\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"1.0\">".to_string(),
     ];
 
     for (name, source_type) in &data_sources {
@@ -11998,7 +12008,7 @@ mod tests {
         let context = temp_context("dcs-compile-existing-same-family");
         let output_path = context.cwd.join("Template.xml");
         let original = exact_dcs_bytes(
-            r#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" version="2.20"/>"#,
+            r#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" version="1.0"/>"#,
         );
         fs::write(&output_path, &original).unwrap();
         let args = dcs_compile_args(&valid_compile_definition(), "Template.xml");
@@ -14200,7 +14210,8 @@ mod tests {
 		xmlns:v8="http://v8.1c.ru/8.1/data/core"
 		xmlns:v8ui="http://v8.1c.ru/8.1/data/ui"
 		xmlns:xs="http://www.w3.org/2001/XMLSchema"
-		xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+		xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+		version="1.0">
 	<dataSource>
 		<name>ИсточникДанных1</name>
 		<dataSourceType>Local</dataSourceType>

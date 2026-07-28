@@ -1,0 +1,149 @@
+{
+  "schemaVersion": 1,
+  "variant": "ExtensionBorrow",
+  "provenance": {
+    "source": "Approved Task 8 design, Task 5 semantic contract, and the pre-migration v2_20 legacy semantic oracle; exact facts were reviewed against the command DTO and legacy writer behavior.",
+    "reviewedEvidence": [
+      ".superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/task-8-brief.md",
+      "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/legacy-semantic-oracle.json",
+      "crates/unica-adapter-platform-xml/tests/task5_legacy_parity.rs"
+    ]
+  },
+  "removed": [],
+  "added": [
+    {
+      "fact": {
+        "Identity": {
+          "kind": "catalog",
+          "name": "Items",
+          "reference_kind": "catalog",
+          "reference_name": "Items",
+          "capability_state": "{\"resolutionState\":\"unresolved\",\"authorability\":\"unknown_read_only\"}",
+          "capability": "{\"resolution\":\"unresolved\",\"identity\":\"derived\",\"consistency\":\"consistent\",\"coverage\":\"partial\",\"format\":\"compatible\",\"sourceAccess\":\"readOnly\",\"authorability\":\"derived_read_only\"}",
+          "action_profile": "\"generic_metadata_object\"",
+          "facet_visibility": "Full"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "catalog.hierarchy.levelLimit",
+          "value_type": "\"integer\"",
+          "value_state": "\"absent\"",
+          "value": null,
+          "provenance": "\"declared\"",
+          "capability": "\"unavailable\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "metadata.kind",
+          "value_type": "\"string\"",
+          "value_state": "\"computed\"",
+          "value": "{\"type\":\"string\",\"value\":\"catalog\"}",
+          "provenance": "\"derived\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "metadata.name",
+          "value_type": "\"string\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"string\",\"value\":\"Items\"}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "support.authorability",
+          "value_type": "\"string\"",
+          "value_state": "\"computed\"",
+          "value": "{\"type\":\"string\",\"value\":\"derivedReadOnly\"}",
+          "provenance": "\"derived\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "support.editCapability",
+          "value_type": "\"string\"",
+          "value_state": "\"computed\"",
+          "value": "{\"type\":\"string\",\"value\":\"readOnly\"}",
+          "provenance": "\"derived\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "support.state",
+          "value_type": "\"enum\"",
+          "value_state": "\"computed\"",
+          "value": "{\"type\":\"enum\",\"value\":\"notSupported\"}",
+          "provenance": "\"derived\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facets": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "members": "{\"hierarchy\":[\"catalog.hierarchy.levelLimit\"],\"identity\":[\"metadata.kind\",\"metadata.name\"],\"support\":[\"support.state\",\"support.authorability\",\"support.editCapability\"]}"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Actions": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "semantic": "[]",
+          "available": "[{\"kind\":\"inspect\",\"target\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"derived:sha256:<semantic-hash>\",\"identityStrength\":\"derived\",\"kind\":\"catalog\",\"displayName\":\"Items\"},\"owningRelation\":{\"sourceId\":\"workspace:task8-preservation\",\"relationKey\":\"derived:sha256:<semantic-hash>\",\"kind\":\"contains\"},\"availability\":\"modeled\",\"blockingReasons\":[],\"operationBinding\":null,\"atomicity\":\"read_only\"}]"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Relation": {
+          "value": "{\"relationRef\":{\"sourceId\":\"workspace:task8-preservation\",\"relationKey\":\"derived:sha256:<semantic-hash>\",\"kind\":\"contains\"},\"groupRef\":{\"sourceId\":\"workspace:task8-preservation\",\"groupKey\":\"group:sha256:<semantic-hash>\",\"owner\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"uuid:<semantic-id>\",\"identityStrength\":\"persistent\",\"kind\":\"configuration\",\"displayName\":\"MatrixExtension\"},\"role\":\"children\",\"kind\":\"contains\"},\"identityStrength\":\"derived\",\"kind\":\"contains\",\"role\":\"children\",\"source\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"uuid:<semantic-id>\",\"identityStrength\":\"persistent\",\"kind\":\"configuration\",\"displayName\":\"MatrixExtension\"},\"target\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"derived:sha256:<semantic-hash>\",\"identityStrength\":\"derived\",\"kind\":\"catalog\",\"displayName\":\"Items\"},\"capability\":{\"resolution\":\"resolved\",\"identity\":\"derived\",\"consistency\":\"consistent\",\"coverage\":\"partial\",\"format\":\"compatible\",\"sourceAccess\":\"readOnly\",\"authorability\":\"derived_read_only\"}}"
+        }
+      },
+      "count": 1
+    }
+  ]
+}

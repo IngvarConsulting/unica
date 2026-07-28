@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "variant": "FormEdit",
+  "provenance": {
+    "source": "Approved Task 8 design, Task 5 semantic contract, and the pre-migration v2_20 legacy semantic oracle; exact facts were reviewed against the command DTO and legacy writer behavior.",
+    "reviewedEvidence": [
+      ".superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/task-8-brief.md",
+      "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/legacy-semantic-oracle.json",
+      "crates/unica-adapter-platform-xml/tests/task5_legacy_parity.rs"
+    ]
+  },
+  "removed": [],
+  "added": [
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "managedForm",
+          "namespace": "http://v8.1c.ru/8.3/xcf/logform",
+          "document": 0,
+          "ordinal_path": "2",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/xcf/logform:ChildItems",
+          "value": null,
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "managedForm",
+          "namespace": "http://v8.1c.ru/8.3/xcf/logform",
+          "document": 0,
+          "ordinal_path": "2.1",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/xcf/logform:InputField",
+          "value": null,
+          "attributes": [
+            [
+              "id",
+              "1"
+            ],
+            [
+              "identity",
+              "MatrixField"
+            ]
+          ]
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "managedForm",
+          "namespace": "http://v8.1c.ru/8.3/xcf/logform",
+          "document": 0,
+          "ordinal_path": "2.1.1",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/xcf/logform:ContextMenu",
+          "value": "",
+          "attributes": [
+            [
+              "id",
+              "2"
+            ],
+            [
+              "identity",
+              "MatrixField\u041a\u043e\u043d\u0442\u0435\u043a\u0441\u0442\u043d\u043e\u0435\u041c\u0435\u043d\u044e"
+            ]
+          ]
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "managedForm",
+          "namespace": "http://v8.1c.ru/8.3/xcf/logform",
+          "document": 0,
+          "ordinal_path": "2.1.2",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/xcf/logform:ExtendedTooltip",
+          "value": "",
+          "attributes": [
+            [
+              "id",
+              "3"
+            ],
+            [
+              "identity",
+              "MatrixField\u0420\u0430\u0441\u0448\u0438\u0440\u0435\u043d\u043d\u0430\u044f\u041f\u043e\u0434\u0441\u043a\u0430\u0437\u043a\u0430"
+            ]
+          ]
+        }
+      },
+      "count": 1
+    }
+  ]
+}

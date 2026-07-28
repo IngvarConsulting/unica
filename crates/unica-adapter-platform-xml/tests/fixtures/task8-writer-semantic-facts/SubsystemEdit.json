@@ -1,0 +1,195 @@
+{
+  "schemaVersion": 1,
+  "variant": "SubsystemEdit",
+  "provenance": {
+    "source": "Approved Task 8 design, Task 5 semantic contract, and the pre-migration v2_20 legacy semantic oracle; exact facts were reviewed against the command DTO and legacy writer behavior.",
+    "reviewedEvidence": [
+      ".superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/task-8-brief.md",
+      "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/legacy-semantic-oracle.json",
+      "crates/unica-adapter-platform-xml/tests/task5_legacy_parity.rs"
+    ]
+  },
+  "removed": [
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "subsystem",
+          "owner_name": "Sales",
+          "id": "unknown.facts",
+          "value_type": "\"list\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"list\",\"value\":[{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"unknown\",\"value\":{\"summary\":\"absent\"}}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"unknown\",\"value\":{\"summary\":\"absent\"}}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"string\",\"value\":\"true\"}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"unknown\",\"value\":{\"summary\":\"absent\"}}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"string\",\"value\":\"false\"}}}]}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facets": {
+          "owner_kind": "subsystem",
+          "owner_name": "Sales",
+          "members": "{\"identity\":[\"metadata.kind\",\"metadata.name\",\"metadata.uuid\",\"metadata.synonym\",\"metadata.comment\"],\"support\":[\"support.state\",\"support.authorability\",\"support.editCapability\"],\"unknown\":[\"unknown.facts\"]}"
+        }
+      },
+      "count": 1
+    }
+  ],
+  "added": [
+    {
+      "fact": {
+        "Diagnostic": {
+          "code": "unmappedSemanticFact",
+          "message": "source contains a property outside the registered semantic vocabulary",
+          "details": "{\"objectRef\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"uuid:<semantic-id>\",\"identityStrength\":\"persistent\",\"kind\":\"subsystem\",\"displayName\":\"Sales\"}}"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Identity": {
+          "kind": "subsystem",
+          "name": "SalesReports",
+          "reference_kind": "subsystem",
+          "reference_name": "SalesReports",
+          "capability_state": "{\"resolutionState\":\"unresolved\",\"authorability\":\"unknown_read_only\"}",
+          "capability": "{\"resolution\":\"unresolved\",\"identity\":\"derived\",\"consistency\":\"consistent\",\"coverage\":\"partial\",\"format\":\"compatible\",\"sourceAccess\":\"readOnly\",\"authorability\":\"derived_read_only\"}",
+          "action_profile": "\"generic_metadata_object\"",
+          "facet_visibility": "Full"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "subsystem",
+          "owner_name": "Sales",
+          "id": "unknown.facts",
+          "value_type": "\"list\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"list\",\"value\":[{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"list\",\"value\":[{\"type\":\"string\",\"value\":\"backing\"}]}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"unknown\",\"value\":{\"summary\":\"absent\"}}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"unknown\",\"value\":{\"summary\":\"absent\"}}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"string\",\"value\":\"true\"}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"unknown\",\"value\":{\"summary\":\"absent\"}}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"string\",\"value\":\"false\"}}}]}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "subsystem",
+          "owner_name": "SalesReports",
+          "id": "metadata.kind",
+          "value_type": "\"string\"",
+          "value_state": "\"computed\"",
+          "value": "{\"type\":\"string\",\"value\":\"subsystem\"}",
+          "provenance": "\"derived\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "subsystem",
+          "owner_name": "SalesReports",
+          "id": "metadata.name",
+          "value_type": "\"string\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"string\",\"value\":\"SalesReports\"}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "subsystem",
+          "owner_name": "SalesReports",
+          "id": "support.authorability",
+          "value_type": "\"string\"",
+          "value_state": "\"computed\"",
+          "value": "{\"type\":\"string\",\"value\":\"derivedReadOnly\"}",
+          "provenance": "\"derived\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "subsystem",
+          "owner_name": "SalesReports",
+          "id": "support.editCapability",
+          "value_type": "\"string\"",
+          "value_state": "\"computed\"",
+          "value": "{\"type\":\"string\",\"value\":\"readOnly\"}",
+          "provenance": "\"derived\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "subsystem",
+          "owner_name": "SalesReports",
+          "id": "support.state",
+          "value_type": "\"enum\"",
+          "value_state": "\"computed\"",
+          "value": "{\"type\":\"enum\",\"value\":\"notSupported\"}",
+          "provenance": "\"derived\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facets": {
+          "owner_kind": "subsystem",
+          "owner_name": "Sales",
+          "members": "{\"identity\":[\"metadata.kind\",\"metadata.name\",\"metadata.uuid\",\"metadata.synonym\",\"metadata.comment\"],\"structure\":[\"children\"],\"support\":[\"support.state\",\"support.authorability\",\"support.editCapability\"],\"unknown\":[\"unknown.facts\"]}"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facets": {
+          "owner_kind": "subsystem",
+          "owner_name": "SalesReports",
+          "members": "{\"identity\":[\"metadata.kind\",\"metadata.name\"],\"support\":[\"support.state\",\"support.authorability\",\"support.editCapability\"]}"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Actions": {
+          "owner_kind": "subsystem",
+          "owner_name": "SalesReports",
+          "semantic": "[]",
+          "available": "[{\"kind\":\"inspect\",\"target\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"derived:sha256:<semantic-hash>\",\"identityStrength\":\"derived\",\"kind\":\"subsystem\",\"displayName\":\"SalesReports\"},\"owningRelation\":{\"sourceId\":\"workspace:task8-preservation\",\"relationKey\":\"derived:sha256:<semantic-hash>\",\"kind\":\"contains\"},\"availability\":\"modeled\",\"blockingReasons\":[],\"operationBinding\":null,\"atomicity\":\"read_only\"}]"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Relation": {
+          "value": "{\"relationRef\":{\"sourceId\":\"workspace:task8-preservation\",\"relationKey\":\"derived:sha256:<semantic-hash>\",\"kind\":\"contains\"},\"groupRef\":{\"sourceId\":\"workspace:task8-preservation\",\"groupKey\":\"group:sha256:<semantic-hash>\",\"owner\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"uuid:<semantic-id>\",\"identityStrength\":\"persistent\",\"kind\":\"subsystem\",\"displayName\":\"Sales\"},\"role\":\"children\",\"kind\":\"contains\"},\"identityStrength\":\"derived\",\"kind\":\"contains\",\"role\":\"children\",\"source\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"uuid:<semantic-id>\",\"identityStrength\":\"persistent\",\"kind\":\"subsystem\",\"displayName\":\"Sales\"},\"target\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"derived:sha256:<semantic-hash>\",\"identityStrength\":\"derived\",\"kind\":\"subsystem\",\"displayName\":\"SalesReports\"},\"capability\":{\"resolution\":\"resolved\",\"identity\":\"derived\",\"consistency\":\"consistent\",\"coverage\":\"partial\",\"format\":\"compatible\",\"sourceAccess\":\"readOnly\",\"authorability\":\"derived_read_only\"}}"
+        }
+      },
+      "count": 1
+    }
+  ]
+}

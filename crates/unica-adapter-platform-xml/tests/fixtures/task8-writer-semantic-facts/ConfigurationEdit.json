@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "variant": "ConfigurationEdit",
+  "provenance": {
+    "source": "Approved Task 8 design, Task 5 semantic contract, and the pre-migration v2_20 legacy semantic oracle; exact facts were reviewed against the command DTO and legacy writer behavior.",
+    "reviewedEvidence": [
+      ".superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/task-8-brief.md",
+      "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/legacy-semantic-oracle.json",
+      "crates/unica-adapter-platform-xml/tests/task5_legacy_parity.rs"
+    ]
+  },
+  "removed": [
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "configuration",
+          "owner_name": "MatrixBase",
+          "id": "metadata.comment",
+          "value_type": "\"string\"",
+          "value_state": "\"absent\"",
+          "value": null,
+          "provenance": "\"declared\"",
+          "capability": "\"unavailable\""
+        }
+      },
+      "count": 1
+    }
+  ],
+  "added": [
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "configuration",
+          "owner_name": "MatrixBase",
+          "id": "metadata.comment",
+          "value_type": "\"string\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"string\",\"value\":\"matrix configuration comment\"}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    }
+  ]
+}

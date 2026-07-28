@@ -830,7 +830,7 @@ fn compatibility_bytes(
         }
     };
     let root = document.root_element();
-    if uses_family_owned_revision_policy(root) {
+    if family_owned_artifact(root).is_some() {
         let owner = crate::owner::parse_snapshot_owner(bytes).map_err(|_| {
             incompatible(
                 CompatibilityIssueKind::Malformed,
@@ -838,7 +838,25 @@ fn compatibility_bytes(
                 "The captured family-owned artifact is invalid.",
             )
         })?;
-        return Ok(Some((owner, CompatibilityDecision::Compatible)));
+        let result = match classify_family_owned_revision(root) {
+            Ok(FamilyOwnedRevision::Supported) => CompatibilityDecision::Compatible,
+            Ok(FamilyOwnedRevision::Older) => incompatible(
+                CompatibilityIssueKind::Older,
+                FormatDiagnosticCode::SourceRevisionOlder,
+                "The family artifact revision is older than the writable revision. Explicit migration is required before editing.",
+            ),
+            Ok(FamilyOwnedRevision::Newer) => incompatible(
+                CompatibilityIssueKind::Newer,
+                FormatDiagnosticCode::SourceRevisionNewer,
+                "The family artifact revision is newer than this adapter supports.",
+            ),
+            Err(()) => incompatible(
+                CompatibilityIssueKind::Malformed,
+                FormatDiagnosticCode::SourceMalformed,
+                "The family artifact revision declaration is missing or malformed.",
+            ),
+        };
+        return Ok(Some((owner, result)));
     }
     let owner = match crate::owner::parse_snapshot_owner(bytes) {
         Ok(owner) => owner,
@@ -1610,15 +1628,55 @@ fn descriptor_uuid(provider: &LazyPlatformSource) -> Result<String, ()> {
         .map_err(|_| ())
 }
 
-fn uses_family_owned_revision_policy(root: Node<'_, '_>) -> bool {
-    matches!(
-        (root.tag_name().namespace(), root.tag_name().name()),
-        (Some(xml::SPREADSHEET_DOCUMENT_NS), "document")
-            | (
-                Some(xml::DATA_COMPOSITION_SCHEMA_NS),
-                "DataCompositionSchema"
-            )
-    )
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FamilyOwnedArtifact {
+    DataComposition,
+    Spreadsheet,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FamilyOwnedRevision {
+    Older,
+    Supported,
+    Newer,
+}
+
+fn family_owned_artifact(root: Node<'_, '_>) -> Option<FamilyOwnedArtifact> {
+    match (root.tag_name().namespace(), root.tag_name().name()) {
+        (Some(xml::DATA_COMPOSITION_SCHEMA_NS), "DataCompositionSchema") => {
+            Some(FamilyOwnedArtifact::DataComposition)
+        }
+        (Some(xml::SPREADSHEET_DOCUMENT_NS), "document") => Some(FamilyOwnedArtifact::Spreadsheet),
+        _ => None,
+    }
+}
+
+fn classify_family_owned_revision(root: Node<'_, '_>) -> Result<FamilyOwnedRevision, ()> {
+    family_owned_artifact(root).ok_or(())?;
+    let raw = root
+        .attributes()
+        .find(|attribute| attribute.namespace().is_none() && attribute.name() == "version")
+        .map(|attribute| attribute.value())
+        .ok_or(())?;
+    let mut components = raw.split('.');
+    let major = components
+        .next()
+        .ok_or(())?
+        .parse::<u32>()
+        .map_err(|_| ())?;
+    let minor = components
+        .next()
+        .ok_or(())?
+        .parse::<u32>()
+        .map_err(|_| ())?;
+    if components.next().is_some() {
+        return Err(());
+    }
+    Ok(match (major, minor) {
+        (0, _) => FamilyOwnedRevision::Older,
+        (1, 0) => FamilyOwnedRevision::Supported,
+        _ => FamilyOwnedRevision::Newer,
+    })
 }
 
 fn version_is_inherited_when_missing(root: Node<'_, '_>) -> bool {

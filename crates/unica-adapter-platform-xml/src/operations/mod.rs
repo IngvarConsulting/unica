@@ -421,10 +421,9 @@ fn classify_writer_diagnostic(
     } else if text.contains("capability=on") || text.contains("пообъектное переключение недоступно")
     {
         DiagnosticCode::SupportCapabilityDisabled
-    } else if text.contains("newer than supported")
-        || text.contains("unsupported")
-        || text.contains("не поддерж")
-    {
+    } else if text.contains("newer than supported") {
+        DiagnosticCode::UnsupportedFormat
+    } else if text.contains("unsupported") || text.contains("не поддерж") {
         DiagnosticCode::UnsupportedState
     } else if text.contains("already exists") || text.contains("уже существ") {
         DiagnosticCode::AlreadyExists

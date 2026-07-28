@@ -1,0 +1,394 @@
+{
+  "schemaVersion": 1,
+  "variant": "ExternalReportInitialize",
+  "provenance": {
+    "source": "Approved Task 8 design, Task 5 semantic contract, and the pre-migration v2_20 legacy semantic oracle; exact facts were reviewed against the command DTO and legacy writer behavior.",
+    "reviewedEvidence": [
+      ".superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/task-8-brief.md",
+      "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/legacy-semantic-oracle.json",
+      "crates/unica-adapter-platform-xml/tests/task5_legacy_parity.rs"
+    ]
+  },
+  "removed": [],
+  "added": [
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "externalReport",
+          "namespace": "http://v8.1c.ru/8.1/data/core",
+          "document": 0,
+          "ordinal_path": "1.2.2.1",
+          "semantic_kind": "structure:http://v8.1c.ru/8.1/data/core:item",
+          "value": null,
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "externalReport",
+          "namespace": "http://v8.1c.ru/8.1/data/core",
+          "document": 0,
+          "ordinal_path": "1.2.2.1.1",
+          "semantic_kind": "structure:http://v8.1c.ru/8.1/data/core:lang",
+          "value": "ru",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "externalReport",
+          "namespace": "http://v8.1c.ru/8.1/data/core",
+          "document": 0,
+          "ordinal_path": "1.2.2.1.2",
+          "semantic_kind": "structure:http://v8.1c.ru/8.1/data/core:content",
+          "value": "MatrixReport",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "externalReport",
+          "namespace": "http://v8.1c.ru/8.3/MDClasses",
+          "document": 0,
+          "ordinal_path": "",
+          "semantic_kind": "descriptor",
+          "value": null,
+          "attributes": [
+            [
+              "formatRevision",
+              "2.20"
+            ]
+          ]
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "externalReport",
+          "namespace": "http://v8.1c.ru/8.3/MDClasses",
+          "document": 0,
+          "ordinal_path": "1",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/MDClasses:ExternalReport",
+          "value": null,
+          "attributes": [
+            [
+              "stableIdentity",
+              "<semantic-id>"
+            ]
+          ]
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "externalReport",
+          "namespace": "http://v8.1c.ru/8.3/MDClasses",
+          "document": 0,
+          "ordinal_path": "1.1",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/MDClasses:InternalInfo",
+          "value": null,
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "externalReport",
+          "namespace": "http://v8.1c.ru/8.3/MDClasses",
+          "document": 0,
+          "ordinal_path": "1.2",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/MDClasses:Properties",
+          "value": null,
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "externalReport",
+          "namespace": "http://v8.1c.ru/8.3/MDClasses",
+          "document": 0,
+          "ordinal_path": "1.2.1",
+          "semantic_kind": "identityName",
+          "value": "MatrixReport",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "externalReport",
+          "namespace": "http://v8.1c.ru/8.3/MDClasses",
+          "document": 0,
+          "ordinal_path": "1.2.10",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/MDClasses:VariantsStorage",
+          "value": "",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "externalReport",
+          "namespace": "http://v8.1c.ru/8.3/MDClasses",
+          "document": 0,
+          "ordinal_path": "1.2.11",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/MDClasses:SettingsStorage",
+          "value": "",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "externalReport",
+          "namespace": "http://v8.1c.ru/8.3/MDClasses",
+          "document": 0,
+          "ordinal_path": "1.2.2",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/MDClasses:Synonym",
+          "value": null,
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "externalReport",
+          "namespace": "http://v8.1c.ru/8.3/MDClasses",
+          "document": 0,
+          "ordinal_path": "1.2.3",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/MDClasses:Comment",
+          "value": "",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "externalReport",
+          "namespace": "http://v8.1c.ru/8.3/MDClasses",
+          "document": 0,
+          "ordinal_path": "1.2.4",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/MDClasses:DefaultForm",
+          "value": "",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "externalReport",
+          "namespace": "http://v8.1c.ru/8.3/MDClasses",
+          "document": 0,
+          "ordinal_path": "1.2.5",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/MDClasses:AuxiliaryForm",
+          "value": "",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "externalReport",
+          "namespace": "http://v8.1c.ru/8.3/MDClasses",
+          "document": 0,
+          "ordinal_path": "1.2.6",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/MDClasses:MainDataCompositionSchema",
+          "value": "",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "externalReport",
+          "namespace": "http://v8.1c.ru/8.3/MDClasses",
+          "document": 0,
+          "ordinal_path": "1.2.7",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/MDClasses:DefaultSettingsForm",
+          "value": "",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "externalReport",
+          "namespace": "http://v8.1c.ru/8.3/MDClasses",
+          "document": 0,
+          "ordinal_path": "1.2.8",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/MDClasses:AuxiliarySettingsForm",
+          "value": "",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "externalReport",
+          "namespace": "http://v8.1c.ru/8.3/MDClasses",
+          "document": 0,
+          "ordinal_path": "1.2.9",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/MDClasses:DefaultVariantForm",
+          "value": "",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "externalReport",
+          "namespace": "http://v8.1c.ru/8.3/MDClasses",
+          "document": 0,
+          "ordinal_path": "1.3",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/MDClasses:ChildObjects",
+          "value": "",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "externalReport",
+          "namespace": "http://v8.1c.ru/8.3/xcf/readable",
+          "document": 0,
+          "ordinal_path": "1.1.1",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/xcf/readable:ContainedObject",
+          "value": null,
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "externalReport",
+          "namespace": "http://v8.1c.ru/8.3/xcf/readable",
+          "document": 0,
+          "ordinal_path": "1.1.1.1",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/xcf/readable:ClassId",
+          "value": "<semantic-id>",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "externalReport",
+          "namespace": "http://v8.1c.ru/8.3/xcf/readable",
+          "document": 0,
+          "ordinal_path": "1.1.1.2",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/xcf/readable:ObjectId",
+          "value": "<semantic-id>",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "externalReport",
+          "namespace": "http://v8.1c.ru/8.3/xcf/readable",
+          "document": 0,
+          "ordinal_path": "1.1.2",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/xcf/readable:GeneratedType",
+          "value": null,
+          "attributes": [
+            [
+              "category",
+              "Object"
+            ],
+            [
+              "identity",
+              "ExternalReportObject.MatrixReport"
+            ]
+          ]
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "externalReport",
+          "namespace": "http://v8.1c.ru/8.3/xcf/readable",
+          "document": 0,
+          "ordinal_path": "1.1.2.1",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/xcf/readable:TypeId",
+          "value": "<semantic-id>",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "externalReport",
+          "namespace": "http://v8.1c.ru/8.3/xcf/readable",
+          "document": 0,
+          "ordinal_path": "1.1.2.2",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/xcf/readable:ValueId",
+          "value": "<semantic-id>",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneText": {
+          "family": "externalReport",
+          "role": "ObjectModule.bsl",
+          "content": "\ufeff#\u041e\u0431\u043b\u0430\u0441\u0442\u044c \u041f\u0440\u043e\u0433\u0440\u0430\u043c\u043c\u043d\u044b\u0439\u0418\u043d\u0442\u0435\u0440\u0444\u0435\u0439\u0441\n\n#\u041a\u043e\u043d\u0435\u0446\u041e\u0431\u043b\u0430\u0441\u0442\u0438\n"
+        }
+      },
+      "count": 1
+    }
+  ]
+}

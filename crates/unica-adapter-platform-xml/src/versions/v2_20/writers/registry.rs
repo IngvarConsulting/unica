@@ -3,7 +3,8 @@ use unica_format_core::commands::{FormEditEvidence, MutationMode, WriterCommand}
 use crate::{application::NativeWriterResult, operations::PlatformWriterSession};
 
 use super::{
-    cf, cfe, dcs, external, form, help, interface, meta, mxl, role, subsystem, support, template,
+    cf, cfe, common, dcs, external, form, help, interface, meta, mxl, role, subsystem, support,
+    template,
 };
 
 pub(crate) fn execute(
@@ -12,6 +13,7 @@ pub(crate) fn execute(
     session: &PlatformWriterSession,
 ) -> Result<(NativeWriterResult, Option<FormEditEvidence>), String> {
     let context = session.context();
+    preflight_family_owned_command(command, session)?;
     if mode.is_preview() {
         return preview(command, session);
     }
@@ -88,6 +90,46 @@ pub(crate) fn execute(
         }
     };
     Ok((outcome, None))
+}
+
+fn preflight_family_owned_command(
+    command: &WriterCommand,
+    session: &PlatformWriterSession,
+) -> Result<(), String> {
+    use unica_format_core::commands::WriterSourceRole;
+
+    match command {
+        WriterCommand::DataCompositionCreate(_) => {
+            let destination = session.required_source(
+                WriterSourceRole::DestinationArtifact,
+                "data composition destination",
+            )?;
+            common::preflight_active_format_dependencies_for_create(
+                &[],
+                &[destination],
+                session.context(),
+            )
+        }
+        WriterCommand::DataCompositionEdit(_) => {
+            let template = session.required_source(
+                WriterSourceRole::Template,
+                "data composition mutation target",
+            )?;
+            common::preflight_active_format_dependencies(&[template], session.context())
+        }
+        WriterCommand::SpreadsheetCreate(_) => {
+            let destination = session.required_source(
+                WriterSourceRole::DestinationArtifact,
+                "spreadsheet destination",
+            )?;
+            common::preflight_active_format_dependencies_for_create(
+                &[],
+                &[destination],
+                session.context(),
+            )
+        }
+        _ => Ok(()),
+    }
 }
 
 fn preview(

@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "variant": "InterfaceEdit",
+  "provenance": {
+    "source": "Approved Task 8 design, Task 5 semantic contract, and the pre-migration v2_20 legacy semantic oracle; exact facts were reviewed against the command DTO and legacy writer behavior.",
+    "reviewedEvidence": [
+      ".superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/task-8-brief.md",
+      "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/legacy-semantic-oracle.json",
+      "crates/unica-adapter-platform-xml/tests/task5_legacy_parity.rs"
+    ]
+  },
+  "removed": [
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "commandInterface",
+          "namespace": "http://v8.1c.ru/8.3/xcf/extrnprops",
+          "document": 0,
+          "ordinal_path": "2",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/xcf/extrnprops:CommandsPlacement",
+          "value": "",
+          "attributes": []
+        }
+      },
+      "count": 1
+    }
+  ],
+  "added": [
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "commandInterface",
+          "namespace": "http://v8.1c.ru/8.3/xcf/extrnprops",
+          "document": 0,
+          "ordinal_path": "2",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/xcf/extrnprops:CommandsPlacement",
+          "value": null,
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "commandInterface",
+          "namespace": "http://v8.1c.ru/8.3/xcf/extrnprops",
+          "document": 0,
+          "ordinal_path": "2.1",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/xcf/extrnprops:Command",
+          "value": null,
+          "attributes": [
+            [
+              "identity",
+              "Catalog.Items.Command.Open"
+            ]
+          ]
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "commandInterface",
+          "namespace": "http://v8.1c.ru/8.3/xcf/extrnprops",
+          "document": 0,
+          "ordinal_path": "2.1.1",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/xcf/extrnprops:CommandGroup",
+          "value": "Main",
+          "attributes": []
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "StandaloneStructure": {
+          "family": "commandInterface",
+          "namespace": "http://v8.1c.ru/8.3/xcf/extrnprops",
+          "document": 0,
+          "ordinal_path": "2.1.2",
+          "semantic_kind": "structure:http://v8.1c.ru/8.3/xcf/extrnprops:Placement",
+          "value": "Auto",
+          "attributes": []
+        }
+      },
+      "count": 1
+    }
+  ]
+}

@@ -1982,134 +1982,161 @@ impl<'de> Deserialize<'de> for MetadataKindDefinition {
     }
 }
 
-pub const fn metadata_kind_allows_property(
+pub fn metadata_kind_properties(kind: MetadataKind) -> &'static [MetadataKindPropertyName] {
+    use MetadataKind as Kind;
+    use MetadataKindPropertyName as P;
+
+    match kind {
+        Kind::CommonModule => &[P::Context, P::ReturnValuesReuse],
+        Kind::SessionParameter | Kind::CommonAttribute | Kind::FilterCriterion | Kind::Constant => {
+            &[P::Length, P::Precision, P::Nonnegative, P::ValueType]
+        }
+        Kind::FunctionalOption | Kind::FunctionalOptionsParameter => &[
+            P::Length,
+            P::Precision,
+            P::Nonnegative,
+            P::ValueType,
+            P::Description,
+        ],
+        Kind::Role
+        | Kind::XdtoPackage
+        | Kind::WsReference
+        | Kind::CommonPicture
+        | Kind::CommonTemplate
+        | Kind::SettingsStorage
+        | Kind::Language
+        | Kind::Sequence
+        | Kind::Report
+        | Kind::DataProcessor => &[],
+        Kind::ExchangePlan => &[
+            P::CodeLength,
+            P::DescriptionLength,
+            P::CheckUnique,
+            P::Autonumbering,
+            P::QuickChoice,
+            P::DistributedInfoBase,
+            P::IncludeConfigurationExtensions,
+        ],
+        Kind::WebService => &[
+            P::SessionMaxAge,
+            P::ReuseSessions,
+            P::Namespace,
+            P::Operations,
+        ],
+        Kind::HttpService => &[
+            P::SessionMaxAge,
+            P::ReuseSessions,
+            P::RootUrl,
+            P::UrlTemplates,
+        ],
+        Kind::StyleItem => &[P::ValueType, P::Description],
+        Kind::EventSubscription => &[P::Source, P::Event, P::Handler],
+        Kind::ScheduledJob => &[
+            P::RestartCountOnFailure,
+            P::RestartIntervalOnFailure,
+            P::MethodName,
+            P::Description,
+            P::Key,
+            P::Use,
+            P::Predefined,
+        ],
+        Kind::DefinedType => &[P::ValueTypes],
+        Kind::CommandGroup | Kind::CommonCommand => &[P::Description],
+        Kind::DocumentNumerator => &[P::NumberLength, P::CheckUnique, P::Autonumbering],
+        Kind::Catalog => &[
+            P::Hierarchical,
+            P::LimitLevelCount,
+            P::LevelCount,
+            P::FoldersOnTop,
+            P::CodeLength,
+            P::DescriptionLength,
+            P::CheckUnique,
+            P::Autonumbering,
+            P::QuickChoice,
+            P::HierarchyType,
+        ],
+        Kind::Document => &[
+            P::NumberLength,
+            P::CheckUnique,
+            P::Autonumbering,
+            P::SequenceFilling,
+            P::PostInPrivilegedMode,
+            P::UnpostInPrivilegedMode,
+        ],
+        Kind::Enum => &[P::QuickChoice],
+        Kind::ChartOfCharacteristicTypes => &[
+            P::CodeLength,
+            P::DescriptionLength,
+            P::CheckUnique,
+            P::Autonumbering,
+            P::QuickChoice,
+            P::ValueTypes,
+        ],
+        Kind::ChartOfAccounts => &[
+            P::Hierarchical,
+            P::LimitLevelCount,
+            P::LevelCount,
+            P::FoldersOnTop,
+            P::CodeLength,
+            P::DescriptionLength,
+            P::CheckUnique,
+            P::Autonumbering,
+            P::QuickChoice,
+            P::MaxExtDimensionCount,
+            P::CodeMask,
+            P::AutoOrderByCode,
+            P::OrderLength,
+            P::ExtDimensionTypes,
+            P::AccountingFlags,
+            P::ExtDimensionAccountingFlags,
+        ],
+        Kind::ChartOfCalculationTypes => &[
+            P::CodeLength,
+            P::DescriptionLength,
+            P::CheckUnique,
+            P::Autonumbering,
+            P::QuickChoice,
+            P::ActionPeriodUse,
+            P::DependenceOnCalculationTypes,
+            P::BaseCalculationTypes,
+        ],
+        Kind::InformationRegister => &[P::MainFilterOnPeriod, P::Periodicity],
+        Kind::AccumulationRegister => &[P::EnableTotalsSplitting, P::RegisterType],
+        Kind::AccountingRegister => &[
+            P::Correspondence,
+            P::ChartOfAccounts,
+            P::EnableTotalsSplitting,
+        ],
+        Kind::CalculationRegister => &[
+            P::Periodicity,
+            P::PeriodAdjustmentLength,
+            P::ActionPeriod,
+            P::BasePeriod,
+            P::ChartOfCalculationTypes,
+        ],
+        Kind::BusinessProcess => &[
+            P::NumberLength,
+            P::CheckUnique,
+            P::Autonumbering,
+            P::CreateTaskInPrivilegedMode,
+            P::Task,
+        ],
+        Kind::Task => &[
+            P::NumberLength,
+            P::CheckUnique,
+            P::Autonumbering,
+            P::Addressing,
+            P::MainAddressingAttribute,
+        ],
+        Kind::DocumentJournal => &[P::RegisteredDocuments],
+    }
+}
+
+pub fn metadata_kind_allows_property(
     kind: MetadataKind,
     property: MetadataKindPropertyName,
 ) -> bool {
-    use MetadataKind as Kind;
-    use MetadataKindPropertyName as Property;
-
-    match property {
-        Property::Hierarchical
-        | Property::LimitLevelCount
-        | Property::LevelCount
-        | Property::FoldersOnTop => matches!(kind, Kind::Catalog | Kind::ChartOfAccounts),
-        Property::CodeLength | Property::DescriptionLength => matches!(
-            kind,
-            Kind::Catalog
-                | Kind::ExchangePlan
-                | Kind::ChartOfCharacteristicTypes
-                | Kind::ChartOfAccounts
-                | Kind::ChartOfCalculationTypes
-        ),
-        Property::NumberLength => matches!(
-            kind,
-            Kind::Document | Kind::DocumentNumerator | Kind::BusinessProcess | Kind::Task
-        ),
-        Property::CheckUnique | Property::Autonumbering => matches!(
-            kind,
-            Kind::Catalog
-                | Kind::ExchangePlan
-                | Kind::Document
-                | Kind::DocumentNumerator
-                | Kind::ChartOfCharacteristicTypes
-                | Kind::ChartOfAccounts
-                | Kind::ChartOfCalculationTypes
-                | Kind::BusinessProcess
-                | Kind::Task
-        ),
-        Property::QuickChoice => matches!(
-            kind,
-            Kind::Catalog
-                | Kind::ExchangePlan
-                | Kind::Enum
-                | Kind::ChartOfCharacteristicTypes
-                | Kind::ChartOfAccounts
-                | Kind::ChartOfCalculationTypes
-        ),
-        Property::SequenceFilling
-        | Property::PostInPrivilegedMode
-        | Property::UnpostInPrivilegedMode => matches!(kind, Kind::Document),
-        Property::MainFilterOnPeriod => matches!(kind, Kind::InformationRegister),
-        Property::Periodicity => {
-            matches!(kind, Kind::InformationRegister | Kind::CalculationRegister)
-        }
-        Property::EnableTotalsSplitting | Property::RegisterType => {
-            matches!(kind, Kind::AccumulationRegister)
-        }
-        Property::Correspondence | Property::ChartOfAccounts => {
-            matches!(kind, Kind::AccountingRegister)
-        }
-        Property::PeriodAdjustmentLength
-        | Property::ActionPeriod
-        | Property::BasePeriod
-        | Property::ChartOfCalculationTypes => matches!(kind, Kind::CalculationRegister),
-        Property::MaxExtDimensionCount
-        | Property::CodeMask
-        | Property::AutoOrderByCode
-        | Property::OrderLength
-        | Property::ExtDimensionTypes
-        | Property::AccountingFlags
-        | Property::ExtDimensionAccountingFlags => matches!(kind, Kind::ChartOfAccounts),
-        Property::ActionPeriodUse
-        | Property::DependenceOnCalculationTypes
-        | Property::BaseCalculationTypes => matches!(kind, Kind::ChartOfCalculationTypes),
-        Property::DistributedInfoBase | Property::IncludeConfigurationExtensions => {
-            matches!(kind, Kind::ExchangePlan)
-        }
-        Property::RestartCountOnFailure
-        | Property::RestartIntervalOnFailure
-        | Property::MethodName
-        | Property::Key
-        | Property::Use
-        | Property::Predefined => matches!(kind, Kind::ScheduledJob),
-        Property::SessionMaxAge | Property::ReuseSessions => {
-            matches!(kind, Kind::HttpService | Kind::WebService)
-        }
-        Property::Length | Property::Precision | Property::Nonnegative => matches!(
-            kind,
-            Kind::SessionParameter
-                | Kind::CommonAttribute
-                | Kind::FilterCriterion
-                | Kind::FunctionalOption
-                | Kind::FunctionalOptionsParameter
-                | Kind::Constant
-        ),
-        Property::CreateTaskInPrivilegedMode | Property::Task => {
-            matches!(kind, Kind::BusinessProcess)
-        }
-        Property::ValueType => matches!(
-            kind,
-            Kind::SessionParameter
-                | Kind::CommonAttribute
-                | Kind::StyleItem
-                | Kind::FilterCriterion
-                | Kind::FunctionalOption
-                | Kind::FunctionalOptionsParameter
-                | Kind::Constant
-        ),
-        Property::ValueTypes => {
-            matches!(kind, Kind::DefinedType | Kind::ChartOfCharacteristicTypes)
-        }
-        Property::Context | Property::ReturnValuesReuse => matches!(kind, Kind::CommonModule),
-        Property::HierarchyType => matches!(kind, Kind::Catalog),
-        Property::Addressing | Property::MainAddressingAttribute => matches!(kind, Kind::Task),
-        Property::RegisteredDocuments => matches!(kind, Kind::DocumentJournal),
-        Property::Description => matches!(
-            kind,
-            Kind::StyleItem
-                | Kind::FunctionalOption
-                | Kind::FunctionalOptionsParameter
-                | Kind::CommandGroup
-                | Kind::CommonCommand
-                | Kind::ScheduledJob
-        ),
-        Property::Source | Property::Event | Property::Handler => {
-            matches!(kind, Kind::EventSubscription)
-        }
-        Property::RootUrl | Property::UrlTemplates => matches!(kind, Kind::HttpService),
-        Property::Namespace | Property::Operations => matches!(kind, Kind::WebService),
-    }
+    metadata_kind_properties(kind).contains(&property)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

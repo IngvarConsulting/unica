@@ -1,0 +1,568 @@
+{
+  "schemaVersion": 1,
+  "variant": "MetadataRemove",
+  "provenance": {
+    "source": "Approved Task 8 design, Task 5 semantic contract, and the pre-migration v2_20 legacy semantic oracle; exact facts were reviewed against the command DTO and legacy writer behavior.",
+    "reviewedEvidence": [
+      ".superpowers/sdd/2026-07-26-versioned-format-adapter-boundary/task-8-brief.md",
+      "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/legacy-semantic-oracle.json",
+      "crates/unica-adapter-platform-xml/tests/task5_legacy_parity.rs"
+    ]
+  },
+  "removed": [
+    {
+      "fact": {
+        "Envelope": {
+          "status": "\"partial\"",
+          "root": [
+            "sourceRoot",
+            "Source"
+          ],
+          "consistency": "\"consistent\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Diagnostic": {
+          "code": "unmappedSemanticFact",
+          "message": "source contains a property outside the registered semantic vocabulary",
+          "details": "{\"objectRef\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"uuid:<semantic-id>\",\"identityStrength\":\"persistent\",\"kind\":\"catalog\",\"displayName\":\"Items\"}}"
+        }
+      },
+      "count": 32
+    },
+    {
+      "fact": {
+        "Identity": {
+          "kind": "catalog",
+          "name": "Items",
+          "reference_kind": "catalog",
+          "reference_name": "Items",
+          "capability_state": "{\"resolutionState\":\"resolved\",\"authorability\":\"unknown_read_only\"}",
+          "capability": "{\"resolution\":\"resolved\",\"identity\":\"persistent\",\"consistency\":\"consistent\",\"coverage\":\"partial\",\"format\":\"compatible\",\"sourceAccess\":\"readOnly\",\"authorability\":\"authorable\"}",
+          "action_profile": "\"generic_metadata_object\"",
+          "facet_visibility": "Full"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Identity": {
+          "kind": "sourceRoot",
+          "name": "Source",
+          "reference_kind": "sourceRoot",
+          "reference_name": "Source",
+          "capability_state": "{\"resolutionState\":\"resolved\",\"authorability\":\"derived_read_only\"}",
+          "capability": "{\"resolution\":\"resolved\",\"identity\":\"derived\",\"consistency\":\"consistent\",\"coverage\":\"partial\",\"format\":\"compatible\",\"sourceAccess\":\"readOnly\",\"authorability\":\"derived_read_only\"}",
+          "action_profile": "\"generic_metadata_object\"",
+          "facet_visibility": "Full"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "catalog.code.length",
+          "value_type": "\"integer\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"integer\",\"value\":9}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "catalog.code.series",
+          "value_type": "\"enum\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"enum\",\"value\":\"wholeCollection\"}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "catalog.description.length",
+          "value_type": "\"integer\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"integer\",\"value\":25}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "catalog.hierarchy.enabled",
+          "value_type": "\"boolean\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"boolean\",\"value\":false}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "catalog.hierarchy.levelCount",
+          "value_type": "\"integer\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"integer\",\"value\":2}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "catalog.hierarchy.levelLimit",
+          "value_type": "\"integer\"",
+          "value_state": "\"absent\"",
+          "value": null,
+          "provenance": "\"declared\"",
+          "capability": "\"unavailable\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "catalog.hierarchy.levelLimit.enabled",
+          "value_type": "\"boolean\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"boolean\",\"value\":false}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "catalog.hierarchy.type",
+          "value_type": "\"enum\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"enum\",\"value\":\"hierarchyOfGroupsAndItems\"}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "choice.mode",
+          "value_type": "\"enum\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"enum\",\"value\":\"bothWays\"}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "code.allowedLength",
+          "value_type": "\"enum\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"enum\",\"value\":\"variable\"}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "code.type",
+          "value_type": "\"enum\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"enum\",\"value\":\"string\"}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "command.useStandard",
+          "value_type": "\"boolean\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"boolean\",\"value\":true}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "help.includeInContents",
+          "value_type": "\"boolean\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"boolean\",\"value\":false}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "locking.controlMode",
+          "value_type": "\"enum\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"enum\",\"value\":\"automatic\"}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "metadata.comment",
+          "value_type": "\"string\"",
+          "value_state": "\"absent\"",
+          "value": null,
+          "provenance": "\"declared\"",
+          "capability": "\"unavailable\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "metadata.kind",
+          "value_type": "\"string\"",
+          "value_state": "\"computed\"",
+          "value": "{\"type\":\"string\",\"value\":\"catalog\"}",
+          "provenance": "\"derived\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "metadata.name",
+          "value_type": "\"string\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"string\",\"value\":\"Items\"}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "metadata.synonym",
+          "value_type": "\"localizedString\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"localizedString\",\"value\":{\"ru\":\"Items\"}}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "metadata.uuid",
+          "value_type": "\"uuid\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"uuid\",\"value\":\"<semantic-id>\"}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "presentation.defaultMode",
+          "value_type": "\"enum\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"enum\",\"value\":\"asDescription\"}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "presentation.extendedList",
+          "value_type": "\"localizedString\"",
+          "value_state": "\"absent\"",
+          "value": null,
+          "provenance": "\"declared\"",
+          "capability": "\"unavailable\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "presentation.extendedObject",
+          "value_type": "\"localizedString\"",
+          "value_state": "\"absent\"",
+          "value": null,
+          "provenance": "\"declared\"",
+          "capability": "\"unavailable\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "presentation.list",
+          "value_type": "\"localizedString\"",
+          "value_state": "\"absent\"",
+          "value": null,
+          "provenance": "\"declared\"",
+          "capability": "\"unavailable\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "presentation.object",
+          "value_type": "\"localizedString\"",
+          "value_state": "\"absent\"",
+          "value": null,
+          "provenance": "\"declared\"",
+          "capability": "\"unavailable\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "search.fullText.mode",
+          "value_type": "\"enum\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"enum\",\"value\":\"use\"}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "subordination.use",
+          "value_type": "\"enum\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"enum\",\"value\":\"toItems\"}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "support.authorability",
+          "value_type": "\"string\"",
+          "value_state": "\"computed\"",
+          "value": "{\"type\":\"string\",\"value\":\"authorable\"}",
+          "provenance": "\"derived\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "support.editCapability",
+          "value_type": "\"string\"",
+          "value_state": "\"computed\"",
+          "value": "{\"type\":\"string\",\"value\":\"authorable\"}",
+          "provenance": "\"derived\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "support.state",
+          "value_type": "\"enum\"",
+          "value_state": "\"computed\"",
+          "value": "{\"type\":\"enum\",\"value\":\"notSupported\"}",
+          "provenance": "\"derived\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Property": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "id": "unknown.facts",
+          "value_type": "\"list\"",
+          "value_state": "\"explicit\"",
+          "value": "{\"type\":\"list\",\"value\":[{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"list\",\"value\":[{\"type\":\"string\",\"value\":\"backing\"}]}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"string\",\"value\":\"true\"}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"unknown\",\"value\":{\"summary\":\"absent\"}}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"unknown\",\"value\":{\"summary\":\"absent\"}}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"unknown\",\"value\":{\"summary\":\"absent\"}}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"unknown\",\"value\":{\"summary\":\"absent\"}}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"unknown\",\"value\":{\"summary\":\"absent\"}}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"unknown\",\"value\":{\"summary\":\"absent\"}}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"unknown\",\"value\":{\"summary\":\"absent\"}}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"string\",\"value\":\"false\"}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"string\",\"value\":\"Directly\"}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"string\",\"value\":\"Auto\"}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"string\",\"value\":\"DontUse\"}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"string\",\"value\":\"DontUse\"}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"unknown\",\"value\":{\"summary\":\"absent\"}}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"unknown\",\"value\":{\"summary\":\"absent\"}}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"unknown\",\"value\":{\"summary\":\"absent\"}}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"unknown\",\"value\":{\"summary\":\"absent\"}}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"unknown\",\"value\":{\"summary\":\"absent\"}}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"unknown\",\"value\":{\"summary\":\"absent\"}}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"string\",\"value\":\"InDialog\"}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"string\",\"value\":\"false\"}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"unknown\",\"value\":{\"summary\":\"absent\"}}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"string\",\"value\":\"true\"}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"string\",\"value\":\"DontUse\"}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"list\",\"value\":[{\"type\":\"string\",\"value\":\"Catalog.Items.StandardAttribute.Description\"},{\"type\":\"string\",\"value\":\"Catalog.Items.StandardAttribute.Code\"}]}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"unknown\",\"value\":{\"summary\":\"absent\"}}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"string\",\"value\":\"Auto\"}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"string\",\"value\":\"false\"}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"string\",\"value\":\"Begin\"}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"list\",\"value\":[{\"type\":\"string\",\"value\":\"DontCheck\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Auto\"},{\"type\":\"string\",\"value\":\"TransformValues\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Auto\"},{\"type\":\"string\",\"value\":\"Auto\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Use\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Use\"},{\"type\":\"string\",\"value\":\"DontCheck\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Auto\"},{\"type\":\"string\",\"value\":\"TransformValues\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Auto\"},{\"type\":\"string\",\"value\":\"Auto\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Use\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Use\"},{\"type\":\"string\",\"value\":\"DontCheck\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Auto\"},{\"type\":\"string\",\"value\":\"TransformValues\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Auto\"},{\"type\":\"string\",\"value\":\"Auto\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Use\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Use\"},{\"type\":\"string\",\"value\":\"DontCheck\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Auto\"},{\"type\":\"string\",\"value\":\"TransformValues\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Auto\"},{\"type\":\"string\",\"value\":\"Auto\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Use\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Use\"},{\"type\":\"string\",\"value\":\"DontCheck\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Auto\"},{\"type\":\"string\",\"value\":\"TransformValues\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Auto\"},{\"type\":\"string\",\"value\":\"Auto\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Use\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Use\"},{\"type\":\"string\",\"value\":\"DontCheck\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Auto\"},{\"type\":\"string\",\"value\":\"Deny\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Auto\"},{\"type\":\"string\",\"value\":\"Auto\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Use\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Use\"},{\"type\":\"string\",\"value\":\"DontCheck\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Auto\"},{\"type\":\"string\",\"value\":\"TransformValues\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Auto\"},{\"type\":\"string\",\"value\":\"Auto\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Use\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Use\"},{\"type\":\"string\",\"value\":\"DontCheck\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Auto\"},{\"type\":\"string\",\"value\":\"TransformValues\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Auto\"},{\"type\":\"string\",\"value\":\"Auto\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Use\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Use\"},{\"type\":\"string\",\"value\":\"DontCheck\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Auto\"},{\"type\":\"string\",\"value\":\"TransformValues\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Auto\"},{\"type\":\"string\",\"value\":\"Auto\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Use\"},{\"type\":\"string\",\"value\":\"false\"},{\"type\":\"string\",\"value\":\"Use\"}]}}},{\"type\":\"structure\",\"value\":{\"category\":{\"type\":\"string\",\"value\":\"property\"},\"value\":{\"type\":\"string\",\"value\":\"false\"}}}]}",
+          "provenance": "\"declared\"",
+          "capability": "\"readOnly\""
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facets": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "members": "{\"hierarchy\":[\"catalog.hierarchy.enabled\",\"catalog.hierarchy.type\",\"catalog.hierarchy.levelLimit.enabled\",\"catalog.hierarchy.levelCount\",\"catalog.hierarchy.levelLimit\",\"catalog.code.length\",\"catalog.description.length\"],\"identity\":[\"metadata.kind\",\"metadata.name\",\"metadata.uuid\",\"metadata.synonym\",\"metadata.comment\"],\"numbering\":[\"code.allowedLength\",\"code.type\",\"catalog.code.series\"],\"presentation\":[\"presentation.object\",\"presentation.extendedObject\",\"presentation.list\",\"presentation.extendedList\",\"choice.mode\",\"presentation.defaultMode\"],\"structure\":[\"locking.controlMode\",\"search.fullText.mode\",\"subordination.use\"],\"support\":[\"support.state\",\"support.authorability\",\"support.editCapability\"],\"unknown\":[\"unknown.facts\"]}"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Facets": {
+          "owner_kind": "sourceRoot",
+          "owner_name": "Source",
+          "members": "{\"structure\":[\"children\"]}"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Actions": {
+          "owner_kind": "catalog",
+          "owner_name": "Items",
+          "semantic": "[]",
+          "available": "[{\"kind\":\"inspect\",\"target\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"uuid:<semantic-id>\",\"identityStrength\":\"persistent\",\"kind\":\"catalog\",\"displayName\":\"Items\"},\"owningRelation\":{\"sourceId\":\"workspace:task8-preservation\",\"relationKey\":\"derived:sha256:<semantic-hash>\",\"kind\":\"contains\"},\"availability\":\"modeled\",\"blockingReasons\":[],\"operationBinding\":null,\"atomicity\":\"read_only\"}]"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Actions": {
+          "owner_kind": "sourceRoot",
+          "owner_name": "Source",
+          "semantic": "[]",
+          "available": "[{\"kind\":\"inspect\",\"target\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"derived:sha256:<semantic-hash>\",\"identityStrength\":\"derived\",\"kind\":\"sourceRoot\",\"displayName\":\"Source\"},\"owningRelation\":null,\"availability\":\"modeled\",\"blockingReasons\":[],\"operationBinding\":null,\"atomicity\":\"read_only\"}]"
+        }
+      },
+      "count": 1
+    },
+    {
+      "fact": {
+        "Relation": {
+          "value": "{\"relationRef\":{\"sourceId\":\"workspace:task8-preservation\",\"relationKey\":\"derived:sha256:<semantic-hash>\",\"kind\":\"contains\"},\"groupRef\":{\"sourceId\":\"workspace:task8-preservation\",\"groupKey\":\"group:sha256:<semantic-hash>\",\"owner\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"derived:sha256:<semantic-hash>\",\"identityStrength\":\"derived\",\"kind\":\"sourceRoot\",\"displayName\":\"Source\"},\"role\":\"children\",\"kind\":\"contains\"},\"identityStrength\":\"derived\",\"kind\":\"contains\",\"role\":\"children\",\"source\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"derived:sha256:<semantic-hash>\",\"identityStrength\":\"derived\",\"kind\":\"sourceRoot\",\"displayName\":\"Source\"},\"target\":{\"sourceId\":\"workspace:task8-preservation\",\"objectKey\":\"uuid:<semantic-id>\",\"identityStrength\":\"persistent\",\"kind\":\"catalog\",\"displayName\":\"Items\"},\"capability\":{\"resolution\":\"resolved\",\"identity\":\"derived\",\"consistency\":\"consistent\",\"coverage\":\"partial\",\"format\":\"compatible\",\"sourceAccess\":\"readOnly\",\"authorability\":\"derived_read_only\"}}"
+        }
+      },
+      "count": 1
+    }
+  ],
+  "added": []
+}

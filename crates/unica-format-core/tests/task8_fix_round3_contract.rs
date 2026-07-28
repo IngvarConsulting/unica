@@ -204,7 +204,11 @@ fn expected_properties(kind: MetadataKind) -> &'static [MetadataKindPropertyName
         ],
         Kind::InformationRegister => &[P::MainFilterOnPeriod, P::Periodicity],
         Kind::AccumulationRegister => &[P::EnableTotalsSplitting, P::RegisterType],
-        Kind::AccountingRegister => &[P::Correspondence, P::ChartOfAccounts],
+        Kind::AccountingRegister => &[
+            P::Correspondence,
+            P::ChartOfAccounts,
+            P::EnableTotalsSplitting,
+        ],
         Kind::CalculationRegister => &[
             P::Periodicity,
             P::PeriodAdjustmentLength,

@@ -12417,8 +12417,12 @@ pub(crate) fn emit_meta_accounting_register_properties(
         "{indent}<DataLockControlMode>{}</DataLockControlMode>",
         meta_enum_prop(defn, "dataLockControlMode", "Automatic")
     ));
+    let enable_totals_splitting = defn
+        .get("enableTotalsSplitting")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     lines.push(format!(
-        "{indent}<EnableTotalsSplitting>false</EnableTotalsSplitting>"
+        "{indent}<EnableTotalsSplitting>{enable_totals_splitting}</EnableTotalsSplitting>"
     ));
     lines.push(format!(
         "{indent}<FullTextSearch>{}</FullTextSearch>",
@@ -16470,12 +16474,12 @@ fn meta_edit_set_semantic_kind_property(
                 .iter()
                 .map(metadata_type_expression_text)
                 .collect::<Vec<_>>();
-            let tag = metadata_kind_property_native_name(name);
+            let tag = metadata_kind_property_native_name(object_type, name)?;
             meta_edit_set_semantic_type_property(xml_text, tag, &values)?;
             return Ok(());
         }
         Value::Type(value) => {
-            let tag = metadata_kind_property_native_name(name);
+            let tag = metadata_kind_property_native_name(object_type, name)?;
             meta_edit_set_semantic_type_property(
                 xml_text,
                 tag,
@@ -16498,7 +16502,7 @@ fn meta_edit_set_semantic_kind_property(
                 .collect::<Vec<_>>();
             meta_edit_replace_complex_property(
                 xml_text,
-                metadata_kind_property_native_name(name),
+                metadata_kind_property_native_name(object_type, name)?,
                 &values,
             )?;
             return Ok(());
@@ -16529,14 +16533,14 @@ fn meta_edit_set_semantic_kind_property(
                 .collect::<Vec<_>>();
             meta_edit_replace_complex_property(
                 xml_text,
-                metadata_kind_property_native_name(name),
+                metadata_kind_property_native_name(object_type, name)?,
                 &values,
             )?;
             return Ok(());
         }
         _ => {}
     }
-    let tag = metadata_kind_property_native_name(name);
+    let tag = metadata_kind_property_native_name(object_type, name)?;
     let scalar = metadata_property_scalar_text(property.value())?;
     let scalar = if matches!(
         (object_type, name),
@@ -16551,74 +16555,94 @@ fn meta_edit_set_semantic_kind_property(
 }
 
 fn metadata_kind_property_native_name(
+    object_type: &str,
     name: unica_format_core::commands::MetadataKindPropertyName,
-) -> &'static str {
-    use unica_format_core::commands::MetadataKindPropertyName as Name;
-    match name {
-        Name::Hierarchical => "Hierarchical",
-        Name::LimitLevelCount => "LimitLevelCount",
-        Name::LevelCount => "LevelCount",
-        Name::FoldersOnTop => "FoldersOnTop",
-        Name::CodeLength => "CodeLength",
-        Name::DescriptionLength => "DescriptionLength",
-        Name::NumberLength => "NumberLength",
-        Name::CheckUnique => "CheckUnique",
-        Name::Autonumbering => "Autonumbering",
-        Name::QuickChoice => "QuickChoice",
-        Name::SequenceFilling => "SequenceFilling",
-        Name::PostInPrivilegedMode => "PostInPrivilegedMode",
-        Name::UnpostInPrivilegedMode => "UnpostInPrivilegedMode",
-        Name::MainFilterOnPeriod => "MainFilterOnPeriod",
-        Name::EnableTotalsSplitting => "EnableTotalsSplitting",
-        Name::Correspondence => "Correspondence",
-        Name::PeriodAdjustmentLength => "PeriodAdjustmentLength",
-        Name::ActionPeriod => "ActionPeriod",
-        Name::BasePeriod => "BasePeriod",
-        Name::MaxExtDimensionCount => "MaxExtDimensionCount",
-        Name::CodeMask => "CodeMask",
-        Name::AutoOrderByCode => "AutoOrderByCode",
-        Name::OrderLength => "OrderLength",
-        Name::ActionPeriodUse => "ActionPeriodUse",
-        Name::DistributedInfoBase => "DistributedInfoBase",
-        Name::IncludeConfigurationExtensions => "IncludeConfigurationExtensions",
-        Name::RestartCountOnFailure => "RestartCountOnFailure",
-        Name::RestartIntervalOnFailure => "RestartIntervalOnFailure",
-        Name::SessionMaxAge => "SessionMaxAge",
-        Name::Length => "Length",
-        Name::Precision => "Precision",
-        Name::Nonnegative => "Nonnegative",
-        Name::CreateTaskInPrivilegedMode => "CreateTaskInPrivilegedMode",
-        Name::ValueType | Name::ValueTypes => "Type",
-        Name::Context => "Context",
-        Name::ReturnValuesReuse => "ReturnValuesReuse",
-        Name::HierarchyType => "HierarchyType",
-        Name::Periodicity => "InformationRegisterPeriodicity",
-        Name::RegisterType => "RegisterType",
-        Name::ChartOfAccounts => "ChartOfAccounts",
-        Name::ChartOfCalculationTypes => "ChartOfCalculationTypes",
-        Name::ExtDimensionTypes => "ExtDimensionTypes",
-        Name::AccountingFlags => "AccountingFlags",
-        Name::ExtDimensionAccountingFlags => "ExtDimensionAccountingFlags",
-        Name::DependenceOnCalculationTypes => "DependenceOnCalculationTypes",
-        Name::BaseCalculationTypes => "BaseCalculationTypes",
-        Name::Task => "Task",
-        Name::Addressing => "Addressing",
-        Name::MainAddressingAttribute => "MainAddressingAttribute",
-        Name::RegisteredDocuments => "RegisteredDocuments",
-        Name::MethodName => "MethodName",
-        Name::Description => "Description",
-        Name::Key => "Key",
-        Name::Use => "Use",
-        Name::Predefined => "Predefined",
-        Name::Source => "Source",
-        Name::Event => "Event",
-        Name::Handler => "Handler",
-        Name::RootUrl => "RootURL",
-        Name::ReuseSessions => "ReuseSessions",
-        Name::UrlTemplates => "URLTemplates",
-        Name::Namespace => "Namespace",
-        Name::Operations => "Operations",
+) -> Result<&'static str, String> {
+    use unica_format_core::commands::{
+        metadata_kind_allows_property, MetadataKind, MetadataKindPropertyName as Name,
+    };
+    let kind = MetadataKind::ALL
+        .into_iter()
+        .find(|kind| metadata_kind_native_name(*kind) == object_type)
+        .ok_or_else(|| format!("unsupported metadata kind '{object_type}'"))?;
+    if !metadata_kind_allows_property(kind, name) {
+        return Err(format!(
+            "metadata property {name:?} is not valid for {object_type}"
+        ));
     }
+    Ok(match (kind, name) {
+        (MetadataKind::InformationRegister, Name::Periodicity) => "InformationRegisterPeriodicity",
+        (MetadataKind::CalculationRegister, Name::Periodicity) => "Periodicity",
+        (_, name) => match name {
+            Name::Hierarchical => "Hierarchical",
+            Name::LimitLevelCount => "LimitLevelCount",
+            Name::LevelCount => "LevelCount",
+            Name::FoldersOnTop => "FoldersOnTop",
+            Name::CodeLength => "CodeLength",
+            Name::DescriptionLength => "DescriptionLength",
+            Name::NumberLength => "NumberLength",
+            Name::CheckUnique => "CheckUnique",
+            Name::Autonumbering => "Autonumbering",
+            Name::QuickChoice => "QuickChoice",
+            Name::SequenceFilling => "SequenceFilling",
+            Name::PostInPrivilegedMode => "PostInPrivilegedMode",
+            Name::UnpostInPrivilegedMode => "UnpostInPrivilegedMode",
+            Name::MainFilterOnPeriod => "MainFilterOnPeriod",
+            Name::EnableTotalsSplitting => "EnableTotalsSplitting",
+            Name::Correspondence => "Correspondence",
+            Name::PeriodAdjustmentLength => "PeriodAdjustmentLength",
+            Name::ActionPeriod => "ActionPeriod",
+            Name::BasePeriod => "BasePeriod",
+            Name::MaxExtDimensionCount => "MaxExtDimensionCount",
+            Name::CodeMask => "CodeMask",
+            Name::AutoOrderByCode => "AutoOrderByCode",
+            Name::OrderLength => "OrderLength",
+            Name::ActionPeriodUse => "ActionPeriodUse",
+            Name::DistributedInfoBase => "DistributedInfoBase",
+            Name::IncludeConfigurationExtensions => "IncludeConfigurationExtensions",
+            Name::RestartCountOnFailure => "RestartCountOnFailure",
+            Name::RestartIntervalOnFailure => "RestartIntervalOnFailure",
+            Name::SessionMaxAge => "SessionMaxAge",
+            Name::Length => "Length",
+            Name::Precision => "Precision",
+            Name::Nonnegative => "Nonnegative",
+            Name::CreateTaskInPrivilegedMode => "CreateTaskInPrivilegedMode",
+            Name::ValueType | Name::ValueTypes => "Type",
+            Name::Context => "Context",
+            Name::ReturnValuesReuse => "ReturnValuesReuse",
+            Name::HierarchyType => "HierarchyType",
+            Name::Periodicity => {
+                return Err(format!(
+                    "metadata property Periodicity has no target for {object_type}"
+                ))
+            }
+            Name::RegisterType => "RegisterType",
+            Name::ChartOfAccounts => "ChartOfAccounts",
+            Name::ChartOfCalculationTypes => "ChartOfCalculationTypes",
+            Name::ExtDimensionTypes => "ExtDimensionTypes",
+            Name::AccountingFlags => "AccountingFlags",
+            Name::ExtDimensionAccountingFlags => "ExtDimensionAccountingFlags",
+            Name::DependenceOnCalculationTypes => "DependenceOnCalculationTypes",
+            Name::BaseCalculationTypes => "BaseCalculationTypes",
+            Name::Task => "Task",
+            Name::Addressing => "Addressing",
+            Name::MainAddressingAttribute => "MainAddressingAttribute",
+            Name::RegisteredDocuments => "RegisteredDocuments",
+            Name::MethodName => "MethodName",
+            Name::Description => "Description",
+            Name::Key => "Key",
+            Name::Use => "Use",
+            Name::Predefined => "Predefined",
+            Name::Source => "Source",
+            Name::Event => "Event",
+            Name::Handler => "Handler",
+            Name::RootUrl => "RootURL",
+            Name::ReuseSessions => "ReuseSessions",
+            Name::UrlTemplates => "URLTemplates",
+            Name::Namespace => "Namespace",
+            Name::Operations => "Operations",
+        },
+    })
 }
 
 fn meta_edit_set_semantic_mltext_property(
@@ -22335,5 +22359,114 @@ mod tests {
                     == Some(name)
             })
             .unwrap_or_else(|| panic!("{object_type} {name} not found"))
+    }
+}
+
+#[cfg(test)]
+mod task8_fix_round4_metadata_projection_tests {
+    use std::{collections::BTreeMap, fs, path::PathBuf};
+
+    use serde_json::Value;
+    use unica_format_core::commands::{
+        metadata_kind_allows_property, MetadataKind, MetadataKindPropertyName,
+    };
+
+    use super::{metadata_kind_native_name, metadata_kind_property_native_name};
+
+    fn reviewed_targets() -> (
+        BTreeMap<String, Option<String>>,
+        BTreeMap<(String, String), String>,
+    ) {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/task8-metadata-property-targets.json");
+        let value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value["schemaVersion"], 1);
+        assert!(value["provenance"]["source"].as_str().is_some());
+        assert!(value["provenance"]["reviewedEvidence"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty()));
+        let defaults = value["defaultTargets"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(property, target)| (property.clone(), target.as_str().map(str::to_string)))
+            .collect::<BTreeMap<_, _>>();
+        let overrides = value["overrides"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| {
+                (
+                    (
+                        entry["kind"].as_str().unwrap().to_string(),
+                        entry["property"].as_str().unwrap().to_string(),
+                    ),
+                    entry["target"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(defaults.len(), MetadataKindPropertyName::ALL.len());
+        (defaults, overrides)
+    }
+
+    #[test]
+    fn all_40_by_64_pairs_have_exact_independently_reviewed_native_targets() {
+        let (defaults, overrides) = reviewed_targets();
+        let mut audited = 0;
+        for kind in MetadataKind::ALL {
+            for property in MetadataKindPropertyName::ALL {
+                audited += 1;
+                let kind_name = format!("{kind:?}");
+                let property_name = format!("{property:?}");
+                let expected = overrides
+                    .get(&(kind_name, property_name.clone()))
+                    .cloned()
+                    .or_else(|| defaults.get(&property_name).cloned().flatten());
+                let actual =
+                    metadata_kind_property_native_name(metadata_kind_native_name(kind), property);
+                if metadata_kind_allows_property(kind, property) {
+                    assert_eq!(
+                        actual.as_deref(),
+                        Ok(expected.as_deref().unwrap_or_else(|| {
+                            panic!("missing reviewed target for {kind:?}+{property:?}")
+                        })),
+                        "wrong native target for {kind:?}+{property:?}"
+                    );
+                } else {
+                    assert!(
+                        actual.is_err(),
+                        "invalid pair reached adapter projection: {kind:?}+{property:?}"
+                    );
+                }
+            }
+        }
+        assert_eq!(audited, 40 * 64);
+    }
+
+    #[test]
+    fn independent_crosswalk_detects_accounting_and_periodicity_mapping_mutations() {
+        let accounting = metadata_kind_property_native_name(
+            "AccountingRegister",
+            MetadataKindPropertyName::EnableTotalsSplitting,
+        )
+        .unwrap();
+        assert_eq!(accounting, "EnableTotalsSplitting");
+        assert_ne!(accounting, "EnableTotalSplitting");
+
+        let calculation = metadata_kind_property_native_name(
+            "CalculationRegister",
+            MetadataKindPropertyName::Periodicity,
+        )
+        .unwrap();
+        assert_eq!(calculation, "Periodicity");
+        assert_ne!(calculation, "InformationRegisterPeriodicity");
+
+        let information = metadata_kind_property_native_name(
+            "InformationRegister",
+            MetadataKindPropertyName::Periodicity,
+        )
+        .unwrap();
+        assert_eq!(information, "InformationRegisterPeriodicity");
+        assert_ne!(information, "Periodicity");
     }
 }
