@@ -33,9 +33,11 @@
 
 Эти файлы удалять и переименовывать нельзя без правки тестов:
 
-- `2026-07-23-platform-8-3-27-format-2-20-design.md` — закреплён как контракт
-  профиля формата в `tests/ci/test_format_profile_contract.py` и
-  `tests/dev/test_verify_8_3_27_platform.py`.
+- `2026-07-23-platform-8-3-27-format-2-20-design.md` — закреплён по пути как
+  тестовый вход и свидетельство профиля формата в
+  `tests/ci/test_format_profile_contract.py` и
+  `tests/dev/test_verify_8_3_27_platform.py`; действующий контракт находится в
+  `spec/`.
 - `2026-07-24-updatable-donor-parity-relations-design.md` — назван как
   свидетельство в `tests/fixtures/unica_mcp_script_parity/donor-relations.json`
   и в записях `docs/provenance/reviews/`.

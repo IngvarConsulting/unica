@@ -1,9 +1,11 @@
 #!/usr/bin/env python3.12
-"""Fail a change that moves the public MCP surface without moving the spec layer.
+"""Fail a public MCP surface change with no contract-sync evidence.
 
-The rule this guard enforces is INV-MCP-SURFACE-SYNC: adding, removing, or renaming a
-public `unica.*` tool is an architecture change, so it lands together with the
-decision record, registry entry, or acceptance plan that describes it.
+This guard enforces the syntactic half of INV-MCP-SURFACE-SYNC: adding, removing,
+or renaming a public `unica.*` tool is an architecture change, so at least one
+contract-relevant ADR, registry, or acceptance artefact moves with it. Review
+still has to prove that the actual ADR and registry owners plus the named check
+changed together.
 
 The trigger is deliberately narrow. Only added or removed tool-name declarations
 in the public registry count. Refactoring inside a handler, editing a schema
@@ -42,14 +44,13 @@ TOOL_REGISTRY = "crates/unica-coder/src/application/mod.rs"
 # A public tool declaration in the registry, for example:  name: "unica.form.edit",
 TOOL_DECLARATION = re.compile(r'name:\s*"(?P<tool>unica\.[A-Za-z0-9_.]+)"')
 
-# Documents that carry the architecture contract. Touching one of them is
-# accepted as evidence that the surface change was described.
+# Files accepted as contract-relevant synchronization evidence.
 #
-# The list names the normative documents on purpose. `spec/architecture/` as a
-# whole would also match the glossary, the risk list and the concept notes, and
-# a comma moved in the glossary is not a description of a new public tool. What
-# the guard can prove is that the layer that owns rules moved in the same
-# change; which record owns *this* tool stays a review judgement.
+# ADR decisions and registry rules can own normative text; acceptance plans are
+# supporting verification evidence, not owners. `spec/architecture/` as a whole
+# would also match the glossary, risks and concept notes, where a comma moved is
+# not evidence about a new public tool. The guard proves only that a relevant
+# slice moved; identifying the actual owner stays a review judgement.
 ARCHITECTURE_EVIDENCE = (
     "spec/acceptance/",
     "spec/architecture/invariants.md",
@@ -474,7 +475,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if not change.is_violation:
-        print("check-architecture-sync: surface change is described")
+        print("check-architecture-sync: surface change has contract-sync evidence")
         print(change.describe())
         return 0
 
@@ -484,9 +485,10 @@ def main(argv: list[str] | None = None) -> int:
     print(
         "INV-MCP-SURFACE-SYNC requires the owning decision record, the registry entry that\n"
         "derives from it, and the check named by that entry to change together.\n"
-        "This guard proves only the weaker half: that a normative document moved\n"
-        "in the same change. Naming the record that actually owns this tool is\n"
-        "the reviewer's job. Update one of: spec/decisions/NNNN-*.md,\n"
+        "This guard proves only the weaker half: that contract-relevant sync\n"
+        "evidence moved in the same change. Review must still identify and\n"
+        "update the ADR/registry owner. Update one of:\n"
+        "spec/decisions/NNNN-*.md,\n"
         "spec/architecture/invariants.md, spec/architecture/quality-requirements.md,\n"
         "spec/acceptance/."
     )

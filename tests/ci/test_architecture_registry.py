@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ast
 import re
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -50,45 +51,277 @@ WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 # `.github/workflows/unica-plugin-release.yml` runs `unittest discover` over
 # these two trees, with the default `test*.py` pattern.
 PYTHON_TEST_ROOTS = ("tests/ci/", "tests/dev/")
-# `unittest discover` collects test methods of `TestCase` subclasses and nothing
-# else. A regex for `def test_` also matches a module-level function, a helper on
-# a plain class, or a line inside a comment — none of which the runner collects,
-# so the registry would still be counting a check that never runs. The module is
-# parsed rather than imported: importing a test module to inspect it runs its
-# import-time code, which is a poor trade for a validator.
-TESTCASE_BASE_NAMES = {"TestCase", "IsolatedAsyncioTestCase", "FunctionTestCase"}
+# `unittest discover` imports a module and inspects its final namespace. A regex
+# for `def test_` also matches a module-level function, a helper on a plain
+# class, or a line inside a comment — none of which the runner collects. The
+# validator therefore proves a conservative subset of that runtime behaviour:
+# an undecorated module-level `TestCase` subclass with a direct, undecorated test
+# method whose class and method bindings survive. Inherited-only methods,
+# wildcard imports, dynamic discovery hooks and decorators fail closed. The
+# module is parsed rather than imported because importing test code a second
+# time would repeat its import-time side effects.
+TESTCASE_IMPORTS = {
+    "unittest": {"TestCase", "IsolatedAsyncioTestCase", "FunctionTestCase"},
+    "unittest.case": {"TestCase", "FunctionTestCase"},
+    "unittest.async_case": {"IsolatedAsyncioTestCase"},
+}
 
 
 def python_module_collects_tests(path: Path) -> bool:
-    """True when `unittest` would collect at least one test from this module."""
+    """True when the module statically proves a collectable `unittest` test."""
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"))
     except SyntaxError:
         return False
 
-    def is_testcase_base(node: ast.expr) -> bool:
-        name = node.attr if isinstance(node, ast.Attribute) else getattr(node, "id", None)
-        return name in TESTCASE_BASE_NAMES
+    unittest_modules: dict[str, str] = {}
+    imported_cases: set[str] = set()
+    local_cases: dict[str, set[str]] = {}
+    has_dynamic_discovery_binding = False
+    has_wildcard_import = False
 
-    local_cases = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.ClassDef):
+    def replace_binding(name: str) -> None:
+        nonlocal has_dynamic_discovery_binding
+        unittest_modules.pop(name, None)
+        imported_cases.discard(name)
+        local_cases.pop(name, None)
+        if name in {"load_tests", "__dir__"}:
+            has_dynamic_discovery_binding = True
+
+    def bound_names(target: ast.expr) -> set[str]:
+        if isinstance(target, ast.Name):
+            return {target.id}
+        if isinstance(target, (ast.List, ast.Tuple)):
+            return {
+                name
+                for element in target.elts
+                for name in bound_names(element)
+            }
+        return set()
+
+    class NamedExpressionBindingVisitor(ast.NodeVisitor):
+        """Find walrus targets that escape a comprehension into this scope."""
+
+        def __init__(self) -> None:
+            self.names: set[str] = set()
+
+        def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+            self.names.update(bound_names(node.target))
+            self.visit(node.value)
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            # Defaults execute in this scope; the body belongs to the lambda.
+            for expression in (
+                *node.args.defaults,
+                *(default for default in node.args.kw_defaults if default is not None),
+            ):
+                self.visit(expression)
+
+    class ScopeBindingVisitor(ast.NodeVisitor):
+        """Find bindings made in one scope without entering child scopes."""
+
+        def __init__(self) -> None:
+            self.names: set[str] = set()
+            self.has_wildcard_import = False
+
+        def visit_Name(self, node: ast.Name) -> None:
+            if isinstance(node.ctx, (ast.Store, ast.Del)):
+                self.names.add(node.id)
+
+        def visit_Import(self, node: ast.Import) -> None:
+            self.names.update(
+                alias.asname or alias.name.split(".", maxsplit=1)[0]
+                for alias in node.names
+            )
+
+        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+            if any(alias.name == "*" for alias in node.names):
+                self.has_wildcard_import = True
+            self.names.update(
+                alias.asname or alias.name
+                for alias in node.names
+                if alias.name != "*"
+            )
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self._visit_function_definition(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            self._visit_function_definition(node)
+
+        def _visit_function_definition(
+            self, node: ast.FunctionDef | ast.AsyncFunctionDef
+        ) -> None:
+            self.names.add(node.name)
+            for expression in (
+                *node.decorator_list,
+                *node.args.defaults,
+                *(default for default in node.args.kw_defaults if default is not None),
+            ):
+                self.visit(expression)
+            if node.returns is not None:
+                self.visit(node.returns)
+            for argument in (
+                *node.args.posonlyargs,
+                *node.args.args,
+                *node.args.kwonlyargs,
+            ):
+                if argument.annotation is not None:
+                    self.visit(argument.annotation)
+            if (
+                node.args.vararg is not None
+                and node.args.vararg.annotation is not None
+            ):
+                self.visit(node.args.vararg.annotation)
+            if (
+                node.args.kwarg is not None
+                and node.args.kwarg.annotation is not None
+            ):
+                self.visit(node.args.kwarg.annotation)
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            self.names.add(node.name)
+            for expression in (
+                *node.decorator_list,
+                *node.bases,
+                *(keyword.value for keyword in node.keywords),
+            ):
+                self.visit(expression)
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            for expression in (
+                *node.args.defaults,
+                *(default for default in node.args.kw_defaults if default is not None),
+            ):
+                self.visit(expression)
+
+        def _visit_comprehension(
+            self,
+            node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+        ) -> None:
+            visitor = NamedExpressionBindingVisitor()
+            visitor.visit(node)
+            self.names.update(visitor.names)
+
+        visit_ListComp = _visit_comprehension
+        visit_SetComp = _visit_comprehension
+        visit_DictComp = _visit_comprehension
+        visit_GeneratorExp = _visit_comprehension
+
+        def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+            if node.name is not None:
+                self.names.add(node.name)
+            if node.type is not None:
+                self.visit(node.type)
+            for statement in node.body:
+                self.visit(statement)
+
+        def visit_MatchAs(self, node: ast.MatchAs) -> None:
+            if node.name is not None:
+                self.names.add(node.name)
+            if node.pattern is not None:
+                self.visit(node.pattern)
+
+        def visit_MatchStar(self, node: ast.MatchStar) -> None:
+            if node.name is not None:
+                self.names.add(node.name)
+
+        def visit_MatchMapping(self, node: ast.MatchMapping) -> None:
+            if node.rest is not None:
+                self.names.add(node.rest)
+            for key in node.keys:
+                self.visit(key)
+            for pattern in node.patterns:
+                self.visit(pattern)
+
+    def scope_bindings(node: ast.AST) -> tuple[set[str], bool]:
+        visitor = ScopeBindingVisitor()
+        visitor.visit(node)
+        return visitor.names, visitor.has_wildcard_import
+
+    def attribute_path(node: ast.Attribute) -> tuple[str, list[str]] | None:
+        attributes = [node.attr]
+        value: ast.expr = node
+        while isinstance(value, ast.Attribute):
+            value = value.value
+            if isinstance(value, ast.Attribute):
+                attributes.append(value.attr)
+        if not isinstance(value, ast.Name):
+            return None
+        return value.id, list(reversed(attributes))
+
+    def is_testcase_base(node: ast.expr) -> bool:
+        if isinstance(node, ast.Name):
+            return node.id in imported_cases or node.id in local_cases
+        if not isinstance(node, ast.Attribute):
+            return False
+        path = attribute_path(node)
+        if path is None:
+            return False
+        root, attributes = path
+        imported_module = unittest_modules.get(root)
+        if imported_module is None:
+            return False
+        module = ".".join((imported_module, *attributes[:-1]))
+        return attributes[-1] in TESTCASE_IMPORTS.get(module, set())
+
+    def collectable_methods(node: ast.ClassDef) -> set[str]:
+        methods: set[str] = set()
+        for child in node.body:
+            bindings, wildcard_import = scope_bindings(child)
+            if wildcard_import:
+                return set()
+            methods.difference_update(bindings)
+            if (
+                isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and (child.name.startswith("test") or child.name == "runTest")
+                and not child.decorator_list
+            ):
+                methods.add(child.name)
+        return methods
+
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                name = alias.asname or alias.name.split(".", maxsplit=1)[0]
+                replace_binding(name)
+                if alias.name in TESTCASE_IMPORTS:
+                    imported_module = alias.name if alias.asname else "unittest"
+                    unittest_modules[name] = imported_module
             continue
-        derives = any(
-            is_testcase_base(base)
-            or (isinstance(base, ast.Name) and base.id in local_cases)
-            for base in node.bases
-        )
-        if not derives:
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name == "*":
+                    has_wildcard_import = True
+                    continue
+                name = alias.asname or alias.name
+                replace_binding(name)
+                if (
+                    node.level == 0
+                    and node.module is not None
+                    and alias.name in TESTCASE_IMPORTS.get(node.module, set())
+                ):
+                    imported_cases.add(name)
             continue
-        local_cases.add(node.name)
-        if any(
-            isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and child.name.startswith("test")
-            for child in node.body
-        ):
-            return True
-    return False
+        if isinstance(node, ast.ClassDef):
+            derives = any(is_testcase_base(base) for base in node.bases)
+            bindings, wildcard_import = scope_bindings(node)
+            has_wildcard_import = has_wildcard_import or wildcard_import
+            for name in bindings:
+                replace_binding(name)
+            if derives and not node.decorator_list and not node.keywords:
+                local_cases[node.name] = collectable_methods(node)
+            continue
+        bindings, wildcard_import = scope_bindings(node)
+        has_wildcard_import = has_wildcard_import or wildcard_import
+        for name in bindings:
+            replace_binding(name)
+
+    return (
+        not has_dynamic_discovery_binding
+        and not has_wildcard_import
+        and any(methods for methods in local_cases.values())
+    )
 # `cargo test --workspace` collects `#[test]` and `#[tokio::test]`.
 RUST_TEST_ATTRIBUTE = re.compile(r"#\[(?:tokio::)?test\]")
 # A Rust test target may be a two-line shim that pulls in the real file, which
@@ -110,9 +343,10 @@ MAX_MANUAL_CHECKS = 5
 # registry rework -- and how the same list then reappeared in another chapter.
 MAX_DECISION_LINKS_PER_DOCUMENT = 3
 
-# Registry fields carry normative text, and normative text is Russian
-# (INV-DOC-RUSSIAN-NORMATIVE). Identifiers stay Latin, so a rule may legitimately be almost all
-# backticked names; only the prose around them is checked.
+# Registry `Rule` fields and new ADR `Решение` sections carry normative text,
+# and normative text is Russian (INV-DOC-RUSSIAN-NORMATIVE). Identifiers stay
+# Latin, so a rule may legitimately be almost all backticked names; only the
+# prose around them is checked.
 CYRILLIC = re.compile(r"[Ѐ-ӿ]")
 # A citation of a record, as a reader would recognise one. Digits are matched on
 # purpose even though `RECORD_ID` forbids them: the identifiers this corpus has
@@ -127,6 +361,101 @@ RECORD_CITATION = re.compile(r"\b((?:INV|REQ)-[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\b")
 ILLUSTRATIVE_IDENTIFIERS = {"INV-MCP-TOOL-CONTRACTS-RS"}
 BACKTICKED_SPAN = re.compile(r"`[^`]*`")
 NORMATIVE_FIELDS = ("Rule",)
+LATIN_TOKEN = re.compile(
+    r"(?<![\w-])[A-Za-z][A-Za-z0-9]*(?:[-_.:/][A-Za-z0-9]+)*(?![\w-])"
+)
+# Existing product and technology names that legitimately remain Latin outside
+# backticks. New code/path identifiers should be backticked instead of growing
+# this set; an unknown Latin word is treated as English prose.
+ALLOWED_NORMATIVE_LATIN_TOKENS = {
+    "Actions",
+    "ADR",
+    "API",
+    "Bootstrap",
+    "BSL",
+    "Cargo",
+    "CI",
+    "CR",
+    "CRLF",
+    "Claude",
+    "Code",
+    "Codex",
+    "DCS",
+    "DSL",
+    "EDT",
+    "Git",
+    "GitHub",
+    "ID",
+    "JSON",
+    "JSON-RPC",
+    "Job",
+    "LF",
+    "Linux",
+    "MCP",
+    "MXL",
+    "Node.js",
+    "Object",
+    "PATH",
+    "PowerShell",
+    "Python",
+    "QName",
+    "README",
+    "Release",
+    "Rust",
+    "SDK",
+    "SHA-256",
+    "Staging-PR",
+    "Unica",
+    "Unix",
+    "Workflow",
+    "Windows",
+    "XML",
+    "XSD",
+    "application",
+    "bootstrap",
+    "diff",
+    "git",
+    "interfaces",
+    "macOS",
+    "override",
+    "platform",
+    "promotion",
+    "promotion-PR",
+    "pull",
+    "push",
+    "request",
+    "runtime",
+    "shell",
+    "staging",
+    "v1",
+    "workflow",
+    "writer",
+}
+DECISION_SECTION = re.compile(
+    r"^## Решение\s*$\n(?P<body>.*?)(?=^## |\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+# ADR-0001...ADR-0006 predate the Russian-only policy and remain immutable.
+# `spec/decisions/README.md` records the same closed historical exception.
+LEGACY_MIXED_LANGUAGE_DECISIONS = {
+    "0001",
+    "0002",
+    "0003",
+    "0004",
+    "0005",
+    "0006",
+}
+
+
+def unexpected_normative_latin_tokens(text: str) -> set[str]:
+    prose = BACKTICKED_SPAN.sub(" ", text)
+    return {
+        token
+        for token in LATIN_TOKEN.findall(prose)
+        if token not in ALLOWED_NORMATIVE_LATIN_TOKENS
+        and ADR_REFERENCE.fullmatch(token) is None
+        and RECORD_CITATION.fullmatch(token) is None
+    }
 
 # Formulations that describe Unica as a single-host product. ADR-0012 made the
 # plugin directory serve both Codex and Claude Code, so these are wrong in the
@@ -359,7 +688,7 @@ class RegistryFormatTests(unittest.TestCase):
         ]
         self.assertEqual(offenders, [], "a record states exactly one rule")
 
-    def test_normative_fields_are_written_in_russian(self) -> None:
+    def test_registry_rules_are_written_in_russian(self) -> None:
         """Rules are stated in Russian; only identifiers stay Latin.
 
         Backticked spans are dropped before the check, because a rule may
@@ -375,11 +704,353 @@ class RegistryFormatTests(unittest.TestCase):
                         continue
                     if not CYRILLIC.search(prose):
                         offenders.append(f"{record.where}: {field} is not Russian")
+                    unexpected = unexpected_normative_latin_tokens(value)
+                    if unexpected:
+                        offenders.append(
+                            f"{record.where}: {field} has English prose "
+                            f"{', '.join(sorted(unexpected))}"
+                        )
         self.assertEqual(
             offenders,
             [],
             "normative text is Russian so one grep finds every statement of a rule",
         )
+
+    def test_non_legacy_decisions_are_written_in_russian(self) -> None:
+        offenders = []
+        for path in sorted(DECISIONS_DIR.glob("*.md")):
+            file_match = ADR_FILE.match(path.name)
+            if (
+                file_match is None
+                or file_match.group("number") in LEGACY_MIXED_LANGUAGE_DECISIONS
+            ):
+                continue
+            section = DECISION_SECTION.search(path.read_text(encoding="utf-8"))
+            if section is None:
+                offenders.append(f"{path.relative_to(REPO_ROOT)}: missing Решение")
+                continue
+            prose = BACKTICKED_SPAN.sub(" ", section.group("body")).strip()
+            if not CYRILLIC.search(prose):
+                offenders.append(f"{path.relative_to(REPO_ROOT)}: Решение is not Russian")
+            unexpected = unexpected_normative_latin_tokens(section.group("body"))
+            if unexpected:
+                offenders.append(
+                    f"{path.relative_to(REPO_ROOT)}: Решение has English prose "
+                    f"{', '.join(sorted(unexpected))}"
+                )
+        self.assertEqual(offenders, [])
+
+    def test_language_check_rejects_mixed_english_prose(self) -> None:
+        text = "1. Русский. This normative decision is written in English."
+        self.assertEqual(
+            unexpected_normative_latin_tokens(text),
+            {"This", "normative", "decision", "is", "written", "in", "English"},
+        )
+
+
+class PythonCheckCollectionTests(unittest.TestCase):
+    def _write_module(self, directory: Path, name: str, source: str) -> Path:
+        path = directory / f"test_{name}.py"
+        path.write_text(source, encoding="utf-8")
+        return path
+
+    def test_rejects_testcase_classes_unittest_cannot_collect(self) -> None:
+        sources = {
+            "nested": """
+import unittest
+
+def factory():
+    class Hidden(unittest.TestCase):
+        def test_never_collected(self):
+            pass
+    return Hidden
+""",
+            "unreachable": """
+import unittest
+
+if False:
+    class Hidden(unittest.TestCase):
+        def test_never_collected(self):
+            pass
+""",
+            "unrelated_base": """
+class TestCase:
+    pass
+
+class NotAUnittest(TestCase):
+    def test_never_collected(self):
+        pass
+""",
+            "decorated_away": """
+import unittest
+
+def replace_with_object(_class):
+    return object()
+
+@replace_with_object
+class NotAClassAtRuntime(unittest.TestCase):
+    def test_never_collected(self):
+        pass
+""",
+            "rebound": """
+import unittest
+
+class Rebound(unittest.TestCase):
+    def test_never_collected(self):
+        pass
+
+Rebound = object()
+""",
+            "conditionally_rebound": """
+import unittest
+
+class Rebound(unittest.TestCase):
+    def test_never_collected(self):
+        pass
+
+if True:
+    Rebound = object()
+""",
+            "deleted": """
+import unittest
+
+class Deleted(unittest.TestCase):
+    def test_never_collected(self):
+        pass
+
+del Deleted
+""",
+            "foreign_testcase": """
+from unittest.fake import TestCase
+
+class NotAUnittest(TestCase):
+    def test_never_collected(self):
+        pass
+""",
+            "load_tests_replaces_suite": """
+import unittest
+
+class Replaced(unittest.TestCase):
+    def test_never_collected(self):
+        pass
+
+def load_tests(loader, tests, pattern):
+    return unittest.TestSuite()
+""",
+            "module_dir_hides_suite": """
+import unittest
+
+class HiddenByDir(unittest.TestCase):
+    def test_never_collected(self):
+        pass
+
+def __dir__():
+    return []
+""",
+            "wildcard_import_rebinds_class": """
+from unittest import TestCase
+
+class Candidate(TestCase):
+    def test_never_collected(self):
+        pass
+
+from fake_star import *
+""",
+            "decorated_method": """
+import unittest
+
+class NotCallable(unittest.TestCase):
+    @property
+    def test_never_collected(self):
+        pass
+""",
+            "rebound_method": """
+import unittest
+
+class NotCallable(unittest.TestCase):
+    def test_never_collected(self):
+        pass
+
+    test_never_collected = None
+""",
+            "conditionally_rebound_method": """
+import unittest
+
+class NotCallable(unittest.TestCase):
+    def test_never_collected(self):
+        pass
+
+    if True:
+        test_never_collected = None
+""",
+            "deleted_method": """
+import unittest
+
+class NotCallable(unittest.TestCase):
+    def test_never_collected(self):
+        pass
+
+    del test_never_collected
+""",
+            "exception_target_rebinds_class": """
+import unittest
+
+class Candidate(unittest.TestCase):
+    def test_never_collected(self):
+        pass
+
+try:
+    raise RuntimeError
+except RuntimeError as Candidate:
+    pass
+""",
+            "match_capture_rebinds_class": """
+import unittest
+
+class Candidate(unittest.TestCase):
+    def test_never_collected(self):
+        pass
+
+match object():
+    case Candidate:
+        pass
+""",
+            "match_star_rebinds_class": """
+import unittest
+
+class Candidate(unittest.TestCase):
+    def test_never_collected(self):
+        pass
+
+match []:
+    case [*Candidate]:
+        pass
+""",
+            "match_mapping_rebinds_class": """
+import unittest
+
+class Candidate(unittest.TestCase):
+    def test_never_collected(self):
+        pass
+
+match {}:
+    case {**Candidate}:
+        pass
+""",
+            "relative_unittest_import": """
+from .unittest import TestCase
+
+class NotAStdlibTestCase(TestCase):
+    def test_never_collected(self):
+        pass
+""",
+            "mro_masks_inherited_method": """
+import unittest
+
+class Base(unittest.TestCase):
+    def test_never_collected(self):
+        pass
+
+class Mask:
+    test_never_collected = None
+
+class Candidate(Mask, Base):
+    pass
+
+del Base
+""",
+            "lambda_default_rebinds_class": """
+import unittest
+
+class Candidate(unittest.TestCase):
+    def test_never_collected(self):
+        pass
+
+helper = lambda value=(Candidate := object): value
+""",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            for name, source in sources.items():
+                with self.subTest(name=name):
+                    path = self._write_module(directory, name, source)
+                    self.assertFalse(python_module_collects_tests(path))
+
+    def test_accepts_aliased_unittest_testcase(self) -> None:
+        source = """
+from unittest import TestCase as CheckCase
+
+class Collected(CheckCase):
+    def test_collected(self):
+        pass
+"""
+        with tempfile.TemporaryDirectory() as temporary:
+            path = self._write_module(Path(temporary), "aliased", source)
+            self.assertTrue(python_module_collects_tests(path))
+
+    def test_accepts_run_test_method(self) -> None:
+        source = """
+import unittest as testing
+
+class Collected(testing.TestCase):
+    def runTest(self):
+        pass
+"""
+        with tempfile.TemporaryDirectory() as temporary:
+            path = self._write_module(Path(temporary), "run_test", source)
+            self.assertTrue(python_module_collects_tests(path))
+
+    def test_ignores_bindings_inside_nested_function_scope(self) -> None:
+        sources = {
+            "nested_function": """
+import unittest
+
+class Collected(unittest.TestCase):
+    def test_collected(self):
+        pass
+
+if True:
+    def helper():
+        Collected = object()
+        return Collected
+""",
+            "nested_class": """
+import unittest
+
+class Collected(unittest.TestCase):
+    def test_collected(self):
+        pass
+
+if True:
+    class Helper:
+        Collected = object()
+""",
+            "comprehension": """
+import unittest
+
+class Collected(unittest.TestCase):
+    def test_collected(self):
+        pass
+
+if True:
+    shadowed = [Collected for Collected in ()]
+""",
+            "lambda_body": """
+import unittest
+
+class Collected(unittest.TestCase):
+    def test_collected(self):
+        pass
+
+helper = lambda: (Collected := object)
+""",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            for name, source in sources.items():
+                with self.subTest(name=name):
+                    path = self._write_module(directory, name, source)
+                    self.assertTrue(python_module_collects_tests(path))
 
 
 class IdentifierLedgerTests(unittest.TestCase):

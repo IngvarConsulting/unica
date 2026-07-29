@@ -322,7 +322,7 @@ class DiffGrammarTests(unittest.TestCase):
 
 
 class ArchitectureEvidenceTests(unittest.TestCase):
-    """Evidence has to be a normative document, not any file under `spec/`."""
+    """Evidence has to be contract-relevant, not any file under `spec/`."""
 
     def setUp(self) -> None:
         self.guard = load_guard()
@@ -340,7 +340,7 @@ class ArchitectureEvidenceTests(unittest.TestCase):
         self.assertEqual(change.architecture_files, set())
         self.assertTrue(change.is_violation)
 
-    def test_normative_documents_are_evidence(self) -> None:
+    def test_contract_relevant_documents_are_evidence(self) -> None:
         for evidence in (
             "spec/decisions/0017-form-rename.md",
             "spec/architecture/invariants.md",
