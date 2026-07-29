@@ -199,16 +199,31 @@ with `claude --plugin-dir ./plugins/unica`.
 
 ## Workspace Service Acceptance
 
-This section exercises INV-APP-LAZY-HIDDEN-SERVICES (hidden, workspace-scoped services),
-INV-SOURCE-SINGLE-RESOLVED-ROOT (source-root selection), INV-MCP-SDK-TRANSPORT and INV-MCP-BOUNDED-ADMISSION (transport
-ownership and bounded admission), INV-CACHE-PERSISTED-STALENESS (live services are notified by
-applied mutations), and INV-PLATFORM-NO-ORPHAN-PROCESSES (process-tree ownership).
+This section exercises INV-APP-CODE-PROVIDER-BOUNDARY (provider-neutral
+orchestration), INV-MCP-CODE-SEARCH-SECTIONS (public search semantics),
+INV-APP-LAZY-HIDDEN-SERVICES (hidden, workspace-scoped services),
+INV-SOURCE-SINGLE-RESOLVED-ROOT (source-root selection),
+INV-CACHE-WORKTREE-ISOLATION (independent provider state),
+INV-MCP-SDK-TRANSPORT and INV-MCP-BOUNDED-ADMISSION (transport ownership and
+bounded admission), INV-CACHE-PERSISTED-STALENESS (live services are notified
+by applied mutations), and INV-PLATFORM-NO-ORPHAN-PROCESSES (process-tree
+ownership).
 
-- `unica.code.grep` must not create `.build/unica/services`.
+- `initialize`, `tools/list`, `project.status`, and `project.map` must not create
+  `.build/unica/services`.
+- `unica.code.search` returns fixed `rlm`, `bsl-analyzer`, and `git-grep`
+  sections in that order and may start the workspace service. One failed or
+  unavailable section remains visible while another successful or empty
+  section makes the overall search successful; cancellation returns no partial
+  success.
 - Analyzer-backed tools may create `.build/unica/services/<service-key>`.
-- Two sessions using the same workspace/source root should reuse a matching live
-  service record.
-- Another workspace or source root must use another service key.
+- Repeated provider calls through one matching live service reuse independent
+  `bsl-analyzer` and RLM transports. RLM reuses one logical `rlm_start` session
+  until invalidation, expiry, shutdown, or source-root change and closes the
+  old session with `rlm_end`.
+- Another workspace, linked worktree, or source root must use another service,
+  session, and index identity. No cross-chat reuse is part of the public
+  contract, and no main-branch index is combined with a worktree delta.
 - Stale or version-mismatched `service.json` records must be replaced.
 - With no `sourceDir`, a source set named `main` is the effective source root;
   otherwise the sole `CONFIGURATION` source set is used. Multiple configuration
@@ -232,6 +247,10 @@ applied mutations), and INV-PLATFORM-NO-ORPHAN-PROCESSES (process-tree ownership
   `cargo test -p unica-coder eof_cancels_active_calls`.
 - At most 32 `tools/call` workers are admitted; excess calls return `-32603`
   with `overloaded` without delaying `ping` or cancellation (INV-MCP-BOUNDED-ADMISSION).
+  Each code-intelligence provider separately admits at most 32 retained
+  workers. A timed-out non-cooperative provider keeps its permit until it
+  actually exits, and all retained handles share the same aggregate two-second
+  shutdown grace as active tool calls.
   Public input line length is delegated to the SDK transport; the 8 MiB line
   bound below applies to the internal workspace-service protocol.
 - `ping`, cancellation, and shutdown must remain responsive while analyzer or
@@ -267,9 +286,10 @@ subsequent successful request, and descendant cleanup:
 
 ```sh
 cargo test -p unica-coder --test issue_89_workspace_service -- --nocapture
+cargo test -p unica-coder --test platform_code_intelligence -- --nocapture
 ```
 
-Run it three consecutive times. Each run must finish within its test deadlines,
+Run the issue-89 test three consecutive times. Each run must finish within its test deadlines,
 all recorded backend roots must end in `src/cf`, and no PID created by the
 fixture may survive. On Windows, additionally inspect without terminating any
 pre-existing user process:

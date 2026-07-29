@@ -1,6 +1,9 @@
 use super::{AdapterOutcome, ToolSpec};
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
+use crate::domain::code_intelligence::{
+    CodeIntelligenceContext, CodeIntelligenceReadRequest, CodeIntelligenceRegistry,
+};
 use crate::domain::events::DomainEvent;
 use crate::domain::workspace::WorkspaceContext;
 use serde_json::{Map, Value};
@@ -61,6 +64,26 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         dry_run: bool,
         context: &WorkspaceContext,
     ) -> Result<(), String>;
+
+    fn resolve_code_intelligence_context(
+        &self,
+        _context: &WorkspaceContext,
+        _args: &Map<String, Value>,
+    ) -> Result<CodeIntelligenceContext, String> {
+        Err("code intelligence context resolver is not configured".to_string())
+    }
+
+    fn normalize_code_intelligence_read_request(
+        &self,
+        _request: CodeIntelligenceReadRequest,
+        _context: &CodeIntelligenceContext,
+    ) -> Result<CodeIntelligenceReadRequest, String> {
+        Err("code intelligence path resolver is not configured".to_string())
+    }
+
+    fn code_intelligence_registry(&self) -> Result<CodeIntelligenceRegistry, String> {
+        Err("code intelligence provider registry is not configured".to_string())
+    }
 
     fn evaluate_format_guard(
         &self,

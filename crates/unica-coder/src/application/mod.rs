@@ -1,5 +1,6 @@
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
+use crate::domain::code_intelligence::{CodeIntelligenceReadRequest, SearchRequest};
 use crate::domain::events::{runtime_event_kind, DomainEvent, DomainEventKind};
 use crate::domain::workspace::WorkspaceContext;
 pub(crate) use operation_descriptors::SupportGuardRequirement;
@@ -13,6 +14,7 @@ pub(crate) use tool_contracts::{
     DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS, DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
 };
 
+pub(crate) mod code_intelligence;
 pub(crate) mod operation_descriptors;
 mod outcome;
 pub(crate) mod ports;
@@ -44,6 +46,9 @@ pub enum ToolHandler {
     RuntimeJob {
         action: RuntimeJobAction,
     },
+    CodeIntelligence {
+        operation: CodeIntelligenceOperation,
+    },
     CodeAdapter {
         command: &'static [&'static str],
     },
@@ -60,6 +65,14 @@ pub enum RuntimeJobAction {
     Logs,
     Cancel,
     List,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodeIntelligenceOperation {
+    Search,
+    Definition,
+    Outline,
+    ObjectProfile,
 }
 
 #[derive(Debug, Serialize)]
@@ -115,7 +128,14 @@ impl UnicaApplication {
         let spec = tools()
             .into_iter()
             .find(|tool| tool.name == name)
-            .ok_or_else(|| format!("unknown unica tool: {name}"))?;
+            .ok_or_else(|| {
+                if name == "unica.code.grep" {
+                    "unica.code.grep was removed; use unica.code.search and inspect its git-grep section"
+                        .to_string()
+                } else {
+                    format!("unknown unica tool: {name}")
+                }
+            })?;
         call_tool(spec, args, self.ports.as_ref(), &cancellation)
     }
 }
@@ -270,14 +290,14 @@ pub fn tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "unica.code.search",
-            description: "Search BSL code through the internal RLM index.",
+            description: "Search code concurrently through provider-local RLM, bsl-analyzer, and literal git-grep sections. Migration: use sourceDir instead of the former path/config fields and a per-provider limit from 1 to 50.",
             mutating: false,
             cache_access: CacheAccess {
-                reads: &["bsl_index"],
+                reads: &["bsl_index", "workspace_graph"],
                 writes: &[],
             },
-            handler: ToolHandler::CodeAdapter {
-                command: &["search"],
+            handler: ToolHandler::CodeIntelligence {
+                operation: CodeIntelligenceOperation::Search,
             },
         },
         ToolSpec {
@@ -288,8 +308,8 @@ pub fn tools() -> Vec<ToolSpec> {
                 reads: &["bsl_index"],
                 writes: &[],
             },
-            handler: ToolHandler::CodeAdapter {
-                command: &["definition"],
+            handler: ToolHandler::CodeIntelligence {
+                operation: CodeIntelligenceOperation::Definition,
             },
         },
         ToolSpec {
@@ -300,16 +320,9 @@ pub fn tools() -> Vec<ToolSpec> {
                 reads: &["bsl_index"],
                 writes: &[],
             },
-            handler: ToolHandler::CodeAdapter {
-                command: &["outline"],
+            handler: ToolHandler::CodeIntelligence {
+                operation: CodeIntelligenceOperation::Outline,
             },
-        },
-        ToolSpec {
-            name: "unica.code.grep",
-            description: "Run safe typed git-grep search inside the Unica workspace.",
-            mutating: false,
-            cache_access: CacheAccess::default(),
-            handler: ToolHandler::CodeAdapter { command: &["grep"] },
         },
         ToolSpec {
             name: "unica.code.patch",
@@ -467,7 +480,21 @@ fn call_tool(
         None
     };
 
-    let handler_outcome = ports.invoke_handler(spec, args, &context, dry_run, cancellation)?;
+    let handler_outcome = match spec.handler {
+        ToolHandler::CodeIntelligence {
+            operation: CodeIntelligenceOperation::Search,
+        } => invoke_code_intelligence_search(ports, args, &context, dry_run, cancellation)?,
+        ToolHandler::CodeIntelligence { operation } => invoke_code_intelligence_read(
+            ports,
+            spec.name,
+            operation,
+            args,
+            &context,
+            dry_run,
+            cancellation,
+        )?,
+        _ => ports.invoke_handler(spec, args, &context, dry_run, cancellation)?,
+    };
     let mut outcome = handler_outcome.adapter;
     if let Some(warning) = support_guard_warning {
         outcome.warnings.insert(0, warning);
@@ -510,6 +537,198 @@ fn call_tool(
         data: handler_outcome.data,
         job: handler_outcome.job,
     })
+}
+
+fn invoke_code_intelligence_search(
+    ports: &dyn ApplicationPorts,
+    args: &Map<String, Value>,
+    workspace: &WorkspaceContext,
+    dry_run: bool,
+    cancellation: &CancellationToken,
+) -> Result<ports::HandlerOutcome, String> {
+    let context = ports.resolve_code_intelligence_context(workspace, args)?;
+    if dry_run {
+        let mut outcome = AdapterOutcome::ok(
+            "dry run: unica.code.search would run the provider-neutral search coordinator",
+        );
+        outcome
+            .artifacts
+            .push(context.source_root.path.display().to_string());
+        return Ok(ports::HandlerOutcome::plain(outcome));
+    }
+    let request = SearchRequest {
+        query: args
+            .get("query")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        limit: args
+            .get("limit")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(20),
+    };
+    let execution = code_intelligence::CodeSearchCoordinator::new(
+        ports.code_intelligence_registry()?,
+    )
+    .search(&request, &context, cancellation)?;
+    let artifacts = execution
+        .result
+        .sections
+        .iter()
+        .flat_map(|section| section.artifacts.clone())
+        .collect();
+    let data = serde_json::to_value(&execution.result)
+        .map_err(|error| format!("failed to serialize code search result: {error}"))?;
+    Ok(ports::HandlerOutcome::with_data(
+        AdapterOutcome {
+            ok: execution.ok,
+            summary: if execution.ok {
+                "unica.code.search completed through provider-neutral code intelligence".to_string()
+            } else {
+                "unica.code.search failed because no provider served the request".to_string()
+            },
+            changes: Vec::new(),
+            warnings: execution.warnings,
+            errors: execution.errors,
+            artifacts,
+            stdout: Some(execution.text),
+            stderr: None,
+            command: None,
+        },
+        data,
+    ))
+}
+
+fn invoke_code_intelligence_read(
+    ports: &dyn ApplicationPorts,
+    tool_name: &str,
+    operation: CodeIntelligenceOperation,
+    args: &Map<String, Value>,
+    workspace: &WorkspaceContext,
+    dry_run: bool,
+    cancellation: &CancellationToken,
+) -> Result<ports::HandlerOutcome, String> {
+    let context = ports.resolve_code_intelligence_context(workspace, args)?;
+    if dry_run {
+        let mut outcome = AdapterOutcome::ok(format!(
+            "dry run: {tool_name} would use the provider-neutral code intelligence registry"
+        ));
+        outcome
+            .artifacts
+            .push(context.source_root.path.display().to_string());
+        return Ok(ports::HandlerOutcome::plain(outcome));
+    }
+    let request = ports.normalize_code_intelligence_read_request(
+        code_intelligence_read_request(operation, args)?,
+        &context,
+    )?;
+    let registry = ports.code_intelligence_registry()?;
+    let provider = registry.provider_for(request.capability()).ok_or_else(|| {
+        format!(
+            "no code intelligence provider implements {:?} for {tool_name}",
+            request.capability()
+        )
+    })?;
+    let provider_id = provider.id();
+    let mut outcome =
+        code_intelligence::execute_provider_read(provider, request, context, cancellation)?;
+    if outcome.provider != provider_id {
+        outcome.warnings.insert(
+            0,
+            format!(
+                "provider registry selected {}, but the response identified {}",
+                provider_id.as_str(),
+                outcome.provider.as_str()
+            ),
+        );
+    }
+    Ok(ports::HandlerOutcome::plain(AdapterOutcome {
+        ok: outcome.ok,
+        summary: outcome.summary,
+        changes: Vec::new(),
+        warnings: outcome.warnings,
+        errors: outcome.errors,
+        artifacts: outcome.artifacts,
+        stdout: outcome.stdout,
+        stderr: outcome.stderr,
+        command: None,
+    }))
+}
+
+fn code_intelligence_read_request(
+    operation: CodeIntelligenceOperation,
+    args: &Map<String, Value>,
+) -> Result<CodeIntelligenceReadRequest, String> {
+    match operation {
+        CodeIntelligenceOperation::Definition => Ok(CodeIntelligenceReadRequest::Definition {
+            name: required_code_intelligence_string(args, "name")?.to_string(),
+            module_hint: args
+                .get("moduleHint")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            limit: code_intelligence_limit(args, 50),
+        }),
+        CodeIntelligenceOperation::Outline => Ok(CodeIntelligenceReadRequest::Outline {
+            path: required_code_intelligence_string(args, "path")?.to_string(),
+            include_methods: args
+                .get("includeMethods")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
+        }),
+        CodeIntelligenceOperation::ObjectProfile => {
+            Ok(CodeIntelligenceReadRequest::ObjectProfile {
+                name: required_code_intelligence_string(args, "name")?.to_string(),
+                sections: Some(
+                    args.get("sections")
+                        .and_then(Value::as_array)
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_string)
+                                .collect()
+                        })
+                        .unwrap_or_else(|| {
+                            [
+                                "structure",
+                                "modules",
+                                "roles",
+                                "subscriptions",
+                                "functionalOptions",
+                            ]
+                            .into_iter()
+                            .map(str::to_string)
+                            .collect()
+                        }),
+                ),
+                limit: code_intelligence_limit(args, 20),
+            })
+        }
+        CodeIntelligenceOperation::Search => {
+            Err("search cannot be built as a code intelligence read request".to_string())
+        }
+    }
+}
+
+fn required_code_intelligence_string<'a>(
+    args: &'a Map<String, Value>,
+    name: &str,
+) -> Result<&'a str, String> {
+    args.get(name)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("missing required `{name}` argument"))
+}
+
+fn code_intelligence_limit(args: &Map<String, Value>, default: usize) -> usize {
+    args.get("limit")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(default)
 }
 
 fn runtime_xml_route_guard(
@@ -1114,8 +1333,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
                 reads: &["bsl_index"],
                 writes: &[],
             },
-            handler: ToolHandler::CodeAdapter {
-                command: &["meta-profile"],
+            handler: ToolHandler::CodeIntelligence {
+                operation: CodeIntelligenceOperation::ObjectProfile,
             },
         },
         ToolSpec {
@@ -1517,11 +1736,47 @@ mod tests {
         }
         assert!(names.contains(&"unica.code.definition"));
         assert!(names.contains(&"unica.code.outline"));
-        assert!(names.contains(&"unica.code.grep"));
+        assert!(!names.contains(&"unica.code.grep"));
         assert!(names.contains(&"unica.code.graph"));
         assert!(names.contains(&"unica.meta.profile"));
         assert!(names.contains(&"unica.standards.explain"));
         assert!(!names.contains(&"unica-coder"));
+    }
+
+    #[test]
+    fn provider_neutral_tools_use_typed_code_intelligence_handlers() {
+        let expected = [
+            ("unica.code.search", CodeIntelligenceOperation::Search),
+            (
+                "unica.code.definition",
+                CodeIntelligenceOperation::Definition,
+            ),
+            ("unica.code.outline", CodeIntelligenceOperation::Outline),
+            (
+                "unica.meta.profile",
+                CodeIntelligenceOperation::ObjectProfile,
+            ),
+        ];
+
+        for (name, operation) in expected {
+            let tool = tools().into_iter().find(|tool| tool.name == name).unwrap();
+            assert!(matches!(
+                tool.handler,
+                ToolHandler::CodeIntelligence {
+                    operation: actual
+                } if actual == operation
+            ));
+        }
+    }
+
+    #[test]
+    fn removed_code_grep_error_points_to_unified_search() {
+        let error = UnicaApplication::new()
+            .call_tool("unica.code.grep", &Map::new())
+            .unwrap_err();
+
+        assert!(error.contains("removed"), "{error}");
+        assert!(error.contains("unica.code.search"), "{error}");
     }
 
     #[test]
@@ -6579,7 +6834,7 @@ mod tests {
         token.cancel();
 
         let result = app
-            .call_tool_cancellable("unica.code.search", &Map::new(), token)
+            .call_tool_cancellable("unica.project.status", &Map::new(), token)
             .unwrap();
 
         assert_eq!(*ports.observed_cancelled.lock().unwrap(), Some(true));

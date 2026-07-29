@@ -60,7 +60,7 @@
 | `unica.project.*` | состояние рабочего пространства и карта наборов исходников | `infrastructure/application_ports.rs` поверх `infrastructure/project_sources.rs` и `GitTrackingAdapter` |
 | `unica.cf.*` | контейнер конфигурации: создание, чтение, правка, валидация | `infrastructure/native_operations/cf.rs` |
 | `unica.cfe.*` | расширения конфигурации: создание, заимствование, перехват, сравнение | `native_operations/cfe.rs` |
-| `unica.meta.*` | объекты метаданных и их структура | `native_operations/meta.rs`; отдельно `unica.meta.profile` — `CodeAdapter` поверх индекса RLM |
+| `unica.meta.*` | объекты метаданных и их структура | `native_operations/meta.rs`; отдельно `unica.meta.profile` — поставщик RLM через `infrastructure/rlm_navigation.rs` |
 | `unica.form.*` | управляемые формы | `native_operations/form.rs` |
 | `unica.dcs.*` | схемы компоновки данных | `native_operations/dcs.rs` |
 | `unica.mxl.*` | табличные документы | `native_operations/mxl.rs` |
@@ -73,7 +73,7 @@
 | `unica.epf.*`, `unica.erf.*` | заготовки внешних обработок и внешних отчётов | `native_operations/external.rs` |
 | `unica.build.*` | выгрузка, загрузка, обновление, сборка и запуск через платформу | `RuntimeAdapter` в `infrastructure/internal_adapters.rs` поверх поставляемого `v8-runner` |
 | `unica.runtime.*` | типизированные сценарии runtime и долгоживущие задания | `RuntimeAdapter` и `RuntimeJobAdapter` в `internal_adapters.rs`, состояние — `infrastructure/runtime_jobs.rs` |
-| `unica.code.*` | поиск, навигация, правка и диагностика BSL | чтение — `CodeAdapter` в `internal_adapters.rs`; `unica.code.patch` — `native_operations/code.rs` |
+| `unica.code.*` | поиск, навигация, правка и диагностика BSL | поиск и навигация — реестр поставщиков в `infrastructure/code_intelligence.rs`; граф и диагностика — адаптер анализатора в `internal_adapters.rs`; `unica.code.patch` — `native_operations/code.rs` |
 | `unica.standards.*` | знания о стандартах разработки 1С | `StandardsAdapter` в `internal_adapters.rs` |
 
 Внутренние границы, до которых дотягиваются адаптеры: поставляемый инструмент
@@ -100,6 +100,9 @@ runtime для операций платформы, поставляемый а�
   требуют упреждающего обновления.
 - `cancellation` — `CancellationToken` и общий префикс ошибки `cancelled:`,
   которым отчитывается любая отменяемая операция.
+- `code_intelligence` — нейтральные к движку `CodeIntelligenceProvider`,
+  `CodeIntelligenceRegistry`, `CodeIntelligenceContext`, возможности, секции
+  поиска и типизированные запросы чтения (INV-APP-CODE-PROVIDER-BOUNDARY).
 - `events` — `DomainEvent` и `DomainEventKind`: типизированные факты, о которых
   сообщает мутирующая операция.
 - `form_edit` — схема определения правки управляемой формы и правила её
@@ -126,6 +129,10 @@ runtime для операций платформы, поставляемый а�
 - `mod` — `UnicaApplication`, `ToolSpec`, `ToolHandler`, `RuntimeJobAction`,
   `OperationResult`, канонический реестр `tools()` и диспетчер
   `call_tool` / `call_tool_cancellable`.
+- `code_intelligence` — `CodeSearchCoordinator` и общий исполнитель операций
+  чтения: параллельный запуск поставщиков, сроки, ограничение допущенных
+  исполнителей, отмена, сохранение порядка секций и политика частичного успеха
+  (INV-MCP-CODE-SEARCH-SECTIONS, INV-MCP-BOUNDED-ADMISSION).
 - `tool_contracts` — входные JSON-схемы, нормализация алиасов путей и проверка
   аргументов для каждого зарегистрированного инструмента (INV-MCP-DATA-DRIVEN-SCHEMA).
 - `operation_descriptors` — описатели нативных операций, включая политики
@@ -168,10 +175,14 @@ runtime для операций платформы, поставляемый а�
 - `application_ports` — `InfrastructureApplicationPorts`, единственная
   реализация `ApplicationPorts`, связываемая композиционным корнем (INV-APP-NO-ADAPTER-BYPASS).
 - `internal_adapters` — `CliAdapter`, `RuntimeAdapter`, `RuntimeJobAdapter`,
-  `GitTrackingAdapter`, `CodeSearchAdapter`, `CodeNavigationAdapter`,
-  `BslAnalyzerMcpAdapter` и `StandardsAdapter`. `GitTrackingAdapter`
+  `GitTrackingAdapter`, `BslAnalyzerMcpAdapter` и `StandardsAdapter`.
+  `GitTrackingAdapter`
   крейт-приватен: `unica.project.status` и `unica.project.map` читают состояние
   отслеживания в git через него, а не запускают `git` сами (INV-APP-NO-DIRECT-GIT).
+- `code_intelligence` — инфраструктурные поставщики `rlm`, `bsl-analyzer` и
+  `git-grep`, их команды, разбор ответов и отображение состояний.
+- `rlm_navigation` — типизированные definition, outline и object-profile поверх
+  поддерживаемой MCP-сессии RLM без чтения частной SQLite-схемы.
 - `native_operations` — фасад над нативными операциями над XML и DSL,
   разложенными по семействам; разобран ниже.
 - `platform` — фасад платформы из ADR-0009; разобран ниже.
@@ -190,7 +201,8 @@ runtime для операций платформы, поставляемый а�
   об упреждающих обновлениях под корнем кеша (INV-CACHE-ORCHESTRATOR-OWNED).
 - `workspace_services` — `WorkspaceServiceManager` и
   `run_workspace_service_from_args`: жизненный цикл скрытого сервиса рабочего
-  пространства и его внутренний протокол JSONL (ADR-0006).
+  пространства, отдельные тёплые транспорты `bsl-analyzer` и RLM, логическая
+  сессия RLM и внутренний протокол JSONL (ADR-0018).
 - `workspace_index` — жизненный цикл постоянного индекса BSL, который строит
   поставляемый `rlm-bsl-index`: классификация готовности, владение блокировкой,
   сердцебиение, фоновая сборка и обновление.

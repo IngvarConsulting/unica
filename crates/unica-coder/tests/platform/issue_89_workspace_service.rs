@@ -1,4 +1,3 @@
-use rusqlite::Connection;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -32,6 +31,21 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
         "unica"
     );
     mcp.send(json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{}}));
+    mcp.send(tool_call(
+        10,
+        "unica.code.search",
+        json!({
+            "cwd": fixture.workspace,
+            "query": "Procedure",
+            "dryRun": true
+        }),
+    ));
+    let dry_run = mcp.receive_ids(&[10], RESPONSE_DEADLINE);
+    assert_tool_ok(&dry_run[&10], "provider-neutral search coordinator");
+    assert!(
+        fixture.service_records().is_empty(),
+        "code.search dryRun must not start workspace services"
+    );
 
     mcp.send(tool_call(
         2,
@@ -53,8 +67,8 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
             "sections": []
         }),
     ));
-    let active_rlm = fixture.wait_for_two_active_rlm_starts(RESPONSE_DEADLINE);
-    assert_ne!(active_rlm[0].pid, active_rlm[1].pid);
+    let first_rlm = fixture.wait_for_rlm_starts(1, RESPONSE_DEADLINE)[0].clone();
+    assert_eq!(first_rlm.sequence, 1);
     let ping_started = Instant::now();
     mcp.send(json!({"jsonrpc":"2.0","id":4,"method":"ping"}));
     mcp.send(json!({
@@ -62,16 +76,20 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
         "method":"notifications/cancelled",
         "params":{"requestId":2,"reason":"issue-89 regression"}
     }));
-    let blocked_search = active_rlm
-        .iter()
-        .find(|record| record.sequence == 1)
-        .expect("first RLM operation must be observed");
-    assert!(wait_until_dead(blocked_search.pid, Duration::from_secs(2)));
+    assert!(wait_until_dead(first_rlm.pid, Duration::from_secs(2)));
     assert!(wait_until_dead(
-        blocked_search.descendant_pid,
+        first_rlm.descendant_pid,
         Duration::from_secs(2)
     ));
-    fixture.release_rlm(2);
+    let restarted_rlm = fixture.wait_for_rlm_starts(2, RESPONSE_DEADLINE);
+    assert_ne!(restarted_rlm[0].pid, restarted_rlm[1].pid);
+    assert_eq!(
+        restarted_rlm
+            .iter()
+            .map(|record| record.sequence)
+            .collect::<Vec<_>>(),
+        vec![1, 2]
+    );
 
     // The SDK drops the response of a cancelled request (MCP spec, ADR-0013);
     // cancellation itself is proven by the RLM process-tree death above.
@@ -80,7 +98,22 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
     assert!(response_times[&4] < Duration::from_secs(2));
     assert_tool_ok(
         &responses[&3],
-        "completed through internal RLM metadata index",
+        "persistent RLM MCP API",
+    );
+    let session_records = fixture.log_records();
+    assert_eq!(
+        session_records
+            .iter()
+            .filter(|record| record.kind == "rlm-session-start" && record.sequence == 2)
+            .count(),
+        3,
+        "rlm_start and rlm_execute session invalidation must each retry in the same RLM process"
+    );
+    assert!(
+        session_records
+            .iter()
+            .any(|record| record.kind == "rlm-end" && record.sequence == 2),
+        "the expired logical session must be closed before retry"
     );
     assert!(responses[&4].get("result").is_some(), "{:#}", responses[&4]);
 
@@ -106,7 +139,54 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
     assert_tool_ok(&final_responses[&5], "typed bsl-analyzer MCP adapter");
     assert_tool_ok(
         &final_responses[&6],
-        "completed through internal RLM metadata index",
+        "persistent RLM MCP API",
+    );
+    mcp.send(tool_call(
+        8,
+        "unica.meta.profile",
+        json!({
+            "cwd": fixture.workspace,
+            "name": "Catalog.LogicalError",
+            "sections": []
+        }),
+    ));
+    let logical_error = mcp.receive_ids(&[8], RESPONSE_DEADLINE);
+    assert!(logical_error[&8]["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("invalid logical request")));
+    mcp.send(tool_call(
+        9,
+        "unica.meta.profile",
+        json!({
+            "cwd": fixture.workspace,
+            "name": "Catalog.Test",
+            "sections": []
+        }),
+    ));
+    let after_logical_error = mcp.receive_ids(&[9], RESPONSE_DEADLINE);
+    assert_tool_ok(
+        &after_logical_error[&9],
+        "persistent RLM MCP API",
+    );
+    mcp.send(tool_call(
+        7,
+        "unica.code.search",
+        json!({
+            "cwd": fixture.workspace,
+            "query": "Procedure"
+        }),
+    ));
+    let search_response = mcp.receive_ids(&[7], RESPONSE_DEADLINE);
+    let search = tool_operation(&search_response[&7]);
+    assert_eq!(search["ok"], true, "{search:#}");
+    assert_eq!(
+        search["data"]["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|section| section["provider"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["rlm", "bsl-analyzer", "git-grep"]
     );
 
     let expected_root = canonical_display(&fixture.workspace.join("src/cf"));
@@ -132,6 +212,15 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
     );
     assert_eq!(fixture.single_service_owner(), initial_owner);
     assert!(fixture.service_is_alive());
+    assert_eq!(
+        fixture
+            .log_records()
+            .into_iter()
+            .filter(|record| record.kind == "rlm")
+            .count(),
+        2,
+        "the second persistent RLM process must be reused after cancellation recovery"
+    );
 
     mcp.finish().unwrap();
     fixture.finish(&records).unwrap();
@@ -225,10 +314,7 @@ fn send_service_request_with_timeout(
 }
 
 fn assert_tool_ok(response: &Value, summary: &str) {
-    let text = response["result"]["content"][0]["text"]
-        .as_str()
-        .unwrap_or_else(|| panic!("missing tool result: {response:#}"));
-    let operation: Value = serde_json::from_str(text).unwrap();
+    let operation = tool_operation(response);
     assert_eq!(operation["ok"], true, "{operation:#}");
     assert!(
         operation["summary"]
@@ -236,6 +322,13 @@ fn assert_tool_ok(response: &Value, summary: &str) {
             .is_some_and(|value| value.contains(summary)),
         "{operation:#}"
     );
+}
+
+fn tool_operation(response: &Value) -> Value {
+    let text = response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("missing tool result: {response:#}"));
+    serde_json::from_str(text).unwrap()
 }
 
 struct McpProcess {
@@ -252,7 +345,6 @@ impl McpProcess {
             .env("UNICA_CACHE_DIR", &fixture.cache)
             .env("ISSUE89_LOG", &fixture.log)
             .env("ISSUE89_RLM_STATE", &fixture.rlm_state)
-            .env("ISSUE89_RLM_DB", &fixture.rlm_db)
             .env("UNICA_WORKSPACE_SERVICE_IDLE_SECS", "30")
             .env("UNICA_WORKSPACE_SERVICE_MAX_AGE_SECS", "60")
             .stdin(Stdio::piped())
@@ -377,7 +469,6 @@ struct Fixture {
     cache: PathBuf,
     log: PathBuf,
     rlm_state: PathBuf,
-    rlm_db: PathBuf,
     cleaned: bool,
 }
 
@@ -397,7 +488,6 @@ impl Fixture {
         let cache = root.join("cache");
         let log = root.join("tool.log");
         let rlm_state = root.join("rlm-state");
-        let rlm_db = root.join("rlm-index.sqlite");
         fs::create_dir_all(workspace.join("src/cf/Configuration")).unwrap();
         fs::create_dir_all(workspace.join("src/cf/CommonModules/Test/Ext")).unwrap();
         fs::create_dir_all(workspace.join("exts/TESTS/Configuration")).unwrap();
@@ -413,7 +503,6 @@ impl Fixture {
         )
         .unwrap();
         fs::write(workspace.join("exts/TESTS/Configuration.xml"), "<?xml version=\"1.0\" encoding=\"UTF-8\"?><MetaDataObject><Configuration/></MetaDataObject>").unwrap();
-        create_rlm_database(&rlm_db);
         compile_fake_tools(&root, &plugin_root);
         Self {
             root,
@@ -422,13 +511,8 @@ impl Fixture {
             cache,
             log,
             rlm_state,
-            rlm_db,
             cleaned: false,
         }
-    }
-
-    fn release_rlm(&self, sequence: u32) {
-        fs::write(self.rlm_state.join(format!("release-{sequence}")), "go").unwrap();
     }
 
     fn wait_for_log(&self, prefix: &str, timeout: Duration) {
@@ -446,25 +530,15 @@ impl Fixture {
         panic!("timed out waiting for fake-tool log prefix {prefix}");
     }
 
-    fn wait_for_two_active_rlm_starts(&self, timeout: Duration) -> Vec<ToolRecord> {
+    fn wait_for_rlm_starts(&self, expected: usize, timeout: Duration) -> Vec<ToolRecord> {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             let records = self
                 .log_records()
                 .into_iter()
-                .filter(|record| {
-                    record.kind == "rlm"
-                        && process_alive(record.pid)
-                        && process_alive(record.descendant_pid)
-                })
+                .filter(|record| record.kind == "rlm")
                 .collect::<Vec<_>>();
-            if records
-                .iter()
-                .map(|record| record.sequence)
-                .collect::<HashSet<_>>()
-                .len()
-                >= 2
-            {
+            if records.len() >= expected {
                 return records;
             }
             thread::yield_now();
@@ -480,7 +554,7 @@ impl Fixture {
                 )
             })
             .collect::<Vec<_>>();
-        panic!("two distinct RLM processes were never concurrently active: {states:#?}");
+        panic!("expected {expected} RLM process starts were not observed: {states:#?}");
     }
 
     fn single_service_owner(&self) -> (u64, String, u64, u64) {
@@ -553,7 +627,25 @@ impl Fixture {
     }
 
     fn finish(&mut self, records: &[ToolRecord]) -> Result<(), String> {
-        self.shutdown_services(Duration::from_secs(2))?;
+        self.shutdown_services(RESPONSE_DEADLINE)?;
+        let deadline = Instant::now() + RESPONSE_DEADLINE;
+        loop {
+            let final_records = self.try_log_records()?;
+            if final_records
+                .iter()
+                .filter(|record| record.kind == "rlm-end" && record.sequence == 2)
+                .count()
+                >= 2
+            {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(
+                    "persistent RLM session was not ended during service shutdown".to_string(),
+                );
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
         verify_records_dead(records, RESPONSE_DEADLINE)?;
         fs::remove_dir_all(&self.root).map_err(|error| error.to_string())?;
         self.cleaned = true;
@@ -635,31 +727,6 @@ struct ToolRecord {
     source_root: String,
 }
 
-fn create_rlm_database(path: &Path) {
-    let connection = Connection::open(path).unwrap();
-    connection
-        .execute_batch(
-            "CREATE TABLE modules (
-                id INTEGER PRIMARY KEY,
-                category TEXT,
-                object_name TEXT,
-                rel_path TEXT,
-                module_type TEXT
-            );
-            CREATE TABLE object_attributes (
-                category TEXT,
-                object_name TEXT,
-                attr_kind TEXT,
-                attr_name TEXT,
-                attr_type TEXT,
-                ts_name TEXT
-            );
-            INSERT INTO modules(category, object_name, rel_path, module_type)
-            VALUES ('Catalog', 'Test', 'Catalogs/Test/Ext/ObjectModule.bsl', 'object');",
-        )
-        .unwrap();
-}
-
 fn compile_fake_tools(root: &Path, plugin_root: &Path) {
     let source = root.join("fake_tool.rs");
     fs::write(&source, FAKE_TOOL_SOURCE).unwrap();
@@ -687,7 +754,7 @@ fn compile_fake_tools(root: &Path, plugin_root: &Path) {
     fs::create_dir_all(&bin).unwrap();
     let sha256 = sha256_file(&fake);
     let mut manifest_tools = Vec::new();
-    for name in ["bsl-analyzer", "rlm-bsl-index"] {
+    for name in ["bsl-analyzer", "rlm-tools-bsl", "rlm-bsl-index"] {
         let contract = lock["tools"]
             .as_array()
             .unwrap()
@@ -851,7 +918,13 @@ fn main() {
     }
     let exe = env::current_exe().unwrap();
     let name = exe.file_stem().unwrap().to_string_lossy();
-    if name.contains("bsl-analyzer") { analyzer(&args); } else { rlm(&args); }
+    if name.contains("bsl-analyzer") {
+        analyzer(&args);
+    } else if name.contains("rlm-bsl-index") {
+        rlm_index();
+    } else {
+        rlm_mcp();
+    }
 }
 
 fn spawn_descendant(kind: &str, root: &str) -> Child {
@@ -898,25 +971,100 @@ fn claim_sequence() -> u32 {
     unreachable!()
 }
 
-fn rlm(args: &[String]) {
-    let root = args.last().unwrap();
+fn json_string(line: &str, key: &str) -> String {
+    let marker = format!("\"{key}\":\"");
+    line.split_once(&marker)
+        .and_then(|(_, tail)| tail.split('"').next())
+        .unwrap_or("")
+        .replace("\\\\", "\\")
+}
+
+fn json_escape(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+}
+
+fn respond(id: &str, text: &str) {
+    println!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{{\"content\":[{{\"type\":\"text\",\"text\":\"{}\"}}]}}}}",
+        json_escape(text)
+    );
+    io::stdout().flush().unwrap();
+}
+
+fn rlm_mcp() {
     let sequence = claim_sequence();
-    let mut descendant = spawn_descendant("rlm", root);
-    record("rlm", sequence, descendant.id(), root);
-    if sequence <= 2 {
-        let release = std::path::Path::new(&env::var("ISSUE89_RLM_STATE").unwrap())
-            .join(format!("release-{sequence}"));
-        while !release.is_file() { thread::sleep(Duration::from_millis(2)); }
-    }
-    if sequence >= 2 {
-        let _ = descendant.kill();
-        for _ in 0..100 {
-            if descendant.try_wait().ok().flatten().is_some() { break; }
-            thread::sleep(Duration::from_millis(2));
+    let mut descendant = spawn_descendant("rlm", "pending");
+    let mut recorded = false;
+    let mut root = String::new();
+    let mut start_count = 0_u32;
+    let mut execute_count = 0_u32;
+    for line in io::stdin().lock().lines() {
+        let line = line.unwrap();
+        if !line.contains("\"id\"") { continue; }
+        let id = line.split("\"id\":").nth(1).and_then(|tail| tail.split(|c: char| !c.is_ascii_digit()).next()).unwrap();
+        if line.contains("\"method\":\"initialize\"") {
+            println!("{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":{{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{{}},\"serverInfo\":{{\"name\":\"fake-rlm\",\"version\":\"test\"}}}}}}", id);
+            io::stdout().flush().unwrap();
+            continue;
+        }
+        if line.contains("\"name\":\"rlm_start\"") {
+            root = json_string(&line, "path");
+            if !recorded {
+                record("rlm", sequence, descendant.id(), &root);
+                recorded = true;
+            }
+            record("rlm-session-start", sequence, descendant.id(), &root);
+            start_count += 1;
+            if sequence == 2 && start_count == 1 {
+                respond(id, "{\"error\":\"Sandbox not found\"}");
+                continue;
+            }
+            respond(id, &format!("{{\"session_id\":\"session-{sequence}\",\"index\":{{\"index_status\":\"fresh\"}}}}"));
+        } else if line.contains("\"name\":\"rlm_execute\"") {
+            if sequence == 1 {
+                loop { thread::sleep(Duration::from_secs(60)); }
+            }
+            execute_count += 1;
+            if line.contains("LogicalError") {
+                respond(id, "{\"error\":\"invalid logical request\"}");
+                continue;
+            }
+            if sequence == 2 && execute_count == 1 {
+                respond(id, "{\"error\":\"Session not found or expired\"}");
+                continue;
+            }
+            let helper = if line.contains("get_object_profile") {
+                "{\"object_name\":\"Test\",\"category\":\"Catalog\",\"sections\":{}}"
+            } else {
+                "[]"
+            };
+            let envelope = format!("{{\"stdout\":\"{}\",\"error\":null}}", json_escape(helper));
+            respond(id, &envelope);
+        } else if line.contains("\"name\":\"rlm_end\"") {
+            record("rlm-end", sequence, descendant.id(), &root);
+            respond(id, "{\"ended\":true}");
+        } else {
+            respond(id, "{\"error\":\"unexpected fake RLM tool\"}");
         }
     }
+    let _ = descendant.kill();
+    for _ in 0..100 {
+        if descendant.try_wait().ok().flatten().is_some() { break; }
+        thread::sleep(Duration::from_millis(2));
+    }
+}
+
+fn rlm_index() {
     println!("Status: fresh");
-    println!("Index: {}", env::var("ISSUE89_RLM_DB").unwrap());
+    println!(
+        "Index: {}",
+        std::path::Path::new(&env::var("RLM_INDEX_DIR").unwrap())
+            .join("fake/bsl_index.db")
+            .display()
+    );
     io::stdout().flush().unwrap();
 }
 "#;

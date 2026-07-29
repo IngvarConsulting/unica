@@ -62,9 +62,30 @@ pub fn run_stdio() {
     // The SDK drained finishing calls before `waiting()` returned. Whatever is
     // still running is cancelled and given a bounded grace so tool
     // implementations can terminate their child process trees.
-    in_flight.cancel_all();
-    in_flight.wait_idle(EOF_CANCELLATION_GRACE);
+    if !drain_mcp_shutdown(&in_flight, EOF_CANCELLATION_GRACE) {
+        eprintln!(
+            "unica mcp shutdown grace expired while tool calls or code-search providers were cleaning up"
+        );
+    }
     runtime.shutdown_timeout(RUNTIME_SHUTDOWN_GRACE);
+}
+
+fn drain_mcp_shutdown(in_flight: &InFlightRegistry, grace: Duration) -> bool {
+    drain_mcp_shutdown_with(in_flight, grace, |remaining| {
+        crate::application::code_intelligence::drain_code_search_workers(remaining)
+    })
+}
+
+fn drain_mcp_shutdown_with(
+    in_flight: &InFlightRegistry,
+    grace: Duration,
+    drain_providers: impl FnOnce(Duration) -> bool,
+) -> bool {
+    let deadline = Instant::now() + grace;
+    in_flight.cancel_all();
+    let calls_idle = in_flight.wait_idle(deadline.saturating_duration_since(Instant::now()));
+    let providers_idle = drain_providers(deadline.saturating_duration_since(Instant::now()));
+    calls_idle && providers_idle
 }
 
 pub struct UnicaServer {
@@ -272,6 +293,7 @@ impl Drop for InFlightGuard {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::cell::Cell;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::time::timeout;
@@ -600,12 +622,13 @@ mod tests {
             .expect("server did not stop after EOF")
             .unwrap();
 
-        // Mirror the run_stdio shutdown path: cancel leftovers and wait.
-        in_flight.cancel_all();
-        let drained =
-            tokio::task::spawn_blocking(move || in_flight.wait_idle(EOF_CANCELLATION_GRACE))
-                .await
-                .unwrap();
+        // Mirror the run_stdio shutdown path: cancel leftovers and share one
+        // aggregate grace with tracked provider cleanup.
+        let drained = tokio::task::spawn_blocking(move || {
+            drain_mcp_shutdown(&in_flight, EOF_CANCELLATION_GRACE)
+        })
+        .await
+        .unwrap();
         assert!(drained, "cancelled call did not finish within the grace");
         assert!(cancellation_seen.load(Ordering::SeqCst));
     }
@@ -623,6 +646,50 @@ mod tests {
         guards.push(registry.admit().unwrap());
         drop(guards);
         assert!(registry.wait_idle(Duration::from_millis(100)));
+    }
+
+    #[test]
+    fn eof_cleanup_drains_tracked_code_search_workers_within_grace() {
+        crate::application::code_intelligence::track_code_search_worker_for_test(
+            std::thread::spawn(|| std::thread::sleep(Duration::from_millis(50))),
+        );
+
+        assert!(
+            crate::application::code_intelligence::drain_code_search_workers(
+                EOF_CANCELLATION_GRACE
+            ),
+            "tracked code-search worker outlived the EOF cleanup grace"
+        );
+    }
+
+    #[test]
+    fn eof_cleanup_shares_one_aggregate_grace_between_calls_and_provider_workers() {
+        let registry = Arc::new(InFlightRegistry::default());
+        let guard = registry.admit().unwrap();
+        let cancellation = guard.token();
+        let guard_thread = std::thread::spawn(move || {
+            while !cancellation.is_cancelled() {
+                std::thread::yield_now();
+            }
+            std::thread::sleep(Duration::from_millis(80));
+            drop(guard);
+        });
+        let provider_budget = Cell::new(None);
+
+        assert!(drain_mcp_shutdown_with(
+            &registry,
+            Duration::from_millis(200),
+            |remaining| {
+                provider_budget.set(Some(remaining));
+                true
+            }
+        ));
+        assert!(
+            provider_budget.get().unwrap() < Duration::from_millis(150),
+            "provider cleanup received a fresh grace instead of the aggregate remainder"
+        );
+
+        guard_thread.join().unwrap();
     }
 
     #[tokio::test]

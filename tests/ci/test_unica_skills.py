@@ -68,7 +68,6 @@ SCENARIO_SKILLS = {
     "api-design": [
         "unica.code.search",
         "unica.code.definition",
-        "unica.code.grep",
         "unica.code.diagnostics",
         "unica.project.map",
         "unica.subsystem.info",
@@ -82,7 +81,6 @@ SCENARIO_SKILLS = {
         "unica.code.search",
         "unica.code.definition",
         "unica.code.outline",
-        "unica.code.grep",
         "unica.meta.profile",
         "unica.project.map",
     ],
@@ -97,7 +95,6 @@ SCENARIO_SKILLS = {
         "unica.code.search",
         "unica.code.definition",
         "unica.code.outline",
-        "unica.code.grep",
         "unica.code.diagnostics",
         "unica.meta.profile",
         "unica.standards.explain",
@@ -108,7 +105,6 @@ SCENARIO_SKILLS = {
     "query-optimize": [
         "unica.code.search",
         "unica.code.outline",
-        "unica.code.grep",
         "unica.dcs.info",
         "unica.meta.info",
         "unica.meta.profile",
@@ -182,7 +178,6 @@ SCENARIO_SKILLS = {
         "unica.project.map",
         "unica.code.search",
         "unica.code.outline",
-        "unica.code.grep",
         "unica.meta.info",
         "unica.meta.profile",
         "unica.dcs.info",
@@ -667,6 +662,15 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                     self.assertIn(tool_name, text)
                 for token in SCENARIO_REQUIRED_TOKENS.get(skill, []):
                     self.assertIn(token, text)
+
+    def test_skill_guidance_never_reintroduces_removed_code_grep_tool(self) -> None:
+        offenders = [
+            path.relative_to(self.repo_root()).as_posix()
+            for path in sorted(self.skill_root().glob("*/SKILL.md"))
+            if "unica.code.grep" in path.read_text(encoding="utf-8")
+        ]
+
+        self.assertEqual(offenders, [])
 
     def test_unica_owned_guidance_contains_required_operational_concepts(self) -> None:
         docs = {

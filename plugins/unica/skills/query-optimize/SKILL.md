@@ -7,13 +7,13 @@ description: "Оптимизация запросов 1С и СКД. Испол�
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.code.outline`, `unica.code.grep`, `unica.code.graph`, `unica.code.diagnostics`, `unica.dcs.info`, `unica.meta.info`, `unica.meta.profile`, `unica.standards.search`, `unica.standards.explain`, and `unica.runtime.execute`.
+- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.code.outline`, `unica.code.graph`, `unica.code.diagnostics`, `unica.dcs.info`, `unica.meta.info`, `unica.meta.profile`, `unica.standards.search`, `unica.standards.explain`, and `unica.runtime.execute`.
 - Use `unica.project.map` if the source-set or format is unclear.
 - Do not call internal analyzer, standards, runtime, or package adapters directly. They are hidden behind MCP `unica`.
 
 ## Workflow
 
-1. Extract the exact query text with `unica.code.grep`, `unica.code.search`, or `unica.dcs.info`.
+1. Extract the exact query text with `unica.code.search` or `unica.dcs.info`.
 2. Inspect the execution context with `unica.code.outline`: module, exported entry point, region, temporary table chain, and caller loop.
 3. Use `unica.code.graph` for callers/callees when the query is inside reusable API, background jobs, event handlers, or suspected query-in-loop flow.
 4. Run `unica.code.diagnostics` with `mode=file` when analyzer diagnostics can reveal unreachable code, unresolved calls, or type issues around the query.
