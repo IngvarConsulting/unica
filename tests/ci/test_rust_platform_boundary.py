@@ -594,5 +594,26 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         self.assertEqual(checker.check_repository(REPO_ROOT), [])
 
 
+class HostNameBoundaryTests(unittest.TestCase):
+    """A host name is host knowledge only when it opens an identifier segment.
+
+    Both boundaries matter and each was missing at some point: without the right
+    one `codexample` was diagnosed, without the left one `mycodex` was. Either
+    way an ordinary identifier failed CI for no reason.
+    """
+
+    def setUp(self) -> None:
+        self.guard = load_checker_module()
+
+    def test_a_name_embedded_in_a_longer_word_is_not_host_knowledge(self) -> None:
+        for identifier in ("mycodex", "preclaude", "codexample", "MyClaudeThing"):
+            with self.subTest(identifier=identifier):
+                self.assertIsNone(self.guard.HOST_MARKER.search(identifier))
+
+    def test_a_name_opening_a_segment_is_host_knowledge(self) -> None:
+        for identifier in ("CodexHost", "codex_home_root", "CODEX_HOME", ".claude-plugin"):
+            with self.subTest(identifier=identifier):
+                self.assertIsNotNone(self.guard.HOST_MARKER.search(identifier))
+
 if __name__ == "__main__":
     unittest.main()

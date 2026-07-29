@@ -174,13 +174,13 @@
 Python 3.12:
 
 ```sh
-python -m pip install -r tests/ci/requirements.txt
-python -m unittest discover -s tests/ci --durations 20
-python -m unittest discover -s tests/dev --durations 20
-python -m py_compile scripts/ci/*.py tests/ci/*.py
-python -m py_compile scripts/dev/*.py tests/dev/*.py
-python scripts/ci/check-version-contract.py
-python scripts/ci/check-architecture-sync.py --base "$(git merge-base HEAD origin/main)"
+python3.12 -m pip install -r tests/ci/requirements.txt
+python3.12 -m unittest discover -s tests/ci --durations 20
+python3.12 -m unittest discover -s tests/dev --durations 20
+python3.12 -m py_compile scripts/ci/*.py tests/ci/*.py
+python3.12 -m py_compile scripts/dev/*.py tests/dev/*.py
+python3.12 scripts/ci/check-version-contract.py
+python3.12 scripts/ci/check-architecture-sync.py --base "$(git merge-base HEAD origin/main)"
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace -- --test-threads=1

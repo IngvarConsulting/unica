@@ -32,6 +32,12 @@ HOST_NAMES = ("codex", "claude")
 # `env::var_os("CODEX_HOME")` and `join(".codex-plugin")` — the very call sites
 # the host facade exists to absorb.
 #
+# A host name counts only when it opens an identifier segment. Without the left
+# boundary `mycodex` and `preclaude` were diagnosed as host knowledge, which is
+# a false CI failure on an ordinary identifier; without the right one
+# `codexample` was. `CodexHost` and `codex_home_root` still match, because there
+# the name does start a segment.
+#
 # A host name ends where its case segment ends. Without that trailing rule the
 # names match as bare substrings and unrelated words that merely contain them
 # (`claudetite`, `codexes`) are reported as host knowledge, which the guard has
@@ -42,7 +48,7 @@ HOST_NAMES = ("codex", "claude")
 HOST_MARKER = re.compile(
     rf"(?P<environment>{'|'.join(HOST_ENVIRONMENT_VARIABLES)})"
     rf"|(?P<manifest>{'|'.join(re.escape(name) for name in HOST_MANIFEST_DIRECTORIES)})"
-    rf"|(?P<name>(?i:{'|'.join(HOST_NAMES)})(?![a-z]))"
+    rf"|(?P<name>(?<![A-Za-z0-9])(?i:{'|'.join(HOST_NAMES)})(?![a-z]))"
 )
 HOST_MARKER_KINDS = {
     "environment": "host environment variable",
