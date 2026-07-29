@@ -34,19 +34,23 @@
 - **Check:** `doc-assert` — `tests/ci/test_product_contracts.py`
 - **Scope:** runtime
 
-### REQ-PERF-VERIFIED-HANDOFF — Runtime передаётся хосту только после ограниченного по времени рукопожатия
+### REQ-PERF-VERIFIED-HANDOFF — Релиз объявляет runtime годным только после ограниченного по времени рукопожатия
 
-- **Rule:** `unica-bootstrap` объявляет установку успешной только после того, как
-  установленный runtime ответил на MCP-запросы `initialize` и `tools/list` в
-  пределах фиксированного бюджета времени; runtime, который завис или ответил
-  неполно, проваливает проверку, а не передаётся хосту.
+- **Rule:** `unica-bootstrap verify` объявляет установленный runtime годным
+  только после того, как тот ответил на MCP-запросы `initialize` и `tools/list`
+  в пределах фиксированного бюджета времени, поэтому runtime, который завис или
+  ответил неполно, проваливает релизный шлюз и не публикуется; обычный запуск
+  `unica-bootstrap run` рукопожатие не повторяет, а передаёт хосту те же байты,
+  сверив их контрольные суммы с закреплёнными
+  (INV-PKG-VERIFIED-ATOMIC-INSTALL).
 - **Decision:** ADR-0008
 - **Check:** `ci-test` — `crates/unica-bootstrap/tests/verification_contract.rs`
 - **Check:** `release-gate` — `scripts/ci/smoke-unica-bootstrap.py`
+- **Check:** `ci-test` — `tests/ci/test_bootstrap_launch_path.py`
 - **Check:** `manual` — числовой бюджет, который `install_and_verify_runtime`
   передаёт в `crates/unica-bootstrap/src/main.rs`, не закреплён тестом;
   перечитай его, когда меняется путь запуска runtime
-- **Scope:** packaged, release, runtime
+- **Scope:** packaged, release
 
 ### REQ-PERF-WARM-REUSE — Тёплое состояние переиспользуется, а не собирается заново на каждый вызов
 

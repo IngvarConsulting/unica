@@ -42,29 +42,161 @@ TOOL_REGISTRY = "crates/unica-coder/src/application/mod.rs"
 # A public tool declaration in the registry, for example:  name: "unica.form.edit",
 TOOL_DECLARATION = re.compile(r'name:\s*"(?P<tool>unica\.[A-Za-z0-9_.]+)"')
 
-# Directories that carry the architecture contract. Touching any of them is
+# Documents that carry the architecture contract. Touching one of them is
 # accepted as evidence that the surface change was described.
-ARCHITECTURE_PREFIXES = (
-    "spec/decisions/",
+#
+# The list names the normative documents on purpose. `spec/architecture/` as a
+# whole would also match the glossary, the risk list and the concept notes, and
+# a comma moved in the glossary is not a description of a new public tool. What
+# the guard can prove is that the layer that owns rules moved in the same
+# change; which record owns *this* tool stays a review judgement.
+ARCHITECTURE_EVIDENCE = (
     "spec/acceptance/",
-    "spec/architecture/",
+    "spec/architecture/invariants.md",
+    "spec/architecture/quality-requirements.md",
 )
+# The four digits are the record's ID: `ADR-0011` is the file `0011-*.md`. The
+# ID is what every citation elsewhere in the spec points at, so it is the thing
+# the immutability rules below have to keep resolving.
+DECISION_RECORD = re.compile(r"^spec/decisions/(?P<id>\d{4})-.+\.md$")
 
-DIFF_FILE_HEADER = re.compile(r"^\+\+\+ b/(?P<path>.+)$")
-# The old-side header is either `--- a/<path>` for a file that existed or
-# `--- /dev/null` for one the diff creates. Matching both keeps the decision
-# about existence in the code that cares, instead of leaving it implied by a
-# pattern that silently drops half the grammar.
+
+def is_architecture_evidence(path: str) -> bool:
+    return path.startswith(ARCHITECTURE_EVIDENCE) or bool(DECISION_RECORD.match(path))
+
+
+# `---` and `+++` name files only inside the header block of a file section,
+# between `diff --git` and the first `@@`. Inside a hunk they are content: a
+# removed line whose text is `-- spec/architecture/x.md` renders as
+# `--- spec/architecture/x.md`, and an added line whose text is `++ b/x.md`
+# renders as `+++ b/x.md`. Reading either as a file header lets a diff describe
+# files it never touches, so the position is part of the grammar here.
+DIFF_SECTION_START = "diff --git "
 DIFF_OLD_HEADER = re.compile(r"^--- (?:a/)?(?P<path>.+)$")
+DIFF_NEW_HEADER = re.compile(r"^\+\+\+ (?:b/)?(?P<path>.+)$")
+# A pure rename carries no `---`/`+++` and no hunks at all: git states it with
+# `rename from`/`rename to` and nothing else. Without these two, `git mv` is a
+# way to move a file with the guard seeing an empty section.
+DIFF_RENAME_FROM = re.compile(r"^rename from (?P<path>.+)$")
+DIFF_RENAME_TO = re.compile(r"^rename to (?P<path>.+)$")
+DEV_NULL = "/dev/null"
 
 # An accepted decision record is a dated statement of what was chosen, not a
-# description of current code (INV-DOC-SUPERSEDE-NOT-EDIT). Two edits give the rewrite away and
-# are cheap to spot in a diff: moving the acceptance date, and walking the status
-# backwards. Prose edits stay legal, so translations and typo fixes pass.
-DECISION_RECORD = re.compile(r"^spec/decisions/\d{4}-.+\.md$")
+# description of current code (INV-DOC-SUPERSEDE-NOT-EDIT). The rewrites that a
+# diff can give away are all cheap to spot: moving the acceptance date, walking
+# the status backwards, parking the record on a status the catalogue does not
+# define, dropping the status or date field altogether, deleting the record, and
+# moving or renumbering it so its ID stops resolving. Prose edits stay legal
+# only when the diff also stamps the `Обновлено` field, which is what the
+# invariant asks an editorial change to carry.
+#
+# Dropping a field and moving the file matter because both unaccept a record
+# without ever writing a smaller status: a record with no `Статус` line is no
+# longer accepted by the catalogue's own reading, and a record that left
+# `spec/decisions/` takes its ID out of every citation that pointed at it.
 DATE_FIELD = re.compile(r"^-\s*(?:Дата|Date):\s*`?(?P<value>[0-9]{4}-[0-9]{2}-[0-9]{2})`?")
-STATUS_FIELD = re.compile(r"^-\s*(?:Статус|Status):\s*`?(?P<value>[a-z]+)`?")
+STATUS_FIELD = re.compile(r"^-\s*(?:Статус|Status):\s*`?(?P<value>[A-Za-z]+)`?")
+UPDATED_FIELD = re.compile(r"^-\s*(?:Обновлено|Updated):")
 STATUS_ORDER = {"proposed": 0, "accepted": 1, "superseded": 2}
+# Statuses that make a record binding. Deleting one is a rewrite by removal:
+# every reference to its ID becomes a dangling pointer.
+BINDING_STATUSES = frozenset({"accepted", "superseded"})
+
+
+class FileDiff:
+    """One file section of a unified diff: its two paths and its hunk lines."""
+
+    def __init__(self, old_path: str | None, new_path: str | None) -> None:
+        self.old_path = old_path
+        self.new_path = new_path
+        self.lines: list[str] = []
+
+    @property
+    def created(self) -> bool:
+        return self.old_path == DEV_NULL
+
+    @property
+    def deleted(self) -> bool:
+        return self.new_path == DEV_NULL
+
+    @property
+    def path(self) -> str | None:
+        """The name the change leaves behind, or the deleted name."""
+        if self.new_path and self.new_path != DEV_NULL:
+            return self.new_path
+        if self.old_path and self.old_path != DEV_NULL:
+            return self.old_path
+        return None
+
+    def paths(self) -> list[str]:
+        return [
+            path
+            for path in (self.old_path, self.new_path)
+            if path is not None and path != DEV_NULL
+        ]
+
+
+def iter_file_diffs(diff_text: str):
+    """Split a unified diff into file sections, reading headers by position.
+
+    A section opens at `diff --git`. Until the first `@@`, the lines are header
+    lines and `---`/`+++`, `rename from`/`rename to` name the two sides of the
+    file. From the first `@@` onwards every line is hunk content, whatever it
+    starts with -- which is the whole point: content that looks like a header
+    must not be read as one.
+
+    A pure rename states its paths only in `rename from`/`rename to`; git emits
+    no `---`/`+++` and no hunk for it. Reading those two lines is what stops
+    `git mv` from being a blind spot. When both forms are present the `---`/`+++`
+    pair comes last and wins, which is the same value by construction.
+
+    A section that names no paths at all (a bare mode change) yields none, so
+    callers skip it without a special case.
+    """
+    current: FileDiff | None = None
+    in_header = False
+
+    for line in diff_text.splitlines():
+        if line.startswith(DIFF_SECTION_START):
+            if current is not None:
+                yield current
+            current = FileDiff(None, None)
+            in_header = True
+            continue
+
+        if current is None:
+            continue
+
+        if in_header:
+            if line.startswith("@@"):
+                in_header = False
+                continue
+            old_header = DIFF_OLD_HEADER.match(line)
+            if old_header:
+                current.old_path = old_header.group("path")
+                continue
+            new_header = DIFF_NEW_HEADER.match(line)
+            if new_header:
+                current.new_path = new_header.group("path")
+                continue
+            rename_from = DIFF_RENAME_FROM.match(line)
+            if rename_from:
+                current.old_path = rename_from.group("path")
+                continue
+            rename_to = DIFF_RENAME_TO.match(line)
+            if rename_to:
+                current.new_path = rename_to.group("path")
+                continue
+            # `index`, `old mode`, `similarity index` and the rest of the
+            # extended header. Nothing here names a hunk line.
+            continue
+
+        if line.startswith("@@"):
+            continue
+        current.lines.append(line)
+
+    if current is not None:
+        yield current
 
 
 class SurfaceChange:
@@ -99,35 +231,113 @@ class SurfaceChange:
         return "\n".join(lines)
 
 
+def record_id(path: str | None) -> str | None:
+    """The four-digit ID of a decision record, or None for anything else."""
+    if path is None or path == DEV_NULL:
+        return None
+    match = DECISION_RECORD.match(path)
+    return match.group("id") if match else None
+
+
 def analyze_decision_records(diff_text: str) -> list[str]:
     """Report accepted decision records that the diff rewrites (INV-DOC-SUPERSEDE-NOT-EDIT).
 
-    Pure function over a unified diff: no git, no filesystem. A file that the
-    diff creates is skipped -- a brand new record may say anything. Only edits
-    to a record that already existed are judged, and only two of them: a moved
-    acceptance date and a status that walks backwards.
+    Pure function over a unified diff: no git, no filesystem. Judgement starts
+    from the *old* side: a name that was not a record before this change states
+    nothing yet, so creating a record -- or moving a document into the catalogue
+    -- is skipped, and a brand new record may say anything.
+
+    A record that already existed is held to its ID and to its fields. Its ID
+    must still resolve after the change: deleting the file, moving it out of
+    `spec/decisions/`, or renumbering it all leave every citation dangling, and
+    a 100% rename is the quietest of the three. Its fields must not be walked
+    back: a moved acceptance date, a status that goes backwards or leaves the
+    catalogue, a status or date line dropped outright. Its prose must not move
+    without the `Обновлено` stamp that marks an editorial change.
     """
     violations: list[str] = []
-    path: str | None = None
-    # `--- a/<path>` marks a file as pre-existing; a created file carries
-    # `--- /dev/null`. That line arrives before the `+++` line that names the
-    # file, so the flag is parked in `pending_existed` and handed to the file
-    # only when `+++` opens it. Without the hand-off a stale value from the
-    # previous file would decide whether this one is judged.
-    pending_existed = False
-    existed = False
-    dates: dict[str, list[str]] = {"-": [], "+": []}
-    statuses: dict[str, list[str]] = {"-": [], "+": []}
 
-    def close() -> None:
-        if path is None or not existed:
-            return
+    for section in iter_file_diffs(diff_text):
+        before_id = record_id(section.old_path)
+        if before_id is None:
+            continue
+        # An old-side ID means the old path is a real name, so `path` is set.
+        path = section.path
+
+        dates: dict[str, list[str]] = {"-": [], "+": []}
+        statuses: dict[str, list[str]] = {"-": [], "+": []}
+        updated_stamped = False
+        prose_edited = False
+
+        for line in section.lines:
+            if not line or line[0] not in "+-":
+                continue
+            side, body = line[0], line[1:]
+            date = DATE_FIELD.match(body)
+            if date:
+                dates[side].append(date.group("value"))
+                continue
+            status = STATUS_FIELD.match(body)
+            if status:
+                statuses[side].append(status.group("value").lower())
+                continue
+            if UPDATED_FIELD.match(body):
+                updated_stamped = updated_stamped or side == "+"
+                continue
+            if body.strip():
+                prose_edited = True
+
+        # A record whose removed status is visible and non-binding was never
+        # something anyone could cite, so withdrawing it is legal. When the diff
+        # shows no status at all -- which is exactly what a 100% rename looks
+        # like -- the record is treated as binding: a guard that assumes the
+        # harmless case is how `git mv` becomes the way around this rule.
+        withdrawn = bool(statuses["-"]) and not any(
+            status in BINDING_STATUSES for status in statuses["-"]
+        )
+
+        if section.deleted:
+            if not withdrawn:
+                binding = statuses["-"][0] if statuses["-"] else "binding"
+                violations.append(
+                    f"{path}: {binding} record deleted; supersede it in place "
+                    "so its ID keeps resolving"
+                )
+            continue
+
+        if record_id(section.new_path) != before_id:
+            if not withdrawn:
+                after = section.new_path or "(unnamed)"
+                violations.append(
+                    f"{section.old_path} -> {after}: record "
+                    f"{before_id} left the catalogue under a new name; every "
+                    "citation of its ID stops resolving. Supersede it in place "
+                    "instead of moving or renumbering it"
+                )
+            continue
+
         if dates["-"] and dates["+"] and dates["-"] != dates["+"]:
             violations.append(
                 f"{path}: acceptance date rewritten "
                 f"({', '.join(dates['-'])} -> {', '.join(dates['+'])}); "
                 "record the editorial change with an Updated field instead"
             )
+        if dates["-"] and not dates["+"]:
+            violations.append(
+                f"{path}: acceptance date removed; a record states what was "
+                "chosen and on what date"
+            )
+        if statuses["-"] and not statuses["+"]:
+            violations.append(
+                f"{path}: status field removed; a record with no status sits "
+                "outside the catalogue, which unaccepts it without saying so"
+            )
+        for after in statuses["+"]:
+            if after not in STATUS_ORDER:
+                violations.append(
+                    f"{path}: unknown status {after!r}; the catalogue defines "
+                    + ", ".join(sorted(STATUS_ORDER))
+                )
         for before in statuses["-"]:
             for after in statuses["+"]:
                 rank_before = STATUS_ORDER.get(before)
@@ -138,75 +348,36 @@ def analyze_decision_records(diff_text: str) -> list[str]:
                     violations.append(
                         f"{path}: status moved backwards ({before} -> {after})"
                     )
+        if prose_edited and not updated_stamped:
+            violations.append(
+                f"{path}: text rewritten without an Updated field; an editorial "
+                "change stamps `Обновлено`, a changed decision gets a new record"
+            )
 
-    for line in diff_text.splitlines():
-        new_header = DIFF_FILE_HEADER.match(line)
-        if new_header:
-            close()
-            candidate = new_header.group("path")
-            path = candidate if DECISION_RECORD.match(candidate) else None
-            existed = pending_existed
-            pending_existed = False
-            dates = {"-": [], "+": []}
-            statuses = {"-": [], "+": []}
-            continue
-
-        old_header = DIFF_OLD_HEADER.match(line)
-        if old_header:
-            pending_existed = old_header.group("path") != "/dev/null"
-            continue
-
-        if path is None or not line or line[0] not in "+-":
-            continue
-        if line.startswith(("+++", "---")):
-            continue
-
-        side, body = line[0], line[1:]
-        date = DATE_FIELD.match(body)
-        if date:
-            dates[side].append(date.group("value"))
-        status = STATUS_FIELD.match(body)
-        if status:
-            statuses[side].append(status.group("value"))
-
-    close()
     return violations
 
 
 def analyze_diff(diff_text: str) -> SurfaceChange:
     """Classify a unified diff. Pure function: no git, no filesystem."""
     change = SurfaceChange()
-    current_path: str | None = None
 
-    for line in diff_text.splitlines():
-        new_header = DIFF_FILE_HEADER.match(line)
-        if new_header:
-            path = new_header.group("path")
-            current_path = None if path == "/dev/null" else path
-            if current_path and current_path.startswith(ARCHITECTURE_PREFIXES):
-                change.architecture_files.add(current_path)
-            continue
-
-        old_header = DIFF_OLD_HEADER.match(line)
-        if old_header:
-            path = old_header.group("path")
-            # A deleted file has no +++ path, so record the old path too.
-            if path != "/dev/null" and path.startswith(ARCHITECTURE_PREFIXES):
+    for section in iter_file_diffs(diff_text):
+        for path in section.paths():
+            if is_architecture_evidence(path):
                 change.architecture_files.add(path)
+
+        # A deleted registry file still removes every tool it declared, so the
+        # section counts when the registry is on either side.
+        if TOOL_REGISTRY not in section.paths():
             continue
 
-        if current_path != TOOL_REGISTRY:
-            continue
-
-        if line.startswith("+++") or line.startswith("---"):
-            continue
-
-        if line.startswith("+"):
-            for match in TOOL_DECLARATION.finditer(line[1:]):
-                change.added.add(match.group("tool"))
-        elif line.startswith("-"):
-            for match in TOOL_DECLARATION.finditer(line[1:]):
-                change.removed.add(match.group("tool"))
+        for line in section.lines:
+            if line.startswith("+"):
+                for match in TOOL_DECLARATION.finditer(line[1:]):
+                    change.added.add(match.group("tool"))
+            elif line.startswith("-"):
+                for match in TOOL_DECLARATION.finditer(line[1:]):
+                    change.removed.add(match.group("tool"))
 
     # A pure rename inside one hunk shows the same tool on both sides only when
     # the name really changed, so nothing to cancel out here. A moved line with
@@ -313,7 +484,11 @@ def main(argv: list[str] | None = None) -> int:
     print(
         "INV-MCP-SURFACE-SYNC requires the owning decision record, the registry entry that\n"
         "derives from it, and the check named by that entry to change together.\n"
-        "Update one of: spec/decisions/, spec/architecture/, spec/acceptance/."
+        "This guard proves only the weaker half: that a normative document moved\n"
+        "in the same change. Naming the record that actually owns this tool is\n"
+        "the reviewer's job. Update one of: spec/decisions/NNNN-*.md,\n"
+        "spec/architecture/invariants.md, spec/architecture/quality-requirements.md,\n"
+        "spec/acceptance/."
     )
     return 1
 

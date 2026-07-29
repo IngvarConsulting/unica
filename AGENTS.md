@@ -24,16 +24,19 @@
 
 ## Куда смотреть, где менять
 
-Пути во втором столбце даны относительно `spec/`, если не указано иначе. Пути в
-третьем столбце — от корня репозитория; `<группа>` и `<имя>` подставляются по
-имени домена инструмента.
+Пути в обоих столбцах даны от корня репозитория, кроме двух сокращений, которые
+названы прямо здесь: `architecture/` и `acceptance/` во втором столбце читаются
+от `spec/`, а ADR цитируются номером и лежат в `spec/decisions/`. `<группа>` и
+`<имя>` подставляются по имени домена инструмента. Сокращать путь до хвоста
+нельзя: `rg` по такому хвосту ничего не находит, и строка перестаёт быть
+маршрутом.
 
 | Задача | Что читать сначала | Где менять код |
 | --- | --- | --- |
-| Новый или изменённый публичный инструмент `unica.*` | `architecture/invariants.md` (`INV-MCP-NAMESPACE`, `INV-MCP-SURFACE-SYNC`), `architecture/change-checklist.md` | `crates/unica-coder/src/application/mod.rs` (`tools()`), `application/tool_contracts.rs`, `application/operation_descriptors.rs`, `crates/unica-coder/src/infrastructure/native_operations/<группа>.rs`, `plugins/unica/skills/<имя>/SKILL.md` |
+| Новый или изменённый публичный инструмент `unica.*` | `architecture/invariants.md` (`INV-MCP-NAMESPACE`, `INV-MCP-SURFACE-SYNC`), `architecture/change-checklist.md` | `crates/unica-coder/src/application/mod.rs` (`tools()`), `crates/unica-coder/src/application/tool_contracts.rs`, `crates/unica-coder/src/application/operation_descriptors.rs`, `crates/unica-coder/src/infrastructure/native_operations/<группа>.rs`, `plugins/unica/skills/<имя>/SKILL.md` |
 | Изменение формата XML 1С или DSL | ADR-0016, `acceptance/format-profile-8-3-27.md` и `plugins/unica/references/specs/` | `crates/unica-coder/src/infrastructure/native_operations/` |
-| Кеш, состояние рабочего пространства, доменные события | ADR-0003, область `CACHE` реестра | `crates/unica-coder/src/domain/events.rs`, `domain/cache.rs`, `infrastructure/workspace_state.rs`, `infrastructure/workspace.rs` |
-| Скрытый сервис рабочего пространства или задание runtime | ADR-0006, `architecture/runtime.md`, `INV-APP-LAZY-HIDDEN-SERVICES` | `crates/unica-coder/src/infrastructure/workspace_services.rs`, `infrastructure/runtime_jobs.rs` |
+| Кеш, состояние рабочего пространства, доменные события | ADR-0003, область `CACHE` реестра | `crates/unica-coder/src/domain/events.rs`, `crates/unica-coder/src/domain/cache.rs`, `crates/unica-coder/src/infrastructure/workspace_state.rs`, `crates/unica-coder/src/infrastructure/workspace.rs` |
+| Скрытый сервис рабочего пространства или задание runtime | ADR-0006, `architecture/runtime.md`, `INV-APP-LAZY-HIDDEN-SERVICES` | `crates/unica-coder/src/infrastructure/workspace_services.rs`, `crates/unica-coder/src/infrastructure/runtime_jobs.rs` |
 | Упаковка или релиз | ADR-0008, ADR-0012, область `PKG` реестра, а также `docs/release-runbook.md` | `scripts/ci/package-unica-plugin.py`, `crates/unica-bootstrap/src/`, `.github/workflows/unica-plugin-release.yml` |
 | Поведение, зависящее от ОС | ADR-0009, область `PLATFORM` реестра | `crates/unica-coder/src/infrastructure/platform/`, `crates/unica-bootstrap/src/platform/`, страж `scripts/ci/check-rust-platform-boundary.py` |
 | Само архитектурное правило | `architecture/invariants.md` или `architecture/quality-requirements.md` плюс запись в `spec/decisions/` | проверка, названная в поле `Check` этой записи |

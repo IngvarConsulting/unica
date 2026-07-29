@@ -31,10 +31,18 @@ HOST_NAMES = ("codex", "claude")
 # Masking literals the way the platform rules do would leave the guard blind to
 # `env::var_os("CODEX_HOME")` and `join(".codex-plugin")` — the very call sites
 # the host facade exists to absorb.
+#
+# A host name ends where its case segment ends. Without that trailing rule the
+# names match as bare substrings and unrelated words that merely contain them
+# (`claudetite`, `codexes`) are reported as host knowledge, which the guard has
+# no path exemption to silence (INV-PLATFORM-NO-PATH-EXEMPTIONS). Only a
+# following lowercase letter ends the match: `CodexHost`, `claude_plugin_data`,
+# `codex-plugin` and `Claude Code` all still have to be caught, and a word
+# boundary would miss the camel-case one.
 HOST_MARKER = re.compile(
     rf"(?P<environment>{'|'.join(HOST_ENVIRONMENT_VARIABLES)})"
     rf"|(?P<manifest>{'|'.join(re.escape(name) for name in HOST_MANIFEST_DIRECTORIES)})"
-    rf"|(?P<name>(?i:{'|'.join(HOST_NAMES)}))"
+    rf"|(?P<name>(?i:{'|'.join(HOST_NAMES)})(?![a-z]))"
 )
 HOST_MARKER_KINDS = {
     "environment": "host environment variable",

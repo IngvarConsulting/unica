@@ -42,6 +42,22 @@ MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\((?P<target>[^)\s]+)\)")
 CHECK_CLASSES = {"ci-test", "guard-script", "doc-assert", "release-gate", "manual"}
 SCOPES = {"source", "packaged", "ci", "release", "runtime"}
 
+# What each automated check class must point at for the entry to mean anything.
+# The registry claims a named check holds the rule; a path that merely exists
+# proves nothing, so the target has to be an artefact a CI runner collects.
+WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
+# `.github/workflows/unica-plugin-release.yml` runs `unittest discover` over
+# these two trees, with the default `test*.py` pattern.
+PYTHON_TEST_ROOTS = ("tests/ci/", "tests/dev/")
+PYTHON_TEST_FUNCTION = re.compile(r"^\s*(?:async\s+)?def\s+test\w*\(", re.MULTILINE)
+# `cargo test --workspace` collects `#[test]` and `#[tokio::test]`.
+RUST_TEST_ATTRIBUTE = re.compile(r"#\[(?:tokio::)?test\]")
+# A Rust test target may be a two-line shim that pulls in the real file, which
+# is how the platform-specific suites are laid out.
+RUST_INCLUDE = re.compile(
+    r'#\[path\s*=\s*"(?P<path>[^"]+)"\]|include!\(\s*"(?P<include>[^"]+)"\s*\)'
+)
+
 # Ratchet: the number of registry records whose only evidence is a human
 # re-reading the code. This constant may be lowered when a manual check is
 # automated. It must never be raised: a new rule without an automated check is
@@ -59,6 +75,17 @@ MAX_DECISION_LINKS_PER_DOCUMENT = 3
 # (INV-DOC-RUSSIAN-NORMATIVE). Identifiers stay Latin, so a rule may legitimately be almost all
 # backticked names; only the prose around them is checked.
 CYRILLIC = re.compile(r"[Ѐ-ӿ]")
+# A citation of a record, as a reader would recognise one. Digits are matched on
+# purpose even though `RECORD_ID` forbids them: the identifiers this corpus has
+# actually left behind are the numbered ones the registry rework replaced
+# (`INV-CACHE-07`), and a resolver that cannot see them cannot report them.
+RECORD_CITATION = re.compile(r"\b((?:INV|REQ)-[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\b")
+# Names shaped like a record but written to be read as an example, never as a
+# citation. `AGENTS.md` teaches the naming rule by contrasting a good code with
+# a bad one, and the bad one has to look real to make the point. The resolver
+# below requires every entry here to be used and to stay unclaimed, so the
+# exemption cannot outlive the sentence it was written for.
+ILLUSTRATIVE_IDENTIFIERS = {"INV-MCP-TOOL-CONTRACTS-RS"}
 BACKTICKED_SPAN = re.compile(r"`[^`]*`")
 NORMATIVE_FIELDS = ("Rule",)
 
@@ -141,6 +168,80 @@ def parse_records(path: Path) -> list[Record]:
 
 def all_records() -> list[Record]:
     return parse_records(INVARIANTS) + parse_records(REQUIREMENTS)
+
+
+def citation_corpus() -> list[Path]:
+    """Documents whose record citations a reader is entitled to follow.
+
+    The whole active specification layer, plus the two documents outside it
+    that route a reader into the registry. `docs/design/**` is deliberately
+    absent: it is archived planning material that keeps its original wording,
+    including identifiers the registry has since replaced.
+    """
+    entry_points = (
+        REPO_ROOT / "AGENTS.md",
+        REPO_ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md",
+    )
+    paths = list((REPO_ROOT / "spec").rglob("*.md"))
+    paths.extend(path for path in entry_points if path.is_file())
+    return sorted(paths)
+
+
+def rust_defines_tests(path: Path, seen: set[Path] | None = None) -> bool:
+    """True when the file, or a file it inlines, declares a Rust test."""
+    seen = set() if seen is None else seen
+    if path in seen or not path.is_file():
+        return False
+    seen.add(path)
+    text = path.read_text(encoding="utf-8")
+    if RUST_TEST_ATTRIBUTE.search(text):
+        return True
+    for match in RUST_INCLUDE.finditer(text):
+        relative = match.group("path") or match.group("include")
+        if rust_defines_tests((path.parent / relative).resolve(), seen):
+            return True
+    return False
+
+
+def rust_target_is_built(relative: str, path: Path) -> bool:
+    """True when `cargo test --workspace` compiles the file.
+
+    Unit tests under `src/` and the integration targets directly under
+    `tests/` are compiled by name. A file deeper under `tests/` is only
+    compiled when a target inlines it, which is how the platform suites and
+    the two-line contract shims are arranged.
+    """
+    parts = relative.split("/")
+    if len(parts) < 4 or parts[0] != "crates":
+        return False
+    if parts[2] == "src":
+        return True
+    if parts[2] != "tests":
+        return False
+    if len(parts) == 4:
+        return True
+    for target in sorted((REPO_ROOT / parts[0] / parts[1] / "tests").glob("*.rs")):
+        text = target.read_text(encoding="utf-8")
+        for match in RUST_INCLUDE.finditer(text):
+            inlined = match.group("path") or match.group("include")
+            if (target.parent / inlined).resolve() == path:
+                return True
+    return False
+
+
+def ci_invocations() -> str:
+    """Everything CI runs, as one blob to search for a script name.
+
+    A guard script earns its class by being executed: from a workflow step or
+    from the test suite that CI runs. A script no runner mentions is a file,
+    not a check.
+    """
+    blobs = []
+    for root in (WORKFLOWS_DIR, REPO_ROOT / "tests" / "ci", REPO_ROOT / "tests" / "dev"):
+        for path in sorted(root.rglob("*")):
+            if path.suffix in {".yml", ".yaml", ".py"} and path.is_file():
+                blobs.append(path.read_text(encoding="utf-8"))
+    return "\n".join(blobs)
 
 
 def decision_numbers_on_disk() -> set[str]:
@@ -263,6 +364,67 @@ class IdentifierLedgerTests(unittest.TestCase):
         ]
         self.assertEqual(offenders, [])
 
+    def retired_ids(self) -> set[str]:
+        """Identifiers the registry has withdrawn from circulation."""
+        text = INVARIANTS.read_text(encoding="utf-8")
+        section = re.search(
+            r"## Выведенные из обращения идентификаторы\n(?P<body>.*?)(?=\n## |\Z)",
+            text,
+            re.DOTALL,
+        )
+        if section is None:
+            return set()
+        return set(RECORD_CITATION.findall(section.group("body")))
+
+    def test_every_citation_in_the_active_corpus_resolves(self) -> None:
+        """Every `INV-*`/`REQ-*` in the active layer names a record that exists.
+
+        Scoping this to the change checklist was the hole that let nine dead
+        citations survive in two decision records: a reader following
+        `INV-CACHE-07` from ADR-0014 lands on nothing, and the registry rework
+        that renamed it had no way to notice. A citation either resolves to a
+        declared record or to the retired-identifier ledger, which is the one
+        place a withdrawn identifier keeps its meaning.
+
+        The two entry-point documents outside `spec/` carry citations too, and
+        a dead identifier costs the same there: `AGENTS.md` is what an agent
+        reads first, so a rename that misses it sends every reader to a rule
+        that is not written down.
+        """
+        declared = set(self.declared_ids())
+        known = declared | self.retired_ids()
+        used_exemptions = set()
+        offenders = []
+        for path in citation_corpus():
+            for number, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(), start=1
+            ):
+                for identifier in RECORD_CITATION.findall(line):
+                    if identifier in ILLUSTRATIVE_IDENTIFIERS:
+                        used_exemptions.add(identifier)
+                        continue
+                    if identifier not in known:
+                        where = f"{path.relative_to(REPO_ROOT).as_posix()}:{number}"
+                        offenders.append(f"{where} cites {identifier}")
+        self.assertEqual(
+            offenders,
+            [],
+            "a citation that resolves to nothing tells the reader a rule is "
+            "written down when it is not",
+        )
+        self.assertEqual(
+            sorted(ILLUSTRATIVE_IDENTIFIERS - used_exemptions),
+            [],
+            "an exemption nobody uses is a licence waiting to be claimed by an "
+            "unrelated identifier; drop it from ILLUSTRATIVE_IDENTIFIERS",
+        )
+        self.assertEqual(
+            sorted(ILLUSTRATIVE_IDENTIFIERS & known),
+            [],
+            "an exempted name became a real record; it is now a citation like "
+            "any other and must not keep a licence to resolve to nothing",
+        )
+
     def test_retired_identifiers_are_not_reissued(self) -> None:
         """A retired identifier stays retired.
 
@@ -270,21 +432,16 @@ class IdentifierLedgerTests(unittest.TestCase):
         that a future rule cannot quietly inherit the meaning of a deleted one.
         """
         text = INVARIANTS.read_text(encoding="utf-8")
-        section = re.search(
-            r"## Выведенные из обращения идентификаторы\n(?P<body>.*?)(?=\n## |\Z)",
-            text,
-            re.DOTALL,
-        )
         self.assertIsNotNone(
-            section, "invariants.md must carry a retired-identifier ledger"
-        )
-        retired = set(
-            re.findall(
-                r"\b((?:INV|REQ)-[A-Z]+(?:-[A-Z]+)+)\b", section.group("body")
-            )
+            re.search(
+                r"## Выведенные из обращения идентификаторы\n(?P<body>.*?)(?=\n## |\Z)",
+                text,
+                re.DOTALL,
+            ),
+            "invariants.md must carry a retired-identifier ledger",
         )
         active = set(self.declared_ids())
-        reissued = sorted(retired & active)
+        reissued = sorted(self.retired_ids() & active)
         self.assertEqual(
             reissued, [], "a retired identifier may never be given to a new rule"
         )
@@ -334,6 +491,75 @@ class RegistryCheckTests(unittest.TestCase):
             if not path.exists():
                 offenders.append(f"{record.where}: missing check target {backticked.group('target')}")
         self.assertEqual(offenders, [], "a registry entry may not point at a check that does not exist")
+
+    def test_automated_checks_name_something_ci_actually_executes(self) -> None:
+        """An automated class must point at an artefact a CI runner collects.
+
+        Existence of the target file proves nothing: `ci-test` — `README.md`
+        would pass such a test, and the registry would still claim the rule is
+        held automatically. What makes the claim true is that the named file is
+        a test the suite collects, or a script a runner executes. This test
+        proves that for every automated check line, so the count of automated
+        checks in the registry is a count of checks that run.
+        """
+        invocations = ci_invocations()
+        offenders = []
+        for record, cls, target in self.parsed_checks():
+            if cls == "manual":
+                continue
+            backticked = BACKTICKED.match(target.strip())
+            if not backticked:
+                continue  # reported by the well-formedness test
+            relative = backticked.group("target")
+            path = REPO_ROOT / relative
+            if not path.is_file():
+                continue  # reported by the existence test
+
+            if cls in {"ci-test", "doc-assert"}:
+                if relative.endswith(".py"):
+                    if not relative.startswith(PYTHON_TEST_ROOTS) or not path.name.startswith(
+                        "test"
+                    ):
+                        offenders.append(
+                            f"{record.where}: {relative} is outside what "
+                            "`unittest discover` collects"
+                        )
+                    elif not PYTHON_TEST_FUNCTION.search(path.read_text(encoding="utf-8")):
+                        offenders.append(f"{record.where}: {relative} defines no test function")
+                elif relative.endswith(".rs"):
+                    if not rust_target_is_built(relative, path):
+                        offenders.append(
+                            f"{record.where}: {relative} is not compiled by `cargo test`"
+                        )
+                    elif not rust_defines_tests(path):
+                        offenders.append(f"{record.where}: {relative} declares no Rust test")
+                else:
+                    offenders.append(
+                        f"{record.where}: {cls} target must be a test file, got {relative}"
+                    )
+            elif cls == "guard-script":
+                if not relative.startswith("scripts/"):
+                    offenders.append(
+                        f"{record.where}: guard-script must live under scripts/, got {relative}"
+                    )
+                elif path.name not in invocations:
+                    offenders.append(
+                        f"{record.where}: no workflow or test runs {relative}"
+                    )
+            elif cls == "release-gate":
+                workflow = relative.startswith(".github/workflows/")
+                if not workflow and not relative.startswith("scripts/"):
+                    offenders.append(
+                        f"{record.where}: release-gate must be a workflow or a script, "
+                        f"got {relative}"
+                    )
+                elif not workflow and path.name not in invocations:
+                    offenders.append(f"{record.where}: no workflow runs {relative}")
+        self.assertEqual(
+            offenders,
+            [],
+            "an automated check class is a promise that CI runs the named target",
+        )
 
     def test_manual_checks_stay_within_budget(self) -> None:
         manual = [
@@ -410,7 +636,7 @@ class IndexSynchronizationTests(unittest.TestCase):
         checklist = (
             REPO_ROOT / "spec" / "architecture" / "change-checklist.md"
         ).read_text(encoding="utf-8")
-        cited = set(re.findall(r"\b((?:INV|REQ)-[A-Z]+(?:-[A-Z]+)+)\b", checklist))
+        cited = set(RECORD_CITATION.findall(checklist))
         declared = {record.id for record in all_records()}
 
         self.assertTrue(cited, "the checklist must attribute its items to records")

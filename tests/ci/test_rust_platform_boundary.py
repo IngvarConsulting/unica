@@ -473,6 +473,46 @@ class RustPlatformBoundaryTests(unittest.TestCase):
             ],
         )
 
+    def test_a_host_name_inside_a_longer_word_is_not_host_knowledge(self) -> None:
+        """Имя хоста кончается там, где кончается его регистровый сегмент.
+
+        Подстрочное совпадение объявляло host knowledge любое слово, внутри
+        которого встретились эти буквы, а исключений по путям у стража нет
+        (INV-PLATFORM-NO-PATH-EXEMPTIONS) — снять ложный диагноз было бы нечем.
+        """
+        checker = load_checker_module()
+
+        diagnostics = checker.check_source(
+            "crates/unica-coder/src/infrastructure/mineralogy.rs",
+            "// claudetite and claudent are minerals, not hosts.\n"
+            "let codexes = manuscripts.len();\n",
+        )
+
+        self.assertEqual(diagnostics, [])
+
+    def test_a_host_name_ending_a_case_segment_is_still_host_knowledge(self) -> None:
+        """Обратная сторона того же правила: camelCase и snake_case не теряются."""
+        checker = load_checker_module()
+
+        diagnostics = checker.check_source(
+            "crates/unica-coder/src/infrastructure/plugin_runtime.rs",
+            "struct CodexHost;\n"
+            "fn claude_plugin_data() {}\n"
+            "let catalog = \"codex-plugin\";\n",
+        )
+
+        self.assertEqual(
+            diagnostics,
+            [
+                "crates/unica-coder/src/infrastructure/plugin_runtime.rs:1: "
+                "host name Codex is outside the host facade",
+                "crates/unica-coder/src/infrastructure/plugin_runtime.rs:2: "
+                "host name claude is outside the host facade",
+                "crates/unica-coder/src/infrastructure/plugin_runtime.rs:3: "
+                "host name codex is outside the host facade",
+            ],
+        )
+
     def test_host_facade_root_is_not_granted_to_other_crates(self) -> None:
         checker = load_checker_module()
 

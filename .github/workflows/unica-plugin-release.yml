@@ -35,13 +35,18 @@ jobs:
         shell: bash
         env:
           FORCE_FULL: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+          # A branch name reaches the shell as data, never as script text. Git
+          # ref rules allow `;`, `$`, backticks and parentheses, so `${{ }}`
+          # pasted straight into `run:` would be a command-injection sink the
+          # day someone pushes a branch named for one.
+          BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
           if [ "$FORCE_FULL" = "true" ]; then
             python scripts/ci/classify-workflow-changes.py --force-full </dev/null >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          git fetch --no-tags origin "${{ github.base_ref }}"
+          git fetch --no-tags origin "$BASE_REF"
           git diff --name-only FETCH_HEAD...HEAD |
             python scripts/ci/classify-workflow-changes.py >> "$GITHUB_OUTPUT"
 
@@ -66,8 +71,11 @@ jobs:
       - run: python scripts/ci/check-version-contract.py
       - name: Check architecture sync
         if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          git fetch --no-tags origin "${{ github.base_ref }}"
+          set -euo pipefail
+          git fetch --no-tags origin "$BASE_REF"
           python scripts/ci/check-architecture-sync.py --base FETCH_HEAD --strict
 
   test-rust-primary:
@@ -398,13 +406,17 @@ jobs:
           name: unica-runtime-linux-x64
           path: dist/runtime
       - name: Run release assessment
+        # A tag name is a ref, so it obeys the same rules a branch name does and
+        # is the same command-injection sink: it reaches the shell as data.
+        env:
+          RELEASE_REF: ${{ github.ref_name }}
         run: >
           python scripts/ci/release-assessment.py
           --package-archive dist/runtime/unica-runtime-linux-x64.tar.gz
           --work-dir .build/release-assessment
           --out-dir dist/release-assessment
           --bsp-ref 3.2.1.446
-          --release-tag "${{ github.ref_name }}"
+          --release-tag "$RELEASE_REF"
           --github-run-id "${{ github.run_id }}"
       - uses: actions/upload-artifact@v7
         if: always()

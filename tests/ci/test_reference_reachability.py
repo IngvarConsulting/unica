@@ -36,7 +36,18 @@ CORPUS_PREFIX = CORPUS_ROOT.relative_to(REPO_ROOT).as_posix() + "/"
 # Относительный путь до markdown-документа. Лукбехайнд не даёт зацепиться за
 # хвост более длинного пути: `plugins/unica/references/specs/x.md` разбирается
 # целиком и не превращается в ложную ссылку `specs/x.md`.
-DOC_PATH = re.compile(r"(?<![A-Za-z0-9._/-])((?:\.{1,2}/)*[A-Za-z0-9._/-]*\.md)")
+#
+# Лукахед закрывает ту же дыру с другого конца. Без него `.md` совпадал
+# посередине более длинного имени, и упоминание `x.md.bak`, `x.md5` или
+# `x.mdx` давало ребро к существующему `x.md` — ложную достижимость, под
+# которой прячется неназванный документ. Первое условие отбрасывает
+# продолжение имени (`x.md5`, `x.mdx`), второе — продолжение расширения или
+# пути (`x.md.bak`), но оставляет точку в конце предложения: там за ней стоит
+# пробел или конец строки, а не символ пути.
+DOC_PATH = re.compile(
+    r"(?<![A-Za-z0-9._/-])((?:\.{1,2}/)*[A-Za-z0-9._/-]*\.md)"
+    r"(?![A-Za-z0-9_-])(?![./][A-Za-z0-9._/-])"
+)
 
 # Зафиксированный долг, а не одобренное состояние.
 #
@@ -147,6 +158,28 @@ class ReferenceReachabilityTests(unittest.TestCase):
         """
         self.assertGreater(len(self.documents), 20, "справочный корпус разобран как пустой")
         self.assertGreater(len(skill_roots(self.documents)), 0, "ни один скилл не назвал документ корпуса")
+
+    def test_a_longer_file_name_is_not_a_link_to_the_document_inside_it(self) -> None:
+        """Ложная достижимость прячет неназванный документ.
+
+        `x.md.bak`, `x.md5` и `x.mdx` — самостоятельные имена. Считая их
+        ссылкой на `x.md`, обход объявил бы достижимым документ, который на
+        деле не назван ниоткуда, и ратчет долга поехал бы вниз без обвязки.
+        """
+        source = "references/README.md"
+        target = "references/specs/x.md"
+        documents = {target}
+
+        for probe in ("см. specs/x.md.bak", "sha: specs/x.md5",
+                      "шаблон specs/x.md.tmpl", "см. specs/x.mdx"):
+            with self.subTest(probe=probe):
+                self.assertEqual(cited_documents(source, probe, documents), set())
+
+        # Обратная сторона: ссылка в конце предложения ребром остаётся.
+        for probe in ("см. specs/x.md.", "см. `specs/x.md`,",
+                      "[имя](specs/x.md)", "см. specs/x.md в конце"):
+            with self.subTest(probe=probe):
+                self.assertEqual(cited_documents(source, probe, documents), {target})
 
     def test_shipped_reference_documents_are_reachable_from_a_skill(self) -> None:
         """INV-SKILL-REACHABLE-REFERENCES: новых неназванных документов не появляется."""

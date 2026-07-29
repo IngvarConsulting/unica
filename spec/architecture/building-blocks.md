@@ -340,8 +340,9 @@ runtime для операций платформы, поставляемый а�
 
 ### Правила зависимостей между слоями
 
-Направление зависимостей нормировано в INV-APP-DEPENDENCY-DIRECTION (ADR-0009, ADR-0002) и
-проверяется скриптом
+Направление зависимостей нормировано в INV-APP-DEPENDENCY-DIRECTION (ADR-0009, ADR-0002),
+запрет `infrastructure -> interfaces` — в INV-APP-NO-ADAPTER-BYPASS (ADR-0002,
+ADR-0003). Оба проверяет один страж
 [`scripts/ci/check-rust-platform-boundary.py`](../../scripts/ci/check-rust-platform-boundary.py),
 который исполняется тестами
 [`tests/ci/test_rust_platform_boundary.py`](../../tests/ci/test_rust_platform_boundary.py).
@@ -351,15 +352,22 @@ runtime для операций платформы, поставляемый а�
 | --- | --- | --- |
 | `domain` | только на себя и внешние крейты | `application`, `infrastructure`, `interfaces`; `std::fs`, `std::env`, `std::process`; ввод-вывод через `Path` |
 | `application` | `domain` | `infrastructure`, `interfaces` |
-| `infrastructure` | `domain`, `application` | стражем не ограничен; ссылок на `interfaces` в коде нет |
+| `infrastructure` | `domain`, `application` | `interfaces` |
 | `interfaces` | `application`, `domain`, `infrastructure` | стражем не ограничен |
 
-Асимметрия таблицы намеренна. Страж запрещает только те направления, которые
-ломают инверсию зависимостей: `domain` не знает никого, `application` не знает
-своих адаптеров. Обратные направления разрешены, потому что именно они и есть
-связывание: `infrastructure` реализует порты приложения, а `interfaces` для двух
-скрытых режимов (`--workspace-service`, `--runtime-job-worker`) вызывает
+Асимметрия таблицы намеренна. Страж запрещает те направления, которые ломают
+инверсию зависимостей: `domain` не знает никого, `application` не знает своих
+адаптеров. Связывающие направления разрешены: `infrastructure` реализует порты
+приложения и потому ссылается на `application` и `domain`, а `interfaces` для
+двух скрытых режимов (`--workspace-service`, `--runtime-job-worker`) вызывает
 инфраструктуру напрямую — эти режимы не проходят через диспетчер инструментов.
+
+`interfaces` при этом остаётся неизвестен всем трём нижним слоям, и для
+`infrastructure` у этого запрета своё основание: адаптер, дотянувшийся до слоя
+представления, отрисовал бы ответ MCP сам и по дороге наружу обошёл бы отчёт о
+кеше, который ведёт application (INV-APP-NO-ADAPTER-BYPASS). Это не «в коде
+таких ссылок нет», а проверяемый запрет: страж возвращает
+`infrastructure must not reference crate::interfaces`.
 
 Дополнительно тот же страж требует, чтобы специфика операционной системы
 (`cfg(windows)`, `cfg(unix)`, `cfg(target_*)`, `windows_sys`) встречалась только
