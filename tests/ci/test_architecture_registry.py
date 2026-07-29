@@ -14,6 +14,7 @@ resolves is a defect in the architecture layer, not a formatting nit.
 
 from __future__ import annotations
 
+import ast
 import re
 import unittest
 from pathlib import Path
@@ -49,7 +50,45 @@ WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 # `.github/workflows/unica-plugin-release.yml` runs `unittest discover` over
 # these two trees, with the default `test*.py` pattern.
 PYTHON_TEST_ROOTS = ("tests/ci/", "tests/dev/")
-PYTHON_TEST_FUNCTION = re.compile(r"^\s*(?:async\s+)?def\s+test\w*\(", re.MULTILINE)
+# `unittest discover` collects test methods of `TestCase` subclasses and nothing
+# else. A regex for `def test_` also matches a module-level function, a helper on
+# a plain class, or a line inside a comment — none of which the runner collects,
+# so the registry would still be counting a check that never runs. The module is
+# parsed rather than imported: importing a test module to inspect it runs its
+# import-time code, which is a poor trade for a validator.
+TESTCASE_BASE_NAMES = {"TestCase", "IsolatedAsyncioTestCase", "FunctionTestCase"}
+
+
+def python_module_collects_tests(path: Path) -> bool:
+    """True when `unittest` would collect at least one test from this module."""
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except SyntaxError:
+        return False
+
+    def is_testcase_base(node: ast.expr) -> bool:
+        name = node.attr if isinstance(node, ast.Attribute) else getattr(node, "id", None)
+        return name in TESTCASE_BASE_NAMES
+
+    local_cases = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        derives = any(
+            is_testcase_base(base)
+            or (isinstance(base, ast.Name) and base.id in local_cases)
+            for base in node.bases
+        )
+        if not derives:
+            continue
+        local_cases.add(node.name)
+        if any(
+            isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and child.name.startswith("test")
+            for child in node.body
+        ):
+            return True
+    return False
 # `cargo test --workspace` collects `#[test]` and `#[tokio::test]`.
 RUST_TEST_ATTRIBUTE = re.compile(r"#\[(?:tokio::)?test\]")
 # A Rust test target may be a two-line shim that pulls in the real file, which
@@ -99,6 +138,10 @@ SINGLE_HOST_PHRASES = (
     "fresh Codex visibility",
     "Codex operation instruction",
 )
+
+# Uniqueness is checked everywhere a heading could collide with a live
+# identifier, the archive included. Resolution is not: see `registry_ids()`.
+DECLARATION_SCAN_ROOTS = (REPO_ROOT / "spec", REPO_ROOT / "docs")
 
 ARCHIVE_MARKER = "Архивный материал планирования, а не источник истины"
 ARCHIVE_INDEXES = (
@@ -168,6 +211,11 @@ def parse_records(path: Path) -> list[Record]:
 
 def all_records() -> list[Record]:
     return parse_records(INVARIANTS) + parse_records(REQUIREMENTS)
+
+
+def registry_ids() -> set[str]:
+    """Identifiers the registry actually declares — the only ones a citation may name."""
+    return {record.id for record in all_records()}
 
 
 def citation_corpus() -> list[Path]:
@@ -344,7 +392,7 @@ class IdentifierLedgerTests(unittest.TestCase):
         record. A mention inside prose is a reference, not a declaration.
         """
         declarations: dict[str, list[str]] = {}
-        roots = [REPO_ROOT / "spec", REPO_ROOT / "docs"]
+        roots = list(DECLARATION_SCAN_ROOTS)
         for root in roots:
             for path in sorted(root.rglob("*.md")):
                 for number, line in enumerate(
@@ -391,7 +439,12 @@ class IdentifierLedgerTests(unittest.TestCase):
         reads first, so a rename that misses it sends every reader to a rule
         that is not written down.
         """
-        declared = set(self.declared_ids())
+        # Resolution accepts only what the registry declares. `declared_ids()`
+        # sweeps the archive too, because a heading there would collide with a
+        # live identifier and that collision has to surface — but an archived
+        # design note is not a place a citation may land, so reusing that wider
+        # set here would let a rule "exist" outside the normative layer.
+        declared = registry_ids()
         known = declared | self.retired_ids()
         used_exemptions = set()
         offenders = []
@@ -524,8 +577,11 @@ class RegistryCheckTests(unittest.TestCase):
                             f"{record.where}: {relative} is outside what "
                             "`unittest discover` collects"
                         )
-                    elif not PYTHON_TEST_FUNCTION.search(path.read_text(encoding="utf-8")):
-                        offenders.append(f"{record.where}: {relative} defines no test function")
+                    elif not python_module_collects_tests(path):
+                        offenders.append(
+                            f"{record.where}: {relative} defines no test that "
+                            "`unittest discover` collects"
+                        )
                 elif relative.endswith(".rs"):
                     if not rust_target_is_built(relative, path):
                         offenders.append(
