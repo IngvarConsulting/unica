@@ -26,6 +26,24 @@ misconfigured, not that the change is clean. `--strict` turns every skip into a
 failure, so a guard that cannot run reports itself instead of passing silently.
 A shallow checkout is the usual cause: the three-dot diff needs a merge base,
 which requires `fetch-depth: 0`.
+
+"Could not run" is the easy half. The dangerous half is running and seeing
+nothing, because that is indistinguishable from a clean change. Three ways to
+arrange it are closed here:
+
+* A governed file rendered as binary states no lines at all, so every rule
+  reads an empty section. One `-diff` line in `.gitattributes` used to hide
+  every later edit to every decision record. Reads now pass `--text` and
+  `--no-ext-diff`, and a binary section that still names a governed file is a
+  failure rather than a silent skip.
+* A quoted path names no file the patterns recognise. git quotes any path with
+  non-ASCII bytes by default, which in a repository whose records are written
+  in Russian is the ordinary case, not an exotic one. Reads now set
+  `core.quotePath=false` and the grammar decodes the quoting anyway, because a
+  piped diff carries the sender's configuration.
+* An anchor that moved leaves the guard reading a file that no longer holds the
+  surface. Renaming the registry used to buy permanent silence. The anchors are
+  verified against the tree before any diff is judged.
 """
 
 from __future__ import annotations
@@ -43,6 +61,10 @@ TOOL_REGISTRY = "crates/unica-coder/src/application/mod.rs"
 
 # A public tool declaration in the registry, for example:  name: "unica.form.edit",
 TOOL_DECLARATION = re.compile(r'name:\s*"(?P<tool>unica\.[A-Za-z0-9_.]+)"')
+
+# A Rust comment line. `*` needs the space or slash after it so that a deref
+# statement is not mistaken for a block-comment continuation.
+RUST_COMMENT = re.compile(r"^\s*(?://|/\*|\*(?:[\s/]|$))")
 
 # Files accepted as contract-relevant synchronization evidence.
 #
@@ -73,14 +95,41 @@ def is_architecture_evidence(path: str) -> bool:
 # renders as `+++ b/x.md`. Reading either as a file header lets a diff describe
 # files it never touches, so the position is part of the grammar here.
 DIFF_SECTION_START = "diff --git "
-DIFF_OLD_HEADER = re.compile(r"^--- (?:a/)?(?P<path>.+)$")
-DIFF_NEW_HEADER = re.compile(r"^\+\+\+ (?:b/)?(?P<path>.+)$")
+DIFF_OLD_HEADER = re.compile(r"^--- (?P<path>.+)$")
+DIFF_NEW_HEADER = re.compile(r"^\+\+\+ (?P<path>.+)$")
 # A pure rename carries no `---`/`+++` and no hunks at all: git states it with
 # `rename from`/`rename to` and nothing else. Without these two, `git mv` is a
 # way to move a file with the guard seeing an empty section.
 DIFF_RENAME_FROM = re.compile(r"^rename from (?P<path>.+)$")
 DIFF_RENAME_TO = re.compile(r"^rename to (?P<path>.+)$")
 DEV_NULL = "/dev/null"
+
+# A section whose content git refuses to render as text. It carries no hunk
+# lines, so every rule below reads it as "nothing changed here" -- the quietest
+# possible edit. `Binary files ... differ` is what a plain diff prints; the
+# `GIT binary patch` payload is what `--binary` prints instead.
+DIFF_BINARY_FILES = re.compile(r"^Binary files (?P<old>.+) and (?P<new>.+) differ$")
+DIFF_BINARY_PATCH = "GIT binary patch"
+
+# git quotes a path it cannot print literally: the name is wrapped in double
+# quotes, and bytes outside printable ASCII become C escapes -- `\321\200` for a
+# Russian letter, `\t` for a tab. With `core.quotePath` at its default this is
+# the normal rendering for a record named in Russian, which this catalogue is
+# full of. A path left quoted matches none of the patterns above, so the record
+# it names is judged as no record at all.
+QUOTED_PATH = re.compile(r'^"(?P<body>.*)"$')
+C_ESCAPES = {
+    "a": 0x07,
+    "b": 0x08,
+    "f": 0x0C,
+    "n": 0x0A,
+    "r": 0x0D,
+    "t": 0x09,
+    "v": 0x0B,
+    '"': 0x22,
+    "\\": 0x5C,
+}
+OCTAL_DIGITS = "01234567"
 
 # An accepted decision record is a dated statement of what was chosen, not a
 # description of current code (INV-DOC-SUPERSEDE-NOT-EDIT). The rewrites that a
@@ -104,6 +153,61 @@ STATUS_ORDER = {"proposed": 0, "accepted": 1, "superseded": 2}
 BINDING_STATUSES = frozenset({"accepted", "superseded"})
 
 
+def unquote_path(raw: str) -> str:
+    """Decode git's C-style quoting of a path. An unquoted path passes through.
+
+    Undecodable input is returned untouched rather than guessed at: a wrong
+    path is worse than a quoted one, because it can name a file the diff never
+    mentioned.
+    """
+    quoted = QUOTED_PATH.match(raw)
+    if quoted is None:
+        return raw
+
+    body = quoted.group("body")
+    decoded = bytearray()
+    index = 0
+    while index < len(body):
+        character = body[index]
+        if character != "\\":
+            decoded.extend(character.encode("utf-8"))
+            index += 1
+            continue
+        index += 1
+        if index >= len(body):
+            return raw
+        escape = body[index]
+        if escape in C_ESCAPES:
+            decoded.append(C_ESCAPES[escape])
+            index += 1
+            continue
+        if escape in OCTAL_DIGITS:
+            digits = body[index : index + 3]
+            if len(digits) < 3 or any(digit not in OCTAL_DIGITS for digit in digits):
+                return raw
+            decoded.append(int(digits, 8))
+            index += 3
+            continue
+        return raw
+
+    return decoded.decode("utf-8", errors="surrogateescape")
+
+
+def header_path(raw: str, prefix: str) -> str:
+    """The repository-relative path a diff header line names.
+
+    Strips the `a/`/`b/` side prefix after unquoting, not before: in a quoted
+    path the prefix sits inside the quotes. `diff.noprefix` output carries no
+    prefix at all, which is why stripping is conditional.
+    """
+    path = unquote_path(raw)
+    if path == DEV_NULL:
+        return path
+    if path.startswith(prefix):
+        return path[len(prefix) :]
+    return path
+
+
 class FileDiff:
     """One file section of a unified diff: its two paths and its hunk lines."""
 
@@ -111,6 +215,9 @@ class FileDiff:
         self.old_path = old_path
         self.new_path = new_path
         self.lines: list[str] = []
+        # Set when git refused to render the content. The section then states
+        # nothing, and "states nothing" must not read as "changed nothing".
+        self.binary = False
 
     @property
     def created(self) -> bool:
@@ -174,19 +281,30 @@ def iter_file_diffs(diff_text: str):
                 continue
             old_header = DIFF_OLD_HEADER.match(line)
             if old_header:
-                current.old_path = old_header.group("path")
+                current.old_path = header_path(old_header.group("path"), "a/")
                 continue
             new_header = DIFF_NEW_HEADER.match(line)
             if new_header:
-                current.new_path = new_header.group("path")
+                current.new_path = header_path(new_header.group("path"), "b/")
                 continue
             rename_from = DIFF_RENAME_FROM.match(line)
             if rename_from:
-                current.old_path = rename_from.group("path")
+                current.old_path = unquote_path(rename_from.group("path"))
                 continue
             rename_to = DIFF_RENAME_TO.match(line)
             if rename_to:
-                current.new_path = rename_to.group("path")
+                current.new_path = unquote_path(rename_to.group("path"))
+                continue
+            binary_files = DIFF_BINARY_FILES.match(line)
+            if binary_files:
+                # The only line a plain binary section carries, and the only
+                # place it names its two sides.
+                current.binary = True
+                current.old_path = header_path(binary_files.group("old"), "a/")
+                current.new_path = header_path(binary_files.group("new"), "b/")
+                continue
+            if line.startswith(DIFF_BINARY_PATCH):
+                current.binary = True
                 continue
             # `index`, `old mode`, `similarity index` and the rest of the
             # extended header. Nothing here names a hunk line.
@@ -238,6 +356,46 @@ def record_id(path: str | None) -> str | None:
         return None
     match = DECISION_RECORD.match(path)
     return match.group("id") if match else None
+
+
+def is_governed(path: str) -> bool:
+    """True for the files this guard is the reader of."""
+    return record_id(path) is not None or path == TOOL_REGISTRY
+
+
+def unreadable_sections(diff_text: str) -> list[str]:
+    """Report sections that hide a governed file behind a binary rendering.
+
+    A binary section carries no hunk lines, so both analyses below walk over it
+    and find nothing to object to. That is the failure mode this guard exists to
+    not have: silence that looks like cleanliness. One `-diff` line in
+    `.gitattributes`, or a single NUL byte in a record, was enough to buy it.
+
+    A binary section naming only ordinary files is not this guard's business --
+    an image is legitimately binary, and crying wolf about it is how a guard
+    gets switched off. A section that names no path at all is reported, because
+    an unattributable change is exactly the one that cannot be cleared.
+    """
+    problems: list[str] = []
+
+    for section in iter_file_diffs(diff_text):
+        if not section.binary:
+            continue
+        paths = section.paths()
+        if not paths:
+            problems.append(
+                "a binary section names no path, so the guard cannot tell "
+                "which file it hides"
+            )
+            continue
+        governed = sorted({path for path in paths if is_governed(path)})
+        if governed:
+            problems.append(
+                f"{', '.join(governed)}: rendered as binary, so its content is "
+                "unreadable and every rule below it passes by default"
+            )
+
+    return problems
 
 
 def analyze_decision_records(diff_text: str) -> list[str]:
@@ -373,12 +531,19 @@ def analyze_diff(diff_text: str) -> SurfaceChange:
             continue
 
         for line in section.lines:
-            if line.startswith("+"):
-                for match in TOOL_DECLARATION.finditer(line[1:]):
-                    change.added.add(match.group("tool"))
-            elif line.startswith("-"):
-                for match in TOOL_DECLARATION.finditer(line[1:]):
-                    change.removed.add(match.group("tool"))
+            if not line or line[0] not in "+-":
+                continue
+            body = line[1:]
+            # A tool name inside a comment is prose about the registry, not a
+            # declaration in it. Counting it made a comment a cancelling token:
+            # removing a real declaration and adding `// name: "unica.x"` in the
+            # same change left added and removed equal, and the retirement of a
+            # public tool passed as a no-op.
+            if RUST_COMMENT.match(body):
+                continue
+            side = change.added if line[0] == "+" else change.removed
+            for match in TOOL_DECLARATION.finditer(body):
+                side.add(match.group("tool"))
 
     # A pure rename inside one hunk shows the same tool on both sides only when
     # the name really changed, so nothing to cancel out here. A moved line with
@@ -387,6 +552,45 @@ def analyze_diff(diff_text: str) -> SurfaceChange:
     change.added -= unchanged
     change.removed -= unchanged
     return change
+
+
+def anchor_problems(repo_root: Path | None = None) -> list[str]:
+    """Report the guard's own reference points having moved out from under it.
+
+    Every rule here is stated against three hard-coded paths. Nothing made those
+    paths prove they still exist, so renaming the registry -- a pure rename, no
+    hunks, not a surface change by any rule below -- left the guard reading a
+    file that no longer holds the surface, reporting "public MCP surface
+    unchanged" forever after. A declaration count is part of the check because
+    an empty or restructured registry is the same blindness with the file still
+    in place.
+    """
+    root = REPO_ROOT if repo_root is None else repo_root
+    problems: list[str] = []
+
+    registry = root / TOOL_REGISTRY
+    if not registry.is_file():
+        problems.append(
+            f"{TOOL_REGISTRY}: the tool registry this guard reads is not in the "
+            "tree; every surface rule below it is unenforced"
+        )
+    elif not TOOL_DECLARATION.search(registry.read_text(encoding="utf-8")):
+        problems.append(
+            f"{TOOL_REGISTRY}: no `unica.*` declaration left in the registry "
+            "this guard reads; either the surface moved or the pattern stopped "
+            "matching it"
+        )
+
+    for evidence in ARCHITECTURE_EVIDENCE:
+        target = root / evidence
+        present = target.is_dir() if evidence.endswith("/") else target.is_file()
+        if not present:
+            problems.append(
+                f"{evidence}: named as contract-sync evidence but not in the "
+                "tree, so no change can ever satisfy it"
+            )
+
+    return problems
 
 
 def resolve_base(explicit: str | None) -> str | None:
@@ -406,8 +610,29 @@ def resolve_base(explicit: str | None) -> str | None:
 
 
 def read_diff(base: str) -> str | None:
+    """The change under judgement, rendered so that nothing can hide in it.
+
+    Every flag here closes a way to make a governed file unreadable:
+    `--no-ext-diff` and `--text` defeat both a `-diff` attribute and a stray NUL
+    byte, `core.quotePath=false` keeps a Russian file name literal, and the two
+    prefix settings keep `a/`/`b/` where the grammar expects them whatever the
+    caller's git configuration says.
+    """
     result = subprocess.run(
-        ["git", "diff", "--unified=0", f"{base}..."],
+        [
+            "git",
+            "-c",
+            "core.quotePath=false",
+            "-c",
+            "diff.noprefix=false",
+            "-c",
+            "diff.mnemonicPrefix=false",
+            "diff",
+            "--no-ext-diff",
+            "--text",
+            "--unified=0",
+            f"{base}...",
+        ],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -444,6 +669,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"check-architecture-sync: {message}; skipping")
         return 0
 
+    moved_anchors = anchor_problems()
+    if moved_anchors:
+        for problem in moved_anchors:
+            print(f"check-architecture-sync: {problem}")
+        return unusable(
+            "the guard's own anchors moved, so it can no longer see what it guards"
+        )
+
     if args.diff == "-":
         diff_text = sys.stdin.read()
     else:
@@ -455,6 +688,21 @@ def main(argv: list[str] | None = None) -> int:
         diff_text = read_diff(base)
         if diff_text is None:
             return unusable(f"cannot diff against {base!r}")
+
+    hidden = unreadable_sections(diff_text)
+    if hidden:
+        print(
+            "check-architecture-sync: a governed file is unreadable in this diff"
+        )
+        for problem in hidden:
+            print(f"  {problem}")
+        print()
+        print(
+            "A decision record and the tool registry are text. Rendered as binary they\n"
+            "state nothing, and a guard reading nothing reports success. Drop the\n"
+            "`-diff` attribute or the stray byte so the change can be read."
+        )
+        return 1
 
     rewritten = analyze_decision_records(diff_text)
     if rewritten:

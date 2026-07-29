@@ -630,5 +630,273 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
         self.assertIn("without an Updated field", violations[0])
 
 
+class QuotedPathTests(unittest.TestCase):
+    """A path git had to quote still names the file it names.
+
+    With `core.quotePath` at its default -- which is every checkout nobody
+    reconfigured -- a record named in Russian arrives as
+    `"spec/decisions/0099-\\321\\200....md"`. Read literally that string matches
+    no record, so the record it names was judged as not a record at all: an
+    accepted decision could be walked back in a file whose name simply spelled
+    out what this catalogue is written in.
+    """
+
+    def setUp(self) -> None:
+        self.guard = load_guard()
+
+    def test_an_octal_escaped_name_decodes_to_the_path_it_names(self) -> None:
+        quoted = '"spec/decisions/0099-\\321\\200\\320\\265\\321\\210.md"'
+
+        self.assertEqual(
+            self.guard.unquote_path(quoted), "spec/decisions/0099-реш.md"
+        )
+
+    def test_a_plain_path_is_left_alone(self) -> None:
+        self.assertEqual(
+            self.guard.unquote_path("spec/decisions/0011-canonical-dcs-domain.md"),
+            "spec/decisions/0011-canonical-dcs-domain.md",
+        )
+
+    def test_c_escapes_decode(self) -> None:
+        self.assertEqual(self.guard.unquote_path('"a\\tb\\\\c\\"d"'), 'a\tb\\c"d')
+
+    def test_an_undecodable_quoting_is_returned_untouched(self) -> None:
+        """Guessing a path is worse than failing to read one.
+
+        A wrong guess names a file the diff never mentioned, which is how a
+        guard invents violations instead of finding them.
+        """
+        for raw in ('"a\\q"', '"a\\77"', '"a\\"'):
+            with self.subTest(raw=raw):
+                self.assertEqual(self.guard.unquote_path(raw), raw)
+
+    def test_a_quoted_record_is_still_held_to_its_status(self) -> None:
+        """The end-to-end shape of the bypass, checked against real git output."""
+        name = "spec/decisions/0099-\\321\\200\\320\\265\\321\\210.md"
+        diff = (
+            f'diff --git "a/{name}" "b/{name}"\n'
+            f'--- "a/{name}"\n'
+            f'+++ "b/{name}"\n'
+            "@@ -3 +3 @@\n"
+            "-- Статус: `accepted`\n"
+            "+- Статус: `proposed`\n"
+        )
+        violations = self.guard.analyze_decision_records(diff)
+
+        self.assertEqual(len(violations), 1, violations)
+        self.assertIn("status moved backwards", violations[0])
+        self.assertIn("0099-реш.md", violations[0])
+
+
+class BinarySectionTests(unittest.TestCase):
+    """A section git renders as binary states nothing, and nothing reads as clean.
+
+    Marking `spec/decisions/*.md` with `-diff` in `.gitattributes`, or leaving a
+    single NUL byte in a record, turned every later edit to that file into an
+    empty section. Both analyses walked it and found nothing to report, which is
+    the exact failure this guard exists not to have.
+    """
+
+    def setUp(self) -> None:
+        self.guard = load_guard()
+
+    def _binary_section(self, path: str) -> str:
+        return (
+            f"diff --git a/{path} b/{path}\n"
+            "index 41a2168..f02890a 100644\n"
+            f"Binary files a/{path} and b/{path} differ\n"
+        )
+
+    def test_a_binary_decision_record_is_reported(self) -> None:
+        problems = self.guard.unreadable_sections(
+            self._binary_section("spec/decisions/0011-canonical-dcs-domain.md")
+        )
+
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("0011-canonical-dcs-domain.md", problems[0])
+
+    def test_a_binary_tool_registry_is_reported(self) -> None:
+        problems = self.guard.unreadable_sections(self._binary_section(REGISTRY))
+
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn(REGISTRY, problems[0])
+
+    def test_a_binary_ordinary_file_is_not_this_guards_business(self) -> None:
+        """An image is legitimately binary; a guard that cries wolf gets removed."""
+        problems = self.guard.unreadable_sections(
+            self._binary_section("docs/assets/diagram.png")
+        )
+
+        self.assertEqual(problems, [])
+
+    def test_a_binary_patch_payload_naming_no_path_is_reported(self) -> None:
+        diff = (
+            "diff --git a/x b/x\n"
+            "index 41a2168..f02890a 100644\n"
+            "GIT binary patch\n"
+            "delta 42\n"
+        )
+        problems = self.guard.unreadable_sections(diff)
+
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("names no path", problems[0])
+
+    def test_a_binary_governed_file_exits_one(self) -> None:
+        import io
+        import sys
+
+        diff = self._binary_section("spec/decisions/0011-canonical-dcs-domain.md")
+        original = sys.stdin
+        sys.stdin = io.StringIO(diff)
+        try:
+            self.assertEqual(self.guard.main(["-"]), 1)
+        finally:
+            sys.stdin = original
+
+    def test_the_read_renders_every_file_as_text(self) -> None:
+        """`--text` and `--no-ext-diff` are what stop a binary section existing.
+
+        Without them the `.gitattributes` route needs no cooperation from the
+        content at all: one line marks the whole catalogue unreadable.
+        """
+        from unittest.mock import patch
+
+        recorded: dict[str, list[str]] = {}
+
+        def fake_run(command, **kwargs):
+            recorded["command"] = command
+            return subprocess_result(returncode=0, stdout="")
+
+        with patch.object(self.guard.subprocess, "run", fake_run):
+            self.guard.read_diff("origin/main")
+
+        command = recorded["command"]
+        self.assertIn("--text", command)
+        self.assertIn("--no-ext-diff", command)
+        self.assertIn("core.quotePath=false", command)
+
+
+class AnchorTests(unittest.TestCase):
+    """The guard has to prove its own reference points still exist.
+
+    Every rule is stated against three hard-coded paths and nothing made them
+    prove anything. A pure rename of the registry is not a surface change by any
+    rule here, so it left the guard reading a file that no longer held the
+    surface -- reporting "public MCP surface unchanged" for every change after,
+    forever.
+    """
+
+    def setUp(self) -> None:
+        self.guard = load_guard()
+
+    def test_the_real_repository_satisfies_its_own_anchors(self) -> None:
+        self.assertEqual(self.guard.anchor_problems(), [])
+
+    def test_a_renamed_registry_is_reported(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for evidence in self.guard.ARCHITECTURE_EVIDENCE:
+                target = root / evidence
+                if evidence.endswith("/"):
+                    target.mkdir(parents=True, exist_ok=True)
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text("evidence\n", encoding="utf-8")
+
+            problems = self.guard.anchor_problems(root)
+
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("not in the tree", problems[0])
+
+    def test_an_emptied_registry_is_reported(self) -> None:
+        """The file can stay where it is and still hold nothing the guard reads."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            registry = root / self.guard.TOOL_REGISTRY
+            registry.parent.mkdir(parents=True, exist_ok=True)
+            registry.write_text("fn main() {}\n", encoding="utf-8")
+            for evidence in self.guard.ARCHITECTURE_EVIDENCE:
+                target = root / evidence
+                if evidence.endswith("/"):
+                    target.mkdir(parents=True, exist_ok=True)
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text("evidence\n", encoding="utf-8")
+
+            problems = self.guard.anchor_problems(root)
+
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("no `unica.*` declaration", problems[0])
+
+    def test_strict_mode_fails_when_an_anchor_moved(self) -> None:
+        from unittest.mock import patch
+
+        with patch.object(
+            self.guard, "anchor_problems", return_value=["registry gone"]
+        ):
+            self.assertEqual(self.guard.main(["--strict"]), 2)
+            self.assertEqual(self.guard.main([]), 0)
+
+
+class CommentCancellationTests(unittest.TestCase):
+    """A tool name in a comment is prose about the registry, not a declaration.
+
+    Counting it made a comment a cancelling token: the classifier subtracts the
+    names appearing on both sides, so removing a real declaration and adding
+    `// name: "unica.code.grep"` in the same change left added and removed equal
+    and the retirement passed as a no-op.
+    """
+
+    def setUp(self) -> None:
+        self.guard = load_guard()
+
+    def test_a_comment_cannot_cancel_a_removed_declaration(self) -> None:
+        diff = diff_for(
+            REGISTRY,
+            "@@ -100 +100 @@\n"
+            '-            name: "unica.code.grep",\n'
+            '+            // name: "unica.code.grep" moved to the search module\n',
+        )
+        change = self.guard.analyze_diff(diff)
+
+        self.assertEqual(change.removed, {"unica.code.grep"})
+        self.assertEqual(change.added, set())
+        self.assertTrue(change.is_violation)
+
+    def test_a_block_comment_does_not_declare_a_tool(self) -> None:
+        diff = diff_for(
+            REGISTRY,
+            "@@ -100,0 +101,2 @@\n"
+            '+/* name: "unica.form.rename" is planned */\n'
+            '+ * name: "unica.form.rename" stays undeclared\n',
+        )
+        change = self.guard.analyze_diff(diff)
+
+        self.assertFalse(change.touches_public_surface)
+
+    def test_a_real_declaration_is_still_counted(self) -> None:
+        """The narrowing must not cost the guard its actual trigger."""
+        diff = diff_for(
+            REGISTRY,
+            '@@ -100,0 +101 @@\n+            name: "unica.form.rename",\n',
+        )
+        change = self.guard.analyze_diff(diff)
+
+        self.assertEqual(change.added, {"unica.form.rename"})
+
+    def test_a_dereference_is_not_read_as_a_comment(self) -> None:
+        diff = diff_for(
+            REGISTRY,
+            '@@ -100,0 +101 @@\n+            *slot = ToolSpec { name: "unica.form.rename" };\n',
+        )
+        change = self.guard.analyze_diff(diff)
+
+        self.assertEqual(change.added, {"unica.form.rename"})
+
+
 if __name__ == "__main__":
     unittest.main()
