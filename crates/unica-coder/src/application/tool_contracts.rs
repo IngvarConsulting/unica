@@ -561,7 +561,16 @@ const STANDARDS_ARGS: &[&str] = &[
 ];
 
 pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
-    let property_names = allowed_args(tool);
+    let mut property_names = allowed_args(tool);
+    if let ToolHandler::NativeOperation { operation, .. } = tool.handler {
+        // ADR-0019: aliases remain accepted by normalize_native_path_aliases,
+        // while tools/list publishes one host-portable canonical path contract.
+        for group in native_path_alias_groups(operation) {
+            property_names.retain(|name| {
+                *name == group.canonical || !group.aliases.iter().any(|alias| alias == name)
+            });
+        }
+    }
     let mut properties = Map::new();
     for name in property_names {
         let mut property = property_schema_for_tool(tool, name);
@@ -576,39 +585,15 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
         properties.insert(name.to_string(), property);
     }
 
-    let mut required = required_args(tool);
-    let mut required_path_aliases = Vec::new();
-    if let ToolHandler::NativeOperation { operation, .. } = tool.handler {
-        for group in native_path_alias_groups(operation) {
-            if let Some(index) = required
-                .iter()
-                .position(|required| *required == group.canonical)
-            {
-                required.remove(index);
-                required_path_aliases.push(json!({
-                    "anyOf": group
-                        .aliases
-                        .iter()
-                        .map(|alias| json!({"required": [alias]}))
-                        .collect::<Vec<_>>()
-                }));
-            }
-        }
-    }
-
     let mut schema = json!({
         "type": "object",
         "additionalProperties": false,
         "properties": properties,
-        "required": required,
+        "required": required_args(tool),
     });
-    if !required_path_aliases.is_empty() {
-        schema["allOf"] = Value::Array(required_path_aliases);
-    }
     if tool.name == "unica.form.edit" {
         schema["anyOf"] = json!([
             {"required": ["JsonPath"]},
-            {"required": ["jsonPath"]},
             {"required": ["definition"]}
         ]);
     }
@@ -2996,22 +2981,21 @@ mod tests {
     }
 
     #[test]
-    fn native_required_path_aliases_are_honest_json_schema_alternatives() {
+    fn native_required_paths_publish_canonical_json_schema_only() {
         let cases = [
             (
                 "unica.cf.info",
+                json!({"ConfigPath": "src"}),
                 vec![
-                    json!({"ConfigPath": "src"}),
                     json!({"configPath": "src"}),
                     json!({"Path": "src"}),
                     json!({"path": "src"}),
-                    json!({"ConfigPath": "src", "configPath": "src"}),
                 ],
             ),
             (
                 "unica.meta.edit",
+                json!({"ObjectPath": "Catalogs/Items.xml"}),
                 vec![
-                    json!({"ObjectPath": "Catalogs/Items.xml"}),
                     json!({"objectPath": "Catalogs/Items.xml"}),
                     json!({"Path": "Catalogs/Items.xml"}),
                     json!({"path": "Catalogs/Items.xml"}),
@@ -3019,22 +3003,17 @@ mod tests {
             ),
             (
                 "unica.form.edit",
+                json!({"FormPath": "Ext/Form.xml", "definition": {}}),
                 vec![
-                    json!({"FormPath": "Ext/Form.xml", "definition": {}}),
                     json!({"formPath": "Ext/Form.xml", "definition": {}}),
                     json!({"Path": "Ext/Form.xml", "definition": {}}),
                     json!({"path": "Ext/Form.xml", "definition": {}}),
-                    json!({
-                        "FormPath": "Ext/Form.xml",
-                        "JsonPath": "edit.json",
-                        "jsonPath": "edit.json"
-                    }),
                 ],
             ),
             (
                 "unica.interface.edit",
+                json!({"CIPath": "Ext/CommandInterface.xml"}),
                 vec![
-                    json!({"CIPath": "Ext/CommandInterface.xml"}),
                     json!({"ciPath": "Ext/CommandInterface.xml"}),
                     json!({"Path": "Ext/CommandInterface.xml"}),
                     json!({"path": "Ext/CommandInterface.xml"}),
@@ -3042,8 +3021,8 @@ mod tests {
             ),
             (
                 "unica.subsystem.edit",
+                json!({"SubsystemPath": "Subsystems/Sales.xml"}),
                 vec![
-                    json!({"SubsystemPath": "Subsystems/Sales.xml"}),
                     json!({"subsystemPath": "Subsystems/Sales.xml"}),
                     json!({"Path": "Subsystems/Sales.xml"}),
                     json!({"path": "Subsystems/Sales.xml"}),
@@ -3051,8 +3030,8 @@ mod tests {
             ),
             (
                 "unica.dcs.edit",
+                json!({"TemplatePath": "Ext/Template.xml"}),
                 vec![
-                    json!({"TemplatePath": "Ext/Template.xml"}),
                     json!({"templatePath": "Ext/Template.xml"}),
                     json!({"Path": "Ext/Template.xml"}),
                     json!({"path": "Ext/Template.xml"}),
@@ -3060,25 +3039,26 @@ mod tests {
             ),
             (
                 "unica.form.compile",
-                vec![
-                    json!({"OutputPath": "Ext/Form.xml"}),
-                    json!({"outputPath": "Ext/Form.xml"}),
-                    json!({"OutputPath": "Ext/Form.xml", "outputPath": "Ext/Form.xml"}),
-                ],
+                json!({"OutputPath": "Ext/Form.xml"}),
+                vec![json!({"outputPath": "Ext/Form.xml"})],
             ),
         ];
 
-        for (tool_name, instances) in cases {
+        for (tool_name, canonical, aliases) in cases {
             let tool = tools()
                 .into_iter()
                 .find(|tool| tool.name == tool_name)
                 .unwrap();
             let schema = input_schema_for_tool(&tool);
             let validator = jsonschema::validator_for(&schema).unwrap();
-            for instance in instances {
+            assert!(
+                validator.is_valid(&canonical),
+                "{tool_name} schema rejected canonical path: {canonical}; schema={schema}"
+            );
+            for instance in aliases {
                 assert!(
-                    validator.is_valid(&instance),
-                    "{tool_name} schema rejected documented path aliases: {instance}; schema={schema}"
+                    !validator.is_valid(&instance),
+                    "{tool_name} schema published runtime-only path alias: {instance}; schema={schema}"
                 );
             }
         }
@@ -3104,10 +3084,17 @@ mod tests {
                         seen.insert(*alias),
                         "{operation} assigns path alias {alias} to more than one group"
                     );
-                    assert!(
-                        properties.contains_key(*alias),
-                        "{operation} path alias {alias} is not public in its MCP schema"
-                    );
+                    if *alias == group.canonical {
+                        assert!(
+                            properties.contains_key(*alias),
+                            "{operation} canonical path {alias} is missing from its MCP schema"
+                        );
+                    } else {
+                        assert!(
+                            !properties.contains_key(*alias),
+                            "{operation} runtime-only path alias {alias} is public in its MCP schema"
+                        );
+                    }
                     let raw =
                         Map::from_iter([(alias.to_string(), json!(format!("{operation}/value")))]);
                     let normalized = normalize_native_path_aliases(tool, &raw).unwrap();
@@ -3150,23 +3137,12 @@ mod tests {
             .unwrap();
         let schema = input_schema_for_tool(&tool);
         assert_eq!(schema["properties"]["definition"]["type"], "object");
-        assert_eq!(schema["required"], json!([]));
-        assert_eq!(
-            schema["allOf"],
-            json!([{
-                "anyOf": [
-                    {"required": ["FormPath"]},
-                    {"required": ["formPath"]},
-                    {"required": ["Path"]},
-                    {"required": ["path"]}
-                ]
-            }])
-        );
+        assert_eq!(schema["required"], json!(["FormPath"]));
+        assert!(schema.get("allOf").is_none());
         assert_eq!(
             schema["anyOf"],
             json!([
                 {"required": ["JsonPath"]},
-                {"required": ["jsonPath"]},
                 {"required": ["definition"]}
             ])
         );
@@ -3921,18 +3897,8 @@ mod tests {
         assert!(raw_description.contains("full query text"));
         assert!(!raw_description.contains("changes nothing"));
         assert!(!raw_description.contains("truncated"));
-        assert_eq!(schema["required"], json!([]));
-        assert_eq!(
-            schema["allOf"],
-            json!([{
-                "anyOf": [
-                    {"required": ["TemplatePath"]},
-                    {"required": ["templatePath"]},
-                    {"required": ["Path"]},
-                    {"required": ["path"]}
-                ]
-            }])
-        );
+        assert_eq!(schema["required"], json!(["TemplatePath"]));
+        assert!(schema.get("allOf").is_none());
 
         let mut args = Map::new();
         args.insert(

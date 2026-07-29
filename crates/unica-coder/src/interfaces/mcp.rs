@@ -473,7 +473,7 @@ mod tests {
     }
 
     #[test]
-    fn native_tool_schema_is_contract_specific_and_does_not_expose_raw_args() {
+    fn native_tool_schema_is_typed_and_does_not_expose_raw_args() {
         let listed = tool_definitions(&crate::application::tools());
         let cf_info = listed
             .iter()
@@ -486,6 +486,36 @@ mod tests {
         assert!(schema["properties"].get("cwd").is_some());
         assert!(schema["properties"].get("dryRun").is_some());
         assert!(schema["properties"].get("args").is_none());
+    }
+
+    #[tokio::test]
+    async fn role_validate_schema_publishes_canonical_required_path_without_composition() {
+        let (mut client, _) = spawn_server(application_handler());
+        client.initialize().await;
+        client
+            .send(json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} }))
+            .await;
+        let response = client.receive().await;
+        let role_validate = response["result"]["tools"]
+            .as_array()
+            .expect("tools/list must return an array")
+            .iter()
+            .find(|tool| tool["name"] == "unica.role.validate")
+            .expect("unica.role.validate must be listed");
+
+        let schema = &role_validate["inputSchema"];
+        assert_eq!(schema["required"], json!(["RightsPath"]));
+        assert!(schema.get("allOf").is_none());
+        assert!(schema["properties"].get("RightsPath").is_some());
+        assert!(schema["properties"].get("Detailed").is_some());
+        assert!(schema["properties"].get("MaxErrors").is_some());
+        for alias in ["rightsPath", "Path", "path"] {
+            assert!(
+                schema["properties"].get(alias).is_none(),
+                "{alias} is a runtime compatibility alias, not a published argument"
+            );
+        }
+        client.shutdown().await;
     }
 
     #[test]
