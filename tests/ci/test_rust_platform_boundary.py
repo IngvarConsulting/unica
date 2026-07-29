@@ -600,18 +600,38 @@ class HostNameBoundaryTests(unittest.TestCase):
     Both boundaries matter and each was missing at some point: without the right
     one `codexample` was diagnosed, without the left one `mycodex` was. Either
     way an ordinary identifier failed CI for no reason.
+
+    A segment is not a word, though. Camel case opens a segment mid-word, and
+    that is how Rust types are named, so a capitalised host name counts wherever
+    its segment starts.
     """
 
     def setUp(self) -> None:
         self.guard = load_checker_module()
 
     def test_a_name_embedded_in_a_longer_word_is_not_host_knowledge(self) -> None:
-        for identifier in ("mycodex", "preclaude", "codexample", "MyClaudeThing"):
+        for identifier in ("mycodex", "preclaude", "codexample", "claudetite"):
             with self.subTest(identifier=identifier):
                 self.assertIsNone(self.guard.HOST_MARKER.search(identifier))
 
     def test_a_name_opening_a_segment_is_host_knowledge(self) -> None:
         for identifier in ("CodexHost", "codex_home_root", "CODEX_HOME", ".claude-plugin"):
+            with self.subTest(identifier=identifier):
+                self.assertIsNotNone(self.guard.HOST_MARKER.search(identifier))
+
+    def test_a_name_opening_a_camel_case_segment_is_host_knowledge(self) -> None:
+        """The idiomatic Rust type name was the hole in the left boundary.
+
+        `LegacyClaudeConfig` is exactly how host knowledge arrives in a type, and
+        reading the boundary as "start of word" waved all of it through while
+        still catching the snake-case spelling of the same thing.
+        """
+        for identifier in (
+            "MyCodexHost",
+            "LegacyClaudeConfig",
+            "resolveClaudeRoot",
+            "XdgCodexHome",
+        ):
             with self.subTest(identifier=identifier):
                 self.assertIsNotNone(self.guard.HOST_MARKER.search(identifier))
 

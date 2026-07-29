@@ -45,10 +45,20 @@ HOST_NAMES = ("codex", "claude")
 # following lowercase letter ends the match: `CodexHost`, `claude_plugin_data`,
 # `codex-plugin` and `Claude Code` all still have to be caught, and a word
 # boundary would miss the camel-case one.
+#
+# Inside a camel-case identifier the name opens a segment without opening the
+# word, and that is the idiomatic way to name a Rust type. Reading the left
+# boundary as "start of word" let `LegacyClaudeConfig` and `resolveCodexRoot`
+# carry host knowledge past the guard, so a capitalised name is host knowledge
+# wherever its segment begins. The exact capitalisation is what keeps this
+# narrow: `mycodex` and `preclaude` are still ordinary identifiers, because a
+# lower-case name has to open the word to count.
+CAPITALISED_HOST_NAMES = tuple(name.capitalize() for name in HOST_NAMES)
 HOST_MARKER = re.compile(
     rf"(?P<environment>{'|'.join(HOST_ENVIRONMENT_VARIABLES)})"
     rf"|(?P<manifest>{'|'.join(re.escape(name) for name in HOST_MANIFEST_DIRECTORIES)})"
-    rf"|(?P<name>(?<![A-Za-z0-9])(?i:{'|'.join(HOST_NAMES)})(?![a-z]))"
+    rf"|(?P<name>(?<![A-Za-z0-9])(?i:{'|'.join(HOST_NAMES)})(?![a-z])"
+    rf"|(?<=[A-Za-z0-9])(?:{'|'.join(CAPITALISED_HOST_NAMES)})(?![a-z]))"
 )
 HOST_MARKER_KINDS = {
     "environment": "host environment variable",
