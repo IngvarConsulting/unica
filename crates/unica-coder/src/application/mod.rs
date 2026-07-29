@@ -4882,6 +4882,12 @@ mod tests {
                 "{operation} must not hide required paths in schema composition"
             );
             let properties = schema["properties"].as_object().unwrap();
+            for required in &required {
+                assert!(
+                    properties.contains_key(*required),
+                    "{operation} requires unpublished argument {required}"
+                );
+            }
             for group in path_groups {
                 assert!(properties.contains_key(group.canonical));
                 for alias in group
