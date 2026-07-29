@@ -1,16 +1,15 @@
 # ADR-0006: Workspace-scoped internal services
 
-- Статус: `accepted`
+- Статус: `superseded` — заменено ADR-0018
 - Дата: `2026-06-23`
-- Обновлено: `2026-07-27`
 
 ## Контекст
 
 Some internal engines are workspace-bound and expensive to warm repeatedly.
-`bsl-analyzer` workspace MCP keeps an in-memory model, while RLM combines a
-persistent file index with an MCP process and logical read session. Starting
-those engines for every tool call loses warm state and can create duplicated
-processes for the same checkout.
+`bsl-analyzer` workspace MCP keeps an in-memory model, while RLM keeps a
+persistent file index with build/update coordination. Starting those engines for
+every Codex chat or every tool call loses warm state and can create duplicated
+processes for the same workspace.
 
 At the same time, exposing those engines as public MCP servers would violate the
 single public MCP rule and return cache coordination back to the LLM.
@@ -21,16 +20,13 @@ Unica may start hidden internal services scoped by workspace and source root.
 
 1. Public MCP surface remains exactly one server: `unica`.
 2. The `unica` orchestrator lazily starts a workspace service for
-   `workspaceRoot + sourceRoot` when a non-dry-run provider or index operation
+   `workspaceRoot + sourceRoot` when a non-dry-run analyzer/index operation
    needs it.
 3. The workspace service communicates with `unica` through an internal localhost
    JSONL protocol protected by a per-service token stored in volatile cache
    state.
-4. The service keeps independent `bsl-analyzer` and RLM MCP transports warm and
-   coordinates RLM index readiness/build/update for the same source root. RLM
-   reads reuse one logical `rlm_start` session until index/domain invalidation,
-   session expiry, service shutdown, or source-root change; the service then
-   closes it with `rlm_end`.
+4. The service keeps `bsl-analyzer` workspace MCP warm and coordinates RLM
+   index readiness/build/update for the same source root.
 5. Service state lives under `<cacheRoot>/services/<serviceKey>/service.json`.
 6. The default idle TTL is 7200 seconds and the hard max age is 28800 seconds;
    `UNICA_WORKSPACE_SERVICE_IDLE_SECS` and
@@ -50,10 +46,9 @@ Unica may start hidden internal services scoped by workspace and source root.
    JSON-RPC error `-32603` containing `overloaded`. Public input line length
    is delegated to the SDK transport (ADR-0013).
 10. The service accepts each connection independently. `ping`, `cancel`, and
-    `shutdown` do not wait for analyzer or RLM work. RLM index jobs may run
-    independently; the warm analyzer MCP transport and warm RLM MCP transport
-    use separate serialized lanes. Disconnecting a work client cancels its
-    operation.
+    `shutdown` do not wait for analyzer or RLM work. RLM jobs may run
+    independently, while access to the single warm analyzer session remains
+    serialized. Disconnecting a work client cancels its operation.
     It admits at most 64 general connection handlers and 8 work workers. When
     general handlers are saturated, a bounded 64-connection classifier with a
     500 ms aggregate lifetime and a 64 KiB classification prefix preserves a
@@ -119,27 +114,23 @@ Unica may start hidden internal services scoped by workspace and source root.
 ## Неграницы
 
 1. This does not add public MCP tools or public MCP servers.
-2. This does not require provider runtimes to live in this service. Their
-   hosting remains an infrastructure choice under ADR-0014; the current
-   implementation keeps RLM and bsl-analyzer transports here.
+2. This does not make RLM a long-running process in v1; RLM remains a
+   persistent index plus single-flight background build/update jobs.
 3. This does not add a filesystem watcher dependency. Freshness is driven by
    request-time source fingerprints and explicit mutation events.
 4. This does not require a user-level daemon that owns all workspaces.
 
 ## Последствия
 
-1. Calls that resolve to the same workspace/source root can reuse one warm
-   service and provider sessions; no cross-chat behavior is part of the public
-   contract.
-2. Different workspaces, linked worktrees, or source roots get independent
-   services, sessions, and indexes.
+1. Multiple Codex chats for the same workspace/source root can reuse one warm
+   analyzer service.
+2. Different workspaces or source roots get independent services and indexes.
 3. Stale service records must be detected and replaced.
 4. Packaged `.mcp.json` must set `cwd` to the plugin root, and packaged
    binaries must still locate the plugin root from their own executable path
    when `UNICA_PLUGIN_ROOT` is absent.
 5. Tests must continue proving that `.mcp.json` exposes only `unica` and that
-   control-plane reads (`initialize`, `tools/list`, `project.status`, and
-   `project.map`) do not start services.
+   cheap read-only operations such as `unica.code.grep` do not start services.
 6. Cancellation is cooperative until it reaches a managed process boundary;
    bounded cleanup is guaranteed, but a cancelled operation is not reported as
    a successful partial result.
@@ -148,8 +139,8 @@ Unica may start hidden internal services scoped by workspace and source root.
 
 - [x] ADR preserves the single public MCP server rule.
 - [x] ADR defines workspace service ownership and volatile state location.
-- [x] ADR distinguishes persistent RLM index coordination from the independent
-      persistent RLM MCP read session.
+- [x] ADR distinguishes persistent RLM index coordination from a long-running
+      RLM process.
 - [x] ADR defines operation-scoped cancellation and an independent control path.
 - [x] ADR defines deterministic source-root selection and process-tree ownership.
 - [x] ADR names `tools.lock.json` as the bundled-tool version authority.

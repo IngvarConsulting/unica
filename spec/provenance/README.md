@@ -77,9 +77,10 @@ packaged skills и runtime-контракты с донорскими репоз
 python3.12 scripts/ci/check-tool-contracts.py --target darwin-arm64 --tools-dir plugins/unica/bin/darwin-arm64
 ```
 
-`--rlm-db <path/to/bsl_index.db>` нужен при проверке настоящей базы
-`rlm-bsl-index`: проверка схемы покрывает таблицы и колонки, которыми
-пользуется `WorkspaceIndexService`.
+Unica проверяет исполняемый жизненный цикл `rlm-bsl-index` (`build`, `update`,
+`info`), а чтения анализа кода выполняет только через опубликованный MCP API
+`rlm-tools-bsl`. Проверка не принимает путь к базе и не зависит от частной
+SQLite-схемы поставщика (INV-CACHE-ORCHESTRATOR-OWNED).
 
 Для записей `runtime-tool-contract` индекс отслеживает skill и MCP-контракт,
 выведенные из репозитория runtime-инструмента. Версия бинарника здесь не

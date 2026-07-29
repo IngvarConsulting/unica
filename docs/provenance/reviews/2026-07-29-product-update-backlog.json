@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "id": "2026-06-18-product-update-backlog",
-  "generatedAt": "2026-07-24",
-  "purpose": "Product and dependency update backlog for Unica bundled tools, plugin package dependencies, and release-package inputs.",
+  "id": "2026-07-29-product-update-backlog",
+  "generatedAt": "2026-07-29",
+  "purpose": "Product and dependency update backlog snapshot after the provider-neutral code-intelligence integration.",
   "products": [
     {
       "id": "bsl-analyzer",
@@ -18,24 +18,24 @@
     {
       "id": "rlm-tools-bsl",
       "kind": "bundled-tool",
-      "locked": "v1.26.0",
-      "latest": "v1.26.0",
+      "locked": "v1.29.1",
+      "latest": "v1.29.1",
       "risk": "medium",
       "batch": "rlm-index-contract",
       "status": "applied",
       "contractGate": true,
-      "notes": "Updated together with rlm-bsl-index to v1.26.0. v1.26.0 keeps index BUILDER_VERSION=14, fixes Windows full rebuild under an open reader, adds regex-DoS guards, removes false callers from multiline literals, adds find_files FS fallback on index zero-hit, and normalizes parse_metadata_xml to dict|None; raw RLM helper guidance remains hidden from skills."
+      "notes": "Updated together with rlm-bsl-index to unmodified upstream v1.29.1. The reviewed delta keeps helper and index schema contracts compatible while adding process-isolated persistent sandboxes, hard execution timeout, session teardown fixes, and the Linux spawn-broker hotfix. Unica uses only rlm_start/rlm_execute/rlm_end with fixed helper templates; raw RLM helper guidance remains hidden from skills."
     },
     {
       "id": "rlm-bsl-index",
       "kind": "bundled-tool",
-      "locked": "v1.26.0",
-      "latest": "v1.26.0",
+      "locked": "v1.29.1",
+      "latest": "v1.29.1",
       "risk": "medium",
       "batch": "rlm-index-contract",
       "status": "applied",
       "contractGate": true,
-      "notes": "v1.26.0 release states index schema and BUILDER_VERSION remain 14, so production index rebuild is not required. Contract gates verify build/info/update, schema tables used by Unica SQL, and generated package launchers."
+      "notes": "v1.29.1 keeps index schema and BUILDER_VERSION 14, so existing worktree-local indexes remain reusable without destructive migration. Contract gates verify the supported build/info/update CLI lifecycle and generated package launchers; Unica no longer reads or validates private SQLite tables."
     },
     {
       "id": "v8-runner",

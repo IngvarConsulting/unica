@@ -27,10 +27,12 @@
 
 Эти файлы удалять и переименовывать нельзя без правки тестов:
 
-- `reviews/2026-06-15-upstream-review.json`,
-  `reviews/2026-06-18-product-update-backlog.json` и
+- `reviews/2026-06-15-upstream-review.json` и
   `reviews/2026-07-20-script-backed-skill-removal.json` — закреплены по пути в
   `tests/ci/test_skill_provenance.py`.
+- `reviews/2026-07-29-product-update-backlog.json` — новый снимок после
+  обновления RLM до `v1.29.1`; тест происхождения читает его вместо
+  исторического снимка `2026-06-18`.
 - `reviews/2026-07-24-cc-1c-parity-refresh.json` и
   `reviews/2026-07-24-cfe-portable-path-profile.json` — названы как `reviewId`
   в `tests/fixtures/unica_mcp_script_parity/donor-baseline.json` и

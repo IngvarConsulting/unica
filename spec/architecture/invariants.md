@@ -240,11 +240,13 @@ Unica. Каждая запись формулирует одно нормати�
 
 - **Rule:** Одновременно допускается не более 32 обработчиков `tools/call`,
   лишние вызовы завершаются ошибкой JSON-RPC `-32603` со словом `overloaded`,
-  запрос, отменённый через `notifications/cancelled`, не получает ответа, а
-  остановка транспорта отменяет ещё выполняющиеся доменные операции за
-  ограниченное время.
-- **Decision:** ADR-0013, ADR-0006
+  каждый поставщик анализа кода удерживает не более 32 исполнителей, запрос,
+  отменённый через `notifications/cancelled`, не получает ответа, а остановка
+  транспорта отменяет ещё выполняющиеся доменные операции и исполнителей
+  поставщиков за один общий ограниченный срок.
+- **Decision:** ADR-0013, ADR-0017, ADR-0018
 - **Check:** `ci-test` — `crates/unica-coder/src/interfaces/mcp.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/application/code_intelligence.rs`
 - **Scope:** runtime
 
 ### INV-MCP-SURFACE-SYNC — Изменения публичной поверхности синхронны
@@ -259,6 +261,17 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `guard-script` — `scripts/ci/check-architecture-sync.py`
 - **Check:** `ci-test` — `tests/ci/test_architecture_sync_guard.py`
 - **Scope:** source, packaged
+
+### INV-MCP-CODE-SEARCH-SECTIONS — Поиск сохраняет независимые секции поставщиков
+
+- **Rule:** `unica.code.search` возвращает в фиксированном порядке секции
+  `rlm`, `bsl-analyzer` и `git-grep`, не сравнивает их оценки и не скрывает
+  отказ секции; результат успешен, когда хотя бы одна секция имеет состояние
+  `ok` или `empty`, а отмена не возвращает частичный успех.
+- **Decision:** ADR-0017
+- **Check:** `ci-test` — `crates/unica-coder/src/application/code_intelligence.rs`
+- **Check:** `ci-test` — `tests/ci/test_release_assessment.py`
+- **Scope:** runtime, packaged
 
 ## SKILL — маршрутизация скиллов
 
@@ -392,16 +405,27 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `tests/ci/test_product_contracts.py`
 - **Scope:** source
 
+### INV-APP-CODE-PROVIDER-BOUNDARY — Анализ кода не зависит от движка
+
+- **Rule:** Слой application оркестрирует поиск и навигацию только через
+  типизированные `CodeIntelligenceProvider` и `CodeIntelligenceContext`,
+  разрешает корень исходников один раз и не знает команд процессов, транспортов
+  и форматов частного хранилища поставщика; эти детали принадлежат
+  инфраструктурной реализации.
+- **Decision:** ADR-0017
+- **Check:** `ci-test` — `crates/unica-coder/src/application/code_intelligence.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/code_intelligence.rs`
+- **Scope:** source, runtime
+
 ### INV-APP-LAZY-HIDDEN-SERVICES — Внутренние сервисы скрыты и привязаны к рабочему пространству
 
-- **Rule:** Прогретое состояние анализатора и индекса живёт в скрытых сервисах,
-  ключ которых складывается из корня рабочего пространства и корня исходников;
-  сервисы запускаются лениво и только тогда, когда их требует не сухая операция
-  анализатора или индекса; дешёвые операции только на чтение вроде
-  `unica.code.grep` сервис не поднимают, и ни один сервис не становится
-  публичной регистрацией MCP.
-- **Decision:** ADR-0006
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/internal_adapters.rs`
+- **Rule:** Тёплые транспорты и сессии поставщиков живут в скрытом сервисе с
+  ключом из корня рабочего пространства и корня исходников; сервис запускается
+  только настоящей операцией поставщика, тогда как `initialize`, `tools/list`,
+  `unica.project.status`, `unica.project.map` и предпросмотр его не запускают,
+  и сервис никогда не становится публичной регистрацией MCP.
+- **Decision:** ADR-0018
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace_services.rs`
 - **Check:** `ci-test` — `crates/unica-coder/tests/platform/issue_89_workspace_service.rs`
 - **Scope:** runtime
 
@@ -409,12 +433,13 @@ Unica. Каждая запись формулирует одно нормати�
 
 ### INV-CACHE-ORCHESTRATOR-OWNED — Состоянием рабочего пространства владеет оркестратор
 
-- **Rule:** Состояние рабочего пространства и инвалидация кеша принадлежат
-  оркестратору `unica`; модель никогда не просят согласовывать свежесть кеша
-  между движками.
-- **Decision:** ADR-0003, ADR-0001
+- **Rule:** Оркестратор `unica` владеет состоянием рабочего пространства и
+  логической инвалидацией по доменным событиям, а поставщик владеет реализацией
+  жизненного цикла своего индекса, процесса и сессии; модель не согласовывает
+  свежесть между движками, и оркестратор не читает частное хранилище поставщика.
+- **Decision:** ADR-0003, ADR-0001, ADR-0018
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace_state.rs`
-- **Check:** `ci-test` — `tests/ci/test_unica_mcp_smoke.py`
+- **Check:** `ci-test` — `tests/ci/test_product_contracts.py`
 - **Scope:** runtime
 
 ### INV-CACHE-REPORTED-EFFECTS — Изменяющие операции порождают типизированные доменные события
@@ -453,19 +478,20 @@ Unica. Каждая запись формулирует одно нормати�
   `WorkspaceStateRepository`, поэтому кеш, который оно инвалидировало, при
   следующем чтении по-прежнему числится устаревшим, а не оказывается молча
   пересобранным.
-- **Decision:** ADR-0003, ADR-0006
+- **Decision:** ADR-0003, ADR-0018
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace_state.rs`
 - **Scope:** runtime
 
 ### INV-CACHE-WORKTREE-ISOLATION — Связанное рабочее дерево git изолировано
 
 - **Rule:** Идентичность рабочего пространства, его эпоха, корни кеша и ключи
-  внутренних сервисов выводятся так, что связанное рабочее дерево git
-  изолировано и от основной рабочей копии, и от любого другого рабочего дерева,
-  а код, читающий состояние git, разрешает `.git` и как каталог, и как
-  файл-указатель.
-- **Decision:** ADR-0003
+  внутренних сервисов, индексов и сессий выводятся так, что связанное рабочее
+  дерево git изолировано и от основной рабочей копии, и от любого другого
+  рабочего дерева, а код, читающий состояние git, разрешает `.git` и как
+  каталог, и как файл-указатель.
+- **Decision:** ADR-0003, ADR-0018
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace.rs`
+- **Check:** `ci-test` — `crates/unica-coder/tests/platform/code_intelligence_symlinked_workspace.rs`
 - **Scope:** runtime
 
 ### INV-CACHE-RUNTIME-ROOT-ORDER — Разрешение корня кеша runtime детерминировано

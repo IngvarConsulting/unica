@@ -211,7 +211,7 @@ workspace-service abstractions, Python package-contract tests, upstream
 - Modify: `plugins/unica/ATTRIBUTIONS.md`
 - Modify: `plugins/unica/skills/code-search/SKILL.md`
 - Modify: dependent skill files returned by `rg 'unica\.code\.grep'`
-- Modify: `spec/decisions/0014-provider-neutral-code-intelligence.md`
+- Modify: `spec/decisions/0017-provider-neutral-code-intelligence.md`
 
 - [x] Build unmodified RLM v1.29.1 through `unica-toolchain`, publish the final
   immutable build.2 release tag, and verify every platform asset plus SHA-256.

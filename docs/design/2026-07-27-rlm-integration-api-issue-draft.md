@@ -1,5 +1,9 @@
 # Draft upstream issue: typed integration API gaps in RLM v1.29.1
 
+- Date: `2026-07-27`
+- Status: `draft`
+- Decision: `none` — upstream API feedback does not change Unica architecture
+
 > Draft only. Review this text before publishing it in
 > `Dach-Coin/rlm-tools-bsl`.
 

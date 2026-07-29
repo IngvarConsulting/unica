@@ -32,7 +32,7 @@ class SkillProvenanceTests(unittest.TestCase):
         return self.reviews_dir() / "2026-06-15-upstream-review.json"
 
     def product_backlog_path(self) -> Path:
-        return self.reviews_dir() / "2026-06-18-product-update-backlog.json"
+        return self.reviews_dir() / "2026-07-29-product-update-backlog.json"
 
     def load_provenance(self) -> dict:
         return json.loads(self.provenance_path().read_text(encoding="utf-8"))
@@ -527,7 +527,7 @@ class SkillProvenanceTests(unittest.TestCase):
         backlog = self.load_product_backlog()
         products = {item["id"]: item for item in backlog["products"]}
 
-        self.assertEqual(backlog["generatedAt"], "2026-07-27")
+        self.assertEqual(backlog["generatedAt"], "2026-07-29")
         tool_lock = json.loads(
             (self.repo_root() / "plugins" / "unica" / "third-party" / "tools.lock.json").read_text(
                 encoding="utf-8"
