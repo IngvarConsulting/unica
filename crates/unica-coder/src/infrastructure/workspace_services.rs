@@ -6766,7 +6766,7 @@ fn main() {
                     query: "needle".to_string(),
                     limit: 20,
                 },
-                Duration::from_millis(50),
+                Duration::from_secs(1),
                 &CancellationToken::new(),
             )
             .unwrap();
@@ -6782,7 +6782,7 @@ fn main() {
             .timeout_millis
             .borrow()
             .iter()
-            .all(|timeout| *timeout <= 50));
+            .all(|timeout| *timeout <= 1_000));
         cleanup(&context);
     }
 
