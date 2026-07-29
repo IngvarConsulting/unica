@@ -150,7 +150,12 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         """
         refs = ("github.base_ref", "github.ref_name", "github.head_ref")
         scanned = 0
-        for workflow in sorted(WORKFLOWS_DIR.glob("*.yml")):
+        # GitHub accepts either extension, so a guard that scans one of them
+        # leaves the other as a blind spot.
+        for workflow in sorted(
+            (*WORKFLOWS_DIR.glob("*.yml"), *WORKFLOWS_DIR.glob("*.yaml")),
+            key=lambda path: path.name,
+        ):
             for number, line in run_block_lines(workflow.read_text(encoding="utf-8")):
                 scanned += 1
                 context = next((ref for ref in refs if ref in line), None)

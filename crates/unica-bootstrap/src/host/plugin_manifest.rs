@@ -8,6 +8,8 @@ use super::descriptor::KNOWN;
 const PLUGIN_NAME: &str = "unica";
 /// Pointer a host that does not scan the package expects to find.
 const SKILLS_POINTER: &str = "./skills/";
+/// Server pointer the same host expects, for the same reason.
+const SERVERS_POINTER: &str = "./.mcp.json";
 
 /// One plugin directory serves every known host, so a package carries every
 /// host manifest (ADR-0012, INV-PKG-VERSION-LOCKSTEP). A package that is
@@ -33,10 +35,12 @@ pub fn verify_installed_plugin_metadata(plugin_root: &Path, version: &str) -> Re
         let declared_skills = metadata.get("skills");
         let skills = declared_skills.and_then(serde_json::Value::as_str);
         let declared_servers = metadata.get("mcpServers");
+        let servers = declared_servers.and_then(serde_json::Value::as_str);
         if metadata.get("name").and_then(serde_json::Value::as_str) != Some(PLUGIN_NAME)
             || metadata.get("version").and_then(serde_json::Value::as_str) != Some(version)
             || (host.expects_skills_pointer && skills != Some(SKILLS_POINTER))
             || (!host.expects_skills_pointer && declared_skills.is_some())
+            || (host.expects_manifest_servers && servers != Some(SERVERS_POINTER))
             || (!host.expects_manifest_servers && declared_servers.is_some())
         {
             return Err(BootstrapError::new(format!(
@@ -137,6 +141,21 @@ mod tests {
             ".claude-plugin",
             serde_json::json!({"name": "unica", "version": "0.0.0"}),
         );
+        verify_installed_plugin_metadata(&fixture.root, VERSION).unwrap_err();
+    }
+
+    #[test]
+    fn a_codex_manifest_without_the_server_pointer_is_rejected() {
+        // Codex does not read the root `.mcp.json` on its own, so a manifest
+        // that omits the pointer installs a plugin exposing no MCP server at
+        // all. The skills pointer is checked in both directions; this one has
+        // to be, for the same reason.
+        let fixture = ManifestFixture::new("codex-no-servers");
+        fixture.write(
+            ".codex-plugin",
+            serde_json::json!({"name": "unica", "version": VERSION, "skills": "./skills/"}),
+        );
+        fixture.write(".claude-plugin", claude_manifest());
         verify_installed_plugin_metadata(&fixture.root, VERSION).unwrap_err();
     }
 
