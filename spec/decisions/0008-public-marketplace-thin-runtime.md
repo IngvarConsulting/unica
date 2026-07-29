@@ -1,48 +1,52 @@
-# ADR-0008: Public marketplace with a thin verified runtime
+# ADR-0008: Публичный маркетплейс и тонкий проверяемый runtime
 
-- Status: accepted
-- Date: 2026-07-19
+- Статус: `accepted`
+- Дата: `2026-07-19`
+- Обновлено: `2026-07-28`
 
-## Context
+> Переведено на русский; содержание решения не изменялось.
 
-A full three-platform plugin is too large for a stable Git marketplace, and
-consumer machines cannot be assumed to have Node.js, Python, download clients,
-or archive tools. Codex package metadata currently exposes one command shape,
-not an operating-system command matrix. Git remains a supported installation
-prerequisite and Git for Windows provides the same shell entry mechanism as
-POSIX Git.
+## Контекст
 
-Publishing plugin files and immediately moving the stable catalog would expose
-an unverified or not-yet-tagged package.
+Полный плагин с тремя платформами слишком велик для стабильного
+Git-маркетплейса, а на машинах потребителей нельзя рассчитывать ни на Node.js,
+ни на Python, ни на клиенты загрузки, ни на архиваторы. Метаданные пакета Codex
+сейчас описывают одну форму команды, а не матрицу команд по операционным
+системам. Git остаётся поддерживаемым предусловием установки, и Git for Windows
+даёт тот же механизм входа через оболочку, что и POSIX-версия Git.
 
-## Decision
+Публикация файлов плагина с немедленным переводом стабильного каталога открыла
+бы потребителям непроверенный или ещё не помеченный тегом пакет.
 
-The public marketplace stores a thin plugin with three small native bootstrap
-binaries. `.mcp.json` invokes a command-scoped Git shell alias and the tracked
-portable selector. Bootstrap downloads the exact host runtime from a pinned
-source release, verifies archive and file SHA-256 values, and publishes it
-atomically in the Codex home cache.
+## Решение
 
-Marketplace publication is two-phase. A staging PR changes plugin files only.
-After merge and creation of an immutable signed tag, a promotion PR changes only
-the stable `git-subdir` catalog entry. Existing tags and release bytes are never
-moved; changed bytes require a new version.
+Публичный маркетплейс хранит тонкий плагин с тремя небольшими нативными
+bootstrap-бинарниками. `.mcp.json` вызывает ограниченный одной командой
+Git-алиас оболочки и отслеживаемый переносимый селектор. Bootstrap скачивает
+нужный хосту runtime из закреплённого исходного релиза, сверяет SHA-256 архива
+и файлов и атомарно публикует его в домашнем кеше Codex.
 
-Legacy migration is frozen in the immutable `v0.7.8` release, where one native
-transaction engine serves every platform and the shell and PowerShell files are
-acquisition shims rather than separate mutation implementations. Starting with
-`v0.8.0`, current source and marketplace packages contain no legacy migration
-engine or acquisition shims; old installations first cross the `v0.7.8` bridge
-and then use the ordinary marketplace update path.
+Публикация в маркетплейс идёт в две фазы. Staging-PR меняет только файлы
+плагина. После его слияния и создания неизменяемого подписанного тега
+promotion-PR меняет только запись `git-subdir` в стабильном каталоге.
+Существующие теги и байты релиза никогда не двигаются; изменившиеся байты
+требуют новой версии.
 
-## Consequences
+Миграция со старых установок заморожена в неизменяемом релизе `v0.7.8`, где один
+нативный движок транзакций обслуживает все платформы, а файлы shell и PowerShell
+служат обёртками получения, а не отдельными реализациями мутаций. Начиная с
+`v0.8.0` текущие исходники и пакеты маркетплейса не содержат ни движка старой
+миграции, ни этих обёрток: старая установка сначала переходит по мосту `v0.7.8`,
+а дальше пользуется обычным путём обновления через маркетплейс.
 
-- Git and Codex CLI are consumer prerequisites; Node.js is not.
-- "Thin" constrains the marketplace package and its acquisition path, not the
-  runtime's dependency graph; the runtime binary may embed an async runtime
-  (ADR-0013).
-- First MCP startup may download one target runtime, while later startups reuse
-  the verified ready cache.
-- Runtime stdout remains dedicated to MCP JSON-RPC.
-- Source, runtime, marketplace tag, and catalog promotion have separate proof
-  points and cannot be published as one unsafe mutable step.
+## Последствия
+
+- Git и Codex CLI — предусловия на стороне потребителя; Node.js — нет.
+- «Тонкий» ограничивает пакет маркетплейса и путь его получения, а не граф
+  зависимостей runtime; бинарник runtime может нести встроенный асинхронный
+  runtime (ADR-0013).
+- Первый запуск MCP может скачать один целевой runtime, последующие запуски
+  переиспользуют проверенный готовый кеш.
+- stdout runtime остаётся выделенным под MCP JSON-RPC.
+- У исходников, runtime, тега маркетплейса и перевода каталога разные точки
+  доказательства, и опубликовать их одним небезопасным изменяемым шагом нельзя.

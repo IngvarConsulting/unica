@@ -1,74 +1,201 @@
-# Architecture Change Checklist
+# Чек-лист архитектурного изменения
 
-Use this checklist when changing public MCP tools, skill routing, adapters,
-cache behavior, or packaging metadata.
+Используйте этот чек-лист, когда меняете публичные MCP-инструменты,
+маршрутизацию скиллов, адаптеры, поведение кеша или метаданные упаковки.
 
-## MCP Surface
+Каждый пункт назван идентификатором записи реестра — инварианта из
+[`invariants.md`](invariants.md) или требования из
+[`quality-requirements.md`](quality-requirements.md) — и не повторяет её
+формулировку: правило принадлежит реестру, чек-лист лишь напоминает, что его
+нужно проверить (`INV-DOC-SINGLE-RULE-OWNER`). Если пункт нельзя выполнить, изменению нужна
+новая или заменяющая запись решения, а не исключение в этом файле.
 
-- [ ] `.mcp.json` still declares exactly one public server: `unica`.
-- [ ] `initialize` still returns `serverInfo.name = "unica"`.
-- [ ] `tools/list` contains intended `unica.*` tools only.
-- [ ] Public tool name changes are covered by tests and ADR updates.
+## MCP-поверхность
 
-## Skill Routing
+- [ ] Внутренние движки по-прежнему достижимы только через внутренние адаптеры
+  (`INV-MCP-NO-ENGINE-SERVERS`).
+- [ ] `.mcp.json` по-прежнему объявляет ровно одну запись `mcpServers` с именем
+  `unica` (`INV-MCP-SINGLE-ENTRY`).
+- [ ] `initialize` по-прежнему возвращает `serverInfo.name = "unica"`
+  (`INV-MCP-SERVER-NAME`).
+- [ ] `tools/list` показывает только имена вида `unica.<группа>.<операция>` и ни
+  одного снятого псевдонима (`INV-MCP-NAMESPACE`).
+- [ ] Имена, описания и схемы инструментов по-прежнему берутся из дескрипторов,
+  заданных данными, и не показывают ни одного сырого аргумента адаптера
+  (`INV-MCP-DATA-DRIVEN-SCHEMA`).
+- [ ] Код транспорта и типы `rmcp` остаются внутри `interfaces/mcp.rs`
+  (`INV-MCP-SDK-TRANSPORT`).
+- [ ] Предел приёма вызовов, ошибка перегрузки, отмена и запас времени на
+  остановку сохранены или заново покрыты тестом (`INV-MCP-BOUNDED-ADMISSION`).
+- [ ] Реестр в Rust, стенд паритета, скилл маршрутизации и запись-владелец
+  решения меняются одним набором изменений (`INV-MCP-SURFACE-SYNC`).
 
-- [ ] Updated skills mention MCP `unica`.
-- [ ] Updated skills do not expose internal adapter server names as user-facing
-  routing.
-- [ ] Updated skills do not point users to skill-local Python/PowerShell
-  operation files.
-- [ ] Mutating skills preserve explicit `dryRun: false` guidance.
+## Маршрутизация скиллов
 
-## Cache And Events
+- [ ] Изменённые скиллы ходят через MCP `unica` и называют инструмент `unica.*`,
+  который вызывают (`INV-SKILL-DECLARED-ROUTING`).
+- [ ] Изменённые скиллы не называют целью маршрутизации ни внутренний
+  сервер-адаптер, ни идентификатор инструмента адаптера (`INV-SKILL-NO-ADAPTER-TARGETS`).
+- [ ] Изменённые скиллы не поставляют и не упоминают ни одного локального для
+  скилла Python-, PowerShell- или shell-файла операции (`INV-SKILL-NO-SCRIPT-ROUTE`).
+- [ ] Инструкции по изменяющим операциям сохраняют предпросмотр как путь по
+  умолчанию (`INV-SKILL-DOCUMENTED-PREVIEW`).
+- [ ] Каждый пример `tools/call` в затронутом скилле по-прежнему исполняется как
+  сухой прогон MCP (`INV-SKILL-EXECUTABLE-EXAMPLES`).
+- [ ] Добавленный в поставку справочный документ назван скиллом или достижим от
+  названного по ссылкам, а обвязанный документ вычеркнут из списка долга
+  (`INV-SKILL-REACHABLE-REFERENCES`).
+- [ ] Встроенные низкоуровневые движки нигде не названы целью вызова в тексте,
+  видимом модели (`INV-PRODUCT-NO-ENGINE-ROUTING`).
 
-- [ ] Mutating operation emits the right `DomainEventKind`.
-- [ ] `CacheImpact` invalidates affected caches.
-- [ ] Dry-run reports impact without writing state.
-- [ ] Applied operation writes state only after successful mutation or approved
-  state transition.
-- [ ] Applied mutations notify live workspace services when analyzer or index
-  caches are affected.
+## Кеш и события
 
-## Adapters
+- [ ] Изменяющая операция порождает верный `DomainEventKind`, и заявленное
+  влияние на кеш совпадает с тем, что эти события инвалидируют
+  (`INV-CACHE-REPORTED-EFFECTS`).
+- [ ] Сухой прогон сообщает о последствиях и не пишет ни состояние рабочего
+  пространства, ни индекс, ни запись сервиса (`INV-CACHE-WRITE-FREE-PREVIEW`).
+- [ ] Применённая операция пишет состояние только после успешной мутации и
+  уведомляет живые сервисы рабочего пространства теми же событиями
+  (`INV-CACHE-PERSISTED-STALENESS`).
+- [ ] Никакое состояние кеша не пишется за пределами корня изменчивого кеша
+  (`INV-CACHE-WORKSPACE-ROOT`).
+- [ ] Идентичность рабочего пространства и ключи сервисов держат связанное
+  рабочее дерево изолированным (`INV-CACHE-WORKTREE-ISOLATION`).
 
-- [ ] Internal adapter errors are summarized in `warnings` or `errors`.
-- [ ] Adapter command construction is covered by focused tests when behavior is
-  non-trivial.
-- [ ] Analyzer/index adapters that need warm workspace state go through the
-  workspace service manager.
-- [ ] Cheap read-only adapters such as `unica.code.grep` do not start workspace
-  services.
-- [ ] Operation backends use native Rust handlers, not Python/PowerShell/Bash
-  runtime fallbacks.
-- [ ] Fixture parity exists when donor script behavior is retained as the
-  reference source model.
+## Адаптеры и границы слоёв
 
-## Packaging
+- [ ] Новая диспетчеризация входит через `UnicaApplication`, а не через
+  транспорт или адаптер (`INV-APP-DISPATCH-OWNERSHIP`, `INV-APP-THIN-TRANSPORT`).
+- [ ] Адаптеры идут к рабочему пространству через `ApplicationPorts` и не
+  формируют MCP-ответ (`INV-APP-NO-ADAPTER-BYPASS`); их отказы выходят наружу через общие поля
+  конверта `warnings` и `errors` (`REQ-OBS-STABLE-ENVELOPE`).
+- [ ] Ни один путь исполнения в продуктовом коде не запускает интерпретатор
+  скриптов как бэкенд операции (`INV-APP-NO-SCRIPT-BACKEND`).
+- [ ] Направление зависимостей между слоями и корень композиции не изменились
+  (`INV-APP-DEPENDENCY-DIRECTION`).
+- [ ] Код слоя application не создаёт дочерний процесс `git` (`INV-APP-NO-DIRECT-GIT`).
+- [ ] Работа анализатора и индекса, которой нужно тёплое состояние, идёт через
+  менеджер скрытых сервисов рабочего пространства, а дешёвый инструмент только
+  на чтение вроде `unica.code.grep` по-прежнему не поднимает ни одного сервиса
+  (`INV-APP-LAZY-HIDDEN-SERVICES`).
+- [ ] Зависящий от ОС код остаётся за платформенными фасадами, а дочерние
+  процессы удерживаются как деревья процессов (`INV-PLATFORM-OS-BEHIND-FACADE`,
+  `INV-PLATFORM-NO-ORPHAN-PROCESSES`).
+- [ ] Имя хоста, каталог его манифеста и его переменная окружения не появились
+  вне host-фасада, а место вызова не обзавелось ветвлением по конкретному хосту
+  (`INV-HOST-NEUTRAL-ORCHESTRATOR`, `INV-HOST-KNOWLEDGE-BEHIND-FACADE`, `INV-HOST-UNIFORM-CALL-SITES`).
 
-- [ ] `third-party/tools.lock.json` names the bundled binary `unica`.
-- [ ] Generated `third-party/manifest.json` matches the lock.
-- [ ] `cargo run --quiet --bin unica -- --help` works from source checkout.
-- [ ] Generated package `.mcp.json` starts `./bin/<target>/unica` directly with
-      `cwd` set to the plugin root.
-- [ ] Fresh Codex visibility is checked from a clean cache when changing plugin
-  metadata.
+## Наборы исходников
 
-## Verification
+- [ ] Определение формата остаётся свойством одного набора исходников
+  (`INV-SOURCE-PER-SET-FORMAT`, `INV-SOURCE-UNAMBIGUOUS-SET`).
+- [ ] Нативная операция над платформенным XML по-прежнему разрешает набор
+  исходников формата `platform_xml` прежде, чем трогать файлы
+  (`INV-SOURCE-PLATFORM-XML-ONLY`).
+- [ ] Выбор корня исходников остаётся детерминированным и общим с анализатором,
+  индексом и инструментами проекта (`INV-SOURCE-SINGLE-RESOLVED-ROOT`).
+- [ ] Стиль перевода строки берётся из самого источника, а не назначается
+  писателем; неоднозначный источник отклоняется, а не нормализуется молча
+  (`INV-SOURCE-OBSERVED-EOL`).
+- [ ] Каждая запись остаётся внутри корня рабочего пространства, включая выход
+  через символическую ссылку (`INV-SOURCE-WRITE-CONTAINMENT`).
 
-Run:
+## Упаковка
+
+- [ ] `third-party/tools.lock.json` по-прежнему называет встроенный публичный
+  бинарник `unica` и остаётся единственным владельцем версий (`INV-PKG-BINARY-NAME`,
+  `INV-PRODUCT-TOOL-VERSION-SOURCE`).
+- [ ] Упакованный `third-party/manifest.json` по-прежнему порождается из lock-а и
+  записывает его отпечаток, а не становится вторым владельцем версий
+  (`INV-PRODUCT-TOOL-VERSION-SOURCE`).
+- [ ] `cargo run --quiet --bin unica -- --help` по-прежнему работает из
+  чекаута исходников (`INV-PKG-BINARY-NAME`).
+- [ ] Публичный пакет маркетплейса остаётся тонким: его `.mcp.json` входит через
+  ограниченный командой Git-алиас оболочки, который вычисляет корень плагина для
+  обоих хостов и передаёт его в `bootstrap/launch.sh`, без матрицы команд по
+  целевым платформам и без полного бинарника runtime (`INV-PKG-THIN-PACKAGE`).
+- [ ] Запуск, стартующий бинарник `unica` для хоста напрямую, без полезной
+  нагрузки bootstrap, остаётся только в локальном отладочном пакете для
+  разработки (`INV-PKG-DEV-ONLY-PACKAGE`).
+- [ ] Оба манифеста хостов объявляют одну версию, и ни один собранный бинарник не
+  становится отслеживаемым файлом (`INV-PKG-VERSION-LOCKSTEP`, `INV-PKG-UNTRACKED-BUILD-OUTPUT`).
+- [ ] Ключи манифестов и каталогов не выходят за нижнюю границу самого старого
+  поддерживаемого клиента (`INV-PKG-OLDEST-CLIENT-KEYS`).
+- [ ] Порядок разрешения кеша runtime не изменился (`INV-CACHE-RUNTIME-ROOT-ORDER`).
+- [ ] Атрибуция остаётся полной и достижимой из обоих README (`INV-PKG-ATTRIBUTION-COVERAGE`).
+- [ ] Контракты, проверенные на чекауте исходников, проверены заново на
+  сгенерированном пакете, включая установку с чистым кешем на каждом хосте
+  (`INV-PRODUCT-PACKAGE-PARITY`, `INV-PRODUCT-SINGLE-PLUGIN-TREE`); порядок описан в
+  [`../acceptance/unica-mcp-validation.md`](../acceptance/unica-mcp-validation.md).
+
+## Фикстуры
+
+- [ ] Сохранённые донорские эталонные модели остаются фикстурами только для
+  тестов, а их байтовая политика следует
+  [`../acceptance/unica-mcp-validation.md`](../acceptance/unica-mcp-validation.md)
+  (`INV-SKILL-SCRIPTS-AS-FIXTURES`).
+
+## Синхронизация документации
+
+Изменение публичной поверхности — инструментов `unica.*` и их контрактов,
+идентичности MCP-сервера, маршрутизации скиллов, контракта упаковки и релиза или
+границ слоёв — обязано принести с собой документацию в том же изменении.
+
+- [ ] Запись-владелец решения в каталоге [`../decisions/`](../decisions/README.md)
+  добавлена, обновлена или заменена новой (`INV-MCP-SURFACE-SYNC`); принятая запись при
+  этом не переписывается под изменившийся код (`INV-DOC-SUPERSEDE-NOT-EDIT`).
+- [ ] Затронутая запись в [`invariants.md`](invariants.md) обновлена вместе с
+  проверкой, которую она называет (`INV-DOC-REAL-CHECKS`).
+- [ ] Индексы остались синхронными: [`../decisions/README.md`](../decisions/README.md)
+  перечисляет записи решений, [`../README.md`](../README.md) — документы
+  каталога `spec/architecture/` (`INV-DOC-INDEX-SYNC`).
+- [ ] Документы ссылаются на владельца нового правила по ID, не копируют его
+  нормативную формулировку и не выдают пояснение применения за независимую норму
+  (`INV-DOC-SINGLE-RULE-OWNER`); нормативные предложения написаны по-русски
+  (`INV-DOC-RUSSIAN-NORMATIVE`), и каждая добавленная относительная ссылка
+  разрешается от своего документа (`INV-DOC-RELATIVE-LINKS`).
+
+`tests/ci/test_architecture_registry.py` читает этот чек-лист ровно в одном
+отношении: каждый процитированный здесь ID обязан существовать в реестре. То, что
+пункт верно передаёт смысл названного правила, тест не доказывает — это остаётся
+на ревью. Остальные названные здесь правила он удерживает на самих реестрах и
+индексах: индекс решений
+перечисляет ровно записи на диске, а `spec/README.md` — каждый документ каталога
+`spec/architecture/` (`INV-DOC-INDEX-SYNC`); каждая неручная проверка записи называет
+артефакт, который CI действительно исполняет, а что этот артефакт проверяет
+именно названное правило, тест не доказывает (`INV-DOC-REAL-CHECKS`); нормативные поля записей написаны по-русски
+(`INV-DOC-RUSSIAN-NORMATIVE`); относительные ссылки действующих документов, включая этот файл,
+разрешаются (`INV-DOC-RELATIVE-LINKS`). Остальные пункты раздела проверяет ревью.
+
+## Проверка
+
+Локально достаточно тех же команд, которые прогоняют задания `verify-source` и
+`test-rust-primary` из `.github/workflows/unica-plugin-release.yml` на
+Python 3.12:
 
 ```sh
+python3.12 -m pip install -r tests/ci/requirements.txt
+python3.12 -m unittest discover -s tests/ci --durations 20
+python3.12 -m unittest discover -s tests/dev --durations 20
+python3.12 -m py_compile scripts/ci/*.py tests/ci/*.py
+python3.12 -m py_compile scripts/dev/*.py tests/dev/*.py
+python3.12 scripts/ci/check-version-contract.py
+python3.12 scripts/ci/check-architecture-sync.py --base "$(git merge-base HEAD origin/main)"
 cargo fmt --all -- --check
-cargo clippy --package unica-coder --all-targets -- -D warnings
-cargo test --package unica-coder
-python3.12 -m unittest discover -s tests/ci
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace -- --test-threads=1
 git diff --check
 ```
 
-BSP parity fixtures are the narrow exception to whitespace normalization: they
-preserve their committed bytes under `.gitattributes` `-text -whitespace`.
-Schema-v2 manifests distinguish upstream harvested hashes from hashes of the
-declared immutable CI-fixture profile projection; only schema-v1 direct
-harvests may be called byte-identical to upstream. That fixture derivation is
-not a supported migration or downgrade and must never be offered for user
-source.
+Первая строка — предусловие задания: без установленных зависимостей часть тестов
+`tests/ci` падает на отсутствующем модуле, а не на разбираемом изменении.
+`check-architecture-sync.py` CI выполняет только для pull request и от merge-base
+с базовой веткой; локально базу задаёт та же `git merge-base`.
+
+`git diff --check` — локальная гигиена пробелов, а не шаг конвейера; исключение
+для parity-фикстур описано в
+[`../acceptance/unica-mcp-validation.md`](../acceptance/unica-mcp-validation.md).
+Остальные шаги — сборка инструментов, контракты бинарников, упаковка плагина и
+runtime, смоук bootstrap на каждом хосте и агрегирующий шлюз — запускает сам
+workflow.

@@ -255,6 +255,51 @@ class ProductContractTests(unittest.TestCase):
         "esac\n"
     )
 
+    def test_task_router_paths_resolve(self) -> None:
+        """Каждый путь таблицы маршрутизации указывает на существующее место.
+
+        Таблица — единственный маршрут от задачи к коду, и её пути записаны в
+        обратных кавычках, а не markdown-ссылками, поэтому резолвер ссылок их
+        не видел. Шесть строк успели усохнуть до хвоста вроде
+        `domain/cache.rs`: от корня такой путь не разрешается, `rg` по нему
+        ничего не находит, и строка перестаёт быть маршрутом.
+        """
+        repo_root = Path(__file__).resolve().parents[2]
+        agents = (repo_root / "AGENTS.md").read_text(encoding="utf-8")
+
+        section = agents.split("## Куда смотреть, где менять", 1)[1].split("\n## ", 1)[0]
+        rows = [
+            line
+            for line in section.splitlines()
+            if line.startswith("|") and not set(line) <= set("| -")
+        ]
+        self.assertGreater(len(rows), 5, "таблица маршрутизации не разобрана")
+
+        # Только два префикса читаются от `spec/`, и оба названы в шапке
+        # таблицы; всё остальное — от корня репозитория.
+        spec_relative = ("architecture/", "acceptance/")
+        extensions = (".md", ".rs", ".py", ".yml", ".yaml", ".json", ".toml")
+        offenders = []
+        checked = 0
+        for row in rows[1:]:
+            for token in re.findall(r"`([^`]+)`", row):
+                if "/" not in token and not token.endswith(extensions):
+                    continue
+                # `<группа>` и `<имя>` подставляются вызывающим; проверяется
+                # каталог, в котором такой файл обязан лежать.
+                probe = token
+                if "<" in probe:
+                    probe = probe.rsplit("/", 1)[0] if "/" in probe else probe
+                    if "<" in probe:
+                        continue
+                base = repo_root / "spec" if probe.startswith(spec_relative) else repo_root
+                checked += 1
+                if not (base / probe).exists():
+                    offenders.append(token)
+
+        self.assertGreater(checked, 15, "пути таблицы не разобраны")
+        self.assertEqual(offenders, [], "путь из таблицы маршрутизации не разрешается")
+
     def test_local_1ci_corpus_is_ignored_and_agent_discoverable(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         ignore = (repo_root / ".gitignore").read_text(encoding="utf-8")
@@ -556,8 +601,8 @@ class ProductContractTests(unittest.TestCase):
             repo_root / "README.md",
             repo_root / "plugins/unica/README.md",
             repo_root / "spec/acceptance/unica-mcp-validation.md",
-            repo_root / "spec/architecture/arc42/06-runtime-view.md",
-            repo_root / "spec/architecture/arc42/07-deployment-view.md",
+            repo_root / "spec/architecture/runtime.md",
+            repo_root / "spec/architecture/deployment.md",
         ]
         forbidden = ("unica-local", "unica-codex-marketplace-")
         matches = [
@@ -744,28 +789,108 @@ class ProductContractTests(unittest.TestCase):
         )
 
     def test_runtime_docs_define_workspace_service_deadlines_exactly(self) -> None:
+        """Three documents must quote the budgets the runtime actually enforces.
+
+        The contract is the numbers, not the wording. Asserting exact English
+        prose broke the moment the architecture layer was translated, while the
+        thing worth protecting is language-independent.
+
+        The budgets are read from the constants that enforce them rather than
+        written down here a second time. A literal set inside the test made the
+        check circular in two ways: changing `SERVICE_REQUEST_TIMEOUT` in the
+        runtime left every document and this test green, and the two former
+        "documents agree" assertions could not fail at all -- the loop above
+        them already established `required <= found` for every document, so
+        `found & required` was `required` on both sides of each comparison.
+        Anchoring the set to the source makes the loop the real check: drift in
+        the runtime now fails against all three documents at once.
+        """
         repo_root = Path(__file__).resolve().parents[2]
-        runtime = (repo_root / "spec" / "architecture" / "arc42" / "06-runtime-view.md").read_text(
-            encoding="utf-8"
-        )
-        acceptance = (repo_root / "spec" / "acceptance" / "unica-mcp-validation.md").read_text(
-            encoding="utf-8"
-        )
-        adr = (repo_root / "spec" / "decisions" / "0006-workspace-scoped-internal-services.md").read_text(
-            encoding="utf-8"
+        sources = {
+            "runtime": repo_root / "spec/architecture/runtime.md",
+            "acceptance": repo_root / "spec/acceptance/unica-mcp-validation.md",
+            "adr-0006": repo_root
+            / "spec/decisions/0006-workspace-scoped-internal-services.md",
+        }
+
+        # Quantity plus unit, in either language: "120 seconds", "500 мс", "8 MiB".
+        quantity = re.compile(
+            r"(?<![\w.])(\d+)[\s-]*"
+            r"(seconds?|секунд\w*|ms\b|мс\b|MiB|КиБ|KiB|МиБ)",
+            re.IGNORECASE,
         )
 
-        for text in (runtime, acceptance, adr):
-            normalized = " ".join(text.split())
-            self.assertIn("120-second overall deadline", normalized)
-            self.assertIn("500 ms connect cap", normalized)
-            self.assertIn("remaining overall budget", normalized)
-            self.assertIn("best-effort `Cancel`", normalized)
-            self.assertIn("separate 500 ms aggregate budget", normalized)
-            self.assertIn("connect, write, flush, and read", normalized)
-            self.assertIn("does not read a response", normalized)
-            self.assertIn("cancellation takes precedence", normalized)
-            self.assertIn("100 ms", normalized)
+        budgets = {}
+        for label, path in sources.items():
+            text = " ".join(path.read_text(encoding="utf-8").split())
+            found = set()
+            for value, unit in quantity.findall(text):
+                unit = unit.lower()
+                if unit.startswith(("second", "секунд")):
+                    canonical = "s"
+                elif unit in {"ms", "мс"}:
+                    canonical = "ms"
+                else:
+                    canonical = "bytes"
+                found.add(f"{value}{canonical}")
+            budgets[label] = found
+
+        required = self.enforced_workspace_service_budgets()
+        for label, found in budgets.items():
+            missing = sorted(required - found)
+            self.assertEqual(
+                missing, [], f"{label} no longer states the budgets {missing}"
+            )
+
+    def enforced_workspace_service_budgets(self) -> set:
+        """The deadlines the workspace service enforces, read from its source.
+
+        Two are named constants; the read-poll slice is a literal repeated at
+        every polling call site, so it is taken from those call sites and must
+        be a single value -- several different slices would mean the documented
+        one describes only part of the behaviour.
+
+        The unit is captured rather than assumed. Matching only `from_millis`
+        would let a call site move to `from_secs` and simply drop out of the
+        set, leaving the remaining site to agree with the documents on its own
+        while the runtime had stopped behaving as documented. Test code is cut
+        away first: the fixtures set their own read timeouts, and those are not
+        budgets anyone documents.
+        """
+        repo_root = Path(__file__).resolve().parents[2]
+        source = (
+            repo_root / "crates/unica-coder/src/infrastructure/workspace_services.rs"
+        ).read_text(encoding="utf-8")
+        source = re.split(r"^#\[cfg\(test\)\]", source, maxsplit=1, flags=re.MULTILINE)[0]
+
+        constants = {
+            match.group("name"): (match.group("unit"), match.group("value"))
+            for match in re.finditer(
+                r"^const (?P<name>[A-Z_]+): Duration = "
+                r"Duration::from_(?P<unit>secs|millis)\((?P<value>\d+)\);",
+                source,
+                re.MULTILINE,
+            )
+        }
+        budgets = set()
+        for name in ("SERVICE_REQUEST_TIMEOUT", "SERVICE_CONTROL_CONNECT_TIMEOUT"):
+            self.assertIn(name, constants, f"{name} no longer names a duration")
+            unit, value = constants[name]
+            budgets.add(f"{value}{'s' if unit == 'secs' else 'ms'}")
+
+        slices = {
+            f"{value}{'s' if unit == 'secs' else 'ms'}"
+            for unit, value in re.findall(
+                r"set_read_timeout\(\s*Some\((?:remaining\.min\()?"
+                r"Duration::from_(secs|millis)\((\d+)\)",
+                source,
+            )
+        }
+        self.assertEqual(
+            len(slices), 1, f"read polling uses several slice lengths: {sorted(slices)}"
+        )
+        budgets.add(slices.pop())
+        return budgets
 
     def test_tool_help_contracts_report_missing_rlm_server_transport_surface(self) -> None:
         module = load_contract_module()

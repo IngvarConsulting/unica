@@ -389,6 +389,160 @@ class RustPlatformBoundaryTests(unittest.TestCase):
 
         self.assertEqual(diagnostics, [])
 
+    def test_rejects_host_names_outside_the_host_facade(self) -> None:
+        checker = load_checker_module()
+
+        diagnostics = checker.check_source(
+            "crates/unica-bootstrap/src/main.rs",
+            "let data = env::var_os(\"CLAUDE_PLUGIN_DATA\");\n"
+            "let manifest = plugin_root.join(\".codex-plugin\").join(\"plugin.json\");\n"
+            "fn codex_home_root() -> Result<PathBuf> { unimplemented!() }\n"
+            "let home = env::var_os(\"CODEX_HOME\");\n"
+            "let root = env::var_os(\"CLAUDE_PLUGIN_ROOT\");\n",
+        )
+
+        self.assertEqual(
+            diagnostics,
+            [
+                "crates/unica-bootstrap/src/main.rs:1: "
+                "host environment variable CLAUDE_PLUGIN_DATA is outside the host facade",
+                "crates/unica-bootstrap/src/main.rs:2: "
+                "host manifest directory .codex-plugin is outside the host facade",
+                "crates/unica-bootstrap/src/main.rs:3: "
+                "host name codex is outside the host facade",
+                "crates/unica-bootstrap/src/main.rs:4: "
+                "host environment variable CODEX_HOME is outside the host facade",
+                "crates/unica-bootstrap/src/main.rs:5: "
+                "host environment variable CLAUDE_PLUGIN_ROOT is outside the host facade",
+            ],
+        )
+
+    def test_allows_host_names_only_in_the_host_facade_and_nested_host_tests(self) -> None:
+        checker = load_checker_module()
+        source = (
+            "const HOME: &str = \"CODEX_HOME\";\n"
+            "let manifest = root.join(\".claude-plugin\");\n"
+            "fn codex_home_root() -> Result<PathBuf> { unimplemented!() }\n"
+        )
+
+        for path in (
+            "crates/unica-bootstrap/src/host/mod.rs",
+            "crates/unica-bootstrap/src/host/descriptor/codex.rs",
+            "crates/unica-bootstrap/tests/host/cli_contract.rs",
+        ):
+            self.assertEqual(checker.check_source(path, source), [])
+
+    def test_rejects_top_level_host_test_file(self) -> None:
+        checker = load_checker_module()
+
+        diagnostics = checker.check_source(
+            "crates/unica-bootstrap/tests/host.rs",
+            "let _ = env::var_os(\"CODEX_HOME\");\n",
+        )
+
+        self.assertEqual(
+            diagnostics,
+            [
+                "crates/unica-bootstrap/tests/host.rs:1: "
+                "host environment variable CODEX_HOME is outside the host facade"
+            ],
+        )
+
+    def test_host_names_are_detected_in_literals_and_comments(self) -> None:
+        checker = load_checker_module()
+
+        diagnostics = checker.check_source(
+            "crates/unica-bootstrap/src/main.rs",
+            "// The package points the cache at ${CLAUDE_PLUGIN_DATA}.\n"
+            "/* Claude Code scans skills/ on its own. */\n"
+            "let variable = \"CODEX_HOME\";\n"
+            "let raw = r#\".claude-plugin\"#;\n",
+        )
+
+        self.assertEqual(
+            diagnostics,
+            [
+                "crates/unica-bootstrap/src/main.rs:1: "
+                "host environment variable CLAUDE_PLUGIN_DATA is outside the host facade",
+                "crates/unica-bootstrap/src/main.rs:2: "
+                "host name Claude is outside the host facade",
+                "crates/unica-bootstrap/src/main.rs:3: "
+                "host environment variable CODEX_HOME is outside the host facade",
+                "crates/unica-bootstrap/src/main.rs:4: "
+                "host manifest directory .claude-plugin is outside the host facade",
+            ],
+        )
+
+    def test_a_host_name_inside_a_longer_word_is_not_host_knowledge(self) -> None:
+        """Имя хоста кончается там, где кончается его регистровый сегмент.
+
+        Подстрочное совпадение объявляло host knowledge любое слово, внутри
+        которого встретились эти буквы, а исключений по путям у стража нет
+        (INV-PLATFORM-NO-PATH-EXEMPTIONS) — снять ложный диагноз было бы нечем.
+        """
+        checker = load_checker_module()
+
+        diagnostics = checker.check_source(
+            "crates/unica-coder/src/infrastructure/mineralogy.rs",
+            "// claudetite and claudent are minerals, not hosts.\n"
+            "let codexes = manuscripts.len();\n",
+        )
+
+        self.assertEqual(diagnostics, [])
+
+    def test_a_host_name_ending_a_case_segment_is_still_host_knowledge(self) -> None:
+        """Обратная сторона того же правила: camelCase и snake_case не теряются."""
+        checker = load_checker_module()
+
+        diagnostics = checker.check_source(
+            "crates/unica-coder/src/infrastructure/plugin_runtime.rs",
+            "struct CodexHost;\n"
+            "fn claude_plugin_data() {}\n"
+            "let catalog = \"codex-plugin\";\n",
+        )
+
+        self.assertEqual(
+            diagnostics,
+            [
+                "crates/unica-coder/src/infrastructure/plugin_runtime.rs:1: "
+                "host name Codex is outside the host facade",
+                "crates/unica-coder/src/infrastructure/plugin_runtime.rs:2: "
+                "host name claude is outside the host facade",
+                "crates/unica-coder/src/infrastructure/plugin_runtime.rs:3: "
+                "host name codex is outside the host facade",
+            ],
+        )
+
+    def test_host_facade_root_is_not_granted_to_other_crates(self) -> None:
+        checker = load_checker_module()
+
+        diagnostics = checker.check_source(
+            "crates/unica-coder/src/host/codex.rs",
+            "let home = env::var_os(\"CODEX_HOME\");\n",
+        )
+
+        self.assertEqual(
+            diagnostics,
+            [
+                "crates/unica-coder/src/host/codex.rs:1: "
+                "host environment variable CODEX_HOME is outside the host facade"
+            ],
+        )
+
+    def test_host_neutral_names_do_not_trip_the_host_boundary(self) -> None:
+        checker = load_checker_module()
+
+        diagnostics = checker.check_source(
+            "crates/unica-coder/src/infrastructure/plugin_runtime.rs",
+            "let root = env::var_os(\"UNICA_PLUGIN_ROOT\");\n"
+            "let cache = env::var_os(\"UNICA_RUNTIME_CACHE_DIR\");\n"
+            "let target = HostTarget::current()?;\n"
+            "let fixture = root.join(\"marketplace/plugins/unica\");\n"
+            "let manifest = root.join(\"third-party/manifest.json\");\n",
+        )
+
+        self.assertEqual(diagnostics, [])
+
     def test_collects_tracked_and_nonignored_untracked_rust_sources_only(self) -> None:
         checker = load_checker_module()
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -439,6 +593,47 @@ class RustPlatformBoundaryTests(unittest.TestCase):
 
         self.assertEqual(checker.check_repository(REPO_ROOT), [])
 
+
+class HostNameBoundaryTests(unittest.TestCase):
+    """A host name is host knowledge only when it opens an identifier segment.
+
+    Both boundaries matter and each was missing at some point: without the right
+    one `codexample` was diagnosed, without the left one `mycodex` was. Either
+    way an ordinary identifier failed CI for no reason.
+
+    A segment is not a word, though. Camel case opens a segment mid-word, and
+    that is how Rust types are named, so a capitalised host name counts wherever
+    its segment starts.
+    """
+
+    def setUp(self) -> None:
+        self.guard = load_checker_module()
+
+    def test_a_name_embedded_in_a_longer_word_is_not_host_knowledge(self) -> None:
+        for identifier in ("mycodex", "preclaude", "codexample", "claudetite"):
+            with self.subTest(identifier=identifier):
+                self.assertIsNone(self.guard.HOST_MARKER.search(identifier))
+
+    def test_a_name_opening_a_segment_is_host_knowledge(self) -> None:
+        for identifier in ("CodexHost", "codex_home_root", "CODEX_HOME", ".claude-plugin"):
+            with self.subTest(identifier=identifier):
+                self.assertIsNotNone(self.guard.HOST_MARKER.search(identifier))
+
+    def test_a_name_opening_a_camel_case_segment_is_host_knowledge(self) -> None:
+        """The idiomatic Rust type name was the hole in the left boundary.
+
+        `LegacyClaudeConfig` is exactly how host knowledge arrives in a type, and
+        reading the boundary as "start of word" waved all of it through while
+        still catching the snake-case spelling of the same thing.
+        """
+        for identifier in (
+            "MyCodexHost",
+            "LegacyClaudeConfig",
+            "resolveClaudeRoot",
+            "XdgCodexHome",
+        ):
+            with self.subTest(identifier=identifier):
+                self.assertIsNotNone(self.guard.HOST_MARKER.search(identifier))
 
 if __name__ == "__main__":
     unittest.main()

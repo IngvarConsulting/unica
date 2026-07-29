@@ -12,6 +12,44 @@ PUBLISH_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "publish-unica-marketpl
 LEGACY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unica-legacy-migration.yml"
 
 
+RUN_KEY = re.compile(r"^(?P<lead>\s*(?:- )?)run:(?P<inline>.*)$")
+
+
+def run_block_lines(workflow: str):
+    """Yield `(line number, text)` for every line that becomes shell script.
+
+    A `run:` value is the only place in a workflow where text is handed to a
+    shell, so it is the only place where an interpolated `${{ }}` is script
+    rather than data. `if:`, `concurrency:` and `env:` values are evaluated by
+    GitHub itself and never parsed by bash, which is exactly why binding a ref
+    name to `env:` defuses it.
+
+    Blocks are found by indentation: the body of a block scalar is indented
+    past the column of its `run:` key. PyYAML is not a dependency of this suite,
+    and pulling one in to read four lines of indentation is a poor trade.
+    """
+    lines = workflow.splitlines()
+    index = 0
+    while index < len(lines):
+        match = RUN_KEY.match(lines[index])
+        if match is None:
+            index += 1
+            continue
+
+        key_column = len(match.group("lead"))
+        if match.group("inline").strip() not in ("", "|", ">", "|-", ">-"):
+            yield index + 1, lines[index]
+        index += 1
+
+        while index < len(lines):
+            body = lines[index]
+            if body.strip() and len(body) - len(body.lstrip()) <= key_column:
+                break
+            if body.strip():
+                yield index + 1, body
+            index += 1
+
+
 def job_block(workflow: str, job_id: str) -> str:
     marker = f"  {job_id}:\n"
     start = workflow.find(marker)
@@ -92,10 +130,45 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         classifier = job_block(text, "classify-changes")
 
         self.assertIn("fetch-depth: 0", classifier)
-        self.assertIn('git fetch --no-tags origin "${{ github.base_ref }}"', classifier)
+        self.assertIn("BASE_REF: ${{ github.base_ref }}", classifier)
+        self.assertIn('git fetch --no-tags origin "$BASE_REF"', classifier)
         self.assertNotIn("--depth", classifier)
         self.assertIn("FORCE_FULL", classifier)
         self.assertIn("git diff --name-only FETCH_HEAD...HEAD", classifier)
+
+    def test_a_ref_name_never_reaches_the_shell_as_script_text(self) -> None:
+        """A ref name is data, so it crosses into `run:` through `env:`.
+
+        Git ref rules forbid spaces but allow `;`, `$`, backticks and
+        parentheses, so a ref name pasted into a `run:` block through `${{ }}`
+        is a command-injection sink. Passing it as an environment variable keeps
+        the shell from ever parsing it.
+
+        Branch and tag names are the same sink: `github.ref_name` obeys exactly
+        the rules `github.base_ref` does, so pinning only the name the review
+        happened to cite would leave the defect a second way back in.
+        """
+        refs = ("github.base_ref", "github.ref_name", "github.head_ref")
+        scanned = 0
+        # GitHub accepts either extension, so a guard that scans one of them
+        # leaves the other as a blind spot.
+        for workflow in sorted(
+            (*WORKFLOWS_DIR.glob("*.yml"), *WORKFLOWS_DIR.glob("*.yaml")),
+            key=lambda path: path.name,
+        ):
+            for number, line in run_block_lines(workflow.read_text(encoding="utf-8")):
+                scanned += 1
+                context = next((ref for ref in refs if ref in line), None)
+                with self.subTest(workflow=workflow.name, line=number):
+                    self.assertIsNone(
+                        context,
+                        f"{context} is interpolated into a run block; bind it "
+                        "to an env variable and read it as \"$NAME\"",
+                    )
+
+        # An indentation scanner that silently matched nothing would pass this
+        # test forever. The workflows have far more shell than this.
+        self.assertGreater(scanned, 50)
 
     def test_rust_jobs_route_primary_and_platform_contours(self) -> None:
         text = self.release_text()

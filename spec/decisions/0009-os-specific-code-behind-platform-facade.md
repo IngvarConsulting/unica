@@ -1,46 +1,52 @@
-# ADR-0009: OS-specific code lives behind infrastructure platform facades
+# ADR-0009: Зависящий от ОС код живёт за платформенными фасадами инфраструктуры
 
-- Status: `accepted`
-- Date: `2026-07-20`
+- Статус: `accepted`
+- Дата: `2026-07-20`
+- Обновлено: `2026-07-28`
 
-## Context
+> Переведено на русский; содержание решения не изменялось.
 
-Rust platform branches are spread across domain models, application code,
-infrastructure adapters, binary entrypoints, and `unica-bootstrap`. This makes
-the source path an unreliable signal for deciding whether a change needs the
-full macOS/Linux/Windows test matrix.
+## Контекст
 
-The current application layer also imports concrete infrastructure adapters,
-while domain modules perform filesystem discovery and canonicalization. Moving
-only `cfg(windows)` blocks would preserve those inverted dependencies and would
-not establish the intended DDD boundary from ADR-0002.
+Платформенные ветвления в Rust разбросаны по моделям домена, коду приложения,
+адаптерам инфраструктуры, точкам входа бинарников и `unica-bootstrap`. Из-за
+этого путь к исходнику — ненадёжный признак того, нужна ли изменению полная
+матрица тестов macOS/Linux/Windows.
 
-## Decision
+Вдобавок нынешний слой приложения импортирует конкретные адаптеры
+инфраструктуры, а модули домена сами ходят в файловую систему и канонизируют
+пути. Перенос одних только блоков `cfg(windows)` сохранил бы эти перевёрнутые
+зависимости и не установил бы границу DDD, задуманную в ADR-0002.
 
-Unica uses dependency inversion and two explicit platform infrastructure
-facades.
+## Решение
 
-1. `domain` owns models and pure rules; `application` owns use cases and
-   platform-neutral ports; `infrastructure` implements those ports. Production
-   wiring happens outside the application layer.
-2. OS-specific production code lives only under
-   `crates/unica-coder/src/infrastructure/platform/**` and
+Unica использует инверсию зависимостей и два явных платформенных фасада
+инфраструктуры.
+
+1. `domain` владеет моделями и чистыми правилами; `application` — сценариями
+   использования и платформенно-нейтральными портами; `infrastructure`
+   реализует эти порты. Боевая сборка зависимостей происходит вне слоя
+   приложения.
+2. Зависящий от ОС боевой код живёт только под
+   `crates/unica-coder/src/infrastructure/platform/**` и
    `crates/unica-bootstrap/src/platform/**`.
-3. Platform modules expose only platform-neutral types. Filesystem/path and
-   process/entrypoint behavior enters the rest of the code through these
-   facades.
-4. A tracked-source architecture guard enforces both allowed platform roots and
-   dependency direction. Its implementation and allowlist are part of the
-   platform contract and may not contain path-by-path legacy exemptions.
-5. Platform-specific tests live beside their adapters or under
+3. Платформенные модули выставляют наружу только платформенно-нейтральные типы.
+   Поведение файловой системы и путей, а также процессов и точек входа попадает
+   в остальной код через эти фасады.
+4. Архитектурный страж, лежащий в отслеживаемых исходниках, удерживает и
+   разрешённые платформенные корни, и направление зависимостей. Его реализация
+   и список исключений — часть платформенного контракта, и в нём не может быть
+   пофайловых послаблений для унаследованного кода.
+5. Платформенные тесты живут рядом со своими адаптерами или под
    `crates/<crate>/tests/platform/**`.
 
-## Consequences
+## Последствия
 
-- Source paths become a stable input for cross-platform CI classification.
-- Domain filesystem discovery moves to infrastructure while domain models and
-  pure selection rules remain in domain.
-- Public MCP contracts, package behavior, path safety, and process-lifecycle
-  guarantees do not change.
+- Путь к исходнику становится устойчивым входом для классификации
+  кроссплатформенного CI.
+- Обход файловой системы уезжает из домена в инфраструктуру, а модели домена и
+  чистые правила выбора остаются в домене.
+- Публичные MCP-контракты, поведение пакета, безопасность путей и гарантии
+  жизненного цикла процессов не меняются.
 
-GitHub Actions routing and CI optimization are outside this decision.
+Маршрутизация GitHub Actions и оптимизация CI лежат вне этого решения.
