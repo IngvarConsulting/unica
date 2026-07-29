@@ -105,6 +105,12 @@ def analyze_decision_records(diff_text: str) -> list[str]:
     """
     violations: list[str] = []
     path: str | None = None
+    # `--- a/<path>` marks a file as pre-existing; a created file carries
+    # `--- /dev/null`. That line arrives before the `+++` line that names the
+    # file, so the flag is parked in `pending_existed` and handed to the file
+    # only when `+++` opens it. Without the hand-off a stale value from the
+    # previous file would decide whether this one is judged.
+    pending_existed = False
     existed = False
     dates: dict[str, list[str]] = {"-": [], "+": []}
     statuses: dict[str, list[str]] = {"-": [], "+": []}
@@ -135,13 +141,15 @@ def analyze_decision_records(diff_text: str) -> list[str]:
             close()
             candidate = new_header.group("path")
             path = candidate if DECISION_RECORD.match(candidate) else None
+            existed = pending_existed
+            pending_existed = False
             dates = {"-": [], "+": []}
             statuses = {"-": [], "+": []}
             continue
 
         old_header = DIFF_OLD_HEADER.match(line)
         if old_header:
-            existed = old_header.group("path") != "/dev/null"
+            pending_existed = True
             continue
 
         if path is None or not line or line[0] not in "+-":

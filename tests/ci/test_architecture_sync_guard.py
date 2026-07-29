@@ -308,3 +308,37 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
             self.assertEqual(self.guard.main(["-"]), 1)
         finally:
             sys.stdin = original
+
+    def test_an_edited_record_followed_by_a_new_one_is_still_judged(self) -> None:
+        """State from one file must not decide the verdict for another.
+
+        A unified diff marks a pre-existing file with `--- a/<path>` and a
+        created one with `--- /dev/null`. If the flag that records "this file
+        existed" outlived its file, an edit followed by an addition would be
+        flushed under the next file's flag and its violation would vanish.
+        """
+        diff = diff_for(
+            "spec/decisions/0008-public-marketplace-thin-runtime.md",
+            "@@ -3 +3 @@\n-- Дата: `2026-07-19`\n+- Дата: `2026-07-28`\n",
+        ) + (
+            "diff --git a/spec/decisions/0016-new.md b/spec/decisions/0016-new.md\n"
+            "--- /dev/null\n+++ b/spec/decisions/0016-new.md\n"
+            "@@ -0,0 +1 @@\n+- Дата: `2026-07-29`\n"
+        )
+        violations = self.guard.analyze_decision_records(diff)
+
+        self.assertEqual(len(violations), 1, violations)
+        self.assertIn("0008-public-marketplace-thin-runtime.md", violations[0])
+
+    def test_a_new_record_after_an_edited_one_is_not_flagged(self) -> None:
+        """The reverse direction: a created file must not inherit `existed`."""
+        diff = diff_for(
+            "spec/decisions/0008-public-marketplace-thin-runtime.md",
+            "@@ -20 +20 @@\n-старый текст\n+новый текст\n",
+        ) + (
+            "diff --git a/spec/decisions/0016-new.md b/spec/decisions/0016-new.md\n"
+            "--- /dev/null\n+++ b/spec/decisions/0016-new.md\n"
+            "@@ -0,0 +1,2 @@\n+- Статус: `accepted`\n+- Дата: `2026-07-29`\n"
+        )
+
+        self.assertEqual(self.guard.analyze_decision_records(diff), [])
