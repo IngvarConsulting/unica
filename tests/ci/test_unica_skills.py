@@ -6,6 +6,19 @@ import unittest
 from pathlib import Path
 
 
+# Both ways a document points at another one: a backticked path, where the
+# slash separates a link from a bare filename mentioned as prose (`SKILL.md`),
+# and a markdown link, where the target is a path whether it has a slash or not.
+DOCUMENT_LINK_PATTERNS = (
+    re.compile(r"`([^`\s]*/[^`\s]*\.md)`"),
+    re.compile(r"\]\((?!\w+:)([^)\s#]+\.md)(?:#[^)\s]*)?\)"),
+)
+
+
+def document_links(text: str) -> list[str]:
+    return [match for pattern in DOCUMENT_LINK_PATTERNS for match in pattern.findall(text)]
+
+
 IN_SCOPE_TOOLS = {
     "cf-edit": "unica.cf.edit",
     "cf-info": "unica.cf.info",
@@ -55,7 +68,6 @@ SCENARIO_SKILLS = {
     "api-design": [
         "unica.code.search",
         "unica.code.definition",
-        "unica.code.grep",
         "unica.code.diagnostics",
         "unica.project.map",
         "unica.subsystem.info",
@@ -69,7 +81,6 @@ SCENARIO_SKILLS = {
         "unica.code.search",
         "unica.code.definition",
         "unica.code.outline",
-        "unica.code.grep",
         "unica.meta.profile",
         "unica.project.map",
     ],
@@ -84,7 +95,6 @@ SCENARIO_SKILLS = {
         "unica.code.search",
         "unica.code.definition",
         "unica.code.outline",
-        "unica.code.grep",
         "unica.code.diagnostics",
         "unica.meta.profile",
         "unica.standards.explain",
@@ -95,7 +105,6 @@ SCENARIO_SKILLS = {
     "query-optimize": [
         "unica.code.search",
         "unica.code.outline",
-        "unica.code.grep",
         "unica.dcs.info",
         "unica.meta.info",
         "unica.meta.profile",
@@ -169,7 +178,6 @@ SCENARIO_SKILLS = {
         "unica.project.map",
         "unica.code.search",
         "unica.code.outline",
-        "unica.code.grep",
         "unica.meta.info",
         "unica.meta.profile",
         "unica.dcs.info",
@@ -322,7 +330,7 @@ SCENARIO_PRESERVING_MIN_MCP_CALLS = {
     "cfe-validate": 2,
     "meta-edit": 11,
     "meta-info": 14,
-    "meta-remove": 6,
+    "meta-remove": 5,
     "meta-validate": 2,
     "form-add": 6,
     "form-compile": 4,
@@ -432,7 +440,6 @@ SCENARIO_PRESERVING_TOKENS = {
         '"Object": "Catalog.Устаревший"',
         '"dryRun": true',
         '"Force": true',
-        '"KeepFiles": true',
         '"Object": "CommonModule.МойМодуль"',
     ],
     "form-add": [
@@ -518,6 +525,13 @@ SCENARIO_PRESERVING_TOKENS = {
         '"Offset": 150',
     ],
     "role-info": ['"Offset": 150'],
+}
+
+# Arguments the MCP contract used to publish and now rejects. The packaged skill
+# must not keep advertising them: the server would answer such a call with
+# "does not accept argument", so a leftover example is a broken instruction.
+SCENARIO_RETIRED_TOKENS = {
+    "meta-remove": ['"KeepFiles"', '"keepFiles"'],
 }
 
 
@@ -648,6 +662,15 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                     self.assertIn(tool_name, text)
                 for token in SCENARIO_REQUIRED_TOKENS.get(skill, []):
                     self.assertIn(token, text)
+
+    def test_skill_guidance_never_reintroduces_removed_code_grep_tool(self) -> None:
+        offenders = [
+            path.relative_to(self.repo_root()).as_posix()
+            for path in sorted(self.skill_root().glob("*/SKILL.md"))
+            if "unica.code.grep" in path.read_text(encoding="utf-8")
+        ]
+
+        self.assertEqual(offenders, [])
 
     def test_unica_owned_guidance_contains_required_operational_concepts(self) -> None:
         docs = {
@@ -961,7 +984,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             "platform/integration-contracts.md",
             "platform/platform-mechanics.md",
             "tooling/v8project.md",
-            "tooling/internal-package.md",
             "tooling/runtime-build.md",
         ]
         for relative_path in required_paths:
@@ -1329,7 +1351,20 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertIn("platform_xml", joined)
         self.assertIn("EDT configuration", joined)
         self.assertIn("platform XML external", joined)
-        self.assertIn("not of the whole workspace", joined)
+        # The load-bearing claim: the format belongs to one source set, not to
+        # the workspace. The plugin references state it in English for skill
+        # users; the invariant registry states it in Russian. Either wording
+        # satisfies the contract, but one of them has to be present.
+        self.assertTrue(
+            any(
+                phrase in joined
+                for phrase in (
+                    "not of the whole workspace",
+                    "а не всего рабочего пространства",
+                )
+            ),
+            "the source-set format contract must be documented somewhere",
+        )
         self.assertNotIn("sourceFormat=mixed", joined)
         self.assertNotIn("source_format=mixed", joined)
 
@@ -1509,21 +1544,29 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                     with self.subTest(path=path.relative_to(self.repo_root()), pattern=pattern):
                         self.assertIsNone(re.search(pattern, text, flags=re.I))
 
-    def test_documented_reference_paths_exist(self) -> None:
+    def test_documented_paths_resolve_from_the_document_that_carries_them(self) -> None:
+        """A documented link is only unambiguous when it is document-relative.
+
+        The reader of a skill or reference doc has that doc's directory as its
+        only stable anchor: the repository root is absent once the plugin is
+        packaged, and the plugin root is not knowable from the prose. So every
+        link resolves from its own document, and nothing resolves from a root.
+        """
         roots = [
             self.repo_root() / "README.md",
             self.repo_root() / "plugins" / "unica" / "README.md",
-            *self.skill_root().glob("*/SKILL.md"),
+            *self.skill_root().glob("*/**/*.md"),
             *self.reference_root().rglob("*.md"),
         ]
-        pattern = re.compile(r"`(references/[^`]+?\.md)`")
-        for doc in roots:
+        seen = 0
+        for doc in sorted(roots):
             text = doc.read_text(encoding="utf-8")
-            for match in pattern.findall(text):
+            for match in document_links(text):
+                seen += 1
                 with self.subTest(doc=doc.relative_to(self.repo_root()), reference=match):
-                    local_target = doc.parent / match
-                    plugin_target = self.repo_root() / "plugins" / "unica" / match
-                    self.assertTrue(local_target.is_file() or plugin_target.is_file())
+                    self.assertTrue((doc.parent / match).is_file())
+
+        self.assertGreater(seen, 0)
 
     def test_skills_do_not_use_model_specific_assistant_names(self) -> None:
         forbidden = ["Claude", "claude", "Anthropic", ".claude", "CLAUDE.md"]
@@ -1606,6 +1649,8 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                     )
                 for token in SCENARIO_PRESERVING_TOKENS.get(skill, []):
                     self.assertIn(token, text)
+                for token in SCENARIO_RETIRED_TOKENS.get(skill, []):
+                    self.assertNotIn(token, text)
                 for block in mcp_blocks:
                     payload = json.loads(block)
                     params = payload["params"]

@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use unica_bootstrap::{
-    launch_runtime, verify_mcp_runtime, HostTarget, HttpDownloader, Result, RuntimeInstaller,
-    RuntimeManifest,
+    launch_runtime, runtime_cache_root, verify_installed_plugin_metadata, verify_mcp_runtime,
+    HostTarget, HttpDownloader, Result, RuntimeInstaller, RuntimeManifest,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -68,7 +68,7 @@ fn install_and_verify_runtime(plugin_root: &Path) -> Result<()> {
 }
 
 fn verify_installed_skill_package(plugin_root: &Path) -> Result<()> {
-    verify_installed_plugin_metadata(plugin_root)?;
+    verify_installed_plugin_metadata(plugin_root, VERSION)?;
 
     let skills_root = plugin_root.join("skills");
     let mut visible = std::collections::BTreeSet::new();
@@ -106,44 +106,6 @@ fn verify_installed_skill_package(plugin_root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// A package may carry the Codex manifest, the Claude manifest, or both. Every
-/// manifest that is present must agree on the plugin identity, and each host
-/// keeps its own skill-discovery contract: Codex needs the explicit `skills`
-/// pointer, while Claude Code always scans `skills/` and would load the
-/// directory twice if the manifest named it again.
-fn verify_installed_plugin_metadata(plugin_root: &Path) -> Result<()> {
-    let mut hosts = 0;
-    for (dir, expects_skills_pointer) in [(".codex-plugin", true), (".claude-plugin", false)] {
-        let metadata_path = plugin_root.join(dir).join("plugin.json");
-        if !metadata_path.is_file() {
-            continue;
-        }
-        hosts += 1;
-        let metadata: serde_json::Value = serde_json::from_slice(&std::fs::read(&metadata_path)?)?;
-        // Absence is checked on the raw entry rather than the string projection,
-        // so a `skills` key of any type still counts as declared.
-        let declared_skills = metadata.get("skills");
-        let skills = declared_skills.and_then(serde_json::Value::as_str);
-        if metadata.get("name").and_then(serde_json::Value::as_str) != Some("unica")
-            || metadata.get("version").and_then(serde_json::Value::as_str) != Some(VERSION)
-            || (expects_skills_pointer && skills != Some("./skills/"))
-            || (!expects_skills_pointer && declared_skills.is_some())
-        {
-            return Err(unica_bootstrap::BootstrapError::new(format!(
-                "installed Unica plugin metadata does not expose version {VERSION} skills: {}",
-                metadata_path.display()
-            )));
-        }
-    }
-    if hosts == 0 {
-        return Err(unica_bootstrap::BootstrapError::new(format!(
-            "installed Unica plugin has no host manifest: {}",
-            plugin_root.display()
-        )));
-    }
-    Ok(())
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Command {
     Run,
@@ -168,37 +130,6 @@ fn parse_command(args: &[String]) -> Result<(Command, PathBuf)> {
     Ok((command, Path::new(&args[2]).to_path_buf()))
 }
 
-fn runtime_cache_root() -> Result<PathBuf> {
-    // The package points UNICA_RUNTIME_CACHE_DIR at ${CLAUDE_PLUGIN_DATA}, which
-    // only a host that understands the token expands. Hosts that pass it through
-    // literally would otherwise create a directory named after the token, so an
-    // unexpanded value is discarded in favour of the home-directory cache.
-    if let Some(value) = env::var_os("UNICA_RUNTIME_CACHE_DIR") {
-        let value = PathBuf::from(value);
-        if !value.to_string_lossy().contains("${") {
-            return Ok(value);
-        }
-    }
-    if let Some(value) = env::var_os("CLAUDE_PLUGIN_DATA") {
-        return Ok(PathBuf::from(value).join("runtimes"));
-    }
-    Ok(codex_home_root()?.join("unica").join("runtimes"))
-}
-
-fn codex_home_root() -> Result<PathBuf> {
-    if let Some(value) = env::var_os("CODEX_HOME") {
-        return Ok(PathBuf::from(value));
-    }
-    let home = env::var_os("HOME")
-        .or_else(|| env::var_os("USERPROFILE"))
-        .ok_or_else(|| {
-            unica_bootstrap::BootstrapError::new(
-                "CODEX_HOME, HOME, or USERPROFILE is required for the runtime cache",
-            )
-        })?;
-    Ok(PathBuf::from(home).join(".codex"))
-}
-
 fn normalize_exit_code(code: i32) -> u8 {
     if (0..=255).contains(&code) {
         code as u8
@@ -215,100 +146,5 @@ mod tests {
     fn source_plugin_exposes_required_prompt_visible_skills() {
         let plugin_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/unica");
         verify_installed_skill_package(&plugin_root).unwrap();
-    }
-
-    struct ManifestFixture {
-        root: PathBuf,
-    }
-
-    impl ManifestFixture {
-        fn new(name: &str) -> Self {
-            let root =
-                env::temp_dir().join(format!("unica-manifest-{name}-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&root);
-            std::fs::create_dir_all(&root).unwrap();
-            Self { root }
-        }
-
-        fn write(&self, dir: &str, body: serde_json::Value) {
-            let manifest_dir = self.root.join(dir);
-            std::fs::create_dir_all(&manifest_dir).unwrap();
-            std::fs::write(
-                manifest_dir.join("plugin.json"),
-                serde_json::to_vec(&body).unwrap(),
-            )
-            .unwrap();
-        }
-    }
-
-    impl Drop for ManifestFixture {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.root);
-        }
-    }
-
-    fn codex_manifest() -> serde_json::Value {
-        serde_json::json!({"name": "unica", "version": VERSION, "skills": "./skills/"})
-    }
-
-    fn claude_manifest() -> serde_json::Value {
-        serde_json::json!({"name": "unica", "version": VERSION})
-    }
-
-    #[test]
-    fn either_host_manifest_alone_satisfies_the_contract() {
-        let codex = ManifestFixture::new("codex-only");
-        codex.write(".codex-plugin", codex_manifest());
-        verify_installed_plugin_metadata(&codex.root).unwrap();
-
-        let claude = ManifestFixture::new("claude-only");
-        claude.write(".claude-plugin", claude_manifest());
-        verify_installed_plugin_metadata(&claude.root).unwrap();
-    }
-
-    #[test]
-    fn a_package_without_any_host_manifest_is_rejected() {
-        let fixture = ManifestFixture::new("no-host");
-        verify_installed_plugin_metadata(&fixture.root).unwrap_err();
-    }
-
-    #[test]
-    fn a_manifest_from_another_release_is_rejected() {
-        let fixture = ManifestFixture::new("stale-version");
-        fixture.write(".codex-plugin", codex_manifest());
-        fixture.write(
-            ".claude-plugin",
-            serde_json::json!({"name": "unica", "version": "0.0.0"}),
-        );
-        verify_installed_plugin_metadata(&fixture.root).unwrap_err();
-    }
-
-    #[test]
-    fn a_codex_manifest_without_the_skills_pointer_is_rejected() {
-        let fixture = ManifestFixture::new("codex-no-pointer");
-        fixture.write(
-            ".codex-plugin",
-            serde_json::json!({"name": "unica", "version": VERSION}),
-        );
-        verify_installed_plugin_metadata(&fixture.root).unwrap_err();
-    }
-
-    #[test]
-    fn a_claude_manifest_declaring_skills_is_rejected_whatever_its_type() {
-        // Claude Code always scans skills/, so any declaration would load the
-        // directory twice regardless of the value's JSON type.
-        for value in [
-            serde_json::json!("./skills/"),
-            serde_json::json!(["./skills/"]),
-            serde_json::json!({"path": "./skills/"}),
-            serde_json::Value::Null,
-        ] {
-            let fixture = ManifestFixture::new("claude-skills");
-            fixture.write(
-                ".claude-plugin",
-                serde_json::json!({"name": "unica", "version": VERSION, "skills": value}),
-            );
-            verify_installed_plugin_metadata(&fixture.root).unwrap_err();
-        }
     }
 }

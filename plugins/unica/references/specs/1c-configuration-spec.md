@@ -10,7 +10,7 @@
 > **Связанные спецификации:**
 > - Объекты метаданных — [1c-config-objects-spec.md](1c-config-objects-spec.md)
 > - Подсистемы и командный интерфейс — [1c-subsystem-spec.md](1c-subsystem-spec.md)
-> - Сводный индекс — [1c-specs-index.md](1c-specs-index.md)
+> - Сводный индекс — [format-index.md](format-index.md)
 
 ---
 

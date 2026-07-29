@@ -69,6 +69,7 @@ const CI_PATH_REQUIRED: &[&str] = &["CIPath"];
 pub(crate) const SUBSYSTEM_PATH: &[&str] = &["SubsystemPath", "subsystemPath", "Path", "path"];
 const SUBSYSTEM_PATH_REQUIRED: &[&str] = &["SubsystemPath"];
 const SUBSYSTEM_COMPILE_WRITE: &[&str] = &["OutputDir", "outputDir", "Parent", "parent"];
+const SUBSYSTEM_COMPILE_GUARD: &[&str] = &["Parent", "parent", "OutputDir", "outputDir"];
 const OUTPUT_PATH: &[&str] = &["OutputPath", "outputPath"];
 pub(crate) const TEMPLATE_PATH: &[&str] = &["TemplatePath", "templatePath", "Path", "path"];
 const TEMPLATE_PATH_REQUIRED: &[&str] = &["TemplatePath"];
@@ -409,7 +410,10 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         SUBSYSTEM_COMPILE_REQUIRED,
         SUBSYSTEM_COMPILE_WRITE,
         SUBSYSTEM_COMPILE_WRITE,
-        Some(path_guard(OUTPUT_DIR, SupportGuardRequirement::Editable)),
+        Some(path_guard(
+            SUBSYSTEM_COMPILE_GUARD,
+            SupportGuardRequirement::Editable,
+        )),
     ),
     descriptor_with_paths(
         "subsystem-edit",

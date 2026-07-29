@@ -1,5 +1,5 @@
 use super::operation_descriptors::{native_operation_descriptor, native_path_alias_groups};
-use super::{RuntimeJobAction, ToolHandler, ToolSpec};
+use super::{CodeIntelligenceOperation, RuntimeJobAction, ToolHandler, ToolSpec};
 use crate::domain::form_edit::{form_edit_definition_schema, validate_form_edit_definition};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
@@ -107,7 +107,6 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "Format",
     "InterceptorType",
     "JsonPath",
-    "KeepFiles",
     "Kind",
     "Lang",
     "Language",
@@ -188,7 +187,6 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "format",
     "interceptorType",
     "jsonPath",
-    "keepFiles",
     "kind",
     "lang",
     "language",
@@ -508,17 +506,7 @@ const CODE_ARGS: &[&str] = &[
 
 const CODE_DEFINITION_ARGS: &[&str] = &["limit", "moduleHint", "name", "sourceDir"];
 const CODE_OUTLINE_ARGS: &[&str] = &["includeMethods", "path", "sourceDir"];
-const CODE_GREP_ARGS: &[&str] = &[
-    "excludePath",
-    "fileTypes",
-    "ignoreCase",
-    "limit",
-    "mode",
-    "path",
-    "query",
-    "regex",
-    "sourceDir",
-];
+const CODE_SEARCH_ARGS: &[&str] = &["limit", "query", "sourceDir"];
 const CODE_GRAPH_ARGS: &[&str] = &[
     "detail",
     "dir",
@@ -1200,6 +1188,19 @@ fn validate_code_arguments(
     dry_run: bool,
 ) -> Result<(), String> {
     match tool.name {
+        "unica.code.search" => {
+            if args
+                .get("query")
+                .and_then(Value::as_str)
+                .is_some_and(|query| query.trim().is_empty())
+            {
+                return Err(format!(
+                    "{} argument `query` must be a non-empty string",
+                    tool.name
+                ));
+            }
+            validate_integer_bound(tool.name, args, "limit", 1, 50)?;
+        }
         "unica.code.graph" => {
             validate_enum_argument(tool.name, args, "mode", CODE_GRAPH_MODES)?;
             validate_enum_argument(tool.name, args, "dir", CODE_GRAPH_DIRECTIONS)?;
@@ -1209,11 +1210,20 @@ fn validate_code_arguments(
             validate_enum_argument(tool.name, args, "mode", CODE_DIAGNOSTIC_MODES)?;
             validate_enum_argument(tool.name, args, "minSeverity", CODE_DIAGNOSTIC_SEVERITIES)?;
             validate_enum_argument(tool.name, args, "detail", CODE_DIAGNOSTIC_DETAIL)?;
+            let mode = args
+                .get("mode")
+                .and_then(Value::as_str)
+                .unwrap_or("analyze");
+            // `path` scopes a single-file read, which only mode `file` performs.
+            // Every other mode dropped it silently: `analyze` then scanned the
+            // whole source set although the caller had named one file.
+            if mode != "file" && args.contains_key("path") {
+                return Err(format!(
+                    "{} mode `{mode}` does not support `path`; use mode `file` for one file",
+                    tool.name
+                ));
+            }
             if args.contains_key("timeoutSeconds") {
-                let mode = args
-                    .get("mode")
-                    .and_then(Value::as_str)
-                    .unwrap_or("analyze");
                 if mode != "analyze" {
                     return Err(format!(
                         "{} argument `timeoutSeconds` is only supported for mode `analyze`",
@@ -1228,13 +1238,7 @@ fn validate_code_arguments(
                     DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS,
                 )?;
             }
-            if !dry_run
-                && args
-                    .get("mode")
-                    .and_then(Value::as_str)
-                    .is_some_and(|mode| mode == "file")
-                && !args.contains_key("path")
-            {
+            if !dry_run && mode == "file" && !args.contains_key("path") {
                 return Err(format!(
                     "{} mode `file` requires `path` argument",
                     tool.name
@@ -1605,6 +1609,9 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
         ToolHandler::BuildRuntime { .. } => names.extend(BUILD_ARGS),
         ToolHandler::RuntimeAdapter => names.extend(RUNTIME_ARGS),
         ToolHandler::RuntimeJob { action } => names.extend(runtime_job_args(action)),
+        ToolHandler::CodeIntelligence { operation } => {
+            names.extend(code_intelligence_args(operation))
+        }
         ToolHandler::CodeAdapter { .. } => names.extend(code_args_for(tool.name)),
         ToolHandler::StandardsAdapter { .. } => names.extend(STANDARDS_ARGS),
         ToolHandler::ProjectStatus | ToolHandler::ProjectMap => {}
@@ -1640,12 +1647,15 @@ fn required_args(tool: &ToolSpec) -> Vec<&'static str> {
         } => vec!["query"],
         ToolHandler::RuntimeAdapter => runtime_required_args(tool),
         ToolHandler::RuntimeJob { action } => runtime_job_required_args(action),
+        ToolHandler::CodeIntelligence { operation } => match operation {
+            CodeIntelligenceOperation::Search => vec!["query"],
+            CodeIntelligenceOperation::Definition | CodeIntelligenceOperation::ObjectProfile => {
+                vec!["name"]
+            }
+            CodeIntelligenceOperation::Outline => vec!["path"],
+        },
         ToolHandler::CodeAdapter { .. } => match tool.name {
-            "unica.code.definition" => vec!["name"],
-            "unica.code.outline" => vec!["path"],
-            "unica.code.grep" => vec!["query"],
             "unica.code.graph" => vec!["mode"],
-            "unica.meta.profile" => vec!["name"],
             _ => Vec::new(),
         },
         _ => Vec::new(),
@@ -1654,13 +1664,22 @@ fn required_args(tool: &ToolSpec) -> Vec<&'static str> {
 
 fn code_args_for(tool_name: &str) -> &'static [&'static str] {
     match tool_name {
+        "unica.code.search" => CODE_SEARCH_ARGS,
         "unica.code.definition" => CODE_DEFINITION_ARGS,
         "unica.code.outline" => CODE_OUTLINE_ARGS,
-        "unica.code.grep" => CODE_GREP_ARGS,
         "unica.code.graph" => CODE_GRAPH_ARGS,
         "unica.code.diagnostics" => CODE_DIAGNOSTICS_ARGS,
         "unica.meta.profile" => META_PROFILE_ARGS,
         _ => CODE_ARGS,
+    }
+}
+
+fn code_intelligence_args(operation: CodeIntelligenceOperation) -> &'static [&'static str] {
+    match operation {
+        CodeIntelligenceOperation::Search => CODE_SEARCH_ARGS,
+        CodeIntelligenceOperation::Definition => CODE_DEFINITION_ARGS,
+        CodeIntelligenceOperation::Outline => CODE_OUTLINE_ARGS,
+        CodeIntelligenceOperation::ObjectProfile => META_PROFILE_ARGS,
     }
 }
 
@@ -1729,8 +1748,6 @@ fn property_schema(name: &str) -> Value {
             | "createIfMissing"
             | "IsFunction"
             | "isFunction"
-            | "KeepFiles"
-            | "keepFiles"
             | "allExtensions"
             | "checkUseModality"
             | "checkUseSynchronousCalls"
@@ -1760,8 +1777,6 @@ fn property_schema(name: &str) -> Value {
             | "waitForExit"
             | "webClient"
             | "includeMethods"
-            | "ignoreCase"
-            | "regex"
     ) {
         "boolean"
     } else if name == "definition" {
@@ -1912,7 +1927,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "config",
-        "Workspace-relative path to v8project.yaml on unica.runtime.execute, unica.runtime.job.start and unica.build.* — the file to create for operation config-init and the existing project config for every other operation, never v8project.local.yaml; on unica.code.search and unica.code.diagnostics `config` is a separate passthrough to the bsl-analyzer run and is not the project config.",
+        "Workspace-relative path to v8project.yaml on unica.runtime.execute, unica.runtime.job.start and unica.build.* — the file to create for operation config-init and the existing project config for every other operation, never v8project.local.yaml; on unica.code.diagnostics `config` is a separate passthrough to the bsl-analyzer run and is not the project config.",
     ),
     (
         "configDir",
@@ -2008,10 +2023,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "Boolean Designer syntax-check option (--empty-handlers) accepted only by operation syntax with a designer-* mode",
     ),
     (
-        "excludePath",
-        "One workspace path to exclude from unica.code.grep, resolved against cwd (or placed under sourceDir when relative) and applied as a git-grep exclude pathspec",
-    ),
-    (
         "execute",
         "Workspace-relative .epf to run via the platform /Execute key on a direct-client operation launch; required and must end in .epf when waitForExit is true",
     ),
@@ -2046,10 +2057,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "fields",
         "Declared array-of-strings argument that no handler reads; data-set fields are a `fields` key inside the DCS JSON definition, not a call argument",
-    ),
-    (
-        "fileTypes",
-        "String, not an array: bare file extensions for unica.code.grep separated by commas, semicolons, or spaces, such as \"bsl\" or \"bsl,xml\"; each must be alphanumeric",
     ),
     (
         "filterTags",
@@ -2100,10 +2107,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "Array of code-graph node ids for unica.code.graph, forwarded as ids alongside the single-node id argument; use it when one request targets several nodes",
     ),
     (
-        "ignoreCase",
-        "Boolean for unica.code.grep; true makes the match case-insensitive (git grep -i), and it defaults to false",
-    ),
-    (
         "ignoreTags",
         "Array of Vanessa Automation tags to exclude for operation test with testRunner va; each entry becomes one --ignore-tag",
     ),
@@ -2135,10 +2138,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "jsonPath",
         "Path to the JSON DSL file, relative to `cwd`, for `unica.form.compile`, `unica.form.edit`, `unica.meta.compile`, `unica.mxl.compile` and `unica.role.compile`",
     ),
-    (
-        "keepFiles",
-        "`unica.meta.remove` only: boolean that deregisters the object from `Configuration.xml` but leaves its files on disk (requires typing `KeepFiles` as boolean in `property_schema`, which currently declares it a string).",
-    ),
     ("kind", "Declared string argument that no tool handler reads"),
     (
         "lang",
@@ -2150,7 +2149,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "limit",
-        "Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20, code.definition 50, code.grep 200, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results).",
+        "Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results).",
     ),
     (
         "maxErrors",
@@ -2283,7 +2282,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "path",
-        "Workspace-relative file path whose meaning is tool-scoped: the required .cf or .cfe artifact for unica.runtime.execute operation load (.epf and .erf are rejected there), the target *Module.bsl or module-relative file for unica.code.patch and the other unica.code.* tools, the canonical alias of the object/config path argument on the native XML tools, and a plain --path passthrough on unica.build.*.",
+        "Workspace-relative file path whose meaning is tool-scoped: the required .cf or .cfe artifact for unica.runtime.execute operation load (.epf and .erf are rejected there), the target *Module.bsl or module-relative file for unica.code.patch and the other unica.code.* tools — on unica.code.diagnostics only mode `file` reads one file, so every other mode rejects `path` instead of ignoring it — the canonical alias of the object/config path argument on the native XML tools, and a plain --path passthrough on unica.build.*.",
     ),
     (
         "position",
@@ -2311,7 +2310,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "query",
-        "Search text: FTS phrase for unica.code.search, git-grep pattern for unica.code.grep, node-lookup text for unica.code.graph mode=resolve, the required unica.standards.search string, and explain's last-resort fallback",
+        "Search text: provider-neutral query for unica.code.search, node-lookup text for unica.code.graph mode=resolve, the required unica.standards.search string, and explain's last-resort fallback",
     ),
     (
         "rangeEnd",
@@ -2328,10 +2327,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "rawKeys",
         "Array of extra non-reserved platform launch keys such as /TESTMANAGER for a direct-client operation launch; never repeat /C, /Execute or /Out here",
-    ),
-    (
-        "regex",
-        "Boolean for unica.code.grep; false (the default) matches query as a fixed literal, true treats query as a regular expression",
     ),
     (
         "rightsPath",
@@ -2562,6 +2557,13 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
     if tool.name == "unica.form.edit" && name == "definition" {
         return form_edit_definition_schema();
     }
+    if tool.name == "unica.code.search" {
+        return match name {
+            "query" => json!({ "type": "string", "minLength": 1, "pattern": r"\S" }),
+            "limit" => json!({ "type": "integer", "minimum": 1, "maximum": 50 }),
+            _ => property_schema(name),
+        };
+    }
     if tool.name == "unica.code.patch" {
         return match name {
             "operation" => json!({ "type": "string", "enum": ["insert"] }),
@@ -2684,6 +2686,9 @@ fn validate_argument_type(tool_name: &str, key: &str, value: &Value) -> Result<(
         Some("object") if !value.is_object() => {
             Err(format!("{tool_name} argument `{key}` must be object"))
         }
+        Some("string") if !value.is_string() => {
+            Err(format!("{tool_name} argument `{key}` must be string"))
+        }
         _ => Ok(()),
     }
 }
@@ -2715,8 +2720,6 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
             | "createIfMissing"
             | "IsFunction"
             | "isFunction"
-            | "KeepFiles"
-            | "keepFiles"
             | "allExtensions"
             | "checkUseModality"
             | "checkUseSynchronousCalls"
@@ -2746,10 +2749,10 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
             | "waitForExit"
             | "webClient"
             | "includeMethods"
-            | "ignoreCase"
-            | "regex"
     ) {
         Some("boolean")
+    } else if key == "query" {
+        Some("string")
     } else if matches!(key, "definition" | "selector") {
         Some("object")
     } else if matches!(
@@ -2953,6 +2956,22 @@ mod tests {
 
         assert!(description.contains("mxl.compile"));
         assert!(!description.contains("mxl.decompile"));
+    }
+
+    #[test]
+    fn config_description_excludes_tools_that_stopped_accepting_it() {
+        let (_, description) = ARG_DESCRIPTIONS
+            .iter()
+            .find(|(name, _)| *name == "config")
+            .expect("config must have a shared description");
+
+        assert!(!CODE_SEARCH_ARGS.contains(&"config"));
+        assert!(!description.contains("unica.code.search"), "{description}");
+        assert!(CODE_DIAGNOSTICS_ARGS.contains(&"config"));
+        assert!(
+            description.contains("unica.code.diagnostics"),
+            "{description}"
+        );
     }
 
     #[test]
@@ -3179,27 +3198,30 @@ mod tests {
     }
 
     #[test]
-    fn meta_remove_keep_files_contract_is_boolean() {
+    fn meta_remove_does_not_publish_keep_files() {
         let remove = tools()
             .into_iter()
             .find(|tool| tool.name == "unica.meta.remove")
             .expect("unica.meta.remove must be registered");
         let schema = input_schema_for_tool(&remove);
 
-        assert_eq!(schema["properties"]["KeepFiles"]["type"], "boolean");
-        assert_eq!(schema["properties"]["keepFiles"]["type"], "boolean");
-        validate_tool_arguments(
-            remove,
-            json!({
-                "ConfigDir": "src",
-                "Object": "Catalog.Legacy",
-                "KeepFiles": true,
-            })
-            .as_object()
-            .expect("test arguments must be an object"),
-            false,
-        )
-        .expect("meta.remove must accept boolean KeepFiles");
+        assert!(schema["properties"]["KeepFiles"].is_null());
+        assert!(schema["properties"]["keepFiles"].is_null());
+        for spelling in ["KeepFiles", "keepFiles"] {
+            let error = validate_tool_arguments(
+                remove,
+                json!({
+                    "ConfigDir": "src",
+                    "Object": "Catalog.Legacy",
+                    spelling: true,
+                })
+                .as_object()
+                .expect("test arguments must be an object"),
+                false,
+            )
+            .expect_err("meta.remove must reject the retired keep-files flag");
+            assert!(error.contains(&format!("does not accept argument `{spelling}`")));
+        }
     }
 
     #[test]
@@ -4024,10 +4046,10 @@ mod tests {
             .into_iter()
             .find(|tool| tool.name == "unica.code.outline")
             .expect("unica.code.outline must be registered");
-        let grep = tools()
+        let search = tools()
             .into_iter()
-            .find(|tool| tool.name == "unica.code.grep")
-            .expect("unica.code.grep must be registered");
+            .find(|tool| tool.name == "unica.code.search")
+            .expect("unica.code.search must be registered");
 
         let definition_schema = input_schema_for_tool(&definition);
         assert_eq!(definition_schema["additionalProperties"], false);
@@ -4046,13 +4068,55 @@ mod tests {
         );
         assert_eq!(outline_schema["required"], json!(["path"]));
 
-        let grep_schema = input_schema_for_tool(&grep);
-        assert_eq!(grep_schema["additionalProperties"], false);
-        assert!(grep_schema["properties"].get("query").is_some());
-        assert!(grep_schema["properties"].get("excludePath").is_some());
-        assert_eq!(grep_schema["properties"]["regex"]["type"], "boolean");
-        assert_eq!(grep_schema["properties"]["ignoreCase"]["type"], "boolean");
-        assert_eq!(grep_schema["required"], json!(["query"]));
+        let search_schema = input_schema_for_tool(&search);
+        assert_eq!(search_schema["additionalProperties"], false);
+        assert!(search_schema["properties"].get("query").is_some());
+        assert_eq!(search_schema["properties"]["query"]["minLength"], 1);
+        assert_eq!(search_schema["properties"]["limit"]["minimum"], 1);
+        assert_eq!(search_schema["properties"]["limit"]["maximum"], 50);
+        for removed in [
+            "excludePath",
+            "fileTypes",
+            "ignoreCase",
+            "mode",
+            "path",
+            "regex",
+        ] {
+            assert!(
+                search_schema["properties"].get(removed).is_none(),
+                "{removed} must not leak from removed unica.code.grep"
+            );
+        }
+        assert_eq!(search_schema["required"], json!(["query"]));
+    }
+
+    #[test]
+    fn code_search_rejects_blank_queries_and_out_of_range_limits() {
+        let search = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.code.search")
+            .unwrap();
+
+        for args in [
+            json!({"query": "   "}),
+            json!({"query": 42}),
+            json!({"query": null}),
+            json!({"query": true}),
+            json!({"query": {}}),
+            json!({"query": "Post", "limit": 0}),
+            json!({"query": "Post", "limit": 51}),
+        ] {
+            assert!(
+                validate_tool_arguments(search, args.as_object().unwrap(), false).is_err(),
+                "payload must be rejected: {args}"
+            );
+        }
+        validate_tool_arguments(
+            search,
+            json!({"query": "Post", "limit": 50}).as_object().unwrap(),
+            false,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -4228,6 +4292,45 @@ mod tests {
         args.insert("mode".to_string(), json!("file"));
         let error = validate_tool_arguments(diagnostics, &args, false).unwrap_err();
         assert!(error.contains("requires `path`"));
+
+        let mut args = Map::new();
+        args.insert("mode".to_string(), json!("analyze"));
+        args.insert(
+            "path".to_string(),
+            json!("src/CommonModules/Probe/Ext/Module.bsl"),
+        );
+        let error = validate_tool_arguments(diagnostics, &args, false).unwrap_err();
+        assert!(error.contains("does not support `path`"));
+
+        let mut args = Map::new();
+        args.insert(
+            "path".to_string(),
+            json!("src/CommonModules/Probe/Ext/Module.bsl"),
+        );
+        let error = validate_tool_arguments(diagnostics, &args, false).unwrap_err();
+        assert!(error.contains("does not support `path`"));
+
+        for mode in ["status", "catalog", "workspace"] {
+            let mut args = Map::new();
+            args.insert("mode".to_string(), json!(mode));
+            args.insert(
+                "path".to_string(),
+                json!("src/CommonModules/Probe/Ext/Module.bsl"),
+            );
+            let error = validate_tool_arguments(diagnostics, &args, false).unwrap_err();
+            assert!(
+                error.contains(&format!("mode `{mode}` does not support `path`")),
+                "mode {mode} must reject `path` instead of dropping it: {error}"
+            );
+        }
+
+        let mut args = Map::new();
+        args.insert("mode".to_string(), json!("file"));
+        args.insert(
+            "path".to_string(),
+            json!("src/CommonModules/Probe/Ext/Module.bsl"),
+        );
+        validate_tool_arguments(diagnostics, &args, false).unwrap();
 
         let mut args = Map::new();
         args.insert("mode".to_string(), json!("raw"));

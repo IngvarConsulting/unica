@@ -175,6 +175,7 @@ impl<'a> WorkspaceIndexService<'a> {
         }
     }
 
+    #[cfg(test)]
     pub fn with_runner(runner: &'a dyn IndexRunner) -> Self {
         Self { runner }
     }

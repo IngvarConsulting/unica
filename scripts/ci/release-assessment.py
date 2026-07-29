@@ -34,7 +34,6 @@ EXPECTED_PUBLIC_TOOLS = {
     "unica.cf.validate",
     "unica.code.diagnostics",
     "unica.code.search",
-    "unica.code.grep",
     "unica.code.outline",
     "unica.meta.profile",
     "unica.standards.explain",
@@ -579,6 +578,37 @@ def validate_project_map(scenario: dict[str, Any], payload: dict[str, Any] | Non
         scenario["errors"].append(f"project map did not detect {SOURCE_DIR} as platform XML")
 
 
+def validate_code_search(scenario: dict[str, Any], payload: dict[str, Any] | None) -> None:
+    if payload is None:
+        return
+    data = payload.get("data")
+    sections = data.get("sections") if isinstance(data, dict) else None
+    expected = ["rlm", "bsl-analyzer", "git-grep"]
+    providers = (
+        [section.get("provider") for section in sections if isinstance(section, dict)]
+        if isinstance(sections, list)
+        else []
+    )
+    errors: list[str] = []
+    if providers != expected:
+        errors.append(
+            "code search data.sections must contain exactly rlm, bsl-analyzer, git-grep in that order"
+        )
+    elif any(
+        section.get("status") not in {"ok", "empty", "unavailable", "failed"}
+        or not isinstance(section.get("hits"), list)
+        or not isinstance(section.get("diagnostics"), list)
+        or not isinstance(section.get("artifacts"), list)
+        for section in sections
+    ):
+        errors.append(
+            "code search sections must expose a valid status plus hits, diagnostics, and artifacts arrays"
+        )
+    if errors:
+        scenario["status"] = "failed"
+        scenario["errors"].extend(errors)
+
+
 def relpath(path: Path, root: Path) -> str:
     return path.relative_to(root).as_posix()
 
@@ -652,22 +682,14 @@ def base_tool_scenarios(bsp_root: Path) -> list[tuple[str, str, str, dict[str, A
     bsl_search = sample_bsl_search(bsp_root)
     code_search_args = {"sourceDir": SOURCE_DIR, "query": "Процедура", "limit": 20}
     if bsl_search:
-        bsl_path, query = bsl_search
-        code_search_args = {"sourceDir": SOURCE_DIR, "path": bsl_path, "query": query, "limit": 20}
+        _, query = bsl_search
+        code_search_args = {"sourceDir": SOURCE_DIR, "query": query, "limit": 20}
 
     scenarios: list[tuple[str, str, str, dict[str, Any], bool, bool]] = [
         ("project-status", "Workspace status", "unica.project.status", {}, True, True),
         ("project-map", "Workspace source-set map", "unica.project.map", {}, True, True),
         ("cf-info", "BSP Configuration.xml overview", "unica.cf.info", {"ConfigPath": SOURCE_DIR, "Mode": "brief", "Limit": 80}, True, True),
         ("cf-validate", "BSP Configuration.xml validation", "unica.cf.validate", {"ConfigPath": SOURCE_DIR, "MaxErrors": 50}, False, False),
-        (
-            "code-grep",
-            "BSL git grep smoke",
-            "unica.code.grep",
-            code_search_args,
-            True,
-            True,
-        ),
         (
             "code-diagnostics-workspace",
             "BSL diagnostics workspace read",
@@ -681,7 +703,7 @@ def base_tool_scenarios(bsp_root: Path) -> list[tuple[str, str, str, dict[str, A
             "BSL indexed search smoke",
             "unica.code.search",
             code_search_args,
-            False,
+            True,
             True,
         ),
     ]
@@ -797,6 +819,8 @@ def build_assessment_report(
         )
         if scenario_id == "project-map":
             validate_project_map(scenario, payload)
+        if scenario_id == "code-search":
+            validate_code_search(scenario, payload)
         scenarios.append(scenario)
         diagnostic_codes.extend(extract_diagnostic_codes(payload))
 

@@ -1,96 +1,106 @@
-# ADR-0013: MCP transport is owned by the official Rust SDK
+# ADR-0013: Транспортом MCP владеет официальный Rust SDK
 
-- Status: accepted
-- Date: 2026-07-26
+- Статус: `accepted`
+- Дата: `2026-07-26`
+- Обновлено: `2026-07-28`
 
-## Context
+> Переведено на русский; содержание решения не изменялось.
 
-`interfaces/mcp.rs` reimplemented the MCP stdio transport by hand: a JSON-RPC
-read loop over `std::thread`, a bespoke worker pool, a cancellation registry,
-and a hard-coded `protocolVersion = "2024-11-05"` that was returned without
-negotiating with the client. The Model Context Protocol specification keeps
-moving (structured output, elicitation, progress notifications, newer protocol
-revisions), and every revision widened the silent gap between the hand-rolled
-transport and the upstream contract. The official Rust SDK (`rmcp`) is
-maintained, tested against the specification, and already implements the
-behaviors we duplicated: per-request task spawning, `notifications/cancelled`
-handling, `ping`, protocol version negotiation, and EOF drain.
+## Контекст
 
-The cost of adopting the SDK is a `tokio` runtime inside a previously fully
-synchronous binary, and the discipline to keep our data-driven tool contract
-out of the SDK's macro layer. Issue #219 records the decision driver: stop
-hand-maintaining transport code; binary size is explicitly not a constraint.
+`interfaces/mcp.rs` переизобретал stdio-транспорт MCP вручную: цикл чтения
+JSON-RPC поверх `std::thread`, самодельный пул рабочих потоков, реестр отмен и
+зашитый `protocolVersion = "2024-11-05"`, который возвращался без согласования с
+клиентом. Спецификация Model Context Protocol продолжает двигаться
+(структурированный вывод, elicitation, уведомления о прогрессе, новые ревизии
+протокола), и каждая ревизия расширяла молчаливый разрыв между самодельным
+транспортом и вышестоящим контрактом. Официальный Rust SDK (`rmcp`)
+поддерживается, тестируется против спецификации и уже реализует то, что мы
+дублировали: порождение задачи на запрос, обработку `notifications/cancelled`,
+`ping`, согласование версии протокола и дренаж на EOF.
 
-## Decision
+Цена перехода на SDK — среда выполнения `tokio` внутри прежде полностью
+синхронного бинарника и дисциплина держать наш контракт инструментов,
+описываемый данными, вне макрослоя SDK. Задача #219 фиксирует движущую силу
+решения: перестать поддерживать транспортный код руками; размер бинарника явно
+не является ограничением.
 
-The public `unica` stdio MCP server runs on `rmcp` (official Rust SDK), with
+## Решение
+
+Публичный stdio-сервер MCP `unica` работает на `rmcp` (официальный Rust SDK) с
 `default-features = false, features = ["server", "transport-io"]`.
 
-1. `interfaces/mcp.rs` implements `rmcp::ServerHandler` directly. The SDK's
-   `#[tool]`/`#[tool_router]` macros are not used: tool names, descriptions,
-   and input schemas remain data-driven by `application/operation_descriptors.rs`
-   and `application/tool_contracts.rs` (ADR-0001 contract surface).
-2. `rmcp` types do not leak past `interfaces/mcp.rs`. The application layer
-   keeps its transport-neutral API (ADR-0002): `UnicaApplication::tools()` and
-   `call_tool_cancellable` with the domain `CancellationToken`.
-3. Tool execution runs in `tokio::task::spawn_blocking`; the SDK's per-request
-   cancellation token is bridged to the domain token. Concurrent `tools/call`
-   admission stays bounded at 32; excess calls fail with JSON-RPC `-32603`
-   containing `overloaded`.
-4. Tool execution failures keep their current wire shape (JSON-RPC error
-   `-32000`). Moving them to `CallToolResult.isError` is a separate,
-   deliberate contract change tracked outside this migration.
-5. On transport shutdown the server cancels still-running domain operations and
-   waits a bounded grace for them, preserving child-process cleanup guarantees.
+1. `interfaces/mcp.rs` реализует `rmcp::ServerHandler` напрямую. Макросы SDK
+   `#[tool]`/`#[tool_router]` не используются: имена инструментов, описания и
+   схемы входных данных остаются описанными данными в
+   `application/operation_descriptors.rs` и `application/tool_contracts.rs`
+   (поверхность контракта из ADR-0001).
+2. Типы `rmcp` не выходят за пределы `interfaces/mcp.rs`. Слой приложения
+   сохраняет свой нейтральный к транспорту API (ADR-0002):
+   `UnicaApplication::tools()` и `call_tool_cancellable` с доменным
+   `CancellationToken`.
+3. Выполнение инструмента идёт в `tokio::task::spawn_blocking`; токен отмены
+   SDK, свой на каждый запрос, соединяется мостом с доменным токеном.
+   Допуск параллельных `tools/call` остаётся ограниченным числом 32; лишние
+   вызовы падают с ошибкой JSON-RPC `-32603`, содержащей `overloaded`.
+4. Сбои выполнения инструмента сохраняют нынешнюю форму на проводе (ошибка
+   JSON-RPC `-32000`). Перенос их в `CallToolResult.isError` — отдельное
+   осознанное изменение контракта, которое отслеживается вне этой миграции.
+5. При завершении транспорта сервер отменяет ещё выполняющиеся доменные
+   операции и ждёт их ограниченное время, сохраняя гарантии уборки дочерних
+   процессов.
 
-## Contract deltas accepted with the SDK
+## Изменения контракта, принятые вместе с SDK
 
-These are behavior changes relative to the hand-rolled loop, accepted because
-they match the MCP specification:
+Это изменения поведения относительно самодельного цикла, принятые потому, что
+они соответствуют спецификации MCP:
 
-1. `protocolVersion` is negotiated with the client instead of being pinned to
-   `2024-11-05`; the server can speak newer protocol revisions.
-2. A strict handshake: the first request must be a well-formed `initialize`
-   (`ping` is allowed before it). Requests sent without a handshake, tolerated
-   by the old loop, are no longer served.
-3. A request cancelled via `notifications/cancelled` gets no response at all
-   (the specification says the response SHOULD NOT be sent); the old loop
-   answered with `-32800`.
-4. The 8 MiB public input line bound is delegated to the SDK, which currently
-   does not bound line length. The stdio peer is the host process in the same
-   trust domain, so this was defense-in-depth, not a security boundary. The
-   internal workspace-service protocol keeps its own 8 MiB bound and worker
-   limits (unchanged).
-5. EOF drain timing follows the SDK (up to 5 s natural drain, then our bounded
-   cancellation grace) instead of the bespoke 250 ms/2 s schedule.
+1. `protocolVersion` согласуется с клиентом, а не закреплён на `2024-11-05`;
+   сервер может говорить на более новых ревизиях протокола.
+2. Строгое рукопожатие: первым запросом обязан быть корректный `initialize`
+   (`ping` перед ним допустим). Запросы без рукопожатия, которые старый цикл
+   терпел, больше не обслуживаются.
+3. Запрос, отменённый через `notifications/cancelled`, не получает ответа вовсе
+   (спецификация предписывает ответ не отправлять); старый цикл отвечал
+   `-32800`.
+4. Публичное ограничение строки ввода в 8 МиБ передано SDK, который длину
+   строки сейчас не ограничивает. Партнёр по stdio — процесс хоста в том же
+   домене доверия, так что это была эшелонированная защита, а не граница
+   безопасности. Внутренний протокол сервиса рабочего пространства сохраняет
+   собственное ограничение в 8 МиБ и лимиты рабочих потоков без изменений.
+5. Тайминг дренажа на EOF следует SDK (до 5 с естественного дренажа, затем наша
+   ограниченная отсрочка на отмену), а не самодельному расписанию 250 мс / 2 с.
 
-## Relation to ADR-0008
+## Отношение к ADR-0008
 
-"Thin" in ADR-0008 constrains the marketplace package and its acquisition
-path, not the runtime's dependency graph. The runtime binary embedding an
-async runtime does not violate that decision; ADR-0008 is amended with one
-clarifying sentence to prevent the opposite reading.
+«Тонкий» в ADR-0008 ограничивает пакет маркетплейса и путь его получения, а не
+граф зависимостей runtime. Бинарник runtime со встроенной асинхронной средой
+выполнения того решения не нарушает; в ADR-0008 добавлено одно уточняющее
+предложение, чтобы обратное прочтение стало невозможным.
 
-## Consequences
+## Последствия
 
-1. ~1300 lines of transport code are deleted and stop being maintained here.
-2. `tokio` becomes a workspace dependency of `unica-coder`; the binary is
-   larger. Accepted (issue #219).
-3. Transport-level unit tests move from feeding raw JSON strings into a
-   hand-rolled dispatcher to driving a real SDK server over an in-memory
-   duplex transport.
-4. A second transport (streamable HTTP) or `resources`/`prompts` capabilities
-   become feature flags away instead of a second hand-rolled implementation.
-5. Protocol-revision upgrades become SDK version bumps.
+1. Около 1300 строк транспортного кода удалены и больше здесь не
+   поддерживаются.
+2. `tokio` становится зависимостью рабочего пространства для `unica-coder`;
+   бинарник растёт. Это принято (задача #219).
+3. Модульные тесты уровня транспорта переезжают с подачи сырых JSON-строк в
+   самодельный диспетчер на управление настоящим сервером SDK через дуплексный
+   транспорт в памяти.
+4. Второй транспорт (streamable HTTP) или возможности `resources`/`prompts`
+   оказываются на расстоянии флага компиляции, а не второй самодельной
+   реализации.
+5. Переход на новую ревизию протокола становится подъёмом версии SDK.
 
-## Verification
+## Верификация
 
-- [x] `tools/list` over the SDK returns the same tools with the same
-  data-driven schemas as before the migration
+- [x] `tools/list` поверх SDK возвращает те же инструменты с теми же
+  описанными данными схемами, что и до миграции
   (`cargo test -p unica-coder interfaces::mcp`).
-- [x] `ping` stays responsive while a `tools/call` runs; cancellation reaches
-  the domain token; admission stays bounded at 32 (same test module).
-- [ ] Both hosts (Codex and Claude Code) complete `initialize`/`tools/list`
-  against the SDK server (host-level check, performed at release).
-- [x] `spec/acceptance/unica-mcp-validation.md` describes the SDK-era wire
-  contract (handshake, cancellation, EOF, line bound).
+- [x] `ping` остаётся отзывчивым, пока выполняется `tools/call`; отмена доходит
+  до доменного токена; допуск остаётся ограниченным числом 32 (тот же модуль
+  тестов).
+- [ ] Оба хоста (Codex и Claude Code) проходят `initialize`/`tools/list` против
+  сервера на SDK (проверка уровня хоста, выполняется на релизе).
+- [x] `spec/acceptance/unica-mcp-validation.md` описывает контракт на проводе
+  эпохи SDK (рукопожатие, отмена, EOF, ограничение строки).

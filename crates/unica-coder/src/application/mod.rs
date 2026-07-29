@@ -1,5 +1,6 @@
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
+use crate::domain::code_intelligence::{CodeIntelligenceReadRequest, SearchRequest};
 use crate::domain::events::{runtime_event_kind, DomainEvent, DomainEventKind};
 use crate::domain::workspace::WorkspaceContext;
 pub(crate) use operation_descriptors::SupportGuardRequirement;
@@ -14,6 +15,7 @@ pub(crate) use tool_contracts::{
 };
 
 mod metadata_navigation;
+pub(crate) mod code_intelligence;
 pub(crate) mod operation_descriptors;
 mod outcome;
 pub(crate) mod ports;
@@ -202,6 +204,9 @@ pub enum ToolHandler {
     RuntimeJob {
         action: RuntimeJobAction,
     },
+    CodeIntelligence {
+        operation: CodeIntelligenceOperation,
+    },
     CodeAdapter {
         command: &'static [&'static str],
     },
@@ -218,6 +223,14 @@ pub enum RuntimeJobAction {
     Logs,
     Cancel,
     List,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodeIntelligenceOperation {
+    Search,
+    Definition,
+    Outline,
+    ObjectProfile,
 }
 
 #[derive(Debug, Serialize)]
@@ -273,7 +286,14 @@ impl UnicaApplication {
         let spec = tools()
             .into_iter()
             .find(|tool| tool.name == name)
-            .ok_or_else(|| format!("unknown unica tool: {name}"))?;
+            .ok_or_else(|| {
+                if name == "unica.code.grep" {
+                    "unica.code.grep was removed; use unica.code.search and inspect its git-grep section"
+                        .to_string()
+                } else {
+                    format!("unknown unica tool: {name}")
+                }
+            })?;
         call_tool(spec, args, self.ports.as_ref(), &cancellation)
     }
 }
@@ -428,14 +448,14 @@ pub fn tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "unica.code.search",
-            description: "Search BSL code through the internal RLM index.",
+            description: "Search code concurrently through provider-local RLM, bsl-analyzer, and literal git-grep sections. Migration: use sourceDir instead of the former path/config fields and a per-provider limit from 1 to 50.",
             mutating: false,
             cache_access: CacheAccess {
-                reads: &["bsl_index"],
+                reads: &["bsl_index", "workspace_graph"],
                 writes: &[],
             },
-            handler: ToolHandler::CodeAdapter {
-                command: &["search"],
+            handler: ToolHandler::CodeIntelligence {
+                operation: CodeIntelligenceOperation::Search,
             },
         },
         ToolSpec {
@@ -446,8 +466,8 @@ pub fn tools() -> Vec<ToolSpec> {
                 reads: &["bsl_index"],
                 writes: &[],
             },
-            handler: ToolHandler::CodeAdapter {
-                command: &["definition"],
+            handler: ToolHandler::CodeIntelligence {
+                operation: CodeIntelligenceOperation::Definition,
             },
         },
         ToolSpec {
@@ -458,16 +478,9 @@ pub fn tools() -> Vec<ToolSpec> {
                 reads: &["bsl_index"],
                 writes: &[],
             },
-            handler: ToolHandler::CodeAdapter {
-                command: &["outline"],
+            handler: ToolHandler::CodeIntelligence {
+                operation: CodeIntelligenceOperation::Outline,
             },
-        },
-        ToolSpec {
-            name: "unica.code.grep",
-            description: "Run safe typed git-grep search inside the Unica workspace.",
-            mutating: false,
-            cache_access: CacheAccess::default(),
-            handler: ToolHandler::CodeAdapter { command: &["grep"] },
         },
         ToolSpec {
             name: "unica.code.patch",
@@ -595,11 +608,14 @@ fn call_tool(
             job: None,
         });
     }
-    let mut support_guard_warning = if spec.mutating && !dry_run {
+    let support_guard_warning = if spec.mutating {
         match ports.evaluate_support_guard(spec, args, &context)? {
             SupportGuardCheck::Allow => None,
             SupportGuardCheck::Warn(warning) => Some(warning),
-            SupportGuardCheck::Block(outcome) => {
+            SupportGuardCheck::Block(mut outcome) => {
+                if dry_run {
+                    outcome.summary = format!("dry run: {}", outcome.summary);
+                }
                 let cache = ports.cache_report(&context, &[], dry_run, spec.cache_access)?;
                 return Ok(OperationResult {
                     ok: outcome.ok,
@@ -622,32 +638,22 @@ fn call_tool(
         None
     };
 
-    let handler_outcome = ports.invoke_handler(spec, args, &context, dry_run, cancellation)?;
+    let handler_outcome = match spec.handler {
+        ToolHandler::CodeIntelligence {
+            operation: CodeIntelligenceOperation::Search,
+        } => invoke_code_intelligence_search(ports, args, &context, dry_run, cancellation)?,
+        ToolHandler::CodeIntelligence { operation } => invoke_code_intelligence_read(
+            ports,
+            spec.name,
+            operation,
+            args,
+            &context,
+            dry_run,
+            cancellation,
+        )?,
+        _ => ports.invoke_handler(spec, args, &context, dry_run, cancellation)?,
+    };
     let mut outcome = handler_outcome.adapter;
-    if is_successful_detailed_compile_preview(spec, dry_run, &outcome) {
-        match ports.evaluate_support_guard(spec, args, &context)? {
-            SupportGuardCheck::Allow => {}
-            SupportGuardCheck::Warn(warning) => support_guard_warning = Some(warning),
-            SupportGuardCheck::Block(blocked) => {
-                let cache = ports.cache_report(&context, &[], dry_run, spec.cache_access)?;
-                return Ok(OperationResult {
-                    ok: blocked.ok,
-                    summary: blocked.summary,
-                    changes: blocked.changes,
-                    warnings: blocked.warnings,
-                    errors: blocked.errors,
-                    artifacts: blocked.artifacts,
-                    cache,
-                    stdout: blocked.stdout,
-                    stderr: blocked.stderr,
-                    command: blocked.command,
-                    diagnostics: None,
-                    data: None,
-                    job: None,
-                });
-            }
-        }
-    }
     if let Some(warning) = support_guard_warning {
         outcome.warnings.insert(0, warning);
     }
@@ -689,6 +695,198 @@ fn call_tool(
         data: handler_outcome.data,
         job: handler_outcome.job,
     })
+}
+
+fn invoke_code_intelligence_search(
+    ports: &dyn ApplicationPorts,
+    args: &Map<String, Value>,
+    workspace: &WorkspaceContext,
+    dry_run: bool,
+    cancellation: &CancellationToken,
+) -> Result<ports::HandlerOutcome, String> {
+    let context = ports.resolve_code_intelligence_context(workspace, args)?;
+    if dry_run {
+        let mut outcome = AdapterOutcome::ok(
+            "dry run: unica.code.search would run the provider-neutral search coordinator",
+        );
+        outcome
+            .artifacts
+            .push(context.source_root.path.display().to_string());
+        return Ok(ports::HandlerOutcome::plain(outcome));
+    }
+    let request = SearchRequest {
+        query: args
+            .get("query")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        limit: args
+            .get("limit")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(20),
+    };
+    let execution = code_intelligence::CodeSearchCoordinator::new(
+        ports.code_intelligence_registry()?,
+    )
+    .search(&request, &context, cancellation)?;
+    let artifacts = execution
+        .result
+        .sections
+        .iter()
+        .flat_map(|section| section.artifacts.clone())
+        .collect();
+    let data = serde_json::to_value(&execution.result)
+        .map_err(|error| format!("failed to serialize code search result: {error}"))?;
+    Ok(ports::HandlerOutcome::with_data(
+        AdapterOutcome {
+            ok: execution.ok,
+            summary: if execution.ok {
+                "unica.code.search completed through provider-neutral code intelligence".to_string()
+            } else {
+                "unica.code.search failed because no provider served the request".to_string()
+            },
+            changes: Vec::new(),
+            warnings: execution.warnings,
+            errors: execution.errors,
+            artifacts,
+            stdout: Some(execution.text),
+            stderr: None,
+            command: None,
+        },
+        data,
+    ))
+}
+
+fn invoke_code_intelligence_read(
+    ports: &dyn ApplicationPorts,
+    tool_name: &str,
+    operation: CodeIntelligenceOperation,
+    args: &Map<String, Value>,
+    workspace: &WorkspaceContext,
+    dry_run: bool,
+    cancellation: &CancellationToken,
+) -> Result<ports::HandlerOutcome, String> {
+    let context = ports.resolve_code_intelligence_context(workspace, args)?;
+    if dry_run {
+        let mut outcome = AdapterOutcome::ok(format!(
+            "dry run: {tool_name} would use the provider-neutral code intelligence registry"
+        ));
+        outcome
+            .artifacts
+            .push(context.source_root.path.display().to_string());
+        return Ok(ports::HandlerOutcome::plain(outcome));
+    }
+    let request = ports.normalize_code_intelligence_read_request(
+        code_intelligence_read_request(operation, args)?,
+        &context,
+    )?;
+    let registry = ports.code_intelligence_registry()?;
+    let provider = registry.provider_for(request.capability()).ok_or_else(|| {
+        format!(
+            "no code intelligence provider implements {:?} for {tool_name}",
+            request.capability()
+        )
+    })?;
+    let provider_id = provider.id();
+    let mut outcome =
+        code_intelligence::execute_provider_read(provider, request, context, cancellation)?;
+    if outcome.provider != provider_id {
+        outcome.warnings.insert(
+            0,
+            format!(
+                "provider registry selected {}, but the response identified {}",
+                provider_id.as_str(),
+                outcome.provider.as_str()
+            ),
+        );
+    }
+    Ok(ports::HandlerOutcome::plain(AdapterOutcome {
+        ok: outcome.ok,
+        summary: outcome.summary,
+        changes: Vec::new(),
+        warnings: outcome.warnings,
+        errors: outcome.errors,
+        artifacts: outcome.artifacts,
+        stdout: outcome.stdout,
+        stderr: outcome.stderr,
+        command: None,
+    }))
+}
+
+fn code_intelligence_read_request(
+    operation: CodeIntelligenceOperation,
+    args: &Map<String, Value>,
+) -> Result<CodeIntelligenceReadRequest, String> {
+    match operation {
+        CodeIntelligenceOperation::Definition => Ok(CodeIntelligenceReadRequest::Definition {
+            name: required_code_intelligence_string(args, "name")?.to_string(),
+            module_hint: args
+                .get("moduleHint")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            limit: code_intelligence_limit(args, 50),
+        }),
+        CodeIntelligenceOperation::Outline => Ok(CodeIntelligenceReadRequest::Outline {
+            path: required_code_intelligence_string(args, "path")?.to_string(),
+            include_methods: args
+                .get("includeMethods")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
+        }),
+        CodeIntelligenceOperation::ObjectProfile => {
+            Ok(CodeIntelligenceReadRequest::ObjectProfile {
+                name: required_code_intelligence_string(args, "name")?.to_string(),
+                sections: Some(
+                    args.get("sections")
+                        .and_then(Value::as_array)
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_string)
+                                .collect()
+                        })
+                        .unwrap_or_else(|| {
+                            [
+                                "structure",
+                                "modules",
+                                "roles",
+                                "subscriptions",
+                                "functionalOptions",
+                            ]
+                            .into_iter()
+                            .map(str::to_string)
+                            .collect()
+                        }),
+                ),
+                limit: code_intelligence_limit(args, 20),
+            })
+        }
+        CodeIntelligenceOperation::Search => {
+            Err("search cannot be built as a code intelligence read request".to_string())
+        }
+    }
+}
+
+fn required_code_intelligence_string<'a>(
+    args: &'a Map<String, Value>,
+    name: &str,
+) -> Result<&'a str, String> {
+    args.get(name)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("missing required `{name}` argument"))
+}
+
+fn code_intelligence_limit(args: &Map<String, Value>, default: usize) -> usize {
+    args.get("limit")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(default)
 }
 
 fn runtime_xml_route_guard(
@@ -873,23 +1071,6 @@ fn should_emit_events(
             )
         });
     !is_semantic_form_edit_preview
-}
-
-fn is_successful_detailed_compile_preview(
-    spec: ToolSpec,
-    dry_run: bool,
-    outcome: &AdapterOutcome,
-) -> bool {
-    dry_run
-        && outcome.ok
-        && !outcome.changes.is_empty()
-        && matches!(
-            spec.handler,
-            ToolHandler::NativeOperation {
-                operation: "meta-compile" | "role-compile" | "subsystem-compile",
-                ..
-            }
-        )
 }
 
 fn runtime_result_diagnostics(
@@ -1310,8 +1491,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
                 reads: &["bsl_index"],
                 writes: &[],
             },
-            handler: ToolHandler::CodeAdapter {
-                command: &["meta-profile"],
+            handler: ToolHandler::CodeIntelligence {
+                operation: CodeIntelligenceOperation::ObjectProfile,
             },
         },
         ToolSpec {
@@ -1659,8 +1840,8 @@ fn cache_access_for(operation: &str, event: Option<DomainEventKind>) -> CacheAcc
 mod tests {
     use super::*;
     use crate::composition::testing::{
-        create_file_link_fixture_for_test, prepare_file_for_removal, set_unix_mode_for_test,
-        unix_mode_for_test, CompileTransaction, FileLinkFixtureOutcome,
+        create_file_link_fixture_for_test, file_identity_for_test, prepare_file_for_removal,
+        set_unix_mode_for_test, unix_mode_for_test, CompileTransaction, FileLinkFixtureOutcome,
     };
     use serde_json::Map;
     use std::collections::HashSet;
@@ -1712,11 +1893,47 @@ mod tests {
         }
         assert!(names.contains(&"unica.code.definition"));
         assert!(names.contains(&"unica.code.outline"));
-        assert!(names.contains(&"unica.code.grep"));
+        assert!(!names.contains(&"unica.code.grep"));
         assert!(names.contains(&"unica.code.graph"));
         assert!(names.contains(&"unica.meta.profile"));
         assert!(names.contains(&"unica.standards.explain"));
         assert!(!names.contains(&"unica-coder"));
+    }
+
+    #[test]
+    fn provider_neutral_tools_use_typed_code_intelligence_handlers() {
+        let expected = [
+            ("unica.code.search", CodeIntelligenceOperation::Search),
+            (
+                "unica.code.definition",
+                CodeIntelligenceOperation::Definition,
+            ),
+            ("unica.code.outline", CodeIntelligenceOperation::Outline),
+            (
+                "unica.meta.profile",
+                CodeIntelligenceOperation::ObjectProfile,
+            ),
+        ];
+
+        for (name, operation) in expected {
+            let tool = tools().into_iter().find(|tool| tool.name == name).unwrap();
+            assert!(matches!(
+                tool.handler,
+                ToolHandler::CodeIntelligence {
+                    operation: actual
+                } if actual == operation
+            ));
+        }
+    }
+
+    #[test]
+    fn removed_code_grep_error_points_to_unified_search() {
+        let error = UnicaApplication::new()
+            .call_tool("unica.code.grep", &Map::new())
+            .unwrap_err();
+
+        assert!(error.contains("removed"), "{error}");
+        assert!(error.contains("unica.code.search"), "{error}");
     }
 
     #[test]
@@ -5006,6 +5223,108 @@ mod tests {
     }
 
     #[test]
+    fn mutating_native_support_guard_coverage_is_explicit() {
+        use operation_descriptors::{SupportGuardPolicy, SupportGuardRequirement};
+
+        let mut guarded = Vec::new();
+        let mut exempt = Vec::new();
+        for tool in tools().into_iter().filter(|tool| tool.mutating) {
+            let ToolHandler::NativeOperation { operation, .. } = tool.handler else {
+                continue;
+            };
+            let descriptor = operation_descriptors::native_operation_descriptor(operation).unwrap();
+            match descriptor.support_guard {
+                Some(policy) => {
+                    match policy {
+                        SupportGuardPolicy::PathArgs { names, requirement } => {
+                            assert!(!names.is_empty(), "{operation} guard target is empty");
+                            assert_eq!(
+                                requirement,
+                                SupportGuardRequirement::Editable,
+                                "{operation} path mutation must require an editable owner"
+                            );
+                            if operation == "subsystem-compile" {
+                                assert_eq!(
+                                    names,
+                                    &["Parent", "parent", "OutputDir", "outputDir"],
+                                    "subsystem compilation must guard Parent first and retain OutputDir as the root fallback"
+                                );
+                            }
+                        }
+                        SupportGuardPolicy::MetaRemove { requirement } => {
+                            assert_eq!(operation, "meta-remove");
+                            assert_eq!(requirement, SupportGuardRequirement::Removed);
+                        }
+                        SupportGuardPolicy::ObjectName { requirement } => {
+                            assert!(
+                                matches!(
+                                    operation,
+                                    "help-add" | "form-remove" | "template-add" | "template-remove"
+                                ),
+                                "{operation} unexpectedly uses object-name guard resolution"
+                            );
+                            assert_eq!(requirement, SupportGuardRequirement::Editable);
+                        }
+                    }
+                    guarded.push(operation);
+                }
+                None => exempt.push(operation),
+            }
+        }
+        guarded.sort_unstable();
+        exempt.sort_unstable();
+
+        assert_eq!(
+            guarded,
+            [
+                "cf-edit",
+                "code-patch",
+                "dcs-compile",
+                "dcs-edit",
+                "form-add",
+                "form-compile",
+                "form-edit",
+                "form-remove",
+                "help-add",
+                "interface-edit",
+                "meta-compile",
+                "meta-edit",
+                "meta-remove",
+                "mxl-compile",
+                "role-compile",
+                "subsystem-compile",
+                "subsystem-edit",
+                "template-add",
+                "template-remove",
+            ],
+            "guarded platform-XML mutations changed without updating the support contract"
+        );
+        let expected_exemptions = [
+            ("cf-init", "creates a new configuration tree"),
+            ("cfe-borrow", "writes only into an extension"),
+            ("cfe-init", "creates a new extension tree"),
+            ("cfe-patch-method", "writes only into an extension"),
+            ("epf-init", "creates a new external processor tree"),
+            ("erf-init", "creates a new external report tree"),
+            (
+                "support-edit",
+                "must remain available to change the support lock itself",
+            ),
+        ];
+        assert!(expected_exemptions
+            .iter()
+            .all(|(_, reason)| !reason.is_empty()));
+        assert_eq!(
+            exempt,
+            expected_exemptions
+                .iter()
+                .map(|(operation, _)| *operation)
+                .collect::<Vec<_>>(),
+            "every unguarded native mutation must remain an explicitly justified support-guard exception"
+        );
+    }
+
+    #[test]
     fn mutating_platform_xml_operations_declare_effective_format_paths() {
         use operation_descriptors::FormatGuardPolicy;
 
@@ -6809,7 +7128,7 @@ mod tests {
         token.cancel();
 
         let result = app
-            .call_tool_cancellable("unica.code.search", &Map::new(), token)
+            .call_tool_cancellable("unica.project.status", &Map::new(), token)
             .unwrap();
 
         assert_eq!(*ports.observed_cancelled.lock().unwrap(), Some(true));
@@ -8891,21 +9210,33 @@ mod tests {
             "cwd".to_string(),
             Value::String(workspace.display().to_string()),
         );
-        args.insert("dryRun".to_string(), Value::Bool(false));
         args.insert(
             "ObjectName".to_string(),
             Value::String("Catalogs/Items".to_string()),
         );
         args.insert("SrcDir".to_string(), Value::String("src".to_string()));
 
-        let result = UnicaApplication::new()
-            .call_tool("unica.help.add", &args)
-            .unwrap();
+        let mut results = Vec::new();
+        for dry_run in [false, true] {
+            args.insert("dryRun".to_string(), Value::Bool(dry_run));
+            let result = UnicaApplication::new()
+                .call_tool("unica.help.add", &args)
+                .unwrap();
 
-        assert!(!result.ok);
-        assert!(result.summary.contains("support guard"));
-        assert!(!ext.join("Help.xml").exists());
-        assert!(result.cache.events.is_empty());
+            assert!(!result.ok, "dryRun={dry_run}: {result:?}");
+            assert_eq!(
+                result.summary,
+                if dry_run {
+                    "dry run: unica.help.add blocked by support guard"
+                } else {
+                    "unica.help.add blocked by support guard"
+                }
+            );
+            assert!(!ext.join("Help.xml").exists());
+            assert!(result.cache.events.is_empty(), "{result:?}");
+            results.push(result);
+        }
+        assert_support_guard_block_parity(&results[0], &results[1]);
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -9123,6 +9454,239 @@ mod tests {
         let root = std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    fn source_tree_snapshot(
+        root: &std::path::Path,
+    ) -> Vec<(std::path::PathBuf, &'static str, Vec<u8>, Option<String>)> {
+        fn visit(
+            root: &std::path::Path,
+            current: &std::path::Path,
+            snapshot: &mut Vec<(std::path::PathBuf, &'static str, Vec<u8>, Option<String>)>,
+        ) {
+            let mut entries = std::fs::read_dir(current)
+                .unwrap()
+                .map(Result::unwrap)
+                .collect::<Vec<_>>();
+            entries.sort_by_key(std::fs::DirEntry::file_name);
+            for entry in entries {
+                let path = entry.path();
+                let relative = path.strip_prefix(root).unwrap().to_path_buf();
+                let metadata = std::fs::symlink_metadata(&path).unwrap();
+                if metadata.file_type().is_symlink() {
+                    snapshot.push((
+                        relative,
+                        "symlink",
+                        std::fs::read_link(&path)
+                            .unwrap()
+                            .as_os_str()
+                            .to_string_lossy()
+                            .as_bytes()
+                            .to_vec(),
+                        None,
+                    ));
+                } else if metadata.is_dir() {
+                    snapshot.push((relative, "directory", Vec::new(), None));
+                    visit(root, &path, snapshot);
+                } else {
+                    let identity = file_identity_for_test(&path).unwrap();
+                    snapshot.push((relative, "file", std::fs::read(&path).unwrap(), identity));
+                }
+            }
+        }
+
+        let mut snapshot = Vec::new();
+        visit(root, root, &mut snapshot);
+        snapshot
+    }
+
+    #[test]
+    fn legacy_read_only_output_sinks_cannot_change_source_path_aliases() {
+        let root = test_workspace_root("unica-read-only-output-aliases");
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let protected = src.join("protected-source.xml");
+        let hard_link = src.join("protected-hard-link.xml");
+        let symlink = src.join("protected-symlink.xml");
+        let outside = root.join("outside/protected-source.xml");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(&protected, b"source bytes").unwrap();
+        std::fs::write(&outside, b"outside bytes").unwrap();
+        std::fs::hard_link(&protected, &hard_link).unwrap();
+        let symlink_created = match create_file_link_fixture_for_test(&protected, &symlink)
+            .expect("unexpected file-link creation error must fail the fixture test")
+        {
+            FileLinkFixtureOutcome::Created => true,
+            FileLinkFixtureOutcome::Unsupported => {
+                eprintln!("[SKIPPED FIXTURE] file links are unsupported on this host");
+                false
+            }
+            FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                eprintln!("[SKIPPED FIXTURE] Windows file-link privilege is unavailable");
+                false
+            }
+        };
+
+        let mut sink_targets = vec![
+            ("same source", protected.clone()),
+            (
+                "parent traversal",
+                workspace.join("src/../../outside/protected-source.xml"),
+            ),
+            ("hard-link alias", hard_link),
+        ];
+        if symlink_created {
+            sink_targets.push(("symlink alias", symlink));
+        }
+
+        let affected_tools = [
+            ("unica.cf.info", "ConfigPath", "OutFile", "outFile"),
+            ("unica.cf.validate", "ConfigPath", "OutFile", "outFile"),
+            ("unica.cfe.validate", "ExtensionPath", "OutFile", "outFile"),
+            ("unica.meta.info", "ObjectPath", "OutFile", "outFile"),
+            ("unica.meta.validate", "ObjectPath", "OutFile", "outFile"),
+            ("unica.interface.validate", "CIPath", "OutFile", "outFile"),
+            (
+                "unica.subsystem.info",
+                "SubsystemPath",
+                "OutFile",
+                "outFile",
+            ),
+            (
+                "unica.subsystem.validate",
+                "SubsystemPath",
+                "OutFile",
+                "outFile",
+            ),
+            ("unica.dcs.info", "TemplatePath", "OutFile", "outFile"),
+            ("unica.dcs.validate", "TemplatePath", "OutFile", "outFile"),
+            ("unica.role.info", "RightsPath", "OutFile", "outFile"),
+            ("unica.role.validate", "RightsPath", "OutFile", "outFile"),
+            (
+                "unica.mxl.decompile",
+                "TemplatePath",
+                "OutputPath",
+                "outputPath",
+            ),
+        ];
+
+        for (tool, input_argument, sink_argument, sink_alias) in affected_tools {
+            for argument in [sink_argument, sink_alias] {
+                for (target_kind, target) in &sink_targets {
+                    let mut args = Map::new();
+                    args.insert(
+                        "cwd".to_string(),
+                        Value::String(workspace.display().to_string()),
+                    );
+                    args.insert(
+                        input_argument.to_string(),
+                        Value::String("src/protected-source.xml".to_string()),
+                    );
+                    args.insert(
+                        argument.to_string(),
+                        Value::String(target.display().to_string()),
+                    );
+                    let before = source_tree_snapshot(&root);
+
+                    let error = UnicaApplication::new()
+                        .call_tool(tool, &args)
+                        .expect_err("legacy output sink must be rejected by the public contract");
+
+                    assert!(
+                        error.contains(&format!("does not accept argument `{argument}`")),
+                        "{tool} {argument} {target_kind}: {error}"
+                    );
+                    assert_eq!(
+                        source_tree_snapshot(&root),
+                        before,
+                        "{tool} {argument} must not change the tree through {target_kind}"
+                    );
+                }
+            }
+        }
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn metadata_and_dcs_format_warnings_leave_source_trees_unchanged() {
+        let dcs_fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "../../tests/fixtures/unica_mcp_script_parity/bsp/dcs/DataProcessors__ВыгрузкаЗагрузкаEnterpriseData__СхемаКомпоновкиДанных/Template.xml",
+        );
+
+        for (format, compatibility) in [("2.19", "older"), ("2.21", "newer")] {
+            let root = test_workspace_root(&format!("unica-read-only-format-{format}"));
+            let workspace = root.join("workspace");
+            let src = workspace.join("src");
+            let object = src.join("Catalogs/Items.xml");
+            let template = src.join("Reports/Sales/Templates/Main/Ext/Template.xml");
+            std::fs::create_dir_all(object.parent().unwrap()).unwrap();
+            std::fs::create_dir_all(template.parent().unwrap()).unwrap();
+            std::fs::write(
+                workspace.join("v8project.yaml"),
+                "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+            )
+            .unwrap();
+            std::fs::write(
+                src.join("Configuration.xml"),
+                support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").replacen(
+                    r#"version="2.20""#,
+                    &format!(r#"version="{format}""#),
+                    1,
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                &object,
+                support_test_catalog_xml("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+            )
+            .unwrap();
+            std::fs::copy(&dcs_fixture, &template).unwrap();
+
+            for (tool, path_argument, path) in [
+                ("unica.meta.info", "ObjectPath", &object),
+                ("unica.meta.validate", "ObjectPath", &object),
+                ("unica.dcs.info", "TemplatePath", &template),
+                ("unica.dcs.validate", "TemplatePath", &template),
+            ] {
+                let mut args = Map::new();
+                args.insert(
+                    "cwd".to_string(),
+                    Value::String(workspace.display().to_string()),
+                );
+                args.insert(
+                    path_argument.to_string(),
+                    Value::String(path.display().to_string()),
+                );
+                let before = source_tree_snapshot(&src);
+
+                let result = UnicaApplication::new().call_tool(tool, &args).unwrap();
+
+                assert!(
+                    !result.warnings.is_empty(),
+                    "{tool} must preserve the {format} warning: {result:?}"
+                );
+                let diagnostic = &result.diagnostics.as_ref().unwrap()["formatCompatibility"];
+                assert_eq!(diagnostic["actualFormat"], format, "{tool}: {result:?}");
+                assert_eq!(
+                    diagnostic["compatibility"], compatibility,
+                    "{tool}: {result:?}"
+                );
+                assert_eq!(
+                    source_tree_snapshot(&src),
+                    before,
+                    "{tool} must not change a {format} source tree"
+                );
+            }
+
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 
     fn temp_meta_compile_workspace(prefix: &str) -> std::path::PathBuf {
@@ -9447,21 +10011,37 @@ mod tests {
             "cwd".to_string(),
             Value::String(workspace.display().to_string()),
         );
-        args.insert("dryRun".to_string(), Value::Bool(false));
         args.insert("ConfigDir".to_string(), Value::String("src".to_string()));
         args.insert(
             "Object".to_string(),
             Value::String("Catalog.Items".to_string()),
         );
 
-        let result = UnicaApplication::new()
-            .call_tool("unica.meta.remove", &args)
-            .unwrap();
+        let mut results = Vec::new();
+        for dry_run in [false, true] {
+            args.insert("dryRun".to_string(), Value::Bool(dry_run));
+            let result = UnicaApplication::new()
+                .call_tool("unica.meta.remove", &args)
+                .unwrap();
 
-        assert!(!result.ok);
-        assert!(result.summary.contains("support guard"));
-        assert!(result.errors.join("\n").contains("не снят с поддержки"));
-        assert!(object_path.exists());
+            assert!(!result.ok, "dryRun={dry_run}: {result:?}");
+            assert_eq!(
+                result.summary,
+                if dry_run {
+                    "dry run: unica.meta.remove blocked by support guard"
+                } else {
+                    "unica.meta.remove blocked by support guard"
+                }
+            );
+            assert!(
+                result.errors.join("\n").contains("не снят с поддержки"),
+                "{result:?}"
+            );
+            assert!(object_path.exists(), "dryRun={dry_run}");
+            assert!(result.cache.events.is_empty(), "{result:?}");
+            results.push(result);
+        }
+        assert_support_guard_block_parity(&results[0], &results[1]);
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -9536,6 +10116,52 @@ mod tests {
     </Properties>
   </Form>
 </MetaDataObject>"#
+    }
+
+    fn support_test_subsystem_xml(uuid: &str, name: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Subsystem uuid="{uuid}">
+    <Properties>
+      <Name>{name}</Name>
+      <Synonym/>
+      <Comment/>
+      <IncludeHelpInContents>true</IncludeHelpInContents>
+      <IncludeInCommandInterface>true</IncludeInCommandInterface>
+      <UseOneCommand>false</UseOneCommand>
+      <Explanation/>
+      <Picture/>
+      <Content/>
+    </Properties>
+    <ChildObjects/>
+  </Subsystem>
+</MetaDataObject>"#
+        )
+    }
+
+    fn assert_support_guard_block_parity(applied: &OperationResult, preview: &OperationResult) {
+        assert_eq!(preview.summary, format!("dry run: {}", applied.summary));
+        assert_eq!(preview.ok, applied.ok);
+        assert_eq!(preview.changes, applied.changes);
+        assert_eq!(preview.warnings, applied.warnings);
+        assert_eq!(preview.errors, applied.errors);
+        assert_eq!(preview.artifacts, applied.artifacts);
+        assert_eq!(preview.stdout, applied.stdout);
+        assert_eq!(preview.stderr, applied.stderr);
+        assert_eq!(preview.command, applied.command);
+        assert_eq!(preview.diagnostics, applied.diagnostics);
+        assert_eq!(preview.data, applied.data);
+        assert_eq!(preview.job, applied.job);
+        assert_eq!(preview.cache.mode, applied.cache.mode);
+        assert_eq!(preview.cache.root, applied.cache.root);
+        assert_eq!(preview.cache.workspace_epoch, applied.cache.workspace_epoch);
+        assert_eq!(preview.cache.events, applied.cache.events);
+        assert_eq!(preview.cache.invalidated, applied.cache.invalidated);
+        assert_eq!(preview.cache.refreshed, applied.cache.refreshed);
+        assert_eq!(preview.cache.lazy_rebuilt, applied.cache.lazy_rebuilt);
+        assert_eq!(preview.cache.stale, applied.cache.stale);
+        assert_eq!(preview.cache.fresh, applied.cache.fresh);
     }
 
     fn support_test_workspace(
@@ -10010,11 +10636,194 @@ mod tests {
             .unwrap();
 
         assert!(!result.ok, "{result:?}");
-        assert!(result.summary.contains("support guard"), "{result:?}");
+        assert_eq!(
+            result.summary,
+            "dry run: unica.meta.compile blocked by support guard"
+        );
         assert!(result.cache.events.is_empty(), "{result:?}");
         assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
         assert!(!src.join("CommonModules/PreviewSupportGuard.xml").exists());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn support_guard_blocks_meta_edit_before_dry_run_planning_in_both_modes() {
+        let (root, workspace, _bin_path) = support_test_workspace(
+            "unica-meta-edit-preview-support-guard",
+            support_test_parent_configurations_bin(
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            ),
+        );
+        let object_path = workspace.join("src/Catalogs/Items.xml");
+        let before = std::fs::read(&object_path).unwrap();
+        let mut results = Vec::new();
+
+        for dry_run in [false, true] {
+            let mut args = Map::new();
+            args.insert(
+                "cwd".to_string(),
+                Value::String(workspace.display().to_string()),
+            );
+            args.insert("dryRun".to_string(), Value::Bool(dry_run));
+            args.insert(
+                "ObjectPath".to_string(),
+                Value::String("src/Catalogs/Items.xml".to_string()),
+            );
+            args.insert(
+                "Operation".to_string(),
+                Value::String("modify-property".to_string()),
+            );
+            args.insert(
+                "Value".to_string(),
+                Value::String("Name=Changed".to_string()),
+            );
+
+            results.push(
+                UnicaApplication::new()
+                    .call_tool("unica.meta.edit", &args)
+                    .unwrap(),
+            );
+        }
+
+        let applied = &results[0];
+        let preview = &results[1];
+        assert!(!applied.ok, "{applied:?}");
+        assert!(!preview.ok, "{preview:?}");
+        assert_eq!(applied.summary, "unica.meta.edit blocked by support guard");
+        assert_eq!(
+            preview.summary,
+            "dry run: unica.meta.edit blocked by support guard"
+        );
+        assert_eq!(preview.errors, applied.errors);
+        assert_eq!(preview.artifacts, applied.artifacts);
+        assert!(preview.stdout.is_none(), "{preview:?}");
+        assert!(preview.cache.events.is_empty(), "{preview:?}");
+        assert_eq!(std::fs::read(&object_path).unwrap(), before);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn subsystem_compile_guards_locked_parent_before_both_planners() {
+        for dry_run in [false, true] {
+            let root = test_workspace_root(if dry_run {
+                "unica-subsystem-parent-guard-preview"
+            } else {
+                "unica-subsystem-parent-guard-apply"
+            });
+            let workspace = root.join("workspace");
+            let src = workspace.join("src");
+            let ext = src.join("Ext");
+            let subsystems = src.join("Subsystems");
+            std::fs::create_dir_all(&ext).unwrap();
+            std::fs::create_dir_all(&subsystems).unwrap();
+            std::fs::write(
+                workspace.join("v8project.yaml"),
+                "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+            )
+            .unwrap();
+            std::fs::write(
+                src.join("Configuration.xml"),
+                support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            )
+            .unwrap();
+            let parent_path = subsystems.join("Parent.xml");
+            std::fs::write(
+                &parent_path,
+                support_test_subsystem_xml("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "Parent"),
+            )
+            .unwrap();
+            std::fs::write(
+                ext.join("ParentConfigurations.bin"),
+                support_test_parent_configurations_bin(
+                    "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                    "cccccccc-cccc-cccc-cccc-cccccccccccc",
+                ),
+            )
+            .unwrap();
+            let before = std::fs::read(&parent_path).unwrap();
+            let args = json!({
+                "cwd": workspace,
+                "dryRun": dry_run,
+                "OutputDir": "src",
+                "Parent": "src/Subsystems/Parent.xml",
+                "Value": r#"{"name":"Child"}"#
+            })
+            .as_object()
+            .unwrap()
+            .clone();
+
+            let result = UnicaApplication::new()
+                .call_tool("unica.subsystem.compile", &args)
+                .unwrap();
+            let after = std::fs::read(&parent_path).unwrap();
+            let normalized_parent = normalized_path(&parent_path).display().to_string();
+            let child_exists = src.join("Subsystems/Parent/Subsystems/Child.xml").exists();
+            std::fs::remove_dir_all(root).unwrap();
+
+            assert!(!result.ok, "dryRun={dry_run}: {result:?}");
+            assert_eq!(
+                result.summary,
+                if dry_run {
+                    "dry run: unica.subsystem.compile blocked by support guard"
+                } else {
+                    "unica.subsystem.compile blocked by support guard"
+                }
+            );
+            assert!(result.errors.join("\n").contains("на замке"), "{result:?}");
+            assert_eq!(result.artifacts, [normalized_parent]);
+            assert!(result.cache.events.is_empty(), "{result:?}");
+            assert_eq!(after, before, "dryRun={dry_run}");
+            assert!(!child_exists, "dryRun={dry_run}");
+        }
+    }
+
+    #[test]
+    fn subsystem_compile_retains_locked_configuration_fallback_without_parent() {
+        let config_uuid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let (root, workspace, _bin_path) = support_test_workspace(
+            "unica-subsystem-root-guard",
+            support_test_parent_configurations_bin(
+                config_uuid,
+                config_uuid,
+                "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            ),
+        );
+        let src = workspace.join("src");
+        let config_path = src.join("Configuration.xml");
+        let before = std::fs::read(&config_path).unwrap();
+        let mut args = json!({
+            "cwd": workspace,
+            "OutputDir": "src",
+            "Value": r#"{"name":"RootChild"}"#
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let mut results = Vec::new();
+
+        for dry_run in [false, true] {
+            args.insert("dryRun".to_string(), Value::Bool(dry_run));
+            let result = UnicaApplication::new()
+                .call_tool("unica.subsystem.compile", &args)
+                .unwrap();
+
+            assert!(!result.ok, "dryRun={dry_run}: {result:?}");
+            assert_eq!(
+                result.artifacts,
+                [normalized_path(&src).display().to_string()]
+            );
+            assert!(result.errors.join("\n").contains("на замке"), "{result:?}");
+            assert!(result.cache.events.is_empty(), "{result:?}");
+            assert_eq!(std::fs::read(&config_path).unwrap(), before);
+            assert!(!src.join("Subsystems/RootChild.xml").exists());
+            results.push(result);
+        }
+        assert_support_guard_block_parity(&results[0], &results[1]);
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

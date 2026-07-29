@@ -13,9 +13,9 @@ description: "Безопасная аутентификация и крипто�
 
 ## References
 
-- Read `references/platform/integration-contracts.md` for auth contract, secret handling, retry behavior, and error semantics.
-- Read `references/platform/platform-mechanics.md` for client/server crypto boundary, rights, OpenID, certificates, and temporary secret handling.
-- Read `references/platform/runtime-diagnostics.md` for startup/auth/runtime evidence.
+- Read `../../references/platform/integration-contracts.md` for auth contract, secret handling, retry behavior, and error semantics.
+- Read `../../references/platform/platform-mechanics.md` for client/server crypto boundary, rights, OpenID, certificates, and temporary secret handling.
+- Read `../../references/platform/runtime-diagnostics.md` for startup/auth/runtime evidence.
 
 ## Workflow
 

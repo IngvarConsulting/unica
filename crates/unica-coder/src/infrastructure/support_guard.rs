@@ -5,6 +5,7 @@ use crate::application::ports::SupportGuardCheck;
 use crate::application::{AdapterOutcome, ToolHandler, ToolSpec};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::common::{absolutize, path_arg, required_string};
+use crate::infrastructure::source_roots::normalize_path_identity;
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use unica_application::{GuardEnforcement, OperationalPolicyDecision, OperationalPolicyService};
@@ -299,7 +300,7 @@ fn support_guard_mode_value(value: &str) -> SupportGuardMode {
 }
 
 fn normalize_guard_path(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+    normalize_path_identity(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn support_guard_blocked_outcome(

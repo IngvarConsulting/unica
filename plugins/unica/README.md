@@ -76,6 +76,19 @@ atomically replaces the transliterated `skd` domain with the official
 
 The operation arguments and `DataCompositionSchema` XML format are unchanged.
 
+## Read-only output migration
+
+The release containing [issue #191](https://github.com/IngvarConsulting/unica/issues/191)
+removes caller-controlled file sinks from read-only MCP tools. The affected
+`info`/`validate` tools no longer accept `OutFile` or `outFile`, and
+`unica.mxl.decompile` no longer accepts `OutputPath` or `outputPath`. There is
+no compatibility alias: these arguments are rejected as contract errors.
+
+Reports, exact raw DCS queries, and the MXL JSON DSL are returned in the MCP
+response. Consumers must read `stdout`/structured response data instead of
+reading a file created by Unica. If a durable artifact is needed, the caller
+must save the returned value explicitly outside the read-only tool contract.
+
 ## Runtime delivery
 
 The marketplace plugin contains skills, references, assets, `launch.sh`, and

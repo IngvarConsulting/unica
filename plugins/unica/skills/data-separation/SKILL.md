@@ -13,9 +13,9 @@ description: "Разделение данных 1С. Используй когд
 
 ## References
 
-- Read `references/platform/platform-mechanics.md` for tenant-boundaries, rights, temporary storage, background jobs, and exchange behavior.
-- Read `references/platform/db-performance.md` when separated data changes query plans, indexes, locks, or virtual table filters.
-- Read `references/platform/runtime-diagnostics.md` when the issue appears only in ЖР/ТЖ or runtime traces.
+- Read `../../references/platform/platform-mechanics.md` for tenant-boundaries, rights, temporary storage, background jobs, and exchange behavior.
+- Read `../../references/platform/db-performance.md` when separated data changes query plans, indexes, locks, or virtual table filters.
+- Read `../../references/platform/runtime-diagnostics.md` when the issue appears only in ЖР/ТЖ or runtime traces.
 
 ## Workflow
 

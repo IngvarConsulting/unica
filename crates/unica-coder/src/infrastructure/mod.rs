@@ -1,5 +1,6 @@
 pub(crate) mod application_ports;
 pub(crate) mod bundled_tools;
+pub(crate) mod code_intelligence;
 pub(crate) mod format_guard;
 pub mod internal_adapters;
 pub mod native_operations;
@@ -8,6 +9,7 @@ pub(crate) mod platform;
 pub mod plugin_runtime;
 pub(crate) mod project_sources;
 pub(crate) mod redaction;
+pub(crate) mod rlm_navigation;
 pub(crate) mod runtime_jobs;
 pub(crate) mod semantic_object_kinds;
 pub(crate) mod source_adapters;

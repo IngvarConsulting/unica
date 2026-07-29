@@ -6,7 +6,7 @@ use std::{
 use sha2::{Digest, Sha256};
 
 const APPROVED_PROVENANCE_SOURCES: &[&str] = &[
-    "spec/designs/2026-07-26-versioned-source-adapter-architecture.md",
+    "docs/design/2026-07-26-versioned-source-adapter-architecture.md",
     "crates/unica-adapter-platform-xml/tests/legacy_parity.rs",
     "crates/unica-adapter-platform-xml/tests/fixtures/v2_20/legacy-oracle/legacy-semantic-oracle.json",
     "plugins/unica/references/specs/1c-dcs-spec.md",
@@ -195,7 +195,7 @@ fn provenance_guard_rejects_missing_sources_hash_drift_internals_and_unverified_
     validate_fixture(&original, &repo).unwrap();
 
     let mut missing = original.clone();
-    missing["provenance"]["sources"][0]["path"] = "spec/designs/not-present.md".into();
+    missing["provenance"]["sources"][0]["path"] = "docs/design/not-present.md".into();
     assert!(validate_fixture(&missing, &repo).is_err());
 
     let mut drift = original.clone();

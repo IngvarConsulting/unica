@@ -4676,26 +4676,34 @@ fn form_edit_with_mode_data_input(
         let mut companion_count = 0usize;
         if let Some(elements) = defn.get("elements").and_then(Value::as_array) {
             if !elements.is_empty() {
-                form_compile_validate_element_enum_tree(elements)?;
-                form_edit_validate_element_names(&xml_text, elements)?;
-                let insert_target = form_edit_target_child_items_range(
+                form_compile_validate_element_property_tree(elements)?;
+                let elements_are_idempotent = form_edit_elements_are_idempotent_noop(
                     &xml_text,
+                    elements,
                     defn.get("into").and_then(Value::as_str),
                     defn.get("after").and_then(Value::as_str),
                 )?;
-                let element_indent = insert_target.child_indent().to_string();
-                let start = elem_ids.next;
-                let mut lines = Vec::<String>::new();
-                for element in elements {
-                    let summary = form_edit_element_summary(element);
-                    emit_form_element(&mut lines, element, &element_indent, &mut elem_ids)?;
-                    if let Some(summary) = summary {
-                        added_elements.push(summary);
+                if !elements_are_idempotent {
+                    form_edit_validate_element_names(&xml_text, elements)?;
+                    let insert_target = form_edit_target_child_items_range(
+                        &xml_text,
+                        defn.get("into").and_then(Value::as_str),
+                        defn.get("after").and_then(Value::as_str),
+                    )?;
+                    let element_indent = insert_target.child_indent().to_string();
+                    let start = elem_ids.next;
+                    let mut lines = Vec::<String>::new();
+                    for element in elements {
+                        let summary = form_edit_element_summary(element);
+                        emit_form_element(&mut lines, element, &element_indent, &mut elem_ids)?;
+                        if let Some(summary) = summary {
+                            added_elements.push(summary);
+                        }
                     }
+                    emitted_fragments.push_str(&lines.join("\n"));
+                    form_edit_insert_lines_into_target(&mut xml_text, insert_target, &lines)?;
+                    companion_count = elem_ids.next.saturating_sub(start + added_elements.len());
                 }
-                emitted_fragments.push_str(&lines.join("\n"));
-                form_edit_insert_lines_into_target(&mut xml_text, insert_target, &lines)?;
-                companion_count = elem_ids.next.saturating_sub(start + added_elements.len());
             }
         }
 
@@ -6833,6 +6841,210 @@ pub(crate) fn form_edit_element_name_exists(xml_text: &str, name: &str) -> bool 
     })
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct FormEditElementFingerprint {
+    namespace: Option<String>,
+    tag: String,
+    attributes: Vec<(Option<String>, String, String)>,
+    content: Vec<FormEditElementFingerprintContent>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum FormEditElementFingerprintContent {
+    Element(FormEditElementFingerprint),
+    Text(String),
+}
+
+fn form_edit_is_platform_omitted_default(node: roxmltree::Node<'_, '_>) -> bool {
+    node.has_tag_name((FORM_LOGFORM_NS, "RowFilter"))
+        && node.attribute(("http://www.w3.org/2001/XMLSchema-instance", "nil")) == Some("true")
+        && node.attributes().len() == 1
+        && node
+            .children()
+            .all(|child| child.is_text() && child.text().is_none_or(|text| text.trim().is_empty()))
+}
+
+fn form_edit_element_fingerprint(node: roxmltree::Node<'_, '_>) -> FormEditElementFingerprint {
+    let mut attributes = node
+        .attributes()
+        .filter(|attribute| !(attribute.namespace().is_none() && attribute.name() == "id"))
+        .map(|attribute| {
+            (
+                attribute.namespace().map(ToOwned::to_owned),
+                attribute.name().to_string(),
+                attribute.value().to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    attributes.sort();
+    let content = node
+        .children()
+        .filter_map(|child| {
+            if child.is_element() {
+                (!form_edit_is_platform_omitted_default(child)).then(|| {
+                    FormEditElementFingerprintContent::Element(form_edit_element_fingerprint(child))
+                })
+            } else if child.is_text() {
+                child
+                    .text()
+                    .filter(|text| !text.trim().is_empty())
+                    .map(|text| FormEditElementFingerprintContent::Text(text.to_string()))
+            } else {
+                None
+            }
+        })
+        .collect();
+    FormEditElementFingerprint {
+        namespace: node.tag_name().namespace().map(ToOwned::to_owned),
+        tag: node.tag_name().name().to_string(),
+        attributes,
+        content,
+    }
+}
+
+fn form_edit_expected_element_fingerprint(
+    xml_text: &str,
+    element: &Value,
+) -> Result<FormEditElementFingerprint, String> {
+    let mut lines = Vec::new();
+    let mut ids = FormIdAllocator::new();
+    emit_form_element(&mut lines, element, "\t", &mut ids)?;
+    let fragment = lines.join("\n");
+
+    let source_document =
+        Document::parse(xml_text).map_err(|error| format!("[ERROR] XML parse error: {error}"))?;
+    let root = source_document.root_element();
+    let root_start = root.range().start;
+    let open_end = xml_text[root_start..]
+        .find('>')
+        .map(|offset| root_start + offset + 1)
+        .ok_or_else(|| "[ERROR] Form root start tag is incomplete".to_string())?;
+    let wrapper = format!("{}\n{fragment}\n</Form>", &xml_text[root_start..open_end]);
+    let fragment_document = Document::parse(&wrapper)
+        .map_err(|error| format!("[ERROR] emitted form element XML is invalid: {error}"))?;
+    let emitted = fragment_document
+        .root_element()
+        .children()
+        .find(|node| node.is_element())
+        .ok_or_else(|| "[ERROR] form element emitter produced no element".to_string())?;
+    Ok(form_edit_element_fingerprint(emitted))
+}
+
+fn form_edit_elements_match_target(
+    root: roxmltree::Node<'_, '_>,
+    existing: &[roxmltree::Node<'_, '_>],
+    requested_names: &[String],
+    into_name: Option<&str>,
+    after_name: Option<&str>,
+) -> bool {
+    let Some(root_child_items) = form_child(root, "ChildItems") else {
+        return false;
+    };
+    let (target_child_items, required_predecessor) =
+        if let Some(into_name) = into_name.filter(|name| !name.is_empty()) {
+            let Some(target) = form_edit_find_element(root_child_items, into_name) else {
+                return false;
+            };
+            let Some(child_items) = form_child(target, "ChildItems") else {
+                return false;
+            };
+            (child_items, None)
+        } else if let Some(after_name) = after_name.filter(|name| !name.is_empty()) {
+            let Some(after) = form_edit_find_element(root_child_items, after_name) else {
+                return false;
+            };
+            let Some(child_items) = after
+                .parent()
+                .filter(|parent| parent.has_tag_name((FORM_LOGFORM_NS, "ChildItems")))
+            else {
+                return false;
+            };
+            (child_items, Some(after_name))
+        } else {
+            (root_child_items, None)
+        };
+    if existing
+        .iter()
+        .any(|node| node.parent() != Some(target_child_items))
+    {
+        return false;
+    }
+
+    let child_names = target_child_items
+        .children()
+        .filter(|node| node.is_element())
+        .filter_map(|node| node.attribute("name"))
+        .collect::<Vec<_>>();
+    let Some(start) = required_predecessor.map_or_else(
+        || {
+            child_names
+                .windows(requested_names.len())
+                .position(|window| {
+                    window
+                        .iter()
+                        .zip(requested_names)
+                        .all(|(actual, expected)| *actual == expected)
+                })
+        },
+        |predecessor| {
+            child_names
+                .iter()
+                .position(|name| *name == predecessor)
+                .map(|index| index + 1)
+        },
+    ) else {
+        return false;
+    };
+    child_names
+        .get(start..start + requested_names.len())
+        .is_some_and(|window| {
+            window
+                .iter()
+                .zip(requested_names)
+                .all(|(actual, expected)| *actual == expected)
+        })
+}
+
+fn form_edit_elements_are_idempotent_noop(
+    xml_text: &str,
+    elements: &[Value],
+    into_name: Option<&str>,
+    after_name: Option<&str>,
+) -> Result<bool, String> {
+    let document =
+        Document::parse(xml_text).map_err(|error| format!("[ERROR] XML parse error: {error}"))?;
+    let root = document.root_element();
+    let mut requested_names = Vec::with_capacity(elements.len());
+    let mut existing = Vec::with_capacity(elements.len());
+    for element in elements {
+        let Some(object) = element.as_object() else {
+            return Ok(false);
+        };
+        let kind = FormEditElementDefinitionKind::from_object(object)?;
+        if kind == FormEditElementDefinitionKind::AutoCommandBar {
+            return Ok(false);
+        }
+        let name = kind.name(object)?.to_string();
+        let matches = form_edit_find_element_nodes(root, &name);
+        let [node] = matches.as_slice() else {
+            return Ok(false);
+        };
+        let expected = form_edit_expected_element_fingerprint(xml_text, element)?;
+        if form_edit_element_fingerprint(*node) != expected {
+            return Ok(false);
+        }
+        requested_names.push(name);
+        existing.push(*node);
+    }
+    Ok(form_edit_elements_match_target(
+        root,
+        &existing,
+        &requested_names,
+        into_name,
+        after_name,
+    ))
+}
+
 pub(crate) fn form_edit_element_display_name(element: &Value) -> Option<String> {
     let object = element.as_object()?;
     let kind = FormEditElementDefinitionKind::from_object(object).ok()?;
@@ -6860,8 +7072,30 @@ pub(crate) fn form_edit_element_summary(element: &Value) -> Option<String> {
         .and_then(Value::as_str)
         .map(|value| format!(" -> {value}"))
         .unwrap_or_default();
+    let table_properties = if kind == FormEditElementDefinitionKind::Table {
+        let mut properties = Vec::new();
+        if let Some(representation) = object
+            .get("representation")
+            .and_then(Value::as_str)
+            .and_then(form_compile_table_representation)
+        {
+            properties.push(format!("representation={representation}"));
+        }
+        if let Some(auto_insert_new_row) = object.get("autoInsertNewRow").and_then(Value::as_bool) {
+            properties.push(format!("autoInsertNewRow={auto_insert_new_row}"));
+        }
+        if properties.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", properties.join(", "))
+        }
+    } else {
+        String::new()
+    };
     let events = form_edit_element_events_summary(object);
-    Some(format!("  + [{tag}] {name}{path}{events}"))
+    Some(format!(
+        "  + [{tag}] {name}{path}{table_properties}{events}"
+    ))
 }
 
 pub(crate) fn form_edit_element_events_summary(element: &Map<String, Value>) -> String {
@@ -7616,7 +7850,7 @@ pub(crate) fn form_compile_xml(
         form_edit_validate_attribute_columns(attributes)?;
     }
     form_compile_validate_data_paths(defn)?;
-    form_compile_validate_element_enums(defn)?;
+    form_compile_validate_element_properties(defn)?;
     let context = form_project_event_context(
         FormEventContext {
             definition: FormDefinitionKind::Regular,
@@ -8749,6 +8983,7 @@ fn form_8_3_27_enum_values(xml_name: &str) -> Option<&'static [&'static str]> {
             "LeftNarrowest",
         ]),
         "CommandBarLocation" => Some(&["None", "Auto", "Top", "Bottom"]),
+        "TableRepresentation" => Some(&["List", "HierarchicalList", "Tree"]),
         "FormChildrenGroup" => Some(&[
             "Horizontal",
             "Vertical",
@@ -8814,14 +9049,14 @@ fn form_8_3_27_enum_values(xml_name: &str) -> Option<&'static [&'static str]> {
     }
 }
 
-fn form_compile_validate_element_enums(defn: &Value) -> Result<(), String> {
+fn form_compile_validate_element_properties(defn: &Value) -> Result<(), String> {
     let Some(elements) = defn.get("elements").and_then(Value::as_array) else {
         return Ok(());
     };
-    form_compile_validate_element_enum_tree(elements)
+    form_compile_validate_element_property_tree(elements)
 }
 
-fn form_compile_validate_element_enum_tree(elements: &[Value]) -> Result<(), String> {
+fn form_compile_validate_element_property_tree(elements: &[Value]) -> Result<(), String> {
     for element in elements {
         let Some(object) = element.as_object() else {
             continue;
@@ -8840,6 +9075,13 @@ fn form_compile_validate_element_enum_tree(elements: &[Value]) -> Result<(), Str
                 form_compile_validate_element_enum(object, "currentRowUse", "CurrentRowUse")?;
             }
             FormEditElementDefinitionKind::Table => {
+                form_compile_validate_element_boolean(object, "autoInsertNewRow")?;
+                form_compile_validate_normalized_element_enum(
+                    object,
+                    "representation",
+                    "TableRepresentation",
+                    form_compile_table_representation,
+                )?;
                 form_compile_validate_element_enum(
                     object,
                     "commandBarLocation",
@@ -8944,11 +9186,24 @@ fn form_compile_validate_element_enum_tree(elements: &[Value]) -> Result<(), Str
         }
         for child_key in ["children", "columns"] {
             if let Some(children) = object.get(child_key).and_then(Value::as_array) {
-                form_compile_validate_element_enum_tree(children)?;
+                form_compile_validate_element_property_tree(children)?;
             }
         }
     }
     Ok(())
+}
+
+fn form_compile_validate_element_boolean(
+    object: &Map<String, Value>,
+    json_name: &str,
+) -> Result<(), String> {
+    let Some(value) = object.get(json_name) else {
+        return Ok(());
+    };
+    value
+        .as_bool()
+        .map(|_| ())
+        .ok_or_else(|| format!("form element property {json_name} must be a boolean"))
 }
 
 fn form_compile_validate_element_enum(
@@ -9379,6 +9634,15 @@ pub(crate) fn form_compile_group_representation(value: &str) -> Option<&'static 
         "groupbox" => Some("GroupBox"),
         "line" => Some("Line"),
         "margin" => Some("Margin"),
+        _ => None,
+    }
+}
+
+fn form_compile_table_representation(value: &str) -> Option<&'static str> {
+    match value.to_lowercase().as_str() {
+        "list" => Some("List"),
+        "hierarchicallist" => Some("HierarchicalList"),
+        "tree" => Some("Tree"),
         _ => None,
     }
 }
@@ -9833,6 +10097,18 @@ pub(crate) fn emit_form_table(
         escape_xml(name)
     ));
     let inner = format!("{indent}\t");
+    if let Some(representation) = element
+        .get("representation")
+        .and_then(Value::as_str)
+        .and_then(form_compile_table_representation)
+    {
+        lines.push(format!(
+            "{inner}<Representation>{representation}</Representation>"
+        ));
+    }
+    if element.get("autoInsertNewRow").and_then(Value::as_bool) == Some(true) {
+        lines.push(format!("{inner}<AutoInsertNewRow>true</AutoInsertNewRow>"));
+    }
     if let Some(path) = element.get("path").and_then(Value::as_str) {
         lines.push(format!("{inner}<DataPath>{}</DataPath>", escape_xml(path)));
     }
@@ -15219,6 +15495,88 @@ mod tests {
     }
 
     #[test]
+    fn form_compile_emits_supported_table_properties() {
+        let definition = json!({
+            "attributes": [{
+                "name": "Rows",
+                "type": "ValueTable"
+            }],
+            "elements": [{
+                "table": "Rows",
+                "path": "Rows",
+                "representation": "List",
+                "autoInsertNewRow": true,
+                "columns": []
+            }]
+        });
+
+        let (xml, _) = form_compile_xml(&definition, "2.20").unwrap();
+        let document = Document::parse(&xml).unwrap();
+        let table = document
+            .descendants()
+            .find(|node| node.has_tag_name((FORM_LOGFORM_NS, "Table")))
+            .unwrap();
+        let table_property_order = table
+            .children()
+            .filter(|node| node.is_element())
+            .map(|node| node.tag_name().name())
+            .filter(|name| ["Representation", "AutoInsertNewRow", "DataPath"].contains(name))
+            .collect::<Vec<_>>();
+
+        assert!(
+            xml.contains("<Representation>List</Representation>"),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("<AutoInsertNewRow>true</AutoInsertNewRow>"),
+            "{xml}"
+        );
+        assert_eq!(
+            table_property_order,
+            ["Representation", "AutoInsertNewRow", "DataPath"],
+            "{xml}"
+        );
+    }
+
+    #[test]
+    fn form_compile_accepts_every_table_representation_case_insensitively() {
+        for (input, expected) in [
+            ("List", "List"),
+            ("tree", "Tree"),
+            ("HIERARCHICALLIST", "HierarchicalList"),
+        ] {
+            let definition = json!({
+                "elements": [{
+                    "table": "Rows",
+                    "representation": input
+                }]
+            });
+
+            let (xml, _) = form_compile_xml(&definition, "2.20")
+                .unwrap_or_else(|error| panic!("{input}: {error}"));
+
+            assert!(
+                xml.contains(&format!("<Representation>{expected}</Representation>")),
+                "{input}: {xml}"
+            );
+        }
+    }
+
+    #[test]
+    fn form_compile_omits_false_auto_insert_new_row_default() {
+        let definition = json!({
+            "elements": [{
+                "table": "Rows",
+                "autoInsertNewRow": false
+            }]
+        });
+
+        let (xml, _) = form_compile_xml(&definition, "2.20").unwrap();
+
+        assert!(!xml.contains("<AutoInsertNewRow>"), "{xml}");
+    }
+
+    #[test]
     fn form_compile_emits_tooltip_and_button_appearance() {
         let definition = json!({
             "attributes": [{"name": "Status", "type": "String"}],
@@ -16362,6 +16720,10 @@ mod tests {
                 json!({"elements": [{"table": "Rows", "commandBarLocation": "Bogus"}]}),
             ),
             (
+                "representation",
+                json!({"elements": [{"table": "Rows", "representation": "Bogus"}]}),
+            ),
+            (
                 "initialTreeView",
                 json!({"elements": [{"table": "Rows", "initialTreeView": "Bogus"}]}),
             ),
@@ -16549,6 +16911,11 @@ mod tests {
                     "AlwaysHorizontal",
                 ],
                 |value| json!({"elements": [{"name": "Group", "group": value}]}),
+            ),
+            (
+                "Representation",
+                &["List", "HierarchicalList", "Tree"],
+                |value| json!({"elements": [{"table": "Rows", "representation": value}]}),
             ),
             (
                 "Behavior",
@@ -19254,6 +19621,241 @@ mod tests {
         assert!(stdout.contains("Planned elements:"), "{stdout}");
         assert!(!stdout.contains("Added elements:"), "{stdout}");
         assert_eq!(fs::read(&form_path).unwrap(), original);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn form_edit_dry_run_reports_table_properties_without_writing() {
+        let context = temp_context("edit-table-properties-preview");
+        let form_path = context.cwd.join("Form.xml");
+        let original = form_edit_remove_test_xml("").into_bytes();
+        fs::write(&form_path, &original).unwrap();
+        let args = Map::from_iter([
+            (
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+            (
+                "definition".to_string(),
+                json!({
+                    "elements": [{
+                        "table": "Rows",
+                        "representation": "List",
+                        "autoInsertNewRow": true
+                    }]
+                }),
+            ),
+        ]);
+
+        let outcome = preview_form_edit(&args, &context);
+
+        assert!(outcome.ok, "{outcome:?}");
+        let stdout = outcome.stdout.unwrap_or_default();
+        assert!(stdout.contains("representation=List"), "{stdout}");
+        assert!(stdout.contains("autoInsertNewRow=true"), "{stdout}");
+        assert_eq!(fs::read(&form_path).unwrap(), original);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn form_edit_rejects_non_boolean_auto_insert_new_row_without_writing() {
+        let context = temp_context("edit-table-property-type");
+        let form_path = context.cwd.join("Form.xml");
+        let original = form_edit_remove_test_xml("").into_bytes();
+        fs::write(&form_path, &original).unwrap();
+        let args = Map::from_iter([
+            (
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+            (
+                "definition".to_string(),
+                json!({
+                    "elements": [{
+                        "table": "Rows",
+                        "autoInsertNewRow": "true"
+                    }]
+                }),
+            ),
+        ]);
+
+        let outcome = edit_form(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| { error.contains("autoInsertNewRow") && error.contains("boolean") }),
+            "{outcome:?}"
+        );
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        assert_eq!(fs::read(&form_path).unwrap(), original);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn form_edit_repeated_identical_table_is_byte_exact_idempotent_noop() {
+        let context = temp_context("edit-table-idempotent");
+        let form_path = context.cwd.join("Form.xml");
+        fs::write(&form_path, form_edit_remove_test_xml("")).unwrap();
+        let target_args = Map::from_iter([
+            (
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+            (
+                "definition".to_string(),
+                json!({
+                    "elements": [{
+                        "group": "vertical",
+                        "name": "Container"
+                    }]
+                }),
+            ),
+        ]);
+        let target = edit_form(&target_args, &context);
+        assert!(target.ok, "{target:?}");
+        let args = Map::from_iter([
+            (
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+            (
+                "definition".to_string(),
+                json!({
+                    "into": "Container",
+                    "elements": [{
+                        "table": "Rows",
+                        "representation": "List",
+                        "autoInsertNewRow": true,
+                        "columns": [{
+                            "input": "RowsItem"
+                        }]
+                    }]
+                }),
+            ),
+        ]);
+
+        let first = edit_form(&args, &context);
+        assert!(first.ok, "{first:?}");
+        let after_first = fs::read(&form_path).unwrap();
+
+        let second = edit_form(&args, &context);
+
+        assert!(second.ok, "{second:?}");
+        assert!(second.changes.is_empty(), "{second:?}");
+        assert!(
+            second.summary.contains("no-op")
+                || second
+                    .stdout
+                    .as_deref()
+                    .is_some_and(|stdout| stdout.contains("no-op")),
+            "{second:?}"
+        );
+        assert_eq!(fs::read(&form_path).unwrap(), after_first);
+
+        let validation = validate_form(&form_path_args(&form_path), &context);
+        assert!(validation.ok, "{validation:?}");
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn form_edit_rejects_conflicting_existing_table_without_writing() {
+        let context = temp_context("edit-table-idempotent-conflict");
+        let form_path = context.cwd.join("Form.xml");
+        fs::write(&form_path, form_edit_remove_test_xml("")).unwrap();
+        let list_args = Map::from_iter([
+            (
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+            (
+                "definition".to_string(),
+                json!({
+                    "elements": [{
+                        "table": "Rows",
+                        "representation": "List"
+                    }]
+                }),
+            ),
+        ]);
+        let first = edit_form(&list_args, &context);
+        assert!(first.ok, "{first:?}");
+        let after_first = fs::read(&form_path).unwrap();
+        let tree_args = Map::from_iter([
+            (
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+            (
+                "definition".to_string(),
+                json!({
+                    "elements": [{
+                        "table": "Rows",
+                        "representation": "Tree"
+                    }]
+                }),
+            ),
+        ]);
+
+        let conflict = edit_form(&tree_args, &context);
+
+        assert!(!conflict.ok, "{conflict:?}");
+        assert!(
+            conflict
+                .errors
+                .iter()
+                .any(|error| error.contains("Element 'Rows' already exists in form")),
+            "{conflict:?}"
+        );
+        assert!(conflict.changes.is_empty(), "{conflict:?}");
+        assert_eq!(fs::read(&form_path).unwrap(), after_first);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn form_edit_accepts_platform_omitted_nil_row_filter_as_idempotent() {
+        let context = temp_context("edit-table-idempotent-platform-default");
+        let form_path = context.cwd.join("Form.xml");
+        fs::write(&form_path, form_edit_remove_test_xml("")).unwrap();
+        let args = Map::from_iter([
+            (
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+            (
+                "definition".to_string(),
+                json!({
+                    "elements": [{
+                        "table": "Rows",
+                        "representation": "Tree",
+                        "autoInsertNewRow": true
+                    }]
+                }),
+            ),
+        ]);
+        let first = edit_form(&args, &context);
+        assert!(first.ok, "{first:?}");
+        let platform_normalized = fs::read_to_string(&form_path)
+            .unwrap()
+            .replace("\t\t\t<RowFilter xsi:nil=\"true\"/>\n", "");
+        assert!(
+            !platform_normalized.contains("<RowFilter"),
+            "{platform_normalized}"
+        );
+        fs::write(&form_path, &platform_normalized).unwrap();
+
+        let second = edit_form(&args, &context);
+
+        assert!(second.ok, "{second:?}");
+        assert!(second.changes.is_empty(), "{second:?}");
+        assert_eq!(fs::read_to_string(&form_path).unwrap(), platform_normalized);
+
         let _ = fs::remove_dir_all(&context.cwd);
     }
 

@@ -24,5 +24,5 @@ with `operation=make` or `operation=load`.
 
 ## Related references
 
-- `references/specs/1c-extension-spec.md`
-- `references/use-cases/workspace-runtime.md`
+- `../specs/1c-extension-spec.md`
+- `workspace-runtime.md`

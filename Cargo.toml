@@ -9,7 +9,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.10.0"
+version = "0.11.0"
 edition = "2021"
 license = "LGPL-3.0-or-later"
 repository = "https://github.com/IngvarConsulting/unica"
@@ -37,7 +37,6 @@ sha2 = "0.10"
 tar = "0.4"
 roxmltree = "0.20"
 quick-xml = "0.37"
-rusqlite = { version = "0.32", features = ["bundled"] }
 unica-format-core = { path = "crates/unica-format-core" }
 unica-application = { path = "crates/unica-application" }
 unica-adapter-platform-xml = { path = "crates/unica-adapter-platform-xml" }

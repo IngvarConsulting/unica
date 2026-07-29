@@ -155,7 +155,6 @@ TOOLS = [
     "unica.cf.validate",
     "unica.code.diagnostics",
     "unica.code.search",
-    "unica.code.grep",
     "unica.code.outline",
     "unica.meta.profile",
     "unica.standards.explain",
@@ -193,6 +192,14 @@ for raw in sys.stdin:
             payload["diagnostics"] = [
                 {"code": "UnusedLocalVariable", "file": "CommonModules/Test/Ext/Module.bsl"}
             ]
+        elif name == "unica.code.search":
+            payload["data"] = {
+                "sections": [
+                    {"provider": "rlm", "status": "empty", "hits": [], "diagnostics": [], "artifacts": []},
+                    {"provider": "bsl-analyzer", "status": "empty", "hits": [], "diagnostics": [], "artifacts": []},
+                    {"provider": "git-grep", "status": "empty", "hits": [], "diagnostics": [], "artifacts": []},
+                ]
+            }
         elif name == "unica.standards.explain":
             payload["stdout"] = "UnusedLocalVariable: standard explanation"
         response["result"] = {"content": [{"type": "text", "text": json.dumps(payload)}]}
@@ -517,6 +524,44 @@ for raw in sys.stdin:
         self.assertEqual(summary["status"], "passed")
         self.assertEqual(summary["blockingFailures"], 0)
         self.assertEqual(summary["qualityFindings"]["nonBlockingFailures"], 1)
+
+    def test_code_search_is_blocking_and_requires_fixed_provider_sections(self) -> None:
+        module = load_assessment_module()
+        scenarios = {
+            scenario_id: (blocking, require_payload_ok)
+            for scenario_id, _title, _tool, _arguments, blocking, require_payload_ok
+            in module.base_tool_scenarios(Path("/missing-bsp"))
+        }
+
+        self.assertEqual(scenarios["code-search"], (True, True))
+
+        scenario = module.scenario_result(
+            scenario_id="code-search",
+            title="search",
+            tool="unica.code.search",
+            arguments={},
+            status="passed",
+            duration_ms=1,
+            blocking=True,
+        )
+        module.validate_code_search(
+            scenario,
+            {
+                "ok": True,
+                "data": {
+                    "sections": [
+                        {"provider": "git-grep", "status": "ok"},
+                        {"provider": "rlm", "status": "empty"},
+                    ]
+                },
+            },
+        )
+
+        self.assertEqual(scenario["status"], "failed")
+        self.assertTrue(
+            any("rlm, bsl-analyzer, git-grep" in error for error in scenario["errors"]),
+            scenario,
+        )
 
     def test_default_bsp_ref_is_pinned_and_report_records_requested_ref(self) -> None:
         module = load_assessment_module()

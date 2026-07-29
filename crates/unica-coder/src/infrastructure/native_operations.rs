@@ -4,6 +4,7 @@ pub(crate) mod common;
 pub(crate) mod compile_transaction;
 pub(crate) mod meta;
 pub(crate) mod registry;
+pub(crate) mod text_snapshot;
 pub(crate) mod typed_result;
 
 use crate::{application::AdapterOutcome, domain::workspace::WorkspaceContext};

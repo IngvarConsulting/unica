@@ -28,6 +28,6 @@ integration belongs in the 1C architecture.
 
 ## Related references
 
-- `references/platform/development-standards.md`
-- `references/use-cases/metadata-modeling.md`
-- `references/use-cases/code-quality-review.md`
+- `../platform/development-standards.md`
+- `metadata-modeling.md`
+- `code-quality-review.md`

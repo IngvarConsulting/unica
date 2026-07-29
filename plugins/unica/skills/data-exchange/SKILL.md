@@ -13,9 +13,9 @@ description: "Обмен данными 1С. Используй когда ну�
 
 ## References
 
-- Read `references/platform/integration-contracts.md` for message contracts, file exchange, idempotency, versioning, and error semantics.
-- Read `references/platform/platform-mechanics.md` for exchange registration, tenant boundaries, background workers, and temporary files.
-- Read `references/platform/runtime-diagnostics.md` for ЖР/ТЖ timeline when exchange fails at runtime.
+- Read `../../references/platform/integration-contracts.md` for message contracts, file exchange, idempotency, versioning, and error semantics.
+- Read `../../references/platform/platform-mechanics.md` for exchange registration, tenant boundaries, background workers, and temporary files.
+- Read `../../references/platform/runtime-diagnostics.md` for ЖР/ТЖ timeline when exchange fails at runtime.
 
 ## Workflow
 

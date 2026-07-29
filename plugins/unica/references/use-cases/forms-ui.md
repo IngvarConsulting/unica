@@ -25,7 +25,7 @@ source edits.
 
 ## Related references
 
-- `references/specs/1c-form-spec.md`
-- `references/specs/form-dsl-spec.md`
-- `references/specs/form-patterns.md`
-- `references/platform/development-standards.md`
+- `../specs/1c-form-spec.md`
+- `../specs/form-dsl-spec.md`
+- `../specs/form-patterns.md`
+- `../platform/development-standards.md`

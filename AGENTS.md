@@ -1,60 +1,269 @@
-# Agent Entry Points
+# Точки входа для агента
 
-## Source Of Truth
+## Порядок источников истины
 
-When changing Unica, resolve conflicts in this order:
+Когда меняете Unica, разрешайте противоречия в таком порядке:
 
-1. code and tests
-2. `plugins/unica/.mcp.json`, `plugins/unica/.codex-plugin/plugin.json`, `plugins/unica/.claude-plugin/plugin.json`, and `plugins/unica/third-party/tools.lock.json` are package-contract sources, not background notes.
-3. `spec/` is the active architecture layer unless it contradicts live code, tests, or package metadata.
-4. `README.md` and skill prose
+1. код и тесты;
+2. `plugins/unica/.mcp.json`, `plugins/unica/.codex-plugin/plugin.json`,
+   `plugins/unica/.claude-plugin/plugin.json` и
+   `plugins/unica/third-party/tools.lock.json` — это источники контракта пакета,
+   а не фоновые заметки;
+3. `plugins/unica/references/specs/` — источник контракта форматов XML 1С и
+   JSON-DSL. Когда вопрос в том, как должен выглядеть порождённый `.xml`, `.mxl`
+   или полезная нагрузка DSL, эти спецификации старше `spec/`, скиллов и прозы.
+   Они не старше поведения эмиттера, доказанного фикстурой или официальным
+   дампом платформы; при расхождении с ним правится спецификация;
+4. `spec/` — действующий архитектурный слой; при противоречии с источниками из
+   пунктов 1–3 исправляется `spec/`, а не более высокий источник. Архитектурным
+   выбором владеет раздел `Решение` записи из `spec/decisions/`, а выведенным
+   проверяемым обязательством — поле `Rule` записи в
+   `spec/architecture/invariants.md` или
+   `spec/architecture/quality-requirements.md`. Происхождение адаптированных
+   апстримов нормирует `spec/provenance/skill-upstreams.json`: полнота
+   `plugins/unica/ATTRIBUTIONS.md` проверяется против него;
+5. `README.md` и проза скиллов.
 
-## Releasing
+## Куда смотреть, где менять
 
-Publishing a version to the public marketplace follows
-`docs/release-runbook.md`. Read it before acting on any request to cut, ship,
-promote, or finish a release; the step order carries the ADR-0008 guarantee that
-the catalog never points at bytes that are not final, and improvising it exposes
-consumers to an unverified package.
+Пути в обоих столбцах даны от корня репозитория, кроме двух сокращений, которые
+названы прямо здесь: `architecture/` и `acceptance/` во втором столбце читаются
+от `spec/`, а ADR цитируются номером и лежат в `spec/decisions/`. `<группа>` и
+`<имя>` подставляются по имени домена инструмента. Сокращать путь до хвоста
+нельзя: `rg` по такому хвосту ничего не находит, и строка перестаёт быть
+маршрутом.
 
-## Search Hygiene
+| Задача | Что читать сначала | Где менять код |
+| --- | --- | --- |
+| Новый или изменённый публичный инструмент `unica.*` | `architecture/invariants.md` (`INV-MCP-NAMESPACE`, `INV-MCP-SURFACE-SYNC`), `architecture/change-checklist.md` | `crates/unica-coder/src/application/mod.rs` (`tools()`), `crates/unica-coder/src/application/tool_contracts.rs`, `crates/unica-coder/src/application/operation_descriptors.rs`, `crates/unica-coder/src/infrastructure/native_operations/<группа>.rs`, `plugins/unica/skills/<имя>/SKILL.md` |
+| Изменение формата XML 1С или DSL | ADR-0016, ADR-0019, `acceptance/format-profile-8-3-27.md` и `plugins/unica/references/specs/` | `crates/unica-adapter-platform-xml/src/operations/` и приватные `src/versions/`; в host меняется только semantic mapping в `crates/unica-coder/src/infrastructure/native_operations/registry.rs` |
+| Кеш, состояние рабочего пространства, доменные события | ADR-0003, область `CACHE` реестра | `crates/unica-coder/src/domain/events.rs`, `crates/unica-coder/src/domain/cache.rs`, `crates/unica-coder/src/infrastructure/workspace_state.rs`, `crates/unica-coder/src/infrastructure/workspace.rs` |
+| Скрытый сервис рабочего пространства или задание runtime | ADR-0006, `architecture/runtime.md`, `INV-APP-LAZY-HIDDEN-SERVICES` | `crates/unica-coder/src/infrastructure/workspace_services.rs`, `crates/unica-coder/src/infrastructure/runtime_jobs.rs` |
+| Упаковка или релиз | ADR-0008, ADR-0012, область `PKG` реестра, а также `docs/release-runbook.md` | `scripts/ci/package-unica-plugin.py`, `crates/unica-bootstrap/src/`, `.github/workflows/unica-plugin-release.yml` |
+| Поведение, зависящее от ОС | ADR-0009, область `PLATFORM` реестра | `crates/unica-coder/src/infrastructure/platform/`, `crates/unica-bootstrap/src/platform/`, страж `scripts/ci/check-rust-platform-boundary.py` |
+| Само архитектурное правило | `architecture/invariants.md` или `architecture/quality-requirements.md` плюс запись в `spec/decisions/` | проверка, названная в поле `Check` этой записи |
 
-Do not scan local ignored corpora as part of normal repo understanding:
+**Строки комбинируются.** Одна задача обычно попадает сразу в несколько:
+инструмент, который пишет платформенный XML, — это первая строка вместе со
+второй; инструмент, который меняет файлы и обязан сообщить о влиянии на кеш, —
+первая вместе с третьей; новый инструмент, запускающий долгую работу, — первая
+вместе с четвёртой. Читайте объединение подходящих строк, а не одну самую
+похожую.
+
+Отдельно про format-aware операции. Реестр инструментов, контракты и
+дескрипторы в слое application описывают вызов: имя, схему аргументов и форму
+результата. `crates/unica-format-core` владеет закрытой семантической
+командой/результатом, `unica-application` — нейтральной оркестрацией, а
+`crates/unica-adapter-platform-xml` — layout, schema, parser, writer и
+диспетчеризацией версий семейства. Host-каталог
+`crates/unica-coder/src/infrastructure/native_operations/` остаётся тонким:
+`registry.rs` отображает MCP-параметры на semantic DTO и typed result на
+`AdapterOutcome`, `meta.rs` отображает neutral validation/navigation, а
+`code.rs` содержит только BSL-интерпретацию. Разрешение и публикация BSL
+artifact также идут через neutral adapter ports; XML/version/path topology в
+host не возвращается (ADR-0019).
+
+## Релизы
+
+Публикация версии в публичный маркетплейс выполняется по
+`docs/release-runbook.md`. Прочитайте его прежде, чем действовать по любой
+просьбе выпустить, отгрузить, продвинуть или доделать релиз: порядок шагов несёт
+гарантию ADR-0008 о том, что каталог никогда не указывает на неокончательные
+байты, и импровизация в нём отдаёт потребителям непроверенный пакет.
+
+## Гигиена поиска
+
+Не сканируйте локальные игнорируемые корпуса при обычном изучении репозитория:
 
 - `target`
 - `.build`
 - `dist`
-- `docs-local` (except when the task needs official 1C platform documentation)
+- `docs-local` (кроме случаев, когда задаче нужна официальная документация
+  платформы 1С)
 
-Use `rg`/`git ls-files` first. For packaging questions, prefer tracked files plus generated package artifacts over raw filesystem walks.
+Датированные деревья планов и проектных записок отслеживаются гитом, но они
+описывают, как было сделано прошлое изменение, а не как система ведёт себя
+сейчас. Их тоже не сканируйте:
 
-## Local 1Ci Platform Documentation
+- `docs/design/**`
+- `docs/plans/**`
+- `docs/provenance/reviews/**`
 
-For questions about official 1C platform behavior, search the private local
-corpus at `docs-local/1ci/8.3.27/en/` before using the network. If the required
-guide is absent or `manifest.json` is missing or not marked `"complete": true`,
-run `python3.12 scripts/dev/download-1ci-guides.py` from the repository root and
-retry the local search.
+Открывайте их только чтобы восстановить историю одного конкретного изменения, и
+никогда не выводите из их текста действующее архитектурное правило. CI-тест
+может закрепить архивный файл по пути как живой тестовый вход:
+`tests/ci/test_format_profile_contract.py` читает
+`docs/design/2026-07-23-platform-8-3-27-format-2-20-design.md`. Это не делает
+прозу файла нормативной, но запрещает считать сам файл неиспользуемым; перед
+удалением проверяйте `rg <path> tests/ scripts/`.
 
-The corpus is local research material only. Do not commit it, copy it into
-`plugins/unica/`, include it in packages, or publish it. The downloader may
-fetch `https://kb.1ci.com/bin/download/*` attachments despite that path being
-disallowed by `robots.txt`; this is a narrow, explicitly approved exception and
-must not be generalized to other disallowed paths.
+Начинайте с `rg` и `git ls-files`. В вопросах об упаковке предпочитайте
+отслеживаемые файлы и сгенерированные артефакты пакета обходу файловой системы.
 
-## Development Rules
+## Проектные документы и решения
 
-- Fix root causes, not symptoms.
-- Surface contradictions in assumptions, docs, tests, and runtime behavior.
-- Keep the public MCP boundary as one server named `unica` with `unica.*` tools unless an ADR changes that contract.
-- Prompt-visible skills stay MCP-first. Direct packaged-script execution paths must not return once a native `unica.*` tool exists, except for documented utility exceptions.
-- One plugin directory serves Codex and Claude Code. Keep both manifests at the same version, keep `.mcp.json` host-neutral, and do not add optional manifest or catalog keys without checking that the oldest supported client accepts them; an unrecognized key is a load error there, not a warning.
+Эти правила связывают скиллы мозгового штурма и планирования. Они старше
+умолчаний самого скилла.
 
-## Pull-request Topology
+**Куда кладутся артефакты.** Проектные записки — в
+`docs/design/YYYY-MM-DD-<topic>-design.md`, планы реализации — в
+`docs/plans/YYYY-MM-DD-<feature-name>.md`. Это переопределяет каталоги по
+умолчанию в скиллах `brainstorming` и `writing-plans`. Черновики сессии остаются
+в игнорируемом `.superpowers/`; никогда не делайте `git add -f` для пути, который
+репозиторий игнорирует.
 
-- Default to one independently reviewable PR per coherent change, targeting `main` or an explicitly named release branch.
-- Do not open a PR whose base is the head branch of another open PR. Do not use child PRs as a queue for review fixes: commit and push those fixes to the existing PR's head branch.
-- Before opening a PR, inspect the intended base on GitHub. If it belongs to an open PR, stop and either use that PR's head branch or ask the user for direction; branch names alone are not evidence of an independent base.
-- A stacked PR is allowed only when the user explicitly requests a named stack and its merge/rebase order. Each member must explain its parent, standalone review boundary, and closure plan in its PR body.
-- If an agent cannot push to the existing PR head, it must provide a patch or ask for access; it must not create a child PR as a workaround.
-- A distinct bug discovered during review belongs in an independent `main`-targeted PR or an issue, never in an implicit PR stack.
+**`spec/` — единственный слой нормативной архитектурной документации, но не
+единственный источник истины репозитория.** Код, тесты, контрактные метаданные
+пакета и спецификации форматов остаются выше него согласно порядку в начале
+файла. Внутри `spec/` архитектурным выбором владеет раздел `Решение` записи ADR,
+а выведенным проверяемым обязательством — поле `Rule` одного из двух реестров.
+Описание системы, чек-лист и приёмка ссылаются на владельца по ID. Проектная
+записка фиксирует путь к выбору и нормативной не становится.
+
+**Прочитайте правила прежде, чем предлагать проект.** Изучая контекст проекта,
+начните с `spec/architecture/invariants.md` и `spec/decisions/README.md`.
+Подход, который противоречит принятому решению или записи реестра, либо
+отбрасывается, либо предлагается вместе с записью, заменяющей прежнюю; скажите
+прямо, что именно из двух, а не оставляйте противоречие на откуп ревью.
+
+**Выделите решение, когда сдвинулся контракт.** Написав проектную записку и до
+того, как звать пользователя её смотреть, решите, меняет ли работа архитектурный
+контракт. Меняет, если затронуто хоть одно из:
+
+- набор публичных инструментов `unica.*`, их аргументы или полезная нагрузка
+  результата;
+- идентичность MCP-сервера или граница «единственный публичный сервер»;
+- владение кешем или состоянием рабочего пространства, либо контракт доменных
+  событий;
+- контракт упаковки, хоста или релиза;
+- граница слоя или любое правило, которое несёт реестр инвариантов;
+- создаётся политика, которой обязан следовать более чем один потребитель —
+  существующий или будущий (общее ядро, разделяемый writer, единый формат
+  вывода).
+
+Если меняет — запись решения пишется в `spec/decisions/` тем же коммитом. Запись
+короткая и нормативная; проектная записка остаётся её происхождением и
+упоминается в разделе Context. Если не меняет — так и напишите в шапке.
+
+**Каждая проектная записка открывается тремя полями:**
+
+```markdown
+- Date: `YYYY-MM-DD`
+- Status: `draft` | `approved` | `superseded`
+- Decision: `ADR-NNNN` | `none — no architectural contract changed`
+```
+
+`Decision: none` — это утверждение, которое ревью может отклонить, а не значение
+по умолчанию. Формат проверяет `tests/ci/test_design_documents.py`.
+
+## Именование записей
+
+Идентификатор записи — это устойчивая ручка: его цитируют в описаниях PR, в
+коммитах и в ветках обсуждений. Поэтому он не переименовывается вслед за
+формулировкой и не переиспользуется после удаления записи.
+
+Схемы у реестра и у решений разные, и различает их один признак: **номер уместен
+там, где порядок несёт смысл, и вреден там, где не несёт.**
+
+### Записи реестра — смысловой код без цифр
+
+Формат: `INV-<ОБЛАСТЬ>-<КОД>` для инвариантов и `REQ-<ОБЛАСТЬ>-<КОД>` для
+требований к качеству. Например `INV-MCP-NAMESPACE`, `REQ-PERF-DEADLINE`.
+
+- Код — от одного до трёх слов заглавными через дефис, не длиннее 24 символов.
+- Код называет **то, что правило защищает**, а не то, как оно реализовано.
+  Реализация меняется, защищаемое свойство — нет: `INV-MCP-DATA-DRIVEN-SCHEMA`
+  переживёт переезд дескрипторов в другой модуль, а `INV-MCP-TOOL-CONTRACTS-RS`
+  не переживёт.
+- Цифр в коде нет. Реестр — это множество, а не последовательность: порядок
+  записей внутри области не значит ничего, и номер сообщал бы читателю
+  несуществующий приоритет.
+- Код уникален во всём корпусе спецификаций и после вывода записи из обращения
+  другому правилу не достаётся.
+- Смена смысла правила — это новая запись, а не переименование прежней. Иначе
+  цитата из старого обсуждения начнёт указывать на правило, которого автор
+  ссылки не имел в виду.
+
+Шаблон, длину и уникальность проверяет
+`tests/ci/test_architecture_registry.py`.
+
+### Записи решений — номер и слаг
+
+Формат: файл `NNNN-<слаг>.md`, цитирование — `ADR-NNNN`.
+
+- Номер остаётся, потому что каталог решений — это хроника: по номеру видно, что
+  одно решение принято после другого, и цепочки замещения читаются в порядке.
+- Смысл несёт слаг в имени файла, а не номер.
+- Номера монотонны, израсходованный номер не выдаётся повторно, а решение,
+  переставшее действовать, получает статус `superseded` и остаётся на месте.
+
+Подробности жизненного цикла решений — в
+[`spec/decisions/README.md`](spec/decisions/README.md).
+
+## Локальная документация платформы 1Ci
+
+По вопросам об официальном поведении платформы 1С сначала ищите в приватном
+локальном корпусе `docs-local/1ci/8.3.27/en/`, и только потом идите в сеть. Если
+нужного руководства нет, либо `manifest.json` отсутствует или не помечен
+`"complete": true`, выполните из корня репозитория
+`python3.12 scripts/dev/download-1ci-guides.py` и повторите локальный поиск.
+
+Корпус — только локальный исследовательский материал. Не коммитьте его, не
+копируйте в `plugins/unica/`, не включайте в пакеты и не публикуйте. Загрузчик
+может обращаться к вложениям `https://kb.1ci.com/bin/download/*`, хотя этот путь
+запрещён в `robots.txt`; это узкое, явно согласованное исключение, и его нельзя
+распространять на другие запрещённые пути.
+
+## Правила разработки
+
+- Устраняйте причины, а не симптомы.
+- Выносите наружу противоречия между допущениями, документацией, тестами и
+  поведением в runtime.
+- Держите публичную границу MCP как один сервер с именем `unica` и инструментами
+  `unica.*`, пока запись решения не изменит этот контракт.
+- Видимые модели скиллов остаются MCP-first. Пути прямого запуска упакованных
+  скриптов не должны возвращаться там, где уже есть нативный инструмент
+  `unica.*`, кроме описанных утилитарных исключений.
+- Один каталог плагина обслуживает Codex и Claude Code. Держите оба манифеста на
+  одной версии, держите `.mcp.json` независимым от хоста и не добавляйте
+  необязательные ключи манифеста или каталога, не проверив, что их принимает
+  самый старый поддерживаемый клиент: там нераспознанный ключ — ошибка загрузки,
+  а не предупреждение.
+- Изменение публичной поверхности — инструментов `unica.*`, идентичности
+  MCP-сервера, маршрутизации скиллов, упаковки или границ слоёв — правит
+  `spec/architecture/invariants.md` и запись-владельца из `spec/decisions/` тем
+  же набором изменений. Отгрузить код и отложить документацию значит оставить
+  реестр утверждать то, что сборка опровергает.
+- Ссылайтесь на инвариант или решение по ID, а не копируйте его нормативную
+  формулировку. Если нужно пояснить применение правила, ставьте ID владельца
+  рядом и не выдавайте пояснение за независимую норму.
+
+## Топология pull request
+
+- По умолчанию — один самостоятельно проверяемый PR на одно связное изменение, с
+  базой `main` или явно названной релизной веткой.
+- Не открывайте PR, базой которого является head-ветка другого открытого PR. Не
+  используйте дочерние PR как очередь правок по ревью: коммитьте и пушьте такие
+  правки в head-ветку существующего PR.
+- Перед открытием PR посмотрите предполагаемую базу на GitHub. Если она
+  принадлежит открытому PR, остановитесь и либо возьмите его head-ветку, либо
+  спросите пользователя, как поступить; имя ветки само по себе не доказывает
+  независимость базы.
+- Стек из PR допустим, только если пользователь явно попросил именованный стек и
+  задал порядок слияния и перебазирования. Каждый участник стека объясняет в
+  описании своего PR, кто его родитель, где проходит граница самостоятельного
+  ревью и как он будет закрыт.
+- Если агент не может пушить в head существующего PR, он обязан предоставить
+  патч или попросить доступ; создавать дочерний PR в обход нельзя.
+- Дефект, найденный во время ревью, разбирается по его происхождению.
+  - **Привнесённый этим же PR** — правится в нём же, коммитом в его head-ветку.
+    Отдельный PR на собственную регрессию оставляет в истории заведомо сломанный
+    коммит и делит ревью одного изменения на два.
+  - **Существовавший до него** — идёт независимым PR с базой `main` или
+    заводится задачей. В текущий PR он не втягивается: это расширяет его границу,
+    смешивает несвязанные изменения в одном ревью и задерживает то, что уже
+    готово.
+  - Когда происхождение неочевидно, решает `git log -S` или `git blame` по
+    строке дефекта, а не ощущение. Если и после этого неясно — дефект считается
+    существовавшим ранее и выносится наружу.
+  - Ни в одном из двух случаев дефект не превращается в неявный стек PR.

@@ -1,10 +1,10 @@
 # Авторы, источники и лицензии
 
 Эта страница описывает компоненты публичного пакета Unica, источники идей и
-адаптированного поведения, а также границы применимых лицензий. Версии,
-репозитории и закреплённые коммиты инструментов задаются в
-[`third-party/tools.lock.json`](third-party/tools.lock.json), а происхождение
-skills — в [`provenance/skill-upstreams.json`](provenance/skill-upstreams.json).
+адаптированного поведения, а также границы применимых лицензий. Она
+самодостаточна: каждый источник назван здесь поимённо. Версии, репозитории и
+закреплённые коммиты поставляемых инструментов задаются в
+[`third-party/tools.lock.json`](third-party/tools.lock.json).
 
 ## Unica
 
@@ -57,7 +57,7 @@ LGPL-3.0-or-later проекта Unica не заменяет эти услови
 - Репозиторий: [Dach-Coin/rlm-tools-bsl](https://github.com/Dach-Coin/rlm-tools-bsl)
 - Автор: [Roman Starchenko](https://github.com/Dach-Coin); исходный проект
   `rlm-tools` — [Stefan O'Shea](https://github.com/stefanoshea)
-- Закреплённая версия: `1.26.0`, commit `dcfff95ce678f49971b14d8acd82b042a6855470`
+- Закреплённая версия: `1.29.1`, commit `8bc6e9fc83b522f9a79eab3193eb13fc2cecb8ed`
 - Лицензия: [MIT](third-party/licenses/rlm-tools-bsl/LICENSE)
 
 Оба бинарника собираются из одного репозитория. MIT notice сохраняет

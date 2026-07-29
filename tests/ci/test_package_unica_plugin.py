@@ -486,7 +486,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
         # The catalog on the marketplace default branch must keep naming a tag,
         # so staged plugin bytes are not served before a promotion moves it.
         self.assertEqual(source["ref"], "v1.2.3")
-        self.assertEqual(source["path"], "./plugins/unica")
+        self.assertEqual(source["path"], "plugins/unica")
         self.assertEqual(source["source"], "git-subdir")
 
     def test_claude_manifest_leaves_skill_discovery_to_the_default_scan(self) -> None:
@@ -536,10 +536,10 @@ class PackageUnicaPluginTests(unittest.TestCase):
         active_paths = [
             repo_root / "README.md",
             repo_root / "plugins" / "unica" / "README.md",
-            repo_root / "plugins" / "unica" / "references" / "tooling" / "internal-package.md",
+            repo_root / "docs" / "internal-package.md",
             repo_root / "spec" / "acceptance" / "unica-mcp-validation.md",
-            repo_root / "spec" / "architecture" / "arc42" / "06-runtime-view.md",
-            repo_root / "spec" / "architecture" / "arc42" / "07-deployment-view.md",
+            repo_root / "spec" / "architecture" / "runtime.md",
+            repo_root / "spec" / "architecture" / "deployment.md",
             repo_root / "spec" / "architecture" / "change-checklist.md",
             repo_root / "spec" / "decisions" / "0001-edinyy-publichnyy-mcp-unica.md",
             repo_root / "spec" / "decisions" / "0004-legacy-skill-scripts-are-migration-debt.md",
@@ -693,6 +693,38 @@ class PackageUnicaPluginTests(unittest.TestCase):
             self.assertTrue((destination / "ATTRIBUTIONS.md").is_file())
             for link in local_license_links:
                 self.assertTrue((destination / link).is_file(), link)
+
+    def test_documented_resources_are_packaged(self) -> None:
+        module = load_package_module()
+        repo_root = Path(__file__).resolve().parents[2]
+        plugin_src = repo_root / "plugins" / "unica"
+        # Both ways a document points at another one: a backticked path, where
+        # the slash separates a link from a bare filename mentioned as prose,
+        # and a markdown link, where the target is a path either way.
+        patterns = (
+            re.compile(r"`([^`\s]*/[^`\s]*\.md)`"),
+            re.compile(r"\]\((?!\w+:)([^)\s#]+\.md)(?:#[^)\s]*)?\)"),
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / "unica"
+            module.copy_tracked_plugin_source(repo_root, plugin_src, destination)
+
+            checked = 0
+            for doc in sorted(destination.rglob("*.md")):
+                relative_doc = doc.relative_to(destination)
+                text = doc.read_text(encoding="utf-8")
+                for link in [m for p in patterns for m in p.findall(text)]:
+                    checked += 1
+                    # The package has no repository root and no knowable
+                    # plugin root, so a link only survives packaging when it
+                    # resolves from the document that carries it.
+                    self.assertTrue(
+                        (doc.parent / link).is_file(),
+                        f"{relative_doc}: {link}",
+                    )
+
+            self.assertGreater(checked, 0)
 
     def test_plugin_source_copy_rejects_tracked_source_bin(self) -> None:
         module = load_package_module()
@@ -1009,37 +1041,22 @@ class PackageUnicaPluginTests(unittest.TestCase):
             source = catalog["plugins"][0]["source"]
             self.assertEqual(source["source"], "git-subdir")
             self.assertEqual(source["ref"], release_tag)
-            self.assertEqual(source["path"], "./plugins/unica")
+            self.assertEqual(source["path"], "plugins/unica")
             self.assertNotIn("source\": \"local", json.dumps(catalog))
             self.assertEqual(list(out_dir.glob("*.tar.gz")), [])
             self.assertEqual(list(out_dir.glob("*.zip")), [])
 
-            provenance = plugin / "provenance" / "skill-upstreams.json"
-            self.assertTrue(provenance.is_file())
-            self.assertIn("v8-runner-rust", provenance.read_text(encoding="utf-8"))
-            upstream_review = (
-                plugin
-                / "provenance"
-                / "reviews"
-                / "2026-06-15-upstream-review.json"
+            # Maintainer material stays in the source tree. The donor index and
+            # the dated review records answer questions a consumer never asks,
+            # and the licence obligation is discharged by ATTRIBUTIONS.md,
+            # which names every upstream on its own.
+            self.assertFalse((plugin / "provenance").exists())
+            self.assertFalse(
+                (plugin / "references" / "tooling" / "internal-package.md").exists()
             )
-            self.assertTrue(upstream_review.is_file())
-            upstream_review_data = json.loads(upstream_review.read_text(encoding="utf-8"))
-            upstreams = {item["id"]: item for item in upstream_review_data["upstreams"]}
-            ai_rules = upstreams["ai-rules-1c"]
-            self.assertEqual(ai_rules["reviewStatus"], "reviewed")
-            self.assertEqual(ai_rules["affectedEntries"], [])
-            decisions = {item["skill"]: item for item in ai_rules["entryDecisions"]}
-            self.assertEqual(decisions["api-design"]["primarySource"], "unica")
-            self.assertEqual(decisions["api-design"]["decision"], "ignored-with-reason")
-            product_backlog = (
-                plugin
-                / "provenance"
-                / "reviews"
-                / "2026-06-18-product-update-backlog.json"
+            self.assertIn(
+                "cc-1c-skills", (plugin / "ATTRIBUTIONS.md").read_text(encoding="utf-8")
             )
-            self.assertTrue(product_backlog.is_file())
-            self.assertIn("bsl-analyzer", product_backlog.read_text(encoding="utf-8"))
 
     def test_local_debug_mode_remains_current_host_only_and_uses_unica_dev(self) -> None:
         module = load_package_module()

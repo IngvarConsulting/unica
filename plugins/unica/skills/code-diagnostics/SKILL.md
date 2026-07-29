@@ -7,8 +7,10 @@ description: "Диагностика BSL и объяснение отключе�
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.code.diagnostics`, `unica.code.graph`, `unica.code.definition`, `unica.code.outline`, `unica.code.grep`, `unica.code.search`, `unica.standards.explain`, `unica.standards.search`, and `unica.runtime.execute`.
+- Preferred path: use MCP `unica` tools `unica.code.diagnostics`, `unica.code.graph`, `unica.code.definition`, `unica.code.outline`, `unica.code.search`, `unica.standards.explain`, `unica.standards.search`, and `unica.runtime.execute`.
 - Use `unica.code.diagnostics` with `mode=analyze` or no `mode` for the classic analyzer run; large workspaces may set `timeoutSeconds` from 30 to 3600 (default 120). Use `mode=status|catalog|file|workspace` for typed diagnostic catalog and scoped diagnostic reads; those modes do not accept `timeoutSeconds`.
+- `path` belongs to `mode=file` only. Every other mode rejects it instead of scanning the whole source set, so name the file and the mode together.
+- When the analyzer workspace model is still loading, `mode=file|workspace` fail with `diagnostics_pending:` and a retry hint rather than reporting an empty finding set. `mode=analyze` builds its own diagnostics database inside the run and reports nothing about the code until that build finishes, so a run that ends before the analyzer's own report fails with `diagnostics_pending:` too instead of returning an empty finding set. Treat every `diagnostics_pending:` reply as retryable, never as clean code; `mode=status` reports the same loading state as a successful readiness answer.
 - Use `unica.code.graph` only for diagnostic impact context: containing node, callers, callees, neighbors, or workspace graph status.
 - v8std access goes only through public `unica.standards.*` tools.
 - Do not call internal analyzer, standards, or package adapters directly. They are hidden behind MCP `unica`.
@@ -17,7 +19,7 @@ description: "Диагностика BSL и объяснение отключе�
 
 1. Run `unica.code.diagnostics` for the selected source-set or module. Start with `mode=status` when the analyzer workspace model may still be loading, and use `mode=catalog` when diagnostic codes need classification.
 2. Group diagnostics by file, diagnostic id/code, and root cause. Do not fix duplicate reports independently when one source issue explains them.
-3. For one file or range, use `unica.code.diagnostics` with `mode=file`; then use `unica.code.outline`, `unica.code.definition`, or `unica.code.grep` for exact context.
+3. For one file or range, use `unica.code.diagnostics` with `mode=file`; then use `unica.code.outline`, `unica.code.definition`, or `unica.code.search` for exact context.
 4. When diagnostic output includes a graph id or the fix may affect callers/callees, inspect impact with `unica.code.graph` before proposing a change.
 5. Search nearby code with `unica.code.search` only when exact context tools do not identify the root cause.
 6. For each diagnostic id/code, call `unica.standards.explain` with `codes` when the code is explicit; otherwise search `unica.standards.search` by diagnostic name, APK/EDT/BSL LS token, or nearby snippet.

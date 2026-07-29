@@ -19,7 +19,7 @@ if str(SCRIPT_DIR) not in sys.path:
 import donor_parity_contract
 
 
-DEFAULT_INDEX = Path("plugins/unica/provenance/skill-upstreams.json")
+DEFAULT_INDEX = Path("spec/provenance/skill-upstreams.json")
 DEFAULT_LOCK = Path("plugins/unica/third-party/tools.lock.json")
 DEFAULT_CACHE = Path(".build/skill-upstreams")
 ALLOWED_ROLES = {

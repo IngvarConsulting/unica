@@ -4,7 +4,12 @@
 
 Validate that the Unica plugin exposes one public MCP server, routes developer
 workflows through that server, and keeps cache/state coordination inside the
-orchestrator.
+orchestrator. One plugin directory serves both supported hosts, so host-facing
+steps are run once per host (INV-PRODUCT-SINGLE-PLUGIN-TREE, ADR-0012).
+
+Each section names the invariants it exercises. The normative wording of those
+rules lives in [../architecture/invariants.md](../architecture/invariants.md)
+and is not repeated here.
 
 ## Mandatory Local Contract
 
@@ -19,21 +24,26 @@ cargo run --quiet --bin unica -- --help
 
 Expected:
 
-- `.mcp.json` has exactly one key under `mcpServers`: `unica`.
+- `.mcp.json` has exactly one key under `mcpServers`: `unica` (INV-MCP-SINGLE-ENTRY).
 - `cargo run --quiet --bin unica -- --help` prints `unica <version>` and describes the stdio MCP
   orchestrator.
-- Old adapter names are not public MCP registrations.
+- Old adapter names are not public MCP registrations (INV-MCP-NO-ENGINE-SERVERS).
 - Hidden workspace analyzer services are internal implementation details and do
-  not add keys under `mcpServers`.
+  not add keys under `mcpServers` (INV-APP-LAZY-HIDDEN-SERVICES).
 - Bundled-tool versions come from `plugins/unica/third-party/tools.lock.json`.
   Contract tests must load the locked entry and validate the corresponding
-  artifact/interface; they must not hardcode a second `bsl-analyzer` version.
-- Skill-local operation files are not a target execution path. The target path is
-  MCP `unica`; runtime shell/PowerShell wrappers are not shipped.
+  artifact/interface; they must not hardcode a second `bsl-analyzer` version
+  (INV-PRODUCT-TOOL-VERSION-SOURCE).
+- Skill-local operation files do not exist. The only execution path is MCP
+  `unica`; runtime shell/PowerShell wrappers are not shipped (INV-SKILL-NO-SCRIPT-ROUTE,
+  INV-APP-NO-SCRIPT-BACKEND).
 
 ## Mandatory MCP Smoke
 
-Use a temporary cache directory and call the stdio server:
+Use a temporary cache directory and call the stdio server. The run checks server
+identity on the wire (INV-MCP-SERVER-NAME), the public tool namespace (INV-MCP-NAMESPACE), the
+overridable volatile cache root (INV-CACHE-WORKSPACE-ROOT), and dry-run reporting without
+written state (INV-CACHE-WRITE-FREE-PREVIEW):
 
 ```sh
 python3.12 - <<'PY'
@@ -130,30 +140,34 @@ as byte-identical to the upstream harvest. This immutable CI-fixture projection
 is not a supported migration or downgrade operation and is never applied to
 user source. `git diff --check` remains required for the rest of the tree.
 
-## Skill Script Removal Acceptance
+## Skill Script Absence Acceptance
 
-For migrated skills, documentation and tests must reject workflow guidance that
-points to skill-local Python/PowerShell operation files. Use a check that avoids
-matching package launchers:
+The migration to native `unica.*` handlers is complete: no skill ships or
+references a skill-local Python/PowerShell operation file, and the runtime keeps
+no script fallback (INV-SKILL-NO-SCRIPT-ROUTE, INV-APP-NO-SCRIPT-BACKEND). Use a check that avoids matching
+package launchers:
 
 ```sh
 rg -n 'powershell[.]exe|skills/.+[.]ps1|skills/.+[.]py' plugins/unica/skills
 ```
 
-Expected for fully migrated skills: no matches in their operation workflow
-sections. Matches in not-yet-migrated skills are migration debt and must be
-tracked in `spec/IMPLEMENTATION_TODO.md`.
+Expected: no matches anywhere under `plugins/unica/skills`. A match is a
+regression against INV-SKILL-NO-SCRIPT-ROUTE and needs a superseding decision, not a tracked
+migration task.
 
 ## Packaging Smoke
 
 For the thin public package and its three runtime assets, the normal CI scripts
-must satisfy:
+must satisfy (INV-PRODUCT-PACKAGE-PARITY, INV-PKG-THIN-PACKAGE, INV-PKG-VERIFIED-ATOMIC-INSTALL, INV-PKG-VERSION-LOCKSTEP):
 
 - packaged `.mcp.json` exposes exactly `unica`;
 - packaged `.mcp.json` uses only the command-scoped Git alias and target-neutral
-  portable selector;
+  portable selector, and one launcher serves both hosts;
 - the thin plugin has exactly three native bootstrap binaries and no full
   `bin/<target>` runtime;
+- both host manifests are present at the same version, and the Claude manifest
+  declares neither `skills` nor `mcpServers`, because that host discovers both
+  by default;
 - `runtime-manifest.json` pins the source commit, release tag, exact GitHub URLs,
   archive hashes, file hashes, and entrypoints for all targets;
 - re-downloaded release archives exactly match the metadata and contain the
@@ -161,26 +175,61 @@ must satisfy:
 - bootstrap `verify` completes MCP `initialize` and `tools/list` with the
   required stable public tools.
 
-## Fresh Codex Visibility
+## Fresh Host Visibility
 
-Use a clean `CODEX_HOME`, add `IngvarConsulting/unica-marketplace` at `main`,
-install `unica@unica`, and start a new Codex task. The acceptance signal is a
-fresh prompt showing Unica skills and only the public MCP server provided by the
-plugin, not stale cached registrations.
+One plugin directory serves both hosts, so this section is run twice, once per
+host (INV-PRODUCT-SINGLE-PLUGIN-TREE). On both hosts the acceptance signal is the same: a fresh
+prompt showing Unica skills and only the public MCP server provided by the
+plugin, not stale cached registrations (INV-MCP-NO-ENGINE-SERVERS, INV-MCP-SINGLE-ENTRY).
+
+Codex: use a clean `CODEX_HOME`, add `IngvarConsulting/unica-marketplace` at
+`main`, install `unica@unica`, and start a new Codex task.
+
+Claude Code: uninstall `unica@unica`, remove the marketplace, and delete the
+runtime cache under `${CLAUDE_PLUGIN_DATA}/runtimes` — it deliberately survives
+a plugin update (INV-CACHE-RUNTIME-ROOT-ORDER). Then add the same marketplace, run
+`claude plugin install unica@unica`, and start a new session or reload plugins.
+Skills appear under the plugin prefix, for example `/unica:meta-validate`, and
+public tools appear as `mcp__plugin_unica_unica__<tool>` with every character
+outside `A-Za-z0-9_-` replaced by `_`.
+
+For the development contour the same signal is checked without a marketplace:
+Codex installs the local plugin, and Claude Code loads the directory directly
+with `claude --plugin-dir ./plugins/unica`.
 
 ## Workspace Service Acceptance
 
-- `unica.code.grep` must not create `.build/unica/services`.
+This section exercises INV-APP-CODE-PROVIDER-BOUNDARY (provider-neutral
+orchestration), INV-MCP-CODE-SEARCH-SECTIONS (public search semantics),
+INV-APP-LAZY-HIDDEN-SERVICES (hidden, workspace-scoped services),
+INV-SOURCE-SINGLE-RESOLVED-ROOT (source-root selection),
+INV-CACHE-WORKTREE-ISOLATION (independent provider state),
+INV-MCP-SDK-TRANSPORT and INV-MCP-BOUNDED-ADMISSION (transport ownership and
+bounded admission), INV-CACHE-PERSISTED-STALENESS (live services are notified
+by applied mutations), and INV-PLATFORM-NO-ORPHAN-PROCESSES (process-tree
+ownership).
+
+- `initialize`, `tools/list`, `project.status`, and `project.map` must not create
+  `.build/unica/services`.
+- `unica.code.search` returns fixed `rlm`, `bsl-analyzer`, and `git-grep`
+  sections in that order and may start the workspace service. One failed or
+  unavailable section remains visible while another successful or empty
+  section makes the overall search successful; cancellation returns no partial
+  success.
 - Analyzer-backed tools may create `.build/unica/services/<service-key>`.
-- Two sessions using the same workspace/source root should reuse a matching live
-  service record.
-- Another workspace or source root must use another service key.
+- Repeated provider calls through one matching live service reuse independent
+  `bsl-analyzer` and RLM transports. RLM reuses one logical `rlm_start` session
+  until invalidation, expiry, shutdown, or source-root change and closes the
+  old session with `rlm_end`.
+- Another workspace, linked worktree, or source root must use another service,
+  session, and index identity. No cross-chat reuse is part of the public
+  contract, and no main-branch index is combined with a worktree delta.
 - Stale or version-mismatched `service.json` records must be replaced.
 - With no `sourceDir`, a source set named `main` is the effective source root;
   otherwise the sole `CONFIGURATION` source set is used. Multiple configuration
   source sets without `main` must fail with `invalid_source_root:`. An explicit
   `sourceDir` is resolved relative to request `cwd`, normalized, and rejected if
-  it escapes the workspace.
+  it escapes the workspace (INV-SOURCE-SINGLE-RESOLVED-ROOT).
 - `project.status` and `project.map`, analyzer commands, RLM commands, and the
   workspace-service identity must agree on that effective source root.
 - Analyzer and RLM work requests carry unique internal operation IDs. A public
@@ -188,18 +237,22 @@ plugin, not stale cached registrations.
   The cancelled public request itself gets no response, as the MCP
   specification prescribes (ADR-0013); the internal operation still observes
   cancellation exactly once.
-- The public transport is the official Rust SDK (`rmcp`, ADR-0013). It
-  enforces the handshake: the first request must be a well-formed
-  `initialize` (`ping` may precede it), and `protocolVersion` is negotiated
-  with the client instead of being pinned.
+- The public transport is the official Rust SDK (`rmcp`, ADR-0013,
+  INV-MCP-SDK-TRANSPORT). It enforces the handshake: the first request must be a
+  well-formed `initialize` (`ping` may precede it), and `protocolVersion` is
+  negotiated with the client instead of being pinned.
 - On EOF the SDK drains finishing calls (bounded at 5 seconds); the process
   then cancels all still-running domain operations, waits at most 2 seconds
   for them, and exits, closing stdout. Verify with
   `cargo test -p unica-coder eof_cancels_active_calls`.
 - At most 32 `tools/call` workers are admitted; excess calls return `-32603`
-  with `overloaded` without delaying `ping` or cancellation. Public input line
-  length is delegated to the SDK transport; the 8 MiB line bound below applies
-  to the internal workspace-service protocol.
+  with `overloaded` without delaying `ping` or cancellation (INV-MCP-BOUNDED-ADMISSION).
+  Each code-intelligence provider separately admits at most 32 retained
+  workers. A timed-out non-cooperative provider keeps its permit until it
+  actually exits, and all retained handles share the same aggregate two-second
+  shutdown grace as active tool calls.
+  Public input line length is delegated to the SDK transport; the 8 MiB line
+  bound below applies to the internal workspace-service protocol.
 - `ping`, cancellation, and shutdown must remain responsive while analyzer or
   RLM work is active. Cancelling one request must not require restarting the
   service before a later request succeeds.
@@ -224,7 +277,8 @@ plugin, not stale cached registrations.
 - Shutdown and client disconnect cancel owned operations and boundedly clean up
   their child process trees. On Windows this guarantee is implemented by
   suspended start followed by Job Object assignment; on Unix by a dedicated
-  process group. Other targets guarantee only immediate-child termination.
+  process group. Other targets guarantee only immediate-child termination
+  (INV-PLATFORM-NO-ORPHAN-PROCESSES).
 
 The issue-89 end-to-end regression exercises a workspace with `main` and
 `TESTS` source sets, concurrent analyzer/RLM calls, cancellation, ping, a
@@ -232,9 +286,10 @@ subsequent successful request, and descendant cleanup:
 
 ```sh
 cargo test -p unica-coder --test issue_89_workspace_service -- --nocapture
+cargo test -p unica-coder --test platform_code_intelligence -- --nocapture
 ```
 
-Run it three consecutive times. Each run must finish within its test deadlines,
+Run the issue-89 test three consecutive times. Each run must finish within its test deadlines,
 all recorded backend roots must end in `src/cf`, and no PID created by the
 fixture may survive. On Windows, additionally inspect without terminating any
 pre-existing user process:

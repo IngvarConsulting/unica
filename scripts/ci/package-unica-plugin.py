@@ -292,10 +292,14 @@ def claude_plugin_source(*, release_tag: str) -> dict:
     type; a relative `./plugins/unica` source would load everywhere but would
     follow the marketplace branch instead of a tag.
     """
+    # No "./" prefix: Claude Code feeds this path verbatim to
+    # `git sparse-checkout set --cone`, and git <= 2.34 (Ubuntu 22.04) stores a
+    # leading-"./" argument as a literal pattern that matches nothing, so the
+    # subdirectory never checks out and installation fails.
     return {
         "source": "git-subdir",
         "url": "https://github.com/IngvarConsulting/unica-marketplace.git",
-        "path": f"./plugins/{PLUGIN_ID}",
+        "path": f"plugins/{PLUGIN_ID}",
         "ref": release_tag,
     }
 
@@ -401,10 +405,12 @@ def write_public_marketplace(source_path: Path, dest_path: Path, *, release_tag:
 
     plugin = data["plugins"][0]
     plugin["name"] = PLUGIN_ID
+    # Same constraint as claude_plugin_source: a "./" prefix breaks
+    # sparse-checkout on git <= 2.34, so the path must stay bare.
     plugin["source"] = {
         "source": "git-subdir",
         "url": "https://github.com/IngvarConsulting/unica-marketplace.git",
-        "path": "./plugins/unica",
+        "path": "plugins/unica",
         "ref": release_tag,
     }
     plugin.setdefault("policy", {})["installation"] = "AVAILABLE"

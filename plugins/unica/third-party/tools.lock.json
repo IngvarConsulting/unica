@@ -84,59 +84,59 @@
     },
     {
       "name": "rlm-tools-bsl",
-      "version": "1.26.0",
+      "version": "1.29.1",
       "repository": "https://github.com/Dach-Coin/rlm-tools-bsl",
-      "sourceTag": "v1.26.0",
-      "sourceCommit": "dcfff95ce678f49971b14d8acd82b042a6855470",
+      "sourceTag": "v1.29.1",
+      "sourceCommit": "8bc6e9fc83b522f9a79eab3193eb13fc2cecb8ed",
       "assetRepository": "https://github.com/IngvarConsulting/unica-toolchain",
-      "assetTag": "rlm-tools-bsl-v1.26.0-build.3",
+      "assetTag": "rlm-tools-bsl-v1.29.1-build.2",
       "license": "MIT",
       "assetStrategy": "direct-release-asset",
       "binaryName": "rlm-tools-bsl",
       "assets": {
         "darwin-arm64": {
           "assetName": "rlm-tools-bsl-darwin-arm64",
-          "sha256": "8eeb0abaf8a08f4a7eab1d13fa603101720577f322cef73af1c908fca09920aa"
+          "sha256": "4a1cd5c2fc0c6c27f049241a4008dbe382a7d23ab01b5e9cfdc91a75d9eaba65"
         },
         "linux-x64": {
           "assetName": "rlm-tools-bsl-linux-x64",
-          "sha256": "9e08e45fcd3b770b6810bf18b2575cef4d827266595b33f5c5303b02d517ad0f"
+          "sha256": "dec0334cb640ee94d97b80ff3d0c8e4c39e4426eceffbfe932378526876c4417"
         },
         "win-x64": {
           "assetName": "rlm-tools-bsl-win-x64.exe",
-          "sha256": "02e13273694f0dc5ec4e185acef2b030e95b6191d7390daf3bb9b1cc9853702d"
+          "sha256": "349d6002ecf551f1ab99e24aa097aeb207087acf9de8ab4adef42c2b7eaf6539"
         }
       }
     },
     {
       "name": "rlm-bsl-index",
-      "version": "1.26.0",
+      "version": "1.29.1",
       "repository": "https://github.com/Dach-Coin/rlm-tools-bsl",
-      "sourceTag": "v1.26.0",
-      "sourceCommit": "dcfff95ce678f49971b14d8acd82b042a6855470",
+      "sourceTag": "v1.29.1",
+      "sourceCommit": "8bc6e9fc83b522f9a79eab3193eb13fc2cecb8ed",
       "assetRepository": "https://github.com/IngvarConsulting/unica-toolchain",
-      "assetTag": "rlm-tools-bsl-v1.26.0-build.3",
+      "assetTag": "rlm-tools-bsl-v1.29.1-build.2",
       "license": "MIT",
       "assetStrategy": "direct-release-asset",
       "binaryName": "rlm-bsl-index",
       "assets": {
         "darwin-arm64": {
           "assetName": "rlm-bsl-index-darwin-arm64",
-          "sha256": "6876a26eba795ec8cb73bd62a2d6d2ead73a982f45f703406b82ffad3af93b8c"
+          "sha256": "b20725360b889944547cb2b1823df7ce8bc4b6b39c103debb602d572648d42ad"
         },
         "linux-x64": {
           "assetName": "rlm-bsl-index-linux-x64",
-          "sha256": "f899111f5e7313cdc99f0cd98e70593e20efcddb4ddaeeaeb014b49841400cab"
+          "sha256": "5e68d6048ad384df36a54a7edf0f4fd0c89cd583cf978cc91d7144cd5f788a5d"
         },
         "win-x64": {
           "assetName": "rlm-bsl-index-win-x64.exe",
-          "sha256": "7e7c43c6991cbe658fb974d4a3e0afc2e0adb37a300ae87688a9d4cfb1882f65"
+          "sha256": "e72ddea7ecc841800a3dde479ac4ef1680f7ea0ca60c9cd75004e727fa939cef"
         }
       }
     },
     {
       "name": "unica",
-      "version": "0.10.0",
+      "version": "0.11.0",
       "repository": "https://github.com/IngvarConsulting/unica",
       "sourceTag": "workspace",
       "sourceCommit": "workspace",
