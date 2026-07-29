@@ -342,3 +342,18 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
         )
 
         self.assertEqual(self.guard.analyze_decision_records(diff), [])
+
+    def test_a_created_record_alone_is_never_a_rewrite(self) -> None:
+        """A diff that only adds a record must not be judged as an edit.
+
+        The old-side header of a created file is `--- /dev/null`; existence is
+        decided from that path rather than from the shape of the pattern that
+        matched it.
+        """
+        diff = (
+            "diff --git a/spec/decisions/0017-new.md b/spec/decisions/0017-new.md\n"
+            "--- /dev/null\n+++ b/spec/decisions/0017-new.md\n"
+            "@@ -0,0 +1,2 @@\n+- Статус: `accepted`\n+- Дата: `2026-07-29`\n"
+        )
+
+        self.assertEqual(self.guard.analyze_decision_records(diff), [])

@@ -51,7 +51,11 @@ ARCHITECTURE_PREFIXES = (
 )
 
 DIFF_FILE_HEADER = re.compile(r"^\+\+\+ b/(?P<path>.+)$")
-DIFF_OLD_HEADER = re.compile(r"^--- a/(?P<path>.+)$")
+# The old-side header is either `--- a/<path>` for a file that existed or
+# `--- /dev/null` for one the diff creates. Matching both keeps the decision
+# about existence in the code that cares, instead of leaving it implied by a
+# pattern that silently drops half the grammar.
+DIFF_OLD_HEADER = re.compile(r"^--- (?:a/)?(?P<path>.+)$")
 
 # An accepted decision record is a dated statement of what was chosen, not a
 # description of current code (INV-DOC-SUPERSEDE-NOT-EDIT). Two edits give the rewrite away and
@@ -149,7 +153,7 @@ def analyze_decision_records(diff_text: str) -> list[str]:
 
         old_header = DIFF_OLD_HEADER.match(line)
         if old_header:
-            pending_existed = True
+            pending_existed = old_header.group("path") != "/dev/null"
             continue
 
         if path is None or not line or line[0] not in "+-":
