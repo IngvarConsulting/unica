@@ -4,11 +4,15 @@ use crate::domain::code_intelligence::{
     CodeIntelligenceContext, CodeIntelligenceReadRequest, ProviderDeadline,
 };
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::workspace_index::IndexReadiness;
+use crate::infrastructure::source_roots::normalize_path_identity;
+use crate::infrastructure::workspace_index::{mark_bsl_index_stale, IndexReadiness};
 use crate::infrastructure::workspace_services::{
     WorkspaceRlmOperation, WorkspaceServiceManager, WorkspaceServiceRlmOutput,
 };
+use bsl_syntax::ast::{AstNode, FunctionDef, ProcedureDef};
+use bsl_syntax::SyntaxKind;
 use serde_json::{Map, Value};
+use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
@@ -175,6 +179,40 @@ impl<'a> RlmNavigationAdapter<'a> {
         {
             return Err(format!("{tool_name} RLM helper failed: {error}"));
         }
+        if let CodeIntelligenceReadRequest::Outline {
+            path,
+            include_methods,
+        } = request
+        {
+            // RLM's global `index info` content check is sampled, while an
+            // index-backed outline otherwise trusts its SQLite snapshot
+            // completely. Prove this requested module at the public boundary
+            // before reporting either the outline or a fresh cache.
+            if let Err(error) = validate_indexed_outline(&value, path, *include_methods, context) {
+                let message = format!("requested module `{path}`: {error}");
+                let mut outcome = AdapterOutcome {
+                    ok: false,
+                    summary: "unica.code.outline detected a stale RLM index snapshot".to_string(),
+                    changes: Vec::new(),
+                    warnings: Vec::new(),
+                    errors: vec![format!(
+                        "{INDEX_UNAVAILABLE_PREFIX} rlm index stale: {message}"
+                    )],
+                    artifacts: vec![path.clone()],
+                    stdout: None,
+                    stderr: None,
+                    command: None,
+                };
+                if let Err(status_error) =
+                    mark_bsl_index_stale(&context.workspace, &context.source_root.path, &message)
+                {
+                    outcome.warnings.push(format!(
+                        "failed to persist stale RLM index state: {status_error}"
+                    ));
+                }
+                return Ok(outcome);
+            }
+        }
         let (section, body) = match tool_name {
             "unica.code.definition" => ("rlm-definition", render_definition(&value)?),
             "unica.code.outline" => ("rlm-outline", render_outline(&value)?),
@@ -197,6 +235,372 @@ impl<'a> RlmNavigationAdapter<'a> {
         }
         Ok(outcome)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum OutlineMethodKind {
+    Procedure,
+    Function,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct OutlineMethodFingerprint {
+    line: usize,
+    end_line: usize,
+    kind: OutlineMethodKind,
+    name: String,
+    is_export: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct OutlineRegionFingerprint {
+    line: usize,
+    end_line: Option<usize>,
+    name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OutlineFingerprint {
+    methods: Vec<OutlineMethodFingerprint>,
+    regions: Vec<OutlineRegionFingerprint>,
+    method_count: usize,
+    export_count: usize,
+}
+
+fn validate_indexed_outline(
+    value: &Value,
+    request_path: &str,
+    include_methods: bool,
+    context: &CodeIntelligenceContext,
+) -> Result<(), String> {
+    match value.pointer("/_meta/index_used").and_then(Value::as_bool) {
+        Some(false) => return Ok(()),
+        Some(true) => {}
+        None => {
+            return Err(
+                "RLM outline response did not identify whether the index was used".to_string(),
+            )
+        }
+    }
+
+    let reported_path = required_value_string(value, "path", "RLM outline")?;
+    if reported_path != request_path {
+        return Err(format!(
+            "RLM returned path `{reported_path}` instead of the requested path"
+        ));
+    }
+
+    let source_root = normalize_path_identity(&context.source_root.path)
+        .map_err(|error| format!("could not validate source root: {error}"))?;
+    let module_path = normalize_path_identity(&source_root.join(Path::new(request_path)))
+        .map_err(|error| format!("could not validate current module path: {error}"))?;
+    if !module_path.starts_with(&source_root) {
+        return Err("current module resolves outside the selected source root".to_string());
+    }
+    let text = fs::read_to_string(&module_path)
+        .map_err(|error| format!("could not read the current module: {error}"))?;
+    let live = live_outline_fingerprint(&text)?;
+    let indexed = indexed_outline_fingerprint(value, include_methods)?;
+
+    if live.regions != indexed.regions {
+        return Err(format!(
+            "indexed regions differ from the current filesystem structure (indexed {}, current {})",
+            indexed.regions.len(),
+            live.regions.len()
+        ));
+    }
+    if live.method_count != indexed.method_count || live.export_count != indexed.export_count {
+        return Err(format!(
+            "indexed method totals differ from the current filesystem structure (indexed methods/exports {}/{}, current {}/{})",
+            indexed.method_count,
+            indexed.export_count,
+            live.method_count,
+            live.export_count
+        ));
+    }
+    if include_methods && live.methods != indexed.methods {
+        return Err(
+            "indexed method declarations differ from the current filesystem structure".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn live_outline_fingerprint(text: &str) -> Result<OutlineFingerprint, String> {
+    if text.len() > u32::MAX as usize {
+        return Err("current BSL module is too large for structural validation".to_string());
+    }
+    let parsed = bsl_parser::parse(text);
+    if !parsed.errors().is_empty() {
+        return Err(format!(
+            "current BSL module cannot be structurally validated because the parser reported {} diagnostic(s)",
+            parsed.errors().len()
+        ));
+    }
+    let root = parsed.syntax_node();
+    let mut methods = Vec::new();
+    for node in root.descendants() {
+        if let Some(procedure) = ProcedureDef::cast(node.clone()) {
+            methods.push(method_fingerprint(
+                text,
+                procedure.syntax(),
+                procedure
+                    .name_or_keyword()
+                    .map(|token| token.text().to_string()),
+                procedure.export_keyword().is_some(),
+                OutlineMethodKind::Procedure,
+                SyntaxKind::KW_PROCEDURE,
+                SyntaxKind::KW_END_PROCEDURE,
+            )?);
+        } else if let Some(function) = FunctionDef::cast(node) {
+            methods.push(method_fingerprint(
+                text,
+                function.syntax(),
+                function
+                    .name_or_keyword()
+                    .map(|token| token.text().to_string()),
+                function.export_keyword().is_some(),
+                OutlineMethodKind::Function,
+                SyntaxKind::KW_FUNCTION,
+                SyntaxKind::KW_END_FUNCTION,
+            )?);
+        }
+    }
+    methods.sort();
+    let export_count = methods.iter().filter(|method| method.is_export).count();
+    let method_count = methods.len();
+    Ok(OutlineFingerprint {
+        methods,
+        regions: live_region_fingerprints(text),
+        method_count,
+        export_count,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn method_fingerprint(
+    text: &str,
+    syntax: &bsl_syntax::SyntaxNode,
+    name: Option<String>,
+    is_export: bool,
+    kind: OutlineMethodKind,
+    start_kind: SyntaxKind,
+    end_kind: SyntaxKind,
+) -> Result<OutlineMethodFingerprint, String> {
+    let name = name.ok_or_else(|| "current BSL method is missing a name".to_string())?;
+    let mut tokens = syntax
+        .descendants_with_tokens()
+        .filter_map(|element| element.into_token());
+    let start = tokens
+        .find(|token| token.kind() == start_kind)
+        .ok_or_else(|| format!("current BSL method `{name}` is missing its opening keyword"))?;
+    let end = syntax
+        .descendants_with_tokens()
+        .filter_map(|element| element.into_token())
+        .find(|token| token.kind() == end_kind)
+        .ok_or_else(|| format!("current BSL method `{name}` is missing its closing keyword"))?;
+    Ok(OutlineMethodFingerprint {
+        line: line_number(text, usize::from(start.text_range().start())),
+        end_line: line_number(text, usize::from(end.text_range().start())),
+        kind,
+        name,
+        is_export,
+    })
+}
+
+fn live_region_fingerprints(text: &str) -> Vec<OutlineRegionFingerprint> {
+    let mut regions = Vec::new();
+    let mut open = Vec::new();
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    for (offset, line) in normalized.lines().enumerate() {
+        let line_number = offset + 1;
+        let trimmed = line
+            .trim()
+            .strip_prefix('\u{feff}')
+            .unwrap_or_else(|| line.trim())
+            .trim_start();
+        if trimmed.starts_with("//") {
+            continue;
+        }
+        if let Some(name) = region_start_name(trimmed) {
+            regions.push(OutlineRegionFingerprint {
+                line: line_number,
+                end_line: None,
+                name,
+            });
+            open.push(regions.len() - 1);
+        } else if is_region_end(trimmed) {
+            if let Some(index) = open.pop() {
+                regions[index].end_line = Some(line_number);
+            }
+        }
+    }
+    regions.sort();
+    regions
+}
+
+fn region_start_name(line: &str) -> Option<String> {
+    let lowercase = line.to_lowercase();
+    for keyword in ["#область", "#region"] {
+        let Some(rest) = lowercase.strip_prefix(keyword) else {
+            continue;
+        };
+        if !rest.chars().next().is_some_and(char::is_whitespace) {
+            continue;
+        }
+        let name = line[keyword.len()..].trim();
+        if !name.is_empty() {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+fn is_region_end(line: &str) -> bool {
+    let lowercase = line.to_lowercase();
+    ["#конецобласти", "#endregion"].iter().any(|keyword| {
+        lowercase.strip_prefix(keyword).is_some_and(|rest| {
+            rest.chars()
+                .next()
+                .is_none_or(|next| !next.is_alphanumeric() && next != '_')
+        })
+    })
+}
+
+fn indexed_outline_fingerprint(
+    value: &Value,
+    include_methods: bool,
+) -> Result<OutlineFingerprint, String> {
+    let totals = value
+        .get("totals")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "RLM outline response is missing totals".to_string())?;
+    let method_count = json_usize(totals.get("methods"), "totals.methods")?;
+    let export_count = json_usize(totals.get("exports"), "totals.exports")?;
+    let region_count = json_usize(totals.get("regions"), "totals.regions")?;
+    let mut methods = Vec::new();
+    let mut regions = Vec::new();
+    let outline = value
+        .get("outline")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "RLM outline response is missing outline".to_string())?;
+    collect_indexed_outline(outline, include_methods, &mut methods, &mut regions)?;
+    if include_methods {
+        let orphan_methods = value
+            .get("orphan_methods")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "RLM outline response is missing orphan_methods".to_string())?;
+        collect_indexed_methods(orphan_methods, &mut methods)?;
+    }
+    methods.sort();
+    regions.sort();
+    if regions.len() != region_count {
+        return Err(format!(
+            "RLM outline region total is {}, but the response contains {}",
+            region_count,
+            regions.len()
+        ));
+    }
+    if include_methods && methods.len() != method_count {
+        return Err(format!(
+            "RLM outline method total is {}, but the response contains {}",
+            method_count,
+            methods.len()
+        ));
+    }
+    Ok(OutlineFingerprint {
+        methods,
+        regions,
+        method_count,
+        export_count,
+    })
+}
+
+fn collect_indexed_outline(
+    nodes: &[Value],
+    include_methods: bool,
+    methods: &mut Vec<OutlineMethodFingerprint>,
+    regions: &mut Vec<OutlineRegionFingerprint>,
+) -> Result<(), String> {
+    for node in nodes {
+        regions.push(OutlineRegionFingerprint {
+            line: json_usize(node.get("line"), "region.line")?,
+            end_line: json_optional_usize(node.get("end_line"), "region.end_line")?,
+            name: required_value_string(node, "region", "RLM outline region")?.to_string(),
+        });
+        if include_methods {
+            let region_methods = node
+                .get("methods")
+                .and_then(Value::as_array)
+                .ok_or_else(|| "RLM outline region is missing methods".to_string())?;
+            collect_indexed_methods(region_methods, methods)?;
+        }
+        let children = node
+            .get("children")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "RLM outline region is missing children".to_string())?;
+        collect_indexed_outline(children, include_methods, methods, regions)?;
+    }
+    Ok(())
+}
+
+fn collect_indexed_methods(
+    values: &[Value],
+    methods: &mut Vec<OutlineMethodFingerprint>,
+) -> Result<(), String> {
+    for value in values {
+        let kind_text = required_value_string(value, "type", "RLM outline method")?;
+        let normalized_kind = kind_text.to_lowercase();
+        let kind = if normalized_kind.starts_with("процедур")
+            || normalized_kind.starts_with("procedure")
+        {
+            OutlineMethodKind::Procedure
+        } else if normalized_kind.starts_with("функц") || normalized_kind.starts_with("function")
+        {
+            OutlineMethodKind::Function
+        } else {
+            return Err(format!(
+                "RLM outline method has unsupported type `{kind_text}`"
+            ));
+        };
+        methods.push(OutlineMethodFingerprint {
+            line: json_usize(value.get("line"), "method.line")?,
+            end_line: json_usize(value.get("end_line"), "method.end_line")?,
+            kind,
+            name: required_value_string(value, "name", "RLM outline method")?.to_string(),
+            is_export: value
+                .get("is_export")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| "RLM outline method is missing is_export".to_string())?,
+        });
+    }
+    Ok(())
+}
+
+fn json_usize(value: Option<&Value>, field: &str) -> Result<usize, String> {
+    value
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| format!("RLM outline response has invalid {field}"))
+}
+
+fn json_optional_usize(value: Option<&Value>, field: &str) -> Result<Option<usize>, String> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => json_usize(Some(value), field).map(Some),
+    }
+}
+
+fn line_number(text: &str, byte_offset: usize) -> usize {
+    let bytes = &text.as_bytes()[..byte_offset];
+    bytes
+        .iter()
+        .enumerate()
+        .filter(|(index, byte)| {
+            **byte == b'\n' || (**byte == b'\r' && bytes.get(index + 1) != Some(&b'\n'))
+        })
+        .count()
+        + 1
 }
 
 fn operation_for_request(request: &CodeIntelligenceReadRequest) -> WorkspaceRlmOperation {
@@ -600,7 +1004,7 @@ fn readiness_warning(readiness: IndexReadiness) -> String {
 mod tests {
     use super::{
         operation_for_request, render_definition, render_outline, render_profile,
-        RlmNavigationAdapter, RlmNavigationClient,
+        validate_indexed_outline, RlmNavigationAdapter, RlmNavigationClient,
     };
     use crate::application::AdapterOutcome;
     use crate::domain::cancellation::CancellationToken;
@@ -609,11 +1013,14 @@ mod tests {
     };
     use crate::domain::source_roots::ResolvedSourceRoot;
     use crate::domain::workspace::WorkspaceContext;
-    use crate::infrastructure::workspace_index::IndexReadiness;
+    use crate::infrastructure::workspace_index::{
+        bsl_index_is_ready, read_bsl_index_status, status_path, IndexReadiness,
+    };
     use crate::infrastructure::workspace_services::{
         WorkspaceRlmOperation, WorkspaceServiceRlmOutput,
     };
     use serde_json::json;
+    use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
@@ -967,6 +1374,223 @@ mod tests {
             path: "CommonModules/X/Ext/Module.bsl".to_string(),
             include_methods: true,
         }
+    }
+
+    struct IndexedOutlineClient;
+
+    impl RlmNavigationClient for IndexedOutlineClient {
+        fn readiness(
+            &self,
+            context: &WorkspaceContext,
+            _source_root: &Path,
+            _timeout: Duration,
+            _cancellation: &CancellationToken,
+        ) -> Result<IndexReadiness, String> {
+            Ok(IndexReadiness::Ready {
+                db_path: context.cache_root.join("rlm-tools-bsl/bsl_index.db"),
+            })
+        }
+
+        fn call(
+            &self,
+            _context: &WorkspaceContext,
+            _source_root: &Path,
+            _operation: WorkspaceRlmOperation,
+            _timeout: Duration,
+            _cancellation: &CancellationToken,
+        ) -> Result<WorkspaceServiceRlmOutput, String> {
+            Ok(WorkspaceServiceRlmOutput {
+                result_text: json!({
+                    "path": "CommonModules/X/Ext/Module.bsl",
+                    "category": "CommonModules",
+                    "object_name": "X",
+                    "module_type": "Module",
+                    "totals": {
+                        "methods": 1,
+                        "exports": 0,
+                        "regions": 0,
+                        "loc": 2
+                    },
+                    "outline": [],
+                    "orphan_methods": [{
+                        "name": "Old",
+                        "type": "Procedure",
+                        "is_export": false,
+                        "line": 1,
+                        "end_line": 2
+                    }],
+                    "_meta": {
+                        "index_used": true,
+                        "fallback_reason": null,
+                        "resolved_from_name": false
+                    }
+                })
+                .to_string(),
+                stderr: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn indexed_outline_matching_current_module_is_accepted() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-rlm-matching-outline-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let source_root = root.join("src");
+        let module = source_root.join("CommonModules/X/Ext/Module.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        fs::write(
+            &module,
+            "\u{feff}#Region API\rProcedure Current()\rEndProcedure\r#EndRegion\r",
+        )
+        .unwrap();
+        let context = CodeIntelligenceContext::new(
+            WorkspaceContext {
+                cwd: root.clone(),
+                workspace_root: root.clone(),
+                cache_root: root.join(".build/unica"),
+                workspace_epoch: 1,
+            },
+            ResolvedSourceRoot {
+                source_set: Some("main".to_string()),
+                path: source_root,
+            },
+        );
+        let outline = json!({
+            "path": "CommonModules/X/Ext/Module.bsl",
+            "totals": {
+                "methods": 1,
+                "exports": 0,
+                "regions": 1,
+                "loc": 2
+            },
+            "outline": [{
+                "region": "API",
+                "line": 1,
+                "end_line": 4,
+                "totals": {"methods": 1, "exports": 0},
+                "children": [],
+                "methods": [{
+                    "name": "Current",
+                    "type": "Procedure",
+                    "is_export": false,
+                    "line": 2,
+                    "end_line": 3,
+                    "loc": 2
+                }]
+            }],
+            "orphan_methods": [],
+            "_meta": {"index_used": true}
+        });
+
+        assert_eq!(
+            validate_indexed_outline(&outline, "CommonModules/X/Ext/Module.bsl", true, &context),
+            Ok(())
+        );
+        let compact_outline = json!({
+            "path": "CommonModules/X/Ext/Module.bsl",
+            "totals": {
+                "methods": 1,
+                "exports": 0,
+                "regions": 1,
+                "loc": 2
+            },
+            "outline": [{
+                "region": "API",
+                "line": 1,
+                "end_line": 4,
+                "totals": {"methods": 1, "exports": 0},
+                "children": []
+            }],
+            "_meta": {"index_used": true}
+        });
+        assert_eq!(
+            validate_indexed_outline(
+                &compact_outline,
+                "CommonModules/X/Ext/Module.bsl",
+                false,
+                &context
+            ),
+            Ok(())
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn outline_rejects_index_snapshot_that_disagrees_with_current_module() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-rlm-stale-outline-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let source_root = root.join("src");
+        let module = source_root.join("CommonModules/X/Ext/Module.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        fs::write(
+            &module,
+            "Procedure Old()\nEndProcedure\nProcedure Current()\nEndProcedure\n",
+        )
+        .unwrap();
+        let workspace = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        fs::create_dir_all(status_path(&workspace).parent().unwrap()).unwrap();
+        fs::write(
+            status_path(&workspace),
+            format!(
+                "{{\"status\":\"ready\",\"source_root\":{},\"db_path\":{},\"message\":null,\"updated_at\":1}}\n",
+                serde_json::to_string(&source_root.display().to_string()).unwrap(),
+                serde_json::to_string(
+                    &workspace
+                        .cache_root
+                        .join("rlm-tools-bsl/bsl_index.db")
+                        .display()
+                        .to_string()
+                )
+                .unwrap()
+            ),
+        )
+        .unwrap();
+        let context = CodeIntelligenceContext::new(
+            workspace.clone(),
+            ResolvedSourceRoot {
+                source_set: Some("main".to_string()),
+                path: source_root,
+            },
+        );
+
+        let outcome = RlmNavigationAdapter::with_client(&IndexedOutlineClient)
+            .invoke_resolved_cancellable(
+                &outline_request(),
+                &context,
+                ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        assert!(!outcome.ok);
+        assert_eq!(
+            outcome.summary,
+            "unica.code.outline detected a stale RLM index snapshot"
+        );
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| error.starts_with("index_unavailable: rlm index stale:")));
+        assert!(outcome.stdout.is_none());
+        let status = read_bsl_index_status(&workspace).unwrap();
+        assert_eq!(status.status, "stale");
+        assert!(!bsl_index_is_ready(&workspace));
+        assert!(status
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("CommonModules/X/Ext/Module.bsl")));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
