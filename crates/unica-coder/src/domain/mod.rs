@@ -5,6 +5,7 @@ pub mod events;
 pub mod form_edit;
 pub mod format_profile;
 pub mod project_sources;
+pub mod source_resources;
 pub mod source_roots;
 pub mod source_target;
 pub mod workspace;

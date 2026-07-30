@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 impl UnicaApplication {
     pub fn new() -> Self {
-        Self::with_ports(Arc::new(InfrastructureApplicationPorts))
+        Self::with_ports(Arc::new(InfrastructureApplicationPorts::new()))
     }
 }
 

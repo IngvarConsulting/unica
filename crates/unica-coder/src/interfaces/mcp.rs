@@ -621,6 +621,138 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn source_resource_mcp_round_trip_reuses_instance_snapshot_and_hides_private_state() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-source-resource-mcp-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let source = root.join("src");
+        std::fs::create_dir_all(source.join("CommonModules/Shared/Ext")).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Main</Name></Properties><ChildObjects><CommonModule>Shared</CommonModule></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("CommonModules/Shared.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule><Properties><Name>Shared</Name></Properties></CommonModule></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("CommonModules/Shared/Ext/Module.bsl"),
+            b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\n",
+        )
+        .unwrap();
+
+        let app = UnicaApplication::new();
+        let resources_args = json!({
+            "cwd": root,
+            "sourceSet": "main",
+            "metadataPath": "CommonModule.Shared.Module",
+            "scope": "self",
+            "limit": 50
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let resources: Value = serde_json::from_str(
+            &call_tool_text(
+                &app,
+                "unica.source.resources",
+                &resources_args,
+                CancellationToken::new(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(resources["ok"].as_bool().unwrap());
+        assert_eq!(resources["data"]["completeness"], "complete");
+        assert_eq!(resources["data"]["resources"].as_array().unwrap().len(), 1);
+        assert_eq!(resources["cache"]["events"], json!([]));
+        assert_eq!(resources["cache"]["invalidated"], json!([]));
+        assert_no_private_source_resource_keys(&resources);
+
+        let read_args = json!({
+            "cwd": root,
+            "snapshotId": resources["data"]["snapshotId"],
+            "resourceId": resources["data"]["resources"][0]["resourceId"],
+            "offset": 0,
+            "limit": 9
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let read: Value = serde_json::from_str(
+            &call_tool_text(
+                &app,
+                "unica.source.read",
+                &read_args,
+                CancellationToken::new(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(read["ok"].as_bool().unwrap());
+        assert_eq!(read["data"]["contentEncoding"], "utf-8");
+        assert_eq!(read["data"]["textProfile"]["bomPrefixBytes"], 3);
+        assert_eq!(read["data"]["textProfile"]["eol"], "crlf");
+        assert!(read["data"]["length"].as_u64().unwrap() <= 9);
+        assert_no_private_source_resource_keys(&read);
+
+        let other_app_error = call_tool_text(
+            &UnicaApplication::new(),
+            "unica.source.read",
+            &read_args,
+            CancellationToken::new(),
+        )
+        .unwrap_err();
+        assert!(
+            other_app_error.1.contains("snapshot_not_found"),
+            "{other_app_error:?}"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn assert_no_private_source_resource_keys(value: &Value) {
+        match value {
+            Value::Object(object) => {
+                for key in object.keys() {
+                    assert!(
+                        !matches!(
+                            key.as_str(),
+                            "path"
+                                | "sourceDir"
+                                | "provider"
+                                | "providerId"
+                                | "providerRevision"
+                                | "handle"
+                                | "private"
+                                | "workspaceRoot"
+                        ),
+                        "private source-resource key leaked: {key}"
+                    );
+                }
+                for child in object.values() {
+                    assert_no_private_source_resource_keys(child);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    assert_no_private_source_resource_keys(item);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn assert_no_private_source_navigation_keys(value: &Value) {
         match value {
             Value::Object(object) => {

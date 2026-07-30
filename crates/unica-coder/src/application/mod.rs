@@ -19,6 +19,7 @@ pub(crate) mod operation_descriptors;
 mod outcome;
 pub(crate) mod ports;
 pub(crate) mod source_navigation;
+pub(crate) mod source_resources;
 pub(crate) mod tool_contracts;
 pub use tool_contracts::input_schema_for_tool;
 
@@ -53,6 +54,9 @@ pub enum ToolHandler {
     SourceNavigation {
         operation: SourceNavigationOperation,
     },
+    SourceResources {
+        operation: SourceResourceOperation,
+    },
     CodeAdapter {
         command: &'static [&'static str],
     },
@@ -62,6 +66,7 @@ pub enum ToolHandler {
 }
 
 pub use source_navigation::SourceNavigationOperation;
+pub use source_resources::SourceResourceOperation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeJobAction {
@@ -191,6 +196,26 @@ pub fn tools() -> Vec<ToolSpec> {
             },
             handler: ToolHandler::SourceNavigation {
                 operation: SourceNavigationOperation::Children,
+            },
+        },
+        ToolSpec {
+            name: "unica.source.resources",
+            description:
+                "Open or page an immutable bounded manifest for one logical source target.",
+            mutating: false,
+            cache_access: CacheAccess::default(),
+            handler: ToolHandler::SourceResources {
+                operation: SourceResourceOperation::Resources,
+            },
+        },
+        ToolSpec {
+            name: "unica.source.read",
+            description:
+                "Read one bounded byte range from a resource in an issued immutable snapshot.",
+            mutating: false,
+            cache_access: CacheAccess::default(),
+            handler: ToolHandler::SourceResources {
+                operation: SourceResourceOperation::Read,
             },
         },
         ToolSpec {
@@ -528,6 +553,9 @@ fn call_tool(
         )?,
         ToolHandler::SourceNavigation { operation } => {
             source_navigation::invoke(operation, ports, args, &context, cancellation)?
+        }
+        ToolHandler::SourceResources { operation } => {
+            source_resources::invoke(operation, ports, args, &context, cancellation)?
         }
         _ => ports.invoke_handler(spec, args, &context, dry_run, cancellation)?,
     };
@@ -1819,6 +1847,33 @@ mod tests {
             assert!(matches!(
                 tool.handler,
                 ToolHandler::SourceNavigation {
+                    operation: actual
+                } if actual == operation
+            ));
+        }
+    }
+
+    #[test]
+    fn source_resource_tools_are_read_only_and_have_no_cache_or_event_effects() {
+        let expected = [
+            ("unica.source.resources", SourceResourceOperation::Resources),
+            ("unica.source.read", SourceResourceOperation::Read),
+        ];
+
+        for (name, operation) in expected {
+            let tool = tools().into_iter().find(|tool| tool.name == name).unwrap();
+            assert!(!tool.mutating, "{name} must remain read-only");
+            assert!(
+                tool.cache_access.reads.is_empty(),
+                "{name} must not read cache"
+            );
+            assert!(
+                tool.cache_access.writes.is_empty(),
+                "{name} must not invalidate cache"
+            );
+            assert!(matches!(
+                tool.handler,
+                ToolHandler::SourceResources {
                     operation: actual
                 } if actual == operation
             ));

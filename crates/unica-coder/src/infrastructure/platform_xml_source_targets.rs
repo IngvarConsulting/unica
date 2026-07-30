@@ -932,6 +932,13 @@ pub(crate) struct RevalidatedPlatformXmlTarget {
     pub(crate) path: PathBuf,
 }
 
+pub(crate) struct PlatformXmlResourceEvidence {
+    pub(crate) target_path: PathBuf,
+    pub(crate) source_root: PathBuf,
+    pub(crate) descriptor_paths: Vec<PathBuf>,
+    pub(crate) registration_path: PathBuf,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PlatformXmlModuleIdentity {
     pub(crate) owner: String,
@@ -1108,6 +1115,38 @@ pub(crate) fn revalidate_platform_xml_target(
     }
     Ok(RevalidatedPlatformXmlTarget {
         path: current.handle.target_path,
+    })
+}
+
+pub(crate) fn platform_xml_resource_evidence(
+    context: &WorkspaceContext,
+    handle: &ClosedPlatformXmlTarget,
+) -> Result<PlatformXmlResourceEvidence, SourceTargetError> {
+    let current = revalidate_platform_xml_target(context, handle)?;
+    let descriptor_paths = if handle.source_target.metadata_path.is_some() {
+        let relative = current
+            .path
+            .strip_prefix(&handle.source_root)
+            .map_err(|_| target_containment_error(&handle.source_target.source_set))?;
+        platform_xml_module_identity(relative)
+            .map_err(|_| {
+                SourceTargetError::new(
+                    SourceTargetErrorCode::MetadataAddressNotFound,
+                    "module resource evidence is unavailable",
+                )
+            })?
+            .descriptors
+            .into_iter()
+            .map(|path| handle.source_root.join(path))
+            .collect()
+    } else {
+        vec![handle.source_root.join("Configuration.xml")]
+    };
+    Ok(PlatformXmlResourceEvidence {
+        target_path: current.path,
+        source_root: handle.source_root.clone(),
+        descriptor_paths,
+        registration_path: handle.source_root.join("Configuration.xml"),
     })
 }
 

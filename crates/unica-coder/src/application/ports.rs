@@ -2,12 +2,16 @@ use super::{AdapterOutcome, ToolSpec};
 use crate::application::source_navigation::{
     SourceChildrenRequest, SourceChildrenResult, SourceResolveRequest, SourceResolveResult,
 };
+use crate::application::source_resources::{SourceReadRequest, SourceResourcesRequest};
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
     CodeIntelligenceContext, CodeIntelligenceReadRequest, CodeIntelligenceRegistry,
 };
 use crate::domain::events::DomainEvent;
+use crate::domain::source_resources::{
+    ResourceManifestPage, SourceReadResult, SourceResourceError,
+};
 use crate::domain::workspace::WorkspaceContext;
 use serde_json::{Map, Value};
 use std::path::PathBuf;
@@ -104,6 +108,30 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         _cancellation: &CancellationToken,
     ) -> Result<SourceChildrenResult, String> {
         Err("source navigation traversal is not configured".to_string())
+    }
+
+    fn source_resources(
+        &self,
+        _request: SourceResourcesRequest,
+        _context: &WorkspaceContext,
+        _cancellation: &CancellationToken,
+    ) -> Result<ResourceManifestPage, SourceResourceError> {
+        Err(SourceResourceError::new(
+            crate::domain::source_resources::SourceResourceErrorCode::SourceUnavailable,
+            "source resource provider is not configured",
+        ))
+    }
+
+    fn read_source_resource(
+        &self,
+        _request: SourceReadRequest,
+        _context: &WorkspaceContext,
+        _cancellation: &CancellationToken,
+    ) -> Result<SourceReadResult, SourceResourceError> {
+        Err(SourceResourceError::new(
+            crate::domain::source_resources::SourceResourceErrorCode::SourceUnavailable,
+            "source resource provider is not configured",
+        ))
     }
 
     fn evaluate_format_guard(

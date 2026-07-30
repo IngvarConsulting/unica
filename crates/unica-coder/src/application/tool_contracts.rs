@@ -1,9 +1,11 @@
 use super::operation_descriptors::{native_operation_descriptor, native_path_alias_groups};
 use super::source_navigation::SOURCE_NAVIGATION_LIMIT_MAX;
 use super::{
-    CodeIntelligenceOperation, RuntimeJobAction, SourceNavigationOperation, ToolHandler, ToolSpec,
+    CodeIntelligenceOperation, RuntimeJobAction, SourceNavigationOperation,
+    SourceResourceOperation, ToolHandler, ToolSpec,
 };
 use crate::domain::form_edit::{form_edit_definition_schema, validate_form_edit_definition};
+use crate::domain::source_resources::{SOURCE_READ_LIMIT_MAX, SOURCE_RESOURCE_PAGE_LIMIT_MAX};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use uuid::Uuid;
@@ -29,6 +31,15 @@ const SOURCE_RESOLVE_ARGS: &[&str] = &[
     "cursor",
 ];
 const SOURCE_CHILDREN_ARGS: &[&str] = &["sourceSet", "metadataPath", "limit", "cursor"];
+const SOURCE_RESOURCES_ARGS: &[&str] = &[
+    "sourceSet",
+    "metadataPath",
+    "scope",
+    "snapshotId",
+    "cursor",
+    "limit",
+];
+const SOURCE_READ_ARGS: &[&str] = &["snapshotId", "resourceId", "offset", "limit"];
 
 pub(crate) const DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS: u64 = 30;
 pub(crate) const DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS: u64 = 3600;
@@ -611,6 +622,22 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
             {"required": ["definition"]}
         ]);
     }
+    if tool.name == "unica.source.resources" {
+        schema["oneOf"] = json!([
+            {
+                "required": ["sourceSet"],
+                "not": {"anyOf": [{"required": ["snapshotId"]}, {"required": ["cursor"]}]}
+            },
+            {
+                "required": ["snapshotId", "cursor"],
+                "not": {"anyOf": [
+                    {"required": ["sourceSet"]},
+                    {"required": ["metadataPath"]},
+                    {"required": ["scope"]}
+                ]}
+            }
+        ]);
+    }
     schema
 }
 
@@ -696,6 +723,7 @@ pub fn validate_tool_arguments(
     }
     validate_code_arguments(tool, args, dry_run)?;
     validate_source_navigation_arguments(tool, args)?;
+    validate_source_resource_arguments(tool, args)?;
     validate_code_patch_arguments(tool, args)?;
     validate_meta_edit_arguments(tool, args)?;
     validate_form_add_arguments(tool, args)?;
@@ -713,6 +741,30 @@ pub fn validate_tool_arguments(
         }
     }
 
+    Ok(())
+}
+
+fn validate_source_resource_arguments(
+    tool: ToolSpec,
+    args: &Map<String, Value>,
+) -> Result<(), String> {
+    let ToolHandler::SourceResources { operation } = tool.handler else {
+        return Ok(());
+    };
+    match operation {
+        SourceResourceOperation::Resources => {
+            validate_integer_bound(
+                tool.name,
+                args,
+                "limit",
+                1,
+                SOURCE_RESOURCE_PAGE_LIMIT_MAX as u64,
+            )?;
+        }
+        SourceResourceOperation::Read => {
+            validate_integer_bound(tool.name, args, "limit", 1, SOURCE_READ_LIMIT_MAX as u64)?;
+        }
+    }
     Ok(())
 }
 
@@ -1593,6 +1645,10 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
             SourceNavigationOperation::Resolve => SOURCE_RESOLVE_ARGS,
             SourceNavigationOperation::Children => SOURCE_CHILDREN_ARGS,
         }),
+        ToolHandler::SourceResources { operation } => names.extend(match operation {
+            SourceResourceOperation::Resources => SOURCE_RESOURCES_ARGS,
+            SourceResourceOperation::Read => SOURCE_READ_ARGS,
+        }),
         ToolHandler::CodeAdapter { .. } => names.extend(code_args_for(tool.name)),
         ToolHandler::StandardsAdapter { .. } => names.extend(STANDARDS_ARGS),
         ToolHandler::ProjectStatus | ToolHandler::ProjectMap => {}
@@ -1637,6 +1693,10 @@ fn required_args(tool: &ToolSpec) -> Vec<&'static str> {
         ToolHandler::SourceNavigation { operation } => match operation {
             SourceNavigationOperation::Resolve => vec!["sourceSet", "query"],
             SourceNavigationOperation::Children => vec!["sourceSet"],
+        },
+        ToolHandler::SourceResources { operation } => match operation {
+            SourceResourceOperation::Resources => Vec::new(),
+            SourceResourceOperation::Read => vec!["snapshotId", "resourceId"],
         },
         ToolHandler::CodeAdapter { .. } => match tool.name {
             "unica.code.graph" => vec!["mode"],
@@ -1947,7 +2007,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "cursor",
-        "Opaque continuation token returned by the same `unica.source.resolve` or `unica.source.children` request; do not inspect or reuse it with another source set, query, mode, target kind, or parent address",
+        "Opaque continuation token returned by the same source navigation request or source.resources snapshot page; do not inspect or reuse it with another request or snapshot",
     ),
     (
         "cwd",
@@ -2321,8 +2381,16 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "Path to a role's `Rights.xml`, or the role directory that resolves to it, for `unica.role.info` and `unica.role.validate`, relative to `cwd`",
     ),
     (
+        "resourceId",
+        "Opaque resource identifier returned inside one source.resources snapshot; valid only together with the snapshotId that issued it",
+    ),
+    (
         "scenarioFilters",
         "Array of Vanessa Automation scenario filters for operation test with testRunner va; each entry becomes one --scenario-filter",
+    ),
+    (
+        "scope",
+        "Bounded source.resources manifest scope: self, aggregate, or registrations",
     ),
     (
         "section",
@@ -2363,6 +2431,10 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "snippet",
         "Literal BSL source text for standards.explain to explain against standards, sent with language and limit; codes outranks it when both are passed, and standards.search ignores it.",
+    ),
+    (
+        "snapshotId",
+        "Opaque application-instance and workspace-bound identifier returned by source.resources; expires after five minutes",
     ),
     (
         "sourceDir",
@@ -2589,6 +2661,33 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
                 "minimum": 1,
                 "maximum": SOURCE_NAVIGATION_LIMIT_MAX
             }),
+            _ => property_schema(name),
+        };
+    }
+    if let ToolHandler::SourceResources { operation } = tool.handler {
+        return match (operation, name) {
+            (SourceResourceOperation::Resources, "scope") => json!({
+                "type": "string",
+                "enum": ["self", "aggregate", "registrations"]
+            }),
+            (SourceResourceOperation::Resources, "limit") => json!({
+                "type": "integer",
+                "minimum": 1,
+                "maximum": SOURCE_RESOURCE_PAGE_LIMIT_MAX
+            }),
+            (SourceResourceOperation::Read, "limit") => json!({
+                "type": "integer",
+                "minimum": 1,
+                "maximum": SOURCE_READ_LIMIT_MAX
+            }),
+            (SourceResourceOperation::Read, "offset") => json!({
+                "type": "integer",
+                "minimum": 0,
+                "description": "Zero-based byte offset inside the immutable resource snapshot"
+            }),
+            (_, "sourceSet" | "metadataPath" | "snapshotId" | "resourceId" | "cursor") => {
+                json!({ "type": "string", "minLength": 1, "pattern": r"\S" })
+            }
             _ => property_schema(name),
         };
     }
@@ -3840,6 +3939,51 @@ mod tests {
                 children_schema["properties"].get(forbidden).is_none(),
                 "source.children must not publish {forbidden}"
             );
+        }
+    }
+
+    #[test]
+    fn source_resource_schemas_are_bounded_typed_and_path_free() {
+        let resources = crate::application::tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.source.resources")
+            .expect("source.resources is registered");
+        let read = crate::application::tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.source.read")
+            .expect("source.read is registered");
+        let resources_schema = input_schema_for_tool(&resources);
+        let read_schema = input_schema_for_tool(&read);
+
+        assert_eq!(resources_schema["additionalProperties"], false);
+        assert_eq!(
+            resources_schema["properties"]["scope"]["enum"],
+            json!(["self", "aggregate", "registrations"])
+        );
+        assert_eq!(resources_schema["properties"]["limit"]["maximum"], 50);
+        assert_eq!(read_schema["additionalProperties"], false);
+        assert_eq!(read_schema["required"], json!(["snapshotId", "resourceId"]));
+        assert_eq!(read_schema["properties"]["offset"]["minimum"], 0);
+        assert_eq!(read_schema["properties"]["limit"]["maximum"], 65_536);
+        for forbidden in [
+            "path",
+            "sourceDir",
+            "handle",
+            "provider",
+            "providerRevision",
+            "expectedHash",
+            "content",
+        ] {
+            assert!(
+                resources_schema["properties"].get(forbidden).is_none(),
+                "source.resources must not publish {forbidden}"
+            );
+            if forbidden != "content" {
+                assert!(
+                    read_schema["properties"].get(forbidden).is_none(),
+                    "source.read must not publish {forbidden}"
+                );
+            }
         }
     }
 
