@@ -459,12 +459,19 @@ def read_base_records(base: str) -> BaseCatalogue | None:
     which is the stricter of the two readings -- an unmerged record is then held
     to the same rules as a merged one. A guard that cannot see the target branch
     must not become more permissive than one that can.
+
+    The decoding is pinned rather than left to the locale. `text=True` alone
+    decodes with the runner's preferred encoding, which on a host with no `LANG`
+    is ASCII -- and every record body here is Russian, so the guard would die on
+    a decode error instead of reporting anything at all.
     """
     listing = subprocess.run(
         ["git", "ls-tree", "-r", "--name-only", "-z", base, "--", DECISIONS_DIR],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     if listing.returncode != 0:
         return None
@@ -479,6 +486,8 @@ def read_base_records(base: str) -> BaseCatalogue | None:
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         if content.returncode != 0:
             statuses[identifier] = None

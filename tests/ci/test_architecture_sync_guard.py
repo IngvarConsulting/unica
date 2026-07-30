@@ -902,6 +902,29 @@ class BaseCatalogueReadTests(unittest.TestCase):
         self.assertIn(catalogue.status("0011"), self.guard.STATUS_ORDER)
         self.assertFalse(catalogue.has("0007"))
 
+    def test_the_reads_pin_utf_8_instead_of_trusting_the_locale(self) -> None:
+        """A record body is Russian, so the decoding cannot be the locale's call.
+
+        `text=True` on its own decodes with the runner's preferred encoding. On a
+        host with no `LANG` that is ASCII, and the guard would die on a decode
+        error rather than report a catalogue -- the loudest possible version of
+        the failure it exists to avoid, but a failure all the same.
+        """
+        from unittest.mock import patch
+
+        recorded: list[dict] = []
+
+        def fake_run(command, **kwargs):
+            recorded.append(kwargs)
+            return subprocess_result(returncode=0, stdout="spec/decisions/0011-a.md")
+
+        with patch.object(self.guard.subprocess, "run", fake_run):
+            self.guard.read_base_records("origin/main")
+
+        self.assertEqual(len(recorded), 2, recorded)
+        for kwargs in recorded:
+            self.assertEqual(kwargs.get("encoding"), "utf-8")
+
     def test_an_unresolvable_ref_reads_as_no_catalogue(self) -> None:
         """None means "judge the diff alone", which is the stricter reading."""
         self.assertIsNone(
