@@ -6,6 +6,13 @@ use crate::infrastructure::project_sources::discover_project_source_map;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) struct ResolvedNamedSourceSet {
+    pub(crate) source_set: ProjectSourceSet,
+    pub(crate) path: PathBuf,
+}
+
 pub(crate) fn resolve_source_root(
     context: &WorkspaceContext,
     explicit: Option<&str>,
@@ -16,6 +23,33 @@ pub(crate) fn resolve_source_root(
         resolve_default(context)
     };
     result.map_err(invalid_source_root)
+}
+
+#[allow(dead_code)]
+pub(crate) fn resolve_named_source_set(
+    context: &WorkspaceContext,
+    name: &str,
+) -> Result<ResolvedNamedSourceSet, String> {
+    if name.is_empty() {
+        return Err("source set name must not be empty".to_string());
+    }
+    let map = discover_project_source_map(&context.workspace_root)?;
+    let mut matches = map
+        .source_sets
+        .into_iter()
+        .filter(|source_set| source_set.name == name)
+        .collect::<Vec<_>>();
+    if matches.len() > 1 {
+        return Err(format!(
+            "project source set name `{name}` is ambiguous across {} exact entries",
+            matches.len()
+        ));
+    }
+    let source_set = matches
+        .pop()
+        .ok_or_else(|| format!("project source set `{name}` was not found"))?;
+    let path = normalize_contained_source_root(&context.workspace_root, &source_set.path)?;
+    Ok(ResolvedNamedSourceSet { source_set, path })
 }
 
 pub(crate) fn normalize_path_identity(path: &Path) -> Result<PathBuf, String> {

@@ -1,0 +1,1006 @@
+use crate::domain::project_sources::{SourceFormat, SourceSetKind};
+use crate::domain::source_target::{
+    MetadataAddress, ResolvedTarget, SourceTarget, SourceTargetError, SourceTargetErrorCode,
+    TargetKind,
+};
+use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::metadata_kinds::{
+    metadata_kind, metadata_kind_by_directory, supports_direct_module_role,
+    supports_nested_form_or_command,
+};
+use crate::infrastructure::path_policy::WorkspacePathPolicy;
+use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
+use crate::infrastructure::source_roots::{
+    normalize_path_identity, resolve_named_source_set, ResolvedNamedSourceSet,
+};
+use std::fmt;
+use std::fs;
+use std::path::{Component, Path, PathBuf};
+
+#[derive(Debug)]
+pub(crate) struct PlatformXmlResolution {
+    pub(crate) resolved: ResolvedTarget,
+    pub(crate) handle: ClosedPlatformXmlTarget,
+}
+
+#[derive(Clone)]
+pub(crate) struct ClosedPlatformXmlTarget {
+    source_target: SourceTarget,
+    workspace_root: PathBuf,
+    source_root: PathBuf,
+    source_set_kind: SourceSetKind,
+    source_format: SourceFormat,
+    target_path: PathBuf,
+}
+
+impl fmt::Debug for ClosedPlatformXmlTarget {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ClosedPlatformXmlTarget")
+            .field("source_target", &self.source_target)
+            .field("source_set_kind", &self.source_set_kind)
+            .field("source_format", &self.source_format)
+            .field("physical_handle", &"<closed>")
+            .finish()
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct RevalidatedPlatformXmlTarget {
+    pub(crate) path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PlatformXmlModuleIdentity {
+    pub(crate) owner: String,
+    pub(crate) address: MetadataAddress,
+    pub(crate) role: PlatformXmlModuleRole,
+    pub(crate) descriptors: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlatformXmlModuleRole {
+    Module,
+    ObjectModule,
+    ManagerModule,
+    RecordSetModule,
+    ValueManagerModule,
+    FormModule,
+    CommandModule,
+    ManagedApplicationModule,
+    OrdinaryApplicationModule,
+    SessionModule,
+    ExternalConnectionModule,
+}
+
+impl PlatformXmlModuleRole {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Module => "Module",
+            Self::ObjectModule => "ObjectModule",
+            Self::ManagerModule => "ManagerModule",
+            Self::RecordSetModule => "RecordSetModule",
+            Self::ValueManagerModule => "ValueManagerModule",
+            Self::FormModule => "FormModule",
+            Self::CommandModule => "CommandModule",
+            Self::ManagedApplicationModule => "ManagedApplicationModule",
+            Self::OrdinaryApplicationModule => "OrdinaryApplicationModule",
+            Self::SessionModule => "SessionModule",
+            Self::ExternalConnectionModule => "ExternalConnectionModule",
+        }
+    }
+}
+
+pub(crate) fn resolve_platform_xml_target(
+    context: &WorkspaceContext,
+    target: &SourceTarget,
+) -> Result<PlatformXmlResolution, SourceTargetError> {
+    if target.source_set.is_empty() {
+        return Err(SourceTargetError::new(
+            SourceTargetErrorCode::SourceSetRequired,
+            "sourceSet must name an exact project source set",
+        ));
+    }
+    let selected = resolve_named_source_set(context, &target.source_set).map_err(|error| {
+        let code = if error.contains("was not found") {
+            SourceTargetErrorCode::SourceSetNotFound
+        } else {
+            SourceTargetErrorCode::SourceRootNotAddressable
+        };
+        SourceTargetError::new(code, error)
+    })?;
+    validate_source_set(&selected)?;
+    let address = target.metadata_path.as_ref().ok_or_else(|| {
+        SourceTargetError::new(
+            SourceTargetErrorCode::TargetKindMismatch,
+            "a module target requires metadataPath",
+        )
+    })?;
+    if address.target_kind() != TargetKind::Module {
+        return Err(SourceTargetError::new(
+            SourceTargetErrorCode::TargetKindMismatch,
+            "metadataPath does not identify a module terminal",
+        ));
+    }
+
+    let relative_path = module_path_for_address(address).map_err(|error| {
+        SourceTargetError::new(SourceTargetErrorCode::MetadataAddressNotFound, error)
+    })?;
+    let identity = platform_xml_module_identity(&relative_path).map_err(|error| {
+        SourceTargetError::new(SourceTargetErrorCode::MetadataAddressNotFound, error)
+    })?;
+    if &identity.address != address {
+        return Err(SourceTargetError::new(
+            SourceTargetErrorCode::MetadataAddressNotFound,
+            "module layout did not round-trip to the requested metadata address",
+        ));
+    }
+    validate_platform_xml_module_descriptors(context, &selected.path, &identity.descriptors)
+        .map_err(|error| {
+            let code = if error.contains("containment denied") {
+                SourceTargetErrorCode::ContainmentDenied
+            } else {
+                SourceTargetErrorCode::MetadataAddressNotFound
+            };
+            SourceTargetError::new(code, error)
+        })?;
+
+    let target_path = selected.path.join(&relative_path);
+    let target_path = WorkspacePathPolicy::new(context)
+        .resolve_write(target_path)
+        .map_err(|error| SourceTargetError::new(SourceTargetErrorCode::ContainmentDenied, error))?;
+    ensure_no_link_components(&selected.path, &target_path)
+        .map_err(|error| SourceTargetError::new(SourceTargetErrorCode::ContainmentDenied, error))?;
+    validate_regular_module(&target_path)?;
+    let target_identity = normalize_path_identity(&target_path)
+        .map_err(|error| SourceTargetError::new(SourceTargetErrorCode::ContainmentDenied, error))?;
+    if !target_identity.starts_with(&selected.path) {
+        return Err(SourceTargetError::new(
+            SourceTargetErrorCode::ContainmentDenied,
+            "resolved module is outside its selected source set",
+        ));
+    }
+
+    let workspace_root = normalize_path_identity(&context.workspace_root)
+        .map_err(|error| SourceTargetError::new(SourceTargetErrorCode::ContainmentDenied, error))?;
+    Ok(PlatformXmlResolution {
+        resolved: ResolvedTarget {
+            source_set: selected.source_set.name.clone(),
+            metadata_path: Some(identity.address),
+            target_kind: TargetKind::Module,
+        },
+        handle: ClosedPlatformXmlTarget {
+            source_target: target.clone(),
+            workspace_root,
+            source_root: selected.path,
+            source_set_kind: selected.source_set.kind,
+            source_format: selected.source_set.source_format,
+            target_path,
+        },
+    })
+}
+
+pub(crate) fn revalidate_platform_xml_target(
+    context: &WorkspaceContext,
+    handle: &ClosedPlatformXmlTarget,
+) -> Result<RevalidatedPlatformXmlTarget, SourceTargetError> {
+    let workspace_root = normalize_path_identity(&context.workspace_root)
+        .map_err(|error| SourceTargetError::new(SourceTargetErrorCode::ContainmentDenied, error))?;
+    if workspace_root != handle.workspace_root {
+        return Err(source_map_rebind_error(
+            "workspace identity changed since target resolution",
+        ));
+    }
+    let selected =
+        resolve_named_source_set(context, &handle.source_target.source_set).map_err(|error| {
+            source_map_rebind_error(format!("source-map binding is unavailable: {error}"))
+        })?;
+    if selected.path != handle.source_root
+        || selected.source_set.kind != handle.source_set_kind
+        || selected.source_set.source_format != handle.source_format
+    {
+        return Err(source_map_rebind_error(
+            "source-map binding changed since target resolution",
+        ));
+    }
+
+    let current = resolve_platform_xml_target(context, &handle.source_target)?;
+    if current.handle.target_path != handle.target_path {
+        return Err(source_map_rebind_error(
+            "source-map target changed since target resolution",
+        ));
+    }
+    Ok(RevalidatedPlatformXmlTarget {
+        path: current.handle.target_path,
+    })
+}
+
+fn source_map_rebind_error(message: impl Into<String>) -> SourceTargetError {
+    SourceTargetError::new(SourceTargetErrorCode::ContainmentDenied, message)
+}
+
+fn validate_source_set(selected: &ResolvedNamedSourceSet) -> Result<(), SourceTargetError> {
+    if !matches!(
+        selected.source_set.kind,
+        SourceSetKind::Configuration | SourceSetKind::Extension
+    ) || selected.source_set.source_format != SourceFormat::PlatformXml
+    {
+        return Err(SourceTargetError::new(
+            SourceTargetErrorCode::SourceRootNotAddressable,
+            format!(
+                "source set `{}` must be a Platform XML Configuration or Extension",
+                selected.source_set.name
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_regular_module(path: &Path) -> Result<(), SourceTargetError> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        SourceTargetError::new(
+            SourceTargetErrorCode::MetadataAddressNotFound,
+            format!("module target is unavailable: {error}"),
+        )
+    })?;
+    if metadata_is_link_or_reparse_point(&metadata) {
+        return Err(SourceTargetError::new(
+            SourceTargetErrorCode::ContainmentDenied,
+            "module target must not be a symbolic link or reparse point",
+        ));
+    }
+    if !metadata.is_file() {
+        return Err(SourceTargetError::new(
+            SourceTargetErrorCode::MetadataAddressNotFound,
+            "module target must be an existing regular file",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn platform_xml_module_identity(
+    relative: &Path,
+) -> Result<PlatformXmlModuleIdentity, String> {
+    let components = relative
+        .components()
+        .map(|component| match component {
+            Component::Normal(value) => value
+                .to_str()
+                .map(str::to_string)
+                .ok_or_else(|| "BSL module path is not valid UTF-8".to_string()),
+            _ => Err("BSL module path must be relative to its source set".to_string()),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let parts = components.iter().map(String::as_str).collect::<Vec<_>>();
+    match parts.as_slice() {
+        ["Ext", file] => root_module_identity(file),
+        [directory, name, "Ext", "Module.bsl"]
+            if matches!(
+                *directory,
+                "CommonModules" | "HTTPServices" | "WebServices" | "IntegrationServices"
+            ) =>
+        {
+            metadata_module_identity(directory, name, PlatformXmlModuleRole::Module)
+        }
+        ["CommonForms", name, "Ext", "Form", "Module.bsl"] => module_identity(
+            format!("CommonForm.{name}.FormModule"),
+            format!("CommonForm.{name}"),
+            PlatformXmlModuleRole::FormModule,
+            vec![metadata_descriptor("CommonForms", name)],
+        ),
+        ["CommonCommands", name, "Ext", "CommandModule.bsl"] => module_identity(
+            format!("CommonCommand.{name}.CommandModule"),
+            format!("CommonCommand.{name}"),
+            PlatformXmlModuleRole::CommandModule,
+            vec![metadata_descriptor("CommonCommands", name)],
+        ),
+        [directory, name, "Ext", file] => {
+            let role = direct_module_role(file).ok_or_else(unsupported_module_layout)?;
+            let kind =
+                metadata_kind_by_directory(directory).ok_or_else(unsupported_module_layout)?;
+            if !supports_direct_module_role(kind.tag, role.as_str()) {
+                return Err(unsupported_module_layout());
+            }
+            metadata_module_identity(directory, name, role)
+        }
+        [directory, name, "Forms", form, "Ext", "Form", "Module.bsl"] => nested_module_identity(
+            directory,
+            name,
+            "Form",
+            form,
+            PlatformXmlModuleRole::FormModule,
+        ),
+        [directory, name, "Commands", command, "Ext", "CommandModule.bsl"] => {
+            nested_module_identity(
+                directory,
+                name,
+                "Command",
+                command,
+                PlatformXmlModuleRole::CommandModule,
+            )
+        }
+        _ => Err(unsupported_module_layout()),
+    }
+}
+
+fn root_module_identity(file: &str) -> Result<PlatformXmlModuleIdentity, String> {
+    let role = match file {
+        "ManagedApplicationModule.bsl" => PlatformXmlModuleRole::ManagedApplicationModule,
+        "OrdinaryApplicationModule.bsl" => PlatformXmlModuleRole::OrdinaryApplicationModule,
+        "SessionModule.bsl" => PlatformXmlModuleRole::SessionModule,
+        "ExternalConnectionModule.bsl" => PlatformXmlModuleRole::ExternalConnectionModule,
+        _ => return Err(unsupported_module_layout()),
+    };
+    module_identity(
+        role.as_str().to_string(),
+        "Configuration".to_string(),
+        role,
+        vec![PathBuf::from("Configuration.xml")],
+    )
+}
+
+fn metadata_module_identity(
+    directory: &str,
+    name: &str,
+    role: PlatformXmlModuleRole,
+) -> Result<PlatformXmlModuleIdentity, String> {
+    let kind = metadata_kind_by_directory(directory).ok_or_else(unsupported_module_layout)?;
+    let owner = format!("{}.{name}", kind.tag);
+    module_identity(
+        format!("{owner}.{}", role.as_str()),
+        owner,
+        role,
+        vec![metadata_descriptor(directory, name)],
+    )
+}
+
+fn nested_module_identity(
+    directory: &str,
+    name: &str,
+    nested_kind: &str,
+    nested_name: &str,
+    role: PlatformXmlModuleRole,
+) -> Result<PlatformXmlModuleIdentity, String> {
+    let kind = metadata_kind_by_directory(directory).ok_or_else(unsupported_module_layout)?;
+    if !supports_nested_form_or_command(kind.tag) {
+        return Err(unsupported_module_layout());
+    }
+    let child_directory = match nested_kind {
+        "Form" => "Forms",
+        "Command" => "Commands",
+        _ => return Err(unsupported_module_layout()),
+    };
+    let owner = format!("{}.{name}", kind.tag);
+    module_identity(
+        format!("{owner}.{nested_kind}.{nested_name}.{}", role.as_str()),
+        owner,
+        role,
+        vec![
+            metadata_descriptor(directory, name),
+            PathBuf::from(directory)
+                .join(name)
+                .join(child_directory)
+                .join(nested_name)
+                .join("Ext")
+                .join(format!("{nested_kind}.xml")),
+        ],
+    )
+}
+
+fn module_identity(
+    address: String,
+    owner: String,
+    role: PlatformXmlModuleRole,
+    descriptors: Vec<PathBuf>,
+) -> Result<PlatformXmlModuleIdentity, String> {
+    let address = MetadataAddress::parse(
+        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+        &address,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(PlatformXmlModuleIdentity {
+        owner,
+        address,
+        role,
+        descriptors,
+    })
+}
+
+fn module_path_for_address(address: &MetadataAddress) -> Result<PathBuf, String> {
+    let parts = address.segments().collect::<Vec<_>>();
+    let candidate = match parts.as_slice() {
+        [terminal] => PathBuf::from("Ext").join(format!("{terminal}.bsl")),
+        ["CommonModule" | "HTTPService" | "WebService" | "IntegrationService", name, "Module"] => {
+            let directory = directory_for_kind(parts[0])?;
+            PathBuf::from(directory)
+                .join(name)
+                .join("Ext")
+                .join("Module.bsl")
+        }
+        ["CommonForm", name, "FormModule"] => PathBuf::from("CommonForms")
+            .join(name)
+            .join("Ext")
+            .join("Form")
+            .join("Module.bsl"),
+        ["CommonCommand", name, "CommandModule"] => PathBuf::from("CommonCommands")
+            .join(name)
+            .join("Ext")
+            .join("CommandModule.bsl"),
+        [kind, name, role] => {
+            if !supports_direct_module_role(kind, role) {
+                return Err(unsupported_module_layout());
+            }
+            PathBuf::from(directory_for_kind(kind)?)
+                .join(name)
+                .join("Ext")
+                .join(format!("{role}.bsl"))
+        }
+        [kind, name, "Form", form, "FormModule"] => {
+            if !supports_nested_form_or_command(kind) {
+                return Err(unsupported_module_layout());
+            }
+            PathBuf::from(directory_for_kind(kind)?)
+                .join(name)
+                .join("Forms")
+                .join(form)
+                .join("Ext")
+                .join("Form")
+                .join("Module.bsl")
+        }
+        [kind, name, "Command", command, "CommandModule"] => {
+            if !supports_nested_form_or_command(kind) {
+                return Err(unsupported_module_layout());
+            }
+            PathBuf::from(directory_for_kind(kind)?)
+                .join(name)
+                .join("Commands")
+                .join(command)
+                .join("Ext")
+                .join("CommandModule.bsl")
+        }
+        _ => return Err(unsupported_module_layout()),
+    };
+    let identity = platform_xml_module_identity(&candidate)?;
+    if identity.address != *address {
+        return Err(unsupported_module_layout());
+    }
+    Ok(candidate)
+}
+
+fn directory_for_kind(kind: &str) -> Result<&'static str, String> {
+    metadata_kind(kind)
+        .map(|kind| kind.directory)
+        .ok_or_else(unsupported_module_layout)
+}
+
+fn direct_module_role(file: &str) -> Option<PlatformXmlModuleRole> {
+    match file {
+        "ObjectModule.bsl" => Some(PlatformXmlModuleRole::ObjectModule),
+        "ManagerModule.bsl" => Some(PlatformXmlModuleRole::ManagerModule),
+        "RecordSetModule.bsl" => Some(PlatformXmlModuleRole::RecordSetModule),
+        "ValueManagerModule.bsl" => Some(PlatformXmlModuleRole::ValueManagerModule),
+        _ => None,
+    }
+}
+
+fn metadata_descriptor(directory: &str, name: &str) -> PathBuf {
+    PathBuf::from(directory).join(format!("{name}.xml"))
+}
+
+pub(crate) fn validate_platform_xml_module_descriptors(
+    context: &WorkspaceContext,
+    source_root: &Path,
+    descriptors: &[PathBuf],
+) -> Result<(), String> {
+    for descriptor in descriptors {
+        let path = WorkspacePathPolicy::new(context)
+            .resolve_write(source_root.join(descriptor))
+            .map_err(|error| format!("BSL module descriptor containment denied: {error}"))?;
+        ensure_no_link_components(source_root, &path)
+            .map_err(|error| format!("BSL module descriptor containment denied: {error}"))?;
+        let metadata = fs::symlink_metadata(&path).map_err(|error| {
+            format!(
+                "BSL module metadata descriptor is unavailable {}: {error}",
+                path.display()
+            )
+        })?;
+        if metadata_is_link_or_reparse_point(&metadata) || !metadata.is_file() {
+            return Err(format!(
+                "BSL module metadata descriptor must be a regular file: {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn ensure_no_link_components(source_root: &Path, path: &Path) -> Result<(), String> {
+    let relative = path
+        .strip_prefix(source_root)
+        .map_err(|_| "path is outside its selected source set".to_string())?;
+    let mut current = source_root.to_path_buf();
+    for component in relative.components() {
+        current.push(component.as_os_str());
+        let metadata = match fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => {
+                return Err(format!(
+                    "failed to inspect path component {}: {error}",
+                    current.display()
+                ));
+            }
+        };
+        if metadata_is_link_or_reparse_point(&metadata) {
+            return Err(format!(
+                "path component must not be a symbolic link or reparse point: {}",
+                current.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn unsupported_module_layout() -> String {
+    "unica.code.patch v1 accepts only a supported canonical platform XML BSL module path"
+        .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{resolve_platform_xml_target, revalidate_platform_xml_target};
+    use crate::domain::source_target::{
+        MetadataAddress, SourceTarget, SourceTargetErrorCode, PLATFORM_XML_8_3_27_FORMAT_2_20,
+    };
+    use crate::domain::workspace::WorkspaceContext;
+    use crate::infrastructure::platform::filesystem::create_dir_symlink_for_test;
+    use crate::infrastructure::platform::testing::{
+        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+    };
+    use crate::infrastructure::source_roots::normalize_path_identity;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static TEMP_NONCE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn platform_xml_source_targets_resolve_identical_addresses_in_configuration_and_extension() {
+        let context = fixture(
+            "config-extension",
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: cfg\n  - name: addOn\n    type: EXTENSION\n    path: ext\n",
+        );
+        for root in ["cfg", "ext"] {
+            write_module_fixture(
+                &context.workspace_root.join(root),
+                "CommonModules/Shared.xml",
+                "CommonModules/Shared/Ext/Module.bsl",
+            );
+        }
+
+        let configuration =
+            resolve_platform_xml_target(&context, &target("main", "CommonModule.Shared.Module"))
+                .unwrap();
+        let extension =
+            resolve_platform_xml_target(&context, &target("addOn", "CommonModule.Shared.Module"))
+                .unwrap();
+
+        assert_eq!(
+            configuration
+                .resolved
+                .metadata_path
+                .as_ref()
+                .unwrap()
+                .as_str(),
+            extension.resolved.metadata_path.as_ref().unwrap().as_str()
+        );
+        assert_eq!(
+            configuration.handle.target_path,
+            normalize_path_identity(
+                &context
+                    .workspace_root
+                    .join("cfg/CommonModules/Shared/Ext/Module.bsl")
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            extension.handle.target_path,
+            normalize_path_identity(
+                &context
+                    .workspace_root
+                    .join("ext/CommonModules/Shared/Ext/Module.bsl")
+            )
+            .unwrap()
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_source_target_handle_debug_does_not_disclose_physical_paths() {
+        let context = fixture("closed-debug", project_yaml("main", "CONFIGURATION", "src"));
+        write_module_fixture(
+            &context.workspace_root.join("src"),
+            "CommonModules/Shared.xml",
+            "CommonModules/Shared/Ext/Module.bsl",
+        );
+        let resolution =
+            resolve_platform_xml_target(&context, &target("main", "CommonModule.Shared.Module"))
+                .unwrap();
+
+        let debug = format!("{:?}", resolution.handle);
+
+        assert!(!debug.contains(&context.workspace_root.display().to_string()));
+        assert!(!debug.contains("Module.bsl"));
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_source_targets_reject_wrong_source_set_kind_and_format() {
+        let context = fixture(
+            "wrong-kind-format",
+            "source-set:\n  - name: external\n    type: EXTERNAL_DATA_PROCESSORS\n    path: external\n  - name: edt\n    type: CONFIGURATION\n    path: edt\n",
+        );
+        fs::create_dir_all(context.workspace_root.join("external")).unwrap();
+        fs::create_dir_all(context.workspace_root.join("edt/Configuration")).unwrap();
+        fs::write(context.workspace_root.join("edt/.project"), "edt").unwrap();
+
+        for source_set in ["external", "edt"] {
+            let error = resolve_platform_xml_target(
+                &context,
+                &target(source_set, "CommonModule.Shared.Module"),
+            )
+            .unwrap_err();
+            assert_eq!(
+                error.code,
+                SourceTargetErrorCode::SourceRootNotAddressable,
+                "{source_set}: {error}"
+            );
+        }
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_source_targets_require_descriptor_evidence() {
+        let context = fixture(
+            "missing-descriptor",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let module = context
+            .workspace_root
+            .join("src/CommonModules/Missing/Ext/Module.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        fs::write(&module, "Procedure Run()\nEndProcedure\n").unwrap();
+
+        let error =
+            resolve_platform_xml_target(&context, &target("main", "CommonModule.Missing.Module"))
+                .unwrap_err();
+
+        assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressNotFound);
+        assert!(error.message.contains("descriptor"));
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_source_targets_never_fall_back_from_the_named_source_set() {
+        let context = fixture("exact-name", project_yaml("main", "CONFIGURATION", "src"));
+        write_module_fixture(
+            &context.workspace_root.join("src"),
+            "CommonModules/Shared.xml",
+            "CommonModules/Shared/Ext/Module.bsl",
+        );
+
+        let error =
+            resolve_platform_xml_target(&context, &target("missing", "CommonModule.Shared.Module"))
+                .unwrap_err();
+
+        assert_eq!(error.code, SourceTargetErrorCode::SourceSetNotFound);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_source_targets_reject_duplicate_exact_source_set_names() {
+        let context = fixture(
+            "duplicate-name",
+            "format: DESIGNER\nsource-set:\n  - name: duplicate\n    type: CONFIGURATION\n    path: cfg\n  - name: duplicate\n    type: EXTENSION\n    path: ext\n",
+        );
+        for root in ["cfg", "ext"] {
+            write_module_fixture(
+                &context.workspace_root.join(root),
+                "CommonModules/Shared.xml",
+                "CommonModules/Shared/Ext/Module.bsl",
+            );
+        }
+
+        let error = resolve_platform_xml_target(
+            &context,
+            &target("duplicate", "CommonModule.Shared.Module"),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, SourceTargetErrorCode::SourceRootNotAddressable);
+        assert!(error.message.contains("ambiguous"));
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_source_targets_cover_every_registered_module_layout_family() {
+        let context = fixture(
+            "layout-families",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        for descriptor in [
+            "Configuration.xml",
+            "CommonModules/Shared.xml",
+            "Catalogs/Items.xml",
+            "InformationRegisters/Prices.xml",
+            "Constants/Mode.xml",
+            "CommonForms/Main.xml",
+            "CommonCommands/Print.xml",
+            "Catalogs/Items/Forms/List/Ext/Form.xml",
+            "Catalogs/Items/Commands/Open/Ext/Command.xml",
+        ] {
+            let path = root.join(descriptor);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "<MetaDataObject/>").unwrap();
+        }
+        let cases = [
+            (
+                "ManagedApplicationModule",
+                "Ext/ManagedApplicationModule.bsl",
+            ),
+            (
+                "CommonModule.Shared.Module",
+                "CommonModules/Shared/Ext/Module.bsl",
+            ),
+            (
+                "Catalog.Items.ObjectModule",
+                "Catalogs/Items/Ext/ObjectModule.bsl",
+            ),
+            (
+                "Catalog.Items.ManagerModule",
+                "Catalogs/Items/Ext/ManagerModule.bsl",
+            ),
+            (
+                "InformationRegister.Prices.RecordSetModule",
+                "InformationRegisters/Prices/Ext/RecordSetModule.bsl",
+            ),
+            (
+                "Constant.Mode.ValueManagerModule",
+                "Constants/Mode/Ext/ValueManagerModule.bsl",
+            ),
+            (
+                "CommonForm.Main.FormModule",
+                "CommonForms/Main/Ext/Form/Module.bsl",
+            ),
+            (
+                "CommonCommand.Print.CommandModule",
+                "CommonCommands/Print/Ext/CommandModule.bsl",
+            ),
+            (
+                "Catalog.Items.Form.List.FormModule",
+                "Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
+            ),
+            (
+                "Catalog.Items.Command.Open.CommandModule",
+                "Catalogs/Items/Commands/Open/Ext/CommandModule.bsl",
+            ),
+        ];
+        for (address, relative) in cases {
+            let module = root.join(relative);
+            fs::create_dir_all(module.parent().unwrap()).unwrap();
+            fs::write(&module, "Procedure Run()\nEndProcedure\n").unwrap();
+
+            let resolution =
+                resolve_platform_xml_target(&context, &target("main", address)).unwrap();
+
+            assert_eq!(
+                resolution.handle.target_path,
+                normalize_path_identity(&module).unwrap(),
+                "{address}"
+            );
+            assert_eq!(
+                resolution.resolved.metadata_path.unwrap().as_str(),
+                address,
+                "{relative}"
+            );
+        }
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_source_targets_reject_unregistered_module_roles() {
+        let context = fixture(
+            "unregistered-role",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        write_module_fixture(
+            &context.workspace_root.join("src"),
+            "Languages/Russian.xml",
+            "Languages/Russian/Ext/ManagerModule.bsl",
+        );
+
+        let error = resolve_platform_xml_target(
+            &context,
+            &target("main", "Language.Russian.ManagerModule"),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressNotFound);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_source_targets_revalidation_rejects_a_replaced_symlink_target() {
+        let context = fixture(
+            "revalidate-symlink",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_module_fixture(
+            &root,
+            "CommonModules/Shared.xml",
+            "CommonModules/Shared/Ext/Module.bsl",
+        );
+        let resolution =
+            resolve_platform_xml_target(&context, &target("main", "CommonModule.Shared.Module"))
+                .unwrap();
+        let target = root.join("CommonModules/Shared/Ext/Module.bsl");
+        let real = root.join("CommonModules/Shared/Ext/Replacement.bsl");
+        fs::write(&real, "Procedure Changed()\nEndProcedure\n").unwrap();
+        fs::remove_file(&target).unwrap();
+        let outcome = create_file_link_fixture_for_test(&real, &target)
+            .expect("unexpected file-link creation error must fail the fixture test");
+        if outcome != FileLinkFixtureOutcome::Created {
+            cleanup(&context);
+            return;
+        }
+
+        let error = revalidate_platform_xml_target(&context, &resolution.handle).unwrap_err();
+
+        assert_eq!(error.code, SourceTargetErrorCode::ContainmentDenied);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_source_targets_reject_symlinked_target() {
+        let context = fixture(
+            "symlink-target",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        fs::create_dir_all(root.join("CommonModules/Shared/Ext")).unwrap();
+        fs::write(root.join("CommonModules/Shared.xml"), "<MetaDataObject/>").unwrap();
+        let real = root.join("CommonModules/Shared/Ext/RealModule.bsl");
+        let target = root.join("CommonModules/Shared/Ext/Module.bsl");
+        fs::write(&real, "Procedure Run()\nEndProcedure\n").unwrap();
+        let outcome = create_file_link_fixture_for_test(&real, &target)
+            .expect("unexpected file-link creation error must fail the fixture test");
+        if outcome != FileLinkFixtureOutcome::Created {
+            cleanup(&context);
+            return;
+        }
+
+        let error = resolve_platform_xml_target(
+            &context,
+            &target_for("main", "CommonModule.Shared.Module"),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, SourceTargetErrorCode::ContainmentDenied);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_source_targets_reject_symlinked_layout_ancestor() {
+        let context = fixture(
+            "symlink-ancestor",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_module_fixture(
+            &root,
+            "RealCommonModules/Shared.xml",
+            "RealCommonModules/Shared/Ext/Module.bsl",
+        );
+        let Some(result) =
+            create_dir_symlink_for_test(root.join("RealCommonModules"), root.join("CommonModules"))
+        else {
+            cleanup(&context);
+            return;
+        };
+        result.unwrap();
+
+        let error =
+            resolve_platform_xml_target(&context, &target("main", "CommonModule.Shared.Module"))
+                .unwrap_err();
+
+        assert_eq!(error.code, SourceTargetErrorCode::ContainmentDenied);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_source_targets_revalidate_source_map_binding() {
+        let context = fixture(
+            "source-map-rebind",
+            project_yaml("main", "EXTENSION", "ext"),
+        );
+        write_module_fixture(
+            &context.workspace_root.join("ext"),
+            "CommonModules/Shared.xml",
+            "CommonModules/Shared/Ext/Module.bsl",
+        );
+        let resolution =
+            resolve_platform_xml_target(&context, &target("main", "CommonModule.Shared.Module"))
+                .unwrap();
+        fs::write(
+            context.workspace_root.join("v8project.yaml"),
+            project_yaml("main", "EXTENSION", "other"),
+        )
+        .unwrap();
+        fs::create_dir_all(context.workspace_root.join("other")).unwrap();
+
+        let error = revalidate_platform_xml_target(&context, &resolution.handle).unwrap_err();
+
+        assert_eq!(error.code, SourceTargetErrorCode::ContainmentDenied);
+        assert!(error.message.contains("source-map"));
+        cleanup(&context);
+    }
+
+    fn target(source_set: &str, metadata_path: &str) -> SourceTarget {
+        SourceTarget {
+            source_set: source_set.to_string(),
+            metadata_path: Some(
+                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, metadata_path).unwrap(),
+            ),
+        }
+    }
+
+    fn target_for(source_set: &str, metadata_path: &str) -> SourceTarget {
+        target(source_set, metadata_path)
+    }
+
+    fn fixture(name: &str, yaml: impl AsRef<str>) -> WorkspaceContext {
+        let root = temp_root(name);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("v8project.yaml"), yaml.as_ref()).unwrap();
+        WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        }
+    }
+
+    fn project_yaml(name: &str, kind: &str, path: &str) -> String {
+        format!(
+            "format: DESIGNER\nsource-set:\n  - name: {name}\n    type: {kind}\n    path: {path}\n"
+        )
+    }
+
+    fn write_module_fixture(root: &Path, descriptor: &str, module: &str) {
+        let descriptor = root.join(descriptor);
+        let module = root.join(module);
+        fs::create_dir_all(descriptor.parent().unwrap()).unwrap();
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        fs::write(descriptor, "<MetaDataObject/>").unwrap();
+        fs::write(module, "Procedure Run()\nEndProcedure\n").unwrap();
+    }
+
+    fn temp_root(name: &str) -> PathBuf {
+        let nonce = TEMP_NONCE.fetch_add(1, Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "unica-platform-xml-targets-{name}-{}-{nanos}-{nonce}",
+            std::process::id()
+        ))
+    }
+
+    fn cleanup(context: &WorkspaceContext) {
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+}

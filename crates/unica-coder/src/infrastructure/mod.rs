@@ -8,6 +8,9 @@ pub mod native_operations;
 pub mod path_policy;
 pub(crate) mod platform;
 pub(crate) mod platform_xml_owner;
+// This foundational provider is consumed by the public migration in the next slice.
+#[allow(dead_code)]
+pub(crate) mod platform_xml_source_targets;
 pub mod plugin_runtime;
 pub(crate) mod project_sources;
 pub(crate) mod redaction;

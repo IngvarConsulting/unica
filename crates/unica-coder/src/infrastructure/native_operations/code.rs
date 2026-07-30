@@ -1,9 +1,11 @@
 use crate::application::AdapterOutcome;
 use crate::domain::project_sources::{SourceFormat, SourceSetKind};
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::metadata_kinds::metadata_kind_by_directory;
 use crate::infrastructure::path_policy::WorkspacePathPolicy;
 use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
+use crate::infrastructure::platform_xml_source_targets::{
+    platform_xml_module_identity as module_identity, validate_platform_xml_module_descriptors,
+};
 use crate::infrastructure::project_sources::discover_project_source_map;
 use crate::infrastructure::source_roots::{normalize_path_identity, resolve_source_root};
 use bsl_syntax::ast::{AstNode, FunctionDef, ProcedureDef};
@@ -392,46 +394,6 @@ struct ResolvedTarget {
     module_role: String,
 }
 
-#[derive(Debug)]
-struct ModuleIdentity {
-    owner: String,
-    role: ModuleRole,
-    descriptors: Vec<PathBuf>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ModuleRole {
-    Module,
-    ObjectModule,
-    ManagerModule,
-    RecordSetModule,
-    ValueManagerModule,
-    FormModule,
-    CommandModule,
-    ManagedApplicationModule,
-    OrdinaryApplicationModule,
-    SessionModule,
-    ExternalConnectionModule,
-}
-
-impl ModuleRole {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Module => "Module",
-            Self::ObjectModule => "ObjectModule",
-            Self::ManagerModule => "ManagerModule",
-            Self::RecordSetModule => "RecordSetModule",
-            Self::ValueManagerModule => "ValueManagerModule",
-            Self::FormModule => "FormModule",
-            Self::CommandModule => "CommandModule",
-            Self::ManagedApplicationModule => "ManagedApplicationModule",
-            Self::OrdinaryApplicationModule => "OrdinaryApplicationModule",
-            Self::SessionModule => "SessionModule",
-            Self::ExternalConnectionModule => "ExternalConnectionModule",
-        }
-    }
-}
-
 fn resolve_target(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -472,7 +434,7 @@ fn resolve_target(
         .strip_prefix(&source_root.path)
         .map_err(|_| "failed to derive BSL module identity".to_string())?;
     let identity = module_identity(source_relative)?;
-    validate_identity_descriptors(&source_root.path, &identity.descriptors)?;
+    validate_platform_xml_module_descriptors(context, &source_root.path, &identity.descriptors)?;
     let workspace_identity = normalize_path_identity(&context.workspace_root)?;
     let workspace_relative = target_identity
         .strip_prefix(&workspace_identity)
@@ -485,247 +447,6 @@ fn resolve_target(
         owner: identity.owner,
         module_role: identity.role.as_str().to_string(),
     })
-}
-
-fn module_identity(relative: &Path) -> Result<ModuleIdentity, String> {
-    let components = relative
-        .components()
-        .map(|component| match component {
-            Component::Normal(value) => value
-                .to_str()
-                .map(str::to_string)
-                .ok_or_else(|| "BSL module path is not valid UTF-8".to_string()),
-            _ => Err("BSL module path must be relative to its source set".to_string()),
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let parts = components.iter().map(String::as_str).collect::<Vec<_>>();
-    match parts.as_slice() {
-        ["Ext", file] => configuration_module_identity(file),
-        [directory, name, "Ext", "Module.bsl"]
-            if matches!(
-                *directory,
-                "CommonModules" | "HTTPServices" | "WebServices" | "IntegrationServices"
-            ) =>
-        {
-            metadata_module_identity(directory, name, ModuleRole::Module)
-        }
-        ["CommonForms", name, "Ext", "Form", "Module.bsl"] => Ok(ModuleIdentity {
-            owner: format!("CommonForm.{name}"),
-            role: ModuleRole::FormModule,
-            descriptors: vec![metadata_descriptor("CommonForms", name)],
-        }),
-        ["CommonCommands", name, "Ext", "CommandModule.bsl"] => Ok(ModuleIdentity {
-            owner: format!("CommonCommand.{name}"),
-            role: ModuleRole::CommandModule,
-            descriptors: vec![metadata_descriptor("CommonCommands", name)],
-        }),
-        [directory, name, "Ext", file] => {
-            let role = direct_module_role(file).ok_or_else(unsupported_module_layout)?;
-            let kind =
-                metadata_kind_by_directory(directory).ok_or_else(unsupported_module_layout)?;
-            if !direct_role_is_supported(kind.tag, role) {
-                return Err(unsupported_module_layout());
-            }
-            Ok(ModuleIdentity {
-                owner: format!("{}.{name}", kind.tag),
-                role,
-                descriptors: vec![metadata_descriptor(directory, name)],
-            })
-        }
-        [directory, name, "Forms", form, "Ext", "Form", "Module.bsl"] => {
-            nested_module_identity(directory, name, "Form", form, ModuleRole::FormModule)
-        }
-        [directory, name, "Commands", command, "Ext", "CommandModule.bsl"] => {
-            nested_module_identity(
-                directory,
-                name,
-                "Command",
-                command,
-                ModuleRole::CommandModule,
-            )
-        }
-        _ => Err(unsupported_module_layout()),
-    }
-}
-
-fn configuration_module_identity(file: &str) -> Result<ModuleIdentity, String> {
-    let role = match file {
-        "ManagedApplicationModule.bsl" => ModuleRole::ManagedApplicationModule,
-        "OrdinaryApplicationModule.bsl" => ModuleRole::OrdinaryApplicationModule,
-        "SessionModule.bsl" => ModuleRole::SessionModule,
-        "ExternalConnectionModule.bsl" => ModuleRole::ExternalConnectionModule,
-        _ => return Err(unsupported_module_layout()),
-    };
-    Ok(ModuleIdentity {
-        owner: "Configuration".to_string(),
-        role,
-        descriptors: vec![PathBuf::from("Configuration.xml")],
-    })
-}
-
-fn metadata_module_identity(
-    directory: &str,
-    name: &str,
-    role: ModuleRole,
-) -> Result<ModuleIdentity, String> {
-    let kind = metadata_kind_by_directory(directory).ok_or_else(unsupported_module_layout)?;
-    Ok(ModuleIdentity {
-        owner: format!("{}.{name}", kind.tag),
-        role,
-        descriptors: vec![metadata_descriptor(directory, name)],
-    })
-}
-
-fn nested_module_identity(
-    directory: &str,
-    name: &str,
-    nested_kind: &str,
-    nested_name: &str,
-    role: ModuleRole,
-) -> Result<ModuleIdentity, String> {
-    let kind = metadata_kind_by_directory(directory).ok_or_else(unsupported_module_layout)?;
-    if !nested_modules_are_supported(kind.tag) {
-        return Err(unsupported_module_layout());
-    }
-    let child_directory = match nested_kind {
-        "Form" => "Forms",
-        "Command" => "Commands",
-        _ => return Err(unsupported_module_layout()),
-    };
-    Ok(ModuleIdentity {
-        owner: format!("{}.{name}", kind.tag),
-        role,
-        descriptors: vec![
-            metadata_descriptor(directory, name),
-            PathBuf::from(directory)
-                .join(name)
-                .join(child_directory)
-                .join(nested_name)
-                .join("Ext")
-                .join(format!("{nested_kind}.xml")),
-        ],
-    })
-}
-
-fn direct_module_role(file: &str) -> Option<ModuleRole> {
-    match file {
-        "ObjectModule.bsl" => Some(ModuleRole::ObjectModule),
-        "ManagerModule.bsl" => Some(ModuleRole::ManagerModule),
-        "RecordSetModule.bsl" => Some(ModuleRole::RecordSetModule),
-        "ValueManagerModule.bsl" => Some(ModuleRole::ValueManagerModule),
-        _ => None,
-    }
-}
-
-fn direct_role_is_supported(kind: &str, role: ModuleRole) -> bool {
-    match role {
-        ModuleRole::ObjectModule => matches!(
-            kind,
-            "Catalog"
-                | "Document"
-                | "ExchangePlan"
-                | "ChartOfAccounts"
-                | "ChartOfCharacteristicTypes"
-                | "ChartOfCalculationTypes"
-                | "BusinessProcess"
-                | "Task"
-                | "Report"
-                | "DataProcessor"
-        ),
-        ModuleRole::ManagerModule => matches!(
-            kind,
-            "Catalog"
-                | "Document"
-                | "InformationRegister"
-                | "AccumulationRegister"
-                | "AccountingRegister"
-                | "CalculationRegister"
-                | "ChartOfAccounts"
-                | "ChartOfCharacteristicTypes"
-                | "ChartOfCalculationTypes"
-                | "BusinessProcess"
-                | "Task"
-                | "ExchangePlan"
-                | "Enum"
-                | "Report"
-                | "DataProcessor"
-                | "Constant"
-                | "DocumentJournal"
-                | "FilterCriterion"
-                | "SettingsStorage"
-        ),
-        ModuleRole::RecordSetModule => matches!(
-            kind,
-            "InformationRegister"
-                | "AccumulationRegister"
-                | "AccountingRegister"
-                | "CalculationRegister"
-        ),
-        ModuleRole::ValueManagerModule => kind == "Constant",
-        ModuleRole::Module
-        | ModuleRole::FormModule
-        | ModuleRole::CommandModule
-        | ModuleRole::ManagedApplicationModule
-        | ModuleRole::OrdinaryApplicationModule
-        | ModuleRole::SessionModule
-        | ModuleRole::ExternalConnectionModule => false,
-    }
-}
-
-fn nested_modules_are_supported(kind: &str) -> bool {
-    matches!(
-        kind,
-        "Document"
-            | "Catalog"
-            | "DataProcessor"
-            | "Report"
-            | "InformationRegister"
-            | "AccumulationRegister"
-            | "AccountingRegister"
-            | "CalculationRegister"
-            | "ChartOfAccounts"
-            | "ChartOfCharacteristicTypes"
-            | "ChartOfCalculationTypes"
-            | "ExchangePlan"
-            | "BusinessProcess"
-            | "Task"
-            | "DocumentJournal"
-            | "Enum"
-            | "Constant"
-            | "Sequence"
-            | "DocumentNumerator"
-    )
-}
-
-fn metadata_descriptor(directory: &str, name: &str) -> PathBuf {
-    PathBuf::from(directory).join(format!("{name}.xml"))
-}
-
-fn validate_identity_descriptors(
-    source_root: &Path,
-    descriptors: &[PathBuf],
-) -> Result<(), String> {
-    for descriptor in descriptors {
-        let path = source_root.join(descriptor);
-        let metadata = fs::symlink_metadata(&path).map_err(|error| {
-            format!(
-                "BSL module metadata descriptor is unavailable {}: {error}",
-                path.display()
-            )
-        })?;
-        if metadata_is_link_or_reparse_point(&metadata) || !metadata.is_file() {
-            return Err(format!(
-                "BSL module metadata descriptor must be a regular file: {}",
-                path.display()
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn unsupported_module_layout() -> String {
-    "unica.code.patch v1 accepts only a supported canonical platform XML BSL module path"
-        .to_string()
 }
 
 fn portable_relative_path(path: &Path) -> Result<String, String> {

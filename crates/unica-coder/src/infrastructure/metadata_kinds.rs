@@ -95,6 +95,80 @@ pub(crate) fn metadata_kind_index(tag: &str) -> Option<usize> {
     METADATA_KINDS.iter().position(|kind| kind.tag == tag)
 }
 
+pub(crate) fn supports_direct_module_role(tag: &str, role: &str) -> bool {
+    match role {
+        "ObjectModule" => matches!(
+            tag,
+            "Catalog"
+                | "Document"
+                | "ExchangePlan"
+                | "ChartOfAccounts"
+                | "ChartOfCharacteristicTypes"
+                | "ChartOfCalculationTypes"
+                | "BusinessProcess"
+                | "Task"
+                | "Report"
+                | "DataProcessor"
+        ),
+        "ManagerModule" => matches!(
+            tag,
+            "Catalog"
+                | "Document"
+                | "InformationRegister"
+                | "AccumulationRegister"
+                | "AccountingRegister"
+                | "CalculationRegister"
+                | "ChartOfAccounts"
+                | "ChartOfCharacteristicTypes"
+                | "ChartOfCalculationTypes"
+                | "BusinessProcess"
+                | "Task"
+                | "ExchangePlan"
+                | "Enum"
+                | "Report"
+                | "DataProcessor"
+                | "Constant"
+                | "DocumentJournal"
+                | "FilterCriterion"
+                | "SettingsStorage"
+        ),
+        "RecordSetModule" => matches!(
+            tag,
+            "InformationRegister"
+                | "AccumulationRegister"
+                | "AccountingRegister"
+                | "CalculationRegister"
+        ),
+        "ValueManagerModule" => tag == "Constant",
+        _ => false,
+    }
+}
+
+pub(crate) fn supports_nested_form_or_command(tag: &str) -> bool {
+    matches!(
+        tag,
+        "Document"
+            | "Catalog"
+            | "DataProcessor"
+            | "Report"
+            | "InformationRegister"
+            | "AccumulationRegister"
+            | "AccountingRegister"
+            | "CalculationRegister"
+            | "ChartOfAccounts"
+            | "ChartOfCharacteristicTypes"
+            | "ChartOfCalculationTypes"
+            | "ExchangePlan"
+            | "BusinessProcess"
+            | "Task"
+            | "DocumentJournal"
+            | "Enum"
+            | "Constant"
+            | "Sequence"
+            | "DocumentNumerator"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
