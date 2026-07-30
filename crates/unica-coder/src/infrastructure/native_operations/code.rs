@@ -1809,12 +1809,12 @@ mod tests {
         )
         .unwrap();
         fs::write(
-            src.join("Catalogs/Items/Forms/Main/Ext/Form.xml"),
+            src.join("Catalogs/Items/Forms/Main.xml"),
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form><Properties><Name>Main</Name></Properties></Form></MetaDataObject>"#,
         )
         .unwrap();
         fs::write(
-            src.join("Catalogs/Items/Commands/Print/Ext/Command.xml"),
+            src.join("Catalogs/Items/Commands/Print.xml"),
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Command><Properties><Name>Print</Name></Properties></Command></MetaDataObject>"#,
         )
         .unwrap();

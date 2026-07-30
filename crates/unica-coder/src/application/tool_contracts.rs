@@ -33,6 +33,7 @@ const SOURCE_RESOLVE_ARGS: &[&str] = &[
     "cursor",
 ];
 const SOURCE_CHILDREN_ARGS: &[&str] = &["sourceSet", "metadataPath", "limit", "cursor"];
+const SOURCE_LOCATE_ARGS: &[&str] = &["sourceSet", "path"];
 const SOURCE_RESOURCES_ARGS: &[&str] = &[
     "sourceSet",
     "metadataPath",
@@ -831,6 +832,7 @@ fn validate_source_navigation_arguments(
     for required in match operation {
         SourceNavigationOperation::Resolve => &["sourceSet", "query"][..],
         SourceNavigationOperation::Children => &["sourceSet"][..],
+        SourceNavigationOperation::Locate => &["sourceSet", "path"][..],
     } {
         let value = args
             .get(*required)
@@ -1697,6 +1699,7 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
         ToolHandler::SourceNavigation { operation } => names.extend(match operation {
             SourceNavigationOperation::Resolve => SOURCE_RESOLVE_ARGS,
             SourceNavigationOperation::Children => SOURCE_CHILDREN_ARGS,
+            SourceNavigationOperation::Locate => SOURCE_LOCATE_ARGS,
         }),
         ToolHandler::SourceResources { operation } => names.extend(match operation {
             SourceResourceOperation::Resources => SOURCE_RESOURCES_ARGS,
@@ -1747,6 +1750,7 @@ fn required_args(tool: &ToolSpec) -> Vec<&'static str> {
         ToolHandler::SourceNavigation { operation } => match operation {
             SourceNavigationOperation::Resolve => vec!["sourceSet", "query"],
             SourceNavigationOperation::Children => vec!["sourceSet"],
+            SourceNavigationOperation::Locate => vec!["sourceSet", "path"],
         },
         ToolHandler::SourceResources { operation } => match operation {
             SourceResourceOperation::Resources => Vec::new(),
@@ -2713,6 +2717,12 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
     }
     if matches!(tool.handler, ToolHandler::SourceNavigation { .. }) {
         return match name {
+            "path" => json!({
+                "type": "string",
+                "minLength": 1,
+                "pattern": r"\S",
+                "description": "Source file to look up, given either workspace-relative or relative to the named source set; the answer names the metadata address that owns it"
+            }),
             "sourceSet" | "query" | "metadataPath" | "cursor" => {
                 json!({ "type": "string", "minLength": 1, "pattern": r"\S" })
             }

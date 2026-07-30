@@ -1,6 +1,7 @@
 use super::{AdapterOutcome, ToolSpec};
 use crate::application::source_navigation::{
-    SourceChildrenRequest, SourceChildrenResult, SourceResolveRequest, SourceResolveResult,
+    SourceChildrenRequest, SourceChildrenResult, SourceLocateRequest, SourceLocateResult,
+    SourceResolveRequest, SourceResolveResult,
 };
 use crate::application::source_resources::{
     SourceApplyExecution, SourceApplyRequest, SourceReadRequest, SourceResourcesRequest,
@@ -150,6 +151,15 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         _cancellation: &CancellationToken,
     ) -> Result<SourceChildrenResult, String> {
         Err("source navigation traversal is not configured".to_string())
+    }
+
+    fn locate_source_navigation(
+        &self,
+        _request: SourceLocateRequest,
+        _context: &WorkspaceContext,
+        _cancellation: &CancellationToken,
+    ) -> Result<SourceLocateResult, String> {
+        Err("source navigation locator is not configured".to_string())
     }
 
     fn source_resources(

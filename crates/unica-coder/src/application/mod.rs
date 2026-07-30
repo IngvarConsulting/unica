@@ -199,6 +199,19 @@ pub fn tools() -> Vec<ToolSpec> {
             },
         },
         ToolSpec {
+            name: "unica.source.locate",
+            description:
+                "Recover the logical metadata address that owns one source path inside a named source set.",
+            mutating: false,
+            cache_access: CacheAccess {
+                reads: &["workspace_graph", "metadata_graph"],
+                writes: &[],
+            },
+            handler: ToolHandler::SourceNavigation {
+                operation: SourceNavigationOperation::Locate,
+            },
+        },
+        ToolSpec {
             name: "unica.source.resources",
             description:
                 "Open or page an immutable bounded manifest for one logical source target.",

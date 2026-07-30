@@ -2363,14 +2363,14 @@ mod tests {
             (
                 "Catalog.Items.Form.Main.FormModule",
                 "Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
-                "Catalogs/Items/Forms/Main/Ext/Form.xml",
+                "Catalogs/Items/Forms/Main.xml",
                 "Form",
                 "Main",
             ),
             (
                 "Catalog.Items.Command.Print.CommandModule",
                 "Catalogs/Items/Commands/Print/Ext/CommandModule.bsl",
-                "Catalogs/Items/Commands/Print/Ext/Command.xml",
+                "Catalogs/Items/Commands/Print.xml",
                 "Command",
                 "Print",
             ),

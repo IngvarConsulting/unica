@@ -2173,7 +2173,7 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         args.insert("JsonPath".to_string(), Value::String(path));
         args.insert(
             "OutputPath".to_string(),
-            Value::String("src/Reports/CorpusReport/Forms/CorpusForm/Ext/Form.xml".to_string()),
+            Value::String("src/Reports/CorpusReport/Forms/CorpusForm.xml".to_string()),
         );
         return Ok(args);
     }
@@ -2184,9 +2184,7 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         if case.id == "form-edit-managed" {
             args.insert(
                 "FormPath".to_string(),
-                Value::String(
-                    "src/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml".to_string(),
-                ),
+                Value::String("src/Catalogs/CorpusCatalog/Forms/CorpusForm.xml".to_string()),
             );
             args.insert(
                 "definition".to_string(),

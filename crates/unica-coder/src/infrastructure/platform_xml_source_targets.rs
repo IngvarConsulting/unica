@@ -3,6 +3,9 @@ use crate::application::source_navigation::{
     SourceLocation, SourceMatchKind, SourceNavigationMode, SourceNode, SourceNodeAddressability,
     SourceNodeKind, SourceResolveCandidate, SourceResolveRequest, SourceResolveResult,
 };
+use crate::application::source_navigation::{
+    LocateRejection, SourceLocateRequest, SourceLocateResult,
+};
 use crate::domain::cancellation::{cancelled_error, CancellationToken};
 use crate::domain::project_sources::{
     classify_already_read_config_dump_info_xml, ConfigDumpInfoXmlKind,
@@ -277,6 +280,190 @@ fn resolve_exact_by_rendering(
         completeness: NavigationCompleteness::Complete,
         next_cursor: None,
     }))
+}
+
+/// Recovers the logical address that owns a source path. Every other public
+/// producer of physical paths — `unica.code.search` hits, a git diff, a build
+/// log — otherwise dead-ends, because the logical tools accept addresses only.
+pub(crate) fn locate_platform_xml_source_path(
+    context: &WorkspaceContext,
+    request: &SourceLocateRequest,
+    cancellation: &CancellationToken,
+) -> Result<SourceLocateResult, String> {
+    check_navigation_cancellation(cancellation)?;
+    let selected = resolve_named_source_set(context, &request.source_set)
+        .map_err(|error| public_source_set_error(&request.source_set, error).to_string())?;
+    if selected.source_set.source_format != SourceFormat::PlatformXml {
+        return Err(format!(
+            "sourceSet `{}` is not addressable by the Platform XML source provider",
+            request.source_set
+        ));
+    }
+    let reject = |relative: String, rejection: LocateRejection| SourceLocateResult {
+        source_set: selected.source_set.name.clone(),
+        relative_path: relative,
+        metadata_path: None,
+        target_kind: None,
+        owner_metadata_path: None,
+        rejection: Some(rejection),
+    };
+
+    let raw = Path::new(request.path.trim());
+    let Some(relative) = source_set_relative_path(context, &selected, raw) else {
+        return Ok(reject(
+            portable_relative(raw),
+            LocateRejection::OutsideSourceSet,
+        ));
+    };
+    check_navigation_cancellation(cancellation)?;
+    let relative_text = portable_relative(&relative);
+
+    // A module is addressable in its own right; everything else can at best
+    // name the metadata object that owns it.
+    if relative.extension().and_then(|value| value.to_str()) == Some("bsl") {
+        if let Ok(identity) = platform_xml_module_identity(&relative) {
+            let proven = validate_platform_xml_module_descriptors(
+                context,
+                &selected.path,
+                &identity.descriptors,
+            )
+            .is_ok()
+                && module_descriptor_identity_is_proven(&selected.path, &identity, cancellation)?;
+            if !proven {
+                return Ok(reject(relative_text, LocateRejection::OwnerUnproven));
+            }
+            let owner = MetadataAddress::parse(
+                crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                &identity.owner,
+            )
+            .ok();
+            return Ok(SourceLocateResult {
+                source_set: selected.source_set.name.clone(),
+                relative_path: relative_text,
+                metadata_path: Some(identity.address),
+                target_kind: Some(TargetKind::Module),
+                owner_metadata_path: owner,
+                rejection: None,
+            });
+        }
+        return Ok(reject(relative_text, LocateRejection::NotAddressable));
+    }
+
+    let parts = relative
+        .components()
+        .map(|component| match component {
+            Component::Normal(value) => value.to_str(),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>();
+    let Some(parts) = parts else {
+        return Ok(reject(relative_text, LocateRejection::NotAddressable));
+    };
+    let Some(kind) = parts
+        .first()
+        .and_then(|first| metadata_kind_by_directory(first))
+    else {
+        return Ok(reject(relative_text, LocateRejection::NotAddressable));
+    };
+    let Some(name) = parts.get(1).map(|name| name.trim_end_matches(".xml")) else {
+        return Ok(reject(relative_text, LocateRejection::NotAddressable));
+    };
+    let object = format!("{}.{name}", kind.tag);
+    let Ok(object_address) = MetadataAddress::parse(
+        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+        &object,
+    ) else {
+        return Ok(reject(relative_text, LocateRejection::NotAddressable));
+    };
+    if exact_object_outcome(&selected.path, &object_address, cancellation)?
+        != ExactCandidate::Proven
+    {
+        return Ok(reject(relative_text, LocateRejection::OwnerUnproven));
+    }
+    check_navigation_cancellation(cancellation)?;
+
+    // A nested Form or Command owns everything beneath its own directory.
+    let nested = match parts.get(2).copied() {
+        Some(directory @ ("Forms" | "Commands")) => parts.get(3).map(|child| {
+            let child_kind = if directory == "Forms" {
+                "Form"
+            } else {
+                "Command"
+            };
+            // The same child appears twice under the collection: once as its
+            // `<Name>.xml` descriptor and once as the `<Name>/` content tree.
+            format!("{object}.{child_kind}.{}", child.trim_end_matches(".xml"))
+        }),
+        _ => None,
+    };
+    if let Some(nested) = nested {
+        if let Ok(nested_address) = MetadataAddress::parse(
+            crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+            &nested,
+        ) {
+            if exact_object_outcome(&selected.path, &nested_address, cancellation)?
+                == ExactCandidate::Proven
+            {
+                let is_own_descriptor = parts.len() == 4 && parts[3].ends_with(".xml");
+                return Ok(SourceLocateResult {
+                    source_set: selected.source_set.name.clone(),
+                    relative_path: relative_text,
+                    metadata_path: is_own_descriptor.then(|| nested_address.clone()),
+                    target_kind: is_own_descriptor.then_some(TargetKind::MetadataObject),
+                    owner_metadata_path: Some(nested_address),
+                    rejection: (!is_own_descriptor).then_some(LocateRejection::NotAddressable),
+                });
+            }
+        }
+    }
+
+    let is_object_descriptor = parts.len() == 2 && parts[1].ends_with(".xml");
+    Ok(SourceLocateResult {
+        source_set: selected.source_set.name.clone(),
+        relative_path: relative_text,
+        metadata_path: is_object_descriptor.then(|| object_address.clone()),
+        target_kind: is_object_descriptor.then_some(TargetKind::MetadataObject),
+        owner_metadata_path: Some(object_address),
+        rejection: (!is_object_descriptor).then_some(LocateRejection::NotAddressable),
+    })
+}
+
+/// Accepts an absolute path, a workspace-relative path or a source-set-relative
+/// path, and returns it relative to the source root when it is contained there.
+fn source_set_relative_path(
+    context: &WorkspaceContext,
+    selected: &ResolvedNamedSourceSet,
+    raw: &Path,
+) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if raw.is_absolute() {
+        candidates.push(raw.to_path_buf());
+    } else {
+        candidates.push(context.workspace_root.join(raw));
+        candidates.push(selected.path.join(raw));
+    }
+    for candidate in candidates {
+        let Ok(normalized) = normalize_path_identity(&candidate) else {
+            continue;
+        };
+        if let Ok(relative) = normalized.strip_prefix(&selected.path) {
+            if relative.as_os_str().is_empty() {
+                continue;
+            }
+            return Some(relative.to_path_buf());
+        }
+    }
+    None
+}
+
+fn portable_relative(path: &Path) -> String {
+    path.components()
+        .filter_map(|component| match component {
+            Component::Normal(value) => value.to_str(),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// A prefix query pins its leading segments, so the scan is scoped to the
@@ -803,9 +990,7 @@ fn exact_object_outcome(
             let descriptor = PathBuf::from(kind.directory)
                 .join(name)
                 .join(child_directory)
-                .join(child_name)
-                .join("Ext")
-                .join(format!("{child_kind}.xml"));
+                .join(format!("{child_name}.xml"));
             Ok(descriptor_outcome(
                 source_root,
                 &descriptor,
@@ -1981,7 +2166,8 @@ enum ModuleDescriptorRule {
     },
     Owner,
     Nested {
-        child_kind: &'static str,
+        /// Collection directory holding the child; the child's kind is derived
+        /// from the logical address, so it is not repeated here.
         child_directory: &'static str,
     },
 }
@@ -2104,7 +2290,6 @@ const PLATFORM_XML_MODULE_LAYOUT_FAMILIES: &[PlatformXmlModuleLayoutDescriptor] 
         capability: ModuleLayoutCapability::NestedFormOrCommand,
         fixed_role: Some(PlatformXmlModuleRole::FormModule),
         descriptor_rule: ModuleDescriptorRule::Nested {
-            child_kind: "Form",
             child_directory: "Forms",
         },
     },
@@ -2128,7 +2313,6 @@ const PLATFORM_XML_MODULE_LAYOUT_FAMILIES: &[PlatformXmlModuleLayoutDescriptor] 
         capability: ModuleLayoutCapability::NestedFormOrCommand,
         fixed_role: Some(PlatformXmlModuleRole::CommandModule),
         descriptor_rule: ModuleDescriptorRule::Nested {
-            child_kind: "Command",
             child_directory: "Commands",
         },
     },
@@ -2273,10 +2457,7 @@ impl PlatformXmlModuleLayoutDescriptor {
                     vec![metadata_descriptor(kind.directory, name)],
                 )
             }
-            ModuleDescriptorRule::Nested {
-                child_kind,
-                child_directory,
-            } => {
+            ModuleDescriptorRule::Nested { child_directory } => {
                 let kind = captures.kind.ok_or_else(unsupported_module_layout)?;
                 let name = captures.owner_name.ok_or_else(unsupported_module_layout)?;
                 let child_name = captures.child_name.ok_or_else(unsupported_module_layout)?;
@@ -2284,12 +2465,14 @@ impl PlatformXmlModuleLayoutDescriptor {
                     format!("{}.{name}", kind.tag),
                     vec![
                         metadata_descriptor(kind.directory, name),
+                        // The child's metadata descriptor sits beside its
+                        // directory as `<Forms>/<Name>.xml`. The file under
+                        // `<Name>/Ext/Form.xml` is the form's own content in the
+                        // logform schema, not a `MetaDataObject` descriptor.
                         PathBuf::from(kind.directory)
                             .join(name)
                             .join(child_directory)
-                            .join(child_name)
-                            .join("Ext")
-                            .join(format!("{child_kind}.xml")),
+                            .join(format!("{child_name}.xml")),
                     ],
                 )
             }
@@ -2751,7 +2934,7 @@ mod tests {
         write_nested_module_fixture(
             &root,
             "Catalogs/Items/Forms/Order/Ext/Form/Module.bsl",
-            "Catalogs/Items/Forms/Order/Ext/Form.xml",
+            "Catalogs/Items/Forms/Order.xml",
             "Form",
             "Different",
         );
@@ -2883,14 +3066,14 @@ mod tests {
         write_nested_module_fixture(
             &root,
             "Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
-            "Catalogs/Items/Forms/List/Ext/Form.xml",
+            "Catalogs/Items/Forms/List.xml",
             "Form",
             "List",
         );
         write_nested_module_fixture(
             &root,
             "Catalogs/Items/Commands/Open/Ext/CommandModule.bsl",
-            "Catalogs/Items/Commands/Open/Ext/Command.xml",
+            "Catalogs/Items/Commands/Open.xml",
             "Command",
             "Open",
         );
@@ -3337,27 +3520,27 @@ mod tests {
         write_nested_module_fixture(
             &root,
             "Catalogs/Items/Forms/Order/Ext/Form/Module.bsl",
-            "Catalogs/Items/Forms/Order/Ext/Form.xml",
+            "Catalogs/Items/Forms/Order.xml",
             "Form",
             "DifferentForm",
         );
         write_nested_module_fixture(
             &root,
             "Catalogs/Items/Commands/Print/Ext/CommandModule.bsl",
-            "Catalogs/Items/Commands/Print/Ext/Command.xml",
+            "Catalogs/Items/Commands/Print.xml",
             "Form",
             "Print",
         );
         write_nested_module_fixture_xml(
             &root,
             "Catalogs/Items/Forms/Legacy/Ext/Form/Module.bsl",
-            "Catalogs/Items/Forms/Legacy/Ext/Form.xml",
+            "Catalogs/Items/Forms/Legacy.xml",
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.19"><Form><Properties><Name>Legacy</Name></Properties></Form></MetaDataObject>"#,
         );
         write_nested_module_fixture_xml(
             &root,
             "Catalogs/Items/Commands/NoNamespace/Ext/CommandModule.bsl",
-            "Catalogs/Items/Commands/NoNamespace/Ext/Command.xml",
+            "Catalogs/Items/Commands/NoNamespace.xml",
             r#"<MetaDataObject version="2.20"><Command><Properties><Name>NoNamespace</Name></Properties></Command></MetaDataObject>"#,
         );
 
@@ -3754,6 +3937,125 @@ mod tests {
             !enumerated.get(),
             "exact resolution must render its candidate, not enumerate the source set"
         );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn nested_child_descriptor_sits_beside_its_content_directory() {
+        // A real Designer export keeps the form's `MetaDataObject` descriptor at
+        // `Forms/<Name>.xml`; `Forms/<Name>/Ext/Form.xml` is the form content in
+        // the logform schema. Reading the content file as the descriptor made
+        // every form and command module unaddressable in real configurations.
+        let context = fixture(
+            "navigation-nested-descriptor",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_configuration_descriptor(&root, false);
+        fs::create_dir_all(root.join("Catalogs/Items/Forms/Order/Ext/Form")).unwrap();
+        fs::write(
+            root.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Items</Name></Properties></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Catalogs/Items/Forms/Order.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form><Properties><Name>Order</Name></Properties></Form></MetaDataObject>"#,
+        )
+        .unwrap();
+        // The content file must not be mistaken for the descriptor.
+        fs::write(
+            root.join("Catalogs/Items/Forms/Order/Ext/Form.xml"),
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform"><Items/></Form>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Catalogs/Items/Forms/Order/Ext/Form/Module.bsl"),
+            "Procedure Run()\nEndProcedure\n",
+        )
+        .unwrap();
+
+        let result = resolve_platform_xml_source_navigation(
+            &context,
+            &SourceResolveRequest {
+                source_set: "main".to_string(),
+                query: "Catalog.Items.Form.Order.FormModule".to_string(),
+                mode: SourceNavigationMode::Exact,
+                target_kind: None,
+                limit: 50,
+                cursor: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.completeness, NavigationCompleteness::Complete);
+        assert_eq!(
+            result
+                .candidates
+                .iter()
+                .map(|candidate| candidate.metadata_path.as_str())
+                .collect::<Vec<_>>(),
+            ["Catalog.Items.Form.Order.FormModule"]
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn locate_recovers_the_address_that_owns_a_source_path() {
+        let context = fixture(
+            "navigation-locate",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_configuration_descriptor(&root, false);
+        write_real_module_fixture(&root, "CommonModule", "Shared");
+
+        let locate = |path: &str| {
+            super::locate_platform_xml_source_path(
+                &context,
+                &crate::application::source_navigation::SourceLocateRequest {
+                    source_set: "main".to_string(),
+                    path: path.to_string(),
+                },
+                &CancellationToken::new(),
+            )
+            .unwrap()
+        };
+
+        let module = locate("src/CommonModules/Shared/Ext/Module.bsl");
+        assert_eq!(
+            module.metadata_path.as_ref().map(MetadataAddress::as_str),
+            Some("CommonModule.Shared.Module")
+        );
+        assert_eq!(
+            module
+                .owner_metadata_path
+                .as_ref()
+                .map(MetadataAddress::as_str),
+            Some("CommonModule.Shared")
+        );
+        assert!(module.rejection.is_none());
+        // The same file addressed relative to the source set resolves alike.
+        assert_eq!(
+            locate("CommonModules/Shared/Ext/Module.bsl").metadata_path,
+            module.metadata_path
+        );
+
+        let descriptor = locate("src/CommonModules/Shared.xml");
+        assert_eq!(
+            descriptor
+                .metadata_path
+                .as_ref()
+                .map(MetadataAddress::as_str),
+            Some("CommonModule.Shared")
+        );
+
+        let outside = locate("/etc/passwd");
+        assert_eq!(
+            outside.rejection,
+            Some(crate::application::source_navigation::LocateRejection::OutsideSourceSet)
+        );
+        assert!(!outside.relative_path.contains("etc/passwd") || outside.metadata_path.is_none());
         cleanup(&context);
     }
 

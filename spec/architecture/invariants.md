@@ -266,8 +266,9 @@ Unica. Каждая запись формулирует одно нормати�
 ### INV-MCP-SOURCE-SURFACE — Ресурсная поверхность логична и ограничена
 
 - **Rule:** Публичная группа источников содержит читающие
-  `unica.source.resolve`, `unica.source.children`, `unica.source.resources`,
-  `unica.source.read` и мутирующий `unica.source.apply`; их схемы принимают
+  `unica.source.resolve`, `unica.source.children`, `unica.source.locate`,
+  `unica.source.resources`, `unica.source.read` и мутирующий
+  `unica.source.apply`; их схемы принимают
   логические цели и непрозрачные снимки, не принимают физический путь или
   закрытую ручку и удерживают объявленные пределы.
 - **Decision:** ADR-0021, ADR-0022

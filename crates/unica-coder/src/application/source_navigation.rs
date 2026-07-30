@@ -16,6 +16,7 @@ const CURSOR_MASK: u64 = 0xa93f_4761_c2d8_5be7;
 pub enum SourceNavigationOperation {
     Resolve,
     Children,
+    Locate,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,6 +139,43 @@ pub(crate) struct SourceResolveRequest {
     pub(crate) cursor: Option<String>,
 }
 
+/// Why a source path carries no logical address, so a caller can tell a file
+/// the provider does not model from one it could not classify.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum LocateRejection {
+    /// The path is not part of the named source set.
+    OutsideSourceSet,
+    /// The layout is known but nothing addressable owns this file.
+    NotAddressable,
+    /// The layout matches, but the owning descriptors do not prove it.
+    OwnerUnproven,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SourceLocateResult {
+    pub(crate) source_set: String,
+    /// Path echoed back relative to the source set, never absolute.
+    pub(crate) relative_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) metadata_path: Option<MetadataAddress>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) target_kind: Option<TargetKind>,
+    /// The metadata object that owns the file, which for a module is its owner
+    /// rather than the module address itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) owner_metadata_path: Option<MetadataAddress>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) rejection: Option<LocateRejection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SourceLocateRequest {
+    pub(crate) source_set: String,
+    pub(crate) path: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SourceChildrenRequest {
     pub(crate) source_set: String,
@@ -183,6 +221,19 @@ pub(crate) fn invoke(
                     .map_err(|error| format!("failed to serialize source.children: {error}"))?,
             )
         }
+        SourceNavigationOperation::Locate => {
+            let result =
+                ports.locate_source_navigation(locate_request(args)?, context, cancellation)?;
+            let summary = match result.metadata_path.as_ref() {
+                Some(address) => format!("source.locate resolved `{}`", address.as_str()),
+                None => "source.locate found no logical address for the path".to_string(),
+            };
+            (
+                summary,
+                serde_json::to_value(result)
+                    .map_err(|error| format!("failed to serialize source.locate: {error}"))?,
+            )
+        }
     };
     Ok(HandlerOutcome::with_data(AdapterOutcome::ok(summary), data))
 }
@@ -206,6 +257,13 @@ fn resolve_request(args: &Map<String, Value>) -> Result<SourceResolveRequest, St
             .transpose()?,
         limit: navigation_limit(args)?,
         cursor: optional_non_empty_string(args, "cursor")?,
+    })
+}
+
+fn locate_request(args: &Map<String, Value>) -> Result<SourceLocateRequest, String> {
+    Ok(SourceLocateRequest {
+        source_set: required_string(args, "sourceSet")?.to_string(),
+        path: required_string(args, "path")?.to_string(),
     })
 }
 

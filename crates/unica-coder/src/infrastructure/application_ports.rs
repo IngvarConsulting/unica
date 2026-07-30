@@ -2,7 +2,8 @@ use crate::application::ports::{
     ApplicationPorts, FormatGuardCheck, HandlerOutcome, SupportGuardCheck,
 };
 use crate::application::source_navigation::{
-    SourceChildrenRequest, SourceChildrenResult, SourceResolveRequest, SourceResolveResult,
+    SourceChildrenRequest, SourceChildrenResult, SourceLocateRequest, SourceLocateResult,
+    SourceResolveRequest, SourceResolveResult,
 };
 use crate::application::source_resources::{
     SourceApplyExecution, SourceApplyRequest, SourceReadRequest, SourceResourcesRequest,
@@ -126,6 +127,19 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         cancellation: &CancellationToken,
     ) -> Result<SourceChildrenResult, String> {
         crate::infrastructure::platform_xml_source_targets::children_platform_xml_source_navigation(
+            context,
+            &request,
+            cancellation,
+        )
+    }
+
+    fn locate_source_navigation(
+        &self,
+        request: SourceLocateRequest,
+        context: &WorkspaceContext,
+        cancellation: &CancellationToken,
+    ) -> Result<SourceLocateResult, String> {
+        crate::infrastructure::platform_xml_source_targets::locate_platform_xml_source_path(
             context,
             &request,
             cancellation,

@@ -18,6 +18,12 @@ allowed-tools:
 - Для поиска цели используй `unica.source.resolve` или
   `unica.source.children`. Для исследования уже выбранной цели используй
   `unica.source.resources`, затем `unica.source.read`.
+- Когда на руках физический путь — из `unica.code.search`, из диффа, из лога
+  сборки — переведи его в логический адрес через `unica.source.locate`, а не
+  выводи адрес из раскладки каталогов вручную. `locate` отвечает и владельцем
+  файла: для модуля это его объект метаданных, для содержимого формы — сама
+  форма. Отказ типизирован: `outsideSourceSet`, `notAddressable` или
+  `ownerUnproven`.
 - `unica.source.apply` — только fallback, когда ни один предметный writer не
   выражает нужную полную замену существующего BSL-модуля. До вызова явно назови
   причину fallback и почему `unica.code.patch` либо другой предметный
