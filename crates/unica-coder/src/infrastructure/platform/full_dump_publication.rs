@@ -25,10 +25,11 @@ use crate::infrastructure::native_operations::single_file_publisher::{
 use crate::infrastructure::platform::filesystem::hard_link_count;
 #[cfg(windows)]
 use crate::infrastructure::platform::filesystem::{
-    create_owner_only_directory_child, create_owner_only_file_child, discard_created_child,
-    open_any_child_nofollow, open_directory_child_for_rename, open_directory_child_nofollow,
-    open_directory_nofollow, open_regular_child_nofollow, rename_directory_handle_child_no_replace,
-    verify_owner_only_acl,
+    create_owner_only_directory_child, create_owner_only_file_child, delete_open_child,
+    discard_created_child, open_any_child_for_delete, open_any_child_nofollow,
+    open_directory_child_for_rename, open_directory_child_nofollow, open_directory_nofollow,
+    open_regular_child_nofollow, opened_child_kind, rename_directory_handle_child_no_replace,
+    verify_owner_only_acl, OpenedChildKind,
 };
 use crate::infrastructure::platform::filesystem::{
     file_identity, metadata_is_link_or_reparse_point, restrict_stage_to_owner, FileIdentity,
@@ -78,15 +79,22 @@ pub(crate) enum FullDumpInvocation {
 #[cfg(all(test, windows))]
 mod windows_anchor_tests {
     use super::{
+        capture_directory_snapshot, capture_tree_child_nofollow, remove_bound_directory_child,
         rename_child_no_replace, secure_path_is_absent, secure_read_regular_file_snapshot,
-        with_secure_read_hook, DirectoryAnchor,
+        unlink_bound_regular_child, with_secure_read_hook, with_tree_open_hook, DirectoryAnchor,
+        TreeEntryKind, TreeSnapshot,
     };
-    use crate::infrastructure::platform::filesystem::verify_owner_only_acl;
+    use crate::infrastructure::platform::filesystem::{
+        file_identity, open_directory_nofollow, verify_owner_only_acl,
+    };
     use std::cell::Cell;
     use std::ffi::OsStr;
     use std::fs;
+    use std::os::windows::io::AsRawHandle;
     use std::path::PathBuf;
     use std::rc::Rc;
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::Storage::FileSystem::SetFileTime;
 
     #[test]
     fn windows_anchor_detects_parent_name_replacement() {
@@ -339,6 +347,291 @@ mod windows_anchor_tests {
 
         assert!(secure_path_is_absent(&missing).unwrap());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_tree_snapshot_captures_nested_identities_sizes_and_digests() {
+        let root = unique_temp_root("tree-snapshot-stable");
+        let nested = root.join("nested");
+        let payload = nested.join("payload.txt");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(&payload, b"abc").unwrap();
+        let expected_file_identity = file_identity(&fs::File::open(&payload).unwrap()).unwrap();
+        let expected_directory_identity =
+            file_identity(&open_directory_nofollow(&nested).unwrap()).unwrap();
+
+        let first = capture_directory_snapshot(&root).unwrap();
+        let second = capture_directory_snapshot(&root).unwrap();
+
+        assert_eq!(
+            first, second,
+            "a stable tree must produce a stable snapshot"
+        );
+        assert_eq!(first.len(), 2);
+        assert!(first.iter().any(|entry| {
+            entry.relative_path == PathBuf::from("nested")
+                && entry.kind
+                    == TreeEntryKind::Directory {
+                        identity: expected_directory_identity,
+                    }
+        }));
+        assert!(first.iter().any(|entry| {
+            entry.relative_path == PathBuf::from("nested/payload.txt")
+                && entry.kind
+                    == TreeEntryKind::File {
+                        identity: expected_file_identity,
+                        size: 3,
+                        sha256: [
+                            0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde,
+                            0x5d, 0xae, 0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c,
+                            0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad,
+                        ],
+                    }
+        }));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_tree_snapshot_rejects_a_reparse_target_without_traversal() {
+        let root = unique_temp_root("tree-snapshot-root-reparse");
+        let outside = root.join("outside");
+        let target = root.join("target");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("sentinel.txt"), b"outside").unwrap();
+        std::os::windows::fs::symlink_dir(&outside, &target).unwrap();
+
+        let error = TreeSnapshot::capture_target(&target).unwrap_err();
+
+        assert!(!error.contains("unavailable"), "{error}");
+        assert!(
+            error.contains("reparse") || error.contains("link") || error.contains("real directory"),
+            "{error}"
+        );
+        assert_eq!(fs::read(outside.join("sentinel.txt")).unwrap(), b"outside");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_tree_snapshot_reports_a_missing_target_as_absent() {
+        let root = unique_temp_root("tree-snapshot-absent");
+        let target = root.join("target");
+        fs::create_dir_all(&root).unwrap();
+
+        assert_eq!(
+            TreeSnapshot::capture_target(&target).unwrap(),
+            TreeSnapshot::Absent
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_tree_snapshot_rejects_a_nested_reparse_entry_without_traversal() {
+        let root = unique_temp_root("tree-snapshot-nested-reparse");
+        let target = root.join("target");
+        let outside = root.join("outside");
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("sentinel.txt"), b"outside").unwrap();
+        std::os::windows::fs::symlink_dir(&outside, target.join("link")).unwrap();
+
+        let error = capture_directory_snapshot(&target).unwrap_err();
+
+        assert!(!error.contains("unavailable"), "{error}");
+        assert!(
+            error.contains("reparse") || error.contains("link") || error.contains("unsupported"),
+            "{error}"
+        );
+        assert_eq!(fs::read(outside.join("sentinel.txt")).unwrap(), b"outside");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_tree_snapshot_detects_identical_byte_name_replacement() {
+        let root = unique_temp_root("tree-snapshot-name-replacement");
+        let target = root.join("target");
+        let file = target.join("payload.txt");
+        let displaced = root.join("payload.displaced.txt");
+        let replacement = root.join("payload.replacement.txt");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(&file, b"identical").unwrap();
+        fs::write(&replacement, b"identical").unwrap();
+        let parent = open_directory_nofollow(&root).unwrap();
+        let hook_file = file.clone();
+        let hook_displaced = displaced.clone();
+        let hook_replacement = replacement.clone();
+
+        let result = with_tree_open_hook(
+            move |path| {
+                assert_eq!(path, hook_file);
+                fs::rename(&hook_file, &hook_displaced).unwrap();
+                fs::rename(&hook_replacement, &hook_file).unwrap();
+            },
+            || capture_tree_child_nofollow(&parent, OsStr::new("target"), target.as_path()),
+        );
+
+        let error = result.expect_err("snapshotting must bind each child name to its identity");
+        assert!(!error.contains("unavailable"), "{error}");
+        assert!(
+            error.contains("identity") || error.contains("changed"),
+            "{error}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_tree_snapshot_rejects_multiply_linked_files() {
+        let root = unique_temp_root("tree-snapshot-hard-link");
+        let target = root.join("target");
+        let file = target.join("payload.txt");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(&file, b"payload").unwrap();
+        fs::hard_link(&file, target.join("alias.txt")).unwrap();
+
+        let error = capture_directory_snapshot(&target).unwrap_err();
+
+        assert!(!error.contains("unavailable"), "{error}");
+        assert!(error.contains("exactly one hard link"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_tree_snapshot_detects_last_write_metadata_mutation() {
+        let root = unique_temp_root("tree-snapshot-metadata");
+        let target = root.join("target");
+        let file = target.join("payload.txt");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(&file, b"payload").unwrap();
+        set_last_write_time(&file, 0x01d9_0000, 0x1111_1111);
+        let parent = open_directory_nofollow(&root).unwrap();
+        let hook_file = file.clone();
+
+        let result = with_tree_open_hook(
+            move |path| {
+                assert_eq!(path, hook_file);
+                set_last_write_time(&hook_file, 0x01da_0000, 0x2222_2222);
+            },
+            || capture_tree_child_nofollow(&parent, OsStr::new("target"), target.as_path()),
+        );
+
+        let error = result.expect_err("snapshotting must reject last-write metadata mutation");
+        assert!(!error.contains("unavailable"), "{error}");
+        assert!(error.contains("changed"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_handle_cleanup_removes_reparse_entries_without_traversal() {
+        let root = unique_temp_root("handle-cleanup-reparse");
+        let parent_path = root.join("parent");
+        let tree = parent_path.join("tree");
+        let nested = tree.join("nested");
+        let outside = root.join("outside");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(nested.join("inside.txt"), b"inside").unwrap();
+        fs::write(outside.join("sentinel.txt"), b"outside").unwrap();
+        std::os::windows::fs::symlink_dir(&outside, tree.join("unsupported-link")).unwrap();
+        let parent = open_directory_nofollow(&parent_path).unwrap();
+        let expected_identity = file_identity(&open_directory_nofollow(&tree).unwrap()).unwrap();
+
+        remove_bound_directory_child(&parent, OsStr::new("tree"), expected_identity, &tree)
+            .unwrap();
+
+        assert!(!tree.exists());
+        assert_eq!(fs::read(outside.join("sentinel.txt")).unwrap(), b"outside");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_handle_cleanup_leaves_an_identity_replacement_untouched() {
+        let root = unique_temp_root("handle-cleanup-replacement");
+        let parent_path = root.join("parent");
+        let tree = parent_path.join("tree");
+        let displaced = parent_path.join("tree-displaced");
+        fs::create_dir_all(&tree).unwrap();
+        fs::write(tree.join("owned.txt"), b"owned").unwrap();
+        let parent = open_directory_nofollow(&parent_path).unwrap();
+        let expected_identity = file_identity(&open_directory_nofollow(&tree).unwrap()).unwrap();
+        fs::rename(&tree, &displaced).unwrap();
+        fs::create_dir(&tree).unwrap();
+        fs::write(tree.join("replacement.txt"), b"replacement").unwrap();
+
+        let error =
+            remove_bound_directory_child(&parent, OsStr::new("tree"), expected_identity, &tree)
+                .unwrap_err();
+
+        assert!(
+            error.contains("identity") || error.contains("changed"),
+            "{error}"
+        );
+        assert_eq!(
+            fs::read(tree.join("replacement.txt")).unwrap(),
+            b"replacement"
+        );
+        assert_eq!(fs::read(displaced.join("owned.txt")).unwrap(), b"owned");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_handle_cleanup_removes_an_expected_regular_file() {
+        let root = unique_temp_root("handle-cleanup-file");
+        let parent_path = root.join("parent");
+        let file = parent_path.join("effective.yaml");
+        fs::create_dir_all(&parent_path).unwrap();
+        fs::write(&file, b"private").unwrap();
+        let parent = open_directory_nofollow(&parent_path).unwrap();
+        let expected_identity = file_identity(&fs::File::open(&file).unwrap()).unwrap();
+
+        unlink_bound_regular_child(&parent, OsStr::new("effective.yaml"), expected_identity)
+            .unwrap();
+
+        assert!(!file.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_handle_cleanup_leaves_a_regular_file_replacement_untouched() {
+        let root = unique_temp_root("handle-cleanup-file-replacement");
+        let parent_path = root.join("parent");
+        let file = parent_path.join("effective.yaml");
+        let displaced = parent_path.join("effective.displaced.yaml");
+        fs::create_dir_all(&parent_path).unwrap();
+        fs::write(&file, b"owned").unwrap();
+        let parent = open_directory_nofollow(&parent_path).unwrap();
+        let expected_identity = file_identity(&fs::File::open(&file).unwrap()).unwrap();
+        fs::rename(&file, &displaced).unwrap();
+        fs::write(&file, b"replacement").unwrap();
+
+        let error =
+            unlink_bound_regular_child(&parent, OsStr::new("effective.yaml"), expected_identity)
+                .unwrap_err();
+
+        assert!(error.contains("identity"), "{error}");
+        assert_eq!(fs::read(&file).unwrap(), b"replacement");
+        assert_eq!(fs::read(&displaced).unwrap(), b"owned");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn set_last_write_time(path: &std::path::Path, high: u32, low: u32) {
+        let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+        let last_write = FILETIME {
+            dwLowDateTime: low,
+            dwHighDateTime: high,
+        };
+        // SAFETY: file owns a valid writable handle and last_write remains live for the call.
+        assert_ne!(
+            unsafe {
+                SetFileTime(
+                    file.as_raw_handle(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    &last_write,
+                )
+            },
+            0,
+            "{}",
+            std::io::Error::last_os_error()
+        );
     }
 
     fn unique_temp_root(name: &str) -> PathBuf {
@@ -1841,6 +2134,7 @@ fn secure_read_regular_file_snapshot(
     let mut raw = Vec::new();
     file.read_to_end(&mut raw)
         .map_err(|error| format!("failed to read {role} {}: {error}", path.display()))?;
+    run_secure_read_after_hook(path);
     let after = file.metadata().map_err(|error| {
         format!(
             "failed to recheck opened {role} {}: {error}",
@@ -1868,7 +2162,6 @@ fn secure_read_regular_file_snapshot(
             path.display()
         ));
     }
-    run_secure_read_after_hook(path);
     Ok(SecureFileSnapshot { identity, raw })
 }
 
@@ -2854,7 +3147,36 @@ fn unlink_bound_regular_child(
         .map_err(|error| format!("secure unlinkat failed: {error}"))
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn unlink_bound_regular_child(
+    parent: &File,
+    name: &OsStr,
+    expected_identity: FileIdentity,
+) -> Result<(), String> {
+    let child = open_any_child_for_delete(parent, name)
+        .map_err(|error| format!("failed to rebind the private file before cleanup: {error}"))?;
+    if opened_child_kind(&child)
+        .map_err(|error| format!("failed to classify the private file before cleanup: {error}"))?
+        != OpenedChildKind::RegularFile
+    {
+        return Err(
+            "private file changed kind before cleanup; the replacement was left untouched"
+                .to_string(),
+        );
+    }
+    let actual_identity = file_identity(&child)
+        .map_err(|error| format!("failed to inspect the private file before cleanup: {error}"))?;
+    if actual_identity != expected_identity {
+        return Err(
+            "private file identity changed before cleanup; the replacement was left untouched"
+                .to_string(),
+        );
+    }
+    delete_open_child(&child)
+        .map_err(|error| format!("secure handle-relative file cleanup failed: {error}"))
+}
+
+#[cfg(not(any(unix, windows)))]
 fn unlink_bound_regular_child(
     _parent: &File,
     _name: &OsStr,
@@ -2931,7 +3253,103 @@ fn remove_directory_contents_nofollow(directory: &File, display_path: &Path) -> 
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn remove_directory_contents_nofollow(directory: &File, display_path: &Path) -> Result<(), String> {
+    for name in crate::infrastructure::platform::filesystem::read_directory_names(directory)
+        .map_err(|error| {
+            format!(
+                "failed to enumerate the retained private directory anchor {}: {error}",
+                display_path.display()
+            )
+        })?
+    {
+        let child_path = display_path.join(&name);
+        let child = match open_any_child_for_delete(directory, &name) {
+            Ok(child) => child,
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "failed to inspect private entry {} before cleanup: {error}",
+                    child_path.display()
+                ));
+            }
+        };
+        let identity = file_identity(&child).map_err(|error| {
+            format!(
+                "failed to inspect private entry identity {} before cleanup: {error}",
+                child_path.display()
+            )
+        })?;
+        let kind = opened_child_kind(&child).map_err(|error| {
+            format!(
+                "failed to classify private entry {} before cleanup: {error}",
+                child_path.display()
+            )
+        })?;
+
+        if kind == OpenedChildKind::Directory {
+            let directory_child =
+                open_directory_child_nofollow(directory, &name).map_err(|error| {
+                    format!(
+                        "failed to bind private directory {} before cleanup: {error}",
+                        child_path.display()
+                    )
+                })?;
+            if file_identity(&directory_child).map_err(|error| {
+                format!(
+                    "failed to inspect private directory {} before cleanup: {error}",
+                    child_path.display()
+                )
+            })? != identity
+            {
+                return Err(format!(
+                    "private directory identity changed before cleanup; replacement left untouched: {}",
+                    child_path.display()
+                ));
+            }
+            remove_directory_contents_nofollow(&directory_child, &child_path)?;
+        } else if kind == OpenedChildKind::Unsupported {
+            return Err(format!(
+                "private tree contains an unsupported entry that cannot be securely removed: {}",
+                child_path.display()
+            ));
+        }
+
+        let rebound = open_any_child_for_delete(directory, &name).map_err(|error| {
+            format!(
+                "failed to rebind private entry {} before cleanup: {error}",
+                child_path.display()
+            )
+        })?;
+        let rebound_identity = file_identity(&rebound).map_err(|error| {
+            format!(
+                "failed to recheck private entry {} before cleanup: {error}",
+                child_path.display()
+            )
+        })?;
+        let rebound_kind = opened_child_kind(&rebound).map_err(|error| {
+            format!(
+                "failed to reclassify private entry {} before cleanup: {error}",
+                child_path.display()
+            )
+        })?;
+        if rebound_identity != identity || rebound_kind != kind {
+            return Err(format!(
+                "private entry identity or kind changed before cleanup; replacement left untouched: {}",
+                child_path.display()
+            ));
+        }
+        delete_open_child(&rebound).map_err(|error| {
+            format!(
+                "failed to remove private entry {} through its retained parent anchor: {error}",
+                child_path.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
 fn remove_directory_contents_nofollow(
     _directory: &File,
     display_path: &Path,
@@ -2994,7 +3412,97 @@ fn remove_bound_directory_child(
     })
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn remove_bound_directory_child(
+    parent: &File,
+    name: &OsStr,
+    expected_identity: FileIdentity,
+    display_path: &Path,
+) -> Result<(), String> {
+    let delete_handle = open_any_child_for_delete(parent, name).map_err(|error| {
+        format!(
+            "failed to rebind expected private directory {} before cleanup: {error}",
+            display_path.display()
+        )
+    })?;
+    if opened_child_kind(&delete_handle).map_err(|error| {
+        format!(
+            "failed to classify expected private directory {} before cleanup: {error}",
+            display_path.display()
+        )
+    })? != OpenedChildKind::Directory
+    {
+        return Err(format!(
+            "private directory changed kind before cleanup; replacement left untouched: {}",
+            display_path.display()
+        ));
+    }
+    if file_identity(&delete_handle).map_err(|error| {
+        format!(
+            "failed to inspect expected private directory {} before cleanup: {error}",
+            display_path.display()
+        )
+    })? != expected_identity
+    {
+        return Err(format!(
+            "private directory identity changed before cleanup; replacement left untouched: {}",
+            display_path.display()
+        ));
+    }
+
+    let directory = open_directory_child_nofollow(parent, name).map_err(|error| {
+        format!(
+            "failed to retain expected private directory {} before cleanup: {error}",
+            display_path.display()
+        )
+    })?;
+    if file_identity(&directory).map_err(|error| {
+        format!(
+            "failed to inspect retained private directory {} before cleanup: {error}",
+            display_path.display()
+        )
+    })? != expected_identity
+    {
+        return Err(format!(
+            "private directory identity changed before cleanup; replacement left untouched: {}",
+            display_path.display()
+        ));
+    }
+    remove_directory_contents_nofollow(&directory, display_path)?;
+
+    let rebound = open_any_child_for_delete(parent, name).map_err(|error| {
+        format!(
+            "failed to rebind expected private directory {} after cleanup: {error}",
+            display_path.display()
+        )
+    })?;
+    if file_identity(&rebound).map_err(|error| {
+        format!(
+            "failed to recheck expected private directory {} after cleanup: {error}",
+            display_path.display()
+        )
+    })? != expected_identity
+        || opened_child_kind(&rebound).map_err(|error| {
+            format!(
+                "failed to reclassify expected private directory {} after cleanup: {error}",
+                display_path.display()
+            )
+        })? != OpenedChildKind::Directory
+    {
+        return Err(format!(
+            "private directory identity or kind changed after cleanup; replacement left untouched: {}",
+            display_path.display()
+        ));
+    }
+    delete_open_child(&rebound).map_err(|error| {
+        format!(
+            "failed to remove expected private directory {} through its retained parent anchor: {error}",
+            display_path.display()
+        )
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
 fn remove_bound_directory_child(
     _parent: &File,
     _name: &OsStr,
@@ -3051,7 +3559,7 @@ impl TreeSnapshot {
 fn capture_directory_snapshot(root: &Path) -> Result<Vec<TreeEntrySnapshot>, String> {
     let normalized = normalize_leaf_path(root)?;
     let (parent_path, name) = split_parent_and_name(&normalized)?;
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (parent_path, name);
         Err(format!(
@@ -3059,7 +3567,7 @@ fn capture_directory_snapshot(root: &Path) -> Result<Vec<TreeEntrySnapshot>, Str
             root.display()
         ))
     }
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
         let directory = {
             let parent = open_directory_nofollow(&parent_path).map_err(|error| {
@@ -3150,7 +3658,67 @@ fn capture_tree_child_nofollow(
     Ok(TreeSnapshot::Directory { identity, entries })
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn capture_tree_target_nofollow(path: &Path) -> Result<TreeSnapshot, String> {
+    let normalized = normalize_leaf_path(path)?;
+    let (parent_path, name) = split_parent_and_name(&normalized)?;
+    let parent = open_directory_nofollow(&parent_path).map_err(|error| {
+        format!(
+            "failed to securely open dump target parent {}: {error}",
+            parent_path.display()
+        )
+    })?;
+    run_tree_open_hook(path);
+    capture_tree_child_nofollow(&parent, &name, path)
+}
+
+#[cfg(windows)]
+fn capture_tree_child_nofollow(
+    parent: &File,
+    name: &OsStr,
+    display_path: &Path,
+) -> Result<TreeSnapshot, String> {
+    let directory = match open_directory_child_nofollow(parent, name) {
+        Ok(directory) => directory,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(TreeSnapshot::Absent),
+        Err(error) => {
+            return Err(format!(
+                "dump target must be a real directory or absent {}: {error}",
+                display_path.display()
+            ));
+        }
+    };
+    let identity = file_identity(&directory).map_err(|error| {
+        format!(
+            "failed to inspect dump target directory identity {}: {error}",
+            display_path.display()
+        )
+    })?;
+    let mut entries = Vec::new();
+    capture_directory_snapshot_recursive(&directory, Path::new(""), display_path, &mut entries)?;
+    let rebound = open_directory_child_nofollow(parent, name).map_err(|error| {
+        format!(
+            "failed to rebind dump target directory {}: {error}",
+            display_path.display()
+        )
+    })?;
+    if file_identity(&rebound).map_err(|error| {
+        format!(
+            "failed to recheck dump target identity {}: {error}",
+            display_path.display()
+        )
+    })? != identity
+    {
+        return Err(format!(
+            "dump target directory identity changed while snapshotting: {}",
+            display_path.display()
+        ));
+    }
+    entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    Ok(TreeSnapshot::Directory { identity, entries })
+}
+
+#[cfg(not(any(unix, windows)))]
 fn capture_tree_target_nofollow(path: &Path) -> Result<TreeSnapshot, String> {
     Err(format!(
         "secure no-follow directory snapshots are unavailable on this host: {}",
@@ -3158,7 +3726,7 @@ fn capture_tree_target_nofollow(path: &Path) -> Result<TreeSnapshot, String> {
     ))
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn capture_tree_child_nofollow(
     _parent: &File,
     _name: &OsStr,
@@ -3168,6 +3736,197 @@ fn capture_tree_child_nofollow(
         "secure no-follow directory snapshots are unavailable on this host: {}",
         display_path.display()
     ))
+}
+
+#[cfg(windows)]
+fn capture_directory_snapshot_recursive(
+    directory: &File,
+    relative_root: &Path,
+    display_root: &Path,
+    entries: &mut Vec<TreeEntrySnapshot>,
+) -> Result<(), String> {
+    for name in crate::infrastructure::platform::filesystem::read_directory_names(directory)
+        .map_err(|error| {
+            format!(
+                "failed to securely enumerate {}: {error}",
+                display_root.join(relative_root).display()
+            )
+        })?
+    {
+        let relative = relative_root.join(&name);
+        let display_path = display_root.join(&relative);
+        let opened = open_any_child_nofollow(directory, &name).map_err(|error| {
+            format!(
+                "dump tree contains an unsupported entry {}: {error}",
+                display_path.display()
+            )
+        })?;
+        let identity = file_identity(&opened).map_err(|error| {
+            format!(
+                "failed to inspect entry identity {}: {error}",
+                display_path.display()
+            )
+        })?;
+        let metadata = opened.metadata().map_err(|error| {
+            format!(
+                "failed to inspect opened entry {}: {error}",
+                display_path.display()
+            )
+        })?;
+
+        if metadata.is_dir() {
+            let child = open_directory_child_nofollow(directory, &name).map_err(|error| {
+                format!(
+                    "failed to securely bind directory {}: {error}",
+                    display_path.display()
+                )
+            })?;
+            if file_identity(&child).map_err(|error| {
+                format!(
+                    "failed to inspect directory identity {}: {error}",
+                    display_path.display()
+                )
+            })? != identity
+            {
+                return Err(format!(
+                    "dump tree directory identity changed while opening: {}",
+                    display_path.display()
+                ));
+            }
+            entries.push(TreeEntrySnapshot {
+                relative_path: relative.clone(),
+                kind: TreeEntryKind::Directory { identity },
+            });
+            capture_directory_snapshot_recursive(&child, &relative, display_root, entries)?;
+            let rebound = open_directory_child_nofollow(directory, &name).map_err(|error| {
+                format!(
+                    "failed to rebind directory {}: {error}",
+                    display_path.display()
+                )
+            })?;
+            if file_identity(&rebound).map_err(|error| {
+                format!(
+                    "failed to recheck directory identity {}: {error}",
+                    display_path.display()
+                )
+            })? != identity
+            {
+                return Err(format!(
+                    "dump tree directory identity changed while snapshotting: {}",
+                    display_path.display()
+                ));
+            }
+            continue;
+        }
+
+        if !metadata.is_file() {
+            return Err(format!(
+                "dump tree contains an unsupported entry kind: {}",
+                display_path.display()
+            ));
+        }
+        let mut file = open_regular_child_nofollow(directory, &name).map_err(|error| {
+            format!(
+                "dump tree contains an unsupported entry {}: {error}",
+                display_path.display()
+            )
+        })?;
+        if file_identity(&file).map_err(|error| {
+            format!(
+                "failed to inspect file identity {}: {error}",
+                display_path.display()
+            )
+        })? != identity
+        {
+            return Err(format!(
+                "dump tree file identity changed while opening: {}",
+                display_path.display()
+            ));
+        }
+        if hard_link_count(&file).map_err(|error| {
+            format!(
+                "failed to inspect hard links for {}: {error}",
+                display_path.display()
+            )
+        })? != 1
+        {
+            return Err(format!(
+                "dump tree file must have exactly one hard link: {}",
+                display_path.display()
+            ));
+        }
+        let before = file.metadata().map_err(|error| {
+            format!(
+                "failed to inspect opened file {}: {error}",
+                display_path.display()
+            )
+        })?;
+        let mut hasher = Sha256::new();
+        let mut size = 0_u64;
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let read = file
+                .read(&mut buffer)
+                .map_err(|error| format!("failed to read {}: {error}", display_path.display()))?;
+            if read == 0 {
+                break;
+            }
+            size += read as u64;
+            hasher.update(&buffer[..read]);
+        }
+        run_tree_open_hook(&display_path);
+        let after = file.metadata().map_err(|error| {
+            format!(
+                "failed to recheck opened file {}: {error}",
+                display_path.display()
+            )
+        })?;
+        if before.len() != after.len()
+            || before.modified().ok() != after.modified().ok()
+            || after.len() != size
+        {
+            return Err(format!(
+                "dump tree file changed while snapshotting: {}",
+                display_path.display()
+            ));
+        }
+        if hard_link_count(&file).map_err(|error| {
+            format!(
+                "failed to recheck hard links for {}: {error}",
+                display_path.display()
+            )
+        })? != 1
+        {
+            return Err(format!(
+                "dump tree file hard-link count changed while snapshotting: {}",
+                display_path.display()
+            ));
+        }
+        let rebound = open_regular_child_nofollow(directory, &name).map_err(|error| {
+            format!("failed to rebind file {}: {error}", display_path.display())
+        })?;
+        if file_identity(&rebound).map_err(|error| {
+            format!(
+                "failed to recheck file identity {}: {error}",
+                display_path.display()
+            )
+        })? != identity
+        {
+            return Err(format!(
+                "dump tree file identity changed while snapshotting: {}",
+                display_path.display()
+            ));
+        }
+        entries.push(TreeEntrySnapshot {
+            relative_path: relative,
+            kind: TreeEntryKind::File {
+                identity,
+                size,
+                sha256: hasher.finalize().into(),
+            },
+        });
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -3365,7 +4124,7 @@ fn read_directory_names(directory: &File) -> std::io::Result<Vec<OsString>> {
     Ok(names)
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn capture_directory_snapshot_recursive(
     _directory: &File,
     _relative_root: &Path,

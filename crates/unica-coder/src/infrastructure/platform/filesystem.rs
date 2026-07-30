@@ -737,6 +737,58 @@ pub(crate) fn open_any_child_nofollow(
 }
 
 #[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OpenedChildKind {
+    Directory,
+    RegularFile,
+    ReparsePoint,
+    Unsupported,
+}
+
+#[cfg(windows)]
+pub(crate) fn opened_child_kind(file: &fs::File) -> io::Result<OpenedChildKind> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_DEVICE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+    };
+
+    let attributes = windows_file_information(file)?.dwFileAttributes;
+    if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        Ok(OpenedChildKind::ReparsePoint)
+    } else if attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+        Ok(OpenedChildKind::Directory)
+    } else if attributes & FILE_ATTRIBUTE_DEVICE != 0 {
+        Ok(OpenedChildKind::Unsupported)
+    } else {
+        Ok(OpenedChildKind::RegularFile)
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn open_any_child_for_delete(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    const FILE_OPEN: u32 = 0x0000_0001;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_READ_ATTRIBUTES, SYNCHRONIZE};
+
+    open_relative_child(
+        parent,
+        name,
+        DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        0,
+        FILE_OPEN,
+        FILE_OPEN_REPARSE_POINT,
+        None,
+    )
+}
+
+#[cfg(windows)]
+pub(crate) fn delete_open_child(file: &fs::File) -> io::Result<()> {
+    set_delete_disposition(file)
+}
+
+#[cfg(windows)]
 fn directory_query_is_end(restart: bool, error: &io::Error) -> bool {
     use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_FILES};
 
@@ -1063,6 +1115,11 @@ pub(crate) fn create_owner_only_file_child(
 
 #[cfg(windows)]
 pub(crate) fn discard_created_child(file: &fs::File) -> io::Result<()> {
+    set_delete_disposition(file)
+}
+
+#[cfg(windows)]
+fn set_delete_disposition(file: &fs::File) -> io::Result<()> {
     use std::os::windows::io::AsRawHandle;
 
     const FILE_DISPOSITION_INFORMATION: u32 = 13;
