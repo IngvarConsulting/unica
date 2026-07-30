@@ -479,6 +479,34 @@ mod windows_anchor_tests {
     }
 
     #[test]
+    fn windows_tree_snapshot_detects_a_sibling_inserted_after_enumeration() {
+        let root = unique_temp_root("tree-snapshot-sibling-insertion");
+        let target = root.join("target");
+        let original = target.join("original.txt");
+        let inserted = target.join("inserted.txt");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(&original, b"original").unwrap();
+        let parent = open_directory_nofollow(&root).unwrap();
+        let hook_original = original.clone();
+        let hook_inserted = inserted.clone();
+
+        let result = with_tree_open_hook(
+            move |path| {
+                assert_eq!(path, hook_original);
+                fs::write(&hook_inserted, b"inserted").unwrap();
+            },
+            || capture_tree_child_nofollow(&parent, OsStr::new("target"), target.as_path()),
+        );
+
+        let error = result.expect_err("snapshotting must reject a changed directory name set");
+        assert!(
+            error.contains("name") || error.contains("changed"),
+            "{error}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn windows_tree_snapshot_rejects_multiply_linked_files() {
         let root = unique_temp_root("tree-snapshot-hard-link");
         let target = root.join("target");
@@ -3745,14 +3773,16 @@ fn capture_directory_snapshot_recursive(
     display_root: &Path,
     entries: &mut Vec<TreeEntrySnapshot>,
 ) -> Result<(), String> {
-    for name in crate::infrastructure::platform::filesystem::read_directory_names(directory)
-        .map_err(|error| {
-            format!(
-                "failed to securely enumerate {}: {error}",
-                display_root.join(relative_root).display()
-            )
-        })?
-    {
+    let initial_names = crate::infrastructure::platform::filesystem::read_directory_names(
+        directory,
+    )
+    .map_err(|error| {
+        format!(
+            "failed to securely enumerate {}: {error}",
+            display_root.join(relative_root).display()
+        )
+    })?;
+    for name in initial_names.iter().cloned() {
         let relative = relative_root.join(&name);
         let display_path = display_root.join(&relative);
         let opened = open_any_child_nofollow(directory, &name).map_err(|error| {
@@ -3925,6 +3955,19 @@ fn capture_directory_snapshot_recursive(
                 sha256: hasher.finalize().into(),
             },
         });
+    }
+    let final_names = crate::infrastructure::platform::filesystem::read_directory_names(directory)
+        .map_err(|error| {
+            format!(
+                "failed to securely re-enumerate {}: {error}",
+                display_root.join(relative_root).display()
+            )
+        })?;
+    if final_names != initial_names {
+        return Err(format!(
+            "dump tree directory name set changed while snapshotting: {}",
+            display_root.join(relative_root).display()
+        ));
     }
     Ok(())
 }
