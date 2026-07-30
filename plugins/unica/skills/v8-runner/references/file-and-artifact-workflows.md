@@ -8,11 +8,12 @@ For an applied dump:
 - select an extension with matching `sourceSet` and `extension` names.
 
 On Windows, macOS, and Linux, verified transactional publication supports the
-synchronous applied full dump (`mode=full`) described above. Unica independently
-resolves an exact 8.3.27 installation, redirects the selected source-set to a
-private stage, validates the required owner and every XML version-bearing root
-as the raw literal 2.20, then publishes the complete tree with preimage checks
-and rollback. ADR-0016 owns this publication contract;
+synchronous applied full dump (`mode=full`) for a DESIGNER `CONFIGURATION` or
+`EXTENSION` source-set. Unica independently resolves an exact 8.3.27
+installation, redirects the selected source-set to a private stage, validates
+the required owner and every XML version-bearing root as the raw literal 2.20,
+then publishes the complete tree with preimage checks and rollback. ADR-0016
+owns this publication contract;
 `INV-SOURCE-BOUND-PREIMAGES` and `INV-SOURCE-ROLLBACK-VISIBLE` describe its
 verified transaction behavior, while OS-specific mechanics stay behind
 `INV-PLATFORM-OS-BEHIND-FACADE`.

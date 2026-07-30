@@ -1440,13 +1440,21 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             re.IGNORECASE,
         )
 
-        def contract_errors(text: str) -> list[str]:
-            errors = [
-                f"missing {label}"
-                for label, pattern in required.items()
-                if pattern.search(text) is None
+        def markdown_paragraphs(text: str) -> list[str]:
+            return re.split(r"\n(?:[ \t]*|>[ \t]*)\n", text)
+
+        def support_paragraphs(text: str) -> list[str]:
+            return [
+                paragraph
+                for paragraph in markdown_paragraphs(text)
+                if all(pattern.search(paragraph) for pattern in required.values())
             ]
-            for paragraph in re.split(r"\n(?:[ \t]*|>[ \t]*)\n", text):
+
+        def contract_errors(text: str) -> list[str]:
+            errors = []
+            if not support_paragraphs(text):
+                errors.append("missing complete applied full dump support paragraph")
+            for paragraph in markdown_paragraphs(text):
                 if (
                     required["Windows"].search(paragraph)
                     and required["full dump"].search(paragraph)
@@ -1457,45 +1465,41 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                     )
             return errors
 
+        document_texts = {
+            path: path.read_text(encoding="utf-8")
+            for path in docs
+        }
         for path in docs:
             with self.subTest(document=path.name):
-                self.assertEqual([], contract_errors(path.read_text(encoding="utf-8")))
+                self.assertEqual([], contract_errors(document_texts[path]))
 
-        valid_contract = (
-            "Windows, macOS, and Linux verified transactional publication "
-            "supports synchronous applied full dump (mode=full) for "
-            "CONFIGURATION and EXTENSION."
-        )
-        mutations = {
-            "drop Windows": valid_contract.replace("Windows, ", ""),
-            "drop macOS": valid_contract.replace("macOS, and ", ""),
-            "drop Linux": valid_contract.replace("Linux ", ""),
-            "drop CONFIGURATION": valid_contract.replace("CONFIGURATION", "CONFIG"),
-            "drop EXTENSION": valid_contract.replace("EXTENSION", "EXT"),
-            "drop synchronous": valid_contract.replace("synchronous ", ""),
-            "drop applied": valid_contract.replace("applied ", ""),
-            "drop full mode": valid_contract.replace(
-                "full dump (mode=full)",
-                "dump",
-            ),
-            "drop verified publication": valid_contract.replace(
-                "verified transactional publication",
-                "publication",
-            ),
+        for path, text in document_texts.items():
+            complete_paragraphs = support_paragraphs(text)
+            for missing, pattern in required.items():
+                mutated = text
+                for paragraph in complete_paragraphs:
+                    mutated_paragraph = pattern.sub("", paragraph)
+                    mutated = mutated.replace(paragraph, mutated_paragraph, 1)
+                with self.subTest(document=path.name, missing=missing):
+                    self.assertTrue(contract_errors(mutated), missing)
+
+        stale_mutations = {
             "natural fail-closed wording": (
-                valid_contract
-                + "\n\nWindows applied full dump is currently fail-closed."
+                "Windows applied full dump is currently fail-closed."
             ),
-            "unsupported wording": (
-                valid_contract + "\n\nWindows full dump is unsupported."
-            ),
-            "blocked mode wording": (
-                valid_contract + "\n\nWindows mode=full is blocked."
+            "unsupported wording": "Windows full dump is unsupported.",
+            "blocked mode wording": "Windows mode=full is blocked.",
+            "reversed fail-closed wording": (
+                "Fail-closed: Windows applied full dump."
             ),
         }
-        for mutation, text in mutations.items():
-            with self.subTest(mutation=mutation):
-                self.assertTrue(contract_errors(text), mutation)
+        for path, text in document_texts.items():
+            for mutation, stale_claim in stale_mutations.items():
+                with self.subTest(document=path.name, mutation=mutation):
+                    self.assertTrue(
+                        contract_errors(f"{text}\n\n{stale_claim}\n"),
+                        mutation,
+                    )
 
     def test_code_patch_skill_uses_only_logical_configuration_and_extension_targets(
         self,
