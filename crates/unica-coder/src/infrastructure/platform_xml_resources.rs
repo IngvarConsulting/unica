@@ -29,6 +29,9 @@ const MAX_SNAPSHOT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_LIVE_SNAPSHOT_BYTES: usize = 128 * 1024 * 1024;
 const MAX_LIVE_SNAPSHOTS: usize = 64;
 
+#[cfg(test)]
+type ConstructionObserver = Box<dyn FnMut(usize) + Send>;
+
 pub(crate) trait SourceResourceClock: Send + Sync {
     fn now(&self) -> Duration;
 }
@@ -70,6 +73,8 @@ pub(crate) struct PlatformXmlResourceProvider {
     snapshots: Mutex<HashMap<String, StoredSnapshot>>,
     #[cfg(test)]
     phase_hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    #[cfg(test)]
+    construction_observer: Mutex<Option<ConstructionObserver>>,
 }
 
 impl PlatformXmlResourceProvider {
@@ -86,6 +91,8 @@ impl PlatformXmlResourceProvider {
             snapshots: Mutex::new(HashMap::new()),
             #[cfg(test)]
             phase_hook: Mutex::new(None),
+            #[cfg(test)]
+            construction_observer: Mutex::new(None),
         }
     }
 
@@ -273,16 +280,14 @@ impl PlatformXmlResourceProvider {
 
         let source_root = evidence.source_root.clone();
         let mut stored_resources = Vec::new();
+        let mut byte_size = 0_usize;
         for (path, role) in candidates.into_iter().take(SOURCE_MANIFEST_RESOURCE_MAX) {
             self.check_cancelled(cancellation)?;
-            stored_resources.push(snapshot_resource(&source_root, &path, role)?);
-        }
-        let byte_size = stored_resources
-            .iter()
-            .map(|resource| resource.bytes.len())
-            .sum::<usize>();
-        if byte_size > MAX_SNAPSHOT_BYTES {
-            return Err(capacity_error());
+            let remaining = MAX_SNAPSHOT_BYTES - byte_size;
+            let resource = snapshot_resource(&source_root, &path, role, remaining)?;
+            byte_size += resource.bytes.len();
+            stored_resources.push(resource);
+            self.observe_construction_for_test(byte_size);
         }
         let revision = manifest_revision(&resolution.resolved, request.scope, &stored_resources);
         let snapshot_id = Uuid::new_v4().to_string();
@@ -471,14 +476,35 @@ impl PlatformXmlResourceProvider {
 
     #[cfg(not(test))]
     fn run_phase_hook(&self) {}
+
+    #[cfg(test)]
+    fn set_construction_observer_for_test(&self, observer: impl FnMut(usize) + Send + 'static) {
+        let previous = self
+            .construction_observer
+            .lock()
+            .unwrap()
+            .replace(Box::new(observer));
+        assert!(previous.is_none(), "construction observer leaked");
+    }
+
+    #[cfg(test)]
+    fn observe_construction_for_test(&self, bytes: usize) {
+        if let Some(observer) = self.construction_observer.lock().unwrap().as_mut() {
+            observer(bytes);
+        }
+    }
+
+    #[cfg(not(test))]
+    fn observe_construction_for_test(&self, _bytes: usize) {}
 }
 
 fn snapshot_resource(
     root: &Path,
     path: &Path,
     role: ResourceRole,
+    maximum_bytes: usize,
 ) -> Result<StoredResource, SourceResourceError> {
-    let bytes = read_root_relative_regular_file(root, path, MAX_SNAPSHOT_BYTES, |_| {})
+    let bytes = read_root_relative_regular_file(root, path, maximum_bytes, |_| {})
         .map_err(|error| {
             if error.kind() == std::io::ErrorKind::FileTooLarge {
                 capacity_error()
@@ -1324,6 +1350,38 @@ mod tests {
         assert!(!error
             .message
             .contains(fixture.root.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn aggregate_construction_never_buffers_beyond_snapshot_budget() {
+        let fixture = Fixture::new(b"x");
+        let source = fixture.root.join("src");
+        fs::create_dir_all(source.join("Bulk")).unwrap();
+        fs::write(source.join("Bulk/A.bin"), vec![b'a'; 20 * 1024 * 1024]).unwrap();
+        fs::write(source.join("Bulk/B.bin"), vec![b'b'; 20 * 1024 * 1024]).unwrap();
+        let (provider, _) = provider();
+        let maximum_observed = Arc::new(AtomicU64::new(0));
+        let observed = Arc::clone(&maximum_observed);
+        provider.set_construction_observer_for_test(move |bytes| {
+            observed.fetch_max(bytes as u64, Ordering::SeqCst);
+        });
+
+        let error = provider
+            .resources(
+                fixture.root_request(ResourceScope::Aggregate, 50),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+
+        assert_eq!(
+            error.code,
+            SourceResourceErrorCode::SnapshotCapacityExceeded
+        );
+        assert!(
+            maximum_observed.load(Ordering::SeqCst) <= MAX_SNAPSHOT_BYTES as u64,
+            "construction buffered more than the advertised snapshot budget"
+        );
     }
 
     #[test]
