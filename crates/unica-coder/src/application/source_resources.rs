@@ -62,6 +62,7 @@ pub(crate) struct SourceApplyExecution {
     pub(crate) event: Option<DomainEvent>,
     pub(crate) projected_event: Option<DomainEvent>,
     pub(crate) recorded_cache: Option<CacheReport>,
+    pub(crate) warnings: Vec<String>,
 }
 
 pub(crate) fn invoke(
@@ -72,81 +73,88 @@ pub(crate) fn invoke(
     dry_run: bool,
     cancellation: &CancellationToken,
 ) -> Result<HandlerOutcome, String> {
-    let (summary, data, events, projected_events, changes, recorded_cache) = match operation {
-        SourceResourceOperation::Resources => {
-            let page = ports
-                .source_resources(resources_request(args)?, context, cancellation)
-                .map_err(|error| error.to_string())?;
-            (
-                format!(
-                    "source.resources returned {} resource(s)",
-                    page.resources.len()
-                ),
-                serde_json::to_value(page)
-                    .map_err(|error| format!("failed to serialize source.resources: {error}"))?,
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                None,
-            )
-        }
-        SourceResourceOperation::Read => {
-            let read = ports
-                .read_source_resource(read_request(args)?, context, cancellation)
-                .map_err(|error| error.to_string())?;
-            (
-                format!("source.read returned {} byte(s)", read.length),
-                serde_json::to_value(read)
-                    .map_err(|error| format!("failed to serialize source.read: {error}"))?,
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                None,
-            )
-        }
-        SourceResourceOperation::Apply => {
-            let execution = ports
-                .apply_source_resource(apply_request(args)?, context, dry_run, cancellation)
-                .map_err(|error| error.to_string())?;
-            let summary = if execution.result.no_op {
-                "unica.source.apply replacement is already present".to_string()
-            } else if dry_run {
-                "dry run: unica.source.apply planned one BSL resource replacement".to_string()
-            } else {
-                "unica.source.apply replaced one BSL resource".to_string()
-            };
-            let changes = (!dry_run && !execution.result.no_op)
-                .then(|| {
+    let (summary, data, events, projected_events, changes, recorded_cache, warnings) =
+        match operation {
+            SourceResourceOperation::Resources => {
+                let page = ports
+                    .source_resources(resources_request(args)?, context, cancellation)
+                    .map_err(|error| error.to_string())?;
+                (
                     format!(
-                        "{} + {}: replaced BSL resource",
-                        execution.result.source_set,
-                        execution
-                            .result
-                            .target
-                            .metadata_path
-                            .as_ref()
-                            .map(|address| address.as_str())
-                            .unwrap_or("<source-root>")
-                    )
-                })
-                .into_iter()
-                .collect();
-            let events = execution.event.into_iter().collect();
-            let projected_events = execution.projected_event.into_iter().collect();
-            let recorded_cache = execution.recorded_cache;
-            (
-                summary,
-                serde_json::to_value(execution.result)
-                    .map_err(|error| format!("failed to serialize source.apply: {error}"))?,
-                events,
-                projected_events,
-                changes,
-                recorded_cache,
-            )
-        }
-    };
+                        "source.resources returned {} resource(s)",
+                        page.resources.len()
+                    ),
+                    serde_json::to_value(page).map_err(|error| {
+                        format!("failed to serialize source.resources: {error}")
+                    })?,
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    None,
+                    Vec::new(),
+                )
+            }
+            SourceResourceOperation::Read => {
+                let read = ports
+                    .read_source_resource(read_request(args)?, context, cancellation)
+                    .map_err(|error| error.to_string())?;
+                (
+                    format!("source.read returned {} byte(s)", read.length),
+                    serde_json::to_value(read)
+                        .map_err(|error| format!("failed to serialize source.read: {error}"))?,
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    None,
+                    Vec::new(),
+                )
+            }
+            SourceResourceOperation::Apply => {
+                let execution = ports
+                    .apply_source_resource(apply_request(args)?, context, dry_run, cancellation)
+                    .map_err(|error| error.to_string())?;
+                let summary = if execution.result.no_op {
+                    "unica.source.apply replacement is already present".to_string()
+                } else if dry_run {
+                    "dry run: unica.source.apply planned one BSL resource replacement".to_string()
+                } else {
+                    "unica.source.apply replaced one BSL resource".to_string()
+                };
+                let changes = (!dry_run && !execution.result.no_op)
+                    .then(|| {
+                        format!(
+                            "{} + {}: replaced BSL resource",
+                            execution.result.source_set,
+                            execution
+                                .result
+                                .target
+                                .metadata_path
+                                .as_ref()
+                                .map(|address| address.as_str())
+                                .unwrap_or("<source-root>")
+                        )
+                    })
+                    .into_iter()
+                    .collect();
+                let events = execution.event.into_iter().collect();
+                let projected_events = execution.projected_event.into_iter().collect();
+                let recorded_cache = execution.recorded_cache;
+                let warnings = execution.warnings;
+                (
+                    summary,
+                    serde_json::to_value(execution.result)
+                        .map_err(|error| format!("failed to serialize source.apply: {error}"))?,
+                    events,
+                    projected_events,
+                    changes,
+                    recorded_cache,
+                    warnings,
+                )
+            }
+        };
     let mut adapter = AdapterOutcome::ok(summary);
     adapter.changes = changes;
+    adapter.warnings = warnings;
     let mut outcome = if events.is_empty() && projected_events.is_empty() {
         HandlerOutcome::with_data(adapter, data)
     } else if projected_events.is_empty() {

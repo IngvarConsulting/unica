@@ -1275,7 +1275,7 @@ mod tests {
             .unwrap();
             fs::write(
                 source_root.join("CommonModules/Shared.xml"),
-                b"\xef\xbb\xbf<MetaDataObject marker=\"descriptor\"/>\r\n",
+                b"\xef\xbb\xbf<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><CommonModule><Properties><Name>Shared</Name></Properties></CommonModule></MetaDataObject>\r\n",
             )
             .unwrap();
             fs::write(source_root.join("unrelated.bin"), [0, 1, 2, 255]).unwrap();
@@ -1642,7 +1642,7 @@ mod tests {
         fs::create_dir_all(context.workspace_root.join("src/Catalogs")).unwrap();
         fs::write(
             context.workspace_root.join("src/Catalogs/Items.xml"),
-            "<MetaDataObject/>",
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Items</Name></Properties></Catalog></MetaDataObject>"#,
         )
         .unwrap();
         for role in ["ObjectModule", "ManagerModule"] {
@@ -1803,15 +1803,19 @@ mod tests {
         let src = context.workspace_root.join("src");
         fs::create_dir_all(src.join("Catalogs/Items/Forms/Main/Ext/Form")).unwrap();
         fs::create_dir_all(src.join("Catalogs/Items/Commands/Print/Ext")).unwrap();
-        fs::write(src.join("Catalogs/Items.xml"), "<MetaDataObject/>").unwrap();
+        fs::write(
+            src.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Items</Name></Properties></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
         fs::write(
             src.join("Catalogs/Items/Forms/Main/Ext/Form.xml"),
-            "<Form/>",
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form><Properties><Name>Main</Name></Properties></Form></MetaDataObject>"#,
         )
         .unwrap();
         fs::write(
             src.join("Catalogs/Items/Commands/Print/Ext/Command.xml"),
-            "<Command/>",
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Command><Properties><Name>Print</Name></Properties></Command></MetaDataObject>"#,
         )
         .unwrap();
         let cases = [
@@ -2135,7 +2139,9 @@ mod tests {
             context.workspace_root.join("src/Configuration.xml"),
             concat!(
                 "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">",
-                "<Configuration uuid=\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\"/>",
+                "<Configuration uuid=\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\">",
+                "<Properties><Name>Main</Name></Properties>",
+                "</Configuration>",
                 "</MetaDataObject>"
             ),
         )
@@ -2144,7 +2150,9 @@ mod tests {
             context.workspace_root.join("src/CommonModules/Sample.xml"),
             concat!(
                 "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">",
-                "<CommonModule uuid=\"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\"/>",
+                "<CommonModule uuid=\"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\">",
+                "<Properties><Name>Sample</Name></Properties>",
+                "</CommonModule>",
                 "</MetaDataObject>"
             ),
         )
@@ -2292,7 +2300,7 @@ mod tests {
         .unwrap();
         fs::write(
             root.join("src/CommonModules/Sample.xml"),
-            "<MetaDataObject/>",
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule><Properties><Name>Sample</Name></Properties></CommonModule></MetaDataObject>"#,
         )
         .unwrap();
         WorkspaceContext {

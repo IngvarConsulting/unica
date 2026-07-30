@@ -2250,7 +2250,11 @@ mod tests {
             "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
         )
         .unwrap();
-        std::fs::write(root.join("src/CommonModules/Core.xml"), "<MetaDataObject/>").unwrap();
+        std::fs::write(
+            root.join("src/CommonModules/Core.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule><Properties><Name>Core</Name></Properties></CommonModule></MetaDataObject>"#,
+        )
+        .unwrap();
         std::fs::write(&module, "Procedure Run()\nEndProcedure\n").unwrap();
         let before = std::fs::read(&module).unwrap();
         let mut args = Map::new();

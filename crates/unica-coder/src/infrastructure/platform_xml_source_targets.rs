@@ -913,6 +913,7 @@ pub(crate) struct ClosedPlatformXmlTarget {
     source_set_kind: SourceSetKind,
     source_format: SourceFormat,
     target_path: PathBuf,
+    module_owner: Option<String>,
 }
 
 impl fmt::Debug for ClosedPlatformXmlTarget {
@@ -937,6 +938,7 @@ pub(crate) struct PlatformXmlResourceEvidence {
     pub(crate) source_root: PathBuf,
     pub(crate) descriptor_paths: Vec<PathBuf>,
     pub(crate) registration_path: PathBuf,
+    pub(crate) module_owner: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1031,6 +1033,12 @@ pub(crate) fn resolve_platform_xml_target(
     if !target_identity.starts_with(&selected.path) {
         return Err(target_containment_error(&target.source_set));
     }
+    let identity_proven =
+        module_descriptor_identity_is_proven(&selected.path, &identity, &CancellationToken::new())
+            .map_err(|_| metadata_owner_evidence_error(target))?;
+    if !identity_proven {
+        return Err(metadata_owner_evidence_error(target));
+    }
 
     let workspace_root = normalize_path_identity(&context.workspace_root)
         .map_err(|_| target_containment_error(&target.source_set))?;
@@ -1048,6 +1056,7 @@ pub(crate) fn resolve_platform_xml_target(
             source_set_kind: selected.source_set.kind,
             source_format: selected.source_set.source_format,
             target_path,
+            module_owner: Some(identity.owner),
         },
     })
 }
@@ -1086,6 +1095,7 @@ fn resolve_platform_xml_root(
             source_set_kind: selected.source_set.kind,
             source_format: selected.source_set.source_format,
             target_path: selected.path,
+            module_owner: None,
         },
     })
 }
@@ -1110,7 +1120,9 @@ pub(crate) fn revalidate_platform_xml_target(
     }
 
     let current = resolve_platform_xml_target(context, &handle.source_target)?;
-    if current.handle.target_path != handle.target_path {
+    if current.handle.target_path != handle.target_path
+        || current.handle.module_owner != handle.module_owner
+    {
         return Err(source_map_rebind_error(&handle.source_target.source_set));
     }
     Ok(RevalidatedPlatformXmlTarget {
@@ -1147,6 +1159,7 @@ pub(crate) fn platform_xml_resource_evidence(
         source_root: handle.source_root.clone(),
         descriptor_paths,
         registration_path: handle.source_root.join("Configuration.xml"),
+        module_owner: handle.module_owner.clone(),
     })
 }
 
@@ -1175,20 +1188,24 @@ fn public_evidence_error(
     match error.kind {
         PlatformXmlEvidenceErrorKind::Containment => target_containment_error(&target.source_set),
         PlatformXmlEvidenceErrorKind::Unavailable | PlatformXmlEvidenceErrorKind::NotRegular => {
-            SourceTargetError::new(
-                SourceTargetErrorCode::MetadataAddressNotFound,
-                format!(
-                    "metadata owner evidence is unavailable for `{}` in sourceSet `{}`",
-                    target
-                        .metadata_path
-                        .as_ref()
-                        .map(MetadataAddress::as_str)
-                        .unwrap_or("<root>"),
-                    target.source_set
-                ),
-            )
+            metadata_owner_evidence_error(target)
         }
     }
+}
+
+fn metadata_owner_evidence_error(target: &SourceTarget) -> SourceTargetError {
+    SourceTargetError::new(
+        SourceTargetErrorCode::MetadataAddressNotFound,
+        format!(
+            "metadata owner evidence is unavailable for `{}` in sourceSet `{}`",
+            target
+                .metadata_path
+                .as_ref()
+                .map(MetadataAddress::as_str)
+                .unwrap_or("<root>"),
+            target.source_set
+        ),
+    )
 }
 
 fn target_containment_error(source_set: &str) -> SourceTargetError {
@@ -1923,6 +1940,8 @@ mod tests {
                 &context.workspace_root.join(root),
                 "CommonModules/Shared.xml",
                 "CommonModules/Shared/Ext/Module.bsl",
+                "CommonModule",
+                "Shared",
             );
         }
 
@@ -1970,6 +1989,8 @@ mod tests {
             &context.workspace_root.join("src"),
             "CommonModules/Shared.xml",
             "CommonModules/Shared/Ext/Module.bsl",
+            "CommonModule",
+            "Shared",
         );
         let resolution =
             resolve_platform_xml_target(&context, &target("main", "CommonModule.Shared.Module"))
@@ -2035,6 +2056,84 @@ mod tests {
     }
 
     #[test]
+    fn platform_xml_source_targets_require_exact_owner_descriptor_identity() {
+        let context = fixture(
+            "exact-owner-descriptor-identity",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_real_module_fixture(&root, "CommonModule", "Shared");
+        write_metadata_descriptor(
+            &root,
+            "CommonModules",
+            "CommonModule",
+            "Shared",
+            "Different",
+        );
+
+        let error =
+            resolve_platform_xml_target(&context, &target("main", "CommonModule.Shared.Module"))
+                .unwrap_err();
+
+        assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressNotFound);
+        assert!(!error
+            .message
+            .contains(&context.workspace_root.display().to_string()));
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_source_targets_require_exact_nested_descriptor_identity() {
+        let context = fixture(
+            "exact-nested-descriptor-identity",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_metadata_descriptor(&root, "Catalogs", "Catalog", "Items", "Items");
+        write_nested_module_fixture(
+            &root,
+            "Catalogs/Items/Forms/Order/Ext/Form/Module.bsl",
+            "Catalogs/Items/Forms/Order/Ext/Form.xml",
+            "Form",
+            "Different",
+        );
+
+        let error = resolve_platform_xml_target(
+            &context,
+            &target("main", "Catalog.Items.Form.Order.FormModule"),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressNotFound);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_source_target_revalidation_rejects_changed_descriptor_identity() {
+        let context = fixture(
+            "changed-descriptor-identity",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_real_module_fixture(&root, "CommonModule", "Shared");
+        let resolution =
+            resolve_platform_xml_target(&context, &target("main", "CommonModule.Shared.Module"))
+                .unwrap();
+        write_metadata_descriptor(
+            &root,
+            "CommonModules",
+            "CommonModule",
+            "Shared",
+            "Different",
+        );
+
+        let error = revalidate_platform_xml_target(&context, &resolution.handle).unwrap_err();
+
+        assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressNotFound);
+        cleanup(&context);
+    }
+
+    #[test]
     fn platform_xml_source_targets_serialize_missing_modules_without_io_details() {
         let context = fixture(
             "missing-module",
@@ -2066,6 +2165,8 @@ mod tests {
             &context.workspace_root.join("src"),
             "CommonModules/Shared.xml",
             "CommonModules/Shared/Ext/Module.bsl",
+            "CommonModule",
+            "Shared",
         );
 
         let error =
@@ -2087,6 +2188,8 @@ mod tests {
                 &context.workspace_root.join(root),
                 "CommonModules/Shared.xml",
                 "CommonModules/Shared/Ext/Module.bsl",
+                "CommonModule",
+                "Shared",
             );
         }
 
@@ -2108,21 +2211,31 @@ mod tests {
             project_yaml("main", "CONFIGURATION", "src"),
         );
         let root = context.workspace_root.join("src");
-        for descriptor in [
-            "Configuration.xml",
-            "CommonModules/Shared.xml",
-            "Catalogs/Items.xml",
-            "InformationRegisters/Prices.xml",
-            "Constants/Mode.xml",
-            "CommonForms/Main.xml",
-            "CommonCommands/Print.xml",
-            "Catalogs/Items/Forms/List/Ext/Form.xml",
-            "Catalogs/Items/Commands/Open/Ext/Command.xml",
+        write_configuration_descriptor(&root, false);
+        for (directory, kind, name) in [
+            ("CommonModules", "CommonModule", "Shared"),
+            ("Catalogs", "Catalog", "Items"),
+            ("InformationRegisters", "InformationRegister", "Prices"),
+            ("Constants", "Constant", "Mode"),
+            ("CommonForms", "CommonForm", "Main"),
+            ("CommonCommands", "CommonCommand", "Print"),
         ] {
-            let path = root.join(descriptor);
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(path, "<MetaDataObject/>").unwrap();
+            write_metadata_descriptor(&root, directory, kind, name, name);
         }
+        write_nested_module_fixture(
+            &root,
+            "Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
+            "Catalogs/Items/Forms/List/Ext/Form.xml",
+            "Form",
+            "List",
+        );
+        write_nested_module_fixture(
+            &root,
+            "Catalogs/Items/Commands/Open/Ext/CommandModule.bsl",
+            "Catalogs/Items/Commands/Open/Ext/Command.xml",
+            "Command",
+            "Open",
+        );
         let cases = [
             (
                 "ManagedApplicationModule",
@@ -2255,6 +2368,8 @@ mod tests {
             &context.workspace_root.join("src"),
             "Languages/Russian.xml",
             "Languages/Russian/Ext/ManagerModule.bsl",
+            "Language",
+            "Russian",
         );
 
         let error = resolve_platform_xml_target(
@@ -2278,6 +2393,8 @@ mod tests {
             &root,
             "CommonModules/Shared.xml",
             "CommonModules/Shared/Ext/Module.bsl",
+            "CommonModule",
+            "Shared",
         );
         let resolution =
             resolve_platform_xml_target(&context, &target("main", "CommonModule.Shared.Module"))
@@ -2339,6 +2456,8 @@ mod tests {
             &root,
             "RealCommonModules/Shared.xml",
             "RealCommonModules/Shared/Ext/Module.bsl",
+            "CommonModule",
+            "Shared",
         );
         let Some(result) =
             create_dir_symlink_for_test(root.join("RealCommonModules"), root.join("CommonModules"))
@@ -2462,6 +2581,8 @@ mod tests {
             &context.workspace_root.join("ext"),
             "CommonModules/Shared.xml",
             "CommonModules/Shared/Ext/Module.bsl",
+            "CommonModule",
+            "Shared",
         );
         let resolution =
             resolve_platform_xml_target(&context, &target("main", "CommonModule.Shared.Module"))
@@ -3041,12 +3162,24 @@ mod tests {
         )
     }
 
-    fn write_module_fixture(root: &Path, descriptor: &str, module: &str) {
+    fn write_module_fixture(
+        root: &Path,
+        descriptor: &str,
+        module: &str,
+        descriptor_kind: &str,
+        descriptor_name: &str,
+    ) {
         let descriptor = root.join(descriptor);
         let module = root.join(module);
         fs::create_dir_all(descriptor.parent().unwrap()).unwrap();
         fs::create_dir_all(module.parent().unwrap()).unwrap();
-        fs::write(descriptor, "<MetaDataObject/>").unwrap();
+        fs::write(
+            descriptor,
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{descriptor_kind}><Properties><Name>{descriptor_name}</Name></Properties></{descriptor_kind}></MetaDataObject>"#
+            ),
+        )
+        .unwrap();
         fs::write(module, "Procedure Run()\nEndProcedure\n").unwrap();
     }
 

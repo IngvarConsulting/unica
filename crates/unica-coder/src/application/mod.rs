@@ -2019,7 +2019,11 @@ mod tests {
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration/></MetaDataObject>"#,
         )
         .unwrap();
-        std::fs::write(src.join("CommonModules/Sample.xml"), "<MetaDataObject/>").unwrap();
+        std::fs::write(
+            src.join("CommonModules/Sample.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule><Properties><Name>Sample</Name></Properties></CommonModule></MetaDataObject>"#,
+        )
+        .unwrap();
         std::fs::write(
             &module,
             "Procedure Run()\n    Message(\"ok\");\nEndProcedure\n",

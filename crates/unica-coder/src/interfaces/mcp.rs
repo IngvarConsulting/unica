@@ -840,6 +840,112 @@ mod tests {
     }
 
     #[test]
+    fn source_apply_warn_mode_preserves_support_warning_for_preview_and_apply() {
+        for dry_run in [true, false] {
+            let root = std::env::temp_dir().join(format!(
+                "unica-source-resource-support-warn-{}-{}-{dry_run}",
+                std::process::id(),
+                uuid::Uuid::new_v4()
+            ));
+            let source = root.join("src");
+            let module = source.join("CommonModules/Shared/Ext/Module.bsl");
+            std::fs::create_dir_all(module.parent().unwrap()).unwrap();
+            std::fs::create_dir_all(source.join("Ext")).unwrap();
+            std::fs::write(
+                root.join("v8project.yaml"),
+                "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+            )
+            .unwrap();
+            std::fs::write(
+                root.join(".v8-project.json"),
+                r#"{"editingAllowedCheck":"warn"}"#,
+            )
+            .unwrap();
+            std::fs::write(
+                source.join("Configuration.xml"),
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Main</Name></Properties><ChildObjects><CommonModule>Shared</CommonModule></ChildObjects></Configuration></MetaDataObject>"#,
+            )
+            .unwrap();
+            std::fs::write(
+                source.join("CommonModules/Shared.xml"),
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule><Properties><Name>Shared</Name></Properties></CommonModule></MetaDataObject>"#,
+            )
+            .unwrap();
+            std::fs::write(&module, "Procedure Run()\nEndProcedure\n").unwrap();
+            std::fs::write(
+                source.join("Ext/ParentConfigurations.bin"),
+                concat!(
+                    "\u{feff}{6,1,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,",
+                    "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",",
+                    "\"VendorConf\",0}"
+                ),
+            )
+            .unwrap();
+
+            let app = UnicaApplication::new();
+            let resources_args = json!({
+                "cwd": root,
+                "sourceSet": "main",
+                "metadataPath": "CommonModule.Shared.Module",
+                "scope": "self"
+            })
+            .as_object()
+            .unwrap()
+            .clone();
+            let resources: Value = serde_json::from_str(
+                &call_tool_text(
+                    &app,
+                    "unica.source.resources",
+                    &resources_args,
+                    CancellationToken::new(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let apply_args = json!({
+                "cwd": root,
+                "snapshotId": resources["data"]["snapshotId"],
+                "resourceId": resources["data"]["resources"][0]["resourceId"],
+                "expectedHash": resources["data"]["resources"][0]["hash"],
+                "content": "Procedure Changed()\nEndProcedure\n",
+                "contentEncoding": "utf-8",
+                "dryRun": dry_run
+            })
+            .as_object()
+            .unwrap()
+            .clone();
+
+            let result: Value = serde_json::from_str(
+                &call_tool_text(
+                    &app,
+                    "unica.source.apply",
+                    &apply_args,
+                    CancellationToken::new(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+            assert!(result["ok"].as_bool().unwrap(), "{result}");
+            let warnings = result["warnings"].as_array().unwrap();
+            assert!(
+                warnings
+                    .iter()
+                    .any(|warning| warning.as_str().unwrap().contains("support guard")),
+                "dryRun={dry_run}: {result}"
+            );
+            assert!(
+                warnings.iter().all(|warning| !warning
+                    .as_str()
+                    .unwrap()
+                    .contains(&root.display().to_string())),
+                "source warnings must not disclose the workspace path: {result}"
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
     fn source_apply_refuses_bytes_when_cache_effects_cannot_be_staged() {
         let root = std::env::temp_dir().join(format!(
             "unica-source-resource-cache-rollback-{}-{}",
@@ -1255,7 +1361,11 @@ mod tests {
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration/></MetaDataObject>"#,
         )
         .unwrap();
-        std::fs::write(src.join("CommonModules/Sample.xml"), "<MetaDataObject/>").unwrap();
+        std::fs::write(
+            src.join("CommonModules/Sample.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule><Properties><Name>Sample</Name></Properties></CommonModule></MetaDataObject>"#,
+        )
+        .unwrap();
         std::fs::write(&module, "Procedure Run()\nEndProcedure\n").unwrap();
         let args = json!({
             "cwd": root,

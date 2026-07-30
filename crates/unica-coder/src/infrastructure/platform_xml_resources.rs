@@ -310,7 +310,7 @@ impl PlatformXmlResourceProvider {
                 "the current Platform XML format is not writable",
             )
         })?;
-        authorize_support(&evidence.target_path, context)?;
+        let support_warnings = authorize_support(&evidence.target_path, context)?;
         let current = read_root_relative_regular_file(
             &evidence.source_root,
             &evidence.target_path,
@@ -357,6 +357,12 @@ impl PlatformXmlResourceProvider {
             })?
             .as_str()
             .to_string();
+        let logical_owner = evidence.module_owner.clone().ok_or_else(|| {
+            public_error(
+                SourceResourceErrorCode::AtomicityUnproven,
+                "source.apply requires a proven logical module owner",
+            )
+        })?;
         let post_hash = sha256_hash(&postimage);
         let result = SourceApplyResult {
             snapshot_id: snapshot.snapshot_id.clone(),
@@ -380,11 +386,12 @@ impl PlatformXmlResourceProvider {
                 event: None,
                 projected_event: None,
                 recorded_cache: None,
+                warnings: support_warnings,
             });
         }
         let event = DomainEvent::source_resources_replaced(SourceResourcesReplaced {
             source_set: snapshot.source_set.clone(),
-            owner: logical_owner(&metadata_path),
+            owner: logical_owner,
             roles: vec![snapshot.resource.role],
             preimage_hashes: vec![snapshot.resource.hash.clone()],
             postimage_hashes: vec![post_hash],
@@ -396,11 +403,12 @@ impl PlatformXmlResourceProvider {
                 event: None,
                 projected_event: Some(event),
                 recorded_cache: None,
+                warnings: support_warnings,
             });
         }
 
         let mut attempt = 0;
-        let recorded_cache = loop {
+        let (recorded_cache, support_warnings) = loop {
             self.check_cancelled(cancellation)?;
             let mut transaction = CompileTransaction::new();
             transaction
@@ -427,7 +435,7 @@ impl PlatformXmlResourceProvider {
                     "source resource transaction planned an unexpected publication set",
                 ));
             }
-            authorize_support(&revalidated, context)?;
+            let support_warnings = authorize_support(&revalidated, context)?;
             self.run_phase_hook();
             self.check_cancelled(cancellation)?;
             let staged_cache = match stage_cache_effects(&mut transaction, &event) {
@@ -490,7 +498,7 @@ impl PlatformXmlResourceProvider {
                     let mut recorded_cache = staged_cache.into_report();
                     recorded_cache.publication_warnings =
                         source_cleanup_warnings(commit.cleanup_warnings);
-                    break recorded_cache;
+                    break (recorded_cache, support_warnings);
                 }
                 Err(error)
                     if attempt < CACHE_STATE_CONFLICT_RETRIES
@@ -512,6 +520,7 @@ impl PlatformXmlResourceProvider {
             event: Some(event),
             projected_event: None,
             recorded_cache: Some(recorded_cache),
+            warnings: support_warnings,
         })
     }
 
@@ -1107,9 +1116,16 @@ fn replacement_diff(
     Ok(rendered)
 }
 
-fn authorize_support(target: &Path, context: &WorkspaceContext) -> Result<(), SourceResourceError> {
+fn authorize_support(
+    target: &Path,
+    context: &WorkspaceContext,
+) -> Result<Vec<String>, SourceResourceError> {
     match evaluate_resolved_support_guard(target, SupportGuardRequirement::Editable, context) {
-        ResolvedSupportGuardCheck::Allow | ResolvedSupportGuardCheck::Warn(_) => Ok(()),
+        ResolvedSupportGuardCheck::Allow => Ok(Vec::new()),
+        ResolvedSupportGuardCheck::Warn(_) => Ok(vec![
+            "[support guard] ПРЕДУПРЕЖДЕНИЕ: целевой BSL-модуль находится под поддержкой поставщика; editingAllowedCheck=warn разрешил операцию."
+                .to_string(),
+        ]),
         ResolvedSupportGuardCheck::Block(_) => Err(public_error(
             SourceResourceErrorCode::SupportDenied,
             "the current support state does not allow BSL replacement",
@@ -1199,16 +1215,6 @@ fn source_cleanup_warnings(cleanup_warnings: Vec<String>) -> Vec<String> {
         "source publication committed, but {} recovery or staging artifact(s) require cleanup; inspect the Unica server log",
         cleanup_warnings.len()
     )]
-}
-
-fn logical_owner(metadata_path: &str) -> String {
-    let mut segments = metadata_path.split('.').collect::<Vec<_>>();
-    segments.pop();
-    if segments.is_empty() {
-        "Configuration".to_string()
-    } else {
-        segments.join(".")
-    }
 }
 
 fn snapshot_resource(
@@ -2214,6 +2220,107 @@ mod tests {
         );
         assert_eq!(fs::read(&descriptor).unwrap(), descriptor_before);
         assert_eq!(fs::read(&registration).unwrap(), registration_before);
+    }
+
+    #[test]
+    fn source_apply_nested_module_events_use_the_canonical_metadata_owner() {
+        let fixture = Fixture::new(b"Procedure Run()\nEndProcedure\n");
+        let source = fixture.root.join("src");
+        fs::create_dir_all(source.join("Catalogs")).unwrap();
+        fs::write(
+            source.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Items</Name></Properties></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        let cases = [
+            (
+                "Catalog.Items.Form.Main.FormModule",
+                "Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+                "Catalogs/Items/Forms/Main/Ext/Form.xml",
+                "Form",
+                "Main",
+            ),
+            (
+                "Catalog.Items.Command.Print.CommandModule",
+                "Catalogs/Items/Commands/Print/Ext/CommandModule.bsl",
+                "Catalogs/Items/Commands/Print/Ext/Command.xml",
+                "Command",
+                "Print",
+            ),
+        ];
+        let (provider, _) = provider();
+        let mut observed = Vec::new();
+        for (metadata_path, module_path, descriptor_path, kind, name) in cases {
+            let module = source.join(module_path);
+            let descriptor = source.join(descriptor_path);
+            fs::create_dir_all(module.parent().unwrap()).unwrap();
+            fs::write(&module, "Procedure Run()\nEndProcedure\n").unwrap();
+            fs::write(
+                &descriptor,
+                format!(
+                    r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{kind}><Properties><Name>{name}</Name></Properties></{kind}></MetaDataObject>"#
+                ),
+            )
+            .unwrap();
+            let page = provider
+                .resources(
+                    SourceResourcesRequest::Open(OpenResourceSnapshotRequest {
+                        target: SourceTarget {
+                            source_set: "main".to_string(),
+                            metadata_path: Some(
+                                MetadataAddress::parse(
+                                    PLATFORM_XML_8_3_27_FORMAT_2_20,
+                                    metadata_path,
+                                )
+                                .unwrap(),
+                            ),
+                        },
+                        scope: ResourceScope::SelfOnly,
+                        limit: 50,
+                    }),
+                    &fixture.context,
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            let request = apply_request(&page, "Procedure Changed()\nEndProcedure\n");
+            let preview = provider
+                .apply(
+                    request.clone(),
+                    &fixture.context,
+                    true,
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            let applied = provider
+                .apply(request, &fixture.context, false, &CancellationToken::new())
+                .unwrap();
+            let preview_details = preview.projected_event.unwrap().details.unwrap();
+            let applied_details = applied.event.unwrap().details.unwrap();
+            observed.push((
+                preview_details.owner,
+                applied_details.owner,
+                preview_details.affected_targets,
+                applied_details.affected_targets,
+            ));
+        }
+
+        assert_eq!(
+            observed,
+            [
+                (
+                    "Catalog.Items".to_string(),
+                    "Catalog.Items".to_string(),
+                    vec!["Catalog.Items.Form.Main.FormModule".to_string()],
+                    vec!["Catalog.Items.Form.Main.FormModule".to_string()],
+                ),
+                (
+                    "Catalog.Items".to_string(),
+                    "Catalog.Items".to_string(),
+                    vec!["Catalog.Items.Command.Print.CommandModule".to_string()],
+                    vec!["Catalog.Items.Command.Print.CommandModule".to_string()],
+                ),
+            ]
+        );
     }
 
     #[test]
