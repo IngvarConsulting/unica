@@ -26,10 +26,10 @@ use crate::infrastructure::platform::filesystem::hard_link_count;
 #[cfg(windows)]
 use crate::infrastructure::platform::filesystem::{
     capture_windows_immutable_entry_evidence, create_owner_only_directory_child,
-    create_owner_only_file_child, delete_open_child, open_any_child_for_delete,
-    open_any_child_nofollow, open_directory_child_for_rename, open_directory_child_nofollow,
-    open_directory_nofollow, open_regular_child_nofollow, opened_child_kind,
-    rename_directory_handle_child_no_replace, verify_owner_only_acl,
+    create_owner_only_file_child, delete_open_child, discard_created_child,
+    open_any_child_for_delete, open_any_child_nofollow, open_directory_child_for_rename,
+    open_directory_child_nofollow, open_directory_nofollow, open_regular_child_nofollow,
+    opened_child_kind, rename_directory_handle_child_no_replace, verify_owner_only_acl,
     verify_unprivileged_windows_platform_caller, verify_windows_local_fixed_volume,
     OpenedChildKind, WindowsImmutableAclProfile,
 };
@@ -90,16 +90,124 @@ mod windows_anchor_tests {
         PrivateDumpStage, TreeEntryKind, TreeSnapshot,
     };
     use crate::infrastructure::platform::filesystem::{
-        file_identity, open_directory_nofollow, verify_owner_only_acl,
+        create_owner_only_file_child, file_identity, open_directory_nofollow,
+        open_regular_child_nofollow, read_directory_names, verify_owner_only_acl,
     };
     use std::cell::Cell;
-    use std::ffi::OsStr;
+    use std::ffi::{OsStr, OsString};
     use std::fs;
     use std::os::windows::io::AsRawHandle;
     use std::path::{Path, PathBuf};
     use std::rc::Rc;
     use windows_sys::Win32::Foundation::FILETIME;
     use windows_sys::Win32::Storage::FileSystem::SetFileTime;
+
+    fn enable_directory_case_sensitivity(path: &Path) {
+        use std::mem::size_of;
+        use std::os::windows::ffi::OsStrExt;
+        use std::os::windows::io::FromRawHandle;
+        use std::ptr;
+        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+        use windows_sys::Win32::Storage::FileSystem::{
+            CreateFileW, SetFileInformationByHandle, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY,
+            FILE_DELETE_CHILD, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES,
+            OPEN_EXISTING, SYNCHRONIZE,
+        };
+
+        #[repr(C)]
+        struct FileCaseSensitiveInfo {
+            flags: u32,
+        }
+
+        const FILE_CASE_SENSITIVE_INFO_CLASS: i32 = 23;
+        const FILE_CS_FLAG_CASE_SENSITIVE_DIR: u32 = 1;
+
+        let mut path = path.as_os_str().encode_wide().collect::<Vec<_>>();
+        path.push(0);
+        // SAFETY: path is NUL-terminated and the requested rights are the documented rights for
+        // changing an empty directory's case-sensitivity flag.
+        let handle = unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                FILE_ADD_FILE
+                    | FILE_ADD_SUBDIRECTORY
+                    | FILE_DELETE_CHILD
+                    | FILE_WRITE_ATTRIBUTES
+                    | SYNCHRONIZE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                ptr::null_mut(),
+            )
+        };
+        assert_ne!(
+            handle,
+            INVALID_HANDLE_VALUE,
+            "{}",
+            std::io::Error::last_os_error()
+        );
+        // SAFETY: CreateFileW returned an owned handle.
+        let directory = unsafe { fs::File::from_raw_handle(handle) };
+        let information = FileCaseSensitiveInfo {
+            flags: FILE_CS_FLAG_CASE_SENSITIVE_DIR,
+        };
+        // SAFETY: directory is a live empty-directory handle and information has the exact
+        // FileCaseSensitiveInfo layout and size.
+        assert_ne!(
+            unsafe {
+                SetFileInformationByHandle(
+                    directory.as_raw_handle(),
+                    FILE_CASE_SENSITIVE_INFO_CLASS,
+                    (&raw const information).cast(),
+                    size_of::<FileCaseSensitiveInfo>() as u32,
+                )
+            },
+            0,
+            "{}",
+            std::io::Error::last_os_error()
+        );
+    }
+
+    fn create_case_sensitive_file(path: &Path, contents: &[u8]) -> fs::File {
+        use std::io::Write;
+        use std::os::windows::ffi::OsStrExt;
+        use std::os::windows::io::FromRawHandle;
+        use std::ptr;
+        use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::Storage::FileSystem::{
+            CreateFileW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_POSIX_SEMANTICS,
+            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+
+        let mut path = path.as_os_str().encode_wide().collect::<Vec<_>>();
+        path.push(0);
+        // SAFETY: path is NUL-terminated. POSIX semantics make the independently prepared fixture
+        // honor the already-enabled per-directory case-sensitive state.
+        let handle = unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                ptr::null(),
+                CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_POSIX_SEMANTICS,
+                ptr::null_mut(),
+            )
+        };
+        assert_ne!(
+            handle,
+            INVALID_HANDLE_VALUE,
+            "{}",
+            std::io::Error::last_os_error()
+        );
+        // SAFETY: CreateFileW returned an owned handle.
+        let mut file = unsafe { fs::File::from_raw_handle(handle) };
+        file.write_all(contents).unwrap();
+        file.sync_all().unwrap();
+        file
+    }
 
     #[test]
     fn windows_immutable_platform_path_accepts_only_normal_or_verbatim_local_disks() {
@@ -465,6 +573,122 @@ mod windows_anchor_tests {
                         ],
                     }
         }));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_relative_lookup_preserves_ordinary_case_insensitive_ntfs_semantics() {
+        let root = unique_temp_root("ordinary-case-insensitive-lookup");
+        fs::create_dir_all(&root).unwrap();
+        let exact = root.join("Entry.txt");
+        fs::write(&exact, b"ordinary").unwrap();
+        let expected_identity = file_identity(&fs::File::open(&exact).unwrap()).unwrap();
+        let parent = open_directory_nofollow(&root).unwrap();
+
+        let collision = create_owner_only_file_child(&parent, OsStr::new("eNTRY.TxT")).unwrap_err();
+        assert_eq!(collision.kind(), std::io::ErrorKind::AlreadyExists);
+        let differently_cased =
+            open_regular_child_nofollow(&parent, OsStr::new("eNTRY.TxT")).unwrap();
+
+        assert_eq!(
+            file_identity(&differently_cased).unwrap(),
+            expected_identity
+        );
+        drop(differently_cased);
+        drop(parent);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_case_sensitive_siblings_bind_snapshot_inventory_and_cleanup_to_exact_names() {
+        use std::io::{Read, Write};
+
+        let root = unique_temp_root("case-sensitive-siblings");
+        let target = root.join("target");
+        fs::create_dir_all(&target).unwrap();
+        enable_directory_case_sensitivity(&target);
+        let lower_path = target.join("entry.txt");
+        let lower = create_case_sensitive_file(&lower_path, b"lower-content");
+        let parent = open_directory_nofollow(&target).unwrap();
+        let mut upper = create_owner_only_file_child(&parent, OsStr::new("ENTRY.txt")).unwrap();
+        upper.write_all(b"UPPER-CONTENT").unwrap();
+        upper.sync_all().unwrap();
+        let lower_identity = file_identity(&lower).unwrap();
+        let upper_identity = file_identity(&upper).unwrap();
+        assert_ne!(lower_identity, upper_identity);
+        drop(lower);
+        drop(upper);
+
+        let ambiguous = open_regular_child_nofollow(&parent, OsStr::new("Entry.txt"))
+            .expect_err("a case-sensitive parent must reject a non-exact child spelling");
+        assert_eq!(ambiguous.kind(), std::io::ErrorKind::NotFound);
+
+        let names = read_directory_names(&parent).unwrap();
+        assert_eq!(
+            names,
+            vec![OsString::from("ENTRY.txt"), OsString::from("entry.txt")]
+        );
+        for (name, expected_identity, expected_contents) in [
+            (
+                OsStr::new("entry.txt"),
+                lower_identity,
+                b"lower-content".as_slice(),
+            ),
+            (
+                OsStr::new("ENTRY.txt"),
+                upper_identity,
+                b"UPPER-CONTENT".as_slice(),
+            ),
+        ] {
+            let mut child = open_regular_child_nofollow(&parent, name).unwrap();
+            let mut contents = Vec::new();
+            child.read_to_end(&mut contents).unwrap();
+            assert_eq!(
+                file_identity(&child).unwrap(),
+                expected_identity,
+                "{name:?}"
+            );
+            assert_eq!(contents, expected_contents, "{name:?}");
+        }
+
+        let snapshot = capture_directory_snapshot(&target).unwrap();
+        assert_eq!(snapshot.len(), 2);
+        assert!(snapshot.iter().any(|entry| {
+            entry.relative_path.as_path() == Path::new("entry.txt")
+                && entry.kind
+                    == TreeEntryKind::File {
+                        identity: lower_identity,
+                        size: 13,
+                        sha256: [
+                            0xd4, 0x82, 0x15, 0xe7, 0x47, 0xb9, 0xf0, 0x6a, 0xdc, 0x06, 0xee, 0x08,
+                            0x67, 0xdb, 0xfb, 0xf7, 0x94, 0x00, 0x67, 0x47, 0xe0, 0xf5, 0xff, 0x23,
+                            0x30, 0xaf, 0x82, 0x20, 0x9f, 0x21, 0xca, 0xa3,
+                        ],
+                    }
+        }));
+        assert!(snapshot.iter().any(|entry| {
+            entry.relative_path.as_path() == Path::new("ENTRY.txt")
+                && entry.kind
+                    == TreeEntryKind::File {
+                        identity: upper_identity,
+                        size: 13,
+                        sha256: [
+                            0xdc, 0xd4, 0x17, 0x49, 0xde, 0x8a, 0x50, 0x74, 0x7e, 0x82, 0x18, 0x46,
+                            0x4a, 0x98, 0xa8, 0xbb, 0xfc, 0xe0, 0xec, 0x85, 0xb1, 0x76, 0xae, 0x0a,
+                            0x77, 0xb8, 0x5e, 0xd5, 0x30, 0xc9, 0xe7, 0xd9,
+                        ],
+                    }
+        }));
+
+        unlink_bound_regular_child(&parent, OsStr::new("entry.txt"), lower_identity).unwrap();
+        let mut survivor = open_regular_child_nofollow(&parent, OsStr::new("ENTRY.txt")).unwrap();
+        let mut survivor_contents = Vec::new();
+        survivor.read_to_end(&mut survivor_contents).unwrap();
+        assert_eq!(file_identity(&survivor).unwrap(), upper_identity);
+        assert_eq!(survivor_contents, b"UPPER-CONTENT");
+        drop(survivor);
+        drop(parent);
+        assert!(!lower_path.exists());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -2980,9 +3204,32 @@ fn create_regular_child_owner_only(
 fn create_regular_child_owner_only(
     parent: &File,
     name: &OsStr,
-    _display_path: &Path,
+    display_path: &Path,
 ) -> std::io::Result<File> {
-    create_owner_only_file_child(parent, name)
+    let created = create_owner_only_file_child(parent, name)?;
+    let cleanup_error = |primary: std::io::Error| {
+        match discard_created_child(&created) {
+        Ok(()) => primary,
+        Err(cleanup) => std::io::Error::new(
+            primary.kind(),
+            format!(
+                "{primary}; failed to remove unverified effective config through its created handle: {cleanup}"
+            ),
+        ),
+    }
+    };
+    let expected_identity = file_identity(&created).map_err(cleanup_error)?;
+    run_effective_config_create_hook(display_path);
+    verify_owner_only_acl(&created).map_err(cleanup_error)?;
+    let rebound = open_regular_child_nofollow(parent, name).map_err(cleanup_error)?;
+    let rebound_identity = file_identity(&rebound).map_err(cleanup_error)?;
+    if rebound_identity != expected_identity {
+        return Err(cleanup_error(std::io::Error::new(
+            ErrorKind::InvalidData,
+            "private effective config identity changed before verified reopen",
+        )));
+    }
+    Ok(created)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -6275,6 +6522,8 @@ thread_local! {
     static TEST_TARGETED_READ_HOOKS: RefCell<Option<TargetedReadHooks>> = const { RefCell::new(None) };
     static TEST_TREE_OPEN_HOOK: RefCell<Option<PathHook>> = const { RefCell::new(None) };
     static TEST_PRIVATE_CREATE_HOOK: RefCell<Option<PathHook>> = const { RefCell::new(None) };
+    #[cfg(windows)]
+    static TEST_EFFECTIVE_CONFIG_CREATE_HOOK: RefCell<Option<PathHook>> = const { RefCell::new(None) };
     static TEST_TARGET_PARENT_CAPTURE_HOOK: RefCell<Option<PathHook>> = const { RefCell::new(None) };
     #[cfg(windows)]
     static TEST_PRIVATE_CLEANUP_FAILPOINT: RefCell<Option<PrivateCleanupCheckpoint>> = const { RefCell::new(None) };
@@ -6393,6 +6642,25 @@ fn with_private_create_hook<T>(
     action()
 }
 
+#[cfg(all(test, windows))]
+fn with_effective_config_create_hook<T>(
+    hook: impl FnOnce(&Path) + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<PathHook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_EFFECTIVE_CONFIG_CREATE_HOOK.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+    let previous =
+        TEST_EFFECTIVE_CONFIG_CREATE_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
 #[cfg(test)]
 fn with_target_parent_capture_hook<T>(
     hook: impl FnOnce(&Path) + 'static,
@@ -6474,6 +6742,14 @@ fn run_private_creation_failpoint(checkpoint: PrivateCreationCheckpoint) -> Resu
 fn run_private_create_hook(_path: &Path) {
     #[cfg(test)]
     if let Some(hook) = TEST_PRIVATE_CREATE_HOOK.with(|slot| slot.borrow_mut().take()) {
+        hook(_path);
+    }
+}
+
+#[cfg(windows)]
+fn run_effective_config_create_hook(_path: &Path) {
+    #[cfg(test)]
+    if let Some(hook) = TEST_EFFECTIVE_CONFIG_CREATE_HOOK.with(|slot| slot.borrow_mut().take()) {
         hook(_path);
     }
 }
@@ -7413,6 +7689,8 @@ fn parse_exact_platform_version(value: &str) -> Option<[u32; 4]> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    use super::with_effective_config_create_hook;
     #[cfg_attr(windows, allow(unused_imports))]
     use super::{
         normalize_key_value_connection, staged_root_version_policy, validate_staged_dump,
@@ -7779,6 +8057,133 @@ mod tests {
         assert!(result.ok, "{result:?}");
         assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
         assert!(target.join("Configuration.xml").is_file());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_applied_full_dump_rejects_effective_config_acl_mutation_before_runner_and_cleans_created_identity(
+    ) {
+        use std::os::windows::ffi::OsStrExt;
+        use std::ptr;
+        use windows_sys::Win32::Security::Authorization::{SetNamedSecurityInfoW, SE_FILE_OBJECT};
+        use windows_sys::Win32::Security::{
+            DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+        };
+
+        let (root, context, _) = workspace("windows-effective-config-acl-mutation");
+        let platform = fixed_platform(&root);
+        let runner = DumpRunner::valid();
+        let displaced = context.cwd.join("created-effective-config.yaml");
+        let hook_displaced = displaced.clone();
+
+        let result = with_effective_config_create_hook(
+            move |path| {
+                std::fs::rename(path, &hook_displaced).unwrap();
+                let mut path = hook_displaced.as_os_str().encode_wide().collect::<Vec<_>>();
+                path.push(0);
+                // SAFETY: path is NUL-terminated and names the newly created file. A null DACL is
+                // intentional test corruption that the production verifier must reject.
+                let status = unsafe {
+                    SetNamedSecurityInfoW(
+                        path.as_ptr(),
+                        SE_FILE_OBJECT,
+                        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                        ptr::null_mut(),
+                        ptr::null_mut(),
+                        ptr::null(),
+                        ptr::null(),
+                    )
+                };
+                assert_eq!(
+                    status,
+                    0,
+                    "{}",
+                    std::io::Error::from_raw_os_error(status as i32)
+                );
+            },
+            || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
+        );
+
+        assert!(!result.ok, "{result:?}");
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
+        assert!(
+            !displaced.exists(),
+            "the originally created identity escaped cleanup: {}",
+            displaced.display()
+        );
+        assert!(std::fs::read_dir(&context.cwd).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".unica-dump-guard-")));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_applied_full_dump_rejects_effective_config_name_swap_before_runner_and_preserves_replacement_identity(
+    ) {
+        use std::cell::Cell;
+
+        let (root, context, _) = workspace("windows-effective-config-name-swap");
+        let platform = fixed_platform(&root);
+        let runner = DumpRunner::valid();
+        let displaced = context.cwd.join("created-effective-config.yaml");
+        let replacement = context.cwd.join("replacement-effective-config.yaml");
+        std::fs::write(&replacement, b"replacement sentinel").unwrap();
+        let expected_replacement_identity =
+            crate::infrastructure::platform::filesystem::file_identity(
+                &std::fs::File::open(&replacement).unwrap(),
+            )
+            .unwrap();
+        let created_identity = std::rc::Rc::new(Cell::new(None));
+        let hook_created_identity = std::rc::Rc::clone(&created_identity);
+        let hook_displaced = displaced.clone();
+        let hook_replacement = replacement.clone();
+
+        let result = with_effective_config_create_hook(
+            move |path| {
+                hook_created_identity.set(Some(
+                    crate::infrastructure::platform::filesystem::file_identity(
+                        &std::fs::File::open(path).unwrap(),
+                    )
+                    .unwrap(),
+                ));
+                std::fs::rename(path, &hook_displaced).unwrap();
+                std::fs::hard_link(&hook_replacement, path).unwrap();
+            },
+            || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
+        );
+
+        assert!(!result.ok, "{result:?}");
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
+        assert!(
+            created_identity.get().is_some(),
+            "the post-create hook did not run"
+        );
+        assert!(
+            !displaced.exists(),
+            "the originally created identity escaped cleanup: {}",
+            displaced.display()
+        );
+        assert_eq!(
+            crate::infrastructure::platform::filesystem::file_identity(
+                &std::fs::File::open(&replacement).unwrap(),
+            )
+            .unwrap(),
+            expected_replacement_identity,
+            "cleanup followed the replaced effective-config name"
+        );
+        assert_eq!(
+            std::fs::read(&replacement).unwrap(),
+            b"replacement sentinel"
+        );
+        assert!(std::fs::read_dir(&context.cwd).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".unica-dump-guard-")));
         std::fs::remove_dir_all(root).unwrap();
     }
 

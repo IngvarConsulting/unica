@@ -14,6 +14,25 @@ pub(crate) fn create_test_directory_link(target: &Path, link: &Path) -> io::Resu
     std::os::windows::fs::symlink_dir(target, link)
 }
 
+#[cfg(all(test, windows))]
+thread_local! {
+    static TEST_CASE_SENSITIVITY_QUERY_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(all(test, windows))]
+fn with_case_sensitivity_query_failure<T>(action: impl FnOnce() -> T) -> T {
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_CASE_SENSITIVITY_QUERY_FAILURE.with(|slot| slot.set(self.0));
+        }
+    }
+
+    let previous = TEST_CASE_SENSITIVITY_QUERY_FAILURE.with(|slot| slot.replace(true));
+    let _reset = Reset(previous);
+    action()
+}
+
 #[cfg(all(test, not(any(unix, windows))))]
 pub(crate) fn create_test_directory_link(_target: &Path, _link: &Path) -> io::Result<()> {
     Err(io::Error::new(
@@ -1127,6 +1146,66 @@ fn nt_create_options_for_std_file(desired_access: u32, create_options: u32) -> i
 }
 
 #[cfg(windows)]
+fn relative_child_object_attributes(parent: &fs::File) -> io::Result<u32> {
+    use std::mem::size_of;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileCaseSensitiveInfo, GetFileInformationByHandleEx,
+    };
+
+    #[repr(C)]
+    struct FileCaseSensitiveInformation {
+        flags: u32,
+    }
+
+    const OBJ_CASE_INSENSITIVE: u32 = 0x40;
+    const FILE_CS_FLAG_CASE_SENSITIVE_DIR: u32 = 1;
+
+    #[cfg(test)]
+    if TEST_CASE_SENSITIVITY_QUERY_FAILURE.with(|slot| slot.get()) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "failed to query parent directory case-sensitive state",
+        ));
+    }
+
+    let mut information = FileCaseSensitiveInformation { flags: 0 };
+    // SAFETY: parent retains a valid directory handle and information is a writable buffer with
+    // the exact FileCaseSensitiveInfo layout and size.
+    if unsafe {
+        GetFileInformationByHandleEx(
+            parent.as_raw_handle(),
+            FileCaseSensitiveInfo,
+            (&mut information as *mut FileCaseSensitiveInformation).cast(),
+            size_of::<FileCaseSensitiveInformation>() as u32,
+        )
+    } == 0
+    {
+        let error = io::Error::last_os_error();
+        return Err(io::Error::new(
+            error.kind(),
+            format!("failed to query parent directory case-sensitive state: {error}"),
+        ));
+    }
+    if information.flags & !FILE_CS_FLAG_CASE_SENSITIVE_DIR != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "parent directory reported unsupported case-sensitive flags 0x{:08x}",
+                information.flags
+            ),
+        ));
+    }
+    Ok(
+        if information.flags & FILE_CS_FLAG_CASE_SENSITIVE_DIR != 0 {
+            0
+        } else {
+            OBJ_CASE_INSENSITIVE
+        },
+    )
+}
+
+#[cfg(windows)]
 fn open_relative_child(
     parent: &fs::File,
     name: &std::ffi::OsStr,
@@ -1143,8 +1222,8 @@ fn open_relative_child(
         FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     };
 
-    const OBJ_CASE_INSENSITIVE: u32 = 0x40;
     let create_options = nt_create_options_for_std_file(desired_access, create_options)?;
+    let object_attributes = relative_child_object_attributes(parent)?;
     let mut name = relative_child_name(name)?;
     let byte_length = name
         .len()
@@ -1160,7 +1239,7 @@ fn open_relative_child(
         length: size_of::<NtObjectAttributes>() as u32,
         root_directory: parent.as_raw_handle(),
         object_name: &mut object_name,
-        attributes: OBJ_CASE_INSENSITIVE,
+        attributes: object_attributes,
         security_descriptor: security_descriptor.unwrap_or(ptr::null_mut()).cast(),
         security_quality_of_service: ptr::null_mut(),
     };
@@ -2269,13 +2348,14 @@ mod tests {
             create_owner_only_file_child, delete_open_child, directory_query_is_end, file_identity,
             nt_create_options_for_std_file, open_any_child_for_delete,
             open_directory_child_for_rename, open_directory_child_nofollow,
-            open_directory_nofollow, opened_child_kind, parse_directory_information_buffer,
-            read_directory_names, rename_directory_handle_child_no_replace, verify_owner_only_acl,
+            open_directory_nofollow, open_regular_child_nofollow, opened_child_kind,
+            parse_directory_information_buffer, read_directory_names,
+            rename_directory_handle_child_no_replace, verify_owner_only_acl,
             verify_owner_only_security_descriptor, verify_thread_token_fallback_error,
             verify_windows_elevation_value, verify_windows_immutable_security_descriptor,
             verify_windows_local_fixed_device_info, verify_windows_local_fixed_volume,
-            EffectiveTokenSource, OpenedChildKind, OwnerOnlySecurityAttributes, ProcessToken,
-            WindowsImmutableAclProfile,
+            with_case_sensitivity_query_failure, EffectiveTokenSource, OpenedChildKind,
+            OwnerOnlySecurityAttributes, ProcessToken, WindowsImmutableAclProfile,
         };
         use std::ffi::OsString;
         use std::mem::{offset_of, size_of};
@@ -2728,6 +2808,23 @@ mod tests {
             drop(handle);
             drop(parent);
             assert_eq!(fs::read(root.join("effective.yaml")).unwrap(), b"private");
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn windows_relative_open_fails_closed_when_parent_case_sensitivity_is_ambiguous() {
+            let root = unique_temp_root("ambiguous-parent-case-sensitivity");
+            fs::create_dir_all(&root).unwrap();
+            fs::write(root.join("entry.txt"), b"entry").unwrap();
+            let parent = open_directory_nofollow(&root).unwrap();
+
+            let error = with_case_sensitivity_query_failure(|| {
+                open_regular_child_nofollow(&parent, std::ffi::OsStr::new("entry.txt"))
+            })
+            .expect_err("an ambiguous parent case-sensitivity query must fail closed");
+
+            assert!(error.to_string().contains("case-sensitive"), "{error}");
+            drop(parent);
             fs::remove_dir_all(root).unwrap();
         }
 
