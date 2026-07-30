@@ -382,10 +382,18 @@ impl PlatformXmlResourceProvider {
                 "logical source resource binding changed before publication",
             ));
         }
+        if transaction.planned_updated_paths() != [evidence.target_path.clone()]
+            || !transaction.planned_created_paths().is_empty()
+        {
+            return Err(public_error(
+                SourceResourceErrorCode::IntegrityFailed,
+                "source resource transaction planned an unexpected publication set",
+            ));
+        }
         authorize_support(&revalidated, context)?;
         self.run_phase_hook();
         self.check_cancelled(cancellation)?;
-        let report = transaction
+        transaction
             .commit_with_post_validation(|| {
                 self.run_post_validation_hook_for_test()?;
                 let published = read_root_relative_regular_file(
@@ -406,12 +414,6 @@ impl PlatformXmlResourceProvider {
                 Ok(())
             })
             .map_err(map_transaction_error)?;
-        if report.updated != [evidence.target_path.clone()] || !report.created.is_empty() {
-            return Err(public_error(
-                SourceResourceErrorCode::IntegrityFailed,
-                "source resource transaction reported an unexpected publication set",
-            ));
-        }
         Ok(SourceApplyExecution {
             result,
             event: Some(event),
