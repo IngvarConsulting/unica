@@ -249,6 +249,25 @@ mod tests {
         });
         assert!(result.is_err());
     }
+
+    #[test]
+    fn windows_identity_rebound_uses_safe_capability_metadata() {
+        let source = include_str!("secure_read.rs");
+        let windows = source
+            .split_once("#[cfg(windows)]\nmod imp")
+            .unwrap()
+            .1
+            .split_once("#[cfg(not(any(unix, windows)))]")
+            .unwrap()
+            .0;
+        assert!(!windows.contains("filesystem::file_identity"));
+        assert!(!windows.contains("unsafe"));
+        assert!(windows.contains("cap_primitives::fs::Metadata::from_file"));
+        assert!(windows.contains("CapabilityMetadataExt::dev"));
+        assert!(windows.contains("CapabilityMetadataExt::ino"));
+        assert!(windows.contains("volume_serial_number"));
+        assert!(windows.contains("file_index"));
+    }
 }
 
 #[cfg(all(test, windows))]
@@ -355,8 +374,10 @@ mod windows_tests {
 #[cfg(windows)]
 mod imp {
     use super::{relative_path, SecureRead, SecureReadPhase};
-    use crate::infrastructure::platform::filesystem::file_identity;
-    use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt, OpenOptionsMaybeDirExt};
+    use cap_fs_ext::{
+        FollowSymlinks, MetadataExt as CapabilityMetadataExt, OpenOptionsFollowExt,
+        OpenOptionsMaybeDirExt,
+    };
     use cap_primitives::ambient_authority;
     use cap_primitives::fs::{open, open_ambient, open_dir_nofollow, OpenOptions};
     use std::fs::File;
@@ -400,7 +421,7 @@ mod imp {
         }
         phase(SecureReadPhase::Parent);
         let mut file = open_regular_child(&parent, name)?;
-        let identity = file_identity(&file)?;
+        let identity = windows_file_identity(&file)?;
         let opened = file.metadata()?;
         phase(SecureReadPhase::BeforeRead);
         if usize::try_from(opened.len()).map_or(true, |length| length > maximum_bytes) {
@@ -424,7 +445,7 @@ mod imp {
             return Err(io::Error::other("resource changed while reading"));
         }
         let rebound = open_regular_child(&parent, name)?;
-        if file_identity(&rebound)? != identity {
+        if windows_file_identity(&rebound)? != identity {
             return Err(io::Error::other("resource identity changed while reading"));
         }
         Ok(SecureRead { bytes })
@@ -468,6 +489,20 @@ mod imp {
             ));
         }
         Ok(())
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct WindowsFileIdentity {
+        volume_serial_number: u64,
+        file_index: u64,
+    }
+
+    fn windows_file_identity(file: &File) -> io::Result<WindowsFileIdentity> {
+        let metadata = cap_primitives::fs::Metadata::from_file(file)?;
+        Ok(WindowsFileIdentity {
+            volume_serial_number: CapabilityMetadataExt::dev(&metadata),
+            file_index: CapabilityMetadataExt::ino(&metadata),
+        })
     }
 }
 

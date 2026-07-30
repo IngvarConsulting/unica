@@ -39,4 +39,4 @@ windows-sys = { version = "0.59", features = [
   "Win32_System_Threading",
 ] }
 cap-primitives = "4.0.2"
-cap-fs-ext = { version = "4.0.2", default-features = false }
+cap-fs-ext = "4.0.2"
