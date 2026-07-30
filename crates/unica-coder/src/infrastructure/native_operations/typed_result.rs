@@ -39,7 +39,9 @@ impl NativeOperationAdapter {
                 None => {}
             }
         }
-        if operation == "meta-info" {
+        // A dry run keeps its placeholder outcome: previewing a read must not
+        // perform it, even though this particular read changes nothing.
+        if operation == "meta-info" && !dry_run {
             let execution = meta::analyze_meta_info_with_data(args, context);
             return typed_operation_result(execution.outcome, execution.data, "meta info");
         }

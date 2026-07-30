@@ -4914,8 +4914,13 @@ source-set:
 """,
                         encoding="utf-8",
                     )
-                elif example.skill == "meta-edit":
+                elif (
+                    example.skill == "meta-edit"
+                    and example.payload["params"]["name"] == "unica.meta.edit"
+                ):
                     prepare_meta_edit_skill_example(workspace, example, arguments)
+                if example.payload["params"]["name"] == "unica.meta.info":
+                    prepare_meta_info_skill_example(source_roots, arguments)
             self.assertEqual(code_patch_source_sets, {"main", "myExtension"})
             messages = [
                 dry_run_message_for_example(example, index + 1, workspace)
@@ -5825,6 +5830,64 @@ def dry_run_message_for_example(
     arguments["cwd"] = str(workspace)
     arguments["dryRun"] = True
     return message
+
+
+META_INFO_SKILL_EXAMPLE_DIRECTORIES = {
+    "Catalog": "Catalogs",
+    "Document": "Documents",
+    "InformationRegister": "InformationRegisters",
+    "CommonModule": "CommonModules",
+    "HTTPService": "HTTPServices",
+    "WebService": "WebServices",
+    "EventSubscription": "EventSubscriptions",
+    "ScheduledJob": "ScheduledJobs",
+    "DefinedType": "DefinedTypes",
+}
+
+
+def prepare_meta_info_skill_example(
+    source_roots: dict[str, Path],
+    arguments: dict[str, Any],
+) -> None:
+    """Materialize the object a documented `unica.meta.info` example addresses.
+
+    The example names an object logically, so the fixture is derived from that
+    address instead of from a path spelled out in the document.
+    """
+    kind, _, name = arguments["metadataPath"].partition(".")
+    directory = META_INFO_SKILL_EXAMPLE_DIRECTORIES.get(kind)
+    if directory is None:
+        raise AssertionError(f"unsupported meta.info example kind: {kind}")
+    source_root = source_roots[arguments["sourceSet"]]
+    descriptor = source_root / directory / f"{name}.xml"
+    descriptor.parent.mkdir(parents=True, exist_ok=True)
+    drill = arguments.get("Name")
+    children = ""
+    if drill and kind == "HTTPService":
+        children = (
+            f"<URLTemplate><Properties><Name>{drill}</Name><Template>/{drill}</Template>"
+            f"</Properties><ChildObjects><Method><Properties><Name>Get</Name>"
+            f"<HTTPMethod>GET</HTTPMethod><Handler>Обработчик</Handler></Properties>"
+            f"</Method></ChildObjects></URLTemplate>"
+        )
+    elif drill and kind == "WebService":
+        children = (
+            f"<Operation><Properties><Name>{drill}</Name><XDTOReturningValueType>"
+            f"{{http://www.w3.org/2001/XMLSchema}}string</XDTOReturningValueType>"
+            f"<ProcedureName>Обработчик</ProcedureName></Properties></Operation>"
+        )
+    elif drill:
+        children = (
+            f"<Attribute><Properties><Name>{drill}</Name>"
+            f"<Type><v8:Type xmlns:v8=\"http://v8.1c.ru/8.1/data/core\">"
+            f"xs:string</v8:Type></Type></Properties></Attribute>"
+        )
+    descriptor.write_text(
+        '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">'
+        f"<{kind}><Properties><Name>{name}</Name></Properties>"
+        f"<ChildObjects>{children}</ChildObjects></{kind}></MetaDataObject>\n",
+        encoding="utf-8",
+    )
 
 
 def prepare_meta_edit_skill_example(

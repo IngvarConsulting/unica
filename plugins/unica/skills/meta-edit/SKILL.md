@@ -290,7 +290,8 @@ Batch через `;;` во всех операциях. Подробный си�
     "name": "unica.meta.info",
     "arguments": {
       "cwd": "<workspace>",
-      "ObjectPath": "<ObjectPath>"
+      "sourceSet": "main",
+      "metadataPath": "Catalog.SkillExample"
     }
   }
 }

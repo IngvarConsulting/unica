@@ -48,7 +48,8 @@ description: "Реализация интеграций 1С. Используй 
     "name": "unica.meta.info",
     "arguments": {
       "cwd": "<workspace>",
-      "ObjectPath": "HTTPServices/ExternalAPI/ExternalAPI.xml",
+      "sourceSet": "main",
+      "metadataPath": "HTTPService.ExternalAPI",
       "Mode": "full"
     }
   }

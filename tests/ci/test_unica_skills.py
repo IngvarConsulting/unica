@@ -301,7 +301,7 @@ TASK_EXAMPLE_ARGUMENT_KEYS = {
     "erf-init": ["Name", "OutputDir", "FormName"],
     "meta-compile": ["JsonPath", "OutputDir"],
     "meta-edit": ["ObjectPath", "Operation", "Value"],
-    "meta-info": ["ObjectPath"],
+    "meta-info": ["sourceSet", "metadataPath"],
     "meta-remove": ["ConfigDir", "Object"],
     "meta-validate": ["ObjectPath"],
     "form-add": ["ObjectPath", "FormName", "Purpose"],
@@ -443,12 +443,12 @@ SCENARIO_PRESERVING_TOKENS = {
         '"name": "unica.meta.info"',
     ],
     "meta-info": [
-        '"ObjectPath": "Catalogs/Валюты/Валюты.xml"',
-        '"ObjectPath": "Documents/АвансовыйОтчет/АвансовыйОтчет.xml"',
+        '"metadataPath": "Catalog.Валюты"',
+        '"metadataPath": "Document.АвансовыйОтчет"',
         '"Name": "Товары"',
-        '"ObjectPath": "HTTPServices/ExternalAPI/ExternalAPI.xml"',
+        '"metadataPath": "HTTPService.ExternalAPI"',
         '"Name": "TestConnection"',
-        '"ObjectPath": "DefinedTypes/GLN/GLN.xml"',
+        '"metadataPath": "DefinedType.GLN"',
     ],
     "meta-remove": [
         '"Object": "Catalog.Устаревший"',
@@ -546,6 +546,9 @@ SCENARIO_PRESERVING_TOKENS = {
 # "does not accept argument", so a leftover example is a broken instruction.
 SCENARIO_RETIRED_TOKENS = {
     "meta-remove": ['"KeepFiles"', '"keepFiles"'],
+    # A published example that still selects by path shows a call the server
+    # now rejects with `legacy_target_removed`.
+    "meta-info": ['"ObjectPath"', '"objectPath"', '"Detailed"', '"detailed"'],
 }
 
 

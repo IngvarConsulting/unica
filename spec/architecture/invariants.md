@@ -630,6 +630,18 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs`
 - **Scope:** source, runtime
 
+### INV-SOURCE-WRITE-TARGET-KIND — Писатель принимает только терминал модуля
+
+- **Rule:** Разрешение цели выполняется под явной политикой вида: пишущая
+  операция запрашивает только терминал модуля и отклоняет адрес объекта
+  метаданных стабильным `TargetKindMismatch`, закрытая ручка несёт вид, под
+  которым выдана, и повторная проверка выполняется под той же политикой,
+  поэтому расширение резолвера на новый вид цели не расширяет право записи.
+- **Decision:** ADR-0021
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/code.rs`
+- **Scope:** source, runtime
+
 ### INV-SOURCE-SNAPSHOT-BINDING — Ресурс действует только внутри своего снимка
 
 - **Rule:** Непрозрачные `snapshotId` и `resourceId` связаны с экземпляром

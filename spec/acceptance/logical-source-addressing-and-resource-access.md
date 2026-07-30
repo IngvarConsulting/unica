@@ -2,10 +2,10 @@
 
 Этот план связывает ADR-0021 и ADR-0022 с воспроизводимыми проверками. Нормой
 владеют записи решений и правила `INV-SOURCE-LOGICAL-IDENTITY`,
-`INV-SOURCE-SNAPSHOT-BINDING`, `INV-SOURCE-ROLE-ALLOWLIST`,
-`INV-MCP-SOURCE-SURFACE`, `INV-SKILL-SOURCE-FALLBACK` и
-`REQ-PERF-SOURCE-BOUNDS`; этот документ только показывает, где наблюдается их
-выполнение.
+`INV-SOURCE-WRITE-TARGET-KIND`, `INV-SOURCE-SNAPSHOT-BINDING`,
+`INV-SOURCE-ROLE-ALLOWLIST`, `INV-MCP-SOURCE-SURFACE`,
+`INV-SKILL-SOURCE-FALLBACK` и `REQ-PERF-SOURCE-BOUNDS`; этот документ только
+показывает, где наблюдается их выполнение.
 
 ## Матрица адресов и навигации
 
@@ -25,6 +25,10 @@
 | Замена в `unica.code.patch` | `operation: replace` перезаписывает выбранный метод целиком либо ровно вхождение якоря, сохраняя EOL источника и не трогая соседние методы; `position` для замены не принимается | `cargo test -p unica-coder code_patch_replace -- --test-threads=1` |
 | Повтор замены | Повтор идентичной замены либо пуст, либо отказывает без записи, если селектор поглощён самой заменой | `cargo test -p unica-coder code_patch_replace -- --test-threads=1` |
 | Снятые селекторы `unica.code.patch` | `path` и `sourceDir` отклоняются кодом `legacy_target_removed` с подсказкой `sourceSet + metadataPath` | `cargo test -p unica-coder code_patch -- --test-threads=1` |
+| Объект метаданных как цель | Двухсегментный адрес и вложенный `Form`/`Command` разрешаются в свой дескриптор с `targetKind: metadataObject`; дескриптор с чужим именем, отсутствующий дескриптор и связанный файл отклоняются раздельно | `cargo test -p unica-coder platform_xml_source_targets -- --test-threads=1` |
+| Расширение резолвера не расширяет запись | `unica.code.patch` отклоняет адрес объекта метаданных и ничего не пишет, потому что писатель разрешает цель под политикой «только модуль» | `cargo test -p unica-coder code_patch -- --test-threads=1` |
+| Снятые селекторы `unica.meta.info` | `ObjectPath` и `Path` отклоняются кодом `legacy_target_removed`; `Detailed`, который инструмент никогда не читал, отклоняется как незнакомый аргумент | `cargo test -p unica-coder meta_info -- --test-threads=1` |
+| Логический адрес в предметном читателе | `unica.meta.info` читает дескриптор по `sourceSet + metadataPath`, принимает русский псевдоним вида, отклоняет терминал модуля по имени и возвращает разрешённую цель типизированными данными | `cargo test -p unica-coder meta_info -- --test-threads=1` |
 | Частные поля поставщика | `providerRevision`, закрытая ручка, абсолютный путь и строка соединения отсутствуют в MCP-ответе | `cargo test -p unica-coder interfaces::mcp::tests -- --test-threads=1` |
 
 ## Матрица снимка и чтения
@@ -34,6 +38,8 @@
 | Поддельная пара идентификаторов | `resourceId` из другого снимка отклоняется, а непрозрачные значения не раскрывают внутреннее состояние | `cargo test -p unica-coder source_resources -- --test-threads=1` |
 | Истёкший снимок | После пяти минут чтение и запись получают `snapshot_expired` | `cargo test -p unica-coder source_resources -- --test-threads=1` |
 | Точный диапазон | `unica.source.read` возвращает диапазон до 64 КиБ, усекая фрагмент текстового ресурса до ближайшей границы UTF-8; base64 остаётся везде, где фрагмент не является корректным UTF-8, в том числе для двоичных данных, лимита уже одного символа и `offset` внутри символа; чтение всегда продвигается, а общий хеш снимка не меняется | `cargo test -p unica-coder source_resources -- --test-threads=1` |
+| Манифест объекта метаданных | Область `self` даёт один `metadataDescriptor` и полноту `complete`, `aggregate` добавляет только доказанные модули объекта и остаётся `partial`, доступ у обоих — только `read` | `cargo test -p unica-coder source_resources -- --test-threads=1` |
+| Отказ отличим от недоступности | Недоказуемый адрес и неизвестный набор дают `target_not_found`, пустое имя набора — `invalid_request`, а `source_unavailable` остаётся за настоящей недоступностью источника; сообщение не содержит физического пути | `cargo test -p unica-coder source_resources -- --test-threads=1` |
 | Влияние на кеш | Одно событие инвалидирует только `bsl_index` и `bsl_diagnostics` | `cargo test -p unica-coder domain::cache::tests -- --test-threads=1` |
 
 ## Публичный MCP и скилл
@@ -55,6 +61,7 @@ cargo test -p unica-coder source_target -- --test-threads=1
 cargo test -p unica-coder source_navigation -- --test-threads=1
 cargo test -p unica-coder source_resources -- --test-threads=1
 cargo test -p unica-coder code_patch_replace -- --test-threads=1
+cargo test -p unica-coder meta_info -- --test-threads=1
 cargo test -p unica-coder domain::cache::tests -- --test-threads=1
 python3.12 -m unittest tests/ci/test_architecture_registry.py tests/ci/test_design_documents.py tests/ci/test_unica_skills.py tests/ci/test_skill_provenance.py
 ```
