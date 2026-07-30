@@ -158,8 +158,19 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         dry_run: bool,
         cancellation: &CancellationToken,
     ) -> Result<SourceApplyExecution, SourceResourceError> {
-        self.source_resources
-            .apply(request, context, dry_run, cancellation)
+        self.source_resources.apply_with_cache_effect_staging(
+            request,
+            context,
+            dry_run,
+            cancellation,
+            |transaction, event| {
+                WorkspaceStateRepository::new(context).stage_event_effects(
+                    transaction,
+                    context,
+                    std::slice::from_ref(event),
+                )
+            },
+        )
     }
 
     fn evaluate_support_guard(
@@ -294,6 +305,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                 job: outcome.job,
                 events: Vec::new(),
                 projected_events: Vec::new(),
+                recorded_cache: None,
             }),
             ToolHandler::CodeIntelligence { .. } => Err(format!(
                 "{} must be dispatched through the provider-neutral code intelligence registry",

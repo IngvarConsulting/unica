@@ -196,7 +196,7 @@ class NormativeBoundaryTests(unittest.TestCase):
 
 
 class LogicalSourceDesignContractTests(unittest.TestCase):
-    def test_source_designs_are_approved_and_describe_the_implemented_wire_contract(
+    def test_source_designs_are_approved_and_do_not_restate_stale_wire_shapes(
         self,
     ) -> None:
         logical = (
@@ -208,18 +208,10 @@ class LogicalSourceDesignContractTests(unittest.TestCase):
 
         self.assertIn("- Status: `approved`", logical)
         self.assertIn("- Status: `approved`", resources)
-        self.assertNotIn("UUID объекта при наличии", logical)
-        self.assertNotIn("необязательная collection", logical)
-        self.assertIn("коллекции возвращаются как узлы", logical)
-        self.assertIn("50", resources)
-        self.assertIn("100", resources)
-        self.assertIn('"bomPrefixBytes"', resources)
-        self.assertIn('"limits"', resources)
-        self.assertIn('"target"', resources)
-        self.assertIn("точный диапазон байтов", resources)
-        self.assertIn("base64", resources)
-        self.assertNotIn("фактический диапазон может быть\nуже запрошенного", resources)
-        self.assertNotIn("До появления измерений", resources)
+        self.assertIn("- Decision: `ADR-0021`", logical)
+        self.assertIn("- Decision: `ADR-0022`", resources)
+        self.assertNotIn("  owner,\n  role,", resources)
+        self.assertNotIn('"nextCursor": null', resources)
 
 
 if __name__ == "__main__":

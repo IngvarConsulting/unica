@@ -1,5 +1,6 @@
 use super::ports::{ApplicationPorts, HandlerOutcome};
 use super::AdapterOutcome;
+use crate::domain::cache::CacheReport;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::events::DomainEvent;
 use crate::domain::source_resources::{
@@ -55,11 +56,12 @@ pub(crate) struct SourceApplyRequest {
     pub(crate) content: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) struct SourceApplyExecution {
     pub(crate) result: SourceApplyResult,
     pub(crate) event: Option<DomainEvent>,
     pub(crate) projected_event: Option<DomainEvent>,
+    pub(crate) recorded_cache: Option<CacheReport>,
 }
 
 pub(crate) fn invoke(
@@ -70,7 +72,7 @@ pub(crate) fn invoke(
     dry_run: bool,
     cancellation: &CancellationToken,
 ) -> Result<HandlerOutcome, String> {
-    let (summary, data, events, projected_events, changes) = match operation {
+    let (summary, data, events, projected_events, changes, recorded_cache) = match operation {
         SourceResourceOperation::Resources => {
             let page = ports
                 .source_resources(resources_request(args)?, context, cancellation)
@@ -85,6 +87,7 @@ pub(crate) fn invoke(
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
+                None,
             )
         }
         SourceResourceOperation::Read => {
@@ -98,6 +101,7 @@ pub(crate) fn invoke(
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
+                None,
             )
         }
         SourceResourceOperation::Apply => {
@@ -129,6 +133,7 @@ pub(crate) fn invoke(
                 .collect();
             let events = execution.event.into_iter().collect();
             let projected_events = execution.projected_event.into_iter().collect();
+            let recorded_cache = execution.recorded_cache;
             (
                 summary,
                 serde_json::to_value(execution.result)
@@ -136,23 +141,21 @@ pub(crate) fn invoke(
                 events,
                 projected_events,
                 changes,
+                recorded_cache,
             )
         }
     };
     let mut adapter = AdapterOutcome::ok(summary);
     adapter.changes = changes;
-    if events.is_empty() && projected_events.is_empty() {
-        Ok(HandlerOutcome::with_data(adapter, data))
+    let mut outcome = if events.is_empty() && projected_events.is_empty() {
+        HandlerOutcome::with_data(adapter, data)
     } else if projected_events.is_empty() {
-        Ok(HandlerOutcome::with_data_and_events(adapter, data, events))
+        HandlerOutcome::with_data_and_events(adapter, data, events)
     } else {
-        Ok(HandlerOutcome::with_data_events_and_projection(
-            adapter,
-            data,
-            events,
-            projected_events,
-        ))
-    }
+        HandlerOutcome::with_data_events_and_projection(adapter, data, events, projected_events)
+    };
+    outcome.recorded_cache = recorded_cache;
+    Ok(outcome)
 }
 
 fn resources_request(args: &Map<String, Value>) -> Result<SourceResourcesRequest, String> {

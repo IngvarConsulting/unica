@@ -30,8 +30,9 @@ allowed-tools:
 1. Выбери точный `sourceSet`. Разреши английский или русский запрос через
    `unica.source.resolve`; при исследовании дерева обойди один уровень через
    `unica.source.children`.
-2. Открой `unica.source.resources` с точным `sourceSet + metadataPath`. Для
-   записи требуй `scope: "self"`, `completeness: "complete"`, ровно один ресурс
+2. Открой `unica.source.resources` с точным `sourceSet` и `metadataPath`, когда
+   выбранная цель находится ниже корня набора исходников. Для записи требуй
+   `scope: "self"`, `completeness: "complete"`, ровно один ресурс
    `role: "bslModule"` и `access`, содержащий `replace`.
 3. Читай ресурс через `unica.source.read` фрагментами до объявленного
    `limits.maxReadBytes`. Сохрани `snapshotId`, `resourceId`, полный `hash`,

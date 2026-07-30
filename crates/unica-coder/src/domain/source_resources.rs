@@ -314,12 +314,36 @@ mod tests {
         };
 
         let value = serde_json::to_value(manifest).unwrap();
-        assert_eq!(value["scope"], "self");
-        assert_eq!(value["completeness"], "complete");
-        assert_eq!(value["resources"][0]["role"], "bslModule");
-        assert_eq!(value["resources"][0]["textProfile"]["encoding"], "utf-8");
-        assert_eq!(value["resources"][0]["textProfile"]["bomPrefixBytes"], 3);
-        assert_eq!(value["resources"][0]["limits"]["maxReadBytes"], 65_536);
+        assert_eq!(
+            value,
+            json!({
+                "snapshotId": "opaque-snapshot",
+                "sourceSet": "main",
+                "target": {
+                    "sourceSet": "main",
+                    "metadataPath": "CommonModule.Shared.Module",
+                    "targetKind": "module"
+                },
+                "scope": "self",
+                "completeness": "complete",
+                "resources": [{
+                    "resourceId": "opaque-resource",
+                    "role": "bslModule",
+                    "mediaType": "text/x-bsl",
+                    "size": 12,
+                    "hash": "sha256:0123",
+                    "textProfile": {
+                        "encoding": "utf-8",
+                        "bomPrefixBytes": 3,
+                        "eol": "crlf"
+                    },
+                    "access": ["read"],
+                    "limits": {
+                        "maxReadBytes": 65_536
+                    }
+                }]
+            })
+        );
         let encoded = value.to_string();
         for forbidden in [
             "path",

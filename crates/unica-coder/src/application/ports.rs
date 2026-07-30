@@ -24,6 +24,7 @@ pub(crate) struct HandlerOutcome {
     pub(crate) job: Option<Value>,
     pub(crate) events: Vec<DomainEvent>,
     pub(crate) projected_events: Vec<DomainEvent>,
+    pub(crate) recorded_cache: Option<CacheReport>,
 }
 
 impl HandlerOutcome {
@@ -34,6 +35,7 @@ impl HandlerOutcome {
             job: None,
             events: Vec::new(),
             projected_events: Vec::new(),
+            recorded_cache: None,
         }
     }
 
@@ -44,6 +46,7 @@ impl HandlerOutcome {
             job: None,
             events: Vec::new(),
             projected_events: Vec::new(),
+            recorded_cache: None,
         }
     }
 
@@ -58,6 +61,7 @@ impl HandlerOutcome {
             job: None,
             events,
             projected_events: Vec::new(),
+            recorded_cache: None,
         }
     }
 
@@ -73,6 +77,7 @@ impl HandlerOutcome {
             job: None,
             events,
             projected_events,
+            recorded_cache: None,
         }
     }
 }

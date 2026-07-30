@@ -29,10 +29,15 @@ use crate::infrastructure::platform_xml_source_targets::{
 use crate::infrastructure::support_guard::{
     evaluate_resolved_support_guard, ResolvedSupportGuardCheck,
 };
+use crate::infrastructure::workspace_state::{
+    is_retryable_cache_state_conflict, CacheEffectsStagingError, StagedCacheEffects,
+    CACHE_STATE_CONFLICT_RETRIES,
+};
 use diffy::{apply as apply_diff, DiffOptions, Patch};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -248,6 +253,7 @@ impl PlatformXmlResourceProvider {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn apply(
         &self,
         request: SourceApplyRequest,
@@ -255,6 +261,32 @@ impl PlatformXmlResourceProvider {
         dry_run: bool,
         cancellation: &CancellationToken,
     ) -> Result<SourceApplyExecution, SourceResourceError> {
+        self.apply_with_cache_effect_staging(
+            request,
+            context,
+            dry_run,
+            cancellation,
+            |transaction, event| {
+                crate::infrastructure::workspace_state::WorkspaceStateRepository::new(context)
+                    .stage_event_effects(transaction, context, std::slice::from_ref(event))
+            },
+        )
+    }
+
+    pub(crate) fn apply_with_cache_effect_staging<F>(
+        &self,
+        request: SourceApplyRequest,
+        context: &WorkspaceContext,
+        dry_run: bool,
+        cancellation: &CancellationToken,
+        mut stage_cache_effects: F,
+    ) -> Result<SourceApplyExecution, SourceResourceError>
+    where
+        F: FnMut(
+            &mut CompileTransaction,
+            &DomainEvent,
+        ) -> Result<StagedCacheEffects, CacheEffectsStagingError>,
+    {
         self.check_cancelled(cancellation)?;
         if request.content.len() > SOURCE_REPLACEMENT_MAX_BYTES {
             return Err(public_error(
@@ -347,13 +379,14 @@ impl PlatformXmlResourceProvider {
                 result,
                 event: None,
                 projected_event: None,
+                recorded_cache: None,
             });
         }
         let event = DomainEvent::source_resources_replaced(SourceResourcesReplaced {
-            source_set: snapshot.source_set,
+            source_set: snapshot.source_set.clone(),
             owner: logical_owner(&metadata_path),
             roles: vec![snapshot.resource.role],
-            preimage_hashes: vec![snapshot.resource.hash],
+            preimage_hashes: vec![snapshot.resource.hash.clone()],
             postimage_hashes: vec![post_hash],
             affected_targets: vec![metadata_path],
         });
@@ -362,39 +395,79 @@ impl PlatformXmlResourceProvider {
                 result,
                 event: None,
                 projected_event: Some(event),
+                recorded_cache: None,
             });
         }
 
-        let mut transaction = CompileTransaction::new();
-        transaction
-            .replace_bytes(
-                &evidence.target_path,
-                snapshot.preimage.as_ref(),
-                postimage.clone(),
-            )
-            .map_err(map_transaction_error)?;
-        let revalidated =
-            guard_code_patch_resolved_target(&mut transaction, &snapshot.handle, context)
+        let mut attempt = 0;
+        let recorded_cache = loop {
+            self.check_cancelled(cancellation)?;
+            let mut transaction = CompileTransaction::new();
+            transaction
+                .replace_bytes(
+                    &evidence.target_path,
+                    snapshot.preimage.as_ref(),
+                    postimage.clone(),
+                )
                 .map_err(map_transaction_error)?;
-        if revalidated != evidence.target_path {
-            return Err(public_error(
-                SourceResourceErrorCode::StaleRevision,
-                "logical source resource binding changed before publication",
-            ));
-        }
-        if transaction.planned_updated_paths() != [evidence.target_path.clone()]
-            || !transaction.planned_created_paths().is_empty()
-        {
-            return Err(public_error(
-                SourceResourceErrorCode::IntegrityFailed,
-                "source resource transaction planned an unexpected publication set",
-            ));
-        }
-        authorize_support(&revalidated, context)?;
-        self.run_phase_hook();
-        self.check_cancelled(cancellation)?;
-        transaction
-            .commit_with_post_validation(|| {
+            let revalidated =
+                guard_code_patch_resolved_target(&mut transaction, &snapshot.handle, context)
+                    .map_err(map_transaction_error)?;
+            if revalidated != evidence.target_path {
+                return Err(public_error(
+                    SourceResourceErrorCode::StaleRevision,
+                    "logical source resource binding changed before publication",
+                ));
+            }
+            if transaction.planned_updated_paths() != [evidence.target_path.clone()]
+                || !transaction.planned_created_paths().is_empty()
+            {
+                return Err(public_error(
+                    SourceResourceErrorCode::IntegrityFailed,
+                    "source resource transaction planned an unexpected publication set",
+                ));
+            }
+            authorize_support(&revalidated, context)?;
+            self.run_phase_hook();
+            self.check_cancelled(cancellation)?;
+            let staged_cache = match stage_cache_effects(&mut transaction, &event) {
+                Ok(staged_cache) => staged_cache,
+                Err(error)
+                    if attempt < CACHE_STATE_CONFLICT_RETRIES
+                        && is_retryable_cache_state_conflict(
+                            error.message(),
+                            error.publication_paths(),
+                        ) =>
+                {
+                    attempt += 1;
+                    std::thread::yield_now();
+                    continue;
+                }
+                Err(_) => {
+                    return Err(public_error(
+                        SourceResourceErrorCode::IntegrityFailed,
+                        "source resource cache effects could not be staged",
+                    ));
+                }
+            };
+            let cache_publication_paths = staged_cache.publication_paths().to_vec();
+            let mut planned_publications = transaction.planned_created_paths();
+            planned_publications.extend(transaction.planned_replacement_paths());
+            planned_publications.extend(transaction.planned_removed_paths());
+            planned_publications.sort();
+            planned_publications.dedup();
+            let mut expected_publications = cache_publication_paths.clone();
+            expected_publications.push(evidence.target_path.clone());
+            expected_publications.sort();
+            expected_publications.dedup();
+            if planned_publications != expected_publications {
+                return Err(public_error(
+                    SourceResourceErrorCode::IntegrityFailed,
+                    "source resource transaction planned an unexpected final publication set",
+                ));
+            }
+            self.check_cancelled(cancellation)?;
+            match transaction.commit_with_post_validation(|| {
                 self.run_post_validation_hook_for_test()?;
                 let published = read_root_relative_regular_file(
                     &evidence.source_root,
@@ -412,12 +485,33 @@ impl PlatformXmlResourceProvider {
                     );
                 }
                 Ok(())
-            })
-            .map_err(map_transaction_error)?;
+            }) {
+                Ok(commit) => {
+                    let mut recorded_cache = staged_cache.into_report();
+                    recorded_cache.publication_warnings =
+                        source_cleanup_warnings(commit.cleanup_warnings);
+                    break recorded_cache;
+                }
+                Err(error)
+                    if attempt < CACHE_STATE_CONFLICT_RETRIES
+                        && is_retryable_cache_state_conflict(&error, &cache_publication_paths) =>
+                {
+                    attempt += 1;
+                    std::thread::yield_now();
+                }
+                Err(error) => {
+                    return Err(map_source_apply_commit_error(
+                        error,
+                        &cache_publication_paths,
+                    ));
+                }
+            }
+        };
         Ok(SourceApplyExecution {
             result,
             event: Some(event),
             projected_event: None,
+            recorded_cache: Some(recorded_cache),
         })
     }
 
@@ -1057,6 +1151,56 @@ fn map_transaction_error(error: String) -> SourceResourceError {
     public_error(code, "source resource transaction could not be published")
 }
 
+fn map_source_apply_commit_error(
+    error: String,
+    cache_publication_paths: &[PathBuf],
+) -> SourceResourceError {
+    if cache_publication_paths
+        .iter()
+        .any(|path| error_mentions_exact_path(&error, path))
+    {
+        public_error(
+            SourceResourceErrorCode::IntegrityFailed,
+            "source resource and cache state could not be published atomically",
+        )
+    } else {
+        map_transaction_error(error)
+    }
+}
+
+fn error_mentions_exact_path(error: &str, path: &Path) -> bool {
+    let rendered = path.to_string_lossy();
+    error.match_indices(rendered.as_ref()).any(|(start, _)| {
+        let end = start + rendered.len();
+        let before = error[..start].chars().next_back();
+        let after = error[end..].chars().next();
+        let before_is_boundary = before.is_none_or(|character| {
+            character.is_whitespace() || matches!(character, ':' | '(' | '[' | '{' | '=')
+        });
+        let after_is_boundary = after.is_none_or(|character| {
+            character.is_whitespace() || matches!(character, ':' | ';' | ',' | ')' | ']' | '}')
+        });
+        before_is_boundary && after_is_boundary
+    })
+}
+
+fn source_cleanup_warnings(cleanup_warnings: Vec<String>) -> Vec<String> {
+    if cleanup_warnings.is_empty() {
+        return Vec::new();
+    }
+    let mut stderr = std::io::stderr().lock();
+    for warning in &cleanup_warnings {
+        let _ = writeln!(
+            stderr,
+            "unica.source.apply committed with cleanup warning: {warning}"
+        );
+    }
+    vec![format!(
+        "source publication committed, but {} recovery or staging artifact(s) require cleanup; inspect the Unica server log",
+        cleanup_warnings.len()
+    )]
+}
+
 fn logical_owner(metadata_path: &str) -> String {
     let mut segments = metadata_path.split('.').collect::<Vec<_>>();
     segments.pop();
@@ -1344,6 +1488,7 @@ mod tests {
     use crate::infrastructure::platform::testing::{
         create_file_link_fixture_for_test, FileLinkFixtureOutcome,
     };
+    use crate::infrastructure::workspace_state::WorkspaceStateRepository;
     use std::fs;
     use std::sync::{
         atomic::{AtomicU64, Ordering},
@@ -2036,6 +2181,7 @@ mod tests {
             )
             .unwrap();
         assert!(preview.event.is_none());
+        assert!(preview.recorded_cache.is_none());
         assert!(!preview.result.no_op);
         assert!(!preview.result.changed_ranges.is_empty());
         assert!(preview.result.diff.contains("CommonModule.Shared.Module"));
@@ -2049,6 +2195,12 @@ mod tests {
             .unwrap();
         assert_eq!(applied.result.post_hash, preview.result.post_hash);
         assert_eq!(applied.result.diff, preview.result.diff);
+        let recorded_cache = applied
+            .recorded_cache
+            .as_ref()
+            .expect("successful apply returns the transactionally recorded cache report");
+        assert_eq!(recorded_cache.events, ["SourceResourcesReplaced"]);
+        assert_eq!(recorded_cache.invalidated, ["bsl_diagnostics", "bsl_index"]);
         assert_eq!(
             fs::read(&module).unwrap(),
             b"\xef\xbb\xbfProcedure Changed()\r\n    Message(\"ok\");\r\nEndProcedure\r\n"
@@ -2409,11 +2561,257 @@ mod tests {
     }
 
     #[test]
+    fn source_apply_honors_cancellation_after_cache_staging() {
+        let fixture = Fixture::new(b"Procedure Run()\nEndProcedure\n");
+        let module = fixture.root.join("src/CommonModules/Shared/Ext/Module.bsl");
+        let before = fs::read(&module).unwrap();
+        let state_path = fixture.context.cache_root.join("state.json");
+        let state_repository = WorkspaceStateRepository::new(&fixture.context);
+        let (provider, _) = provider();
+        let page = provider
+            .resources(
+                fixture.module_request(ResourceScope::SelfOnly, 50),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let cancel_after_staging = cancellation.clone();
+
+        let error = provider
+            .apply_with_cache_effect_staging(
+                apply_request(&page, "Procedure Changed()\nEndProcedure\n"),
+                &fixture.context,
+                false,
+                &cancellation,
+                |transaction, event| {
+                    let staged = state_repository.stage_event_effects(
+                        transaction,
+                        &fixture.context,
+                        std::slice::from_ref(event),
+                    )?;
+                    cancel_after_staging.cancel();
+                    Ok(staged)
+                },
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code, SourceResourceErrorCode::Cancelled);
+        assert_eq!(fs::read(&module).unwrap(), before);
+        assert!(!state_path.exists());
+    }
+
+    #[test]
+    fn source_apply_rejects_undeclared_cache_callback_writers() {
+        let fixture = Fixture::new(b"Procedure Run()\nEndProcedure\n");
+        let module = fixture.root.join("src/CommonModules/Shared/Ext/Module.bsl");
+        let before = fs::read(&module).unwrap();
+        let unexpected = fixture.root.join("unexpected-cache-writer.json");
+        let state_repository = WorkspaceStateRepository::new(&fixture.context);
+        let (provider, _) = provider();
+        let page = provider
+            .resources(
+                fixture.module_request(ResourceScope::SelfOnly, 50),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let unexpected_for_callback = unexpected.clone();
+
+        let error = provider
+            .apply_with_cache_effect_staging(
+                apply_request(&page, "Procedure Changed()\nEndProcedure\n"),
+                &fixture.context,
+                false,
+                &CancellationToken::new(),
+                |transaction, event| {
+                    let staged = state_repository.stage_event_effects(
+                        transaction,
+                        &fixture.context,
+                        std::slice::from_ref(event),
+                    )?;
+                    transaction
+                        .create_bytes(&unexpected_for_callback, b"undeclared".to_vec())
+                        .unwrap();
+                    Ok(staged)
+                },
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code, SourceResourceErrorCode::IntegrityFailed);
+        assert_eq!(fs::read(&module).unwrap(), before);
+        assert!(!unexpected.exists());
+
+        fs::write(&unexpected, b"must survive").unwrap();
+        let unexpected_for_callback = unexpected.clone();
+        let error = provider
+            .apply_with_cache_effect_staging(
+                apply_request(&page, "Procedure Changed()\nEndProcedure\n"),
+                &fixture.context,
+                false,
+                &CancellationToken::new(),
+                |transaction, event| {
+                    let staged = state_repository.stage_event_effects(
+                        transaction,
+                        &fixture.context,
+                        std::slice::from_ref(event),
+                    )?;
+                    transaction.remove_path(&unexpected_for_callback).unwrap();
+                    Ok(staged)
+                },
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code, SourceResourceErrorCode::IntegrityFailed);
+        assert_eq!(fs::read(&module).unwrap(), before);
+        assert_eq!(fs::read(&unexpected).unwrap(), b"must survive");
+    }
+
+    #[test]
+    fn source_apply_retries_an_exact_cache_state_conflict_without_losing_either_projection() {
+        let fixture = Fixture::new(b"Procedure Run()\nEndProcedure\n");
+        let module = fixture.root.join("src/CommonModules/Shared/Ext/Module.bsl");
+        let state_path = fixture.context.cache_root.join("state.json");
+        let injected_state = serde_json::to_vec_pretty(&serde_json::json!({
+            "workspace_root": fixture.context.workspace_root.display().to_string(),
+            "workspace_epoch": fixture.context.workspace_epoch,
+            "caches": {
+                "form_graph": {
+                    "status": "stale",
+                    "epoch": fixture.context.workspace_epoch
+                }
+            }
+        }))
+        .unwrap();
+        let (provider, _) = provider();
+        let page = provider
+            .resources(
+                fixture.module_request(ResourceScope::SelfOnly, 50),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let state_path_for_hook = state_path.clone();
+        let execution = with_before_commit_hook(
+            move |_| {
+                fs::create_dir_all(state_path_for_hook.parent().unwrap()).unwrap();
+                fs::write(&state_path_for_hook, &injected_state).unwrap();
+            },
+            || {
+                provider.apply(
+                    apply_request(&page, "Procedure Changed()\nEndProcedure\n"),
+                    &fixture.context,
+                    false,
+                    &CancellationToken::new(),
+                )
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read(&module).unwrap(),
+            b"Procedure Changed()\nEndProcedure\n"
+        );
+        let recorded_cache = execution.recorded_cache.unwrap();
+        assert!(recorded_cache.stale.contains(&"form_graph".to_string()));
+        assert!(recorded_cache.stale.contains(&"bsl_index".to_string()));
+        assert!(recorded_cache
+            .stale
+            .contains(&"bsl_diagnostics".to_string()));
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+        assert_eq!(
+            persisted.pointer("/caches/form_graph/status"),
+            Some(&serde_json::Value::String("stale".to_string()))
+        );
+    }
+
+    #[test]
+    fn source_apply_binds_an_already_stale_byte_identical_cache_projection() {
+        let fixture = Fixture::new(b"Procedure Run()\nEndProcedure\n");
+        let state_path = fixture.context.cache_root.join("state.json");
+        let (provider, _) = provider();
+        let first_page = provider
+            .resources(
+                fixture.module_request(ResourceScope::SelfOnly, 50),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        provider
+            .apply(
+                apply_request(&first_page, "Procedure ChangedOnce()\nEndProcedure\n"),
+                &fixture.context,
+                false,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let state_before = fs::read(&state_path).unwrap();
+        let second_page = provider
+            .resources(
+                fixture.module_request(ResourceScope::SelfOnly, 50),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        let execution = provider
+            .apply(
+                apply_request(&second_page, "Procedure ChangedTwice()\nEndProcedure\n"),
+                &fixture.context,
+                false,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        assert_eq!(fs::read(&state_path).unwrap(), state_before);
+        let recorded_cache = execution.recorded_cache.unwrap();
+        assert!(recorded_cache.stale.contains(&"bsl_index".to_string()));
+        assert!(recorded_cache
+            .stale
+            .contains(&"bsl_diagnostics".to_string()));
+    }
+
+    #[test]
+    fn source_cleanup_warning_does_not_expose_a_physical_path() {
+        let cache_path = PathBuf::from("/private/workspace/state.json");
+        assert!(error_mentions_exact_path(
+            "publication I/O failed for /private/workspace/state.json: denied",
+            &cache_path,
+        ));
+        assert!(!error_mentions_exact_path(
+            "publication target differs: /private/workspace/state.json.backup",
+            &cache_path,
+        ));
+        let warnings = source_cleanup_warnings(vec![
+            "/private/workspace/src/.Module.bsl.unica-recovery-1 could not be removed".to_string(),
+        ]);
+
+        assert_eq!(warnings.len(), 1);
+        assert!(!warnings[0].contains("/private/workspace"));
+        assert!(warnings[0].contains("inspect the Unica server log"));
+    }
+
+    #[test]
     fn source_apply_post_publication_validation_failure_rolls_back_before_returning_error() {
         let fixture = Fixture::new(b"Procedure Run()\nEndProcedure\n");
         let module = fixture.root.join("src/CommonModules/Shared/Ext/Module.bsl");
         let before = fs::read(&module).unwrap();
         let replacement = b"Procedure Changed()\nEndProcedure\n".to_vec();
+        let state_path = fixture.context.cache_root.join("state.json");
+        let state_repository = WorkspaceStateRepository::new(&fixture.context);
+        state_repository
+            .report(
+                &fixture.context,
+                &[DomainEvent::new(
+                    DomainEventKind::FormChanged,
+                    "CommonForms/Main/Ext/Form.xml",
+                )],
+                false,
+                crate::domain::cache::CacheAccess::default(),
+            )
+            .unwrap();
+        let state_before = fs::read(&state_path).unwrap();
         let (provider, _) = provider();
         let page = provider
             .resources(
@@ -2424,21 +2822,35 @@ mod tests {
             .unwrap();
         let module_during_validation = module.clone();
         let replacement_during_validation = replacement.clone();
+        let state_during_validation = state_path.clone();
+        let state_before_validation = state_before.clone();
         provider.set_post_validation_hook_for_test(move || {
             assert_eq!(
                 fs::read(&module_during_validation).unwrap(),
                 replacement_during_validation,
                 "post-validation must run after publication"
             );
+            assert_ne!(
+                fs::read(&state_during_validation).unwrap(),
+                state_before_validation,
+                "cache effects must be published in the same tentative transaction"
+            );
             Err("injected source.apply post-publication validation failure".to_string())
         });
 
         let error = provider
-            .apply(
+            .apply_with_cache_effect_staging(
                 apply_request(&page, std::str::from_utf8(&replacement).unwrap()),
                 &fixture.context,
                 false,
                 &CancellationToken::new(),
+                |transaction, event| {
+                    state_repository.stage_event_effects(
+                        transaction,
+                        &fixture.context,
+                        std::slice::from_ref(event),
+                    )
+                },
             )
             .unwrap_err();
 
@@ -2447,6 +2859,11 @@ mod tests {
             fs::read(&module).unwrap(),
             before,
             "a reported post-validation failure must restore the snapshot preimage"
+        );
+        assert_eq!(
+            fs::read(&state_path).unwrap(),
+            state_before,
+            "the same rollback must restore the previous cache state"
         );
     }
 }

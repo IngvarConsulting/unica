@@ -577,6 +577,7 @@ fn call_tool(
     let mut outcome = handler_outcome.adapter;
     let handler_events = handler_outcome.events;
     let projected_events = handler_outcome.projected_events;
+    let recorded_cache = handler_outcome.recorded_cache;
     if let Some(warning) = support_guard_warning {
         outcome.warnings.insert(0, warning);
     }
@@ -594,7 +595,18 @@ fn call_tool(
     } else {
         Vec::new()
     };
-    let cache = ports.cache_report(&context, &events, dry_run, spec.cache_access)?;
+    let mut cache = if let Some(cache) = recorded_cache {
+        if dry_run || events.is_empty() {
+            return Err(format!(
+                "{} returned a persisted cache report without an applied event",
+                spec.name
+            ));
+        }
+        cache
+    } else {
+        ports.cache_report(&context, &events, dry_run, spec.cache_access)?
+    };
+    outcome.warnings.append(&mut cache.publication_warnings);
     if spec.mutating && !dry_run && outcome.ok && !events.is_empty() {
         ports.notify_invalidation(&context, &events);
     }
@@ -1969,6 +1981,7 @@ mod tests {
                     lazy_rebuilt: Vec::new(),
                     stale: Vec::new(),
                     fresh: Vec::new(),
+                    publication_warnings: Vec::new(),
                 },
                 stdout: None,
                 stderr: None,
@@ -6777,6 +6790,7 @@ mod tests {
                     lazy_rebuilt: Vec::new(),
                     stale: Vec::new(),
                     fresh: Vec::new(),
+                    publication_warnings: Vec::new(),
                 })
             }
 
@@ -7013,6 +7027,7 @@ mod tests {
                     lazy_rebuilt: Vec::new(),
                     stale: Vec::new(),
                     fresh: Vec::new(),
+                    publication_warnings: Vec::new(),
                 })
             }
 
@@ -7130,6 +7145,7 @@ mod tests {
                     lazy_rebuilt: Vec::new(),
                     stale: Vec::new(),
                     fresh: Vec::new(),
+                    publication_warnings: Vec::new(),
                 })
             }
 
@@ -7162,6 +7178,110 @@ mod tests {
         assert!(ports.invalidated.lock().unwrap().is_empty());
         assert_eq!(ports.discovered.lock().unwrap().len(), 1);
 
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pre_recorded_cache_effect_skips_post_commit_cache_report() {
+        struct PreRecordedCachePorts;
+
+        impl ports::ApplicationPorts for PreRecordedCachePorts {
+            fn discover_workspace(
+                &self,
+                requested_cwd: Option<PathBuf>,
+            ) -> Result<WorkspaceContext, String> {
+                let cwd = requested_cwd.unwrap_or_default();
+                Ok(WorkspaceContext {
+                    cwd: cwd.clone(),
+                    workspace_root: cwd.clone(),
+                    cache_root: cwd.join(".build/unica"),
+                    workspace_epoch: 1,
+                })
+            }
+
+            fn validate_tool_context(
+                &self,
+                _spec: ToolSpec,
+                _args: &Map<String, Value>,
+                _dry_run: bool,
+                _context: &WorkspaceContext,
+            ) -> Result<(), String> {
+                Ok(())
+            }
+
+            fn evaluate_support_guard(
+                &self,
+                _spec: ToolSpec,
+                _args: &Map<String, Value>,
+                _context: &WorkspaceContext,
+            ) -> Result<SupportGuardCheck, String> {
+                Ok(SupportGuardCheck::Allow)
+            }
+
+            fn invoke_handler(
+                &self,
+                _spec: ToolSpec,
+                _args: &Map<String, Value>,
+                context: &WorkspaceContext,
+                _dry_run: bool,
+                _cancellation: &CancellationToken,
+            ) -> Result<ports::HandlerOutcome, String> {
+                let event = DomainEvent::new(DomainEventKind::ModuleChanged, "src/Module.bsl");
+                let mut adapter = AdapterOutcome::ok("source and cache state committed");
+                adapter.changes = vec!["updated src/Module.bsl".to_string()];
+                let mut outcome = ports::HandlerOutcome::with_data_and_events(
+                    adapter,
+                    serde_json::json!({"postHash": "sha256:after"}),
+                    vec![event],
+                );
+                outcome.recorded_cache = Some(CacheReport {
+                    mode: "applied".to_string(),
+                    root: context.cache_root.display().to_string(),
+                    workspace_epoch: context.workspace_epoch,
+                    events: vec!["ModuleChanged".to_string()],
+                    invalidated: vec!["bsl_diagnostics".to_string(), "bsl_index".to_string()],
+                    refreshed: Vec::new(),
+                    lazy_rebuilt: Vec::new(),
+                    stale: vec!["bsl_diagnostics".to_string(), "bsl_index".to_string()],
+                    fresh: Vec::new(),
+                    publication_warnings: vec![
+                        "transaction committed with one cleanup warning".to_string()
+                    ],
+                });
+                Ok(outcome)
+            }
+
+            fn cache_report(
+                &self,
+                _context: &WorkspaceContext,
+                _events: &[DomainEvent],
+                _dry_run: bool,
+                _cache_access: CacheAccess,
+            ) -> Result<CacheReport, String> {
+                panic!("post-commit cache_report must not run after transactional persistence")
+            }
+
+            fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
+        }
+
+        let root =
+            std::env::temp_dir().join(format!("unica-pre-recorded-cache-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut args = Map::new();
+        args.insert("cwd".to_string(), Value::String(root.display().to_string()));
+        args.insert("dryRun".to_string(), Value::Bool(false));
+
+        let result = UnicaApplication::with_ports(Arc::new(PreRecordedCachePorts))
+            .call_tool("unica.build.load", &args)
+            .unwrap();
+
+        assert!(result.ok);
+        assert_eq!(result.cache.mode, "applied");
+        assert_eq!(result.cache.events, ["ModuleChanged"]);
+        assert_eq!(
+            result.warnings,
+            ["transaction committed with one cleanup warning"]
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -9312,6 +9432,7 @@ mod tests {
                 lazy_rebuilt: Vec::new(),
                 stale: Vec::new(),
                 fresh: Vec::new(),
+                publication_warnings: Vec::new(),
             })
         }
 

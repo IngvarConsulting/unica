@@ -15,7 +15,7 @@ import threading
 import time
 import unittest
 import xml.etree.ElementTree as ET
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
@@ -4737,6 +4737,43 @@ source-set:
 """,
                 encoding="utf-8",
             )
+            if any(example.skill == "source-access" for example in examples):
+                source_access_name = "SourceAccessExample"
+                configuration = workspace / "src" / "cf" / "Configuration.xml"
+                configuration_text = configuration.read_text(encoding="utf-8")
+                registration = (
+                    f"\t\t\t<CommonModule>{source_access_name}</CommonModule>\n"
+                )
+                self.assertIn("\t\t</ChildObjects>", configuration_text)
+                configuration.write_text(
+                    configuration_text.replace(
+                        "\t\t</ChildObjects>",
+                        f"{registration}\t\t</ChildObjects>",
+                        1,
+                    ),
+                    encoding="utf-8",
+                )
+                module_root = (
+                    workspace
+                    / "src"
+                    / "cf"
+                    / "CommonModules"
+                    / source_access_name
+                )
+                (module_root / "Ext").mkdir(parents=True)
+                (module_root / "Ext" / "Module.bsl").write_text(
+                    "Procedure BeforeReplacement()\nEndProcedure\n",
+                    encoding="utf-8",
+                )
+                (module_root.parent / f"{source_access_name}.xml").write_text(
+                    f"""<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <CommonModule>
+    <Properties><Name>{source_access_name}</Name></Properties>
+  </CommonModule>
+</MetaDataObject>
+""",
+                    encoding="utf-8",
+                )
             code_patch_source_sets: set[str] = set()
             for example in examples:
                 arguments = example.payload["params"]["arguments"]
@@ -4824,7 +4861,66 @@ source-set:
                 dry_run_message_for_example(example, index + 1, workspace)
                 for index, example in enumerate(examples)
             ]
-            responses = self.call_mcp_messages(messages, temp_root / "cache")
+            independent_messages = [
+                message
+                for example, message in zip(examples, messages)
+                if example.skill != "source-access"
+            ]
+            responses = self.call_mcp_messages(
+                independent_messages,
+                temp_root / "cache",
+            )
+            stateful_examples = [
+                (example, message)
+                for example, message in zip(examples, messages)
+                if example.skill == "source-access"
+            ]
+            self.assertEqual(len(stateful_examples), 1)
+            env = os.environ.copy()
+            env["UNICA_PLUGIN_ROOT"] = str(PLUGIN_ROOT)
+            env["UNICA_CACHE_DIR"] = str(temp_root / "cache")
+            for example, message in stateful_examples:
+                def prepare_source_snapshot(
+                    request: Callable[[dict[str, Any]], dict[str, Any]],
+                ) -> None:
+                    response = request(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": -example.line,
+                            "method": "tools/call",
+                            "params": {
+                                "name": "unica.source.resources",
+                                "arguments": {
+                                    "cwd": str(workspace),
+                                    "sourceSet": "main",
+                                    "metadataPath": (
+                                        "CommonModule.SourceAccessExample.Module"
+                                    ),
+                                    "scope": "self",
+                                },
+                            },
+                        }
+                    )
+                    self.assertNotIn("error", response, response)
+                    payload = json.loads(
+                        response["result"]["content"][0]["text"]
+                    )
+                    self.assertTrue(payload["ok"], payload)
+                    resource = payload["data"]["resources"][0]
+                    arguments = message["params"]["arguments"]
+                    arguments["snapshotId"] = payload["data"]["snapshotId"]
+                    arguments["resourceId"] = resource["resourceId"]
+                    arguments["expectedHash"] = resource["hash"]
+                    arguments["content"] = (
+                        "Procedure AfterReplacement()\nEndProcedure\n"
+                    )
+
+                response = self.run_mcp_messages(
+                    [message],
+                    env,
+                    setup=prepare_source_snapshot,
+                )[0]
+                responses[message["id"]] = response
 
         self.assertEqual(len(responses), len(examples))
         for example, message in zip(examples, messages):
@@ -5118,6 +5214,13 @@ source-set:
         self,
         messages: list[dict[str, Any]],
         env: dict[str, str],
+        setup: (
+            Callable[
+                [Callable[[dict[str, Any]], dict[str, Any]]],
+                None,
+            ]
+            | None
+        ) = None,
     ) -> list[dict[str, Any]]:
         process = subprocess.Popen(
             [str(self.unica_bin)],
@@ -5174,6 +5277,17 @@ source-set:
                 process.stdin.write(
                     json.dumps(MCP_HANDSHAKE[1], ensure_ascii=False) + "\n"
                 )
+            if setup is not None:
+                process.stdin.flush()
+
+                def request_one(message: dict[str, Any]) -> dict[str, Any]:
+                    process.stdin.write(
+                        json.dumps(message, ensure_ascii=False) + "\n"
+                    )
+                    process.stdin.flush()
+                    return read_response()
+
+                setup(request_one)
             for message in messages:
                 process.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
             process.stdin.flush()

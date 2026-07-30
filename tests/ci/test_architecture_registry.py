@@ -1409,6 +1409,17 @@ class LogicalSourceContractTests(unittest.TestCase):
                     "ADR-0021, ADR-0022",
                 )
 
+        atomic_checks = "\n".join(
+            self.records["INV-SOURCE-ATOMIC-PUBLISH"].fields.get("Check", [])
+        )
+        for check_path in (
+            "crates/unica-coder/src/infrastructure/platform_xml_resources.rs",
+            "crates/unica-coder/src/infrastructure/native_operations/compile_transaction.rs",
+            "crates/unica-coder/src/infrastructure/native_operations/single_file_publisher.rs",
+        ):
+            with self.subTest(atomic_check=check_path):
+                self.assertIn(check_path, atomic_checks)
+
     def test_source_resource_budgets_match_the_rust_contract(self) -> None:
         record = self.records.get("REQ-PERF-SOURCE-BOUNDS")
         self.assertIsNotNone(record, "missing REQ-PERF-SOURCE-BOUNDS")

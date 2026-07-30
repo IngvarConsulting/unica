@@ -3570,11 +3570,11 @@ fn source_resource_snapshot_chains_preserve_all_corpus_bytes_except_selected_bsl
     ] {
         let source = workspace.join(source_root);
         fs::create_dir_all(source.join("CommonModules/Shared/Ext")).unwrap();
-        let extension_property = extension
-            .then_some(
-                "<ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose>",
-            )
-            .unwrap_or("");
+        let extension_property = if extension {
+            "<ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose>"
+        } else {
+            ""
+        };
         fs::write(
             source.join("Configuration.xml"),
             format!(

@@ -14,6 +14,8 @@ pub struct CacheReport {
     pub lazy_rebuilt: Vec<String>,
     pub stale: Vec<String>,
     pub fresh: Vec<String>,
+    #[serde(skip)]
+    pub(crate) publication_warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]

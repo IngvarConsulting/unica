@@ -526,12 +526,17 @@ Unica. Каждая запись формулирует одно нормати�
 
 ### INV-CACHE-PERSISTED-STALENESS — Применённое изменение запоминает инвалидированный им кеш
 
-- **Rule:** Применённое изменение записывает свои доменные события в
-  `WorkspaceStateRepository`, поэтому кеш, который оно инвалидировало, при
-  следующем чтении по-прежнему числится устаревшим, а не оказывается молча
-  пересобранным.
-- **Decision:** ADR-0003, ADR-0018
+- **Rule:** Применённое изменение отображает свои доменные события в
+  `CacheImpact` и записывает эту проекцию через `WorkspaceStateRepository`,
+  поэтому кеш, который оно инвалидировало, при следующем чтении по-прежнему
+  числится устаревшим, а не оказывается молча пересобранным; хранилище не
+  является журналом полного содержимого событий. Публикация состояния
+  использует тот же механизм точного исходного образа и атомарной замены,
+  поэтому конкурентный план либо сохраняет объединённый эффект после повторного
+  планирования, либо явно отказывает, но не затирает чужую инвалидацию.
+- **Decision:** ADR-0003, ADR-0018, ADR-0022
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace_state.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/compile_transaction.rs`
 - **Scope:** runtime
 
 ### INV-CACHE-WORKTREE-ISOLATION — Связанное рабочее дерево git изолировано
@@ -660,13 +665,20 @@ Unica. Каждая запись формулирует одно нормати�
 ### INV-SOURCE-PLAN-EVENT-PARITY — План, байты и событие описывают одну замену
 
 - **Rule:** Предпросмотр и применение `unica.source.apply` строятся одним
-  планировщиком из точного преобраза; предпросмотр сообщает проектируемое
-  событие и влияние на кеш без публикации и сохранения, а успешная непустая
-  публикация тех же байтов создаёт ровно одно событие
-  `SourceResourcesReplaced` и инвалидирует только индекс и диагностику BSL.
+  планировщиком из точного преобраза; то же внутреннее типизированное событие
+  определяет проекцию влияния на кеш для предпросмотра и применённую
+  инвалидацию.
+  Публичный предпросмотр сообщает только имя события в `cache.events` и имена
+  затрагиваемых кешей без сериализации полей события и без сохранения, а
+  успешное непустое применение тех же байтов порождает ровно одно внутреннее
+  событие `SourceResourcesReplaced`; его проекция устаревшего состояния
+  публикуется одной транзакцией с исходником и инвалидирует только индекс и
+  диагностику BSL.
 - **Decision:** ADR-0022
 - **Check:** `ci-test` — `crates/unica-coder/src/application/source_resources.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/application_ports.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_resources.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace_state.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/domain/events.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/domain/cache.rs`
 - **Scope:** runtime
@@ -700,6 +712,9 @@ Unica. Каждая запись формулирует одно нормати�
 - **Decision:** ADR-0021, ADR-0022
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/text_snapshot.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/code.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_resources.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/compile_transaction.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/single_file_publisher.rs`
 - **Scope:** runtime
 
 ### INV-SOURCE-IDEMPOTENT-REWRITE — Повторная идентичная мутация ничего не пишет

@@ -839,6 +839,86 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn source_apply_refuses_bytes_when_cache_effects_cannot_be_staged() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-source-resource-cache-rollback-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let source = root.join("src");
+        let module = source.join("CommonModules/Shared/Ext/Module.bsl");
+        let original = b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\n";
+        std::fs::create_dir_all(module.parent().unwrap()).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Main</Name></Properties><ChildObjects><CommonModule>Shared</CommonModule></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("CommonModules/Shared.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule><Properties><Name>Shared</Name></Properties></CommonModule></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(&module, original).unwrap();
+
+        let app = UnicaApplication::new();
+        let resources_args = json!({
+            "cwd": root,
+            "sourceSet": "main",
+            "metadataPath": "CommonModule.Shared.Module",
+            "scope": "self"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let resources: Value = serde_json::from_str(
+            &call_tool_text(
+                &app,
+                "unica.source.resources",
+                &resources_args,
+                CancellationToken::new(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let state_path = root.join(".build/unica/state.json");
+        std::fs::create_dir_all(&state_path).unwrap();
+        let apply_args = json!({
+            "cwd": root,
+            "snapshotId": resources["data"]["snapshotId"],
+            "resourceId": resources["data"]["resources"][0]["resourceId"],
+            "expectedHash": resources["data"]["resources"][0]["hash"],
+            "content": "Procedure Changed()\nEndProcedure\n",
+            "contentEncoding": "utf-8",
+            "dryRun": false
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        let error = call_tool_text(
+            &app,
+            "unica.source.apply",
+            &apply_args,
+            CancellationToken::new(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.0, TOOL_EXECUTION_ERROR);
+        assert!(error.1.contains("integrity_failed"), "{error:?}");
+        assert_eq!(std::fs::read(&module).unwrap(), original);
+        assert!(state_path.is_dir());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn assert_no_private_source_resource_keys(value: &Value) {
         match value {
             Value::Object(object) => {
