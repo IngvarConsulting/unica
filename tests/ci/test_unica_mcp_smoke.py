@@ -207,13 +207,19 @@ class UnicaMcpSmokeTests(unittest.TestCase):
             if not process.stdin.closed:
                 process.stdin.close()
             try:
-                return_code = process.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                self.fail("interactive MCP process did not exit")
-            self.assertEqual(return_code, 0, "".join(diagnostics))
-            process.stdout.close()
-            process.stderr.close()
+                try:
+                    return_code = process.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    # Reap the killed child, otherwise it is left a zombie.
+                    process.wait()
+                    self.fail("interactive MCP process did not exit")
+                self.assertEqual(return_code, 0, "".join(diagnostics))
+            finally:
+                # Closed on every exit path, including a failed assertion.
+                for stream in (process.stdout, process.stderr):
+                    if stream is not None and not stream.closed:
+                        stream.close()
 
     def source_fixture(self, root: Path) -> dict[str, bytes]:
         (root / "src/CommonModules/Shared/Ext").mkdir(parents=True)
