@@ -39,6 +39,7 @@
 - [ADR-0018: Состояние поставщиков изолировано рабочим деревом](0018-worktree-scoped-provider-state.md)
 - [ADR-0019: Публичные MCP-схемы используют канонические имена путей](0019-canonical-paths-in-public-mcp-schemas.md)
 - [ADR-0020: `unica.code.outline` строится из текущего BSL-файла](0020-current-source-bsl-outline.md)
+- [ADR-0021: `unica.code.outline` возвращает типизированную структуру текущего BSL-файла](0021-structured-bsl-outline-result.md)
 
 Заголовки записей ADR-0001…ADR-0006 приведены здесь дословно: индекс называет
 документ так, как он называется сам. Почему они выглядят иначе — в разделе

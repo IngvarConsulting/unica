@@ -1,8 +1,13 @@
 # Outline из текущего BSL-файла
 
 - Date: `2026-07-30`
-- Status: `approved`
+- Status: `superseded`
 - Decision: `ADR-0020`
+
+Проект заменён запиской
+[`2026-07-30-structured-bsl-outline-result-design.md`](2026-07-30-structured-bsl-outline-result-design.md):
+источник outline остаётся текущим BSL-файлом, но текстовый `stdout` заменяется
+типизированным объектом `data`.
 
 Статусы проектной записки и ADR имеют разные жизненные циклы. `approved`
 означает, что направление проекта согласовано. ADR-0020 был `proposed` до
