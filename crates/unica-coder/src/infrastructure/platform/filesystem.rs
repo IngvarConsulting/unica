@@ -1000,12 +1000,14 @@ fn verify_windows_local_fixed_device_info(
     const FILE_FLOPPY_DISKETTE: u32 = 0x0000_0004;
     const FILE_WRITE_ONCE_MEDIA: u32 = 0x0000_0008;
     const FILE_VIRTUAL_VOLUME: u32 = 0x0000_0040;
+    const FILE_PORTABLE_DEVICE: u32 = 0x0000_4000;
     const FILE_REMOTE_DEVICE_VSMB: u32 = 0x0008_0000;
     const UNTRUSTED_CHARACTERISTICS: u32 = FILE_REMOTE_DEVICE
         | FILE_REMOVABLE_MEDIA
         | FILE_FLOPPY_DISKETTE
         | FILE_WRITE_ONCE_MEDIA
         | FILE_VIRTUAL_VOLUME
+        | FILE_PORTABLE_DEVICE
         | FILE_REMOTE_DEVICE_VSMB;
 
     if device_type != FILE_DEVICE_DISK || characteristics & UNTRUSTED_CHARACTERISTICS != 0 {
@@ -2419,6 +2421,7 @@ mod tests {
             const FILE_DEVICE_DISK: u32 = 0x0000_0007;
             const FILE_DEVICE_NETWORK_FILE_SYSTEM: u32 = 0x0000_0014;
             const FILE_DEVICE_VIRTUAL_DISK: u32 = 0x0000_0024;
+            const FILE_PORTABLE_DEVICE: u32 = 0x0000_4000;
             const FILE_REMOTE_DEVICE: u32 = 0x0000_0010;
             const FILE_REMOTE_DEVICE_VSMB: u32 = 0x0008_0000;
             const FILE_REMOVABLE_MEDIA: u32 = 0x0000_0001;
@@ -2429,6 +2432,7 @@ mod tests {
             for (device_type, characteristics) in [
                 (FILE_DEVICE_DISK, FILE_REMOTE_DEVICE),
                 (FILE_DEVICE_DISK, FILE_REMOTE_DEVICE_VSMB),
+                (FILE_DEVICE_DISK, FILE_PORTABLE_DEVICE),
                 (FILE_DEVICE_DISK, FILE_REMOVABLE_MEDIA),
                 (FILE_DEVICE_NETWORK_FILE_SYSTEM, FILE_DEVICE_IS_MOUNTED),
                 (FILE_DEVICE_CD_ROM, FILE_DEVICE_IS_MOUNTED),
