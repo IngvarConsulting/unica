@@ -1388,7 +1388,7 @@ fn apply_runtime_success_effects(cwd: &Path, operation: &str, job_id: &str) -> J
         event_kind,
         format!("runtime-job:{job_id}"),
     )];
-    WorkspaceStateRepository::new(&context).report(
+    let report = WorkspaceStateRepository::new(&context).report(
         &context,
         &events,
         false,
@@ -1398,7 +1398,14 @@ fn apply_runtime_success_effects(cwd: &Path, operation: &str, job_id: &str) -> J
         },
     )?;
     WorkspaceServiceManager::new().notify_invalidation(&context, &events);
-    Ok(())
+    if report.publication_warnings.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "runtime cache state committed with cleanup warning: {}",
+            report.publication_warnings.join("; ")
+        ))
+    }
 }
 
 fn fail_queued_job(cache_root: &Path, id: &str, error: &str) -> JobResult<()> {

@@ -195,5 +195,24 @@ class NormativeBoundaryTests(unittest.TestCase):
         )
 
 
+class LogicalSourceDesignContractTests(unittest.TestCase):
+    def test_source_designs_are_approved_and_do_not_restate_stale_wire_shapes(
+        self,
+    ) -> None:
+        logical = (
+            DESIGN_DIR / "2026-07-29-logical-source-addressing-design.md"
+        ).read_text(encoding="utf-8")
+        resources = (
+            DESIGN_DIR / "2026-07-30-bounded-source-resource-access-design.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("- Status: `approved`", logical)
+        self.assertIn("- Status: `approved`", resources)
+        self.assertIn("- Decision: `ADR-0021`", logical)
+        self.assertIn("- Decision: `ADR-0022`", resources)
+        self.assertNotIn("  owner,\n  role,", resources)
+        self.assertNotIn('"nextCursor": null', resources)
+
+
 if __name__ == "__main__":
     unittest.main()

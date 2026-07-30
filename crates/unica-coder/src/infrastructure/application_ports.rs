@@ -1,6 +1,11 @@
 use crate::application::ports::{
     ApplicationPorts, FormatGuardCheck, HandlerOutcome, SupportGuardCheck,
 };
+use crate::application::source_navigation::{
+    SourceChildrenRequest, SourceChildrenResult, SourceLocateRequest, SourceLocateResult,
+    SourceResolveRequest, SourceResolveResult,
+};
+use crate::application::source_resources::{SourceReadRequest, SourceResourcesRequest};
 use crate::application::{project_map, project_status, AdapterOutcome, ToolHandler, ToolSpec};
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
@@ -9,6 +14,9 @@ use crate::domain::code_intelligence::{
     CodeIntelligenceRegistry,
 };
 use crate::domain::events::DomainEvent;
+use crate::domain::source_resources::{
+    ResourceManifestPage, SourceReadResult, SourceResourceError,
+};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::code_intelligence::{BslAnalyzerProvider, GitGrepProvider, RlmProvider};
 use crate::infrastructure::internal_adapters::{
@@ -25,7 +33,18 @@ use serde_json::{Map, Value};
 use std::borrow::Cow;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-pub(crate) struct InfrastructureApplicationPorts;
+pub(crate) struct InfrastructureApplicationPorts {
+    source_resources: crate::infrastructure::platform_xml_resources::PlatformXmlResourceProvider,
+}
+
+impl InfrastructureApplicationPorts {
+    pub(crate) fn new() -> Self {
+        Self {
+            source_resources:
+                crate::infrastructure::platform_xml_resources::PlatformXmlResourceProvider::new(),
+        }
+    }
+}
 
 impl ApplicationPorts for InfrastructureApplicationPorts {
     fn discover_workspace(
@@ -84,6 +103,64 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
             Arc::new(GitGrepProvider::new()),
         ];
         CodeIntelligenceRegistry::new(providers)
+    }
+
+    fn resolve_source_navigation(
+        &self,
+        request: SourceResolveRequest,
+        context: &WorkspaceContext,
+        cancellation: &CancellationToken,
+    ) -> Result<SourceResolveResult, String> {
+        crate::infrastructure::platform_xml_source_targets::resolve_platform_xml_source_navigation(
+            context,
+            &request,
+            cancellation,
+        )
+    }
+
+    fn children_source_navigation(
+        &self,
+        request: SourceChildrenRequest,
+        context: &WorkspaceContext,
+        cancellation: &CancellationToken,
+    ) -> Result<SourceChildrenResult, String> {
+        crate::infrastructure::platform_xml_source_targets::children_platform_xml_source_navigation(
+            context,
+            &request,
+            cancellation,
+        )
+    }
+
+    fn locate_source_navigation(
+        &self,
+        request: SourceLocateRequest,
+        context: &WorkspaceContext,
+        cancellation: &CancellationToken,
+    ) -> Result<SourceLocateResult, String> {
+        crate::infrastructure::platform_xml_source_targets::locate_platform_xml_source_path(
+            context,
+            &request,
+            cancellation,
+        )
+    }
+
+    fn source_resources(
+        &self,
+        request: SourceResourcesRequest,
+        context: &WorkspaceContext,
+        cancellation: &CancellationToken,
+    ) -> Result<ResourceManifestPage, SourceResourceError> {
+        self.source_resources
+            .resources(request, context, cancellation)
+    }
+
+    fn read_source_resource(
+        &self,
+        request: SourceReadRequest,
+        context: &WorkspaceContext,
+        cancellation: &CancellationToken,
+    ) -> Result<SourceReadResult, SourceResourceError> {
+        self.source_resources.read(request, context, cancellation)
     }
 
     fn evaluate_support_guard(
@@ -216,9 +293,20 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                 adapter: outcome.outcome,
                 data: None,
                 job: outcome.job,
+                events: Vec::new(),
+                projected_events: Vec::new(),
+                recorded_cache: None,
             }),
             ToolHandler::CodeIntelligence { .. } => Err(format!(
                 "{} must be dispatched through the provider-neutral code intelligence registry",
+                spec.name
+            )),
+            ToolHandler::SourceNavigation { .. } => Err(format!(
+                "{} must be dispatched through the provider-neutral source navigation port",
+                spec.name
+            )),
+            ToolHandler::SourceResources { .. } => Err(format!(
+                "{} must be dispatched through the provider-neutral source resource port",
                 spec.name
             )),
             ToolHandler::CodeAdapter {

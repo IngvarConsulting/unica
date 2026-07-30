@@ -1971,10 +1971,10 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         )
         .map_err(|error| format!("cannot seed BSL module: {error}"))?;
         let mut args = common_args(workspace);
-        args.insert("sourceDir".to_string(), Value::String("src".to_string()));
+        args.insert("sourceSet".to_string(), Value::String("main".to_string()));
         args.insert(
-            "path".to_string(),
-            Value::String("src/CommonModules/CorpusModule/Ext/Module.bsl".to_string()),
+            "metadataPath".to_string(),
+            Value::String("CommonModule.CorpusModule.Module".to_string()),
         );
         args.insert("operation".to_string(), Value::String("insert".to_string()));
         args.insert("selector".to_string(), json!({"method": "Run"}));
@@ -2173,7 +2173,7 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         args.insert("JsonPath".to_string(), Value::String(path));
         args.insert(
             "OutputPath".to_string(),
-            Value::String("src/Reports/CorpusReport/Forms/CorpusForm/Ext/Form.xml".to_string()),
+            Value::String("src/Reports/CorpusReport/Forms/CorpusForm.xml".to_string()),
         );
         return Ok(args);
     }
@@ -2184,9 +2184,7 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         if case.id == "form-edit-managed" {
             args.insert(
                 "FormPath".to_string(),
-                Value::String(
-                    "src/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml".to_string(),
-                ),
+                Value::String("src/Catalogs/CorpusCatalog/Forms/CorpusForm.xml".to_string()),
             );
             args.insert(
                 "definition".to_string(),
@@ -3525,6 +3523,109 @@ fn none_impact_rejects_any_xml_map_change() {
     let error = enforce_xml_impact(XmlImpactClass::None, &before, &after).unwrap_err();
 
     assert!(error.contains("complete XML map"), "{error}");
+}
+
+#[test]
+fn source_resource_reads_preserve_every_corpus_byte() {
+    let root = unique_temp_dir("source-resource-snapshot-chain");
+    let workspace = root.join("workspace");
+    // No `UNICA_CACHE_DIR` override: setting it would mutate process-global
+    // state shared with every other test in this binary. The default cache
+    // root already lands in this workspace's own ignored `.build`, which the
+    // payload capture skips.
+    fs::create_dir_all(&workspace).unwrap();
+    write_designer_project(
+        &workspace,
+        &[
+            ("main", "CONFIGURATION", "src"),
+            ("extension", "EXTENSION", "ext"),
+        ],
+    )
+    .unwrap();
+    for (source_root, name, method, extension) in [
+        ("src", "Main", "Run", false),
+        ("ext", "Extension", "RunExtension", true),
+    ] {
+        let source = workspace.join(source_root);
+        fs::create_dir_all(source.join("CommonModules/Shared/Ext")).unwrap();
+        let extension_property = if extension {
+            "<ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose>"
+        } else {
+            ""
+        };
+        fs::write(
+            source.join("Configuration.xml"),
+            format!(
+                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><Configuration><Properties><Name>{name}</Name>{extension_property}</Properties><ChildObjects><CommonModule>Shared</CommonModule></ChildObjects></Configuration></MetaDataObject>"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            source.join("CommonModules/Shared.xml"),
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><CommonModule><Properties><Name>Shared</Name></Properties></CommonModule></MetaDataObject>",
+        )
+        .unwrap();
+        fs::write(
+            source.join("CommonModules/Shared/Ext/Module.bsl"),
+            format!("\u{feff}Procedure {method}()\r\nEndProcedure\r\n"),
+        )
+        .unwrap();
+    }
+    let before = capture_workspace_payloads_for_source_test(&workspace);
+    let app = UnicaApplication::new();
+    for source_set in ["main", "extension"] {
+        let mut resources_args = common_args(&workspace);
+        resources_args.insert("sourceSet".to_string(), json!(source_set));
+        resources_args.insert(
+            "metadataPath".to_string(),
+            json!("CommonModule.Shared.Module"),
+        );
+        resources_args.insert("scope".to_string(), json!("self"));
+        let resources = app
+            .call_tool("unica.source.resources", &resources_args)
+            .unwrap();
+        let page = resources.data.unwrap();
+        let resource = &page["resources"][0];
+        assert_eq!(resource["access"], json!(["read"]));
+        let mut read_args = common_args(&workspace);
+        read_args.insert("snapshotId".to_string(), page["snapshotId"].clone());
+        read_args.insert("resourceId".to_string(), resource["resourceId"].clone());
+        let read = app.call_tool("unica.source.read", &read_args).unwrap();
+        assert_eq!(read.data.unwrap()["eof"], json!(true));
+    }
+    // The whole public resource surface is read-only, so the corpus must come
+    // out byte-identical.
+    assert_eq!(
+        capture_workspace_payloads_for_source_test(&workspace),
+        before
+    );
+    fs::remove_dir_all(&root).unwrap();
+}
+
+fn capture_workspace_payloads_for_source_test(root: &Path) -> BTreeMap<String, Vec<u8>> {
+    let mut payloads = BTreeMap::new();
+    fn visit(root: &Path, directory: &Path, payloads: &mut BTreeMap<String, Vec<u8>>) {
+        for entry in fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.file_name() == Some(std::ffi::OsStr::new(".build")) {
+                // Generated cache root, not corpus source under test.
+                continue;
+            }
+            if path.is_dir() {
+                visit(root, &path, payloads);
+            } else {
+                payloads.insert(
+                    path.strip_prefix(root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                    fs::read(path).unwrap(),
+                );
+            }
+        }
+    }
+    visit(root, root, &mut payloads);
+    payloads
 }
 
 #[test]

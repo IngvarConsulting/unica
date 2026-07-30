@@ -318,6 +318,27 @@ pub(crate) fn strip_windows_extended_length_prefix(path: &Path) -> std::path::Pa
     path.to_path_buf()
 }
 
+#[cfg(windows)]
+pub(crate) fn path_starts_with_host_root(path: &Path, root: &Path) -> bool {
+    let path = strip_windows_extended_length_prefix(path);
+    let root = strip_windows_extended_length_prefix(root);
+    let path_components = path.components().collect::<Vec<_>>();
+    let root_components = root.components().collect::<Vec<_>>();
+    path_components.len() >= root_components.len()
+        && path_components
+            .iter()
+            .zip(root_components.iter())
+            .all(|(left, right)| {
+                left.as_os_str().to_string_lossy().to_lowercase()
+                    == right.as_os_str().to_string_lossy().to_lowercase()
+            })
+}
+
+#[cfg(not(windows))]
+pub(crate) fn path_starts_with_host_root(path: &Path, root: &Path) -> bool {
+    path.starts_with(root)
+}
+
 #[cfg(all(test, unix))]
 pub(crate) fn create_file_symlink_for_test(
     source: impl AsRef<Path>,
@@ -475,10 +496,10 @@ fn path_lock_identity_text(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{path_lock_identity_text, windows_api_path_from_utf16};
+    use super::{path_lock_identity_text, path_starts_with_host_root, windows_api_path_from_utf16};
     use std::fs;
     use std::io;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[cfg(windows)]
@@ -627,6 +648,117 @@ mod tests {
         } else {
             assert_eq!(identity, "/Workspace/Configuration.xml");
         }
+    }
+
+    #[test]
+    fn containment_prefix_follows_host_case_policy() {
+        let matches = path_starts_with_host_root(
+            Path::new("/WORKSPACE/src/Module.bsl"),
+            Path::new("/workspace"),
+        );
+        if cfg!(windows) {
+            assert!(matches);
+        } else {
+            assert!(!matches);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_policy_rejects_lexically_external_symlink_into_workspace() {
+        use crate::domain::workspace::WorkspaceContext;
+        use crate::infrastructure::path_policy::WorkspacePathPolicy;
+        use std::os::unix::fs::symlink;
+
+        let temp = unique_temp_root("path-policy-inbound-link");
+        let workspace = temp.join("workspace");
+        let outside = temp.join("outside");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(workspace.join("Configuration.xml"), "<MetaDataObject/>").unwrap();
+        symlink(&workspace, outside.join("workspace-alias")).unwrap();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build").join("unica"),
+            workspace_epoch: 1,
+        };
+        let policy = WorkspacePathPolicy::new(&context);
+
+        let error = policy
+            .resolve_write(outside.join("workspace-alias/Configuration.xml"))
+            .unwrap_err();
+
+        assert!(error.contains("outside workspace root"));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_policy_rejects_lexically_internal_symlink_outside_workspace() {
+        use crate::domain::workspace::WorkspaceContext;
+        use crate::infrastructure::path_policy::WorkspacePathPolicy;
+        use std::os::unix::fs::symlink;
+
+        let temp = unique_temp_root("path-policy-outbound-link");
+        let workspace = temp.join("workspace");
+        let outside = temp.join("outside");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("Configuration.xml"), "<MetaDataObject/>").unwrap();
+        symlink(&outside, workspace.join("outside-alias")).unwrap();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build").join("unica"),
+            workspace_epoch: 1,
+        };
+        let policy = WorkspacePathPolicy::new(&context);
+
+        let error = policy
+            .resolve_write(workspace.join("outside-alias/Configuration.xml"))
+            .unwrap_err();
+
+        assert!(error.contains("outside workspace root"));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn workspace_policy_accepts_normalized_child_of_verbatim_workspace_root() {
+        use crate::domain::workspace::WorkspaceContext;
+        use crate::infrastructure::path_policy::WorkspacePathPolicy;
+        use crate::infrastructure::source_roots::normalize_path_identity;
+
+        let regular_root = unique_temp_root("path-policy-verbatim");
+        let child = regular_root.join("src/CommonModules/Example.xml");
+        fs::create_dir_all(child.parent().unwrap()).unwrap();
+        fs::write(&child, "<MetaDataObject/>").unwrap();
+        let verbatim_root = PathBuf::from(format!(r"\\?\{}", regular_root.display()));
+        let context = WorkspaceContext {
+            cwd: verbatim_root.clone(),
+            workspace_root: verbatim_root.clone(),
+            cache_root: verbatim_root.join(".build").join("unica"),
+            workspace_epoch: 1,
+        };
+        let policy = WorkspacePathPolicy::new(&context);
+        let normalized_child = normalize_path_identity(&child).unwrap();
+
+        assert_eq!(
+            policy.resolve_write(normalized_child.clone()).unwrap(),
+            normalized_child
+        );
+
+        fs::remove_dir_all(regular_root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn containment_prefix_follows_windows_case_policy() {
+        assert!(path_starts_with_host_root(
+            Path::new(r"C:\WORKSPACE\src\Module.bsl"),
+            Path::new(r"c:\workspace")
+        ));
     }
 
     #[cfg(windows)]

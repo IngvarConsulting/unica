@@ -1,23 +1,46 @@
 use super::operation_descriptors::{native_operation_descriptor, native_path_alias_groups};
-use super::{CodeIntelligenceOperation, RuntimeJobAction, ToolHandler, ToolSpec};
+use super::source_navigation::SOURCE_NAVIGATION_LIMIT_MAX;
+use super::{
+    CodeIntelligenceOperation, RuntimeJobAction, SourceNavigationOperation,
+    SourceResourceOperation, ToolHandler, ToolSpec,
+};
 use crate::domain::form_edit::{form_edit_definition_schema, validate_form_edit_definition};
+use crate::domain::source_resources::{SOURCE_READ_LIMIT_MAX, SOURCE_RESOURCE_PAGE_LIMIT_MAX};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
 const COMMON_ARGS: &[&str] = &["cwd", "dryRun", "confirm"];
 const CODE_PATCH_ARGS: &[&str] = &[
-    "path",
+    "sourceSet",
+    "metadataPath",
     "operation",
     "selector",
     "content",
     "position",
-    "sourceDir",
 ];
 const RUNTIME_JOB_STATUS_ARGS: &[&str] = &["jobId"];
 const RUNTIME_JOB_WAIT_ARGS: &[&str] = &["jobId", "timeoutSeconds"];
 const RUNTIME_JOB_LOGS_ARGS: &[&str] = &["jobId", "tailChars"];
-
+const SOURCE_RESOLVE_ARGS: &[&str] = &[
+    "sourceSet",
+    "query",
+    "mode",
+    "targetKind",
+    "limit",
+    "cursor",
+];
+const SOURCE_CHILDREN_ARGS: &[&str] = &["sourceSet", "metadataPath", "limit", "cursor"];
+const SOURCE_LOCATE_ARGS: &[&str] = &["sourceSet", "path"];
+const SOURCE_RESOURCES_ARGS: &[&str] = &[
+    "sourceSet",
+    "metadataPath",
+    "scope",
+    "snapshotId",
+    "cursor",
+    "limit",
+];
+const SOURCE_READ_ARGS: &[&str] = &["snapshotId", "resourceId", "offset", "limit"];
 pub(crate) const DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS: u64 = 30;
 pub(crate) const DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS: u64 = 3600;
 
@@ -579,7 +602,9 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
         // patterns, are described too.
         if let Some(description) = description_for_arg(name) {
             if let Some(object) = property.as_object_mut() {
-                object.insert("description".to_string(), json!(description));
+                object
+                    .entry("description".to_string())
+                    .or_insert_with(|| json!(description));
             }
         }
         properties.insert(name.to_string(), property);
@@ -595,6 +620,22 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
         schema["anyOf"] = json!([
             {"required": ["JsonPath"]},
             {"required": ["definition"]}
+        ]);
+    }
+    if tool.name == "unica.source.resources" {
+        schema["oneOf"] = json!([
+            {
+                "required": ["sourceSet"],
+                "not": {"anyOf": [{"required": ["snapshotId"]}, {"required": ["cursor"]}]}
+            },
+            {
+                "required": ["snapshotId", "cursor"],
+                "not": {"anyOf": [
+                    {"required": ["sourceSet"]},
+                    {"required": ["metadataPath"]},
+                    {"required": ["scope"]}
+                ]}
+            }
         ]);
     }
     schema
@@ -661,6 +702,7 @@ pub fn validate_tool_arguments(
     args: &Map<String, Value>,
     dry_run: bool,
 ) -> Result<(), String> {
+    validate_removed_target_arguments(tool, args)?;
     let allowed = allowed_args(&tool).into_iter().collect::<BTreeSet<_>>();
     for key in args.keys() {
         if !allowed.contains(key.as_str()) {
@@ -680,6 +722,8 @@ pub fn validate_tool_arguments(
         validate_runtime_job_arguments(tool.name, action, args, dry_run)?;
     }
     validate_code_arguments(tool, args, dry_run)?;
+    validate_source_navigation_arguments(tool, args)?;
+    validate_source_resource_arguments(tool, args)?;
     validate_code_patch_arguments(tool, args)?;
     validate_meta_edit_arguments(tool, args)?;
     validate_form_add_arguments(tool, args)?;
@@ -700,11 +744,135 @@ pub fn validate_tool_arguments(
     Ok(())
 }
 
+fn validate_source_resource_arguments(
+    tool: ToolSpec,
+    args: &Map<String, Value>,
+) -> Result<(), String> {
+    let ToolHandler::SourceResources { operation } = tool.handler else {
+        return Ok(());
+    };
+    match operation {
+        SourceResourceOperation::Resources => {
+            validate_integer_bound(
+                tool.name,
+                args,
+                "limit",
+                1,
+                SOURCE_RESOURCE_PAGE_LIMIT_MAX as u64,
+            )?;
+            if let Some(value) = args.get("scope") {
+                let scope = value
+                    .as_str()
+                    .ok_or_else(|| format!("{} argument `scope` must be a string", tool.name))?;
+                if !matches!(scope, "self" | "aggregate" | "registrations") {
+                    return Err(format!(
+                        "{} argument `scope` must be `self`, `aggregate`, or `registrations`",
+                        tool.name
+                    ));
+                }
+            }
+        }
+        SourceResourceOperation::Read => {
+            validate_integer_bound(tool.name, args, "limit", 1, SOURCE_READ_LIMIT_MAX as u64)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_source_navigation_arguments(
+    tool: ToolSpec,
+    args: &Map<String, Value>,
+) -> Result<(), String> {
+    let ToolHandler::SourceNavigation { operation } = tool.handler else {
+        return Ok(());
+    };
+    for required in match operation {
+        SourceNavigationOperation::Resolve => &["sourceSet", "query"][..],
+        SourceNavigationOperation::Children => &["sourceSet"][..],
+        SourceNavigationOperation::Locate => &["sourceSet", "path"][..],
+    } {
+        let value = args
+            .get(*required)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("{} requires `{required}` argument", tool.name))?;
+        debug_assert!(!value.is_empty());
+    }
+    if let Some(value) = args.get("mode") {
+        let mode = value
+            .as_str()
+            .ok_or_else(|| format!("{} argument `mode` must be a string", tool.name))?;
+        if !matches!(mode, "exact" | "prefix") {
+            return Err(format!(
+                "{} argument `mode` must be `exact` or `prefix`",
+                tool.name
+            ));
+        }
+    }
+    if let Some(value) = args.get("targetKind") {
+        let target_kind = value
+            .as_str()
+            .ok_or_else(|| format!("{} argument `targetKind` must be a string", tool.name))?;
+        if !matches!(target_kind, "metadataObject" | "module") {
+            return Err(format!(
+                "{} argument `targetKind` must be `metadataObject` or `module`",
+                tool.name
+            ));
+        }
+    }
+    if let Some(value) = args.get("limit") {
+        let limit = value
+            .as_u64()
+            .ok_or_else(|| format!("{} argument `limit` must be a positive integer", tool.name))?;
+        if !(1..=u64::try_from(SOURCE_NAVIGATION_LIMIT_MAX).expect("small constant"))
+            .contains(&limit)
+        {
+            return Err(format!(
+                "{} argument `limit` must be between 1 and {SOURCE_NAVIGATION_LIMIT_MAX}",
+                tool.name
+            ));
+        }
+    }
+    for optional in ["metadataPath", "cursor"] {
+        if let Some(value) = args.get(optional) {
+            let non_empty = value
+                .as_str()
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty());
+            if !non_empty {
+                return Err(format!(
+                    "{} argument `{optional}` must be a non-empty string",
+                    tool.name
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_removed_target_arguments(
+    tool: ToolSpec,
+    args: &Map<String, Value>,
+) -> Result<(), String> {
+    if tool.name == "unica.code.patch"
+        && ["path", "sourceDir"]
+            .iter()
+            .any(|field| args.contains_key(*field))
+    {
+        return Err(
+            "legacy_target_removed: unica.code.patch no longer accepts `path` or `sourceDir`; use `sourceSet + metadataPath`"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 fn validate_code_patch_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Result<(), String> {
     if tool.name != "unica.code.patch" {
         return Ok(());
     }
-    for key in ["path", "operation", "content", "position"] {
+    for key in ["sourceSet", "metadataPath", "operation", "content"] {
         let value = args
             .get(key)
             .and_then(Value::as_str)
@@ -716,15 +884,31 @@ fn validate_code_patch_arguments(tool: ToolSpec, args: &Map<String, Value>) -> R
             ));
         }
     }
-    if args.get("operation").and_then(Value::as_str) != Some("insert") {
-        return Err(format!("{} supports only operation `insert`", tool.name));
-    }
-    if !matches!(
-        args.get("position").and_then(Value::as_str),
-        Some("before" | "after")
-    ) {
+    let operation = args
+        .get("operation")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !matches!(operation, "insert" | "replace") {
         return Err(format!(
-            "{} argument `position` must be `before` or `after`",
+            "{} supports operation `insert` or `replace`",
+            tool.name
+        ));
+    }
+    // `position` places an insertion; a replacement overwrites the selected span
+    // and has nowhere to place anything, so accepting it would be meaningless.
+    if operation == "insert" {
+        if !matches!(
+            args.get("position").and_then(Value::as_str),
+            Some("before" | "after")
+        ) {
+            return Err(format!(
+                "{} argument `position` must be `before` or `after` for operation `insert`",
+                tool.name
+            ));
+        }
+    } else if args.contains_key("position") {
+        return Err(format!(
+            "{} does not accept `position` for operation `replace`; the selector names the replaced span",
             tool.name
         ));
     }
@@ -1479,6 +1663,15 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
         ToolHandler::CodeIntelligence { operation } => {
             names.extend(code_intelligence_args(operation))
         }
+        ToolHandler::SourceNavigation { operation } => names.extend(match operation {
+            SourceNavigationOperation::Resolve => SOURCE_RESOLVE_ARGS,
+            SourceNavigationOperation::Children => SOURCE_CHILDREN_ARGS,
+            SourceNavigationOperation::Locate => SOURCE_LOCATE_ARGS,
+        }),
+        ToolHandler::SourceResources { operation } => names.extend(match operation {
+            SourceResourceOperation::Resources => SOURCE_RESOURCES_ARGS,
+            SourceResourceOperation::Read => SOURCE_READ_ARGS,
+        }),
         ToolHandler::CodeAdapter { .. } => names.extend(code_args_for(tool.name)),
         ToolHandler::StandardsAdapter { .. } => names.extend(STANDARDS_ARGS),
         ToolHandler::ProjectStatus | ToolHandler::ProjectMap => {}
@@ -1519,6 +1712,15 @@ fn required_args(tool: &ToolSpec) -> Vec<&'static str> {
                 vec!["name"]
             }
             CodeIntelligenceOperation::Outline => vec!["path"],
+        },
+        ToolHandler::SourceNavigation { operation } => match operation {
+            SourceNavigationOperation::Resolve => vec!["sourceSet", "query"],
+            SourceNavigationOperation::Children => vec!["sourceSet"],
+            SourceNavigationOperation::Locate => vec!["sourceSet", "path"],
+        },
+        ToolHandler::SourceResources { operation } => match operation {
+            SourceResourceOperation::Resources => Vec::new(),
+            SourceResourceOperation::Read => vec!["snapshotId", "resourceId"],
         },
         ToolHandler::CodeAdapter { .. } => match tool.name {
             "unica.code.graph" => vec!["mode"],
@@ -1817,7 +2019,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "content",
-        "Non-empty BSL text that unica.code.patch inserts at the selector; its line endings are normalized to the target module's EOL before writing",
+        "BSL text for unica.code.patch: inserted at the selector for operation insert, or written over the selected method or anchor for operation replace",
     ),
     (
         "context",
@@ -1826,6 +2028,10 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "createIfMissing",
         "`unica.interface.edit` only: boolean, create `CommandInterface.xml` when it does not exist yet instead of failing",
+    ),
+    (
+        "cursor",
+        "Opaque continuation token returned by the same source navigation request or source.resources snapshot page; do not inspect or reuse it with another request or snapshot",
     ),
     (
         "cwd",
@@ -2043,7 +2249,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "metadataPath",
-        "Declared string argument that no handler reads; `unica.role.validate` derives the role metadata XML (`Roles/<Name>.xml`) from `rightsPath` itself and checks its UUID, name and synonym whenever that file exists.",
+        "Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics.",
     ),
     (
         "methodName",
@@ -2124,7 +2330,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "operation",
-        "Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` for unica.code.patch; the metadata edit verbs for unica.meta.edit — read the enum published in the tool's own schema.",
+        "Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; the metadata edit verbs for unica.meta.edit — read the enum published in the tool's own schema.",
     ),
     (
         "output",
@@ -2148,7 +2354,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "path",
-        "Workspace-relative file path whose meaning is tool-scoped: the required .cf or .cfe artifact for unica.runtime.execute operation load (.epf and .erf are rejected there), the target *Module.bsl or module-relative file for unica.code.patch and the other unica.code.* tools — on unica.code.diagnostics only mode `file` reads one file, so every other mode rejects `path` instead of ignoring it — the canonical alias of the object/config path argument on the native XML tools, and a plain --path passthrough on unica.build.*.",
+        "Workspace-relative file path whose meaning is tool-scoped: the required .cf or .cfe artifact for unica.runtime.execute operation load (.epf and .erf are rejected there), a module-relative file for the path-based unica.code.* tools — on unica.code.diagnostics only mode `file` reads one file, so every other mode rejects `path` instead of ignoring it — the canonical alias of the object/config path argument on the native XML tools, and a plain --path passthrough on unica.build.*.",
     ),
     (
         "position",
@@ -2199,8 +2405,16 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "Path to a role's `Rights.xml`, or the role directory that resolves to it, for `unica.role.info` and `unica.role.validate`, relative to `cwd`",
     ),
     (
+        "resourceId",
+        "Opaque resource identifier returned inside one source.resources snapshot; valid only together with the snapshotId that issued it",
+    ),
+    (
         "scenarioFilters",
         "Array of Vanessa Automation scenario filters for operation test with testRunner va; each entry becomes one --scenario-filter",
+    ),
+    (
+        "scope",
+        "Bounded source.resources manifest scope: self, aggregate, or registrations",
     ),
     (
         "section",
@@ -2243,12 +2457,16 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "Literal BSL source text for standards.explain to explain against standards, sent with language and limit; codes outranks it when both are passed, and standards.search ignores it.",
     ),
     (
+        "snapshotId",
+        "Opaque application-instance and workspace-bound identifier returned by source.resources; expires after five minutes",
+    ),
+    (
         "sourceDir",
-        "Workspace-relative source root to work in: on unica.code.* , unica.code.patch and unica.meta.profile it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.runtime.execute has no sourceDir and selects sources by configured sourceSet name instead.",
+        "Workspace-relative source root to work in: on the path-based unica.code.* tools and unica.meta.profile it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead.",
     ),
     (
         "sourceSet",
-        "Name of one source-set declared in v8project.yaml, such as main or external-processors; accepted by config-init, build, dump, convert, make and extensions",
+        "Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set",
     ),
     (
         "sourceSets",
@@ -2281,6 +2499,10 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "target",
         "String forwarded to unica.build.* as --target; the skills document no behaviour for it beyond the flag name",
+    ),
+    (
+        "targetKind",
+        "Optional `unica.source.resolve` filter: `metadataObject` or `module`; it narrows exact or prefix matches without changing their canonical metadataPath",
     ),
     (
         "targetPath",
@@ -2422,7 +2644,16 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
     }
     if tool.name == "unica.code.patch" {
         return match name {
-            "operation" => json!({ "type": "string", "enum": ["insert"] }),
+            "sourceSet" | "content" => {
+                json!({ "type": "string", "minLength": 1, "pattern": r"\S" })
+            }
+            "metadataPath" => json!({
+                "type": "string",
+                "minLength": 1,
+                "pattern": r"\S",
+                "description": "Canonical logical module address inside sourceSet, for example CommonModule.Service.Module or Catalog.Items.ObjectModule."
+            }),
+            "operation" => json!({ "type": "string", "enum": ["insert", "replace"] }),
             "position" => json!({ "type": "string", "enum": ["before", "after"] }),
             "selector" => json!({
                 "type": "object",
@@ -2436,6 +2667,57 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
                     { "required": ["anchor"] }
                 ]
             }),
+            _ => property_schema(name),
+        };
+    }
+    if matches!(tool.handler, ToolHandler::SourceNavigation { .. }) {
+        return match name {
+            "path" => json!({
+                "type": "string",
+                "minLength": 1,
+                "pattern": r"\S",
+                "description": "Source file to look up, given either workspace-relative or relative to the named source set; the answer names the metadata address that owns it"
+            }),
+            "sourceSet" | "query" | "metadataPath" | "cursor" => {
+                json!({ "type": "string", "minLength": 1, "pattern": r"\S" })
+            }
+            "mode" => json!({ "type": "string", "enum": ["exact", "prefix"] }),
+            "targetKind" => json!({
+                "type": "string",
+                "enum": ["metadataObject", "module"]
+            }),
+            "limit" => json!({
+                "type": "integer",
+                "minimum": 1,
+                "maximum": SOURCE_NAVIGATION_LIMIT_MAX
+            }),
+            _ => property_schema(name),
+        };
+    }
+    if let ToolHandler::SourceResources { operation } = tool.handler {
+        return match (operation, name) {
+            (SourceResourceOperation::Resources, "scope") => json!({
+                "type": "string",
+                "enum": ["self", "aggregate", "registrations"]
+            }),
+            (SourceResourceOperation::Resources, "limit") => json!({
+                "type": "integer",
+                "minimum": 1,
+                "maximum": SOURCE_RESOURCE_PAGE_LIMIT_MAX
+            }),
+            (SourceResourceOperation::Read, "limit") => json!({
+                "type": "integer",
+                "minimum": 1,
+                "maximum": SOURCE_READ_LIMIT_MAX
+            }),
+            (SourceResourceOperation::Read, "offset") => json!({
+                "type": "integer",
+                "minimum": 0,
+                "description": "Zero-based byte offset inside the immutable resource snapshot"
+            }),
+            (_, "sourceSet" | "metadataPath" | "snapshotId" | "resourceId" | "cursor") => {
+                json!({ "type": "string", "minLength": 1, "pattern": r"\S" })
+            }
             _ => property_schema(name),
         };
     }
@@ -2843,15 +3125,12 @@ mod tests {
             .find(|tool| tool.name == "unica.code.patch")
             .unwrap();
         let mut args = Map::new();
-        args.insert(
-            "path".to_string(),
-            json!("src/CommonModules/X/Ext/Module.bsl"),
-        );
+        args.insert("sourceSet".to_string(), json!("main"));
+        args.insert("metadataPath".to_string(), json!("CommonModule.X.Module"));
         args.insert("operation".to_string(), json!("insert"));
         args.insert("selector".to_string(), json!({"method": "ПриСоздании"}));
         args.insert("content".to_string(), json!("Сообщить(\"ok\");"));
         args.insert("position".to_string(), json!("after"));
-        args.insert("sourceDir".to_string(), json!("src"));
         validate_tool_arguments(tool, &args, false).unwrap();
 
         args.insert(
@@ -2864,6 +3143,31 @@ mod tests {
     }
 
     #[test]
+    fn code_patch_legacy_target_fields_fail_with_a_stable_migration_error() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.code.patch")
+            .unwrap();
+
+        for legacy in [
+            json!({"path": "src/CommonModules/X/Ext/Module.bsl"}),
+            json!({"sourceDir": "src"}),
+            json!({
+                "path": "src/CommonModules/X/Ext/Module.bsl",
+                "sourceDir": "src"
+            }),
+        ] {
+            let error =
+                validate_tool_arguments(tool, legacy.as_object().unwrap(), true).unwrap_err();
+            assert!(
+                error.starts_with("legacy_target_removed:"),
+                "{legacy}: {error}"
+            );
+            assert!(error.contains("sourceSet + metadataPath"), "{error}");
+        }
+    }
+
+    #[test]
     fn code_patch_json_schema_accepts_each_documented_selector_variant() {
         let tool = tools()
             .into_iter()
@@ -2872,11 +3176,11 @@ mod tests {
         let schema = input_schema_for_tool(&tool);
         let validator = jsonschema::validator_for(&schema).unwrap();
         let base = json!({
-            "path": "src/CommonModules/X/Ext/Module.bsl",
+            "sourceSet": "main",
+            "metadataPath": "CommonModule.X.Module",
             "operation": "insert",
             "content": "Сообщить(\"ok\");",
-            "position": "after",
-            "sourceDir": "src",
+            "position": "after"
         });
 
         for selector in [
@@ -2891,6 +3195,34 @@ mod tests {
         let mut invalid = base;
         invalid["selector"] = json!({"method": "A", "anchor": "B"});
         assert!(!validator.is_valid(&invalid));
+    }
+
+    #[test]
+    fn code_patch_metadata_path_description_is_tool_specific() {
+        let tools = tools();
+        let code_patch = tools
+            .iter()
+            .find(|tool| tool.name == "unica.code.patch")
+            .unwrap();
+        let role_validate = tools
+            .iter()
+            .find(|tool| tool.name == "unica.role.validate")
+            .unwrap();
+
+        let code_patch_schema = input_schema_for_tool(code_patch);
+        let role_validate_schema = input_schema_for_tool(role_validate);
+        let code_patch_description = code_patch_schema["properties"]["metadataPath"]["description"]
+            .as_str()
+            .unwrap();
+        let role_validate_description = role_validate_schema["properties"]["metadataPath"]
+            ["description"]
+            .as_str()
+            .unwrap();
+
+        assert!(code_patch_description.contains("logical module address"));
+        assert!(code_patch_description.contains("sourceSet"));
+        assert!(!role_validate_description.contains("unica.code.patch"));
+        assert!(!role_validate_description.contains("module"));
     }
 
     #[test]
@@ -3594,6 +3926,126 @@ mod tests {
     }
 
     #[test]
+    fn source_navigation_schemas_are_logical_exact_and_bounded() {
+        let resolve = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.source.resolve")
+            .expect("source.resolve is registered");
+        let children = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.source.children")
+            .expect("source.children is registered");
+
+        let resolve_schema = input_schema_for_tool(&resolve);
+        assert_eq!(resolve_schema["required"], json!(["sourceSet", "query"]));
+        assert_eq!(
+            resolve_schema["properties"]["mode"]["enum"],
+            json!(["exact", "prefix"])
+        );
+        assert_eq!(
+            resolve_schema["properties"]["targetKind"]["enum"],
+            json!(["metadataObject", "module"])
+        );
+        assert_eq!(resolve_schema["properties"]["limit"]["minimum"], 1);
+        assert_eq!(resolve_schema["properties"]["limit"]["maximum"], 50);
+        for forbidden in ["path", "sourceDir", "provider", "handle"] {
+            assert!(
+                resolve_schema["properties"].get(forbidden).is_none(),
+                "source.resolve must not publish {forbidden}"
+            );
+        }
+
+        let children_schema = input_schema_for_tool(&children);
+        assert_eq!(children_schema["required"], json!(["sourceSet"]));
+        assert_eq!(
+            children_schema["properties"]["metadataPath"]["type"],
+            "string"
+        );
+        assert_eq!(children_schema["properties"]["cursor"]["type"], "string");
+        assert_eq!(children_schema["properties"]["limit"]["minimum"], 1);
+        assert_eq!(children_schema["properties"]["limit"]["maximum"], 50);
+        for forbidden in ["path", "sourceDir", "provider", "handle", "collection"] {
+            assert!(
+                children_schema["properties"].get(forbidden).is_none(),
+                "source.children must not publish {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn source_resource_schemas_are_bounded_typed_and_path_free() {
+        let resources = crate::application::tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.source.resources")
+            .expect("source.resources is registered");
+        let read = crate::application::tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.source.read")
+            .expect("source.read is registered");
+        // The bounded resource surface is read-only; BSL mutation lives in
+        // `unica.code.patch`.
+        assert!(crate::application::tools()
+            .into_iter()
+            .all(|tool| tool.name != "unica.source.apply"));
+        let resources_schema = input_schema_for_tool(&resources);
+        let read_schema = input_schema_for_tool(&read);
+
+        assert_eq!(resources_schema["additionalProperties"], false);
+        assert_eq!(
+            resources_schema["properties"]["scope"]["enum"],
+            json!(["self", "aggregate", "registrations"])
+        );
+        assert_eq!(resources_schema["properties"]["limit"]["maximum"], 50);
+        assert_eq!(read_schema["additionalProperties"], false);
+        assert_eq!(read_schema["required"], json!(["snapshotId", "resourceId"]));
+        assert_eq!(read_schema["properties"]["offset"]["minimum"], 0);
+        assert_eq!(read_schema["properties"]["limit"]["maximum"], 65_536);
+        for forbidden in [
+            "path",
+            "sourceDir",
+            "handle",
+            "provider",
+            "providerRevision",
+            "expectedHash",
+            "content",
+        ] {
+            for (name, schema) in [
+                ("source.resources", &resources_schema),
+                ("source.read", &read_schema),
+            ] {
+                assert!(
+                    schema["properties"].get(forbidden).is_none(),
+                    "{name} must not publish {forbidden}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn source_navigation_arguments_reject_fuzzy_modes_and_unbounded_limits() {
+        let resolve = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.source.resolve")
+            .unwrap();
+        for args in [
+            json!({"sourceSet": "main", "query": "Catalog.Items", "mode": "fuzzy"}),
+            json!({"sourceSet": "main", "query": "Catalog.Items", "mode": 1}),
+            json!({"sourceSet": "main", "query": "Catalog.Items", "targetKind": "sourceRoot"}),
+            json!({"sourceSet": "main", "query": "Catalog.Items", "targetKind": 1}),
+            json!({"sourceSet": "main", "query": "Catalog.Items", "limit": -1}),
+            json!({"sourceSet": "main", "query": "Catalog.Items", "limit": 0}),
+            json!({"sourceSet": "main", "query": "Catalog.Items", "limit": 51}),
+        ] {
+            let error = validate_tool_arguments(resolve, args.as_object().unwrap(), false)
+                .expect_err("invalid source navigation input must be rejected");
+            assert!(
+                error.contains("mode") || error.contains("limit") || error.contains("targetKind"),
+                "unexpected error: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn runtime_job_schemas_keep_execution_typed_and_controls_narrow() {
         let job_start = tools()
             .into_iter()
@@ -3685,16 +4137,36 @@ mod tests {
         let schema = input_schema_for_tool(&tool);
         let selector = &schema["properties"]["selector"];
 
+        assert!(schema["properties"].get("sourceSet").is_some());
+        assert!(schema["properties"].get("metadataPath").is_some());
+        assert!(schema["properties"].get("path").is_none());
+        assert!(schema["properties"].get("sourceDir").is_none());
         assert_eq!(selector["type"], "object");
         assert_eq!(selector["additionalProperties"], false);
         assert_eq!(selector["properties"]["method"]["type"], "string");
         assert_eq!(selector["properties"]["anchor"]["type"], "string");
         assert_eq!(selector["oneOf"].as_array().map(Vec::len), Some(2));
-        for required in ["path", "operation", "selector", "content", "position"] {
+        for required in [
+            "sourceSet",
+            "metadataPath",
+            "operation",
+            "selector",
+            "content",
+        ] {
             assert!(schema["required"]
                 .as_array()
                 .is_some_and(|items| { items.iter().any(|value| value == required) }));
         }
+        // `position` belongs to operation `insert` only, so it is offered but
+        // not demanded of every call.
+        assert_eq!(
+            schema["properties"]["operation"]["enum"],
+            serde_json::json!(["insert", "replace"])
+        );
+        assert!(schema["properties"]["position"].is_object());
+        assert!(schema["required"]
+            .as_array()
+            .is_some_and(|items| { items.iter().all(|value| value != "position") }));
     }
 
     #[test]

@@ -392,6 +392,34 @@ class ArchitectureEvidenceTests(unittest.TestCase):
         self.assertEqual(change.removed, {"unica.code.grep"})
         self.assertTrue(change.is_violation)
 
+    def test_logical_source_family_with_contract_evidence_is_accepted(self) -> None:
+        tools = (
+            "unica.source.resolve",
+            "unica.source.children",
+            "unica.source.resources",
+            "unica.source.read",
+            "unica.source.apply",
+        )
+        registry_hunk = "".join(
+            f'+            name: "{tool}",\n' for tool in tools
+        )
+        diff = diff_for(
+            REGISTRY,
+            "@@ -100,0 +101,5 @@\n" + registry_hunk,
+        )
+        diff += created_diff_for(
+            "spec/decisions/0021-logical-source-addressing.md",
+            "@@ -0,0 +1 @@\n+# ADR-0021\n",
+        )
+        diff += created_diff_for(
+            "spec/acceptance/logical-source-addressing-and-resource-access.md",
+            "@@ -0,0 +1 @@\n+# Приёмка\n",
+        )
+
+        change = self.guard.analyze_diff(diff)
+        self.assertEqual(change.added, set(tools))
+        self.assertFalse(change.is_violation)
+
 
 class DecisionRecordImmutabilityTests(unittest.TestCase):
     """INV-DOC-SUPERSEDE-NOT-EDIT: an accepted record is superseded, never rewritten."""

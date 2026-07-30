@@ -1,4 +1,6 @@
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::platform::filesystem::path_starts_with_host_root;
+use crate::infrastructure::source_roots::normalize_path_identity;
 use std::path::{Component, Path, PathBuf};
 
 pub struct WorkspacePathPolicy<'a> {
@@ -15,28 +17,31 @@ impl<'a> WorkspacePathPolicy<'a> {
     }
 
     fn resolve_workspace_path(&self, path: PathBuf, operation: &str) -> Result<PathBuf, String> {
-        let cwd = canonical_or_lexical(&self.context.cwd);
+        let cwd = normalize_path_identity(&self.context.cwd)
+            .map_err(|error| format!("failed to inspect workspace cwd: {error}"))?;
         let raw = if path.is_absolute() {
             path
         } else {
             cwd.join(path)
         };
         let normalized = normalize_lexically(&raw);
-        let canonical_root = canonical_or_lexical(&self.context.workspace_root);
-        let lexical_root = normalize_lexically(&self.context.workspace_root);
+        let lexical_workspace = normalize_lexically(&self.context.workspace_root);
+        let lexical_path = normalize_lexically(&normalized);
+        let workspace_identity = normalize_path_identity(&self.context.workspace_root)
+            .map_err(|error| format!("failed to inspect workspace root: {error}"))?;
 
-        if !normalized.starts_with(&canonical_root) && !normalized.starts_with(&lexical_root) {
+        if !path_starts_with_host_root(&lexical_path, &lexical_workspace)
+            && !path_starts_with_host_root(&lexical_path, &workspace_identity)
+        {
             return Err(format!(
                 "refusing to {operation} outside workspace root: {}",
                 normalized.display()
             ));
         }
 
-        let existing_ancestor = nearest_existing_ancestor(&normalized);
-        let canonical_ancestor = existing_ancestor
-            .canonicalize()
-            .map_err(|err| format!("failed to inspect {}: {err}", existing_ancestor.display()))?;
-        if !canonical_ancestor.starts_with(&canonical_root) {
+        let path_identity = normalize_path_identity(&normalized)
+            .map_err(|error| format!("failed to inspect workspace path: {error}"))?;
+        if !path_starts_with_host_root(&path_identity, &workspace_identity) {
             return Err(format!(
                 "refusing to {operation} through symlink outside workspace root: {}",
                 normalized.display()
@@ -45,21 +50,6 @@ impl<'a> WorkspacePathPolicy<'a> {
 
         Ok(normalized)
     }
-}
-
-fn canonical_or_lexical(path: &Path) -> PathBuf {
-    path.canonicalize()
-        .map(|path| normalize_lexically(&path))
-        .unwrap_or_else(|_| normalize_lexically(path))
-}
-
-fn nearest_existing_ancestor(path: &Path) -> PathBuf {
-    for ancestor in path.ancestors() {
-        if ancestor.exists() {
-            return ancestor.to_path_buf();
-        }
-    }
-    PathBuf::from("/")
 }
 
 fn normalize_lexically(path: &Path) -> PathBuf {

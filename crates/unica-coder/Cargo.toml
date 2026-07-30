@@ -33,6 +33,8 @@ libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
+cap-primitives.workspace = true
+cap-fs-ext.workspace = true
 
 [dev-dependencies]
 jsonschema.workspace = true

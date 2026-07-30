@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import queue
@@ -8,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -26,6 +28,34 @@ MCP_HANDSHAKE = [
     },
     {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
 ]
+
+
+def source_smoke_oracle():
+    script = Path(__file__).resolve().parents[2] / "scripts/ci/smoke-unica-mcp.py"
+    spec = importlib.util.spec_from_file_location("smoke_unica_mcp_oracle", script)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def assert_no_physical_source_selectors(value: object) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key in {"path", "sourceDir", "provider", "providerId", "providerRevision", "handle"}:
+                raise AssertionError(f"source response leaked physical selector {key}")
+            assert_no_physical_source_selectors(child)
+    elif isinstance(value, list):
+        for child in value:
+            assert_no_physical_source_selectors(child)
+
+
+def snapshot_workspace_files(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
 
 
 class UnicaMcpSmokeTests(unittest.TestCase):
@@ -63,7 +93,8 @@ class UnicaMcpSmokeTests(unittest.TestCase):
         try:
             # The rmcp-based server requires the MCP handshake first; prepend it
             # unless the scenario drives initialize itself.
-            if messages and messages[0].get("method") != "initialize":
+            injected_handshake = messages and messages[0].get("method") != "initialize"
+            if injected_handshake:
                 messages = MCP_HANDSHAKE + messages
             for message in messages:
                 process.stdin.write(json.dumps(message) + "\n")
@@ -98,7 +129,7 @@ class UnicaMcpSmokeTests(unittest.TestCase):
             return_code = process.wait(timeout=max(0.1, deadline - time.monotonic()))
             stderr = process.stderr.read()
             self.assertEqual(return_code, 0, stderr)
-            return [r for r in responses if r.get("id") != MCP_HANDSHAKE_ID]
+            return [r for r in responses if not injected_handshake or r.get("id") != MCP_HANDSHAKE_ID]
         finally:
             if not process.stdin.closed:
                 process.stdin.close()
@@ -110,6 +141,120 @@ class UnicaMcpSmokeTests(unittest.TestCase):
                     pass
             process.stdout.close()
             process.stderr.close()
+
+    @contextmanager
+    def mcp_session(self, *, cache_dir: Path | None = None):
+        env = os.environ.copy()
+        if cache_dir is not None:
+            env["UNICA_CACHE_DIR"] = str(cache_dir)
+        process = subprocess.Popen(
+            ["cargo", "run", "--quiet", "--bin", "unica", "--"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=self.repo_root(),
+            env=env,
+        )
+        assert process.stdin is not None
+        assert process.stdout is not None
+        assert process.stderr is not None
+        lines: queue.Queue[str] = queue.Queue()
+
+        def read_stdout() -> None:
+            for line in process.stdout:
+                lines.put(line)
+            lines.put("")
+
+        threading.Thread(target=read_stdout, daemon=True).start()
+
+        # The session outlives many calls, so stderr has to be drained too:
+        # a full pipe buffer would stall the server and read as a timeout.
+        diagnostics: list[str] = []
+
+        def read_stderr() -> None:
+            for line in process.stderr:
+                diagnostics.append(line)
+
+        threading.Thread(target=read_stderr, daemon=True).start()
+
+        def request(message: dict) -> dict:
+            process.stdin.write(json.dumps(message) + "\n")
+            process.stdin.flush()
+            try:
+                line = lines.get(timeout=30)
+            except queue.Empty:
+                self.fail(
+                    "timed out waiting for interactive MCP response: "
+                    + "".join(diagnostics)
+                )
+            if not line:
+                self.fail(
+                    "interactive MCP process exited before a response: "
+                    + "".join(diagnostics)
+                )
+            response = json.loads(line)
+            self.assertEqual(response.get("id"), message.get("id"), response)
+            return response
+
+        try:
+            response = request({**MCP_HANDSHAKE[0], "id": 1})
+            self.assertIn("result", response)
+            process.stdin.write(json.dumps(MCP_HANDSHAKE[1]) + "\n")
+            process.stdin.flush()
+            yield request
+        finally:
+            try:
+                if not process.stdin.closed:
+                    try:
+                        process.stdin.close()
+                    except BrokenPipeError:
+                        # The child may already be gone; reaping still has to run.
+                        pass
+                try:
+                    return_code = process.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    # Reap the killed child, otherwise it is left a zombie.
+                    process.wait()
+                    self.fail("interactive MCP process did not exit")
+                self.assertEqual(return_code, 0, "".join(diagnostics))
+            finally:
+                # Closed on every exit path, including a failed assertion.
+                for stream in (process.stdout, process.stderr):
+                    if stream is not None and not stream.closed:
+                        stream.close()
+
+    def source_fixture(self, root: Path) -> dict[str, bytes]:
+        (root / "src/CommonModules/Shared/Ext").mkdir(parents=True)
+        (root / "ext/CommonModules/Shared/Ext").mkdir(parents=True)
+        (root / "v8project.yaml").write_text(
+            "format: DESIGNER\nsource-set:\n"
+            "  - name: main\n    type: CONFIGURATION\n    path: src\n"
+            "  - name: extension\n    type: EXTENSION\n    path: ext\n",
+            encoding="utf-8",
+        )
+        xml = {}
+        for source_set, name, method in [("src", "Main", "Run"), ("ext", "Extension", "RunExtension")]:
+            descriptor = (
+                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">"
+                f"<Configuration><Properties><Name>{name}</Name>"
+                + ("<ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose>" if source_set == "ext" else "")
+                + "</Properties><ChildObjects><CommonModule>Shared</CommonModule>"
+                "</ChildObjects></Configuration></MetaDataObject>"
+            ).encode()
+            (root / source_set / "Configuration.xml").write_bytes(descriptor)
+            module_descriptor = (
+                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">"
+                "<CommonModule><Properties><Name>Shared</Name></Properties></CommonModule>"
+                "</MetaDataObject>"
+            ).encode()
+            (root / source_set / "CommonModules/Shared.xml").write_bytes(module_descriptor)
+            module_path = root / source_set / "CommonModules/Shared/Ext/Module.bsl"
+            module_path.write_bytes((f"\ufeffProcedure {method}()\r\nEndProcedure\r\n").encode())
+            xml[str(root / source_set / "Configuration.xml")] = descriptor
+            xml[str(root / source_set / "CommonModules/Shared.xml")] = module_descriptor
+        return xml
 
     def test_initialize_lists_single_unica_server(self) -> None:
         responses = self.call_mcp(
@@ -129,6 +274,203 @@ class UnicaMcpSmokeTests(unittest.TestCase):
         self.assertIn("unica.build.load", tools)
         self.assertIn("unica.runtime.execute", tools)
         self.assertIn("unica.standards.explain", tools)
+
+    def test_source_resources_cover_configuration_and_extension_through_one_jsonrpc_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp = Path(tmp)
+            root = temp / "workspace"
+            self.source_fixture(root)
+            before = snapshot_workspace_files(root)
+            oracle = source_smoke_oracle()
+            cache_root = temp / "cache"
+            with self.mcp_session(cache_dir=cache_root) as request:
+                next_id = 2
+
+                def tool(name: str, arguments: dict) -> dict:
+                    nonlocal next_id
+                    response = request(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": next_id,
+                            "method": "tools/call",
+                            "params": {"name": name, "arguments": arguments},
+                        }
+                    )
+                    next_id += 1
+                    self.assertNotIn("error", response, response)
+                    payload = json.loads(response["result"]["content"][0]["text"])
+                    self.assertTrue(payload["ok"], payload)
+                    assert_no_physical_source_selectors(payload)
+                    return payload
+
+                listed = request({"jsonrpc": "2.0", "id": next_id, "method": "tools/list", "params": {}})
+                next_id += 1
+                oracle._stable_tool_contract(listed["result"]["tools"])
+                tools = {item["name"]: item for item in listed["result"]["tools"]}
+                source_tools = {
+                    "unica.source.resolve",
+                    "unica.source.children",
+                    "unica.source.resources",
+                    "unica.source.read",
+                    "unica.source.locate",
+                }
+                self.assertTrue(source_tools.issubset(tools))
+                for name in source_tools:
+                    schema = tools[name]["inputSchema"]
+                    # `unica.source.locate` takes a path as the subject it
+                    # translates, not as a target selector; every other source
+                    # tool selects its target logically.
+                    forbidden = {"sourceDir", "provider", "handle"}
+                    if name != "unica.source.locate":
+                        forbidden.add("path")
+                    self.assertFalse(forbidden & set(schema["properties"]), name)
+                    if name != "unica.source.locate":
+                        assert_no_physical_source_selectors(schema)
+
+                for source_set in ("main", "extension"):
+                    target = "CommonModule.Shared.Module"
+                    before_flow = snapshot_workspace_files(root)
+                    resolve = tool(
+                        "unica.source.resolve",
+                        {"cwd": str(root), "sourceSet": source_set, "query": target, "mode": "exact", "targetKind": "module"},
+                    )
+                    self.assertEqual([candidate["metadataPath"] for candidate in resolve["data"]["candidates"]], [target])
+                    children = tool(
+                        "unica.source.children",
+                        {"cwd": str(root), "sourceSet": source_set, "metadataPath": "CommonModule.Shared"},
+                    )
+                    self.assertIn(target, [child["metadataPath"] for child in children["data"]["children"]])
+                    resources = tool(
+                        "unica.source.resources",
+                        {"cwd": str(root), "sourceSet": source_set, "metadataPath": target, "scope": "self"},
+                    )
+                    self.assertEqual(resources["cache"]["events"], [])
+                    self.assertEqual(resources["cache"]["invalidated"], [])
+                    resource = resources["data"]["resources"][0]
+                    read = tool(
+                        "unica.source.read",
+                        {"cwd": str(root), "snapshotId": resources["data"]["snapshotId"], "resourceId": resource["resourceId"]},
+                    )
+                    self.assertEqual(read["data"]["textProfile"]["bomPrefixBytes"], 3)
+                    self.assertEqual(read["data"]["textProfile"]["eol"], "crlf")
+                    # The whole source surface is read-only, so the session must
+                    # leave every byte of the workspace in place.
+                    self.assertEqual(
+                        snapshot_workspace_files(root),
+                        before_flow,
+                        f"{source_set} read-only flow changed workspace bytes",
+                    )
+                    located = tool(
+                        "unica.source.locate",
+                        {"cwd": str(root), "sourceSet": source_set,
+                         "path": f"{'src' if source_set == 'main' else 'ext'}/CommonModules/Shared/Ext/Module.bsl"},
+                    )
+                    self.assertEqual(located["data"]["metadataPath"], target)
+                    self.assertEqual(
+                        oracle.source_flow_projection(
+                            source_set,
+                            cache_root,
+                            resolve,
+                            children,
+                            resources,
+                            read,
+                        ),
+                        oracle.expected_source_flow_projection(source_set),
+                    )
+
+            # The public source surface is read-only end to end.
+            self.assertEqual(snapshot_workspace_files(root), before)
+
+    def test_source_transport_rejects_legacy_patch_selectors_and_descriptor_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp = Path(tmp)
+            root = temp / "workspace"
+            self.source_fixture(root)
+            with self.mcp_session(cache_dir=temp / "cache") as request:
+                next_id = 2
+
+                def raw_tool(name: str, arguments: dict) -> dict:
+                    nonlocal next_id
+                    response = request(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": next_id,
+                            "method": "tools/call",
+                            "params": {"name": name, "arguments": arguments},
+                        }
+                    )
+                    next_id += 1
+                    return response
+
+                def assert_rpc_error(
+                    response: dict,
+                    *,
+                    prefix: str,
+                    hint: str,
+                ) -> None:
+                    expected_message = f"{prefix}: {hint}"
+                    self.assertEqual(response["jsonrpc"], "2.0")
+                    self.assertIsInstance(response["id"], int)
+                    self.assertNotIn("result", response)
+                    self.assertEqual(
+                        response["error"],
+                        {"code": -32000, "message": expected_message},
+                    )
+                    actual_prefix, separator, actual_hint = response[
+                        "error"
+                    ]["message"].partition(": ")
+                    self.assertEqual(separator, ": ")
+                    self.assertEqual(actual_prefix, prefix)
+                    self.assertEqual(actual_hint, hint)
+
+                patch_args = {
+                    "cwd": str(root), "sourceSet": "main", "metadataPath": "CommonModule.Shared.Module",
+                    "operation": "insert", "selector": {"method": "Run"}, "content": "Procedure Added()\nEndProcedure",
+                }
+                legacy_hint = (
+                    "unica.code.patch no longer accepts `path` or "
+                    "`sourceDir`; use `sourceSet + metadataPath`"
+                )
+                for legacy in ({"path": "src/CommonModules/Shared/Ext/Module.bsl"}, {"sourceDir": "src"}, {"path": "src/CommonModules/Shared/Ext/Module.bsl", "sourceDir": "src"}):
+                    result = raw_tool("unica.code.patch", {**patch_args, **legacy})
+                    assert_rpc_error(
+                        result,
+                        prefix="legacy_target_removed",
+                        hint=legacy_hint,
+                    )
+
+                resources_response = raw_tool(
+                    "unica.source.resources",
+                    {"cwd": str(root), "sourceSet": "main", "scope": "self"},
+                )
+                self.assertNotIn("error", resources_response)
+                payload = json.loads(
+                    resources_response["result"]["content"][0]["text"]
+                )
+                self.assertEqual(payload["data"]["completeness"], "complete")
+                descriptors = [item for item in payload["data"]["resources"] if item["role"] == "configurationDescriptor"]
+                self.assertEqual(len(descriptors), 1, payload)
+                descriptor = descriptors[0]
+                # Every snapshotted descriptor stays read-only: nothing in the
+                # manifest may advertise a write the surface cannot perform.
+                for resource in payload["data"]["resources"]:
+                    self.assertEqual(resource["access"], ["read"], resource)
+                partial_response = raw_tool(
+                    "unica.source.resources",
+                    {"cwd": str(root), "sourceSet": "main", "scope": "aggregate", "limit": 1},
+                )
+                self.assertNotIn("error", partial_response)
+                partial_payload = json.loads(
+                    partial_response["result"]["content"][0]["text"]
+                )
+                self.assertEqual(partial_payload["data"]["completeness"], "partial")
+                # The writer is gone from the public surface entirely.
+                removed = raw_tool("unica.source.apply", {"cwd": str(root)})
+                assert_rpc_error(
+                    removed,
+                    prefix="unknown unica tool",
+                    hint="unica.source.apply",
+                )
 
     def test_notifications_do_not_count_as_responses(self) -> None:
         responses = self.call_mcp(

@@ -1,5 +1,5 @@
 use crate::domain::cancellation::{cancelled_error, CancellationToken};
-use crate::domain::events::DomainEvent;
+use crate::domain::events::{DomainEvent, DomainEventKind};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::platform::{ManagedChild, ManagedStartupChild};
@@ -25,7 +25,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
-const SERVICE_SCHEMA_VERSION: u32 = 2;
+const SERVICE_SCHEMA_VERSION: u32 = 3;
 const DEFAULT_IDLE_SECS: u64 = 7200;
 const DEFAULT_MAX_AGE_SECS: u64 = 28800;
 const SERVICE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -484,10 +484,7 @@ impl<'a> WorkspaceServiceManager<'a> {
         let Ok(entries) = fs::read_dir(services_dir) else {
             return;
         };
-        let event_names = events
-            .iter()
-            .map(|event| event.name().to_string())
-            .collect::<Vec<_>>();
+        let typed_events = events.to_vec();
         let Ok(workspace_root) = normalize_path_identity(&context.workspace_root) else {
             return;
         };
@@ -511,7 +508,7 @@ impl<'a> WorkspaceServiceManager<'a> {
                 ServiceRequest {
                     token: record.token.clone(),
                     kind: ServiceRequestKind::Invalidate {
-                        events: event_names.clone(),
+                        events: typed_events.clone(),
                     },
                 },
                 &CancellationToken::new(),
@@ -1473,8 +1470,8 @@ impl WorkspaceServiceRuntime {
         self.session_teardowns.drain(SESSION_TEARDOWN_GRACE)
     }
 
-    fn invalidate(&self, events: &[String]) -> ServiceResponse {
-        if events.iter().any(|event| invalidates_analyzer(event)) {
+    fn invalidate(&self, events: &[DomainEvent]) -> ServiceResponse {
+        if events.iter().any(|event| invalidates_analyzer(event.kind)) {
             self.analyzer_invalidated.store(true, Ordering::Release);
             self.rlm_invalidated.store(true, Ordering::Release);
         }
@@ -1707,18 +1704,19 @@ impl SessionTeardownLifecycle {
     }
 }
 
-fn invalidates_analyzer(event: &str) -> bool {
+fn invalidates_analyzer(event: DomainEventKind) -> bool {
     matches!(
         event,
-        "ModuleChanged"
-            | "SourceSetChanged"
-            | "BuildCompleted"
-            | "MetadataChanged"
-            | "ConfigXmlChanged"
-            | "CfeChanged"
-            | "FormChanged"
-            | "RoleChanged"
-            | "DcsChanged"
+        DomainEventKind::ModuleChanged
+            | DomainEventKind::SourceResourcesReplaced
+            | DomainEventKind::SourceSetChanged
+            | DomainEventKind::BuildCompleted
+            | DomainEventKind::MetadataChanged
+            | DomainEventKind::ConfigXmlChanged
+            | DomainEventKind::CfeChanged
+            | DomainEventKind::FormChanged
+            | DomainEventKind::RoleChanged
+            | DomainEventKind::DcsChanged
     )
 }
 
@@ -1852,7 +1850,7 @@ enum ServiceRequestKind {
         operation_id: String,
     },
     Invalidate {
-        events: Vec<String>,
+        events: Vec<DomainEvent>,
     },
     Shutdown,
 }
@@ -6098,6 +6096,29 @@ fn main() {
                 kind
             );
         }
+
+        let invalidation = ServiceRequestKind::Invalidate {
+            events: vec![DomainEvent::source_resources_replaced(
+                crate::domain::events::SourceResourcesReplaced {
+                    source_set: "main".to_string(),
+                    owner: "CommonModule.Shared".to_string(),
+                    roles: vec![crate::domain::source_resources::ResourceRole::BslModule],
+                    preimage_hashes: vec!["sha256:before".to_string()],
+                    postimage_hashes: vec!["sha256:after".to_string()],
+                    affected_targets: vec!["CommonModule.Shared.Module".to_string()],
+                },
+            )],
+        };
+        let json = serde_json::to_value(&invalidation).unwrap();
+        assert_eq!(json["type"], "invalidate");
+        assert_eq!(
+            json["events"][0]["details"]["affectedTargets"],
+            json!(["CommonModule.Shared.Module"])
+        );
+        assert_eq!(
+            serde_json::from_value::<ServiceRequestKind>(json).unwrap(),
+            invalidation
+        );
     }
 
     struct FailingWriter;
@@ -6329,6 +6350,21 @@ fn main() {
         mismatched_source.source_root = context.workspace_root.join("other").display().to_string();
         assert!(!mismatched_source.matches(&identity, env!("CARGO_PKG_VERSION")));
 
+        cleanup(&context);
+    }
+
+    #[test]
+    fn service_record_v2_is_not_reused_after_typed_invalidation_protocol() {
+        let context = test_context("typed-invalidation-record-version");
+        let source_root = context.workspace_root.join("src");
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let mut record = test_record(&identity, 34567, env!("CARGO_PKG_VERSION"));
+        record.schema_version = 2;
+
+        assert!(
+            !record.matches(&identity, env!("CARGO_PKG_VERSION")),
+            "the pre-typed-invalidation service protocol must not be reused"
+        );
         cleanup(&context);
     }
 

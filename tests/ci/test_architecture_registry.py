@@ -28,6 +28,15 @@ REQUIREMENTS = ARCHITECTURE_DIR / "quality-requirements.md"
 DECISIONS_DIR = REPO_ROOT / "spec" / "decisions"
 DECISIONS_INDEX = DECISIONS_DIR / "README.md"
 SPEC_INDEX = REPO_ROOT / "spec" / "README.md"
+LOGICAL_SOURCE_ACCEPTANCE = (
+    REPO_ROOT
+    / "spec"
+    / "acceptance"
+    / "logical-source-addressing-and-resource-access.md"
+)
+SOURCE_RESOURCE_DOMAIN = (
+    REPO_ROOT / "crates" / "unica-coder" / "src" / "domain" / "source_resources.rs"
+)
 
 RECORD_HEADING = re.compile(r"^### (?P<id>\S+) — (?P<name>.+)$")
 # `INV-<ОБЛАСТЬ>-<КОД>`: код смысловой, без цифр, потому что реестр — множество,
@@ -1316,6 +1325,155 @@ class RegistryCheckTests(unittest.TestCase):
         self.assertEqual(offenders, [])
 
 
+class LogicalSourceContractTests(unittest.TestCase):
+    """The accepted source contract stays tied to executable evidence."""
+
+    def setUp(self) -> None:
+        self.records = {record.id: record for record in all_records()}
+
+    def test_decision_lifecycle_activates_both_source_contracts(self) -> None:
+        legacy = (
+            DECISIONS_DIR / "0015-narrow-boundaries-for-code-patch-v1.md"
+        ).read_text(encoding="utf-8")
+        logical = (
+            DECISIONS_DIR / "0021-logical-source-addressing.md"
+        ).read_text(encoding="utf-8")
+        resources = (
+            DECISIONS_DIR / "0022-bounded-source-resource-access.md"
+        ).read_text(encoding="utf-8")
+        index = DECISIONS_INDEX.read_text(encoding="utf-8")
+        accepted = index.split("## Принятые решения", 1)[1].split(
+            "## Предложенные решения", 1
+        )[0]
+        proposed = index.split("## Предложенные решения", 1)[1].split("\n## ", 1)[0]
+
+        self.assertIn("- Статус: `superseded` — заменено ADR-0021", legacy)
+        self.assertIn("- Статус: `accepted`", logical)
+        self.assertIn("- Статус: `accepted`", resources)
+        self.assertIn("(0021-logical-source-addressing.md)", accepted)
+        self.assertIn("(0022-bounded-source-resource-access.md)", accepted)
+        self.assertNotIn("(0021-logical-source-addressing.md)", proposed)
+        self.assertNotIn("(0022-bounded-source-resource-access.md)", proposed)
+
+    def test_derived_source_rules_name_their_owner_and_real_check(self) -> None:
+        expected = {
+            "INV-SOURCE-LOGICAL-IDENTITY": (
+                "ADR-0021",
+                "crates/unica-coder/src/domain/source_target.rs",
+            ),
+            "INV-SOURCE-SNAPSHOT-BINDING": (
+                "ADR-0022",
+                "crates/unica-coder/src/infrastructure/platform_xml_resources.rs",
+            ),
+            "INV-SOURCE-ROLE-ALLOWLIST": (
+                "ADR-0022",
+                "crates/unica-coder/src/domain/source_resources.rs",
+            ),
+            "INV-MCP-SOURCE-SURFACE": (
+                "ADR-0021, ADR-0022",
+                "crates/unica-coder/src/application/tool_contracts.rs",
+            ),
+            "INV-SKILL-SOURCE-FALLBACK": (
+                "ADR-0022",
+                "tests/ci/test_unica_skills.py",
+            ),
+        }
+
+        for identifier, (decision, check_path) in expected.items():
+            with self.subTest(identifier=identifier):
+                record = self.records.get(identifier)
+                self.assertIsNotNone(record, f"missing {identifier}")
+                self.assertEqual(record.one("Decision"), decision)
+                self.assertTrue(
+                    any(check_path in check for check in record.fields.get("Check", [])),
+                    f"{identifier} does not name its executable check",
+                )
+
+        for identifier in (
+            "INV-SOURCE-ATOMIC-PUBLISH",
+            "INV-SOURCE-IDEMPOTENT-REWRITE",
+        ):
+            with self.subTest(identifier=identifier):
+                self.assertEqual(
+                    self.records[identifier].one("Decision"),
+                    "ADR-0021, ADR-0022",
+                )
+
+        atomic_checks = "\n".join(
+            self.records["INV-SOURCE-ATOMIC-PUBLISH"].fields.get("Check", [])
+        )
+        for check_path in (
+            "crates/unica-coder/src/infrastructure/platform_xml_resources.rs",
+            "crates/unica-coder/src/infrastructure/native_operations/compile_transaction.rs",
+            "crates/unica-coder/src/infrastructure/native_operations/single_file_publisher.rs",
+        ):
+            with self.subTest(atomic_check=check_path):
+                self.assertIn(check_path, atomic_checks)
+
+    def test_source_resource_budgets_match_the_rust_contract(self) -> None:
+        record = self.records.get("REQ-PERF-SOURCE-BOUNDS")
+        self.assertIsNotNone(record, "missing REQ-PERF-SOURCE-BOUNDS")
+        self.assertEqual(record.one("Decision"), "ADR-0022")
+        rule = record.one("Rule") or ""
+        for value in ("5", "100", "50", "64", "1", "32", "128"):
+            self.assertRegex(rule, rf"(?<!\d){value}(?!\d)")
+
+        source = SOURCE_RESOURCE_DOMAIN.read_text(encoding="utf-8")
+        expected_constants = {
+            "SOURCE_MANIFEST_RESOURCE_MAX": "100",
+            "SOURCE_RESOURCE_PAGE_LIMIT_MAX": "50",
+            "SOURCE_READ_LIMIT_MAX": "64 * 1024",
+            "SOURCE_REPLACEMENT_MAX_BYTES": "1024 * 1024",
+            "SOURCE_SNAPSHOT_TTL_SECONDS": "5 * 60",
+        }
+        for name, expression in expected_constants.items():
+            with self.subTest(name=name):
+                self.assertRegex(
+                    source,
+                    rf"pub const {name}: [^=]+ = {re.escape(expression)};",
+                )
+        infrastructure = (
+            REPO_ROOT
+            / "crates"
+            / "unica-coder"
+            / "src"
+            / "infrastructure"
+            / "platform_xml_resources.rs"
+        ).read_text(encoding="utf-8")
+        for declaration in (
+            "MAX_SNAPSHOT_BYTES: usize = 32 * 1024 * 1024",
+            "MAX_LIVE_SNAPSHOT_BYTES: usize = 128 * 1024 * 1024",
+            "MAX_LIVE_SNAPSHOTS: usize = 64",
+        ):
+            self.assertIn(declaration, infrastructure)
+
+    def test_logical_source_acceptance_is_indexed_and_traceable(self) -> None:
+        self.assertTrue(LOGICAL_SOURCE_ACCEPTANCE.is_file())
+        index = SPEC_INDEX.read_text(encoding="utf-8")
+        self.assertIn(LOGICAL_SOURCE_ACCEPTANCE.name, index)
+        text = LOGICAL_SOURCE_ACCEPTANCE.read_text(encoding="utf-8")
+        for evidence in (
+            "русск",
+            "английск",
+            "Configuration",
+            "Extension",
+            "ExternalProcessor",
+            "ExternalReport",
+            "exact",
+            "prefix",
+            "children",
+            "legacy_target_removed",
+            "providerRevision",
+            "partial",
+            "snapshot_expired",
+            "locate",
+            "replace",
+            "owner",
+        ):
+            with self.subTest(evidence=evidence):
+                self.assertIn(evidence, text)
+
+
 class IndexSynchronizationTests(unittest.TestCase):
     def test_decision_index_lists_exactly_the_records_on_disk(self) -> None:
         index_text = DECISIONS_INDEX.read_text(encoding="utf-8")
@@ -1373,14 +1531,21 @@ class IndexSynchronizationTests(unittest.TestCase):
             "the checklist cites a registry record that does not exist",
         )
 
-    def test_spec_index_mentions_every_architecture_document(self) -> None:
+    def test_spec_index_mentions_every_active_architecture_and_acceptance_document(
+        self,
+    ) -> None:
         index_text = SPEC_INDEX.read_text(encoding="utf-8")
         missing = [
             path.name
-            for path in sorted((REPO_ROOT / "spec" / "architecture").glob("*.md"))
+            for directory in ("architecture", "acceptance")
+            for path in sorted((REPO_ROOT / "spec" / directory).glob("*.md"))
             if path.name not in index_text
         ]
-        self.assertEqual(missing, [], "spec/README.md must list every architecture document")
+        self.assertEqual(
+            missing,
+            [],
+            "spec/README.md must list every architecture and acceptance document",
+        )
 
     def test_the_retired_arc42_tree_is_not_recreated(self) -> None:
         """The twelve-slot template is gone and stays gone.

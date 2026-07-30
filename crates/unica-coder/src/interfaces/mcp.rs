@@ -529,6 +529,249 @@ mod tests {
         }
     }
 
+    #[test]
+    fn source_navigation_mcp_results_are_bounded_and_hide_provider_state() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-source-navigation-mcp-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let source = root.join("src");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(".v8-project.json"),
+            r#"{"editingAllowedCheck":"off"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Main</Name></Properties></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        for name in ["Alpha", "Alpine", "Algebra"] {
+            let directory = source.join("CommonModules").join(name);
+            std::fs::create_dir_all(directory.join("Ext")).unwrap();
+            std::fs::write(
+                source.join("CommonModules").join(format!("{name}.xml")),
+                format!(
+                    r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule><Properties><Name>{name}</Name></Properties></CommonModule></MetaDataObject>"#
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                directory.join("Ext/Module.bsl"),
+                "Procedure Run()\nEndProcedure\n",
+            )
+            .unwrap();
+        }
+        std::fs::create_dir_all(source.join("Catalogs")).unwrap();
+        std::fs::write(
+            source.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Items</Name></Properties></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+
+        let resolve_args = json!({
+            "cwd": root,
+            "sourceSet": "main",
+            "query": "CommonModule.Al",
+            "mode": "prefix",
+            "limit": 2
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let resolve: Value = serde_json::from_str(
+            &call_tool_text(
+                &UnicaApplication::new(),
+                "unica.source.resolve",
+                &resolve_args,
+                CancellationToken::new(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(resolve["data"]["candidates"].as_array().unwrap().len(), 2);
+        assert_eq!(resolve["data"]["completeness"], "partial");
+        assert!(resolve["data"]["nextCursor"].is_string());
+        assert_no_private_source_navigation_keys(&resolve);
+
+        let children_args = json!({
+            "cwd": root,
+            "sourceSet": "main",
+            "limit": 1
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let children: Value = serde_json::from_str(
+            &call_tool_text(
+                &UnicaApplication::new(),
+                "unica.source.children",
+                &children_args,
+                CancellationToken::new(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(children["data"]["children"].as_array().unwrap().len(), 1);
+        assert!(children["data"]["nextCursor"].is_string());
+        assert_no_private_source_navigation_keys(&children);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_resource_mcp_round_trip_reuses_one_snapshot_and_hides_private_state() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-source-resource-mcp-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let source = root.join("src");
+        std::fs::create_dir_all(source.join("CommonModules/Shared/Ext")).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Main</Name></Properties><ChildObjects><CommonModule>Shared</CommonModule></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("CommonModules/Shared.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule><Properties><Name>Shared</Name></Properties></CommonModule></MetaDataObject>"#,
+        )
+        .unwrap();
+        let module = source.join("CommonModules/Shared/Ext/Module.bsl");
+        let bytes = b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\n";
+        std::fs::write(&module, bytes).unwrap();
+
+        let app = UnicaApplication::new();
+        let resources: Value = serde_json::from_str(
+            &call_tool_text(
+                &app,
+                "unica.source.resources",
+                json!({
+                    "cwd": root,
+                    "sourceSet": "main",
+                    "metadataPath": "CommonModule.Shared.Module",
+                    "scope": "self"
+                })
+                .as_object()
+                .unwrap(),
+                CancellationToken::new(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let snapshot = resources["data"]["snapshotId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let resource = &resources["data"]["resources"][0];
+        // The surface is read-only, so nothing may advertise a write.
+        assert_eq!(resource["access"], json!(["read"]));
+        assert_no_private_source_resource_keys(&resources);
+
+        let read: Value = serde_json::from_str(
+            &call_tool_text(
+                &app,
+                "unica.source.read",
+                json!({
+                    "cwd": root,
+                    "snapshotId": snapshot,
+                    "resourceId": resource["resourceId"].as_str().unwrap()
+                })
+                .as_object()
+                .unwrap(),
+                CancellationToken::new(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(read["data"]["eof"], json!(true));
+        assert_eq!(read["data"]["contentEncoding"], "utf-8");
+        assert_no_private_source_resource_keys(&read);
+        assert_eq!(
+            std::fs::read(&module).unwrap(),
+            bytes,
+            "a read-only flow must not touch the module"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn assert_no_private_source_resource_keys(value: &Value) {
+        match value {
+            Value::Object(object) => {
+                for key in object.keys() {
+                    assert!(
+                        !matches!(
+                            key.as_str(),
+                            "path"
+                                | "sourceDir"
+                                | "provider"
+                                | "providerId"
+                                | "providerRevision"
+                                | "handle"
+                                | "private"
+                                | "workspaceRoot"
+                        ),
+                        "private source-resource key leaked: {key}"
+                    );
+                }
+                for child in object.values() {
+                    assert_no_private_source_resource_keys(child);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    assert_no_private_source_resource_keys(item);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn assert_no_private_source_navigation_keys(value: &Value) {
+        match value {
+            Value::Object(object) => {
+                for key in object.keys() {
+                    assert!(
+                        !matches!(
+                            key.as_str(),
+                            "path"
+                                | "sourceDir"
+                                | "provider"
+                                | "providerId"
+                                | "providerRevision"
+                                | "handle"
+                                | "private"
+                        ),
+                        "private source-navigation key leaked: {key}"
+                    );
+                }
+                for child in object.values() {
+                    assert_no_private_source_navigation_keys(child);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    assert_no_private_source_navigation_keys(item);
+                }
+            }
+            _ => {}
+        }
+    }
+
     #[tokio::test]
     async fn tool_execution_failure_keeps_json_rpc_error_shape() {
         let (mut client, _) = spawn_server(application_handler());
@@ -802,12 +1045,16 @@ mod tests {
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration/></MetaDataObject>"#,
         )
         .unwrap();
-        std::fs::write(src.join("CommonModules/Sample.xml"), "<MetaDataObject/>").unwrap();
+        std::fs::write(
+            src.join("CommonModules/Sample.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule><Properties><Name>Sample</Name></Properties></CommonModule></MetaDataObject>"#,
+        )
+        .unwrap();
         std::fs::write(&module, "Procedure Run()\nEndProcedure\n").unwrap();
         let args = json!({
             "cwd": root,
-            "sourceDir": "src",
-            "path": "src/CommonModules/Sample/Ext/Module.bsl",
+            "sourceSet": "main",
+            "metadataPath": "CommonModule.Sample.Module",
             "operation": "insert",
             "selector": {"method": "Run"},
             "content": "Procedure Added()\nEndProcedure",
@@ -827,6 +1074,10 @@ mod tests {
         let result: Value = serde_json::from_str(&text).unwrap();
 
         assert!(result["data"].is_object());
+        assert_eq!(result["data"]["sourceSet"], "main");
+        assert_eq!(result["data"]["metadataPath"], "CommonModule.Sample.Module");
+        assert_eq!(result["data"]["targetKind"], "module");
+        assert!(result["data"].get("path").is_none());
         assert_eq!(result["data"]["validation"]["status"], "passed");
         assert!(result.get("stdout").is_none());
 

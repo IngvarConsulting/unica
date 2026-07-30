@@ -18,6 +18,8 @@ pub(crate) mod code_intelligence;
 pub(crate) mod operation_descriptors;
 mod outcome;
 pub(crate) mod ports;
+pub(crate) mod source_navigation;
+pub(crate) mod source_resources;
 pub(crate) mod tool_contracts;
 pub use tool_contracts::input_schema_for_tool;
 
@@ -49,6 +51,12 @@ pub enum ToolHandler {
     CodeIntelligence {
         operation: CodeIntelligenceOperation,
     },
+    SourceNavigation {
+        operation: SourceNavigationOperation,
+    },
+    SourceResources {
+        operation: SourceResourceOperation,
+    },
     CodeAdapter {
         command: &'static [&'static str],
     },
@@ -56,6 +64,9 @@ pub enum ToolHandler {
         operation: &'static str,
     },
 }
+
+pub use source_navigation::SourceNavigationOperation;
+pub use source_resources::SourceResourceOperation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeJobAction {
@@ -160,6 +171,65 @@ pub fn tools() -> Vec<ToolSpec> {
                 writes: &[],
             },
             handler: ToolHandler::ProjectMap,
+        },
+        ToolSpec {
+            name: "unica.source.resolve",
+            description:
+                "Resolve an exact or prefix logical metadata query inside one named source set.",
+            mutating: false,
+            cache_access: CacheAccess {
+                reads: &["workspace_graph", "metadata_graph"],
+                writes: &[],
+            },
+            handler: ToolHandler::SourceNavigation {
+                operation: SourceNavigationOperation::Resolve,
+            },
+        },
+        ToolSpec {
+            name: "unica.source.children",
+            description:
+                "List exactly one level below a logical source-set root or metadata address.",
+            mutating: false,
+            cache_access: CacheAccess {
+                reads: &["workspace_graph", "metadata_graph"],
+                writes: &[],
+            },
+            handler: ToolHandler::SourceNavigation {
+                operation: SourceNavigationOperation::Children,
+            },
+        },
+        ToolSpec {
+            name: "unica.source.locate",
+            description:
+                "Recover the logical metadata address that owns one source path inside a named source set.",
+            mutating: false,
+            cache_access: CacheAccess {
+                reads: &["workspace_graph", "metadata_graph"],
+                writes: &[],
+            },
+            handler: ToolHandler::SourceNavigation {
+                operation: SourceNavigationOperation::Locate,
+            },
+        },
+        ToolSpec {
+            name: "unica.source.resources",
+            description:
+                "Open or page an immutable bounded manifest for one logical source target.",
+            mutating: false,
+            cache_access: CacheAccess::default(),
+            handler: ToolHandler::SourceResources {
+                operation: SourceResourceOperation::Resources,
+            },
+        },
+        ToolSpec {
+            name: "unica.source.read",
+            description:
+                "Read one bounded byte range from a resource in an issued immutable snapshot.",
+            mutating: false,
+            cache_access: CacheAccess::default(),
+            handler: ToolHandler::SourceResources {
+                operation: SourceResourceOperation::Read,
+            },
         },
         ToolSpec {
             name: "unica.build.dump",
@@ -328,7 +398,8 @@ pub fn tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "unica.code.patch",
-            description: "Insert content into one selected existing BSL *Module.bsl file.",
+            description:
+                "Insert content into one logically addressed existing Platform XML Configuration or Extension BSL module.",
             mutating: true,
             cache_access: cache_access_for("code-patch", Some(DomainEventKind::ModuleChanged)),
             handler: ToolHandler::NativeOperation {
@@ -495,21 +566,47 @@ fn call_tool(
             dry_run,
             cancellation,
         )?,
+        ToolHandler::SourceNavigation { operation } => {
+            source_navigation::invoke(operation, ports, args, &context, cancellation)?
+        }
+        ToolHandler::SourceResources { operation } => {
+            source_resources::invoke(operation, ports, args, &context, dry_run, cancellation)?
+        }
         _ => ports.invoke_handler(spec, args, &context, dry_run, cancellation)?,
     };
     let mut outcome = handler_outcome.adapter;
+    let handler_events = handler_outcome.events;
+    let projected_events = handler_outcome.projected_events;
+    let recorded_cache = handler_outcome.recorded_cache;
     if let Some(warning) = support_guard_warning {
         outcome.warnings.insert(0, warning);
     }
     if let Some(warning) = format_guard_warning {
         outcome.warnings.insert(0, warning);
     }
-    let events = if should_emit_events(spec, args, dry_run, &outcome) {
-        domain_events(spec, args)
+    let events = if dry_run && !projected_events.is_empty() {
+        projected_events
+    } else if should_emit_events(spec, args, dry_run, &outcome) {
+        if handler_events.is_empty() {
+            domain_events(spec, args)
+        } else {
+            handler_events
+        }
     } else {
         Vec::new()
     };
-    let cache = ports.cache_report(&context, &events, dry_run, spec.cache_access)?;
+    let mut cache = if let Some(cache) = recorded_cache {
+        if dry_run || events.is_empty() {
+            return Err(format!(
+                "{} returned a persisted cache report without an applied event",
+                spec.name
+            ));
+        }
+        cache
+    } else {
+        ports.cache_report(&context, &events, dry_run, spec.cache_access)?
+    };
+    outcome.warnings.append(&mut cache.publication_warnings);
     if spec.mutating && !dry_run && outcome.ok && !events.is_empty() {
         ports.notify_invalidation(&context, &events);
     }
@@ -1079,6 +1176,7 @@ fn domain_events(spec: ToolSpec, args: &Map<String, Value>) -> Vec<DomainEvent> 
             .map(|event| vec![DomainEvent::new(event, spec.name)])
             .unwrap_or_default(),
         ToolHandler::RuntimeJob { .. } => Vec::new(),
+        ToolHandler::SourceNavigation { .. } => Vec::new(),
         _ => Vec::new(),
     }
 }
@@ -1782,6 +1880,59 @@ mod tests {
     }
 
     #[test]
+    fn source_navigation_tools_use_provider_neutral_application_handlers() {
+        let expected = [
+            ("unica.source.resolve", SourceNavigationOperation::Resolve),
+            ("unica.source.children", SourceNavigationOperation::Children),
+        ];
+
+        for (name, operation) in expected {
+            let tool = tools().into_iter().find(|tool| tool.name == name).unwrap();
+            assert!(!tool.mutating, "{name} must remain read-only");
+            assert!(matches!(
+                tool.handler,
+                ToolHandler::SourceNavigation {
+                    operation: actual
+                } if actual == operation
+            ));
+        }
+    }
+
+    #[test]
+    fn source_resource_tools_are_read_only_and_have_no_cache_or_event_effects() {
+        let expected = [
+            ("unica.source.resources", SourceResourceOperation::Resources),
+            ("unica.source.read", SourceResourceOperation::Read),
+        ];
+
+        for (name, operation) in expected {
+            let tool = tools().into_iter().find(|tool| tool.name == name).unwrap();
+            assert!(!tool.mutating, "{name} must remain read-only");
+            assert!(
+                tool.cache_access.reads.is_empty(),
+                "{name} must not read cache"
+            );
+            assert!(
+                tool.cache_access.writes.is_empty(),
+                "{name} must not invalidate cache"
+            );
+            assert!(matches!(
+                tool.handler,
+                ToolHandler::SourceResources {
+                    operation: actual
+                } if actual == operation
+            ));
+        }
+
+        // The bounded resource surface is read-only: BSL mutation belongs to
+        // `unica.code.patch`, which edits the selected method or anchor instead
+        // of rewriting a whole module.
+        assert!(tools()
+            .into_iter()
+            .all(|tool| tool.name != "unica.source.apply"));
+    }
+
+    #[test]
     fn removed_code_grep_error_points_to_unified_search() {
         let error = UnicaApplication::new()
             .call_tool("unica.code.grep", &Map::new())
@@ -1824,6 +1975,7 @@ mod tests {
                     lazy_rebuilt: Vec::new(),
                     stale: Vec::new(),
                     fresh: Vec::new(),
+                    publication_warnings: Vec::new(),
                 },
                 stdout: None,
                 stderr: None,
@@ -1861,7 +2013,11 @@ mod tests {
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration/></MetaDataObject>"#,
         )
         .unwrap();
-        std::fs::write(src.join("CommonModules/Sample.xml"), "<MetaDataObject/>").unwrap();
+        std::fs::write(
+            src.join("CommonModules/Sample.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule><Properties><Name>Sample</Name></Properties></CommonModule></MetaDataObject>"#,
+        )
+        .unwrap();
         std::fs::write(
             &module,
             "Procedure Run()\n    Message(\"ok\");\nEndProcedure\n",
@@ -1870,8 +2026,8 @@ mod tests {
         let app = UnicaApplication::new();
         let mut args = json!({
             "cwd": workspace,
-            "sourceDir": "src",
-            "path": "src/CommonModules/Sample/Ext/Module.bsl",
+            "sourceSet": "main",
+            "metadataPath": "CommonModule.Sample.Module",
             "operation": "insert",
             "selector": {"method": "Run"},
             "content": "Procedure Added()\nEndProcedure",
@@ -1886,6 +2042,15 @@ mod tests {
         assert!(preview.stdout.is_none());
         assert!(preview.cache.events.is_empty());
         assert_eq!(preview.data.as_ref().unwrap()["sourceSet"], "main");
+        assert_eq!(
+            preview.data.as_ref().unwrap()["metadataPath"],
+            "CommonModule.Sample.Module"
+        );
+        assert_eq!(preview.data.as_ref().unwrap()["targetKind"], "module");
+        assert!(preview.data.as_ref().unwrap().get("path").is_none());
+        assert!(preview.data.as_ref().unwrap()["affectedTarget"]
+            .get("path")
+            .is_none());
         assert_eq!(
             preview.data.as_ref().unwrap()["affectedTarget"]["owner"],
             "CommonModule.Sample"
@@ -2237,8 +2402,8 @@ mod tests {
         let args = json!({
             "cwd": workspace,
             "dryRun": false,
-            "sourceDir": "src",
-            "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
+            "sourceSet": "main",
+            "metadataPath": "Catalog.Items.ObjectModule",
             "operation": "insert",
             "selector": {"method": "Run"},
             "content": "Procedure Added()\nEndProcedure",
@@ -4943,8 +5108,9 @@ mod tests {
             };
             let descriptor = operation_descriptors::native_operation_descriptor(operation).unwrap();
             assert!(
-                !descriptor.write_path_args.is_empty(),
-                "{operation} mutates workspace but has no descriptor write_path_args"
+                !descriptor.write_path_args.is_empty()
+                    || format!("{:?}", descriptor.format_path_policy) == "HandlerResolved",
+                "{operation} mutates workspace but has neither declared nor handler-resolved write targets"
             );
         }
     }
@@ -4960,9 +5126,23 @@ mod tests {
                 continue;
             };
             let descriptor = operation_descriptors::native_operation_descriptor(operation).unwrap();
+            if operation == "code-patch" {
+                assert_eq!(
+                    format!("{:?}", descriptor.support_guard),
+                    "Some(HandlerResolved { requirement: Editable })",
+                    "code.patch must not silently lose its support guard with the public path"
+                );
+            }
             match descriptor.support_guard {
                 Some(policy) => {
                     match policy {
+                        SupportGuardPolicy::HandlerResolved { requirement } => {
+                            assert_eq!(
+                                operation, "code-patch",
+                                "{operation} unexpectedly delegates support resolution"
+                            );
+                            assert_eq!(requirement, SupportGuardRequirement::Editable);
+                        }
                         SupportGuardPolicy::PathArgs { names, requirement } => {
                             assert!(!names.is_empty(), "{operation} guard target is empty");
                             assert_eq!(
@@ -5056,7 +5236,7 @@ mod tests {
         use operation_descriptors::FormatGuardPolicy;
 
         let expected = [
-            ("code-patch", &["path"][..], "DeclaredArgs"),
+            ("code-patch", &[][..], "HandlerResolved"),
             (
                 "cf-edit",
                 &["ConfigPath", "configPath", "Path", "path"][..],
@@ -5203,8 +5383,9 @@ mod tests {
             };
             let descriptor = operation_descriptors::native_operation_descriptor(operation).unwrap();
             assert!(
-                !descriptor.source_path_args.is_empty(),
-                "{operation} must declare its platform-XML read/target path arguments"
+                !descriptor.source_path_args.is_empty()
+                    || format!("{:?}", descriptor.format_path_policy) == "HandlerResolved",
+                "{operation} must declare path arguments or explicit handler resolution"
             );
         }
         assert_eq!(
@@ -6607,6 +6788,7 @@ mod tests {
                     lazy_rebuilt: Vec::new(),
                     stale: Vec::new(),
                     fresh: Vec::new(),
+                    publication_warnings: Vec::new(),
                 })
             }
 
@@ -6843,6 +7025,7 @@ mod tests {
                     lazy_rebuilt: Vec::new(),
                     stale: Vec::new(),
                     fresh: Vec::new(),
+                    publication_warnings: Vec::new(),
                 })
             }
 
@@ -6960,6 +7143,7 @@ mod tests {
                     lazy_rebuilt: Vec::new(),
                     stale: Vec::new(),
                     fresh: Vec::new(),
+                    publication_warnings: Vec::new(),
                 })
             }
 
@@ -6992,6 +7176,110 @@ mod tests {
         assert!(ports.invalidated.lock().unwrap().is_empty());
         assert_eq!(ports.discovered.lock().unwrap().len(), 1);
 
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pre_recorded_cache_effect_skips_post_commit_cache_report() {
+        struct PreRecordedCachePorts;
+
+        impl ports::ApplicationPorts for PreRecordedCachePorts {
+            fn discover_workspace(
+                &self,
+                requested_cwd: Option<PathBuf>,
+            ) -> Result<WorkspaceContext, String> {
+                let cwd = requested_cwd.unwrap_or_default();
+                Ok(WorkspaceContext {
+                    cwd: cwd.clone(),
+                    workspace_root: cwd.clone(),
+                    cache_root: cwd.join(".build/unica"),
+                    workspace_epoch: 1,
+                })
+            }
+
+            fn validate_tool_context(
+                &self,
+                _spec: ToolSpec,
+                _args: &Map<String, Value>,
+                _dry_run: bool,
+                _context: &WorkspaceContext,
+            ) -> Result<(), String> {
+                Ok(())
+            }
+
+            fn evaluate_support_guard(
+                &self,
+                _spec: ToolSpec,
+                _args: &Map<String, Value>,
+                _context: &WorkspaceContext,
+            ) -> Result<SupportGuardCheck, String> {
+                Ok(SupportGuardCheck::Allow)
+            }
+
+            fn invoke_handler(
+                &self,
+                _spec: ToolSpec,
+                _args: &Map<String, Value>,
+                context: &WorkspaceContext,
+                _dry_run: bool,
+                _cancellation: &CancellationToken,
+            ) -> Result<ports::HandlerOutcome, String> {
+                let event = DomainEvent::new(DomainEventKind::ModuleChanged, "src/Module.bsl");
+                let mut adapter = AdapterOutcome::ok("source and cache state committed");
+                adapter.changes = vec!["updated src/Module.bsl".to_string()];
+                let mut outcome = ports::HandlerOutcome::with_data_and_events(
+                    adapter,
+                    serde_json::json!({"postHash": "sha256:after"}),
+                    vec![event],
+                );
+                outcome.recorded_cache = Some(CacheReport {
+                    mode: "applied".to_string(),
+                    root: context.cache_root.display().to_string(),
+                    workspace_epoch: context.workspace_epoch,
+                    events: vec!["ModuleChanged".to_string()],
+                    invalidated: vec!["bsl_diagnostics".to_string(), "bsl_index".to_string()],
+                    refreshed: Vec::new(),
+                    lazy_rebuilt: Vec::new(),
+                    stale: vec!["bsl_diagnostics".to_string(), "bsl_index".to_string()],
+                    fresh: Vec::new(),
+                    publication_warnings: vec![
+                        "transaction committed with one cleanup warning".to_string()
+                    ],
+                });
+                Ok(outcome)
+            }
+
+            fn cache_report(
+                &self,
+                _context: &WorkspaceContext,
+                _events: &[DomainEvent],
+                _dry_run: bool,
+                _cache_access: CacheAccess,
+            ) -> Result<CacheReport, String> {
+                panic!("post-commit cache_report must not run after transactional persistence")
+            }
+
+            fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
+        }
+
+        let root =
+            std::env::temp_dir().join(format!("unica-pre-recorded-cache-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut args = Map::new();
+        args.insert("cwd".to_string(), Value::String(root.display().to_string()));
+        args.insert("dryRun".to_string(), Value::Bool(false));
+
+        let result = UnicaApplication::with_ports(Arc::new(PreRecordedCachePorts))
+            .call_tool("unica.build.load", &args)
+            .unwrap();
+
+        assert!(result.ok);
+        assert_eq!(result.cache.mode, "applied");
+        assert_eq!(result.cache.events, ["ModuleChanged"]);
+        assert_eq!(
+            result.warnings,
+            ["transaction committed with one cleanup warning"]
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -9142,6 +9430,7 @@ mod tests {
                 lazy_rebuilt: Vec::new(),
                 stale: Vec::new(),
                 fresh: Vec::new(),
+                publication_warnings: Vec::new(),
             })
         }
 

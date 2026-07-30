@@ -15,7 +15,7 @@ import threading
 import time
 import unittest
 import xml.etree.ElementTree as ET
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
@@ -4703,15 +4703,78 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             temp_root = Path(temp)
             workspace = temp_root / "workspace"
             workspace.mkdir()
-            (workspace / "src" / "cf").mkdir(parents=True)
+            source_roots = {
+                "main": workspace / "src" / "cf",
+                "myExtension": workspace / "src" / "cfe",
+            }
+            for source_root in source_roots.values():
+                source_root.mkdir(parents=True)
             (workspace / "v8project.yaml").write_text(
-                "format: DESIGNER\nsource-set:\n  main:\n    type: CONFIGURATION\n    path: src/cf\n",
+                """format: DESIGNER
+source-set:
+  - name: main
+    type: CONFIGURATION
+    path: src/cf
+  - name: myExtension
+    type: EXTENSION
+    path: src/cfe
+""",
                 encoding="utf-8",
             )
             shutil.copyfile(
                 FIXTURES_ROOT / "meta-remove" / "Configuration.xml",
                 workspace / "src" / "cf" / "Configuration.xml",
             )
+            (workspace / "src" / "cfe" / "Configuration.xml").write_text(
+                """<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Configuration>
+    <Properties>
+      <Name>ParityExtension</Name>
+      <ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose>
+    </Properties>
+  </Configuration>
+</MetaDataObject>
+""",
+                encoding="utf-8",
+            )
+            if any(example.skill == "source-access" for example in examples):
+                source_access_name = "SourceAccessExample"
+                configuration = workspace / "src" / "cf" / "Configuration.xml"
+                configuration_text = configuration.read_text(encoding="utf-8")
+                registration = (
+                    f"\t\t\t<CommonModule>{source_access_name}</CommonModule>\n"
+                )
+                self.assertIn("\t\t</ChildObjects>", configuration_text)
+                configuration.write_text(
+                    configuration_text.replace(
+                        "\t\t</ChildObjects>",
+                        f"{registration}\t\t</ChildObjects>",
+                        1,
+                    ),
+                    encoding="utf-8",
+                )
+                module_root = (
+                    workspace
+                    / "src"
+                    / "cf"
+                    / "CommonModules"
+                    / source_access_name
+                )
+                (module_root / "Ext").mkdir(parents=True)
+                (module_root / "Ext" / "Module.bsl").write_text(
+                    "Procedure BeforeReplacement()\nEndProcedure\n",
+                    encoding="utf-8",
+                )
+                (module_root.parent / f"{source_access_name}.xml").write_text(
+                    f"""<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <CommonModule>
+    <Properties><Name>{source_access_name}</Name></Properties>
+  </CommonModule>
+</MetaDataObject>
+""",
+                    encoding="utf-8",
+                )
+            code_patch_source_sets: set[str] = set()
             for example in examples:
                 arguments = example.payload["params"]["arguments"]
                 if example.skill == "form-edit":
@@ -4756,7 +4819,24 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                         json_path.write_text("{}\n", encoding="utf-8")
                         arguments["JsonPath"] = str(json_path.relative_to(workspace))
                 elif example.skill == "code-patch":
-                    module_path = workspace / arguments["path"]
+                    address = arguments["metadataPath"].split(".")
+                    self.assertEqual(
+                        len(address),
+                        3,
+                        "the code-patch example fixture supports one explicit module layout",
+                    )
+                    kind, name, role = address
+                    self.assertEqual((kind, role), ("CommonModule", "Module"))
+                    self.assertIn(arguments["sourceSet"], source_roots)
+                    code_patch_source_sets.add(arguments["sourceSet"])
+                    source_root = source_roots[arguments["sourceSet"]]
+                    module_path = (
+                        source_root
+                        / "CommonModules"
+                        / name
+                        / "Ext"
+                        / "Module.bsl"
+                    )
                     module_path.parent.mkdir(parents=True, exist_ok=True)
                     module_path.write_text(
                         """Процедура ПриСозданииНаСервере()\n
@@ -4764,21 +4844,27 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
 КонецПроцедуры\n""",
                         encoding="utf-8",
                     )
-                    owner_directory = module_path.parent.parent
-                    descriptor_path = (
-                        owner_directory.parent / f"{owner_directory.name}.xml"
-                    )
+                    descriptor_path = source_root / "CommonModules" / f"{name}.xml"
                     descriptor_path.write_text(
-                        "<MetaDataObject/>\n", encoding="utf-8"
+                        f"""<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <CommonModule>
+    <Properties><Name>{name}</Name></Properties>
+  </CommonModule>
+</MetaDataObject>
+""",
+                        encoding="utf-8",
                     )
                 elif example.skill == "meta-edit":
                     prepare_meta_edit_skill_example(workspace, example, arguments)
+            self.assertEqual(code_patch_source_sets, {"main", "myExtension"})
             messages = [
                 dry_run_message_for_example(example, index + 1, workspace)
                 for index, example in enumerate(examples)
             ]
+            # No example needs a live snapshot any more: the source surface is
+            # read-only and the source-access skill previews through
+            # unica.code.patch like every other writer example.
             responses = self.call_mcp_messages(messages, temp_root / "cache")
-
         self.assertEqual(len(responses), len(examples))
         for example, message in zip(examples, messages):
             with self.subTest(skill=example.skill, line=example.line):
@@ -4787,6 +4873,16 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                 result = json.loads(response["result"]["content"][0]["text"])
                 self.assertTrue(result["ok"], json.dumps(result, ensure_ascii=False, indent=2))
                 self.assertIn("dry run", result["summary"])
+                if example.skill == "code-patch":
+                    arguments = example.payload["params"]["arguments"]
+                    self.assertNotIn("path", arguments)
+                    self.assertNotIn("sourceDir", arguments)
+                    self.assertEqual(
+                        result["data"]["sourceSet"], arguments["sourceSet"]
+                    )
+                    self.assertEqual(
+                        result["data"]["metadataPath"], arguments["metadataPath"]
+                    )
 
     def test_every_documented_tools_call_uses_published_argument_names(self) -> None:
         examples = list(iter_documented_mcp_examples(SKILLS_ROOT.glob("**/*.md")))
@@ -5061,6 +5157,13 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         self,
         messages: list[dict[str, Any]],
         env: dict[str, str],
+        setup: (
+            Callable[
+                [Callable[[dict[str, Any]], dict[str, Any]]],
+                None,
+            ]
+            | None
+        ) = None,
     ) -> list[dict[str, Any]]:
         process = subprocess.Popen(
             [str(self.unica_bin)],
@@ -5117,6 +5220,17 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                 process.stdin.write(
                     json.dumps(MCP_HANDSHAKE[1], ensure_ascii=False) + "\n"
                 )
+            if setup is not None:
+                process.stdin.flush()
+
+                def request_one(message: dict[str, Any]) -> dict[str, Any]:
+                    process.stdin.write(
+                        json.dumps(message, ensure_ascii=False) + "\n"
+                    )
+                    process.stdin.flush()
+                    return read_response()
+
+                setup(request_one)
             for message in messages:
                 process.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
             process.stdin.flush()

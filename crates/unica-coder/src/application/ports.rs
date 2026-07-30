@@ -1,10 +1,18 @@
 use super::{AdapterOutcome, ToolSpec};
+use crate::application::source_navigation::{
+    SourceChildrenRequest, SourceChildrenResult, SourceLocateRequest, SourceLocateResult,
+    SourceResolveRequest, SourceResolveResult,
+};
+use crate::application::source_resources::{SourceReadRequest, SourceResourcesRequest};
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
     CodeIntelligenceContext, CodeIntelligenceReadRequest, CodeIntelligenceRegistry,
 };
 use crate::domain::events::DomainEvent;
+use crate::domain::source_resources::{
+    ResourceManifestPage, SourceReadResult, SourceResourceError,
+};
 use crate::domain::workspace::WorkspaceContext;
 use serde_json::{Map, Value};
 use std::path::PathBuf;
@@ -13,6 +21,9 @@ pub(crate) struct HandlerOutcome {
     pub(crate) adapter: AdapterOutcome,
     pub(crate) data: Option<Value>,
     pub(crate) job: Option<Value>,
+    pub(crate) events: Vec<DomainEvent>,
+    pub(crate) projected_events: Vec<DomainEvent>,
+    pub(crate) recorded_cache: Option<CacheReport>,
 }
 
 impl HandlerOutcome {
@@ -21,6 +32,9 @@ impl HandlerOutcome {
             adapter,
             data: None,
             job: None,
+            events: Vec::new(),
+            projected_events: Vec::new(),
+            recorded_cache: None,
         }
     }
 
@@ -29,6 +43,40 @@ impl HandlerOutcome {
             adapter,
             data: Some(data),
             job: None,
+            events: Vec::new(),
+            projected_events: Vec::new(),
+            recorded_cache: None,
+        }
+    }
+
+    pub(crate) fn with_data_and_events(
+        adapter: AdapterOutcome,
+        data: Value,
+        events: Vec<DomainEvent>,
+    ) -> Self {
+        Self {
+            adapter,
+            data: Some(data),
+            job: None,
+            events,
+            projected_events: Vec::new(),
+            recorded_cache: None,
+        }
+    }
+
+    pub(crate) fn with_data_events_and_projection(
+        adapter: AdapterOutcome,
+        data: Value,
+        events: Vec<DomainEvent>,
+        projected_events: Vec<DomainEvent>,
+    ) -> Self {
+        Self {
+            adapter,
+            data: Some(data),
+            job: None,
+            events,
+            projected_events,
+            recorded_cache: None,
         }
     }
 }
@@ -85,6 +133,57 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         Err("code intelligence provider registry is not configured".to_string())
     }
 
+    fn resolve_source_navigation(
+        &self,
+        _request: SourceResolveRequest,
+        _context: &WorkspaceContext,
+        _cancellation: &CancellationToken,
+    ) -> Result<SourceResolveResult, String> {
+        Err("source navigation resolver is not configured".to_string())
+    }
+
+    fn children_source_navigation(
+        &self,
+        _request: SourceChildrenRequest,
+        _context: &WorkspaceContext,
+        _cancellation: &CancellationToken,
+    ) -> Result<SourceChildrenResult, String> {
+        Err("source navigation traversal is not configured".to_string())
+    }
+
+    fn locate_source_navigation(
+        &self,
+        _request: SourceLocateRequest,
+        _context: &WorkspaceContext,
+        _cancellation: &CancellationToken,
+    ) -> Result<SourceLocateResult, String> {
+        Err("source navigation locator is not configured".to_string())
+    }
+
+    fn source_resources(
+        &self,
+        _request: SourceResourcesRequest,
+        _context: &WorkspaceContext,
+        _cancellation: &CancellationToken,
+    ) -> Result<ResourceManifestPage, SourceResourceError> {
+        Err(SourceResourceError::new(
+            crate::domain::source_resources::SourceResourceErrorCode::SourceUnavailable,
+            "source resource provider is not configured",
+        ))
+    }
+
+    fn read_source_resource(
+        &self,
+        _request: SourceReadRequest,
+        _context: &WorkspaceContext,
+        _cancellation: &CancellationToken,
+    ) -> Result<SourceReadResult, SourceResourceError> {
+        Err(SourceResourceError::new(
+            crate::domain::source_resources::SourceResourceErrorCode::SourceUnavailable,
+            "source resource provider is not configured",
+        ))
+    }
+
     fn evaluate_format_guard(
         &self,
         _spec: ToolSpec,
@@ -125,6 +224,7 @@ pub(crate) trait ApplicationPorts: Send + Sync {
 mod tests {
     use super::HandlerOutcome;
     use crate::application::AdapterOutcome;
+
     use serde_json::json;
 
     #[test]
@@ -133,6 +233,8 @@ mod tests {
 
         assert_eq!(outcome.data, None);
         assert_eq!(outcome.job, None);
+        assert!(outcome.events.is_empty());
+        assert!(outcome.projected_events.is_empty());
     }
 
     #[test]
@@ -142,6 +244,8 @@ mod tests {
 
         assert_eq!(outcome.data, Some(data));
         assert_eq!(outcome.job, None);
+        assert!(outcome.events.is_empty());
+        assert!(outcome.projected_events.is_empty());
         assert_eq!(outcome.adapter.stdout, None);
     }
 }

@@ -1,11 +1,15 @@
 use crate::domain::cache::{path_for_report, CacheAccess, CacheImpact, CacheReport};
 use crate::domain::events::DomainEvent;
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
 use crate::infrastructure::workspace_index::bsl_index_is_ready;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{ErrorKind, Write};
 use std::path::PathBuf;
+
+pub(crate) const CACHE_STATE_CONFLICT_RETRIES: usize = 64;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct WorkspaceState {
@@ -31,6 +35,56 @@ pub struct WorkspaceStateRepository {
     state_path: PathBuf,
 }
 
+struct PlannedWorkspaceStateFile {
+    path: PathBuf,
+    preimage: Option<Vec<u8>>,
+    postimage: Vec<u8>,
+}
+
+struct PlannedWorkspaceReport {
+    report: CacheReport,
+    state: Option<PlannedWorkspaceStateFile>,
+    metadata: Vec<PlannedWorkspaceStateFile>,
+}
+
+impl PlannedWorkspaceReport {
+    fn publication_paths(&self) -> Vec<PathBuf> {
+        self.metadata
+            .iter()
+            .chain(self.state.iter())
+            .map(|file| file.path.clone())
+            .collect()
+    }
+
+    fn stage(self, transaction: &mut CompileTransaction) -> Result<CacheReport, String> {
+        for file in self.metadata.into_iter().chain(self.state) {
+            let PlannedWorkspaceStateFile {
+                path,
+                preimage,
+                postimage,
+            } = file;
+            let expected_existing = preimage.is_some();
+            let staged = match preimage {
+                Some(preimage) => transaction.replace_bytes(&path, preimage, postimage),
+                None => transaction.create_bytes(&path, postimage),
+            };
+            if let Err(error) = staged {
+                if expected_existing
+                    && fs::symlink_metadata(&path)
+                        .is_err_and(|source| source.kind() == ErrorKind::NotFound)
+                {
+                    return Err(format!(
+                        "cache publication target disappeared while staging: {}",
+                        path.display()
+                    ));
+                }
+                return Err(error);
+            }
+        }
+        Ok(self.report)
+    }
+}
+
 impl WorkspaceStateRepository {
     pub fn new(context: &WorkspaceContext) -> Self {
         Self {
@@ -45,11 +99,51 @@ impl WorkspaceStateRepository {
         dry_run: bool,
         cache_access: CacheAccess,
     ) -> Result<CacheReport, String> {
+        for attempt in 0..=CACHE_STATE_CONFLICT_RETRIES {
+            let plan = self.plan_report(context, events, dry_run, cache_access)?;
+            if plan.state.is_none() && plan.metadata.is_empty() {
+                return Ok(plan.report);
+            }
+            let publication_paths = plan.publication_paths();
+            let result = (|| -> Result<CacheReport, String> {
+                let mut transaction = CompileTransaction::new();
+                let mut report = plan.stage(&mut transaction)?;
+                let commit = transaction.commit()?;
+                report.publication_warnings = cache_cleanup_warnings(commit.cleanup_warnings);
+                Ok(report)
+            })();
+            match result {
+                Ok(report) => return Ok(report),
+                Err(error)
+                    if attempt < CACHE_STATE_CONFLICT_RETRIES
+                        && is_retryable_cache_state_conflict(&error, &publication_paths) =>
+                {
+                    std::thread::yield_now();
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "failed to atomically publish Unica cache state: {error}"
+                    ));
+                }
+            }
+        }
+        unreachable!("bounded cache state retry loop always returns")
+    }
+
+    fn plan_report(
+        &self,
+        context: &WorkspaceContext,
+        events: &[DomainEvent],
+        dry_run: bool,
+        cache_access: CacheAccess,
+    ) -> Result<PlannedWorkspaceReport, String> {
         let impact = CacheImpact::from_events(events);
-        let mut state = self.load(context);
+        let (mut state, state_preimage) = self.load_snapshot(context)?;
         let mut invalidated = sorted(impact.invalidated);
         let mut refreshed = sorted(impact.eager_refresh);
         let mut lazy_rebuilt = Vec::new();
+        let mut metadata = Vec::new();
+        let mut write_state = false;
 
         if !events.is_empty() && !dry_run {
             for name in &invalidated {
@@ -69,10 +163,10 @@ impl WorkspaceStateRepository {
                         epoch: context.workspace_epoch,
                     },
                 );
-                self.write_cache_metadata(context, name, "eager")?;
+                metadata.push(self.plan_cache_metadata(context, name, "eager")?);
             }
             state.workspace_epoch = context.workspace_epoch;
-            self.save(&state)?;
+            write_state = true;
         }
 
         if dry_run {
@@ -112,26 +206,26 @@ impl WorkspaceStateRepository {
                             epoch: context.workspace_epoch,
                         },
                     );
-                    self.write_cache_metadata(context, name, "lazy")?;
+                    metadata.push(self.plan_cache_metadata(context, name, "lazy")?);
                     lazy_rebuilt.push((*name).to_string());
                 }
             }
             if !lazy_rebuilt.is_empty() {
                 state.workspace_epoch = context.workspace_epoch;
-                self.save(&state)?;
+                write_state = true;
             }
         }
 
         let mut stale = Vec::new();
         let mut fresh = Vec::new();
-        for (name, entry) in state.caches {
+        for (name, entry) in &state.caches {
             match entry.status {
-                CacheStatus::Fresh => fresh.push(name),
-                CacheStatus::Stale => stale.push(name),
+                CacheStatus::Fresh => fresh.push(name.clone()),
+                CacheStatus::Stale => stale.push(name.clone()),
             }
         }
 
-        Ok(CacheReport {
+        let report = CacheReport {
             mode: if events.is_empty() {
                 "read".to_string()
             } else if dry_run {
@@ -150,45 +244,77 @@ impl WorkspaceStateRepository {
             lazy_rebuilt,
             stale,
             fresh,
+            publication_warnings: Vec::new(),
+        };
+        let state = if write_state {
+            let mut postimage =
+                serde_json::to_vec_pretty(&state).map_err(|error| error.to_string())?;
+            postimage.push(b'\n');
+            Some(PlannedWorkspaceStateFile {
+                path: self.state_path.clone(),
+                preimage: state_preimage,
+                postimage,
+            })
+        } else {
+            None
+        };
+        Ok(PlannedWorkspaceReport {
+            report,
+            state,
+            metadata,
         })
     }
 
-    fn load(&self, context: &WorkspaceContext) -> WorkspaceState {
-        let Ok(text) = fs::read_to_string(&self.state_path) else {
-            return default_state(context);
-        };
-        serde_json::from_str(&text).unwrap_or_else(|_| default_state(context))
-    }
-
-    fn save(&self, state: &WorkspaceState) -> Result<(), String> {
-        if let Some(parent) = self.state_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|err| format!("failed to create Unica cache directory: {err}"))?;
+    fn load_snapshot(
+        &self,
+        context: &WorkspaceContext,
+    ) -> Result<(WorkspaceState, Option<Vec<u8>>), String> {
+        match fs::read(&self.state_path) {
+            Ok(bytes) => {
+                let state =
+                    serde_json::from_slice(&bytes).unwrap_or_else(|_| default_state(context));
+                Ok((state, Some(bytes)))
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok((default_state(context), None)),
+            Err(error) => Err(format!(
+                "failed to read Unica cache state {}: {error}",
+                self.state_path.display()
+            )),
         }
-        let text = serde_json::to_string_pretty(state).map_err(|err| err.to_string())?;
-        fs::write(&self.state_path, text + "\n")
-            .map_err(|err| format!("failed to write Unica cache state: {err}"))
     }
 
-    fn write_cache_metadata(
+    fn plan_cache_metadata(
         &self,
         context: &WorkspaceContext,
         name: &str,
         mode: &str,
-    ) -> Result<(), String> {
-        let dir = context.cache_root.join("caches");
-        fs::create_dir_all(&dir)
-            .map_err(|err| format!("failed to create Unica cache metadata directory: {err}"))?;
+    ) -> Result<PlannedWorkspaceStateFile, String> {
+        let path = context
+            .cache_root
+            .join("caches")
+            .join(format!("{name}.json"));
         let text = serde_json::json!({
             "name": name,
             "mode": mode,
             "workspaceEpoch": context.workspace_epoch,
         });
-        fs::write(
-            dir.join(format!("{name}.json")),
-            serde_json::to_string_pretty(&text).map_err(|err| err.to_string())? + "\n",
-        )
-        .map_err(|err| format!("failed to write Unica cache metadata for {name}: {err}"))
+        let mut postimage = serde_json::to_vec_pretty(&text).map_err(|error| error.to_string())?;
+        postimage.push(b'\n');
+        let preimage = match fs::read(&path) {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(format!(
+                    "failed to read Unica cache metadata {}: {error}",
+                    path.display()
+                ));
+            }
+        };
+        Ok(PlannedWorkspaceStateFile {
+            path,
+            preimage,
+            postimage,
+        })
     }
 }
 
@@ -206,6 +332,56 @@ fn sorted(values: std::collections::BTreeSet<String>) -> Vec<String> {
 
 fn is_lazy_cache(name: &str) -> bool {
     matches!(name, "bsl_diagnostics")
+}
+
+fn cache_cleanup_warnings(cleanup_warnings: Vec<String>) -> Vec<String> {
+    if cleanup_warnings.is_empty() {
+        return Vec::new();
+    }
+    let mut stderr = std::io::stderr().lock();
+    for warning in &cleanup_warnings {
+        let _ = writeln!(
+            stderr,
+            "Unica cache state committed with cleanup warning: {warning}"
+        );
+    }
+    vec![format!(
+        "cache state committed, but {} recovery or staging artifact(s) require cleanup; inspect the Unica server log",
+        cleanup_warnings.len()
+    )]
+}
+
+pub(crate) fn is_retryable_cache_state_conflict(error: &str, paths: &[PathBuf]) -> bool {
+    let error = error.trim_end();
+    let Some(conflict_prefix) = paths.iter().find_map(|path| {
+        let suffix = format!(": {}", path.to_string_lossy());
+        error.strip_suffix(&suffix)
+    }) else {
+        return false;
+    };
+    if [
+        "; rollback encountered:",
+        "; cleanup encountered:",
+        "; cleanup warnings:",
+    ]
+    .iter()
+    .any(|marker| conflict_prefix.contains(marker))
+    {
+        return false;
+    }
+    [
+        "create-only compile target is already",
+        "create-only publication target already exists",
+        "publication target differs from the expected preimage",
+        "publication target metadata changed before commit",
+        "replacement target changed while planning",
+        "registration target changed after planning",
+        "registration target metadata changed after planning",
+        "registration target disappeared before commit",
+        "cache publication target disappeared while staging",
+    ]
+    .iter()
+    .any(|marker| conflict_prefix.contains(marker))
 }
 
 #[cfg(test)]
@@ -254,6 +430,54 @@ mod tests {
         assert!(reported.stale.contains(&"bsl_index".to_string()));
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cache_conflict_classifier_requires_an_exact_planned_cache_path() {
+        let root = PathBuf::from("/workspace");
+        let state = root.join("state.json");
+        let source = root.join("src/CommonModules/Shared/Ext/Module.bsl");
+
+        assert!(is_retryable_cache_state_conflict(
+            &format!(
+                "create-only compile target is already an existing file: {}",
+                state.display()
+            ),
+            std::slice::from_ref(&state),
+        ));
+        let recovery_named_state = PathBuf::from("/workspace/recovery-project/state.json");
+        assert!(is_retryable_cache_state_conflict(
+            &format!(
+                "create-only publication target already exists: {}",
+                recovery_named_state.display()
+            ),
+            std::slice::from_ref(&recovery_named_state),
+        ));
+        assert!(!is_retryable_cache_state_conflict(
+            &format!(
+                "publication target differs from the expected preimage: {}",
+                source.display()
+            ),
+            std::slice::from_ref(&state),
+        ));
+        assert!(!is_retryable_cache_state_conflict(
+            &format!(
+                "publication target differs from the expected preimage: {}.backup",
+                state.display()
+            ),
+            std::slice::from_ref(&state),
+        ));
+        assert!(!is_retryable_cache_state_conflict(
+            &format!(
+                "publication target differs from the expected preimage: {}; rollback encountered: recovery failed",
+                state.display()
+            ),
+            std::slice::from_ref(&state),
+        ));
+        let warnings =
+            cache_cleanup_warnings(vec![format!("{} could not be removed", state.display())]);
+        assert_eq!(warnings.len(), 1);
+        assert!(!warnings[0].contains(state.to_string_lossy().as_ref()));
     }
 
     fn temp_root(prefix: &str) -> PathBuf {

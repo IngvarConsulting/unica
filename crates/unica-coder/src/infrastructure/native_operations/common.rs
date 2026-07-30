@@ -5,7 +5,14 @@ use crate::application::{AdapterOutcome, SupportGuardRequirement};
 use crate::domain::format_profile::{
     classify_root_version, ExportFormatVersion, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
 };
+use crate::domain::source_target::{
+    MetadataAddress, SourceTarget, SourceTargetError, SourceTargetErrorCode,
+    PLATFORM_XML_8_3_27_FORMAT_2_20,
+};
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::platform_xml_source_targets::{
+    resolve_platform_xml_target, revalidate_platform_xml_target, ClosedPlatformXmlTarget,
+};
 use crate::infrastructure::source_roots::normalize_path_identity;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
@@ -1894,6 +1901,77 @@ pub(crate) fn guard_active_format_owner(
     context: &WorkspaceContext,
 ) -> Result<(), String> {
     guard_active_format_dependencies(transaction, &[target], context)
+}
+
+pub(crate) fn code_patch_source_target(
+    args: &Map<String, Value>,
+) -> Result<SourceTarget, SourceTargetError> {
+    let source_set = args
+        .get("sourceSet")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            SourceTargetError::new(
+                SourceTargetErrorCode::SourceSetRequired,
+                "sourceSet must name an exact project source set",
+            )
+        })?;
+    let raw_metadata_path = args
+        .get("metadataPath")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            SourceTargetError::new(
+                SourceTargetErrorCode::MetadataAddressInvalid,
+                "metadataPath must identify one existing module",
+            )
+        })?;
+    let metadata_path = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw_metadata_path)?;
+    Ok(SourceTarget {
+        source_set: source_set.to_string(),
+        metadata_path: Some(metadata_path),
+    })
+}
+
+pub(crate) fn resolve_code_patch_guard_path(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<PathBuf, String> {
+    let target = code_patch_source_target(args).map_err(|error| error.to_string())?;
+    let resolution =
+        resolve_platform_xml_target(context, &target).map_err(|error| error.to_string())?;
+    revalidate_platform_xml_target(context, &resolution.handle)
+        .map(|target| target.path)
+        .map_err(|error| error.to_string())
+}
+
+pub(crate) fn guard_code_patch_resolved_target(
+    transaction: &mut CompileTransaction,
+    handle: &ClosedPlatformXmlTarget,
+    context: &WorkspaceContext,
+) -> Result<PathBuf, String> {
+    let target = revalidate_platform_xml_target(context, handle)
+        .map_err(|error| error.to_string())?
+        .path;
+    guard_active_format_owner(transaction, &target, context)?;
+    for dependency in support_uuid_dependency_paths(&target) {
+        let bytes = fs::read(&dependency)
+            .map_err(|error| format!("failed to read {}: {error}", dependency.display()))?;
+        guard_exact_preimage_if_unprotected(transaction, &dependency, bytes)?;
+    }
+    if let Some(config_dir) = find_support_config_dir(&target) {
+        let support = config_dir.join("Ext").join("ParentConfigurations.bin");
+        if support.is_file() {
+            let bytes = fs::read(&support)
+                .map_err(|error| format!("failed to read {}: {error}", support.display()))?;
+            guard_exact_preimage_if_unprotected(transaction, &support, bytes)?;
+        } else {
+            transaction.guard_path_absent(&support)?;
+        }
+    }
+    Ok(target)
 }
 
 pub(crate) fn guard_active_format_owner_with_exact_root(

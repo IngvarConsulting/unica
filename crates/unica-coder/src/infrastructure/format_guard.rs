@@ -17,8 +17,9 @@ use crate::infrastructure::native_operations::cfe::{
 };
 use crate::infrastructure::native_operations::common::{
     find_support_config_dir, resolve_cf_edit_config_path, resolve_cf_read_config_path,
-    resolve_cfe_validate_config_path, resolve_form_add_object_path, resolve_form_info_path,
-    resolve_role_read_rights_path, resolve_subsystem_edit_xml, support_uuid_dependency_paths,
+    resolve_cfe_validate_config_path, resolve_code_patch_guard_path, resolve_form_add_object_path,
+    resolve_form_info_path, resolve_role_read_rights_path, resolve_subsystem_edit_xml,
+    support_uuid_dependency_paths,
 };
 use crate::infrastructure::native_operations::dcs::{
     dcs_info_format_dependency_paths, resolve_dcs_validate_path,
@@ -993,6 +994,7 @@ fn handler_resolved_format_paths(
     let fallback = raw.map(|path| absolutize(path, &context.cwd));
     let resolved =
         match descriptor.operation {
+            "code-patch" => resolve_code_patch_guard_path(args, context).ok(),
             "cf-edit" => resolve_cf_edit_config_path(args, context).ok(),
             "cf-info" | "cf-validate" => resolve_cf_read_config_path(args, context).ok(),
             "cfe-validate" => resolve_cfe_validate_config_path(args, context).ok(),
@@ -2243,10 +2245,24 @@ mod tests {
         config(&root, Some("2.19"));
         let module = root.join("src/CommonModules/Core/Ext/Module.bsl");
         std::fs::create_dir_all(module.parent().unwrap()).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/CommonModules/Core.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule><Properties><Name>Core</Name></Properties></CommonModule></MetaDataObject>"#,
+        )
+        .unwrap();
         std::fs::write(&module, "Procedure Run()\nEndProcedure\n").unwrap();
         let before = std::fs::read(&module).unwrap();
         let mut args = Map::new();
-        args.insert("path".into(), Value::String(module.display().to_string()));
+        args.insert("sourceSet".into(), Value::String("main".to_string()));
+        args.insert(
+            "metadataPath".into(),
+            Value::String("CommonModule.Core.Module".to_string()),
+        );
 
         let check =
             evaluate_format_guard(spec("unica.code.patch"), &args, &context(&root)).unwrap();

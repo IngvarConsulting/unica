@@ -14,6 +14,8 @@ pub struct CacheReport {
     pub lazy_rebuilt: Vec<String>,
     pub stale: Vec<String>,
     pub fresh: Vec<String>,
+    #[serde(skip)]
+    pub(crate) publication_warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -49,7 +51,7 @@ impl CacheImpact {
                 self.invalidate(["metadata_graph", "form_graph", "bsl_diagnostics"]);
                 self.refresh(["metadata_graph"]);
             }
-            DomainEventKind::ModuleChanged => {
+            DomainEventKind::ModuleChanged | DomainEventKind::SourceResourcesReplaced => {
                 self.invalidate(["bsl_index", "bsl_diagnostics"]);
             }
             DomainEventKind::RoleChanged => {
@@ -105,3 +107,6 @@ impl CacheImpact {
 pub fn path_for_report(path: &Path) -> String {
     path.display().to_string()
 }
+
+#[cfg(test)]
+mod tests {}

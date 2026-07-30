@@ -217,6 +217,13 @@ SCENARIO_SKILLS = {
         "unica.standards.explain",
         "unica.runtime.execute",
     ],
+    "source-access": [
+        "unica.source.resolve",
+        "unica.source.children",
+        "unica.source.resources",
+        "unica.source.read",
+        "unica.source.locate",
+    ],
 }
 
 SCENARIO_REQUIRED_TOKENS = {
@@ -252,6 +259,13 @@ SCENARIO_REQUIRED_TOKENS = {
     "security-auth-crypto": ["OpenID", "сертификаты", "CryptoPro", "секреты"],
     "data-separation": ["tenant-boundaries", "RLS", "разделители", "безопасные запросы"],
     "release-support": ["сравнение/объединение", "Поставка", "поддержка", "совместимость"],
+    "source-access": [
+        "предметн",
+        "dryRun",
+        "unica.code.patch",
+        "unica.source.locate",
+        "только `read`",
+    ],
 }
 
 REPLACED_RUNTIME_SKILLS = {
@@ -1419,6 +1433,57 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 re.IGNORECASE | re.DOTALL,
             ),
         )
+
+    def test_code_patch_skill_uses_only_logical_configuration_and_extension_targets(
+        self,
+    ) -> None:
+        path = self.skill_root() / "code-patch" / "SKILL.md"
+        text = path.read_text(encoding="utf-8")
+        calls = []
+        for block in re.findall(r"```json\s*(.*?)```", text, re.DOTALL):
+            payload = json.loads(block)
+            params = payload.get("params", {})
+            if params.get("name") == "unica.code.patch":
+                calls.append(params.get("arguments", {}))
+
+        self.assertGreaterEqual(len(calls), 2)
+        for arguments in calls:
+            with self.subTest(arguments=arguments):
+                self.assertIn("sourceSet", arguments)
+                self.assertIn("metadataPath", arguments)
+                self.assertNotIn("path", arguments)
+                self.assertNotIn("sourceDir", arguments)
+        self.assertRegex(text, r"Configuration.{0,120}Extension")
+        self.assertIn("sourceSet", text)
+        self.assertIn("metadataPath", text)
+
+    def test_source_access_skill_routes_reads_and_sends_writes_to_code_patch(
+        self,
+    ) -> None:
+        path = self.skill_root() / "source-access" / "SKILL.md"
+        text = path.read_text(encoding="utf-8")
+        writer = text.index("unica.code.patch")
+        inspect = text.index("unica.source.resources")
+
+        self.assertLess(writer, inspect, "the specialized writer is named first")
+        # The resource surface is read-only, so the skill must not promise a
+        # write through it and must send edits to unica.code.patch.
+        self.assertNotIn("unica.source.apply", text)
+        self.assertRegex(text, r"(?s)dryRun.{0,80}true.{0,400}dryRun.{0,80}false")
+        self.assertIn("только `read`", text)
+        self.assertIn("unica.source.locate", text)
+        self.assertIn("replace", text)
+
+    def test_package_readme_documents_code_patch_target_migration(self) -> None:
+        text = (
+            self.repo_root() / "plugins" / "unica" / "README.md"
+        ).read_text(encoding="utf-8")
+        self.assertRegex(
+            text,
+            r"(?s)\|\s*`path`\s*\+\s*`sourceDir`\s*\|"
+            r"\s*`sourceSet`\s*\+\s*`metadataPath`\s*\|",
+        )
+        self.assertIn("legacy_target_removed", text)
 
     def test_v8_runner_dump_references_keep_incomplete_and_external_routes_preview_only(
         self,
