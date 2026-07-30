@@ -173,6 +173,48 @@ enum LeadingSeparator {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PatchOperation {
+    Insert,
+    Replace,
+}
+
+impl PatchOperation {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "insert" => Ok(Self::Insert),
+            "replace" => Ok(Self::Replace),
+            _ => Err("unica.code.patch supports operation `insert` or `replace`".to_string()),
+        }
+    }
+}
+
+/// The span a replacement overwrites, so an edit costs the selected method or
+/// anchor rather than a rewrite of the whole module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReplacementSite {
+    start: usize,
+    end: usize,
+    eol: LineEnding,
+    trailing_eol: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PatchSite {
+    Insertion(InsertionSite),
+    Replacement(ReplacementSite),
+}
+
+impl PatchSite {
+    /// First byte the patch writes, in postimage coordinates.
+    fn changed_start(self) -> usize {
+        match self {
+            Self::Insertion(site) => site.offset,
+            Self::Replacement(site) => site.start,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct InsertionSite {
     offset: usize,
     position: Position,
@@ -198,7 +240,7 @@ struct CodePatchPlan {
     selector: Selector,
     content: String,
     insertion: Vec<u8>,
-    site: InsertionSite,
+    site: PatchSite,
     no_op: bool,
 }
 
@@ -213,20 +255,33 @@ fn build_patch(
         .map_err(|error| format!("BSL module snapshot: {error}"))?;
     let text = snapshot.decoded_text();
     let selector = Selector::parse(args)?;
-    let position = Position::parse(string_arg(args, "position")?)?;
-    if string_arg(args, "operation")? != "insert" {
-        return Err("unica.code.patch v1 supports only operation=insert".to_string());
-    }
+    let operation = PatchOperation::parse(string_arg(args, "operation")?)?;
     let indexed = analyze_module(text)?;
     reject_parse_diagnostics(&indexed.diagnostics, "validate original BSL module")?;
-    let site = locate_selector(&snapshot, position, &selector, &indexed.methods)?;
     let content = string_arg(args, "content")?.to_string();
-    let insertion = normalized_content(&content, site.eol, site.leading_separator);
-    let no_op = insertion_is_present(snapshot.raw(), site, &insertion);
-    let mut after = snapshot.raw().to_vec();
-    if !no_op {
-        after.splice(site.offset..site.offset, insertion.iter().copied());
-    }
+    let (site, insertion, no_op, after) = match operation {
+        PatchOperation::Insert => {
+            let position = Position::parse(string_arg(args, "position")?)?;
+            let site = locate_selector(&snapshot, position, &selector, &indexed.methods)?;
+            let insertion = normalized_content(&content, site.eol, site.leading_separator);
+            let no_op = insertion_is_present(snapshot.raw(), site, &insertion);
+            let mut after = snapshot.raw().to_vec();
+            if !no_op {
+                after.splice(site.offset..site.offset, insertion.iter().copied());
+            }
+            (PatchSite::Insertion(site), insertion, no_op, after)
+        }
+        PatchOperation::Replace => {
+            let site = locate_replacement(&snapshot, &selector, &indexed.methods)?;
+            let replacement = normalized_replacement(&content, site.eol, site.trailing_eol);
+            let no_op = snapshot.raw().get(site.start..site.end) == Some(replacement.as_slice());
+            let mut after = snapshot.raw().to_vec();
+            if !no_op {
+                after.splice(site.start..site.end, replacement.iter().copied());
+            }
+            (PatchSite::Replacement(site), replacement, no_op, after)
+        }
+    };
     Ok(CodePatchPlan {
         target,
         before,
@@ -307,19 +362,23 @@ fn finish_patch(
             return CodePatchExecution::failure(format!("publish BSL module: {error}"), Some(data));
         }
     }
+    let (edit, verb) = match plan.site {
+        PatchSite::Insertion(_) => ("insertion", "inserted"),
+        PatchSite::Replacement(_) => ("replacement", "replaced"),
+    };
     let outcome = AdapterOutcome {
         ok: true,
         summary: if plan.no_op {
             "unica.code.patch is already applied".to_string()
         } else if mode == PatchMode::Preview {
-            "dry run: unica.code.patch planned one insertion".to_string()
+            format!("dry run: unica.code.patch planned one {edit}")
         } else {
-            "unica.code.patch applied one insertion".to_string()
+            format!("unica.code.patch applied one {edit}")
         },
         changes: (mode == PatchMode::Apply && !plan.no_op)
             .then(|| {
                 format!(
-                    "{} + {}: inserted BSL content",
+                    "{} + {}: {verb} BSL content",
                     plan.target.resolved.source_set,
                     plan.target.metadata_path()
                 )
@@ -352,12 +411,13 @@ fn patch_data(
     let changed_ranges = if plan.no_op {
         Vec::new()
     } else {
-        let (start_line, start_column) = line_column(postimage, plan.site.offset)?;
-        let (end_line, end_column) =
-            line_column(postimage, plan.site.offset + plan.insertion.len())?;
+        let start = plan.site.changed_start();
+        let end = start + plan.insertion.len();
+        let (start_line, start_column) = line_column(postimage, start)?;
+        let (end_line, end_column) = line_column(postimage, end)?;
         vec![ChangedRange {
-            start_byte: plan.site.offset,
-            end_byte: plan.site.offset + plan.insertion.len(),
+            start_byte: start,
+            end_byte: end,
             start_line,
             start_column,
             end_line,
@@ -552,6 +612,74 @@ fn locate_selector(
     })
 }
 
+/// Resolves the span a replacement overwrites. A method selector takes the whole
+/// method including the line it starts and ends on; an anchor selector takes the
+/// exact occurrence, so an inline edit stays inline.
+fn locate_replacement(
+    snapshot: &SourceTextSnapshot,
+    selector: &Selector,
+    methods: &[Method],
+) -> Result<ReplacementSite, String> {
+    reject_lone_cr_line_endings(snapshot)?;
+    let text = snapshot.decoded_text();
+    let (start, end) = match selector {
+        Selector::Method(name) => {
+            let folded_name = name.to_lowercase();
+            let found = methods
+                .iter()
+                .filter(|method| method.name.to_lowercase() == folded_name)
+                .collect::<Vec<_>>();
+            let [method] = found.as_slice() else {
+                return Err(format!(
+                    "method selector must match exactly once; matched {} times",
+                    found.len()
+                ));
+            };
+            (
+                safe_line_start(text, method.start),
+                line_end(text, method.end),
+            )
+        }
+        Selector::Anchor(anchor) => {
+            let found = anchor_occurrences(text, anchor, methods);
+            let [selected] = found.as_slice() else {
+                return Err(format!(
+                    "anchor selector must match exactly once; matched {} times",
+                    found.len()
+                ));
+            };
+            (selected.start, selected.end)
+        }
+    };
+    let policy = match snapshot.line_endings() {
+        LineEndingProfile::None => EolPolicy::Lf,
+        LineEndingProfile::Uniform(_) | LineEndingProfile::Mixed { .. } => EolPolicy::Preserve,
+    };
+    let local = local_line_ending_at(text, start, Position::Before);
+    let eol = resolve_line_ending(policy, snapshot, local)
+        .map_err(|error| format!("resolve code.patch EOL: {error}"))?;
+    // The replacement keeps a trailing newline only where the span it overwrites
+    // had one, so replacing an inline anchor does not break the line.
+    let trailing_eol = text
+        .get(..end)
+        .is_some_and(|head| head.ends_with('\n') || head.ends_with('\r'));
+    Ok(ReplacementSite {
+        start,
+        end,
+        eol,
+        trailing_eol,
+    })
+}
+
+fn normalized_replacement(content: &str, eol: LineEnding, trailing_eol: bool) -> Vec<u8> {
+    let eol = eol.as_str();
+    let mut bytes = canonicalize_eol(content).replace('\n', eol).into_bytes();
+    if trailing_eol && !bytes.ends_with(eol.as_bytes()) {
+        bytes.extend_from_slice(eol.as_bytes());
+    }
+    bytes
+}
+
 fn reject_lone_cr_line_endings(snapshot: &SourceTextSnapshot) -> Result<(), String> {
     match snapshot.line_endings() {
         LineEndingProfile::Uniform(LineEnding::Cr) | LineEndingProfile::Mixed { cr: 1.., .. } => {
@@ -632,16 +760,37 @@ fn prove_repeat_is_noop(
 ) -> Result<(), String> {
     let snapshot = SourceTextSnapshot::from_bytes(postimage.as_bytes())
         .map_err(|error| format!("patched BSL module snapshot: {error}"))?;
-    let repeat_site = locate_selector(&snapshot, plan.site.position, &plan.selector, methods)
-        .map_err(|error| {
-            format!("patch cannot be applied idempotently on the next call: {error}")
-        })?;
-    let repeat_insertion = normalized_content(
-        &plan.content,
-        repeat_site.eol,
-        repeat_site.leading_separator,
-    );
-    if insertion_is_present(postimage.as_bytes(), repeat_site, &repeat_insertion) {
+    let stale =
+        |error: String| format!("patch cannot be applied idempotently on the next call: {error}");
+    let repeated_is_noop = match plan.site {
+        PatchSite::Insertion(site) => {
+            let repeat_site = locate_selector(&snapshot, site.position, &plan.selector, methods)
+                .map_err(stale)?;
+            let repeat_insertion = normalized_content(
+                &plan.content,
+                repeat_site.eol,
+                repeat_site.leading_separator,
+            );
+            insertion_is_present(postimage.as_bytes(), repeat_site, &repeat_insertion)
+        }
+        PatchSite::Replacement(_) => match locate_replacement(&snapshot, &plan.selector, methods) {
+            // The edit consumed its own selector — an anchor rewritten to new
+            // text, a method renamed. A repeated identical call then resolves
+            // nothing and fails closed without writing, which is exactly the
+            // double application the guard exists to prevent.
+            Err(_) => true,
+            Ok(repeat_site) => {
+                let repeat_replacement = normalized_replacement(
+                    &plan.content,
+                    repeat_site.eol,
+                    repeat_site.trailing_eol,
+                );
+                snapshot.raw().get(repeat_site.start..repeat_site.end)
+                    == Some(repeat_replacement.as_slice())
+            }
+        },
+    };
+    if repeated_is_noop {
         Ok(())
     } else {
         Err(
@@ -1543,6 +1692,114 @@ mod tests {
         let repeated = patch_inner(&args, &context, PatchMode::Apply);
         assert!(repeated.outcome.ok);
         assert!(repeated.data.unwrap().no_op);
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    fn replace_args(metadata_path: &str, selector: Value, content: &str) -> Map<String, Value> {
+        let mut args = Map::new();
+        args.insert("sourceSet".to_string(), json!("main"));
+        args.insert("metadataPath".to_string(), json!(metadata_path));
+        args.insert("operation".to_string(), json!("replace"));
+        args.insert("selector".to_string(), selector);
+        args.insert("content".to_string(), json!(content));
+        args
+    }
+
+    #[test]
+    fn code_patch_replaces_one_method_and_leaves_its_neighbours_untouched() {
+        let context = temp_context("replace-method");
+        let module = context
+            .workspace_root
+            .join("src/CommonModules/Sample/Ext/Module.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        let before = "Процедура Первая()\r\nКонецПроцедуры\r\n\
+                      Процедура Цель()\r\n\tСтарое = 1;\r\nКонецПроцедуры\r\n\
+                      Процедура Третья()\r\nКонецПроцедуры\r\n";
+        fs::write(&module, before).unwrap();
+        let args = replace_args(
+            "CommonModule.Sample.Module",
+            json!({"method": "Цель"}),
+            "Процедура Цель()\n\tНовое = 2;\nКонецПроцедуры",
+        );
+
+        let preview = patch_inner(&args, &context, PatchMode::Preview);
+        assert!(preview.outcome.ok, "{:?}", preview.outcome.errors);
+        assert_eq!(fs::read_to_string(&module).unwrap(), before);
+
+        let applied = patch_inner(&args, &context, PatchMode::Apply);
+        assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
+        let after = fs::read_to_string(&module).unwrap();
+        assert_eq!(
+            after,
+            "Процедура Первая()\r\nКонецПроцедуры\r\n\
+             Процедура Цель()\r\n\tНовое = 2;\r\nКонецПроцедуры\r\n\
+             Процедура Третья()\r\nКонецПроцедуры\r\n",
+            "only the selected method changes and the source CRLF survives"
+        );
+
+        let repeated = patch_inner(&args, &context, PatchMode::Apply);
+        assert!(repeated.outcome.ok, "{:?}", repeated.outcome.errors);
+        assert!(repeated.data.unwrap().no_op);
+        assert_eq!(fs::read_to_string(&module).unwrap(), after);
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn code_patch_replace_that_consumes_its_selector_cannot_apply_twice() {
+        let context = temp_context("replace-consumes-selector");
+        let module = context
+            .workspace_root
+            .join("src/CommonModules/Sample/Ext/Module.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        fs::write(&module, "Процедура Цель()\nКонецПроцедуры\n").unwrap();
+        let args = replace_args(
+            "CommonModule.Sample.Module",
+            json!({"method": "Цель"}),
+            "Процедура Переименована()\nКонецПроцедуры",
+        );
+
+        let applied = patch_inner(&args, &context, PatchMode::Apply);
+        assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
+        let after = fs::read_to_string(&module).unwrap();
+        assert_eq!(after, "Процедура Переименована()\nКонецПроцедуры\n");
+
+        // The selector no longer resolves, so the repeat fails closed rather
+        // than writing the edit a second time.
+        let repeated = patch_inner(&args, &context, PatchMode::Apply);
+        assert!(!repeated.outcome.ok);
+        assert_eq!(
+            fs::read_to_string(&module).unwrap(),
+            after,
+            "a refused repeat must leave the module byte-identical"
+        );
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn code_patch_replace_keeps_an_anchor_edit_inline() {
+        let context = temp_context("replace-anchor");
+        let module = context
+            .workspace_root
+            .join("src/CommonModules/Sample/Ext/Module.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        fs::write(
+            &module,
+            "Процедура Цель()\n\tЗначение = 1;\nКонецПроцедуры\n",
+        )
+        .unwrap();
+        let args = replace_args(
+            "CommonModule.Sample.Module",
+            json!({"anchor": "Значение = 1;"}),
+            "Значение = 42;",
+        );
+
+        let applied = patch_inner(&args, &context, PatchMode::Apply);
+        assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
+        assert_eq!(
+            fs::read_to_string(&module).unwrap(),
+            "Процедура Цель()\n\tЗначение = 42;\nКонецПроцедуры\n",
+            "an inline anchor replacement must not add a line break"
+        );
         fs::remove_dir_all(&context.workspace_root).unwrap();
     }
 

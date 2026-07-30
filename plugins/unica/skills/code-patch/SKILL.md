@@ -15,7 +15,7 @@ allowed-tools:
 - Do not call internal MCP/CLI adapters directly. They are hidden behind `unica` and synchronized by the orchestrator.
 - Always call `unica.code.patch` with `dryRun: true` first. Call it with `dryRun: false` only after the user explicitly asked to apply this exact insertion.
 
-`unica.code.patch` edits only an existing module in a supported canonical layout, with its metadata descriptors present, inside the selected Platform XML Configuration or Extension source set. The physical `*Module.bsl` path is resolved privately from `sourceSet + metadataPath`; the removed `path` and `sourceDir` selector fields fail with `legacy_target_removed`. The tool performs exactly one `insert`; it cannot create a module, batch-edit files, replace or delete text, edit EDT/external files, or synchronize source with an infobase.
+`unica.code.patch` edits only an existing module in a supported canonical layout, with its metadata descriptors present, inside the selected Platform XML Configuration or Extension source set. The physical `*Module.bsl` path is resolved privately from `sourceSet + metadataPath`; the removed `path` and `sourceDir` selector fields fail with `legacy_target_removed`. The tool performs exactly one `insert` or one `replace` — `insert` places `content` before or after the selected method or anchor, `replace` overwrites the selected span itself and does not accept `position`; it cannot create a module, batch-edit files, delete a whole module, edit EDT/external files, or synchronize source with an infobase.
 
 If the requested BSL change cannot be expressed as one safe insertion and needs
 a full existing-module replacement, stop this route and use the

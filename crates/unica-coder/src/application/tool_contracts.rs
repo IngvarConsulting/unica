@@ -915,13 +915,7 @@ fn validate_code_patch_arguments(tool: ToolSpec, args: &Map<String, Value>) -> R
     if tool.name != "unica.code.patch" {
         return Ok(());
     }
-    for key in [
-        "sourceSet",
-        "metadataPath",
-        "operation",
-        "content",
-        "position",
-    ] {
+    for key in ["sourceSet", "metadataPath", "operation", "content"] {
         let value = args
             .get(key)
             .and_then(Value::as_str)
@@ -933,15 +927,31 @@ fn validate_code_patch_arguments(tool: ToolSpec, args: &Map<String, Value>) -> R
             ));
         }
     }
-    if args.get("operation").and_then(Value::as_str) != Some("insert") {
-        return Err(format!("{} supports only operation `insert`", tool.name));
-    }
-    if !matches!(
-        args.get("position").and_then(Value::as_str),
-        Some("before" | "after")
-    ) {
+    let operation = args
+        .get("operation")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !matches!(operation, "insert" | "replace") {
         return Err(format!(
-            "{} argument `position` must be `before` or `after`",
+            "{} supports operation `insert` or `replace`",
+            tool.name
+        ));
+    }
+    // `position` places an insertion; a replacement overwrites the selected span
+    // and has nowhere to place anything, so accepting it would be meaningless.
+    if operation == "insert" {
+        if !matches!(
+            args.get("position").and_then(Value::as_str),
+            Some("before" | "after")
+        ) {
+            return Err(format!(
+                "{} argument `position` must be `before` or `after` for operation `insert`",
+                tool.name
+            ));
+        }
+    } else if args.contains_key("position") {
+        return Err(format!(
+            "{} does not accept `position` for operation `replace`; the selector names the replaced span",
             tool.name
         ));
     }
@@ -2698,7 +2708,7 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
                 "pattern": r"\S",
                 "description": "Canonical logical module address inside sourceSet, for example CommonModule.Service.Module or Catalog.Items.ObjectModule."
             }),
-            "operation" => json!({ "type": "string", "enum": ["insert"] }),
+            "operation" => json!({ "type": "string", "enum": ["insert", "replace"] }),
             "position" => json!({ "type": "string", "enum": ["before", "after"] }),
             "selector" => json!({
                 "type": "object",
@@ -4240,12 +4250,21 @@ mod tests {
             "operation",
             "selector",
             "content",
-            "position",
         ] {
             assert!(schema["required"]
                 .as_array()
                 .is_some_and(|items| { items.iter().any(|value| value == required) }));
         }
+        // `position` belongs to operation `insert` only, so it is offered but
+        // not demanded of every call.
+        assert_eq!(
+            schema["properties"]["operation"]["enum"],
+            serde_json::json!(["insert", "replace"])
+        );
+        assert!(schema["properties"]["position"].is_object());
+        assert!(schema["required"]
+            .as_array()
+            .is_some_and(|items| { items.iter().all(|value| value != "position") }));
     }
 
     #[test]

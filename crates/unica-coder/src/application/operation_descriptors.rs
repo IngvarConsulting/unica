@@ -97,13 +97,15 @@ const SUBSYSTEM_COMPILE_REQUIRED: &[&str] = &["OutputDir"];
 const MXL_COMPILE_REQUIRED: &[&str] = &["JsonPath", "OutputPath"];
 const ROLE_COMPILE_REQUIRED: &[&str] = &["JsonPath", "OutputDir"];
 const EXTERNAL_INIT_REQUIRED: &[&str] = &["Name", "OutputDir"];
+// `position` is required only by operation `insert`, so the descriptor cannot
+// demand it for every call; `validate_code_patch_arguments` enforces it per
+// operation.
 const CODE_PATCH_REQUIRED: &[&str] = &[
     "sourceSet",
     "metadataPath",
     "operation",
     "selector",
     "content",
-    "position",
 ];
 
 const JSON_PATH: &[&str] = &["JsonPath", "jsonPath"];
