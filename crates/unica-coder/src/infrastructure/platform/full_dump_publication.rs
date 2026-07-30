@@ -21,13 +21,14 @@ use crate::infrastructure::internal_adapters::{
 use crate::infrastructure::native_operations::single_file_publisher::{
     with_publication_locks_mode, PublicationTreeLockMode,
 };
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::infrastructure::platform::filesystem::hard_link_count;
 #[cfg(windows)]
 use crate::infrastructure::platform::filesystem::{
     create_owner_only_directory_child, create_owner_only_file_child, discard_created_child,
-    open_directory_child_for_rename, open_directory_child_nofollow, open_directory_nofollow,
-    rename_directory_handle_child_no_replace, verify_owner_only_acl,
+    open_any_child_nofollow, open_directory_child_for_rename, open_directory_child_nofollow,
+    open_directory_nofollow, open_regular_child_nofollow, rename_directory_handle_child_no_replace,
+    verify_owner_only_acl,
 };
 use crate::infrastructure::platform::filesystem::{
     file_identity, metadata_is_link_or_reparse_point, restrict_stage_to_owner, FileIdentity,
@@ -48,7 +49,7 @@ use std::env;
 use std::ffi::CString;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::io::Read;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
@@ -76,11 +77,16 @@ pub(crate) enum FullDumpInvocation {
 
 #[cfg(all(test, windows))]
 mod windows_anchor_tests {
-    use super::{rename_child_no_replace, DirectoryAnchor};
+    use super::{
+        rename_child_no_replace, secure_path_is_absent, secure_read_regular_file_snapshot,
+        with_secure_read_hook, DirectoryAnchor,
+    };
     use crate::infrastructure::platform::filesystem::verify_owner_only_acl;
+    use std::cell::Cell;
     use std::ffi::OsStr;
     use std::fs;
     use std::path::PathBuf;
+    use std::rc::Rc;
 
     #[test]
     fn windows_anchor_detects_parent_name_replacement() {
@@ -128,6 +134,78 @@ mod windows_anchor_tests {
 
         assert!(error.contains("does not match anchored child"), "{error}");
         assert!(!outside.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_descendant_anchor_walks_multiple_components_from_the_retained_root() {
+        let root = unique_temp_root("descendant-walk");
+        let descendant = root.join("sources").join("configuration");
+        fs::create_dir_all(&descendant).unwrap();
+        let anchor = DirectoryAnchor::capture_exact(&root).unwrap();
+
+        let captured = anchor
+            .capture_descendant(
+                PathBuf::from("sources/configuration").as_path(),
+                &descendant,
+            )
+            .unwrap();
+
+        assert_eq!(captured.path, descendant);
+        captured.verify_path_binding().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_descendant_anchor_rejects_a_replaced_intermediate_component() {
+        let root = unique_temp_root("descendant-replacement");
+        let first = root.join("sources");
+        let descendant = first.join("configuration");
+        fs::create_dir_all(&descendant).unwrap();
+        let anchor = DirectoryAnchor::capture_exact(&root).unwrap();
+        let captured = anchor
+            .capture_descendant(
+                PathBuf::from("sources/configuration").as_path(),
+                &descendant,
+            )
+            .unwrap();
+        let captured_identity = captured.identity;
+        drop(captured);
+        let displaced = root.join("sources-displaced");
+        fs::rename(&first, &displaced).unwrap();
+        fs::create_dir_all(&descendant).unwrap();
+
+        let error = anchor
+            .verify_descendant_identity(
+                PathBuf::from("sources/configuration").as_path(),
+                captured_identity,
+                &descendant,
+            )
+            .unwrap_err();
+
+        assert!(
+            error.contains("identity") || error.contains("changed"),
+            "{error}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_descendant_anchor_captures_child_root_identity_and_absence() {
+        let root = unique_temp_root("descendant-child-root");
+        let child = root.join("source");
+        fs::create_dir_all(&child).unwrap();
+        let anchor = DirectoryAnchor::capture_exact(&root).unwrap();
+
+        let identity = anchor
+            .capture_child_root_identity(OsStr::new("source"), &child)
+            .unwrap();
+        let missing = anchor
+            .capture_child_root_identity(OsStr::new("missing"), &root.join("missing"))
+            .unwrap();
+
+        assert!(identity.is_some());
+        assert_eq!(missing, None);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -183,6 +261,83 @@ mod windows_anchor_tests {
 
         assert!(!source.exists());
         assert_eq!(fs::read(destination.join("new.txt")).unwrap(), b"new");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_secure_read_rejects_a_final_reparse_point() {
+        let root = unique_temp_root("secure-read-reparse");
+        fs::create_dir_all(&root).unwrap();
+        let real = root.join("real.yaml");
+        let link = root.join("v8project.yaml");
+        fs::write(&real, b"project: real").unwrap();
+        std::os::windows::fs::symlink_file(&real, &link).unwrap();
+
+        let error = secure_read_regular_file_snapshot(&link, "project config").unwrap_err();
+
+        assert!(!error.contains("unavailable"), "{error}");
+        assert!(
+            error.contains("reparse") || error.contains("link"),
+            "{error}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_secure_read_detects_child_name_identity_replacement() {
+        let root = unique_temp_root("secure-read-identity");
+        fs::create_dir_all(&root).unwrap();
+        let config = root.join("v8project.yaml");
+        let displaced = root.join("v8project.displaced.yaml");
+        let replacement = root.join("v8project.replacement.yaml");
+        fs::write(&config, b"project: original").unwrap();
+        fs::write(&replacement, b"project: replacement").unwrap();
+        let hook_config = config.clone();
+        let hook_displaced = displaced.clone();
+        let hook_replacement = replacement.clone();
+        let hook_ran = Rc::new(Cell::new(false));
+        let hook_ran_inside = Rc::clone(&hook_ran);
+
+        let result = with_secure_read_hook(
+            move |path| {
+                assert_eq!(path, hook_config);
+                hook_ran_inside.set(true);
+                fs::rename(&hook_config, &hook_displaced).unwrap();
+                fs::rename(&hook_replacement, &hook_config).unwrap();
+            },
+            || secure_read_regular_file_snapshot(&config, "project config"),
+        );
+
+        let error = result.expect_err("the retained child identity must reject replacement");
+        assert!(hook_ran.get(), "the secure-read hook must run");
+        assert!(!error.contains("unavailable"), "{error}");
+        assert!(
+            error.contains("identity") || error.contains("changed"),
+            "{error}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_secure_read_absence_treats_reparse_points_as_present() {
+        let root = unique_temp_root("secure-absence-reparse");
+        fs::create_dir_all(&root).unwrap();
+        let real = root.join("real.yaml");
+        let link = root.join("v8project.local.yaml");
+        fs::write(&real, b"project: local").unwrap();
+        std::os::windows::fs::symlink_file(&real, &link).unwrap();
+
+        assert!(!secure_path_is_absent(&link).unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_secure_read_absence_accepts_only_a_missing_child() {
+        let root = unique_temp_root("secure-absence-missing");
+        fs::create_dir_all(&root).unwrap();
+        let missing = root.join("v8project.local.yaml");
+
+        assert!(secure_path_is_absent(&missing).unwrap());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1623,7 +1778,101 @@ fn secure_read_regular_file_snapshot(
     Ok(SecureFileSnapshot { identity, raw })
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn secure_read_regular_file_snapshot(
+    path: &Path,
+    role: &str,
+) -> Result<SecureFileSnapshot, String> {
+    let normalized = normalize_leaf_path(path)?;
+    let (parent_path, name) = split_parent_and_name(&normalized)?;
+    let parent = open_directory_nofollow(&parent_path).map_err(|error| {
+        format!(
+            "failed to securely open parent for {role} {}: {error}",
+            normalized.display()
+        )
+    })?;
+    let mut file = open_regular_child_nofollow(&parent, &name)
+        .map_err(|error| format!("failed to securely open {role} {}: {error}", path.display()))?;
+    let identity = file_identity(&file).map_err(|error| {
+        format!(
+            "failed to inspect opened {role} identity {}: {error}",
+            path.display()
+        )
+    })?;
+    if hard_link_count(&file).map_err(|error| {
+        format!(
+            "failed to inspect hard links for {role} {}: {error}",
+            path.display()
+        )
+    })? != 1
+    {
+        return Err(format!(
+            "{role} must have exactly one hard link: {}",
+            path.display()
+        ));
+    }
+    let opened = file.metadata().map_err(|error| {
+        format!(
+            "failed to inspect opened {role} {}: {error}",
+            path.display()
+        )
+    })?;
+
+    run_secure_read_hook(path);
+    let rebound = open_regular_child_nofollow(&parent, &name).map_err(|error| {
+        format!(
+            "failed to rebind {role} name before reading {}: {error}",
+            path.display()
+        )
+    })?;
+    if file_identity(&rebound).map_err(|error| {
+        format!(
+            "failed to recheck {role} identity {}: {error}",
+            path.display()
+        )
+    })? != identity
+    {
+        return Err(format!(
+            "{role} identity changed before reading: {}",
+            path.display()
+        ));
+    }
+
+    let mut raw = Vec::new();
+    file.read_to_end(&mut raw)
+        .map_err(|error| format!("failed to read {role} {}: {error}", path.display()))?;
+    let after = file.metadata().map_err(|error| {
+        format!(
+            "failed to recheck opened {role} {}: {error}",
+            path.display()
+        )
+    })?;
+    if opened.len() != after.len() || opened.modified().ok() != after.modified().ok() {
+        return Err(format!("{role} changed while reading: {}", path.display()));
+    }
+    let rebound = open_regular_child_nofollow(&parent, &name).map_err(|error| {
+        format!(
+            "failed to rebind {role} name after reading {}: {error}",
+            path.display()
+        )
+    })?;
+    if file_identity(&rebound).map_err(|error| {
+        format!(
+            "failed to recheck {role} identity {}: {error}",
+            path.display()
+        )
+    })? != identity
+    {
+        return Err(format!(
+            "{role} identity changed while reading: {}",
+            path.display()
+        ));
+    }
+    run_secure_read_after_hook(path);
+    Ok(SecureFileSnapshot { identity, raw })
+}
+
+#[cfg(not(any(unix, windows)))]
 fn secure_read_regular_file_snapshot(
     path: &Path,
     role: &str,
@@ -1702,7 +1951,44 @@ fn secure_path_is_absent(path: &Path) -> Result<bool, String> {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn secure_path_is_absent(path: &Path) -> Result<bool, String> {
+    use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND};
+
+    let normalized = normalize_leaf_path(path)?;
+    let (parent_path, name) = split_parent_and_name(&normalized)?;
+    let parent = open_directory_nofollow(&parent_path).map_err(|error| {
+        format!(
+            "failed to securely open parent while checking {}: {error}",
+            normalized.display()
+        )
+    })?;
+    match open_any_child_nofollow(&parent, &name) {
+        Ok(_) => Ok(false),
+        Err(error)
+            if matches!(
+                error.raw_os_error(),
+                Some(code)
+                    if code == ERROR_FILE_NOT_FOUND as i32
+                        || code == ERROR_PATH_NOT_FOUND as i32
+            ) =>
+        {
+            Ok(true)
+        }
+        Err(error)
+            if error.kind() == ErrorKind::InvalidInput
+                && error.to_string().contains("reparse point") =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(format!(
+            "failed to securely inspect {}: {error}",
+            normalized.display()
+        )),
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 fn secure_path_is_absent(path: &Path) -> Result<bool, String> {
     Err(format!(
         "secure no-follow absence checks are unavailable on this host: {}",
@@ -1751,7 +2037,7 @@ fn open_directory_nofollow(path: &Path) -> std::io::Result<File> {
     Ok(current)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn open_directory_relative_nofollow(root: &File, relative: &Path) -> std::io::Result<File> {
     use std::path::Component;
 
@@ -1944,7 +2230,7 @@ impl DirectoryAnchor {
         })
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn capture_descendant(&self, relative: &Path, display_path: &Path) -> Result<Self, String> {
         self.verify_path_binding()?;
         let directory =
@@ -1968,7 +2254,7 @@ impl DirectoryAnchor {
         })
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn verify_descendant_identity(
         &self,
         relative: &Path,
@@ -1998,7 +2284,7 @@ impl DirectoryAnchor {
         self.verify_path_binding()
     }
 
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     fn capture_descendant(&self, _relative: &Path, display_path: &Path) -> Result<Self, String> {
         Err(format!(
             "secure workspace-relative directory anchors are unavailable on this host: {}",
@@ -2006,7 +2292,7 @@ impl DirectoryAnchor {
         ))
     }
 
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     fn verify_descendant_identity(
         &self,
         _relative: &Path,
@@ -2227,7 +2513,7 @@ impl DirectoryAnchor {
         Ok(snapshot)
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn capture_child_root_identity(
         &self,
         name: &OsStr,
@@ -2257,7 +2543,7 @@ impl DirectoryAnchor {
         Ok(Some(identity))
     }
 
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     fn capture_child_root_identity(
         &self,
         _name: &OsStr,

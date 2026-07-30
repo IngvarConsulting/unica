@@ -404,8 +404,9 @@ pub(crate) fn open_directory_nofollow(path: &Path) -> io::Result<fs::File> {
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
-        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, READ_CONTROL,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY,
+        FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+        READ_CONTROL,
     };
 
     let path = windows_api_path(path)?;
@@ -413,7 +414,7 @@ pub(crate) fn open_directory_nofollow(path: &Path) -> io::Result<fs::File> {
     let handle = unsafe {
         CreateFileW(
             path.as_ptr(),
-            FILE_READ_ATTRIBUTES | READ_CONTROL,
+            FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             ptr::null(),
             OPEN_EXISTING,
@@ -633,13 +634,13 @@ pub(crate) fn open_directory_child_nofollow(
     const FILE_DIRECTORY_FILE: u32 = 0x0000_0001;
     const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
     use windows_sys::Win32::Storage::FileSystem::{
-        FILE_READ_ATTRIBUTES, READ_CONTROL, SYNCHRONIZE,
+        FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, READ_CONTROL, SYNCHRONIZE,
     };
 
     let file = open_relative_child(
         parent,
         name,
-        FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+        FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
         0,
         FILE_OPEN,
         FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
@@ -647,6 +648,215 @@ pub(crate) fn open_directory_child_nofollow(
     )?;
     validate_directory_handle(&file)?;
     Ok(file)
+}
+
+#[cfg(windows)]
+pub(crate) fn open_regular_child_nofollow(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    const FILE_OPEN: u32 = 0x0000_0001;
+    const FILE_NON_DIRECTORY_FILE: u32 = 0x0000_0040;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    use windows_sys::Win32::Foundation::GENERIC_READ;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_READ_ATTRIBUTES, SYNCHRONIZE,
+    };
+
+    let file = open_relative_child(
+        parent,
+        name,
+        GENERIC_READ | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        0,
+        FILE_OPEN,
+        FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+        None,
+    )?;
+    let attributes = windows_file_information(&file)?.dwFileAttributes;
+    if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "regular child resolves to a reparse point",
+        ));
+    }
+    if attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "entry is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(windows)]
+pub(crate) fn open_any_child_nofollow(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    const FILE_OPEN: u32 = 0x0000_0001;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_READ_ATTRIBUTES, SYNCHRONIZE,
+    };
+
+    let file = open_relative_child(
+        parent,
+        name,
+        FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        0,
+        FILE_OPEN,
+        FILE_OPEN_REPARSE_POINT,
+        None,
+    )?;
+    if windows_file_information(&file)?.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "child resolves to a reparse point",
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(windows)]
+#[allow(
+    dead_code,
+    reason = "the following Windows full-dump tree-inspection task consumes retained enumeration"
+)]
+pub(crate) fn read_directory_names(directory: &fs::File) -> io::Result<Vec<std::ffi::OsString>> {
+    use std::mem::{offset_of, size_of};
+    use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::ERROR_NO_MORE_FILES;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo, GetFileInformationByHandleEx,
+        FILE_ID_BOTH_DIR_INFO,
+    };
+
+    const BUFFER_BYTES: usize = 64 * 1024;
+
+    validate_directory_handle(directory)?;
+    let word_count = BUFFER_BYTES.div_ceil(size_of::<usize>());
+    let mut storage = vec![0usize; word_count];
+    let buffer_bytes = storage.len() * size_of::<usize>();
+    let file_name_offset = offset_of!(FILE_ID_BOTH_DIR_INFO, FileName);
+    let mut names = Vec::new();
+    let mut restart = true;
+    loop {
+        storage.fill(0);
+        let information_class = if restart {
+            FileIdBothDirectoryRestartInfo
+        } else {
+            FileIdBothDirectoryInfo
+        };
+        // SAFETY: storage is writable and pointer-aligned, its byte capacity is supplied exactly,
+        // and directory remains a live retained handle throughout enumeration.
+        let succeeded = unsafe {
+            GetFileInformationByHandleEx(
+                directory.as_raw_handle(),
+                information_class,
+                storage.as_mut_ptr().cast(),
+                u32::try_from(buffer_bytes).expect("fixed directory buffer fits u32"),
+            )
+        };
+        if succeeded == 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(ERROR_NO_MORE_FILES as i32) {
+                break;
+            }
+            return Err(error);
+        }
+        restart = false;
+
+        let mut offset = 0usize;
+        loop {
+            let header_end = offset.checked_add(file_name_offset).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "directory entry header offset overflowed",
+                )
+            })?;
+            if header_end > buffer_bytes {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "directory entry header exceeds the enumeration buffer",
+                ));
+            }
+            // SAFETY: the fixed header was bounds-checked above; read_unaligned also accepts any
+            // offset alignment returned by the filesystem.
+            let entry = unsafe {
+                std::ptr::read_unaligned(
+                    storage
+                        .as_ptr()
+                        .cast::<u8>()
+                        .add(offset)
+                        .cast::<FILE_ID_BOTH_DIR_INFO>(),
+                )
+            };
+            let name_bytes = usize::try_from(entry.FileNameLength).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "directory entry name length is not representable",
+                )
+            })?;
+            if name_bytes == 0 || name_bytes % size_of::<u16>() != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "directory entry has an invalid UTF-16 name length",
+                ));
+            }
+            let name_end = header_end.checked_add(name_bytes).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "directory entry name offset overflowed",
+                )
+            })?;
+            if name_end > buffer_bytes {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "directory entry name exceeds the enumeration buffer",
+                ));
+            }
+            // SAFETY: the complete name byte range was bounds-checked and the length is even.
+            let name = unsafe {
+                std::slice::from_raw_parts(
+                    storage.as_ptr().cast::<u8>().add(header_end).cast::<u16>(),
+                    name_bytes / size_of::<u16>(),
+                )
+            };
+            let name = std::ffi::OsString::from_wide(name);
+            if name != "." && name != ".." {
+                names.push(name);
+            }
+
+            let next = entry.NextEntryOffset as usize;
+            if next == 0 {
+                break;
+            }
+            if next < file_name_offset
+                || next < file_name_offset + name_bytes
+                || next % size_of::<u32>() != 0
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "directory entry has an invalid next-record offset",
+                ));
+            }
+            offset = offset.checked_add(next).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "directory entry offset overflowed",
+                )
+            })?;
+            if offset >= buffer_bytes {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "directory entry offset exceeds the enumeration buffer",
+                ));
+            }
+        }
+    }
+    names.sort();
+    Ok(names)
 }
 
 #[cfg(windows)]
@@ -757,14 +967,15 @@ pub(crate) fn create_owner_only_directory_child(
     const FILE_DIRECTORY_FILE: u32 = 0x0000_0001;
     const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
     use windows_sys::Win32::Storage::FileSystem::{
-        DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_READ_ATTRIBUTES, READ_CONTROL, SYNCHRONIZE,
+        DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, READ_CONTROL,
+        SYNCHRONIZE,
     };
 
     let security = OwnerOnlySecurityAttributes::current_user()?;
     let file = open_relative_child(
         parent,
         name,
-        DELETE | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+        DELETE | FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
         FILE_ATTRIBUTE_DIRECTORY,
         FILE_CREATE,
         FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
@@ -1308,9 +1519,11 @@ mod tests {
     mod windows {
         use super::{fs, io, unique_temp_root};
         use crate::infrastructure::platform::filesystem::{
-            create_owner_only_directory, create_owner_only_file, file_identity,
-            open_directory_nofollow, verify_owner_only_acl,
+            create_owner_only_directory, create_owner_only_directory_child, create_owner_only_file,
+            file_identity, open_directory_child_nofollow, open_directory_nofollow,
+            read_directory_names, verify_owner_only_acl,
         };
+        use std::ffi::OsString;
 
         #[test]
         fn owner_only_directory_is_opened_without_following_reparse_points() {
@@ -1367,6 +1580,64 @@ mod tests {
             let handle = create_owner_only_file(&private).unwrap();
 
             verify_owner_only_acl(&handle).unwrap();
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn windows_handle_enumeration_uses_the_retained_directory_after_path_replacement() {
+            let root = unique_temp_root("retained-enumeration");
+            let original = root.join("directory");
+            let displaced = root.join("directory-displaced");
+            fs::create_dir_all(&original).unwrap();
+            fs::write(original.join("alpha.txt"), b"alpha").unwrap();
+            fs::write(original.join("zeta.txt"), b"zeta").unwrap();
+            let directory = open_directory_nofollow(&original).unwrap();
+            fs::rename(&original, &displaced).unwrap();
+            fs::create_dir(&original).unwrap();
+            fs::write(original.join("decoy.txt"), b"decoy").unwrap();
+
+            let names = read_directory_names(&directory).unwrap();
+
+            assert_eq!(
+                names,
+                vec![OsString::from("alpha.txt"), OsString::from("zeta.txt")]
+            );
+            drop(directory);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn windows_handle_enumeration_accepts_a_handle_relative_child() {
+            let root = unique_temp_root("child-enumeration");
+            let child_path = root.join("child");
+            fs::create_dir_all(&child_path).unwrap();
+            fs::write(child_path.join("entry.txt"), b"entry").unwrap();
+            let parent = open_directory_nofollow(&root).unwrap();
+            let child =
+                open_directory_child_nofollow(&parent, std::ffi::OsStr::new("child")).unwrap();
+
+            let names = read_directory_names(&child).unwrap();
+
+            assert_eq!(names, vec![OsString::from("entry.txt")]);
+            drop(child);
+            drop(parent);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn windows_handle_enumeration_accepts_a_new_private_child() {
+            let root = unique_temp_root("private-child-enumeration");
+            fs::create_dir_all(&root).unwrap();
+            let parent = open_directory_nofollow(&root).unwrap();
+            let child =
+                create_owner_only_directory_child(&parent, std::ffi::OsStr::new("child")).unwrap();
+            fs::write(root.join("child").join("entry.txt"), b"entry").unwrap();
+
+            let names = read_directory_names(&child).unwrap();
+
+            assert_eq!(names, vec![OsString::from("entry.txt")]);
+            drop(child);
+            drop(parent);
             fs::remove_dir_all(root).unwrap();
         }
     }
