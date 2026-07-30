@@ -23,13 +23,13 @@ use crate::infrastructure::native_operations::single_file_publisher::{
 };
 #[cfg(unix)]
 use crate::infrastructure::platform::filesystem::hard_link_count;
-use crate::infrastructure::platform::filesystem::{
-    file_identity, metadata_is_link_or_reparse_point, restrict_stage_to_owner, FileIdentity,
-};
 #[cfg(windows)]
 use crate::infrastructure::platform::filesystem::{
     create_owner_only_directory_child, create_owner_only_file_child, discard_created_child,
     open_directory_child_nofollow, open_directory_nofollow, verify_owner_only_acl,
+};
+use crate::infrastructure::platform::filesystem::{
+    file_identity, metadata_is_link_or_reparse_point, restrict_stage_to_owner, FileIdentity,
 };
 use crate::infrastructure::platform_xml_owner::root_version_literal;
 use crate::infrastructure::plugin_runtime::find_plugin_root;
@@ -131,10 +131,7 @@ mod windows_anchor_tests {
     }
 
     fn unique_temp_root(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "unica-full-dump-{name}-{}",
-            uuid::Uuid::new_v4()
-        ))
+        std::env::temp_dir().join(format!("unica-full-dump-{name}-{}", uuid::Uuid::new_v4()))
     }
 }
 
@@ -2064,18 +2061,21 @@ impl DirectoryAnchor {
             ));
         }
         self.verify_path_binding()?;
-        let directory = create_owner_only_directory_child(&self.directory, name).map_err(|error| {
-            format!(
-                "failed to create private directory {}: {error}",
-                display_path.display()
-            )
-        })?;
-        let cleanup_error = |error: String| match discard_created_child(&directory) {
+        let directory =
+            create_owner_only_directory_child(&self.directory, name).map_err(|error| {
+                format!(
+                    "failed to create private directory {}: {error}",
+                    display_path.display()
+                )
+            })?;
+        let cleanup_error = |error: String| {
+            match discard_created_child(&directory) {
             Ok(()) => error,
             Err(cleanup) => format!(
                 "{error}; failed to remove private directory created through the retained parent anchor {}: {cleanup}",
                 display_path.display()
             ),
+        }
         };
         let identity = file_identity(&directory).map_err(|error| {
             cleanup_error(format!(

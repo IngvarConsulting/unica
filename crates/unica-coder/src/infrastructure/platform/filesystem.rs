@@ -523,14 +523,9 @@ fn relative_child_name(name: &std::ffi::OsStr) -> io::Result<Vec<u16>> {
     }
     let wide = name.encode_wide().collect::<Vec<_>>();
     if wide.is_empty()
-        || wide
-            .iter()
-            .any(|unit| {
-                *unit == 0
-                    || *unit == b'\\' as u16
-                    || *unit == b'/' as u16
-                    || *unit == b':' as u16
-            })
+        || wide.iter().any(|unit| {
+            *unit == 0 || *unit == b'\\' as u16 || *unit == b'/' as u16 || *unit == b':' as u16
+        })
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -803,8 +798,8 @@ pub(crate) fn verify_owner_only_acl(file: &fs::File) -> io::Result<()> {
     use std::ptr;
     use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
     use windows_sys::Win32::Security::{
-        EqualSid, GetAce, GetAclInformation, GetSecurityDescriptorControl, ACCESS_ALLOWED_ACE,
-        ACL_SIZE_INFORMATION, AclSizeInformation, ACE_HEADER, DACL_SECURITY_INFORMATION,
+        AclSizeInformation, EqualSid, GetAce, GetAclInformation, GetSecurityDescriptorControl,
+        ACCESS_ALLOWED_ACE, ACE_HEADER, ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION,
         INHERITED_ACE, SE_DACL_PROTECTED,
     };
 
@@ -881,8 +876,7 @@ pub(crate) fn verify_owner_only_acl(file: &fs::File) -> io::Result<()> {
     }
     // SAFETY: GetAce returned a pointer to a valid ACE in dacl.
     let header = unsafe { &*ace.cast::<ACE_HEADER>() };
-    if header.AceType != ACCESS_ALLOWED_ACE_TYPE
-        || u32::from(header.AceFlags) & INHERITED_ACE != 0
+    if header.AceType != ACCESS_ALLOWED_ACE_TYPE || u32::from(header.AceFlags) & INHERITED_ACE != 0
     {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
