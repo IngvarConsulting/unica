@@ -197,6 +197,403 @@ fn windows_api_path(path: &Path) -> io::Result<Vec<u16>> {
     Ok(windows_api_path_from_utf16(encoded, true))
 }
 
+#[cfg(windows)]
+#[allow(
+    dead_code,
+    reason = "DirectoryAnchor callers are introduced by the following Windows full-dump task"
+)]
+struct ProcessToken {
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    user: Vec<u8>,
+}
+
+#[cfg(windows)]
+impl ProcessToken {
+    fn current_user() -> io::Result<Self> {
+        use std::ptr;
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY};
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+        let mut handle = ptr::null_mut();
+        // SAFETY: GetCurrentProcess returns a valid pseudo-handle; handle is writable storage.
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut handle) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let mut length = 0;
+        // SAFETY: the first call requests the buffer size without supplying a buffer.
+        unsafe {
+            GetTokenInformation(handle, TokenUser, ptr::null_mut(), 0, &mut length);
+        }
+        if length == 0 {
+            let error = io::Error::last_os_error();
+            // SAFETY: OpenProcessToken returned this owned handle.
+            unsafe { CloseHandle(handle) };
+            return Err(error);
+        }
+
+        let mut user = vec![0; length as usize];
+        // SAFETY: user provides the byte capacity requested by the preceding call.
+        if unsafe {
+            GetTokenInformation(
+                handle,
+                TokenUser,
+                user.as_mut_ptr().cast(),
+                length,
+                &mut length,
+            )
+        } == 0
+        {
+            let error = io::Error::last_os_error();
+            // SAFETY: OpenProcessToken returned this owned handle.
+            unsafe { CloseHandle(handle) };
+            return Err(error);
+        }
+
+        Ok(Self { handle, user })
+    }
+
+    fn user_sid(&self) -> windows_sys::Win32::Security::PSID {
+        use windows_sys::Win32::Security::TOKEN_USER;
+
+        // SAFETY: GetTokenInformation initialized the buffer as TOKEN_USER, including the SID
+        // pointer, and the buffer remains owned by self for this borrow.
+        unsafe {
+            std::ptr::read_unaligned(self.user.as_ptr().cast::<TOKEN_USER>())
+                .User
+                .Sid
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ProcessToken {
+    fn drop(&mut self) {
+        use windows_sys::Win32::Foundation::CloseHandle;
+
+        // SAFETY: self.handle is an owned token handle returned by OpenProcessToken.
+        unsafe { CloseHandle(self.handle) };
+    }
+}
+
+#[cfg(windows)]
+#[allow(
+    dead_code,
+    reason = "DirectoryAnchor callers are introduced by the following Windows full-dump task"
+)]
+struct OwnerOnlySecurityAttributes {
+    token: ProcessToken,
+    sid_string: windows_sys::core::PWSTR,
+    security_descriptor: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR,
+    attributes: windows_sys::Win32::Security::SECURITY_ATTRIBUTES,
+}
+
+#[cfg(windows)]
+impl OwnerOnlySecurityAttributes {
+    fn current_user() -> io::Result<Self> {
+        use std::mem::size_of;
+        use std::ptr;
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+            SDDL_REVISION_1,
+        };
+        use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+
+        let token = ProcessToken::current_user()?;
+        let mut sid_string = ptr::null_mut();
+        // SAFETY: token.user_sid() is valid while token is live, and sid_string is writable.
+        if unsafe { ConvertSidToStringSidW(token.user_sid(), &mut sid_string) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let mut sddl = "D:P(A;;FA;;;".encode_utf16().collect::<Vec<_>>();
+        // SAFETY: ConvertSidToStringSidW returned a NUL-terminated UTF-16 string allocated by
+        // LocalAlloc, which remains live until OwnerOnlySecurityAttributes is dropped.
+        let sid_length = unsafe {
+            let mut length = 0;
+            while *sid_string.add(length) != 0 {
+                length += 1;
+            }
+            length
+        };
+        // SAFETY: sid_length stops at the allocation's terminating NUL.
+        sddl.extend_from_slice(unsafe { std::slice::from_raw_parts(sid_string, sid_length) });
+        sddl.extend(")".encode_utf16());
+        sddl.push(0);
+
+        let mut security_descriptor = ptr::null_mut();
+        // SAFETY: sddl is NUL-terminated for the duration of the call and the descriptor output
+        // pointer is writable.
+        if unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                SDDL_REVISION_1,
+                &mut security_descriptor,
+                ptr::null_mut(),
+            )
+        } == 0
+        {
+            let error = io::Error::last_os_error();
+            // SAFETY: ConvertSidToStringSidW allocated sid_string with LocalAlloc.
+            unsafe { LocalFree(sid_string.cast()) };
+            return Err(error);
+        }
+
+        Ok(Self {
+            token,
+            sid_string,
+            security_descriptor,
+            attributes: SECURITY_ATTRIBUTES {
+                nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: security_descriptor,
+                bInheritHandle: 0,
+            },
+        })
+    }
+
+    fn as_ptr(&self) -> *const windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
+        let _ = self.token.handle;
+        &self.attributes
+    }
+}
+
+#[cfg(windows)]
+impl Drop for OwnerOnlySecurityAttributes {
+    fn drop(&mut self) {
+        use windows_sys::Win32::Foundation::LocalFree;
+
+        // SAFETY: both pointers were allocated by documented APIs with LocalAlloc semantics.
+        unsafe {
+            LocalFree(self.security_descriptor);
+            LocalFree(self.sid_string.cast());
+        }
+    }
+}
+
+#[cfg(windows)]
+#[allow(
+    dead_code,
+    reason = "DirectoryAnchor callers are introduced by the following Windows full-dump task"
+)]
+struct LocalSecurityDescriptor(windows_sys::Win32::Security::PSECURITY_DESCRIPTOR);
+
+#[cfg(windows)]
+impl Drop for LocalSecurityDescriptor {
+    fn drop(&mut self) {
+        use windows_sys::Win32::Foundation::LocalFree;
+
+        // SAFETY: GetSecurityInfo returns this descriptor through LocalAlloc.
+        unsafe { LocalFree(self.0) };
+    }
+}
+
+#[cfg(windows)]
+#[allow(
+    dead_code,
+    reason = "DirectoryAnchor callers are introduced by the following Windows full-dump task"
+)]
+pub(crate) fn open_directory_nofollow(path: &Path) -> io::Result<fs::File> {
+    use std::os::windows::io::FromRawHandle;
+    use std::ptr;
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, OPEN_EXISTING, READ_CONTROL,
+    };
+
+    let path = windows_api_path(path)?;
+    // SAFETY: path is NUL-terminated and all scalar arguments are documented Win32 flags.
+    let handle = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            FILE_READ_ATTRIBUTES | READ_CONTROL,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: CreateFileW returned an owned, valid file handle.
+    let file = unsafe { fs::File::from_raw_handle(handle) };
+    if windows_file_information(&file)?.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "directory path resolves to a reparse point",
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(windows)]
+#[allow(
+    dead_code,
+    reason = "DirectoryAnchor callers are introduced by the following Windows full-dump task"
+)]
+pub(crate) fn create_owner_only_directory(path: &Path) -> io::Result<fs::File> {
+    use windows_sys::Win32::Storage::FileSystem::CreateDirectoryW;
+
+    let api_path = windows_api_path(path)?;
+    let security = OwnerOnlySecurityAttributes::current_user()?;
+    // SAFETY: path is NUL-terminated and security owns the descriptor for this call.
+    if unsafe { CreateDirectoryW(api_path.as_ptr(), security.as_ptr()) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    open_directory_nofollow(path)
+}
+
+#[cfg(windows)]
+#[allow(
+    dead_code,
+    reason = "DirectoryAnchor callers are introduced by the following Windows full-dump task"
+)]
+pub(crate) fn create_owner_only_file(path: &Path) -> io::Result<fs::File> {
+    use std::os::windows::io::FromRawHandle;
+    use std::ptr;
+    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE,
+    };
+
+    let path = windows_api_path(path)?;
+    let security = OwnerOnlySecurityAttributes::current_user()?;
+    // SAFETY: path is NUL-terminated and security owns the descriptor for this call.
+    let handle = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_DELETE,
+            security.as_ptr(),
+            CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL,
+            ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        Err(io::Error::last_os_error())
+    } else {
+        // SAFETY: CreateFileW returned an owned, valid file handle.
+        Ok(unsafe { fs::File::from_raw_handle(handle) })
+    }
+}
+
+#[cfg(windows)]
+#[allow(
+    dead_code,
+    reason = "DirectoryAnchor callers are introduced by the following Windows full-dump task"
+)]
+pub(crate) fn verify_owner_only_acl(file: &fs::File) -> io::Result<()> {
+    use std::mem::size_of;
+    use std::os::windows::io::AsRawHandle;
+    use std::ptr;
+    use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
+    use windows_sys::Win32::Security::{
+        EqualSid, GetAce, GetAclInformation, GetSecurityDescriptorControl, ACCESS_ALLOWED_ACE,
+        ACL_SIZE_INFORMATION, AclSizeInformation, ACE_HEADER, DACL_SECURITY_INFORMATION,
+        INHERITED_ACE, SE_DACL_PROTECTED,
+    };
+
+    const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+
+    let token = ProcessToken::current_user()?;
+    let mut dacl = ptr::null_mut();
+    let mut descriptor = ptr::null_mut();
+    // SAFETY: file owns a valid handle and all requested output pointers are writable.
+    let status = unsafe {
+        GetSecurityInfo(
+            file.as_raw_handle(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &mut dacl,
+            ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if status != 0 {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    let descriptor = LocalSecurityDescriptor(descriptor);
+    if dacl.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "owner-only object has no DACL",
+        ));
+    }
+
+    let mut control = 0;
+    let mut revision = 0;
+    // SAFETY: descriptor is valid until its RAII wrapper drops.
+    if unsafe { GetSecurityDescriptorControl(descriptor.0, &mut control, &mut revision) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if control & SE_DACL_PROTECTED == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "owner-only object DACL is not protected",
+        ));
+    }
+
+    let mut information = ACL_SIZE_INFORMATION {
+        AceCount: 0,
+        AclBytesInUse: 0,
+        AclBytesFree: 0,
+    };
+    // SAFETY: dacl is valid for the descriptor lifetime and information is writable storage.
+    if unsafe {
+        GetAclInformation(
+            dacl,
+            (&mut information as *mut ACL_SIZE_INFORMATION).cast(),
+            size_of::<ACL_SIZE_INFORMATION>() as u32,
+            AclSizeInformation,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if information.AceCount != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "owner-only object DACL does not contain exactly one ACE",
+        ));
+    }
+
+    let mut ace = ptr::null_mut();
+    // SAFETY: dacl is valid and ACE index zero is within the exactly-one ACE DACL.
+    if unsafe { GetAce(dacl, 0, &mut ace) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: GetAce returned a pointer to a valid ACE in dacl.
+    let header = unsafe { &*ace.cast::<ACE_HEADER>() };
+    if header.AceType != ACCESS_ALLOWED_ACE_TYPE
+        || u32::from(header.AceFlags) & INHERITED_ACE != 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "owner-only object DACL has an unexpected ACE",
+        ));
+    }
+    // SAFETY: the ACE type is ACCESS_ALLOWED_ACE_TYPE, so its payload has this layout.
+    let allowed = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
+    let ace_sid: windows_sys::Win32::Security::PSID =
+        (&raw const allowed.SidStart).cast_mut().cast();
+    // SAFETY: both SIDs are valid: one belongs to the ACL and the other to the current token.
+    if unsafe { EqualSid(ace_sid, token.user_sid()) } == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "owner-only object DACL grants access to a different SID",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn install_file_no_clobber(source: &Path, target: &Path) -> io::Result<()> {
     fs::hard_link(source, target)
 }
@@ -504,6 +901,60 @@ mod tests {
 
     #[cfg(windows)]
     use super::strip_windows_extended_length_prefix;
+
+    #[cfg(windows)]
+    mod windows {
+        use super::{fs, io, unique_temp_root};
+        use crate::infrastructure::platform::filesystem::{
+            create_owner_only_directory, create_owner_only_file, file_identity,
+            open_directory_nofollow, verify_owner_only_acl,
+        };
+
+        #[test]
+        fn owner_only_directory_is_opened_without_following_reparse_points() {
+            let root = unique_temp_root("owner-only-directory");
+            fs::create_dir_all(&root).unwrap();
+            let private = root.join("private");
+
+            let handle = create_owner_only_directory(&private).unwrap();
+
+            verify_owner_only_acl(&handle).unwrap();
+            assert_eq!(
+                file_identity(&handle).unwrap(),
+                file_identity(&open_directory_nofollow(&private).unwrap()).unwrap()
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn directory_open_rejects_a_reparse_point() {
+            let root = unique_temp_root("directory-reparse");
+            let real = root.join("real");
+            let link = root.join("link");
+            fs::create_dir_all(&real).unwrap();
+            std::os::windows::fs::symlink_dir(&real, &link).unwrap();
+
+            let error = open_directory_nofollow(&link).unwrap_err();
+
+            assert!(matches!(
+                error.kind(),
+                io::ErrorKind::InvalidInput | io::ErrorKind::PermissionDenied
+            ));
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn owner_only_file_has_the_final_acl_at_creation() {
+            let root = unique_temp_root("owner-only-file");
+            fs::create_dir_all(&root).unwrap();
+            let private = root.join("effective.yaml");
+
+            let handle = create_owner_only_file(&private).unwrap();
+
+            verify_owner_only_acl(&handle).unwrap();
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
 
     fn unique_temp_root(name: &str) -> PathBuf {
         let nanos = SystemTime::now()
