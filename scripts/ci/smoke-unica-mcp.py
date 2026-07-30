@@ -39,10 +39,1055 @@ SOURCE_TOOL_NAMES = {
     "unica.source.read",
     "unica.source.apply",
 }
-EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(r'''{"unica.source.apply":{"additionalProperties":false,"properties":{"confirm":{"description":"Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does","type":"boolean"},"content":{"description":"Complete UTF-8 BSL replacement text; decoded bytes are capped again by the provider","maxLength":1048576,"type":"string"},"contentEncoding":{"const":"utf-8","description":"unica.source.apply replacement encoding; the first contract accepts only utf-8","type":"string"},"cwd":{"description":"Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it","type":"string"},"dryRun":{"description":"Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution.","type":"boolean"},"expectedHash":{"description":"Exact SHA-256 hash returned for the resource by source.resources; source.apply fails closed when either the argument or current preimage differs","minLength":1,"pattern":"^sha256:[0-9a-f]{64}$","type":"string"},"resourceId":{"description":"Opaque resource identifier returned inside one source.resources snapshot; valid only together with the snapshotId that issued it","minLength":1,"pattern":"\\S","type":"string"},"snapshotId":{"description":"Opaque application-instance and workspace-bound identifier returned by source.resources; expires after five minutes","minLength":1,"pattern":"\\S","type":"string"}},"required":["snapshotId","resourceId","expectedHash","content"],"type":"object"},"unica.source.children":{"additionalProperties":false,"properties":{"confirm":{"description":"Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does","type":"boolean"},"cursor":{"description":"Opaque continuation token returned by the same source navigation request or source.resources snapshot page; do not inspect or reuse it with another request or snapshot","minLength":1,"pattern":"\\S","type":"string"},"cwd":{"description":"Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it","type":"string"},"dryRun":{"description":"Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution.","type":"boolean"},"limit":{"description":"Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results).","maximum":50,"minimum":1,"type":"integer"},"metadataPath":{"description":"Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics.","minLength":1,"pattern":"\\S","type":"string"},"sourceSet":{"description":"Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set","minLength":1,"pattern":"\\S","type":"string"}},"required":["sourceSet"],"type":"object"},"unica.source.read":{"additionalProperties":false,"properties":{"confirm":{"description":"Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does","type":"boolean"},"cwd":{"description":"Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it","type":"string"},"dryRun":{"description":"Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution.","type":"boolean"},"limit":{"description":"Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results).","maximum":65536,"minimum":1,"type":"integer"},"offset":{"description":"Zero-based byte offset inside the immutable resource snapshot","minimum":0,"type":"integer"},"resourceId":{"description":"Opaque resource identifier returned inside one source.resources snapshot; valid only together with the snapshotId that issued it","minLength":1,"pattern":"\\S","type":"string"},"snapshotId":{"description":"Opaque application-instance and workspace-bound identifier returned by source.resources; expires after five minutes","minLength":1,"pattern":"\\S","type":"string"}},"required":["snapshotId","resourceId"],"type":"object"},"unica.source.resolve":{"additionalProperties":false,"properties":{"confirm":{"description":"Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does","type":"boolean"},"cursor":{"description":"Opaque continuation token returned by the same source navigation request or source.resources snapshot page; do not inspect or reuse it with another request or snapshot","minLength":1,"pattern":"\\S","type":"string"},"cwd":{"description":"Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it","type":"string"},"dryRun":{"description":"Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution.","type":"boolean"},"limit":{"description":"Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results).","maximum":50,"minimum":1,"type":"integer"},"mode":{"description":"Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full|incremental|partial for dump, load|merge for load, designer-config|designer-modules|edt for syntax, and the client kind for an mcp or mcp-va launch, while every other tool defines its own values (for example analyze|status|catalog|file|workspace on unica.code.diagnostics) — always use the enum published in that tool's own schema.","enum":["exact","prefix"],"type":"string"},"query":{"description":"Search text: provider-neutral query for unica.code.search, node-lookup text for unica.code.graph mode=resolve, the required unica.standards.search string, and explain's last-resort fallback","minLength":1,"pattern":"\\S","type":"string"},"sourceSet":{"description":"Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set","minLength":1,"pattern":"\\S","type":"string"},"targetKind":{"description":"Optional `unica.source.resolve` filter: `metadataObject` or `module`; it narrows exact or prefix matches without changing their canonical metadataPath","enum":["metadataObject","module"],"type":"string"}},"required":["sourceSet","query"],"type":"object"},"unica.source.resources":{"additionalProperties":false,"oneOf":[{"not":{"anyOf":[{"required":["snapshotId"]},{"required":["cursor"]}]},"required":["sourceSet"]},{"not":{"anyOf":[{"required":["sourceSet"]},{"required":["metadataPath"]},{"required":["scope"]}]},"required":["snapshotId","cursor"]}],"properties":{"confirm":{"description":"Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does","type":"boolean"},"cursor":{"description":"Opaque continuation token returned by the same source navigation request or source.resources snapshot page; do not inspect or reuse it with another request or snapshot","minLength":1,"pattern":"\\S","type":"string"},"cwd":{"description":"Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it","type":"string"},"dryRun":{"description":"Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution.","type":"boolean"},"limit":{"description":"Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results).","maximum":50,"minimum":1,"type":"integer"},"metadataPath":{"description":"Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics.","minLength":1,"pattern":"\\S","type":"string"},"scope":{"description":"Bounded source.resources manifest scope: self, aggregate, or registrations","enum":["self","aggregate","registrations"],"type":"string"},"snapshotId":{"description":"Opaque application-instance and workspace-bound identifier returned by source.resources; expires after five minutes","minLength":1,"pattern":"\\S","type":"string"},"sourceSet":{"description":"Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set","minLength":1,"pattern":"\\S","type":"string"}},"required":[],"type":"object"}}''')
+EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
+    r'''
+{
+  "unica.source.apply": {
+    "additionalProperties": false,
+    "properties": {
+      "confirm": {
+        "description": "Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does",
+        "type": "boolean"
+      },
+      "content": {
+        "description": "Complete UTF-8 BSL replacement text; decoded bytes are capped again by the provider",
+        "maxLength": 1048576,
+        "type": "string"
+      },
+      "contentEncoding": {
+        "const": "utf-8",
+        "description": "unica.source.apply replacement encoding; the first contract accepts only utf-8",
+        "type": "string"
+      },
+      "cwd": {
+        "description": "Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it",
+        "type": "string"
+      },
+      "dryRun": {
+        "description": "Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution.",
+        "type": "boolean"
+      },
+      "expectedHash": {
+        "description": "Exact SHA-256 hash returned for the resource by source.resources; source.apply fails closed when either the argument or current preimage differs",
+        "minLength": 1,
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "type": "string"
+      },
+      "resourceId": {
+        "description": "Opaque resource identifier returned inside one source.resources snapshot; valid only together with the snapshotId that issued it",
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "snapshotId": {
+        "description": "Opaque application-instance and workspace-bound identifier returned by source.resources; expires after five minutes",
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      }
+    },
+    "required": [
+      "snapshotId",
+      "resourceId",
+      "expectedHash",
+      "content"
+    ],
+    "type": "object"
+  },
+  "unica.source.children": {
+    "additionalProperties": false,
+    "properties": {
+      "confirm": {
+        "description": "Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does",
+        "type": "boolean"
+      },
+      "cursor": {
+        "description": "Opaque continuation token returned by the same source navigation request or source.resources snapshot page; do not inspect or reuse it with another request or snapshot",
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "cwd": {
+        "description": "Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it",
+        "type": "string"
+      },
+      "dryRun": {
+        "description": "Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution.",
+        "type": "boolean"
+      },
+      "limit": {
+        "description": "Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results).",
+        "maximum": 50,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "metadataPath": {
+        "description": "Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics.",
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "sourceSet": {
+        "description": "Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set",
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      }
+    },
+    "required": [
+      "sourceSet"
+    ],
+    "type": "object"
+  },
+  "unica.source.read": {
+    "additionalProperties": false,
+    "properties": {
+      "confirm": {
+        "description": "Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does",
+        "type": "boolean"
+      },
+      "cwd": {
+        "description": "Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it",
+        "type": "string"
+      },
+      "dryRun": {
+        "description": "Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution.",
+        "type": "boolean"
+      },
+      "limit": {
+        "description": "Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results).",
+        "maximum": 65536,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "offset": {
+        "description": "Zero-based byte offset inside the immutable resource snapshot",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "resourceId": {
+        "description": "Opaque resource identifier returned inside one source.resources snapshot; valid only together with the snapshotId that issued it",
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "snapshotId": {
+        "description": "Opaque application-instance and workspace-bound identifier returned by source.resources; expires after five minutes",
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      }
+    },
+    "required": [
+      "snapshotId",
+      "resourceId"
+    ],
+    "type": "object"
+  },
+  "unica.source.resolve": {
+    "additionalProperties": false,
+    "properties": {
+      "confirm": {
+        "description": "Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does",
+        "type": "boolean"
+      },
+      "cursor": {
+        "description": "Opaque continuation token returned by the same source navigation request or source.resources snapshot page; do not inspect or reuse it with another request or snapshot",
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "cwd": {
+        "description": "Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it",
+        "type": "string"
+      },
+      "dryRun": {
+        "description": "Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution.",
+        "type": "boolean"
+      },
+      "limit": {
+        "description": "Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results).",
+        "maximum": 50,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "mode": {
+        "description": "Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full|incremental|partial for dump, load|merge for load, designer-config|designer-modules|edt for syntax, and the client kind for an mcp or mcp-va launch, while every other tool defines its own values (for example analyze|status|catalog|file|workspace on unica.code.diagnostics) \u2014 always use the enum published in that tool's own schema.",
+        "enum": [
+          "exact",
+          "prefix"
+        ],
+        "type": "string"
+      },
+      "query": {
+        "description": "Search text: provider-neutral query for unica.code.search, node-lookup text for unica.code.graph mode=resolve, the required unica.standards.search string, and explain's last-resort fallback",
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "sourceSet": {
+        "description": "Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set",
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "targetKind": {
+        "description": "Optional `unica.source.resolve` filter: `metadataObject` or `module`; it narrows exact or prefix matches without changing their canonical metadataPath",
+        "enum": [
+          "metadataObject",
+          "module"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "sourceSet",
+      "query"
+    ],
+    "type": "object"
+  },
+  "unica.source.resources": {
+    "additionalProperties": false,
+    "oneOf": [
+      {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "snapshotId"
+              ]
+            },
+            {
+              "required": [
+                "cursor"
+              ]
+            }
+          ]
+        },
+        "required": [
+          "sourceSet"
+        ]
+      },
+      {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "sourceSet"
+              ]
+            },
+            {
+              "required": [
+                "metadataPath"
+              ]
+            },
+            {
+              "required": [
+                "scope"
+              ]
+            }
+          ]
+        },
+        "required": [
+          "snapshotId",
+          "cursor"
+        ]
+      }
+    ],
+    "properties": {
+      "confirm": {
+        "description": "Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does",
+        "type": "boolean"
+      },
+      "cursor": {
+        "description": "Opaque continuation token returned by the same source navigation request or source.resources snapshot page; do not inspect or reuse it with another request or snapshot",
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "cwd": {
+        "description": "Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it",
+        "type": "string"
+      },
+      "dryRun": {
+        "description": "Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution.",
+        "type": "boolean"
+      },
+      "limit": {
+        "description": "Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results).",
+        "maximum": 50,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "metadataPath": {
+        "description": "Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics.",
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "scope": {
+        "description": "Bounded source.resources manifest scope: self, aggregate, or registrations",
+        "enum": [
+          "self",
+          "aggregate",
+          "registrations"
+        ],
+        "type": "string"
+      },
+      "snapshotId": {
+        "description": "Opaque application-instance and workspace-bound identifier returned by source.resources; expires after five minutes",
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "sourceSet": {
+        "description": "Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set",
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      }
+    },
+    "required": [],
+    "type": "object"
+  }
+}
+'''
+)
 
 
-EXPECTED_SOURCE_FLOW_PROJECTIONS = json.loads(r'''{"extension":{"applied":{"artifacts":[],"cache":{"events":["SourceResourcesReplaced"],"fresh":[],"invalidated":["bsl_diagnostics","bsl_index"],"lazy_rebuilt":[],"mode":"applied","refreshed":[],"root":"<cache-root>","stale":["bsl_diagnostics","bsl_index"],"workspace_epoch":"<workspace-epoch>"},"changes":["extension + CommonModule.Shared.Module: replaced BSL resource"],"data":{"changedRanges":[{"endByte":20,"endColumn":19,"endLine":1,"startByte":13,"startColumn":12,"startLine":1}],"diff":"--- a/CommonModule.Shared.Module\n+++ b/CommonModule.Shared.Module\n@@ -1,2 +1,2 @@\n-﻿Procedure RunExtension()\r\n+﻿Procedure Changed()\r\n EndProcedure\r\n","noOp":false,"postHash":"sha256:524a90a52def76c469ea1bc6a7dcf3b3524249e9b52cbc48caba768a186de762","preHash":"sha256:41e8d685fd708f331f099494d36fe1a0059ae144da2de497c8dc3f5629c900ea","role":"bslModule","sourceSet":"extension","target":{"metadataPath":"CommonModule.Shared.Module","sourceSet":"extension","targetKind":"module"},"validation":{"kind":"bsl-analyzer-parser","status":"passed"}},"errors":[],"ok":true,"summary":"unica.source.apply replaced one BSL resource","warnings":[]},"children":{"artifacts":[],"cache":{"events":[],"fresh":[],"invalidated":[],"lazy_rebuilt":[],"mode":"read","refreshed":[],"root":"<cache-root>","stale":["bsl_diagnostics","bsl_index"],"workspace_epoch":"<workspace-epoch>"},"changes":[],"data":{"children":[{"addressability":"addressable","completeness":"complete","displayName":"Module","location":{"kind":"addressed","metadataPath":"CommonModule.Shared.Module","sourceSet":"extension","targetKind":"module"},"metadataPath":"CommonModule.Shared.Module","nodeKind":"item","targetKind":"module"}],"completeness":"complete"},"errors":[],"ok":true,"summary":"source.children returned 1 immediate child node(s)","warnings":[]},"current":{"artifacts":[],"cache":{"events":[],"fresh":[],"invalidated":[],"lazy_rebuilt":[],"mode":"read","refreshed":[],"root":"<cache-root>","stale":["bsl_diagnostics","bsl_index"],"workspace_epoch":"<workspace-epoch>"},"changes":[],"data":{"completeness":"complete","resources":[{"access":["read","replace"],"hash":"sha256:524a90a52def76c469ea1bc6a7dcf3b3524249e9b52cbc48caba768a186de762","limits":{"maxReadBytes":65536},"mediaType":"text/x-bsl","role":"bslModule","size":38,"textProfile":{"bomPrefixBytes":3,"encoding":"utf-8","eol":"crlf"}}],"scope":"self","sourceSet":"extension","target":{"metadataPath":"CommonModule.Shared.Module","sourceSet":"extension","targetKind":"module"}},"errors":[],"ok":true,"summary":"source.resources returned 1 resource(s)","warnings":[]},"postimage":{"artifacts":[],"cache":{"events":[],"fresh":[],"invalidated":[],"lazy_rebuilt":[],"mode":"read","refreshed":[],"root":"<cache-root>","stale":["bsl_diagnostics","bsl_index"],"workspace_epoch":"<workspace-epoch>"},"changes":[],"data":{"appliedLimit":65536,"content":"﻿Procedure Changed()\r\nEndProcedure\r\n","contentEncoding":"utf-8","eof":true,"hash":"sha256:524a90a52def76c469ea1bc6a7dcf3b3524249e9b52cbc48caba768a186de762","length":38,"offset":0,"size":38,"textProfile":{"bomPrefixBytes":3,"encoding":"utf-8","eol":"crlf"}},"errors":[],"ok":true,"summary":"source.read returned 38 byte(s)","warnings":[]},"preview":{"artifacts":[],"cache":{"events":["SourceResourcesReplaced"],"fresh":[],"invalidated":["bsl_diagnostics","bsl_index"],"lazy_rebuilt":[],"mode":"dry-run","refreshed":[],"root":"<cache-root>","stale":["bsl_diagnostics","bsl_index"],"workspace_epoch":"<workspace-epoch>"},"changes":[],"data":{"changedRanges":[{"endByte":20,"endColumn":19,"endLine":1,"startByte":13,"startColumn":12,"startLine":1}],"diff":"--- a/CommonModule.Shared.Module\n+++ b/CommonModule.Shared.Module\n@@ -1,2 +1,2 @@\n-﻿Procedure RunExtension()\r\n+﻿Procedure Changed()\r\n EndProcedure\r\n","noOp":false,"postHash":"sha256:524a90a52def76c469ea1bc6a7dcf3b3524249e9b52cbc48caba768a186de762","preHash":"sha256:41e8d685fd708f331f099494d36fe1a0059ae144da2de497c8dc3f5629c900ea","role":"bslModule","sourceSet":"extension","target":{"metadataPath":"CommonModule.Shared.Module","sourceSet":"extension","targetKind":"module"},"validation":{"kind":"bsl-analyzer-parser","status":"passed"}},"errors":[],"ok":true,"summary":"dry run: unica.source.apply planned one BSL resource replacement","warnings":[]},"read":{"artifacts":[],"cache":{"events":[],"fresh":[],"invalidated":[],"lazy_rebuilt":[],"mode":"read","refreshed":[],"root":"<cache-root>","stale":["bsl_diagnostics","bsl_index"],"workspace_epoch":"<workspace-epoch>"},"changes":[],"data":{"appliedLimit":65536,"content":"﻿Procedure RunExtension()\r\nEndProcedure\r\n","contentEncoding":"utf-8","eof":true,"hash":"sha256:41e8d685fd708f331f099494d36fe1a0059ae144da2de497c8dc3f5629c900ea","length":43,"offset":0,"size":43,"textProfile":{"bomPrefixBytes":3,"encoding":"utf-8","eol":"crlf"}},"errors":[],"ok":true,"summary":"source.read returned 43 byte(s)","warnings":[]},"resolve":{"artifacts":[],"cache":{"events":[],"fresh":[],"invalidated":[],"lazy_rebuilt":[],"mode":"read","refreshed":[],"root":"<cache-root>","stale":["bsl_diagnostics","bsl_index"],"workspace_epoch":"<workspace-epoch>"},"changes":[],"data":{"candidates":[{"displayName":"Module","location":{"kind":"addressed","metadataPath":"CommonModule.Shared.Module","sourceSet":"extension","targetKind":"module"},"matchKind":"exact","metadataPath":"CommonModule.Shared.Module","targetKind":"module"}],"completeness":"complete"},"errors":[],"ok":true,"summary":"source.resolve returned 1 canonical candidate(s)","warnings":[]},"resources":{"artifacts":[],"cache":{"events":[],"fresh":[],"invalidated":[],"lazy_rebuilt":[],"mode":"read","refreshed":[],"root":"<cache-root>","stale":["bsl_diagnostics","bsl_index"],"workspace_epoch":"<workspace-epoch>"},"changes":[],"data":{"completeness":"complete","resources":[{"access":["read","replace"],"hash":"sha256:41e8d685fd708f331f099494d36fe1a0059ae144da2de497c8dc3f5629c900ea","limits":{"maxReadBytes":65536},"mediaType":"text/x-bsl","role":"bslModule","size":43,"textProfile":{"bomPrefixBytes":3,"encoding":"utf-8","eol":"crlf"}}],"scope":"self","sourceSet":"extension","target":{"metadataPath":"CommonModule.Shared.Module","sourceSet":"extension","targetKind":"module"}},"errors":[],"ok":true,"summary":"source.resources returned 1 resource(s)","warnings":[]},"sourceSet":"extension"},"main":{"applied":{"artifacts":[],"cache":{"events":["SourceResourcesReplaced"],"fresh":[],"invalidated":["bsl_diagnostics","bsl_index"],"lazy_rebuilt":[],"mode":"applied","refreshed":[],"root":"<cache-root>","stale":["bsl_diagnostics","bsl_index"],"workspace_epoch":"<workspace-epoch>"},"changes":["main + CommonModule.Shared.Module: replaced BSL resource"],"data":{"changedRanges":[{"endByte":20,"endColumn":19,"endLine":1,"startByte":13,"startColumn":12,"startLine":1}],"diff":"--- a/CommonModule.Shared.Module\n+++ b/CommonModule.Shared.Module\n@@ -1,2 +1,2 @@\n-﻿Procedure Run()\r\n+﻿Procedure Changed()\r\n EndProcedure\r\n","noOp":false,"postHash":"sha256:524a90a52def76c469ea1bc6a7dcf3b3524249e9b52cbc48caba768a186de762","preHash":"sha256:87c24a6da821b5f96a884b7210133a30d7ee2c66cf281934bae1afc8281a8cbb","role":"bslModule","sourceSet":"main","target":{"metadataPath":"CommonModule.Shared.Module","sourceSet":"main","targetKind":"module"},"validation":{"kind":"bsl-analyzer-parser","status":"passed"}},"errors":[],"ok":true,"summary":"unica.source.apply replaced one BSL resource","warnings":[]},"children":{"artifacts":[],"cache":{"events":[],"fresh":[],"invalidated":[],"lazy_rebuilt":[],"mode":"read","refreshed":[],"root":"<cache-root>","stale":[],"workspace_epoch":"<workspace-epoch>"},"changes":[],"data":{"children":[{"addressability":"addressable","completeness":"complete","displayName":"Module","location":{"kind":"addressed","metadataPath":"CommonModule.Shared.Module","sourceSet":"main","targetKind":"module"},"metadataPath":"CommonModule.Shared.Module","nodeKind":"item","targetKind":"module"}],"completeness":"complete"},"errors":[],"ok":true,"summary":"source.children returned 1 immediate child node(s)","warnings":[]},"current":{"artifacts":[],"cache":{"events":[],"fresh":[],"invalidated":[],"lazy_rebuilt":[],"mode":"read","refreshed":[],"root":"<cache-root>","stale":["bsl_diagnostics","bsl_index"],"workspace_epoch":"<workspace-epoch>"},"changes":[],"data":{"completeness":"complete","resources":[{"access":["read","replace"],"hash":"sha256:524a90a52def76c469ea1bc6a7dcf3b3524249e9b52cbc48caba768a186de762","limits":{"maxReadBytes":65536},"mediaType":"text/x-bsl","role":"bslModule","size":38,"textProfile":{"bomPrefixBytes":3,"encoding":"utf-8","eol":"crlf"}}],"scope":"self","sourceSet":"main","target":{"metadataPath":"CommonModule.Shared.Module","sourceSet":"main","targetKind":"module"}},"errors":[],"ok":true,"summary":"source.resources returned 1 resource(s)","warnings":[]},"postimage":{"artifacts":[],"cache":{"events":[],"fresh":[],"invalidated":[],"lazy_rebuilt":[],"mode":"read","refreshed":[],"root":"<cache-root>","stale":["bsl_diagnostics","bsl_index"],"workspace_epoch":"<workspace-epoch>"},"changes":[],"data":{"appliedLimit":65536,"content":"﻿Procedure Changed()\r\nEndProcedure\r\n","contentEncoding":"utf-8","eof":true,"hash":"sha256:524a90a52def76c469ea1bc6a7dcf3b3524249e9b52cbc48caba768a186de762","length":38,"offset":0,"size":38,"textProfile":{"bomPrefixBytes":3,"encoding":"utf-8","eol":"crlf"}},"errors":[],"ok":true,"summary":"source.read returned 38 byte(s)","warnings":[]},"preview":{"artifacts":[],"cache":{"events":["SourceResourcesReplaced"],"fresh":[],"invalidated":["bsl_diagnostics","bsl_index"],"lazy_rebuilt":[],"mode":"dry-run","refreshed":[],"root":"<cache-root>","stale":[],"workspace_epoch":"<workspace-epoch>"},"changes":[],"data":{"changedRanges":[{"endByte":20,"endColumn":19,"endLine":1,"startByte":13,"startColumn":12,"startLine":1}],"diff":"--- a/CommonModule.Shared.Module\n+++ b/CommonModule.Shared.Module\n@@ -1,2 +1,2 @@\n-﻿Procedure Run()\r\n+﻿Procedure Changed()\r\n EndProcedure\r\n","noOp":false,"postHash":"sha256:524a90a52def76c469ea1bc6a7dcf3b3524249e9b52cbc48caba768a186de762","preHash":"sha256:87c24a6da821b5f96a884b7210133a30d7ee2c66cf281934bae1afc8281a8cbb","role":"bslModule","sourceSet":"main","target":{"metadataPath":"CommonModule.Shared.Module","sourceSet":"main","targetKind":"module"},"validation":{"kind":"bsl-analyzer-parser","status":"passed"}},"errors":[],"ok":true,"summary":"dry run: unica.source.apply planned one BSL resource replacement","warnings":[]},"read":{"artifacts":[],"cache":{"events":[],"fresh":[],"invalidated":[],"lazy_rebuilt":[],"mode":"read","refreshed":[],"root":"<cache-root>","stale":[],"workspace_epoch":"<workspace-epoch>"},"changes":[],"data":{"appliedLimit":65536,"content":"﻿Procedure Run()\r\nEndProcedure\r\n","contentEncoding":"utf-8","eof":true,"hash":"sha256:87c24a6da821b5f96a884b7210133a30d7ee2c66cf281934bae1afc8281a8cbb","length":34,"offset":0,"size":34,"textProfile":{"bomPrefixBytes":3,"encoding":"utf-8","eol":"crlf"}},"errors":[],"ok":true,"summary":"source.read returned 34 byte(s)","warnings":[]},"resolve":{"artifacts":[],"cache":{"events":[],"fresh":[],"invalidated":[],"lazy_rebuilt":[],"mode":"read","refreshed":[],"root":"<cache-root>","stale":[],"workspace_epoch":"<workspace-epoch>"},"changes":[],"data":{"candidates":[{"displayName":"Module","location":{"kind":"addressed","metadataPath":"CommonModule.Shared.Module","sourceSet":"main","targetKind":"module"},"matchKind":"exact","metadataPath":"CommonModule.Shared.Module","targetKind":"module"}],"completeness":"complete"},"errors":[],"ok":true,"summary":"source.resolve returned 1 canonical candidate(s)","warnings":[]},"resources":{"artifacts":[],"cache":{"events":[],"fresh":[],"invalidated":[],"lazy_rebuilt":[],"mode":"read","refreshed":[],"root":"<cache-root>","stale":[],"workspace_epoch":"<workspace-epoch>"},"changes":[],"data":{"completeness":"complete","resources":[{"access":["read","replace"],"hash":"sha256:87c24a6da821b5f96a884b7210133a30d7ee2c66cf281934bae1afc8281a8cbb","limits":{"maxReadBytes":65536},"mediaType":"text/x-bsl","role":"bslModule","size":34,"textProfile":{"bomPrefixBytes":3,"encoding":"utf-8","eol":"crlf"}}],"scope":"self","sourceSet":"main","target":{"metadataPath":"CommonModule.Shared.Module","sourceSet":"main","targetKind":"module"}},"errors":[],"ok":true,"summary":"source.resources returned 1 resource(s)","warnings":[]},"sourceSet":"main"}}''')
+EXPECTED_SOURCE_FLOW_PROJECTIONS = json.loads(
+    r'''
+{
+  "extension": {
+    "applied": {
+      "artifacts": [],
+      "cache": {
+        "events": [
+          "SourceResourcesReplaced"
+        ],
+        "fresh": [],
+        "invalidated": [
+          "bsl_diagnostics",
+          "bsl_index"
+        ],
+        "lazy_rebuilt": [],
+        "mode": "applied",
+        "refreshed": [],
+        "root": "<cache-root>",
+        "stale": [
+          "bsl_diagnostics",
+          "bsl_index"
+        ],
+        "workspace_epoch": "<workspace-epoch>"
+      },
+      "changes": [
+        "extension + CommonModule.Shared.Module: replaced BSL resource"
+      ],
+      "data": {
+        "changedRanges": [
+          {
+            "endByte": 20,
+            "endColumn": 19,
+            "endLine": 1,
+            "startByte": 13,
+            "startColumn": 12,
+            "startLine": 1
+          }
+        ],
+        "diff": "--- a/CommonModule.Shared.Module\n+++ b/CommonModule.Shared.Module\n@@ -1,2 +1,2 @@\n-\ufeffProcedure RunExtension()\r\n+\ufeffProcedure Changed()\r\n EndProcedure\r\n",
+        "noOp": false,
+        "postHash": "sha256:524a90a52def76c469ea1bc6a7dcf3b3524249e9b52cbc48caba768a186de762",
+        "preHash": "sha256:41e8d685fd708f331f099494d36fe1a0059ae144da2de497c8dc3f5629c900ea",
+        "role": "bslModule",
+        "sourceSet": "extension",
+        "target": {
+          "metadataPath": "CommonModule.Shared.Module",
+          "sourceSet": "extension",
+          "targetKind": "module"
+        },
+        "validation": {
+          "kind": "bsl-analyzer-parser",
+          "status": "passed"
+        }
+      },
+      "errors": [],
+      "ok": true,
+      "summary": "unica.source.apply replaced one BSL resource",
+      "warnings": []
+    },
+    "children": {
+      "artifacts": [],
+      "cache": {
+        "events": [],
+        "fresh": [],
+        "invalidated": [],
+        "lazy_rebuilt": [],
+        "mode": "read",
+        "refreshed": [],
+        "root": "<cache-root>",
+        "stale": [
+          "bsl_diagnostics",
+          "bsl_index"
+        ],
+        "workspace_epoch": "<workspace-epoch>"
+      },
+      "changes": [],
+      "data": {
+        "children": [
+          {
+            "addressability": "addressable",
+            "completeness": "complete",
+            "displayName": "Module",
+            "location": {
+              "kind": "addressed",
+              "metadataPath": "CommonModule.Shared.Module",
+              "sourceSet": "extension",
+              "targetKind": "module"
+            },
+            "metadataPath": "CommonModule.Shared.Module",
+            "nodeKind": "item",
+            "targetKind": "module"
+          }
+        ],
+        "completeness": "complete"
+      },
+      "errors": [],
+      "ok": true,
+      "summary": "source.children returned 1 immediate child node(s)",
+      "warnings": []
+    },
+    "current": {
+      "artifacts": [],
+      "cache": {
+        "events": [],
+        "fresh": [],
+        "invalidated": [],
+        "lazy_rebuilt": [],
+        "mode": "read",
+        "refreshed": [],
+        "root": "<cache-root>",
+        "stale": [
+          "bsl_diagnostics",
+          "bsl_index"
+        ],
+        "workspace_epoch": "<workspace-epoch>"
+      },
+      "changes": [],
+      "data": {
+        "completeness": "complete",
+        "resources": [
+          {
+            "access": [
+              "read",
+              "replace"
+            ],
+            "hash": "sha256:524a90a52def76c469ea1bc6a7dcf3b3524249e9b52cbc48caba768a186de762",
+            "limits": {
+              "maxReadBytes": 65536
+            },
+            "mediaType": "text/x-bsl",
+            "role": "bslModule",
+            "size": 38,
+            "textProfile": {
+              "bomPrefixBytes": 3,
+              "encoding": "utf-8",
+              "eol": "crlf"
+            }
+          }
+        ],
+        "scope": "self",
+        "sourceSet": "extension",
+        "target": {
+          "metadataPath": "CommonModule.Shared.Module",
+          "sourceSet": "extension",
+          "targetKind": "module"
+        }
+      },
+      "errors": [],
+      "ok": true,
+      "summary": "source.resources returned 1 resource(s)",
+      "warnings": []
+    },
+    "postimage": {
+      "artifacts": [],
+      "cache": {
+        "events": [],
+        "fresh": [],
+        "invalidated": [],
+        "lazy_rebuilt": [],
+        "mode": "read",
+        "refreshed": [],
+        "root": "<cache-root>",
+        "stale": [
+          "bsl_diagnostics",
+          "bsl_index"
+        ],
+        "workspace_epoch": "<workspace-epoch>"
+      },
+      "changes": [],
+      "data": {
+        "appliedLimit": 65536,
+        "content": "\ufeffProcedure Changed()\r\nEndProcedure\r\n",
+        "contentEncoding": "utf-8",
+        "eof": true,
+        "hash": "sha256:524a90a52def76c469ea1bc6a7dcf3b3524249e9b52cbc48caba768a186de762",
+        "length": 38,
+        "offset": 0,
+        "size": 38,
+        "textProfile": {
+          "bomPrefixBytes": 3,
+          "encoding": "utf-8",
+          "eol": "crlf"
+        }
+      },
+      "errors": [],
+      "ok": true,
+      "summary": "source.read returned 38 byte(s)",
+      "warnings": []
+    },
+    "preview": {
+      "artifacts": [],
+      "cache": {
+        "events": [
+          "SourceResourcesReplaced"
+        ],
+        "fresh": [],
+        "invalidated": [
+          "bsl_diagnostics",
+          "bsl_index"
+        ],
+        "lazy_rebuilt": [],
+        "mode": "dry-run",
+        "refreshed": [],
+        "root": "<cache-root>",
+        "stale": [
+          "bsl_diagnostics",
+          "bsl_index"
+        ],
+        "workspace_epoch": "<workspace-epoch>"
+      },
+      "changes": [],
+      "data": {
+        "changedRanges": [
+          {
+            "endByte": 20,
+            "endColumn": 19,
+            "endLine": 1,
+            "startByte": 13,
+            "startColumn": 12,
+            "startLine": 1
+          }
+        ],
+        "diff": "--- a/CommonModule.Shared.Module\n+++ b/CommonModule.Shared.Module\n@@ -1,2 +1,2 @@\n-\ufeffProcedure RunExtension()\r\n+\ufeffProcedure Changed()\r\n EndProcedure\r\n",
+        "noOp": false,
+        "postHash": "sha256:524a90a52def76c469ea1bc6a7dcf3b3524249e9b52cbc48caba768a186de762",
+        "preHash": "sha256:41e8d685fd708f331f099494d36fe1a0059ae144da2de497c8dc3f5629c900ea",
+        "role": "bslModule",
+        "sourceSet": "extension",
+        "target": {
+          "metadataPath": "CommonModule.Shared.Module",
+          "sourceSet": "extension",
+          "targetKind": "module"
+        },
+        "validation": {
+          "kind": "bsl-analyzer-parser",
+          "status": "passed"
+        }
+      },
+      "errors": [],
+      "ok": true,
+      "summary": "dry run: unica.source.apply planned one BSL resource replacement",
+      "warnings": []
+    },
+    "read": {
+      "artifacts": [],
+      "cache": {
+        "events": [],
+        "fresh": [],
+        "invalidated": [],
+        "lazy_rebuilt": [],
+        "mode": "read",
+        "refreshed": [],
+        "root": "<cache-root>",
+        "stale": [
+          "bsl_diagnostics",
+          "bsl_index"
+        ],
+        "workspace_epoch": "<workspace-epoch>"
+      },
+      "changes": [],
+      "data": {
+        "appliedLimit": 65536,
+        "content": "\ufeffProcedure RunExtension()\r\nEndProcedure\r\n",
+        "contentEncoding": "utf-8",
+        "eof": true,
+        "hash": "sha256:41e8d685fd708f331f099494d36fe1a0059ae144da2de497c8dc3f5629c900ea",
+        "length": 43,
+        "offset": 0,
+        "size": 43,
+        "textProfile": {
+          "bomPrefixBytes": 3,
+          "encoding": "utf-8",
+          "eol": "crlf"
+        }
+      },
+      "errors": [],
+      "ok": true,
+      "summary": "source.read returned 43 byte(s)",
+      "warnings": []
+    },
+    "resolve": {
+      "artifacts": [],
+      "cache": {
+        "events": [],
+        "fresh": [],
+        "invalidated": [],
+        "lazy_rebuilt": [],
+        "mode": "read",
+        "refreshed": [],
+        "root": "<cache-root>",
+        "stale": [
+          "bsl_diagnostics",
+          "bsl_index"
+        ],
+        "workspace_epoch": "<workspace-epoch>"
+      },
+      "changes": [],
+      "data": {
+        "candidates": [
+          {
+            "displayName": "Module",
+            "location": {
+              "kind": "addressed",
+              "metadataPath": "CommonModule.Shared.Module",
+              "sourceSet": "extension",
+              "targetKind": "module"
+            },
+            "matchKind": "exact",
+            "metadataPath": "CommonModule.Shared.Module",
+            "targetKind": "module"
+          }
+        ],
+        "completeness": "complete"
+      },
+      "errors": [],
+      "ok": true,
+      "summary": "source.resolve returned 1 canonical candidate(s)",
+      "warnings": []
+    },
+    "resources": {
+      "artifacts": [],
+      "cache": {
+        "events": [],
+        "fresh": [],
+        "invalidated": [],
+        "lazy_rebuilt": [],
+        "mode": "read",
+        "refreshed": [],
+        "root": "<cache-root>",
+        "stale": [
+          "bsl_diagnostics",
+          "bsl_index"
+        ],
+        "workspace_epoch": "<workspace-epoch>"
+      },
+      "changes": [],
+      "data": {
+        "completeness": "complete",
+        "resources": [
+          {
+            "access": [
+              "read",
+              "replace"
+            ],
+            "hash": "sha256:41e8d685fd708f331f099494d36fe1a0059ae144da2de497c8dc3f5629c900ea",
+            "limits": {
+              "maxReadBytes": 65536
+            },
+            "mediaType": "text/x-bsl",
+            "role": "bslModule",
+            "size": 43,
+            "textProfile": {
+              "bomPrefixBytes": 3,
+              "encoding": "utf-8",
+              "eol": "crlf"
+            }
+          }
+        ],
+        "scope": "self",
+        "sourceSet": "extension",
+        "target": {
+          "metadataPath": "CommonModule.Shared.Module",
+          "sourceSet": "extension",
+          "targetKind": "module"
+        }
+      },
+      "errors": [],
+      "ok": true,
+      "summary": "source.resources returned 1 resource(s)",
+      "warnings": []
+    },
+    "sourceSet": "extension"
+  },
+  "main": {
+    "applied": {
+      "artifacts": [],
+      "cache": {
+        "events": [
+          "SourceResourcesReplaced"
+        ],
+        "fresh": [],
+        "invalidated": [
+          "bsl_diagnostics",
+          "bsl_index"
+        ],
+        "lazy_rebuilt": [],
+        "mode": "applied",
+        "refreshed": [],
+        "root": "<cache-root>",
+        "stale": [
+          "bsl_diagnostics",
+          "bsl_index"
+        ],
+        "workspace_epoch": "<workspace-epoch>"
+      },
+      "changes": [
+        "main + CommonModule.Shared.Module: replaced BSL resource"
+      ],
+      "data": {
+        "changedRanges": [
+          {
+            "endByte": 20,
+            "endColumn": 19,
+            "endLine": 1,
+            "startByte": 13,
+            "startColumn": 12,
+            "startLine": 1
+          }
+        ],
+        "diff": "--- a/CommonModule.Shared.Module\n+++ b/CommonModule.Shared.Module\n@@ -1,2 +1,2 @@\n-\ufeffProcedure Run()\r\n+\ufeffProcedure Changed()\r\n EndProcedure\r\n",
+        "noOp": false,
+        "postHash": "sha256:524a90a52def76c469ea1bc6a7dcf3b3524249e9b52cbc48caba768a186de762",
+        "preHash": "sha256:87c24a6da821b5f96a884b7210133a30d7ee2c66cf281934bae1afc8281a8cbb",
+        "role": "bslModule",
+        "sourceSet": "main",
+        "target": {
+          "metadataPath": "CommonModule.Shared.Module",
+          "sourceSet": "main",
+          "targetKind": "module"
+        },
+        "validation": {
+          "kind": "bsl-analyzer-parser",
+          "status": "passed"
+        }
+      },
+      "errors": [],
+      "ok": true,
+      "summary": "unica.source.apply replaced one BSL resource",
+      "warnings": []
+    },
+    "children": {
+      "artifacts": [],
+      "cache": {
+        "events": [],
+        "fresh": [],
+        "invalidated": [],
+        "lazy_rebuilt": [],
+        "mode": "read",
+        "refreshed": [],
+        "root": "<cache-root>",
+        "stale": [],
+        "workspace_epoch": "<workspace-epoch>"
+      },
+      "changes": [],
+      "data": {
+        "children": [
+          {
+            "addressability": "addressable",
+            "completeness": "complete",
+            "displayName": "Module",
+            "location": {
+              "kind": "addressed",
+              "metadataPath": "CommonModule.Shared.Module",
+              "sourceSet": "main",
+              "targetKind": "module"
+            },
+            "metadataPath": "CommonModule.Shared.Module",
+            "nodeKind": "item",
+            "targetKind": "module"
+          }
+        ],
+        "completeness": "complete"
+      },
+      "errors": [],
+      "ok": true,
+      "summary": "source.children returned 1 immediate child node(s)",
+      "warnings": []
+    },
+    "current": {
+      "artifacts": [],
+      "cache": {
+        "events": [],
+        "fresh": [],
+        "invalidated": [],
+        "lazy_rebuilt": [],
+        "mode": "read",
+        "refreshed": [],
+        "root": "<cache-root>",
+        "stale": [
+          "bsl_diagnostics",
+          "bsl_index"
+        ],
+        "workspace_epoch": "<workspace-epoch>"
+      },
+      "changes": [],
+      "data": {
+        "completeness": "complete",
+        "resources": [
+          {
+            "access": [
+              "read",
+              "replace"
+            ],
+            "hash": "sha256:524a90a52def76c469ea1bc6a7dcf3b3524249e9b52cbc48caba768a186de762",
+            "limits": {
+              "maxReadBytes": 65536
+            },
+            "mediaType": "text/x-bsl",
+            "role": "bslModule",
+            "size": 38,
+            "textProfile": {
+              "bomPrefixBytes": 3,
+              "encoding": "utf-8",
+              "eol": "crlf"
+            }
+          }
+        ],
+        "scope": "self",
+        "sourceSet": "main",
+        "target": {
+          "metadataPath": "CommonModule.Shared.Module",
+          "sourceSet": "main",
+          "targetKind": "module"
+        }
+      },
+      "errors": [],
+      "ok": true,
+      "summary": "source.resources returned 1 resource(s)",
+      "warnings": []
+    },
+    "postimage": {
+      "artifacts": [],
+      "cache": {
+        "events": [],
+        "fresh": [],
+        "invalidated": [],
+        "lazy_rebuilt": [],
+        "mode": "read",
+        "refreshed": [],
+        "root": "<cache-root>",
+        "stale": [
+          "bsl_diagnostics",
+          "bsl_index"
+        ],
+        "workspace_epoch": "<workspace-epoch>"
+      },
+      "changes": [],
+      "data": {
+        "appliedLimit": 65536,
+        "content": "\ufeffProcedure Changed()\r\nEndProcedure\r\n",
+        "contentEncoding": "utf-8",
+        "eof": true,
+        "hash": "sha256:524a90a52def76c469ea1bc6a7dcf3b3524249e9b52cbc48caba768a186de762",
+        "length": 38,
+        "offset": 0,
+        "size": 38,
+        "textProfile": {
+          "bomPrefixBytes": 3,
+          "encoding": "utf-8",
+          "eol": "crlf"
+        }
+      },
+      "errors": [],
+      "ok": true,
+      "summary": "source.read returned 38 byte(s)",
+      "warnings": []
+    },
+    "preview": {
+      "artifacts": [],
+      "cache": {
+        "events": [
+          "SourceResourcesReplaced"
+        ],
+        "fresh": [],
+        "invalidated": [
+          "bsl_diagnostics",
+          "bsl_index"
+        ],
+        "lazy_rebuilt": [],
+        "mode": "dry-run",
+        "refreshed": [],
+        "root": "<cache-root>",
+        "stale": [],
+        "workspace_epoch": "<workspace-epoch>"
+      },
+      "changes": [],
+      "data": {
+        "changedRanges": [
+          {
+            "endByte": 20,
+            "endColumn": 19,
+            "endLine": 1,
+            "startByte": 13,
+            "startColumn": 12,
+            "startLine": 1
+          }
+        ],
+        "diff": "--- a/CommonModule.Shared.Module\n+++ b/CommonModule.Shared.Module\n@@ -1,2 +1,2 @@\n-\ufeffProcedure Run()\r\n+\ufeffProcedure Changed()\r\n EndProcedure\r\n",
+        "noOp": false,
+        "postHash": "sha256:524a90a52def76c469ea1bc6a7dcf3b3524249e9b52cbc48caba768a186de762",
+        "preHash": "sha256:87c24a6da821b5f96a884b7210133a30d7ee2c66cf281934bae1afc8281a8cbb",
+        "role": "bslModule",
+        "sourceSet": "main",
+        "target": {
+          "metadataPath": "CommonModule.Shared.Module",
+          "sourceSet": "main",
+          "targetKind": "module"
+        },
+        "validation": {
+          "kind": "bsl-analyzer-parser",
+          "status": "passed"
+        }
+      },
+      "errors": [],
+      "ok": true,
+      "summary": "dry run: unica.source.apply planned one BSL resource replacement",
+      "warnings": []
+    },
+    "read": {
+      "artifacts": [],
+      "cache": {
+        "events": [],
+        "fresh": [],
+        "invalidated": [],
+        "lazy_rebuilt": [],
+        "mode": "read",
+        "refreshed": [],
+        "root": "<cache-root>",
+        "stale": [],
+        "workspace_epoch": "<workspace-epoch>"
+      },
+      "changes": [],
+      "data": {
+        "appliedLimit": 65536,
+        "content": "\ufeffProcedure Run()\r\nEndProcedure\r\n",
+        "contentEncoding": "utf-8",
+        "eof": true,
+        "hash": "sha256:87c24a6da821b5f96a884b7210133a30d7ee2c66cf281934bae1afc8281a8cbb",
+        "length": 34,
+        "offset": 0,
+        "size": 34,
+        "textProfile": {
+          "bomPrefixBytes": 3,
+          "encoding": "utf-8",
+          "eol": "crlf"
+        }
+      },
+      "errors": [],
+      "ok": true,
+      "summary": "source.read returned 34 byte(s)",
+      "warnings": []
+    },
+    "resolve": {
+      "artifacts": [],
+      "cache": {
+        "events": [],
+        "fresh": [],
+        "invalidated": [],
+        "lazy_rebuilt": [],
+        "mode": "read",
+        "refreshed": [],
+        "root": "<cache-root>",
+        "stale": [],
+        "workspace_epoch": "<workspace-epoch>"
+      },
+      "changes": [],
+      "data": {
+        "candidates": [
+          {
+            "displayName": "Module",
+            "location": {
+              "kind": "addressed",
+              "metadataPath": "CommonModule.Shared.Module",
+              "sourceSet": "main",
+              "targetKind": "module"
+            },
+            "matchKind": "exact",
+            "metadataPath": "CommonModule.Shared.Module",
+            "targetKind": "module"
+          }
+        ],
+        "completeness": "complete"
+      },
+      "errors": [],
+      "ok": true,
+      "summary": "source.resolve returned 1 canonical candidate(s)",
+      "warnings": []
+    },
+    "resources": {
+      "artifacts": [],
+      "cache": {
+        "events": [],
+        "fresh": [],
+        "invalidated": [],
+        "lazy_rebuilt": [],
+        "mode": "read",
+        "refreshed": [],
+        "root": "<cache-root>",
+        "stale": [],
+        "workspace_epoch": "<workspace-epoch>"
+      },
+      "changes": [],
+      "data": {
+        "completeness": "complete",
+        "resources": [
+          {
+            "access": [
+              "read",
+              "replace"
+            ],
+            "hash": "sha256:87c24a6da821b5f96a884b7210133a30d7ee2c66cf281934bae1afc8281a8cbb",
+            "limits": {
+              "maxReadBytes": 65536
+            },
+            "mediaType": "text/x-bsl",
+            "role": "bslModule",
+            "size": 34,
+            "textProfile": {
+              "bomPrefixBytes": 3,
+              "encoding": "utf-8",
+              "eol": "crlf"
+            }
+          }
+        ],
+        "scope": "self",
+        "sourceSet": "main",
+        "target": {
+          "metadataPath": "CommonModule.Shared.Module",
+          "sourceSet": "main",
+          "targetKind": "module"
+        }
+      },
+      "errors": [],
+      "ok": true,
+      "summary": "source.resources returned 1 resource(s)",
+      "warnings": []
+    },
+    "sourceSet": "main"
+  }
+}
+'''
+)
 
 
 def _source_workspace(root: Path) -> None:
