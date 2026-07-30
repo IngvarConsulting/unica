@@ -472,6 +472,124 @@ class UnicaMcpSmokeTests(unittest.TestCase):
                     hint="unica.source.apply",
                 )
 
+    def test_one_logical_address_flows_from_resolve_through_meta_info(self) -> None:
+        """An address found logically must be readable by the subject-matter
+        tool without ever spelling out a configurator layout path."""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            temp = Path(tmp)
+            root = temp / "workspace"
+            self.source_fixture(root)
+            (root / "src/Catalogs").mkdir(parents=True)
+            (root / "src/Catalogs/Goods.xml").write_bytes(
+                (
+                    "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">"
+                    "<Catalog><Properties><Name>Goods</Name>"
+                    "<Owners><xr:Item xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\">"
+                    "Catalog.Kinds</xr:Item></Owners>"
+                    "</Properties></Catalog></MetaDataObject>"
+                ).encode()
+            )
+            before = snapshot_workspace_files(root)
+            with self.mcp_session(cache_dir=temp / "cache") as request:
+                next_id = 2
+
+                def call(name: str, arguments: dict) -> dict:
+                    nonlocal next_id
+                    response = request(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": next_id,
+                            "method": "tools/call",
+                            "params": {"name": name, "arguments": arguments},
+                        }
+                    )
+                    next_id += 1
+                    return response
+
+                resolved = json.loads(
+                    call(
+                        "unica.source.resolve",
+                        {
+                            "cwd": str(root),
+                            "sourceSet": "main",
+                            "query": "Справочник.Goods",
+                            "mode": "exact",
+                        },
+                    )["result"]["content"][0]["text"]
+                )
+                address = resolved["data"]["candidates"][0]["metadataPath"]
+                self.assertEqual(address, "Catalog.Goods")
+
+                manifest = json.loads(
+                    call(
+                        "unica.source.resources",
+                        {
+                            "cwd": str(root),
+                            "sourceSet": "main",
+                            "metadataPath": address,
+                            "scope": "self",
+                        },
+                    )["result"]["content"][0]["text"]
+                )
+                self.assertEqual(manifest["data"]["completeness"], "complete")
+                self.assertEqual(
+                    [item["role"] for item in manifest["data"]["resources"]],
+                    ["metadataDescriptor"],
+                )
+                assert_no_physical_source_selectors(manifest["data"])
+
+                info = json.loads(
+                    call(
+                        "unica.meta.info",
+                        {
+                            "cwd": str(root),
+                            "sourceSet": "main",
+                            "metadataPath": address,
+                        },
+                    )["result"]["content"][0]["text"]
+                )
+                self.assertTrue(info["ok"], info)
+                self.assertEqual(info["data"]["metadataPath"], address)
+                self.assertEqual(info["data"]["sourceSet"], "main")
+                self.assertIn("Владельцы (1): Catalog.Kinds", info["stdout"])
+
+                legacy = call(
+                    "unica.meta.info",
+                    {"cwd": str(root), "ObjectPath": "src/Catalogs/Goods.xml"},
+                )
+                self.assertEqual(
+                    legacy["error"],
+                    {
+                        "code": -32000,
+                        "message": (
+                            "legacy_target_removed: unica.meta.info no longer "
+                            "accepts `ObjectPath` or `Path`; use "
+                            "`sourceSet + metadataPath`"
+                        ),
+                    },
+                )
+
+                missing = call(
+                    "unica.source.resources",
+                    {
+                        "cwd": str(root),
+                        "sourceSet": "main",
+                        "metadataPath": "Catalog.Missing",
+                        "scope": "self",
+                    },
+                )
+                # An address nobody can prove is a refusal, not an outage: the
+                # caller must not read it as something to retry.
+                self.assertNotIn("result", missing)
+                self.assertTrue(
+                    missing["error"]["message"].startswith("target_not_found:"),
+                    missing,
+                )
+                self.assertNotIn("source_unavailable", missing["error"]["message"])
+
+            self.assertEqual(snapshot_workspace_files(root), before)
+
     def test_notifications_do_not_count_as_responses(self) -> None:
         responses = self.call_mcp(
             [
