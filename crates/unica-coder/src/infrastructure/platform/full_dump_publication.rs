@@ -26,7 +26,7 @@ use crate::infrastructure::platform::filesystem::hard_link_count;
 #[cfg(windows)]
 use crate::infrastructure::platform::filesystem::{
     create_owner_only_directory_child, create_owner_only_file_child, discard_created_child,
-    open_directory_child_nofollow, open_directory_nofollow,
+    open_directory_child_for_rename, open_directory_child_nofollow, open_directory_nofollow,
     rename_directory_handle_child_no_replace, verify_owner_only_acl,
 };
 use crate::infrastructure::platform::filesystem::{
@@ -134,20 +134,22 @@ mod windows_anchor_tests {
     #[test]
     fn no_clobber_directory_move_preserves_an_existing_destination() {
         let root = unique_temp_root("no-clobber");
-        let source = root.join("source");
-        let destination = root.join("destination");
+        let source_parent_path = root.join("source-parent");
+        let destination_parent_path = root.join("destination-parent");
+        let source = source_parent_path.join("payload");
+        let destination = destination_parent_path.join("payload");
         fs::create_dir_all(&source).unwrap();
         fs::create_dir_all(&destination).unwrap();
         fs::write(source.join("new.txt"), b"new").unwrap();
         fs::write(destination.join("old.txt"), b"old").unwrap();
 
-        let source_parent = DirectoryAnchor::capture_exact(&root).unwrap();
-        let destination_parent = source_parent.try_clone().unwrap();
+        let source_parent = DirectoryAnchor::capture_exact(&source_parent_path).unwrap();
+        let destination_parent = DirectoryAnchor::capture_exact(&destination_parent_path).unwrap();
         let error = rename_child_no_replace(
             &source_parent,
-            OsStr::new("source"),
+            OsStr::new("payload"),
             &destination_parent,
-            OsStr::new("destination"),
+            OsStr::new("payload"),
         )
         .unwrap_err();
 
@@ -161,18 +163,21 @@ mod windows_anchor_tests {
     #[test]
     fn directory_move_installs_when_destination_is_absent() {
         let root = unique_temp_root("rename-success");
-        let source = root.join("source");
-        let destination = root.join("destination");
+        let source_parent_path = root.join("source-parent");
+        let destination_parent_path = root.join("destination-parent");
+        let source = source_parent_path.join("payload");
+        let destination = destination_parent_path.join("payload");
         fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&destination_parent_path).unwrap();
         fs::write(source.join("new.txt"), b"new").unwrap();
 
-        let source_parent = DirectoryAnchor::capture_exact(&root).unwrap();
-        let destination_parent = source_parent.try_clone().unwrap();
+        let source_parent = DirectoryAnchor::capture_exact(&source_parent_path).unwrap();
+        let destination_parent = DirectoryAnchor::capture_exact(&destination_parent_path).unwrap();
         rename_child_no_replace(
             &source_parent,
-            OsStr::new("source"),
+            OsStr::new("payload"),
             &destination_parent,
-            OsStr::new("destination"),
+            OsStr::new("payload"),
         )
         .unwrap();
 
@@ -4054,13 +4059,14 @@ fn rename_prechecked_directory_child_no_replace(
     destination_parent: &DirectoryAnchor,
     destination_name: &OsStr,
 ) -> Result<(), String> {
-    let source =
-        open_directory_child_nofollow(&source_parent.directory, source_name).map_err(|error| {
+    let source = open_directory_child_for_rename(&source_parent.directory, source_name).map_err(
+        |error| {
             format!(
                 "failed to open staged child {}: {error}",
                 source_parent.path.join(source_name).display()
             )
-        })?;
+        },
+    )?;
     if file_identity(&source).map_err(|error| error.to_string())? != expected_identity {
         return Err("staged directory identity changed".to_string());
     }
@@ -4152,13 +4158,14 @@ fn rename_child_no_replace(
     destination_parent: &DirectoryAnchor,
     destination_name: &OsStr,
 ) -> Result<(), String> {
-    let source =
-        open_directory_child_nofollow(&source_parent.directory, source_name).map_err(|error| {
+    let source = open_directory_child_for_rename(&source_parent.directory, source_name).map_err(
+        |error| {
             format!(
                 "failed to bind source directory {}: {error}",
                 source_parent.path.join(source_name).display()
             )
-        })?;
+        },
+    )?;
     rename_open_directory_child_no_replace(source, destination_parent, destination_name)
 }
 

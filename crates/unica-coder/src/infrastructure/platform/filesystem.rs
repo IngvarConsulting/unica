@@ -633,6 +633,31 @@ pub(crate) fn open_directory_child_nofollow(
     const FILE_DIRECTORY_FILE: u32 = 0x0000_0001;
     const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
     use windows_sys::Win32::Storage::FileSystem::{
+        FILE_READ_ATTRIBUTES, READ_CONTROL, SYNCHRONIZE,
+    };
+
+    let file = open_relative_child(
+        parent,
+        name,
+        FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+        0,
+        FILE_OPEN,
+        FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+        None,
+    )?;
+    validate_directory_handle(&file)?;
+    Ok(file)
+}
+
+#[cfg(windows)]
+pub(crate) fn open_directory_child_for_rename(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    const FILE_OPEN: u32 = 0x0000_0001;
+    const FILE_DIRECTORY_FILE: u32 = 0x0000_0001;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    use windows_sys::Win32::Storage::FileSystem::{
         DELETE, FILE_READ_ATTRIBUTES, READ_CONTROL, SYNCHRONIZE,
     };
 
