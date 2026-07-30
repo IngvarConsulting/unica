@@ -18,7 +18,7 @@
 - `includeMethods=false` empties every method array without changing totals.
 - Any mandatory-field, read, containment, parse, cancellation, or deadline failure publishes neither `data` nor `stdout`.
 - Outline keeps empty cache reads and writes and does not start RLM or write workspace state.
-- ADR-0020 is superseded only when ADR-0021 and its executable checks become effective in the same implementation commit.
+- ADR-0020 is superseded only when ADR-0021 and its executable checks become effective in the same verified change set.
 
 ---
 
