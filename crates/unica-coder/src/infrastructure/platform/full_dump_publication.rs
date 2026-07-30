@@ -96,7 +96,7 @@ mod windows_anchor_tests {
     use std::ffi::OsStr;
     use std::fs;
     use std::os::windows::io::AsRawHandle;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::rc::Rc;
     use windows_sys::Win32::Foundation::FILETIME;
     use windows_sys::Win32::Storage::FileSystem::SetFileTime;
@@ -446,14 +446,14 @@ mod windows_anchor_tests {
         );
         assert_eq!(first.len(), 2);
         assert!(first.iter().any(|entry| {
-            entry.relative_path == PathBuf::from("nested")
+            entry.relative_path.as_path() == Path::new("nested")
                 && entry.kind
                     == TreeEntryKind::Directory {
                         identity: expected_directory_identity,
                     }
         }));
         assert!(first.iter().any(|entry| {
-            entry.relative_path == PathBuf::from("nested/payload.txt")
+            entry.relative_path.as_path() == Path::new("nested/payload.txt")
                 && entry.kind
                     == TreeEntryKind::File {
                         identity: expected_file_identity,
@@ -3439,15 +3439,17 @@ impl PrivateDumpStage {
             Err(error) => {
                 #[cfg(windows)]
                 return Err(windows_private_creation_error(
-                    &parent_anchor,
-                    root_anchor,
-                    &root_name,
-                    &root,
-                    None,
-                    &execution,
-                    None,
-                    &recovery,
-                    error,
+                    WindowsPrivateCreationRollback {
+                        parent_anchor: &parent_anchor,
+                        root_anchor,
+                        root_name: &root_name,
+                        root: &root,
+                        execution_anchor: None,
+                        execution: &execution,
+                        recovery_anchor: None,
+                        recovery: &recovery,
+                        primary: error,
+                    },
                 ));
                 #[cfg(not(windows))]
                 return Err(private_creation_error(
@@ -3464,15 +3466,17 @@ impl PrivateDumpStage {
             run_private_creation_failpoint(PrivateCreationCheckpoint::AfterExecutionCreation)
         {
             return Err(windows_private_creation_error(
-                &parent_anchor,
-                root_anchor,
-                &root_name,
-                &root,
-                Some(execution_anchor),
-                &execution,
-                None,
-                &recovery,
-                error,
+                WindowsPrivateCreationRollback {
+                    parent_anchor: &parent_anchor,
+                    root_anchor,
+                    root_name: &root_name,
+                    root: &root,
+                    execution_anchor: Some(execution_anchor),
+                    execution: &execution,
+                    recovery_anchor: None,
+                    recovery: &recovery,
+                    primary: error,
+                },
             ));
         }
         let recovery_anchor = match root_anchor.create_child(OsStr::new("recovery"), &recovery) {
@@ -3480,15 +3484,17 @@ impl PrivateDumpStage {
             Err(error) => {
                 #[cfg(windows)]
                 return Err(windows_private_creation_error(
-                    &parent_anchor,
-                    root_anchor,
-                    &root_name,
-                    &root,
-                    Some(execution_anchor),
-                    &execution,
-                    None,
-                    &recovery,
-                    error,
+                    WindowsPrivateCreationRollback {
+                        parent_anchor: &parent_anchor,
+                        root_anchor,
+                        root_name: &root_name,
+                        root: &root,
+                        execution_anchor: Some(execution_anchor),
+                        execution: &execution,
+                        recovery_anchor: None,
+                        recovery: &recovery,
+                        primary: error,
+                    },
                 ));
                 #[cfg(not(windows))]
                 return Err(private_creation_error(
@@ -3505,29 +3511,33 @@ impl PrivateDumpStage {
             run_private_creation_failpoint(PrivateCreationCheckpoint::AfterRecoveryCreation)
         {
             return Err(windows_private_creation_error(
-                &parent_anchor,
-                root_anchor,
-                &root_name,
-                &root,
-                Some(execution_anchor),
-                &execution,
-                Some(recovery_anchor),
-                &recovery,
-                error,
+                WindowsPrivateCreationRollback {
+                    parent_anchor: &parent_anchor,
+                    root_anchor,
+                    root_name: &root_name,
+                    root: &root,
+                    execution_anchor: Some(execution_anchor),
+                    execution: &execution,
+                    recovery_anchor: Some(recovery_anchor),
+                    recovery: &recovery,
+                    primary: error,
+                },
             ));
         }
         if let Err(error) = parent_anchor.verify_path_binding() {
             #[cfg(windows)]
             return Err(windows_private_creation_error(
-                &parent_anchor,
-                root_anchor,
-                &root_name,
-                &root,
-                Some(execution_anchor),
-                &execution,
-                Some(recovery_anchor),
-                &recovery,
-                error,
+                WindowsPrivateCreationRollback {
+                    parent_anchor: &parent_anchor,
+                    root_anchor,
+                    root_name: &root_name,
+                    root: &root,
+                    execution_anchor: Some(execution_anchor),
+                    execution: &execution,
+                    recovery_anchor: Some(recovery_anchor),
+                    recovery: &recovery,
+                    primary: error,
+                },
             ));
             #[cfg(not(windows))]
             return Err(private_creation_error(
@@ -3930,17 +3940,31 @@ fn release_anchor_and_remove_private_child(
 }
 
 #[cfg(windows)]
-fn windows_private_creation_error(
-    parent_anchor: &DirectoryAnchor,
+struct WindowsPrivateCreationRollback<'a> {
+    parent_anchor: &'a DirectoryAnchor,
     root_anchor: DirectoryAnchor,
-    root_name: &OsStr,
-    root: &Path,
-    mut execution_anchor: Option<DirectoryAnchor>,
-    execution: &Path,
-    mut recovery_anchor: Option<DirectoryAnchor>,
-    recovery: &Path,
+    root_name: &'a OsStr,
+    root: &'a Path,
+    execution_anchor: Option<DirectoryAnchor>,
+    execution: &'a Path,
+    recovery_anchor: Option<DirectoryAnchor>,
+    recovery: &'a Path,
     primary: String,
-) -> String {
+}
+
+#[cfg(windows)]
+fn windows_private_creation_error(rollback: WindowsPrivateCreationRollback<'_>) -> String {
+    let WindowsPrivateCreationRollback {
+        parent_anchor,
+        root_anchor,
+        root_name,
+        root,
+        mut execution_anchor,
+        execution,
+        mut recovery_anchor,
+        recovery,
+        primary,
+    } = rollback;
     let root_identity = root_anchor.identity;
     let mut cleanup_errors = Vec::new();
 
@@ -4683,10 +4707,10 @@ fn capture_directory_snapshot_recursive(
             display_root.join(relative_root).display()
         )
     })?;
-    for name in initial_names.iter().cloned() {
-        let relative = relative_root.join(&name);
+    for name in &initial_names {
+        let relative = relative_root.join(name);
         let display_path = display_root.join(&relative);
-        let opened = open_any_child_nofollow(directory, &name).map_err(|error| {
+        let opened = open_any_child_nofollow(directory, name).map_err(|error| {
             format!(
                 "dump tree contains an unsupported entry {}: {error}",
                 display_path.display()
@@ -4706,7 +4730,7 @@ fn capture_directory_snapshot_recursive(
         })?;
 
         if metadata.is_dir() {
-            let child = open_directory_child_nofollow(directory, &name).map_err(|error| {
+            let child = open_directory_child_nofollow(directory, name).map_err(|error| {
                 format!(
                     "failed to securely bind directory {}: {error}",
                     display_path.display()
@@ -4729,7 +4753,7 @@ fn capture_directory_snapshot_recursive(
                 kind: TreeEntryKind::Directory { identity },
             });
             capture_directory_snapshot_recursive(&child, &relative, display_root, entries)?;
-            let rebound = open_directory_child_nofollow(directory, &name).map_err(|error| {
+            let rebound = open_directory_child_nofollow(directory, name).map_err(|error| {
                 format!(
                     "failed to rebind directory {}: {error}",
                     display_path.display()
@@ -4756,7 +4780,7 @@ fn capture_directory_snapshot_recursive(
                 display_path.display()
             ));
         }
-        let mut file = open_regular_child_nofollow(directory, &name).map_err(|error| {
+        let mut file = open_regular_child_nofollow(directory, name).map_err(|error| {
             format!(
                 "dump tree contains an unsupported entry {}: {error}",
                 display_path.display()
@@ -4833,7 +4857,7 @@ fn capture_directory_snapshot_recursive(
                 display_path.display()
             ));
         }
-        let rebound = open_regular_child_nofollow(directory, &name).map_err(|error| {
+        let rebound = open_regular_child_nofollow(directory, name).map_err(|error| {
             format!("failed to rebind file {}: {error}", display_path.display())
         })?;
         if file_identity(&rebound).map_err(|error| {

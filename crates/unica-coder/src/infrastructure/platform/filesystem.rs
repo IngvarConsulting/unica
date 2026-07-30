@@ -1092,7 +1092,7 @@ fn validate_directory_handle(file: &fs::File) -> io::Result<()> {
         FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
     };
 
-    let attributes = windows_file_information(&file)?.dwFileAttributes;
+    let attributes = windows_file_information(file)?.dwFileAttributes;
     if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1381,7 +1381,7 @@ fn parse_directory_information_buffer(
             std::ptr::read_unaligned(buffer.as_ptr().add(offset).cast::<FILE_ID_BOTH_DIR_INFO>())
         };
         let name_bytes = entry.FileNameLength as usize;
-        if name_bytes == 0 || name_bytes % size_of::<u16>() != 0 {
+        if name_bytes == 0 || !name_bytes.is_multiple_of(size_of::<u16>()) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "directory entry has an invalid UTF-16 name length",
@@ -1428,7 +1428,7 @@ fn parse_directory_information_buffer(
                 "directory entry record length overflowed",
             )
         })?;
-        if next < minimum_record_bytes || next % 8 != 0 {
+        if next < minimum_record_bytes || !next.is_multiple_of(8) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "directory entry next-record offset is not 8-byte-aligned or overlaps the name",
@@ -1805,19 +1805,11 @@ pub(crate) fn create_owner_only_file(path: &Path) -> io::Result<fs::File> {
     reason = "DirectoryAnchor callers are introduced by the following Windows full-dump task"
 )]
 pub(crate) fn verify_owner_only_acl(file: &fs::File) -> io::Result<()> {
-    use std::mem::size_of;
     use std::os::windows::io::AsRawHandle;
     use std::ptr;
     use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
-    use windows_sys::Win32::Security::{
-        AclSizeInformation, EqualSid, GetAce, GetAclInformation, GetSecurityDescriptorControl,
-        ACCESS_ALLOWED_ACE, ACE_HEADER, ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION,
-        INHERITED_ACE, SE_DACL_PROTECTED,
-    };
+    use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
 
-    const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
-
-    let token = ProcessToken::current_user()?;
     let mut dacl = ptr::null_mut();
     let mut descriptor = ptr::null_mut();
     // SAFETY: file owns a valid handle and all requested output pointers are writable.
@@ -1837,7 +1829,47 @@ pub(crate) fn verify_owner_only_acl(file: &fs::File) -> io::Result<()> {
         return Err(io::Error::from_raw_os_error(status as i32));
     }
     let descriptor = LocalSecurityDescriptor(descriptor);
-    if dacl.is_null() {
+    verify_owner_only_security_descriptor(descriptor.0)
+}
+
+#[cfg(windows)]
+fn verify_owner_only_security_descriptor(
+    descriptor: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR,
+) -> io::Result<()> {
+    use std::mem::size_of;
+    use std::ptr;
+    use windows_sys::Win32::Security::{
+        AclSizeInformation, EqualSid, GetAce, GetAclInformation, GetSecurityDescriptorControl,
+        GetSecurityDescriptorDacl, ACCESS_ALLOWED_ACE, ACE_HEADER, ACL_SIZE_INFORMATION,
+        SE_DACL_PROTECTED,
+    };
+    use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+
+    const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+
+    if descriptor.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "owner-only object has no security descriptor",
+        ));
+    }
+    let token = ProcessToken::current_user()?;
+    let mut dacl_present = 0;
+    let mut dacl = ptr::null_mut();
+    let mut dacl_defaulted = 0;
+    // SAFETY: descriptor is non-null and all requested output pointers are writable.
+    if unsafe {
+        GetSecurityDescriptorDacl(
+            descriptor,
+            &mut dacl_present,
+            &mut dacl,
+            &mut dacl_defaulted,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if dacl_present == 0 || dacl.is_null() {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "owner-only object has no DACL",
@@ -1846,8 +1878,8 @@ pub(crate) fn verify_owner_only_acl(file: &fs::File) -> io::Result<()> {
 
     let mut control = 0;
     let mut revision = 0;
-    // SAFETY: descriptor is valid until its RAII wrapper drops.
-    if unsafe { GetSecurityDescriptorControl(descriptor.0, &mut control, &mut revision) } == 0 {
+    // SAFETY: descriptor is valid for the duration of this call.
+    if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0 {
         return Err(io::Error::last_os_error());
     }
     if control & SE_DACL_PROTECTED == 0 {
@@ -1888,15 +1920,26 @@ pub(crate) fn verify_owner_only_acl(file: &fs::File) -> io::Result<()> {
     }
     // SAFETY: GetAce returned a pointer to a valid ACE in dacl.
     let header = unsafe { &*ace.cast::<ACE_HEADER>() };
-    if header.AceType != ACCESS_ALLOWED_ACE_TYPE || u32::from(header.AceFlags) & INHERITED_ACE != 0
-    {
+    if header.AceType != ACCESS_ALLOWED_ACE_TYPE {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "owner-only object DACL has an unexpected ACE",
         ));
     }
+    if header.AceFlags != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "owner-only object DACL has unexpected ACE flags",
+        ));
+    }
     // SAFETY: the ACE type is ACCESS_ALLOWED_ACE_TYPE, so its payload has this layout.
     let allowed = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
+    if allowed.Mask != FILE_ALL_ACCESS {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "owner-only object DACL does not grant full access",
+        ));
+    }
     let ace_sid: windows_sys::Win32::Security::PSID =
         (&raw const allowed.SidStart).cast_mut().cast();
     // SAFETY: both SIDs are valid: one belongs to the ACL and the other to the current token.
@@ -2228,9 +2271,10 @@ mod tests {
             open_directory_child_for_rename, open_directory_child_nofollow,
             open_directory_nofollow, opened_child_kind, parse_directory_information_buffer,
             read_directory_names, rename_directory_handle_child_no_replace, verify_owner_only_acl,
-            verify_thread_token_fallback_error, verify_windows_elevation_value,
-            verify_windows_immutable_security_descriptor, verify_windows_local_fixed_device_info,
-            verify_windows_local_fixed_volume, EffectiveTokenSource, OpenedChildKind, ProcessToken,
+            verify_owner_only_security_descriptor, verify_thread_token_fallback_error,
+            verify_windows_elevation_value, verify_windows_immutable_security_descriptor,
+            verify_windows_local_fixed_device_info, verify_windows_local_fixed_volume,
+            EffectiveTokenSource, OpenedChildKind, OwnerOnlySecurityAttributes, ProcessToken,
             WindowsImmutableAclProfile,
         };
         use std::ffi::OsString;
@@ -2596,6 +2640,78 @@ mod tests {
         }
 
         #[test]
+        fn owner_only_acl_verifier_rejects_a_reduced_access_mask() {
+            use windows_sys::Win32::Security::{
+                GetAce, GetSecurityDescriptorDacl, ACCESS_ALLOWED_ACE,
+            };
+
+            let security = OwnerOnlySecurityAttributes::current_user().unwrap();
+            let mut dacl_present = 0;
+            let mut dacl = ptr::null_mut();
+            let mut dacl_defaulted = 0;
+            // SAFETY: the security owner retains a valid descriptor and all output pointers are
+            // writable for the duration of the call.
+            assert_ne!(
+                unsafe {
+                    GetSecurityDescriptorDacl(
+                        security.security_descriptor(),
+                        &mut dacl_present,
+                        &mut dacl,
+                        &mut dacl_defaulted,
+                    )
+                },
+                0
+            );
+            assert_ne!(dacl_present, 0);
+            let mut ace = ptr::null_mut();
+            // SAFETY: the owner-only descriptor contains exactly one access-allowed ACE.
+            assert_ne!(unsafe { GetAce(dacl, 0, &mut ace) }, 0);
+            // SAFETY: the SDDL fixture creates an ACCESS_ALLOWED_ACE at index zero.
+            unsafe { (*ace.cast::<ACCESS_ALLOWED_ACE>()).Mask = 0 };
+
+            let error =
+                verify_owner_only_security_descriptor(security.security_descriptor()).unwrap_err();
+
+            assert!(error.to_string().contains("full access"), "{error}");
+        }
+
+        #[test]
+        fn owner_only_acl_verifier_rejects_an_unexpected_ace_flag() {
+            use windows_sys::Win32::Security::{
+                GetAce, GetSecurityDescriptorDacl, ACE_HEADER, INHERIT_ONLY_ACE,
+            };
+
+            let security = OwnerOnlySecurityAttributes::current_user().unwrap();
+            let mut dacl_present = 0;
+            let mut dacl = ptr::null_mut();
+            let mut dacl_defaulted = 0;
+            // SAFETY: the security owner retains a valid descriptor and all output pointers are
+            // writable for the duration of the call.
+            assert_ne!(
+                unsafe {
+                    GetSecurityDescriptorDacl(
+                        security.security_descriptor(),
+                        &mut dacl_present,
+                        &mut dacl,
+                        &mut dacl_defaulted,
+                    )
+                },
+                0
+            );
+            assert_ne!(dacl_present, 0);
+            let mut ace = ptr::null_mut();
+            // SAFETY: the owner-only descriptor contains exactly one ACE.
+            assert_ne!(unsafe { GetAce(dacl, 0, &mut ace) }, 0);
+            // SAFETY: GetAce returned a valid ACE header inside the live descriptor.
+            unsafe { (*ace.cast::<ACE_HEADER>()).AceFlags = INHERIT_ONLY_ACE as u8 };
+
+            let error =
+                verify_owner_only_security_descriptor(security.security_descriptor()).unwrap_err();
+
+            assert!(error.to_string().contains("flags"), "{error}");
+        }
+
+        #[test]
         fn owner_only_file_child_is_created_through_its_retained_parent() {
             use std::io::Write;
 
@@ -2847,8 +2963,12 @@ mod tests {
         #[test]
         fn windows_directory_parser_rejects_an_unaligned_next_record() {
             let mut buffer = vec![0u8; 512];
-            let next = 108u32;
             let name_length = 2u32;
+            let minimum_record_bytes =
+                offset_of!(FILE_ID_BOTH_DIR_INFO, FileName) + name_length as usize;
+            let next = (((minimum_record_bytes + 7) & !7) + 4) as u32;
+            assert!(next as usize >= minimum_record_bytes);
+            assert_eq!(next % 8, 4);
             // SAFETY: the test buffer is large enough for each field and unaligned writes accept
             // Vec<u8>'s alignment.
             unsafe {
