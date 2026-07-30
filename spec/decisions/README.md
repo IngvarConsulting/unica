@@ -38,9 +38,6 @@
 - [ADR-0017: Нейтральная к поставщику модель анализа кода](0017-provider-neutral-code-intelligence.md)
 - [ADR-0018: Состояние поставщиков изолировано рабочим деревом](0018-worktree-scoped-provider-state.md)
 - [ADR-0019: Публичные MCP-схемы используют канонические имена путей](0019-canonical-paths-in-public-mcp-schemas.md)
-
-## Предложенные решения
-
 - [ADR-0020: `unica.code.outline` строится из текущего BSL-файла](0020-current-source-bsl-outline.md)
 
 Заголовки записей ADR-0001…ADR-0006 приведены здесь дословно: индекс называет

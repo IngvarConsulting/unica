@@ -1,9 +1,10 @@
-use crate::domain::cancellation::{cancelled_error, CancellationToken};
+use crate::domain::cancellation::{cancelled_error, CancellationToken, CANCELLED_PREFIX};
 use crate::domain::code_intelligence::{
     CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadRequest,
     ProviderCapability, ProviderDeadline, ProviderId, ProviderReadOutcome, ProviderSearchHit,
     ProviderSearchSection, ProviderSectionStatus, SearchRequest,
 };
+use crate::infrastructure::bsl_outline::render_current_source_outline;
 use crate::infrastructure::internal_adapters::{
     system_process_runner, ProcessCommand, ProcessOutput, ProcessRunner,
 };
@@ -17,10 +18,13 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 const SEARCH_CAPABILITIES: &[ProviderCapability] = &[ProviderCapability::Search];
+/// ADR-0020: the outline is built from the current BSL file by the pinned
+/// `bsl-parser`, so it belongs to this provider and not to the index.
+const BSL_ANALYZER_CAPABILITIES: &[ProviderCapability] =
+    &[ProviderCapability::Search, ProviderCapability::Outline];
 const RLM_CAPABILITIES: &[ProviderCapability] = &[
     ProviderCapability::Search,
     ProviderCapability::Definition,
-    ProviderCapability::Outline,
     ProviderCapability::ObjectProfile,
 ];
 const GIT_GREP_TIMEOUT: Duration = Duration::from_secs(15);
@@ -176,7 +180,56 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
     }
 
     fn capabilities(&self) -> &[ProviderCapability] {
-        SEARCH_CAPABILITIES
+        BSL_ANALYZER_CAPABILITIES
+    }
+
+    fn read(
+        &self,
+        request: &CodeIntelligenceReadRequest,
+        context: &CodeIntelligenceContext,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<ProviderReadOutcome, String> {
+        let CodeIntelligenceReadRequest::Outline {
+            path,
+            include_methods,
+        } = request
+        else {
+            return Err(format!(
+                "provider {} does not implement {:?}",
+                ProviderId::BslAnalyzer.as_str(),
+                request.capability()
+            ));
+        };
+        let tool_name = request.tool_name();
+        let mut outcome = ProviderReadOutcome {
+            provider: ProviderId::BslAnalyzer,
+            ok: true,
+            summary: format!("{tool_name} completed from the current BSL source"),
+            warnings: Vec::new(),
+            errors: Vec::new(),
+            artifacts: vec![path.clone()],
+            stdout: None,
+            stderr: None,
+        };
+        match render_current_source_outline(path, *include_methods, context, deadline, cancellation)
+        {
+            Ok(section) => outcome.stdout = Some(section),
+            Err(error) => {
+                outcome.ok = false;
+                outcome.summary = if error.starts_with(CANCELLED_PREFIX) {
+                    error
+                        .strip_prefix(CANCELLED_PREFIX)
+                        .unwrap_or(&error)
+                        .trim()
+                        .to_string()
+                } else {
+                    format!("{tool_name} could not outline the current module")
+                };
+                outcome.errors = vec![error];
+            }
+        }
+        Ok(outcome)
     }
 
     fn search(
@@ -805,8 +858,8 @@ mod tests {
     };
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::{
-        CodeIntelligenceContext, CodeIntelligenceProvider, ProviderCapability, ProviderDeadline,
-        ProviderId, ProviderSectionStatus, SearchRequest,
+        CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceRegistry,
+        ProviderCapability, ProviderDeadline, ProviderId, ProviderSectionStatus, SearchRequest,
     };
     use crate::domain::source_roots::ResolvedSourceRoot;
     use crate::domain::workspace::WorkspaceContext;
@@ -815,7 +868,7 @@ mod tests {
     use crate::infrastructure::workspace_services::WorkspaceServiceBslOutput;
     use serde_json::Value;
     use std::path::PathBuf;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
     struct FakeRunner {
@@ -1519,9 +1572,34 @@ mod tests {
             &[
                 ProviderCapability::Search,
                 ProviderCapability::Definition,
-                ProviderCapability::Outline,
                 ProviderCapability::ObjectProfile,
             ]
+        );
+    }
+
+    #[test]
+    fn the_outline_capability_belongs_to_the_current_source_provider() {
+        // ADR-0020: the outline is proved from the BSL file on disk, so the
+        // index-backed provider must not claim it and the registry must not be
+        // able to route it there.
+        assert!(!RlmProvider::new()
+            .capabilities()
+            .contains(&ProviderCapability::Outline));
+        assert!(BslAnalyzerProvider::new()
+            .capabilities()
+            .contains(&ProviderCapability::Outline));
+
+        let registry = CodeIntelligenceRegistry::new(vec![
+            Arc::new(RlmProvider::new()) as Arc<dyn CodeIntelligenceProvider>,
+            Arc::new(BslAnalyzerProvider::new()),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            registry
+                .provider_for(ProviderCapability::Outline)
+                .map(|provider| provider.id()),
+            Some(ProviderId::BslAnalyzer)
         );
     }
 

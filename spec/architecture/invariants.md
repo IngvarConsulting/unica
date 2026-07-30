@@ -418,6 +418,21 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/code_intelligence.rs`
 - **Scope:** source, runtime
 
+### INV-APP-OUTLINE-SOURCE — Структура модуля берётся из текущего файла
+
+- **Rule:** `unica.code.outline` строит результат из BSL-файла, лежащего в
+  выбранном корне исходников на момент вызова: он не читает снимок `bsl_index`,
+  не проверяет готовность индекса, не запускает его скрытый сервис и не меняет
+  состояние рабочего пространства, а недоказуемая структура завершает вызов
+  отказом вместо частичного дерева.
+- **Decision:** ADR-0020
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/bsl_outline.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/code_intelligence.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/rlm_navigation.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
+- **Check:** `ci-test` — `crates/unica-coder/tests/platform/code_intelligence_symlinked_workspace.rs`
+- **Scope:** source, runtime
+
 ### INV-APP-LAZY-HIDDEN-SERVICES — Внутренние сервисы скрыты и привязаны к рабочему пространству
 
 - **Rule:** Тёплые транспорты и сессии поставщиков живут в скрытом сервисе с

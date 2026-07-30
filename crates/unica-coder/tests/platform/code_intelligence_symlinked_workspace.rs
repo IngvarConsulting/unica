@@ -40,8 +40,8 @@ fn code_intelligence_accepts_source_paths_reached_through_a_symlinked_workspace(
 
     match result {
         Ok(outcome) => {
-            // Without a built RLM index the call reports a typed index failure. The
-            // point of the test is that it never fails on path containment.
+            // The outline is proved from the current file (ADR-0020), so the point
+            // of this test is only that it never fails on path containment.
             let rendered = format!("{} {:?}", outcome.summary, outcome.errors);
             assert!(
                 !rendered.contains("outside resolved source root"),
@@ -154,6 +154,93 @@ fn code_intelligence_rejects_a_source_path_through_a_symlink_outside_the_source_
         .expect_err("a source path through an escaping symlink must be rejected");
 
     assert!(error.contains("outside resolved source root"), "{error}");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// ADR-0020: the public envelope of `unica.code.outline` describes the file on
+/// disk and claims no cache. Nothing here builds an index, so a passing outline
+/// also proves the tool never needed one.
+#[test]
+fn code_outline_answers_from_the_current_file_without_touching_the_index() {
+    use serde_json::{Map, Value};
+    use unica_coder::application::UnicaApplication;
+
+    let root = std::env::temp_dir().join(format!(
+        "unica-code-outline-current-source-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let workspace = root.join("workspace");
+    let module = workspace.join("src/CommonModules/Демо/Ext/Module.bsl");
+    std::fs::create_dir_all(module.parent().unwrap()).unwrap();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+    )
+    .unwrap();
+    // The BSP header shape that the shipped index reads as a real exported
+    // method while losing the real one.
+    std::fs::write(
+        &module,
+        concat!(
+            "\u{feff}#Область ПрограммныйИнтерфейс\n",
+            "\n",
+            "// Пример вызова:\n",
+            "// Процедура ОпределитьНастройки(Форма) Экспорт\n",
+            "// КонецПроцедуры\n",
+            "Процедура НастроитьВарианты(Настройки) Экспорт\n",
+            "\tВозврат;\n",
+            "КонецПроцедуры\n",
+            "\n",
+            "#КонецОбласти\n",
+        ),
+    )
+    .unwrap();
+
+    let mut args = Map::new();
+    args.insert(
+        "cwd".to_string(),
+        Value::String(workspace.display().to_string()),
+    );
+    args.insert(
+        "path".to_string(),
+        Value::String("CommonModules/Демо/Ext/Module.bsl".to_string()),
+    );
+
+    let outcome = UnicaApplication::new()
+        .call_tool("unica.code.outline", &args)
+        .expect("the outline is proved from the current file");
+
+    assert!(outcome.ok, "{:?}", outcome.errors);
+    assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
+    let stdout = outcome.stdout.clone().expect("outline stdout");
+    assert_eq!(
+        stdout,
+        concat!(
+            "=== bsl-outline ===\n",
+            "module: CommonModules/Демо/Ext/Module.bsl\n",
+            "object: Демо\n",
+            "category: CommonModules\n",
+            "moduleType: Module\n",
+            "totals: methods=1 exports=1 regions=1 loc=3\n",
+            "region ПрограммныйИнтерфейс: 1-10\n",
+            "  Процедура НастроитьВарианты(Настройки) export at 6-8"
+        )
+    );
+    assert!(
+        !stdout.contains("ОпределитьНастройки"),
+        "a commented-out declaration reached the public outline:\n{stdout}"
+    );
+    assert!(
+        !outcome.cache.fresh.iter().any(|name| name == "bsl_index"),
+        "the outline must not claim the index fresh: {:?}",
+        outcome.cache
+    );
+    assert!(
+        !workspace.join(".build/unica/rlm-tools-bsl").exists(),
+        "the outline must not create index state"
+    );
 
     let _ = std::fs::remove_dir_all(&root);
 }

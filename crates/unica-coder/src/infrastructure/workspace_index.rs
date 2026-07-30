@@ -216,7 +216,6 @@ impl<'a> WorkspaceIndexService<'a> {
                 }
             };
         let matching_failed = failed_status_for_source(context, &source_root);
-        let locally_stale = stale_status_for_source(context, &source_root);
 
         if active_lock(context, &source_root) {
             return IndexStartReport {
@@ -239,22 +238,6 @@ impl<'a> WorkspaceIndexService<'a> {
                 return IndexStartReport::default();
             }
         };
-
-        // A requested module already proved content drift. Do not let the
-        // upstream sampled `info` check overwrite that evidence with `fresh`.
-        if locally_stale.is_some() {
-            return self.start_background(
-                context,
-                IndexStartSpec {
-                    action: "update",
-                    source_root,
-                    primary: commands.update,
-                    info: commands.info,
-                    recovery_build: Some(commands.build),
-                    warning: "rlm index building",
-                },
-            );
-        }
 
         let info = self.runner.run(&commands.info);
         if active_lock(context, &source_root) {
@@ -358,13 +341,9 @@ impl<'a> WorkspaceIndexService<'a> {
                 Err(error) => return IndexReadiness::Unavailable(error),
             };
         let matching_failed = failed_status_for_source(context, &source_root);
-        let locally_stale = stale_status_for_source(context, &source_root);
 
         if active_lock(context, &source_root) {
             return IndexReadiness::Building;
-        }
-        if let Some(status) = locally_stale {
-            return IndexReadiness::Stale { status };
         }
 
         let commands = match self.commands(context, &source_root, cancellation) {
@@ -582,18 +561,6 @@ impl BslIndexStatus {
         Self {
             status: "unavailable".to_string(),
             source_root: source_root.map(|path| path.display().to_string()),
-            db_path: None,
-            message: Some(message.to_string()),
-            failure_class: None,
-            updated_at: now_secs(),
-            last_run: None,
-        }
-    }
-
-    fn stale(message: &str, source_root: &Path) -> Self {
-        Self {
-            status: "stale".to_string(),
-            source_root: Some(source_root.display().to_string()),
             db_path: None,
             message: Some(message.to_string()),
             failure_class: None,
@@ -1191,14 +1158,6 @@ pub fn read_bsl_index_status(context: &WorkspaceContext) -> Option<BslIndexStatu
     serde_json::from_str(&text).ok()
 }
 
-pub(crate) fn mark_bsl_index_stale(
-    context: &WorkspaceContext,
-    source_root: &Path,
-    message: &str,
-) -> Result<(), String> {
-    write_status(context, BslIndexStatus::stale(message, source_root))
-}
-
 pub fn bsl_index_is_ready(context: &WorkspaceContext) -> bool {
     let Some(status) = read_bsl_index_status(context) else {
         return false;
@@ -1487,19 +1446,6 @@ fn failed_status_for_source(context: &WorkspaceContext, source_root: &Path) -> O
     status.message
 }
 
-fn stale_status_for_source(context: &WorkspaceContext, source_root: &Path) -> Option<String> {
-    let status = read_bsl_index_status(context)?;
-    if status.status != "stale" || !stored_path_matches(status.source_root.as_deref(), source_root)
-    {
-        return None;
-    }
-    Some(
-        status
-            .message
-            .unwrap_or_else(|| "stale (content)".to_string()),
-    )
-}
-
 fn stored_path_matches(stored: Option<&str>, current: &Path) -> bool {
     let Some(stored) = stored else {
         return false;
@@ -1631,53 +1577,6 @@ mod tests {
             status: "stale (age)".to_string()
         }
         .is_stale_content());
-    }
-
-    #[test]
-    fn locally_detected_content_drift_forces_update_despite_fresh_upstream_info() {
-        let context = test_context("local-content-drift");
-        let source_root = context.workspace_root.join("src");
-        fs::create_dir_all(source_root.join("CommonModules")).unwrap();
-        write_status(
-            &context,
-            BslIndexStatus {
-                status: "stale".to_string(),
-                source_root: Some(source_root.display().to_string()),
-                db_path: None,
-                message: Some("requested module differs from the indexed outline".to_string()),
-                failure_class: None,
-                updated_at: now_secs(),
-                last_run: None,
-            },
-        )
-        .unwrap();
-        let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success(
-                "Index: /tmp/bsl_index.db\n  Status:   fresh\n",
-            )]),
-            ..Default::default()
-        };
-        let service = WorkspaceIndexService::with_runner(&runner);
-
-        assert!(matches!(
-            service.ready_index(&context, &Map::new()),
-            IndexReadiness::Stale { status }
-                if status == "requested module differs from the indexed outline"
-        ));
-        let report = service.start_for_workspace(&context, &Map::new(), false);
-
-        assert_eq!(report.warnings, vec!["rlm index building".to_string()]);
-        assert!(
-            runner.commands.borrow().is_empty(),
-            "locally proven drift must not be overwritten by probabilistic upstream info"
-        );
-        let backgrounds = runner.backgrounds.borrow();
-        assert_eq!(backgrounds.len(), 1);
-        assert_eq!(backgrounds[0].action, "update");
-        assert_eq!(backgrounds[0].primary.args[0..2], ["index", "update"]);
-        assert!(backgrounds[0].recovery_build.is_some());
-        assert_eq!(read_bsl_index_status(&context).unwrap().status, "building");
-        cleanup(&context);
     }
 
     #[test]
