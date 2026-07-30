@@ -30,7 +30,8 @@ use crate::infrastructure::platform::filesystem::{
     open_any_child_for_delete, open_any_child_nofollow, open_directory_child_for_rename,
     open_directory_child_nofollow, open_directory_nofollow, open_regular_child_nofollow,
     opened_child_kind, rename_directory_handle_child_no_replace, verify_owner_only_acl,
-    verify_unprivileged_windows_platform_caller, OpenedChildKind, WindowsImmutableAclProfile,
+    verify_unprivileged_windows_platform_caller, verify_windows_local_fixed_volume,
+    OpenedChildKind, WindowsImmutableAclProfile,
 };
 use crate::infrastructure::platform::filesystem::{
     file_identity, metadata_is_link_or_reparse_point, restrict_stage_to_owner, FileIdentity,
@@ -81,10 +82,10 @@ pub(crate) enum FullDumpInvocation {
 mod windows_anchor_tests {
     use super::{
         capture_directory_snapshot, capture_tree_child_nofollow,
-        capture_windows_immutable_platform_children, remove_bound_directory_child,
-        rename_child_no_replace, secure_path_is_absent, secure_read_regular_file_snapshot,
-        unlink_bound_regular_child, with_secure_read_hook, with_tree_open_hook, DirectoryAnchor,
-        TreeEntryKind, TreeSnapshot,
+        capture_windows_immutable_platform_children, parse_windows_local_platform_path,
+        remove_bound_directory_child, rename_child_no_replace, secure_path_is_absent,
+        secure_read_regular_file_snapshot, unlink_bound_regular_child, with_secure_read_hook,
+        with_tree_open_hook, DirectoryAnchor, TreeEntryKind, TreeSnapshot,
     };
     use crate::infrastructure::platform::filesystem::{
         file_identity, open_directory_nofollow, verify_owner_only_acl,
@@ -97,6 +98,39 @@ mod windows_anchor_tests {
     use std::rc::Rc;
     use windows_sys::Win32::Foundation::FILETIME;
     use windows_sys::Win32::Storage::FileSystem::SetFileTime;
+
+    #[test]
+    fn windows_immutable_platform_path_accepts_only_normal_or_verbatim_local_disks() {
+        for path in [
+            PathBuf::from(r"C:\Program Files\1cv8\8.3.27.1859"),
+            PathBuf::from(r"\\?\C:\Program Files\1cv8\8.3.27.1859"),
+        ] {
+            let (root, names) = parse_windows_local_platform_path(&path).unwrap();
+            assert!(
+                root.as_path() == std::path::Path::new(r"C:\")
+                    || root.as_path() == std::path::Path::new(r"\\?\C:\"),
+                "{}",
+                root.display()
+            );
+            assert_eq!(
+                names.last().unwrap(),
+                &std::ffi::OsString::from("8.3.27.1859")
+            );
+        }
+
+        for path in [
+            PathBuf::from(r"\\server\share\1cv8"),
+            PathBuf::from(r"\\?\UNC\server\share\1cv8"),
+            PathBuf::from(r"\\.\C:\Program Files\1cv8"),
+            PathBuf::from(r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\1cv8"),
+        ] {
+            assert!(
+                parse_windows_local_platform_path(&path).is_err(),
+                "{}",
+                path.display()
+            );
+        }
+    }
 
     #[test]
     fn windows_anchor_detects_parent_name_replacement() {
@@ -1785,10 +1819,8 @@ impl ImmutablePlatformTrustSnapshot {
 }
 
 #[cfg(windows)]
-fn capture_windows_immutable_platform_ancestry(
-    install: &Path,
-) -> Result<(Vec<ImmutablePlatformEntry>, File), String> {
-    use std::path::Component;
+fn parse_windows_local_platform_path(install: &Path) -> Result<(PathBuf, Vec<OsString>), String> {
+    use std::path::{Component, Prefix};
 
     if !install.is_absolute() {
         return Err(format!(
@@ -1806,6 +1838,12 @@ fn capture_windows_immutable_platform_ancestry(
             ))
         }
     };
+    if !matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)) {
+        return Err(format!(
+            "Windows immutable platform path must use a local disk prefix: {}",
+            install.display()
+        ));
+    }
     if !matches!(components.next(), Some(Component::RootDir)) {
         return Err(format!(
             "Windows immutable platform path has no volume root: {}",
@@ -1828,9 +1866,23 @@ fn capture_windows_immutable_platform_ancestry(
 
     let mut root_path = PathBuf::from(prefix.as_os_str());
     root_path.push(Path::new(r"\"));
+    Ok((root_path, names))
+}
+
+#[cfg(windows)]
+fn capture_windows_immutable_platform_ancestry(
+    install: &Path,
+) -> Result<(Vec<ImmutablePlatformEntry>, File), String> {
+    let (root_path, names) = parse_windows_local_platform_path(install)?;
     let root = open_directory_nofollow(&root_path).map_err(|error| {
         format!(
             "failed to securely open immutable platform volume root {}: {error}",
+            root_path.display()
+        )
+    })?;
+    verify_windows_local_fixed_volume(&root).map_err(|error| {
+        format!(
+            "failed to prove a local fixed immutable platform volume from retained handle {}: {error}",
             root_path.display()
         )
     })?;
@@ -1868,6 +1920,12 @@ fn capture_windows_immutable_platform_ancestry(
             profile,
         )?);
     }
+    verify_windows_local_fixed_volume(&current).map_err(|error| {
+        format!(
+            "failed to prove a local fixed immutable platform installation from retained handle {}: {error}",
+            current_path.display()
+        )
+    })?;
     Ok((entries, current))
 }
 
@@ -7462,7 +7520,7 @@ mod tests {
     }
 
     #[test]
-    fn system_resolver_does_not_trust_an_explicit_platform_path_or_broad_claim() {
+    fn platform_resolver_does_not_trust_an_explicit_platform_path_or_broad_claim() {
         let root = std::env::temp_dir().join(format!(
             "unica-platform-resolution-{}",
             uuid::Uuid::new_v4()
@@ -7566,7 +7624,7 @@ mod tests {
     }
 
     #[test]
-    fn system_resolver_rejects_fake_binary_even_under_exact_version_directory_name() {
+    fn platform_resolver_rejects_fake_binary_even_under_exact_version_directory_name() {
         let root = std::env::temp_dir().join(format!(
             "unica-platform-fake-resolution-{}",
             uuid::Uuid::new_v4()

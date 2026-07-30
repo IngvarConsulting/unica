@@ -202,24 +202,61 @@ fn windows_api_path(path: &Path) -> io::Result<Vec<u16>> {
     dead_code,
     reason = "DirectoryAnchor callers are introduced by the following Windows full-dump task"
 )]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EffectiveTokenSource {
+    Thread,
+    Process,
+}
+
+#[cfg(windows)]
+fn verify_thread_token_fallback_error(error: u32) -> io::Result<()> {
+    use windows_sys::Win32::Foundation::ERROR_NO_TOKEN;
+
+    if error == ERROR_NO_TOKEN {
+        Ok(())
+    } else {
+        Err(io::Error::from_raw_os_error(error as i32))
+    }
+}
+
+#[cfg(windows)]
+#[allow(
+    dead_code,
+    reason = "DirectoryAnchor callers are introduced by the following Windows full-dump task"
+)]
 struct ProcessToken {
     handle: windows_sys::Win32::Foundation::HANDLE,
     user: Vec<u8>,
+    source: EffectiveTokenSource,
 }
 
 #[cfg(windows)]
 impl ProcessToken {
     fn current_user() -> io::Result<Self> {
         use std::ptr;
-        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::Foundation::{CloseHandle, ERROR_NO_TOKEN};
         use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY};
-        use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentProcess, GetCurrentThread, OpenProcessToken, OpenThreadToken,
+        };
 
         let mut handle = ptr::null_mut();
-        // SAFETY: GetCurrentProcess returns a valid pseudo-handle; handle is writable storage.
-        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut handle) } == 0 {
-            return Err(io::Error::last_os_error());
-        }
+        // SAFETY: GetCurrentThread returns a valid pseudo-handle; handle is writable storage and
+        // OpenAsSelf is true so an impersonating caller can inspect its effective token.
+        let source =
+            if unsafe { OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 1, &mut handle) } != 0 {
+                EffectiveTokenSource::Thread
+            } else {
+                let error = io::Error::last_os_error();
+                let error_code = error.raw_os_error().unwrap_or_default() as u32;
+                verify_thread_token_fallback_error(error_code)?;
+                debug_assert_eq!(error_code, ERROR_NO_TOKEN);
+                // SAFETY: GetCurrentProcess returns a valid pseudo-handle; handle is writable storage.
+                if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut handle) } == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                EffectiveTokenSource::Process
+            };
 
         let mut length = 0;
         // SAFETY: the first call requests the buffer size without supplying a buffer.
@@ -251,7 +288,11 @@ impl ProcessToken {
             return Err(error);
         }
 
-        Ok(Self { handle, user })
+        Ok(Self {
+            handle,
+            user,
+            source,
+        })
     }
 
     fn user_sid(&self) -> windows_sys::Win32::Security::PSID {
@@ -272,7 +313,8 @@ impl Drop for ProcessToken {
     fn drop(&mut self) {
         use windows_sys::Win32::Foundation::CloseHandle;
 
-        // SAFETY: self.handle is an owned token handle returned by OpenProcessToken.
+        // SAFETY: self.handle is an owned token handle returned by OpenThreadToken or
+        // OpenProcessToken.
         unsafe { CloseHandle(self.handle) };
     }
 }
@@ -902,6 +944,13 @@ struct NtIoStatusBlock {
 }
 
 #[cfg(windows)]
+#[repr(C)]
+struct NtFileFsDeviceInformation {
+    device_type: u32,
+    characteristics: u32,
+}
+
+#[cfg(windows)]
 unsafe extern "system" {
     fn NtCreateFile(
         file_handle: *mut windows_sys::Win32::Foundation::HANDLE,
@@ -923,6 +972,13 @@ unsafe extern "system" {
         length: u32,
         file_information_class: u32,
     ) -> i32;
+    fn NtQueryVolumeInformationFile(
+        file_handle: windows_sys::Win32::Foundation::HANDLE,
+        io_status_block: *mut NtIoStatusBlock,
+        fs_information: *mut std::ffi::c_void,
+        length: u32,
+        fs_information_class: u32,
+    ) -> i32;
     fn RtlNtStatusToDosError(status: i32) -> u32;
 }
 
@@ -931,6 +987,73 @@ fn nt_status_error(status: i32) -> io::Error {
     // SAFETY: RtlNtStatusToDosError accepts all NTSTATUS values and returns a Win32 error code.
     let error = unsafe { RtlNtStatusToDosError(status) };
     io::Error::from_raw_os_error(error as i32)
+}
+
+#[cfg(windows)]
+fn verify_windows_local_fixed_device_info(
+    device_type: u32,
+    characteristics: u32,
+) -> io::Result<()> {
+    const FILE_DEVICE_DISK: u32 = 0x0000_0007;
+    const FILE_REMOTE_DEVICE: u32 = 0x0000_0010;
+    const FILE_REMOVABLE_MEDIA: u32 = 0x0000_0001;
+    const FILE_FLOPPY_DISKETTE: u32 = 0x0000_0004;
+    const FILE_WRITE_ONCE_MEDIA: u32 = 0x0000_0008;
+    const FILE_VIRTUAL_VOLUME: u32 = 0x0000_0040;
+    const FILE_REMOTE_DEVICE_VSMB: u32 = 0x0008_0000;
+    const UNTRUSTED_CHARACTERISTICS: u32 = FILE_REMOTE_DEVICE
+        | FILE_REMOVABLE_MEDIA
+        | FILE_FLOPPY_DISKETTE
+        | FILE_WRITE_ONCE_MEDIA
+        | FILE_VIRTUAL_VOLUME
+        | FILE_REMOTE_DEVICE_VSMB;
+
+    if device_type != FILE_DEVICE_DISK || characteristics & UNTRUSTED_CHARACTERISTICS != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "immutable platform volume is not a local fixed disk (device type 0x{device_type:08x}, characteristics 0x{characteristics:08x})"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+pub(crate) fn verify_windows_local_fixed_volume(file: &fs::File) -> io::Result<()> {
+    use std::mem::size_of;
+    use std::os::windows::io::AsRawHandle;
+
+    const FILE_FS_DEVICE_INFORMATION_CLASS: u32 = 4;
+    let mut io_status = NtIoStatusBlock {
+        status: NtIoStatusStatus { status: 0 },
+        information: 0,
+    };
+    let mut information = NtFileFsDeviceInformation {
+        device_type: 0,
+        characteristics: 0,
+    };
+    // SAFETY: file retains a valid handle for the complete call; io_status and information are
+    // writable buffers of the exact native layouts for FileFsDeviceInformation.
+    let status = unsafe {
+        NtQueryVolumeInformationFile(
+            file.as_raw_handle(),
+            &mut io_status,
+            (&mut information as *mut NtFileFsDeviceInformation).cast(),
+            size_of::<NtFileFsDeviceInformation>() as u32,
+            FILE_FS_DEVICE_INFORMATION_CLASS,
+        )
+    };
+    if status < 0 {
+        return Err(nt_status_error(status));
+    }
+    if io_status.information != size_of::<NtFileFsDeviceInformation>() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Windows volume device proof returned an unexpected size",
+        ));
+    }
+    verify_windows_local_fixed_device_info(information.device_type, information.characteristics)
 }
 
 #[cfg(windows)]
@@ -2050,20 +2173,24 @@ mod tests {
             create_owner_only_directory_child, create_owner_only_file, directory_query_is_end,
             file_identity, nt_create_options_for_std_file, open_directory_child_nofollow,
             open_directory_nofollow, parse_directory_information_buffer, read_directory_names,
-            verify_owner_only_acl, verify_windows_elevation_value,
-            verify_windows_immutable_security_descriptor, WindowsImmutableAclProfile,
+            verify_owner_only_acl, verify_thread_token_fallback_error,
+            verify_windows_elevation_value, verify_windows_immutable_security_descriptor,
+            verify_windows_local_fixed_device_info, verify_windows_local_fixed_volume,
+            EffectiveTokenSource, ProcessToken, WindowsImmutableAclProfile,
         };
         use std::ffi::OsString;
         use std::mem::{offset_of, size_of};
         use std::ptr;
         use windows_sys::Win32::Foundation::{LocalFree, GENERIC_ALL, GENERIC_WRITE};
         use windows_sys::Win32::Foundation::{
-            ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_FILES,
+            ERROR_ACCESS_DENIED, ERROR_CANT_OPEN_ANONYMOUS, ERROR_FILE_NOT_FOUND,
+            ERROR_NO_MORE_FILES, ERROR_NO_TOKEN,
         };
         use windows_sys::Win32::Security::Authorization::{
             ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
         };
         use windows_sys::Win32::Security::PSECURITY_DESCRIPTOR;
+        use windows_sys::Win32::Security::{ImpersonateSelf, RevertToSelf, SecurityImpersonation};
         use windows_sys::Win32::Storage::FileSystem::{
             DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_DELETE_CHILD, FILE_ID_BOTH_DIR_INFO,
             FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, WRITE_DAC, WRITE_OWNER,
@@ -2245,7 +2372,90 @@ mod tests {
         }
 
         #[test]
-        fn windows_immutable_platform_handle_evidence_stays_bound_to_the_open_object() {
+        fn windows_immutable_platform_effective_token_falls_back_only_when_thread_has_no_token() {
+            verify_thread_token_fallback_error(ERROR_NO_TOKEN).unwrap();
+
+            for expected in [ERROR_ACCESS_DENIED, ERROR_CANT_OPEN_ANONYMOUS] {
+                let error = verify_thread_token_fallback_error(expected).unwrap_err();
+                assert_eq!(error.raw_os_error(), Some(expected as i32));
+            }
+        }
+
+        #[test]
+        fn windows_immutable_platform_effective_token_uses_process_token_without_impersonation() {
+            let token = ProcessToken::current_user().unwrap();
+
+            assert_eq!(token.source, EffectiveTokenSource::Process);
+        }
+
+        #[test]
+        fn windows_immutable_platform_effective_token_selects_an_impersonation_token() {
+            struct RevertGuard;
+
+            impl Drop for RevertGuard {
+                fn drop(&mut self) {
+                    // SAFETY: this guard is created only after ImpersonateSelf succeeds.
+                    assert_ne!(unsafe { RevertToSelf() }, 0);
+                }
+            }
+
+            // SAFETY: SecurityImpersonation is a documented impersonation level.
+            assert_ne!(
+                unsafe { ImpersonateSelf(SecurityImpersonation) },
+                0,
+                "{}",
+                io::Error::last_os_error()
+            );
+            let _guard = RevertGuard;
+
+            let token = ProcessToken::current_user().unwrap();
+
+            assert_eq!(token.source, EffectiveTokenSource::Thread);
+        }
+
+        #[test]
+        fn windows_immutable_platform_rejects_nonlocal_or_nonfixed_device_information() {
+            const FILE_DEVICE_CD_ROM: u32 = 0x0000_0002;
+            const FILE_DEVICE_DISK: u32 = 0x0000_0007;
+            const FILE_DEVICE_NETWORK_FILE_SYSTEM: u32 = 0x0000_0014;
+            const FILE_DEVICE_VIRTUAL_DISK: u32 = 0x0000_0024;
+            const FILE_REMOTE_DEVICE: u32 = 0x0000_0010;
+            const FILE_REMOTE_DEVICE_VSMB: u32 = 0x0008_0000;
+            const FILE_REMOVABLE_MEDIA: u32 = 0x0000_0001;
+            const FILE_DEVICE_IS_MOUNTED: u32 = 0x0000_0020;
+
+            verify_windows_local_fixed_device_info(FILE_DEVICE_DISK, FILE_DEVICE_IS_MOUNTED)
+                .unwrap();
+            for (device_type, characteristics) in [
+                (FILE_DEVICE_DISK, FILE_REMOTE_DEVICE),
+                (FILE_DEVICE_DISK, FILE_REMOTE_DEVICE_VSMB),
+                (FILE_DEVICE_DISK, FILE_REMOVABLE_MEDIA),
+                (FILE_DEVICE_NETWORK_FILE_SYSTEM, FILE_DEVICE_IS_MOUNTED),
+                (FILE_DEVICE_CD_ROM, FILE_DEVICE_IS_MOUNTED),
+                (FILE_DEVICE_VIRTUAL_DISK, FILE_DEVICE_IS_MOUNTED),
+                (0xffff_ffff, 0),
+            ] {
+                assert!(
+                    verify_windows_local_fixed_device_info(device_type, characteristics).is_err(),
+                    "device type 0x{device_type:08x}, characteristics 0x{characteristics:08x}"
+                );
+            }
+        }
+
+        #[test]
+        fn windows_immutable_platform_accepts_a_real_local_fixed_volume_handle() {
+            let root = unique_temp_root("immutable-local-volume");
+            fs::create_dir_all(&root).unwrap();
+            let handle = open_directory_nofollow(&root).unwrap();
+
+            verify_windows_local_fixed_volume(&handle).unwrap();
+
+            drop(handle);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn windows_immutable_platform_attestation_handle_evidence_stays_bound_to_the_open_object() {
             let root = unique_temp_root("immutable-handle-evidence");
             fs::create_dir_all(&root).unwrap();
             let original = root.join("entry");
