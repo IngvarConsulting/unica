@@ -579,7 +579,9 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
         // patterns, are described too.
         if let Some(description) = description_for_arg(name) {
             if let Some(object) = property.as_object_mut() {
-                object.insert("description".to_string(), json!(description));
+                object
+                    .entry("description".to_string())
+                    .or_insert_with(|| json!(description));
             }
         }
         properties.insert(name.to_string(), property);
@@ -2067,7 +2069,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "metadataPath",
-        "Canonical logical metadata address. For unica.code.patch it identifies one existing module inside sourceSet, for example CommonModule.Service.Module or Catalog.Items.ObjectModule.",
+        "Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics.",
     ),
     (
         "methodName",
@@ -2446,9 +2448,15 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
     }
     if tool.name == "unica.code.patch" {
         return match name {
-            "sourceSet" | "metadataPath" | "content" => {
+            "sourceSet" | "content" => {
                 json!({ "type": "string", "minLength": 1, "pattern": r"\S" })
             }
+            "metadataPath" => json!({
+                "type": "string",
+                "minLength": 1,
+                "pattern": r"\S",
+                "description": "Canonical logical module address inside sourceSet, for example CommonModule.Service.Module or Catalog.Items.ObjectModule."
+            }),
             "operation" => json!({ "type": "string", "enum": ["insert"] }),
             "position" => json!({ "type": "string", "enum": ["before", "after"] }),
             "selector" => json!({
@@ -2940,6 +2948,34 @@ mod tests {
         let mut invalid = base;
         invalid["selector"] = json!({"method": "A", "anchor": "B"});
         assert!(!validator.is_valid(&invalid));
+    }
+
+    #[test]
+    fn code_patch_metadata_path_description_is_tool_specific() {
+        let tools = tools();
+        let code_patch = tools
+            .iter()
+            .find(|tool| tool.name == "unica.code.patch")
+            .unwrap();
+        let role_validate = tools
+            .iter()
+            .find(|tool| tool.name == "unica.role.validate")
+            .unwrap();
+
+        let code_patch_schema = input_schema_for_tool(code_patch);
+        let role_validate_schema = input_schema_for_tool(role_validate);
+        let code_patch_description = code_patch_schema["properties"]["metadataPath"]["description"]
+            .as_str()
+            .unwrap();
+        let role_validate_description = role_validate_schema["properties"]["metadataPath"]
+            ["description"]
+            .as_str()
+            .unwrap();
+
+        assert!(code_patch_description.contains("logical module address"));
+        assert!(code_patch_description.contains("sourceSet"));
+        assert!(!role_validate_description.contains("unica.code.patch"));
+        assert!(!role_validate_description.contains("module"));
     }
 
     #[test]

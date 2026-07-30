@@ -1967,6 +1967,8 @@ pub(crate) fn guard_code_patch_resolved_target(
             let bytes = fs::read(&support)
                 .map_err(|error| format!("failed to read {}: {error}", support.display()))?;
             guard_exact_preimage_if_unprotected(transaction, &support, bytes)?;
+        } else {
+            transaction.guard_path_absent(&support)?;
         }
     }
     Ok(target)

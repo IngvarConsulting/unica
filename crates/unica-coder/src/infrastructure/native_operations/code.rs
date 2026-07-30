@@ -899,7 +899,9 @@ mod tests {
         locate_insertion, module_identity, normalized_content, patch_inner, unified_diff,
         LeadingSeparator, PatchMode, Position, ValidationStatus,
     };
+    use crate::application::SupportGuardRequirement;
     use crate::domain::workspace::WorkspaceContext;
+    use crate::infrastructure::native_operations::common::support_guard_violation;
     use crate::infrastructure::native_operations::single_file_publisher::with_before_commit_hook;
     use crate::infrastructure::native_operations::text_snapshot::{
         resolve_line_ending, EolPolicy, LineEnding, SourceTextSnapshot,
@@ -2118,6 +2120,77 @@ mod tests {
         );
         assert_eq!(fs::read(&module).unwrap(), before);
         assert_eq!(fs::read_to_string(&descriptor).unwrap(), replacement);
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn code_patch_rolls_back_if_absent_support_state_appears_before_commit() {
+        let context = temp_context("support-state-appearance-race");
+        let module = context
+            .workspace_root
+            .join("src/CommonModules/Sample/Ext/Module.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        fs::create_dir_all(context.workspace_root.join("src/Ext")).unwrap();
+        fs::write(
+            context.workspace_root.join("src/Configuration.xml"),
+            concat!(
+                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">",
+                "<Configuration uuid=\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\"/>",
+                "</MetaDataObject>"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            context.workspace_root.join("src/CommonModules/Sample.xml"),
+            concat!(
+                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">",
+                "<CommonModule uuid=\"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\"/>",
+                "</MetaDataObject>"
+            ),
+        )
+        .unwrap();
+        let before = b"Procedure Run()\nEndProcedure\n";
+        fs::write(&module, before).unwrap();
+        let args = patch_args(
+            "main",
+            "CommonModule.Sample.Module",
+            "Run",
+            "Procedure Added()\nEndProcedure",
+        );
+        let support_path = context
+            .workspace_root
+            .join("src/Ext/ParentConfigurations.bin");
+        let concurrent_support = concat!(
+            "\u{feff}{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,",
+            "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",",
+            "\"VendorConf\",3,1,0,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,0,0,",
+            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb,",
+            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb,2,0,",
+            "cccccccc-cccc-cccc-cccc-cccccccccccc,",
+            "cccccccc-cccc-cccc-cccc-cccccccccccc}"
+        )
+        .as_bytes()
+        .to_vec();
+        let support_path_for_hook = support_path.clone();
+        let concurrent_support_for_hook = concurrent_support.clone();
+
+        let result = with_before_commit_hook(
+            move |_| fs::write(&support_path_for_hook, &concurrent_support_for_hook).unwrap(),
+            || patch_inner(&args, &context, PatchMode::Apply),
+        );
+
+        assert!(!result.outcome.ok);
+        assert!(
+            result.outcome.errors.join("\n").contains("absence guard"),
+            "{:?}",
+            result.outcome.errors
+        );
+        assert_eq!(fs::read(&module).unwrap(), before);
+        assert_eq!(fs::read(&support_path).unwrap(), concurrent_support);
+        let violation =
+            support_guard_violation(&module, SupportGuardRequirement::Editable).unwrap();
+        assert_eq!(violation.code, "locked");
         fs::remove_dir_all(&context.workspace_root).unwrap();
     }
 
