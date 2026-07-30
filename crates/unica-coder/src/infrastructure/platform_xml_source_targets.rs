@@ -6,7 +6,7 @@ use crate::domain::source_target::{
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::{
     metadata_kind, metadata_kind_by_directory, supports_direct_module_role,
-    supports_nested_form_or_command,
+    supports_nested_form_or_command, MetadataKind,
 };
 use crate::infrastructure::path_policy::WorkspacePathPolicy;
 use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
@@ -346,16 +346,6 @@ enum PlatformXmlModuleLayoutFamily {
     NestedCommand,
 }
 
-const PLATFORM_XML_MODULE_LAYOUT_FAMILIES: &[PlatformXmlModuleLayoutFamily] = &[
-    PlatformXmlModuleLayoutFamily::RootApplication,
-    PlatformXmlModuleLayoutFamily::OwnerModule,
-    PlatformXmlModuleLayoutFamily::CommonForm,
-    PlatformXmlModuleLayoutFamily::CommonCommand,
-    PlatformXmlModuleLayoutFamily::DirectMetadata,
-    PlatformXmlModuleLayoutFamily::NestedForm,
-    PlatformXmlModuleLayoutFamily::NestedCommand,
-];
-
 const OWNER_MODULE_KINDS: &[&str] = &[
     "CommonModule",
     "HTTPService",
@@ -363,191 +353,423 @@ const OWNER_MODULE_KINDS: &[&str] = &[
     "IntegrationService",
 ];
 
-impl PlatformXmlModuleLayoutFamily {
+#[derive(Debug, Clone, Copy)]
+enum ModuleLayoutToken {
+    Literal(&'static str),
+    MetadataKind,
+    MetadataDirectory,
+    OwnerName,
+    ChildName,
+    Role(ModuleRoleClass),
+    RoleFile(ModuleRoleClass),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ModuleRoleClass {
+    Root,
+    Direct,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ModuleLayoutCapability {
+    Any,
+    OwnerModule,
+    DirectModule,
+    NestedFormOrCommand,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ModuleDescriptorRule {
+    Root,
+    Common {
+        kind: &'static str,
+        directory: &'static str,
+    },
+    Owner,
+    Nested {
+        child_kind: &'static str,
+        child_directory: &'static str,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PlatformXmlModuleLayoutDescriptor {
+    family: PlatformXmlModuleLayoutFamily,
+    physical: &'static [ModuleLayoutToken],
+    logical: &'static [ModuleLayoutToken],
+    capability: ModuleLayoutCapability,
+    fixed_role: Option<PlatformXmlModuleRole>,
+    descriptor_rule: ModuleDescriptorRule,
+}
+
+const PLATFORM_XML_MODULE_LAYOUT_FAMILIES: &[PlatformXmlModuleLayoutDescriptor] = &[
+    PlatformXmlModuleLayoutDescriptor {
+        family: PlatformXmlModuleLayoutFamily::RootApplication,
+        physical: &[
+            ModuleLayoutToken::Literal("Ext"),
+            ModuleLayoutToken::RoleFile(ModuleRoleClass::Root),
+        ],
+        logical: &[ModuleLayoutToken::Role(ModuleRoleClass::Root)],
+        capability: ModuleLayoutCapability::Any,
+        fixed_role: None,
+        descriptor_rule: ModuleDescriptorRule::Root,
+    },
+    PlatformXmlModuleLayoutDescriptor {
+        family: PlatformXmlModuleLayoutFamily::OwnerModule,
+        physical: &[
+            ModuleLayoutToken::MetadataDirectory,
+            ModuleLayoutToken::OwnerName,
+            ModuleLayoutToken::Literal("Ext"),
+            ModuleLayoutToken::Literal("Module.bsl"),
+        ],
+        logical: &[
+            ModuleLayoutToken::MetadataKind,
+            ModuleLayoutToken::OwnerName,
+            ModuleLayoutToken::Literal("Module"),
+        ],
+        capability: ModuleLayoutCapability::OwnerModule,
+        fixed_role: Some(PlatformXmlModuleRole::Module),
+        descriptor_rule: ModuleDescriptorRule::Owner,
+    },
+    PlatformXmlModuleLayoutDescriptor {
+        family: PlatformXmlModuleLayoutFamily::CommonForm,
+        physical: &[
+            ModuleLayoutToken::Literal("CommonForms"),
+            ModuleLayoutToken::OwnerName,
+            ModuleLayoutToken::Literal("Ext"),
+            ModuleLayoutToken::Literal("Form"),
+            ModuleLayoutToken::Literal("Module.bsl"),
+        ],
+        logical: &[
+            ModuleLayoutToken::Literal("CommonForm"),
+            ModuleLayoutToken::OwnerName,
+            ModuleLayoutToken::Literal("FormModule"),
+        ],
+        capability: ModuleLayoutCapability::Any,
+        fixed_role: Some(PlatformXmlModuleRole::FormModule),
+        descriptor_rule: ModuleDescriptorRule::Common {
+            kind: "CommonForm",
+            directory: "CommonForms",
+        },
+    },
+    PlatformXmlModuleLayoutDescriptor {
+        family: PlatformXmlModuleLayoutFamily::CommonCommand,
+        physical: &[
+            ModuleLayoutToken::Literal("CommonCommands"),
+            ModuleLayoutToken::OwnerName,
+            ModuleLayoutToken::Literal("Ext"),
+            ModuleLayoutToken::Literal("CommandModule.bsl"),
+        ],
+        logical: &[
+            ModuleLayoutToken::Literal("CommonCommand"),
+            ModuleLayoutToken::OwnerName,
+            ModuleLayoutToken::Literal("CommandModule"),
+        ],
+        capability: ModuleLayoutCapability::Any,
+        fixed_role: Some(PlatformXmlModuleRole::CommandModule),
+        descriptor_rule: ModuleDescriptorRule::Common {
+            kind: "CommonCommand",
+            directory: "CommonCommands",
+        },
+    },
+    PlatformXmlModuleLayoutDescriptor {
+        family: PlatformXmlModuleLayoutFamily::DirectMetadata,
+        physical: &[
+            ModuleLayoutToken::MetadataDirectory,
+            ModuleLayoutToken::OwnerName,
+            ModuleLayoutToken::Literal("Ext"),
+            ModuleLayoutToken::RoleFile(ModuleRoleClass::Direct),
+        ],
+        logical: &[
+            ModuleLayoutToken::MetadataKind,
+            ModuleLayoutToken::OwnerName,
+            ModuleLayoutToken::Role(ModuleRoleClass::Direct),
+        ],
+        capability: ModuleLayoutCapability::DirectModule,
+        fixed_role: None,
+        descriptor_rule: ModuleDescriptorRule::Owner,
+    },
+    PlatformXmlModuleLayoutDescriptor {
+        family: PlatformXmlModuleLayoutFamily::NestedForm,
+        physical: &[
+            ModuleLayoutToken::MetadataDirectory,
+            ModuleLayoutToken::OwnerName,
+            ModuleLayoutToken::Literal("Forms"),
+            ModuleLayoutToken::ChildName,
+            ModuleLayoutToken::Literal("Ext"),
+            ModuleLayoutToken::Literal("Form"),
+            ModuleLayoutToken::Literal("Module.bsl"),
+        ],
+        logical: &[
+            ModuleLayoutToken::MetadataKind,
+            ModuleLayoutToken::OwnerName,
+            ModuleLayoutToken::Literal("Form"),
+            ModuleLayoutToken::ChildName,
+            ModuleLayoutToken::Literal("FormModule"),
+        ],
+        capability: ModuleLayoutCapability::NestedFormOrCommand,
+        fixed_role: Some(PlatformXmlModuleRole::FormModule),
+        descriptor_rule: ModuleDescriptorRule::Nested {
+            child_kind: "Form",
+            child_directory: "Forms",
+        },
+    },
+    PlatformXmlModuleLayoutDescriptor {
+        family: PlatformXmlModuleLayoutFamily::NestedCommand,
+        physical: &[
+            ModuleLayoutToken::MetadataDirectory,
+            ModuleLayoutToken::OwnerName,
+            ModuleLayoutToken::Literal("Commands"),
+            ModuleLayoutToken::ChildName,
+            ModuleLayoutToken::Literal("Ext"),
+            ModuleLayoutToken::Literal("CommandModule.bsl"),
+        ],
+        logical: &[
+            ModuleLayoutToken::MetadataKind,
+            ModuleLayoutToken::OwnerName,
+            ModuleLayoutToken::Literal("Command"),
+            ModuleLayoutToken::ChildName,
+            ModuleLayoutToken::Literal("CommandModule"),
+        ],
+        capability: ModuleLayoutCapability::NestedFormOrCommand,
+        fixed_role: Some(PlatformXmlModuleRole::CommandModule),
+        descriptor_rule: ModuleDescriptorRule::Nested {
+            child_kind: "Command",
+            child_directory: "Commands",
+        },
+    },
+];
+
+impl PlatformXmlModuleLayoutDescriptor {
     fn identity_from_parts(
-        self,
+        &self,
         parts: &[&str],
     ) -> Option<Result<PlatformXmlModuleIdentity, String>> {
-        match self {
-            Self::RootApplication => {
-                let ["Ext", file] = parts else {
-                    return None;
-                };
-                let role = root_module_role(file)?;
-                Some(module_identity(
-                    role.as_str().to_string(),
-                    "Configuration".to_string(),
-                    role,
-                    vec![PathBuf::from("Configuration.xml")],
-                ))
+        self.capture(self.physical, parts)
+            .map(|captures| self.identity(&captures))
+    }
+
+    fn path_from_address(&self, parts: &[&str]) -> Option<Result<PathBuf, String>> {
+        self.capture(self.logical, parts).map(|captures| {
+            let mut path = PathBuf::new();
+            for segment in self.render(self.physical, &captures) {
+                path.push(segment);
             }
-            Self::OwnerModule => {
-                let [directory, name, "Ext", "Module.bsl"] = parts else {
-                    return None;
-                };
-                let kind = metadata_kind_by_directory(directory)?;
-                if !OWNER_MODULE_KINDS.contains(&kind.tag) {
-                    return None;
+            Ok(path)
+        })
+    }
+
+    fn capture<'a>(
+        &self,
+        template: &[ModuleLayoutToken],
+        parts: &[&'a str],
+    ) -> Option<ModuleLayoutCaptures<'a>> {
+        if template.len() != parts.len() {
+            return None;
+        }
+        let mut captures = ModuleLayoutCaptures::default();
+        for (token, value) in template.iter().zip(parts.iter().copied()) {
+            match token {
+                ModuleLayoutToken::Literal(expected) if *expected == value => {}
+                ModuleLayoutToken::Literal(_) => return None,
+                ModuleLayoutToken::MetadataKind => {
+                    captures.kind = Some(metadata_kind(value)?);
                 }
-                Some(metadata_module_identity(
-                    directory,
-                    name,
-                    PlatformXmlModuleRole::Module,
-                ))
-            }
-            Self::CommonForm => {
-                let ["CommonForms", name, "Ext", "Form", "Module.bsl"] = parts else {
-                    return None;
-                };
-                Some(module_identity(
-                    format!("CommonForm.{name}.FormModule"),
-                    format!("CommonForm.{name}"),
-                    PlatformXmlModuleRole::FormModule,
-                    vec![metadata_descriptor("CommonForms", name)],
-                ))
-            }
-            Self::CommonCommand => {
-                let ["CommonCommands", name, "Ext", "CommandModule.bsl"] = parts else {
-                    return None;
-                };
-                Some(module_identity(
-                    format!("CommonCommand.{name}.CommandModule"),
-                    format!("CommonCommand.{name}"),
-                    PlatformXmlModuleRole::CommandModule,
-                    vec![metadata_descriptor("CommonCommands", name)],
-                ))
-            }
-            Self::DirectMetadata => {
-                let [directory, name, "Ext", file] = parts else {
-                    return None;
-                };
-                let role = direct_module_role(file)?;
-                let kind = metadata_kind_by_directory(directory)?;
-                if !supports_direct_module_role(kind.tag, role.as_str()) {
-                    return None;
+                ModuleLayoutToken::MetadataDirectory => {
+                    captures.kind = Some(metadata_kind_by_directory(value)?);
                 }
-                Some(metadata_module_identity(directory, name, role))
+                ModuleLayoutToken::OwnerName => captures.owner_name = Some(value),
+                ModuleLayoutToken::ChildName => captures.child_name = Some(value),
+                ModuleLayoutToken::Role(class) => {
+                    captures.role = Some(class.parse(value)?);
+                }
+                ModuleLayoutToken::RoleFile(class) => {
+                    captures.role = Some(class.parse(value.strip_suffix(".bsl")?)?);
+                }
             }
-            Self::NestedForm => {
-                let [directory, name, "Forms", form, "Ext", "Form", "Module.bsl"] = parts else {
-                    return None;
-                };
-                Some(nested_module_identity(
-                    directory,
-                    name,
-                    "Form",
-                    form,
-                    PlatformXmlModuleRole::FormModule,
-                ))
-            }
-            Self::NestedCommand => {
-                let [directory, name, "Commands", command, "Ext", "CommandModule.bsl"] = parts
-                else {
-                    return None;
-                };
-                Some(nested_module_identity(
-                    directory,
-                    name,
-                    "Command",
-                    command,
-                    PlatformXmlModuleRole::CommandModule,
-                ))
-            }
+        }
+        self.accepts(&captures).then_some(captures)
+    }
+
+    fn accepts(&self, captures: &ModuleLayoutCaptures<'_>) -> bool {
+        match self.capability {
+            ModuleLayoutCapability::Any => true,
+            ModuleLayoutCapability::OwnerModule => captures
+                .kind
+                .is_some_and(|kind| OWNER_MODULE_KINDS.contains(&kind.tag)),
+            ModuleLayoutCapability::DirectModule => captures
+                .kind
+                .zip(captures.role)
+                .is_some_and(|(kind, role)| supports_direct_module_role(kind.tag, role.as_str())),
+            ModuleLayoutCapability::NestedFormOrCommand => captures
+                .kind
+                .is_some_and(|kind| supports_nested_form_or_command(kind.tag)),
         }
     }
 
-    fn path_from_address(self, parts: &[&str]) -> Option<Result<PathBuf, String>> {
+    fn render(
+        &self,
+        template: &[ModuleLayoutToken],
+        captures: &ModuleLayoutCaptures<'_>,
+    ) -> Vec<String> {
+        template
+            .iter()
+            .map(|token| match token {
+                ModuleLayoutToken::Literal(value) => (*value).to_string(),
+                ModuleLayoutToken::MetadataKind => captures
+                    .kind
+                    .expect("accepted layout must capture metadata kind")
+                    .tag
+                    .to_string(),
+                ModuleLayoutToken::MetadataDirectory => captures
+                    .kind
+                    .expect("accepted layout must capture metadata kind")
+                    .directory
+                    .to_string(),
+                ModuleLayoutToken::OwnerName => captures
+                    .owner_name
+                    .expect("accepted layout must capture owner name")
+                    .to_string(),
+                ModuleLayoutToken::ChildName => captures
+                    .child_name
+                    .expect("accepted layout must capture child name")
+                    .to_string(),
+                ModuleLayoutToken::Role(_) => captures
+                    .role
+                    .expect("accepted layout must capture module role")
+                    .as_str()
+                    .to_string(),
+                ModuleLayoutToken::RoleFile(_) => format!(
+                    "{}.bsl",
+                    captures
+                        .role
+                        .expect("accepted layout must capture module role")
+                        .as_str()
+                ),
+            })
+            .collect()
+    }
+
+    fn identity(
+        &self,
+        captures: &ModuleLayoutCaptures<'_>,
+    ) -> Result<PlatformXmlModuleIdentity, String> {
+        let address = self.render(self.logical, captures).join(".");
+        let role = self
+            .fixed_role
+            .or(captures.role)
+            .ok_or_else(unsupported_module_layout)?;
+        let (owner, descriptors) = match self.descriptor_rule {
+            ModuleDescriptorRule::Root => (
+                "Configuration".to_string(),
+                vec![PathBuf::from("Configuration.xml")],
+            ),
+            ModuleDescriptorRule::Common { kind, directory } => {
+                let name = captures.owner_name.ok_or_else(unsupported_module_layout)?;
+                (
+                    format!("{kind}.{name}"),
+                    vec![metadata_descriptor(directory, name)],
+                )
+            }
+            ModuleDescriptorRule::Owner => {
+                let kind = captures.kind.ok_or_else(unsupported_module_layout)?;
+                let name = captures.owner_name.ok_or_else(unsupported_module_layout)?;
+                (
+                    format!("{}.{name}", kind.tag),
+                    vec![metadata_descriptor(kind.directory, name)],
+                )
+            }
+            ModuleDescriptorRule::Nested {
+                child_kind,
+                child_directory,
+            } => {
+                let kind = captures.kind.ok_or_else(unsupported_module_layout)?;
+                let name = captures.owner_name.ok_or_else(unsupported_module_layout)?;
+                let child_name = captures.child_name.ok_or_else(unsupported_module_layout)?;
+                (
+                    format!("{}.{name}", kind.tag),
+                    vec![
+                        metadata_descriptor(kind.directory, name),
+                        PathBuf::from(kind.directory)
+                            .join(name)
+                            .join(child_directory)
+                            .join(child_name)
+                            .join("Ext")
+                            .join(format!("{child_kind}.xml")),
+                    ],
+                )
+            }
+        };
+        module_identity(address, owner, role, descriptors)
+    }
+
+    #[cfg(test)]
+    fn family(&self) -> PlatformXmlModuleLayoutFamily {
+        self.family
+    }
+
+    #[cfg(test)]
+    fn render_physical(&self, address: &MetadataAddress) -> Result<PathBuf, String> {
+        let parts = address.segments().collect::<Vec<_>>();
+        self.path_from_address(&parts)
+            .ok_or_else(unsupported_module_layout)?
+    }
+
+    #[cfg(test)]
+    fn parse_physical(&self, relative: &Path) -> Result<MetadataAddress, String> {
+        let components = relative_module_path_components(relative)?;
+        let parts = components.iter().map(String::as_str).collect::<Vec<_>>();
+        self.identity_from_parts(&parts)
+            .ok_or_else(unsupported_module_layout)?
+            .map(|identity| identity.address)
+    }
+}
+
+#[derive(Debug, Default)]
+struct ModuleLayoutCaptures<'a> {
+    kind: Option<&'static MetadataKind>,
+    owner_name: Option<&'a str>,
+    child_name: Option<&'a str>,
+    role: Option<PlatformXmlModuleRole>,
+}
+
+impl ModuleRoleClass {
+    fn parse(self, raw: &str) -> Option<PlatformXmlModuleRole> {
+        let role = match raw {
+            "ObjectModule" => PlatformXmlModuleRole::ObjectModule,
+            "ManagerModule" => PlatformXmlModuleRole::ManagerModule,
+            "RecordSetModule" => PlatformXmlModuleRole::RecordSetModule,
+            "ValueManagerModule" => PlatformXmlModuleRole::ValueManagerModule,
+            "ManagedApplicationModule" => PlatformXmlModuleRole::ManagedApplicationModule,
+            "OrdinaryApplicationModule" => PlatformXmlModuleRole::OrdinaryApplicationModule,
+            "SessionModule" => PlatformXmlModuleRole::SessionModule,
+            "ExternalConnectionModule" => PlatformXmlModuleRole::ExternalConnectionModule,
+            _ => return None,
+        };
         match self {
-            Self::RootApplication => {
-                let [terminal] = parts else {
-                    return None;
-                };
-                let role = root_module_role_name(terminal)?;
-                Some(Ok(
-                    PathBuf::from("Ext").join(format!("{}.bsl", role.as_str()))
-                ))
+            Self::Root
+                if matches!(
+                    role,
+                    PlatformXmlModuleRole::ManagedApplicationModule
+                        | PlatformXmlModuleRole::OrdinaryApplicationModule
+                        | PlatformXmlModuleRole::SessionModule
+                        | PlatformXmlModuleRole::ExternalConnectionModule
+                ) =>
+            {
+                Some(role)
             }
-            Self::OwnerModule => {
-                let [kind, name, "Module"] = parts else {
-                    return None;
-                };
-                if !OWNER_MODULE_KINDS.contains(kind) {
-                    return None;
-                }
-                Some(directory_for_kind(kind).map(|directory| {
-                    PathBuf::from(directory)
-                        .join(name)
-                        .join("Ext")
-                        .join("Module.bsl")
-                }))
+            Self::Direct
+                if matches!(
+                    role,
+                    PlatformXmlModuleRole::ObjectModule
+                        | PlatformXmlModuleRole::ManagerModule
+                        | PlatformXmlModuleRole::RecordSetModule
+                        | PlatformXmlModuleRole::ValueManagerModule
+                ) =>
+            {
+                Some(role)
             }
-            Self::CommonForm => {
-                let ["CommonForm", name, "FormModule"] = parts else {
-                    return None;
-                };
-                Some(Ok(PathBuf::from("CommonForms")
-                    .join(name)
-                    .join("Ext")
-                    .join("Form")
-                    .join("Module.bsl")))
-            }
-            Self::CommonCommand => {
-                let ["CommonCommand", name, "CommandModule"] = parts else {
-                    return None;
-                };
-                Some(Ok(PathBuf::from("CommonCommands")
-                    .join(name)
-                    .join("Ext")
-                    .join("CommandModule.bsl")))
-            }
-            Self::DirectMetadata => {
-                let [kind, name, role_name] = parts else {
-                    return None;
-                };
-                let role = direct_module_role_name(role_name)?;
-                if !supports_direct_module_role(kind, role.as_str()) {
-                    return None;
-                }
-                Some(directory_for_kind(kind).map(|directory| {
-                    PathBuf::from(directory)
-                        .join(name)
-                        .join("Ext")
-                        .join(format!("{}.bsl", role.as_str()))
-                }))
-            }
-            Self::NestedForm => {
-                let [kind, name, "Form", form, "FormModule"] = parts else {
-                    return None;
-                };
-                if !supports_nested_form_or_command(kind) {
-                    return None;
-                }
-                Some(directory_for_kind(kind).map(|directory| {
-                    PathBuf::from(directory)
-                        .join(name)
-                        .join("Forms")
-                        .join(form)
-                        .join("Ext")
-                        .join("Form")
-                        .join("Module.bsl")
-                }))
-            }
-            Self::NestedCommand => {
-                let [kind, name, "Command", command, "CommandModule"] = parts else {
-                    return None;
-                };
-                if !supports_nested_form_or_command(kind) {
-                    return None;
-                }
-                Some(directory_for_kind(kind).map(|directory| {
-                    PathBuf::from(directory)
-                        .join(name)
-                        .join("Commands")
-                        .join(command)
-                        .join("Ext")
-                        .join("CommandModule.bsl")
-                }))
-            }
+            _ => None,
         }
     }
 }
@@ -555,7 +777,18 @@ impl PlatformXmlModuleLayoutFamily {
 fn module_layout_for_relative(
     relative: &Path,
 ) -> Result<(PlatformXmlModuleLayoutFamily, PlatformXmlModuleIdentity), String> {
-    let components = relative
+    let components = relative_module_path_components(relative)?;
+    let parts = components.iter().map(String::as_str).collect::<Vec<_>>();
+    for family in PLATFORM_XML_MODULE_LAYOUT_FAMILIES {
+        if let Some(identity) = family.identity_from_parts(&parts) {
+            return identity.map(|identity| (family.family, identity));
+        }
+    }
+    Err(unsupported_module_layout())
+}
+
+fn relative_module_path_components(relative: &Path) -> Result<Vec<String>, String> {
+    relative
         .components()
         .map(|component| match component {
             Component::Normal(value) => value
@@ -564,69 +797,12 @@ fn module_layout_for_relative(
                 .ok_or_else(|| "BSL module path is not valid UTF-8".to_string()),
             _ => Err("BSL module path must be relative to its source set".to_string()),
         })
-        .collect::<Result<Vec<_>, _>>()?;
-    let parts = components.iter().map(String::as_str).collect::<Vec<_>>();
-    for family in PLATFORM_XML_MODULE_LAYOUT_FAMILIES {
-        if let Some(identity) = family.identity_from_parts(&parts) {
-            return identity.map(|identity| (*family, identity));
-        }
-    }
-    Err(unsupported_module_layout())
+        .collect()
 }
 
 #[cfg(test)]
-fn module_layout_family_id_for_relative(
-    relative: &Path,
-) -> Result<PlatformXmlModuleLayoutFamily, String> {
-    module_layout_for_relative(relative).map(|(family, _)| family)
-}
-
-fn metadata_module_identity(
-    directory: &str,
-    name: &str,
-    role: PlatformXmlModuleRole,
-) -> Result<PlatformXmlModuleIdentity, String> {
-    let kind = metadata_kind_by_directory(directory).ok_or_else(unsupported_module_layout)?;
-    let owner = format!("{}.{name}", kind.tag);
-    module_identity(
-        format!("{owner}.{}", role.as_str()),
-        owner,
-        role,
-        vec![metadata_descriptor(directory, name)],
-    )
-}
-
-fn nested_module_identity(
-    directory: &str,
-    name: &str,
-    nested_kind: &str,
-    nested_name: &str,
-    role: PlatformXmlModuleRole,
-) -> Result<PlatformXmlModuleIdentity, String> {
-    let kind = metadata_kind_by_directory(directory).ok_or_else(unsupported_module_layout)?;
-    if !supports_nested_form_or_command(kind.tag) {
-        return Err(unsupported_module_layout());
-    }
-    let child_directory = match nested_kind {
-        "Form" => "Forms",
-        "Command" => "Commands",
-        _ => return Err(unsupported_module_layout()),
-    };
-    let owner = format!("{}.{name}", kind.tag);
-    module_identity(
-        format!("{owner}.{nested_kind}.{nested_name}.{}", role.as_str()),
-        owner,
-        role,
-        vec![
-            metadata_descriptor(directory, name),
-            PathBuf::from(directory)
-                .join(name)
-                .join(child_directory)
-                .join(nested_name)
-                .join("Ext")
-                .join(format!("{nested_kind}.xml")),
-        ],
-    )
+fn module_layout_descriptors_for_test() -> &'static [PlatformXmlModuleLayoutDescriptor] {
+    PLATFORM_XML_MODULE_LAYOUT_FAMILIES
 }
 
 fn module_identity(
@@ -656,53 +832,6 @@ fn module_path_for_address(address: &MetadataAddress) -> Result<PathBuf, String>
         }
     }
     Err(unsupported_module_layout())
-}
-
-#[cfg(test)]
-fn module_layout_family_id_for_address(
-    address: &MetadataAddress,
-) -> Result<PlatformXmlModuleLayoutFamily, String> {
-    let parts = address.segments().collect::<Vec<_>>();
-    for family in PLATFORM_XML_MODULE_LAYOUT_FAMILIES {
-        if family.path_from_address(&parts).is_some() {
-            return Ok(*family);
-        }
-    }
-    Err(unsupported_module_layout())
-}
-
-fn directory_for_kind(kind: &str) -> Result<&'static str, String> {
-    metadata_kind(kind)
-        .map(|kind| kind.directory)
-        .ok_or_else(unsupported_module_layout)
-}
-
-fn direct_module_role(file: &str) -> Option<PlatformXmlModuleRole> {
-    file.strip_suffix(".bsl").and_then(direct_module_role_name)
-}
-
-fn direct_module_role_name(role: &str) -> Option<PlatformXmlModuleRole> {
-    match role {
-        "ObjectModule" => Some(PlatformXmlModuleRole::ObjectModule),
-        "ManagerModule" => Some(PlatformXmlModuleRole::ManagerModule),
-        "RecordSetModule" => Some(PlatformXmlModuleRole::RecordSetModule),
-        "ValueManagerModule" => Some(PlatformXmlModuleRole::ValueManagerModule),
-        _ => None,
-    }
-}
-
-fn root_module_role(file: &str) -> Option<PlatformXmlModuleRole> {
-    file.strip_suffix(".bsl").and_then(root_module_role_name)
-}
-
-fn root_module_role_name(role: &str) -> Option<PlatformXmlModuleRole> {
-    match role {
-        "ManagedApplicationModule" => Some(PlatformXmlModuleRole::ManagedApplicationModule),
-        "OrdinaryApplicationModule" => Some(PlatformXmlModuleRole::OrdinaryApplicationModule),
-        "SessionModule" => Some(PlatformXmlModuleRole::SessionModule),
-        "ExternalConnectionModule" => Some(PlatformXmlModuleRole::ExternalConnectionModule),
-        _ => None,
-    }
 }
 
 fn metadata_descriptor(directory: &str, name: &str) -> PathBuf {
@@ -1111,42 +1240,57 @@ mod tests {
     fn platform_xml_module_layouts_share_one_family_registry_in_both_directions() {
         let cases = [
             (
+                super::PlatformXmlModuleLayoutFamily::RootApplication,
                 "ManagedApplicationModule",
                 "Ext/ManagedApplicationModule.bsl",
             ),
             (
+                super::PlatformXmlModuleLayoutFamily::OwnerModule,
                 "CommonModule.Shared.Module",
                 "CommonModules/Shared/Ext/Module.bsl",
             ),
             (
+                super::PlatformXmlModuleLayoutFamily::CommonForm,
                 "CommonForm.Main.FormModule",
                 "CommonForms/Main/Ext/Form/Module.bsl",
             ),
             (
+                super::PlatformXmlModuleLayoutFamily::CommonCommand,
                 "CommonCommand.Print.CommandModule",
                 "CommonCommands/Print/Ext/CommandModule.bsl",
             ),
             (
+                super::PlatformXmlModuleLayoutFamily::DirectMetadata,
                 "Catalog.Items.ManagerModule",
                 "Catalogs/Items/Ext/ManagerModule.bsl",
             ),
             (
+                super::PlatformXmlModuleLayoutFamily::NestedForm,
                 "Catalog.Items.Form.List.FormModule",
                 "Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
             ),
             (
+                super::PlatformXmlModuleLayoutFamily::NestedCommand,
                 "Catalog.Items.Command.Open.CommandModule",
                 "Catalogs/Items/Commands/Open/Ext/CommandModule.bsl",
             ),
         ];
 
-        for (address, relative) in cases {
+        let descriptors = super::module_layout_descriptors_for_test();
+        assert_eq!(descriptors.len(), cases.len());
+        for ((expected_family, address, relative), descriptor) in cases.into_iter().zip(descriptors)
+        {
             let address = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, address).unwrap();
-            let from_address = super::module_layout_family_id_for_address(&address).unwrap();
-            let from_path =
-                super::module_layout_family_id_for_relative(Path::new(relative)).unwrap();
 
-            assert_eq!(from_address, from_path, "{address} <-> {relative}");
+            assert_eq!(descriptor.family(), expected_family);
+            assert_eq!(
+                descriptor.render_physical(&address).unwrap(),
+                Path::new(relative)
+            );
+            assert_eq!(
+                descriptor.parse_physical(Path::new(relative)).unwrap(),
+                address
+            );
         }
     }
 
