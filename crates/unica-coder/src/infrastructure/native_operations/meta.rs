@@ -5,6 +5,7 @@ use crate::application::AdapterOutcome;
 use crate::domain::format_profile::{
     classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
 };
+use crate::domain::source_target::ResolvedTarget;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::metadata_kind;
 use crate::infrastructure::platform_xml_owner::{
@@ -7854,13 +7855,29 @@ pub(crate) fn meta_validate_forbidden_properties(md_type: &str) -> Option<&'stat
     }
 }
 
+pub(crate) struct MetaInfoExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<ResolvedTarget>,
+}
+
 pub(crate) fn analyze_meta_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
+    analyze_meta_info_with_data(args, context).outcome
+}
+
+/// The resolved logical target rides in typed data rather than in the printed
+/// report: ADR-0021 asks every exact operation to name the source set it
+/// actually resolved, and a machine reader should not have to parse prose for
+/// it.
+pub(crate) fn analyze_meta_info_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> MetaInfoExecution {
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
-    let result = (|| -> Result<(String, PathBuf), String> {
+    let result = (|| -> Result<(String, PathBuf, ResolvedTarget), String> {
         let (resolved, object_path) = resolve_metadata_object_descriptor(args, context)?;
         let text = read_utf8_sig(&object_path)?;
         let doc = Document::parse(text.trim_start_matches('\u{feff}'))
@@ -7895,51 +7912,43 @@ pub(crate) fn analyze_meta_info(
             meta_info_drill_lines(md_type, child_objs, drill_name, &obj_name)?
         };
         if drill_name.is_empty() {
-            // Identity in the answer is the resolved logical address, so a
-            // reader can feed it straight back to any other logical tool.
             lines.insert(
                 1,
-                format!(
-                    "Адрес: {} / {}",
-                    resolved.source_set,
-                    resolved
-                        .metadata_path
-                        .as_ref()
-                        .map(|path| path.as_str())
-                        .unwrap_or_default()
-                ),
-            );
-            lines.insert(
-                2,
                 format!("Поддержка: {}", support_status_for_path(&object_path)),
             );
         }
         let output_text = meta_info_paginate(lines, args);
-        Ok((format!("{output_text}\n"), object_path))
+        Ok((format!("{output_text}\n"), object_path, resolved))
     })();
 
     match result {
-        Ok((stdout, artifact)) => AdapterOutcome {
-            ok: true,
-            summary: "unica.meta.info completed with native metadata analyzer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: Vec::new(),
-            artifacts: vec![artifact.display().to_string()],
-            stdout: Some(stdout),
-            stderr: Some(String::new()),
-            command: None,
+        Ok((stdout, artifact, resolved)) => MetaInfoExecution {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary: "unica.meta.info completed with native metadata analyzer".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: Vec::new(),
+                artifacts: vec![artifact.display().to_string()],
+                stdout: Some(stdout),
+                stderr: Some(String::new()),
+                command: None,
+            },
+            data: Some(resolved),
         },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.meta.info failed in native metadata analyzer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: Some(format!("{error}\n")),
-            stderr: Some(String::new()),
-            command: None,
+        Err(error) => MetaInfoExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.meta.info failed in native metadata analyzer".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: Some(format!("{error}\n")),
+                stderr: Some(String::new()),
+                command: None,
+            },
+            data: None,
         },
     }
 }
@@ -8200,6 +8209,7 @@ pub(crate) fn meta_info_append_overview_or_full(
     child_objs: Option<roxmltree::Node<'_, '_>>,
     mode: &str,
 ) {
+    meta_info_append_owners(lines, props);
     if md_type == "Document" {
         meta_info_append_document_header(lines, props);
     }
@@ -8262,7 +8272,9 @@ pub(crate) fn meta_info_append_overview_or_full(
         meta_info_append_attribute_section(lines, "Реквизиты", child_objs, "Attribute", false);
         meta_info_append_tabular_sections(lines, child_objs, mode);
     }
-    if mode == "overview" && matches!(md_type, "Report" | "DataProcessor") {
+    // Forms, templates and commands exist on far more kinds than reports and
+    // data processors; overview hid them from every other object.
+    if mode == "overview" {
         meta_info_append_simple_children(lines, child_objs);
     }
     if mode == "full" {
@@ -8502,6 +8514,34 @@ pub(crate) fn meta_info_append_document_header(
     }
 }
 
+/// Subordination is a first-class property of the object, so an object that
+/// declares `<Owners>` always reports it. Silence would be read as "the tool
+/// does not know", which is exactly the ambiguity that sends a reader to the
+/// raw XML.
+pub(crate) fn meta_info_append_owners(
+    lines: &mut Vec<String>,
+    props: Option<roxmltree::Node<'_, '_>>,
+) {
+    let Some(owners_node) = props.and_then(|node| meta_info_child(node, "Owners")) else {
+        return;
+    };
+    let owners = meta_info_children(owners_node, "Item")
+        .into_iter()
+        .map(meta_info_inner_text)
+        .map(|owner| owner.trim().to_string())
+        .filter(|owner| !owner.is_empty())
+        .collect::<Vec<_>>();
+    if owners.is_empty() {
+        lines.push("Владельцы: нет".to_string());
+    } else {
+        lines.push(format!(
+            "Владельцы ({}): {}",
+            owners.len(),
+            owners.join(", ")
+        ));
+    }
+}
+
 pub(crate) fn meta_info_append_catalog_header(
     lines: &mut Vec<String>,
     props: Option<roxmltree::Node<'_, '_>>,
@@ -8526,15 +8566,31 @@ pub(crate) fn meta_info_append_catalog_header(
             hierarchy_type.push_str(", без ограничения уровней");
         }
         parts.push(format!("Иерархический: {hierarchy_type}"));
+    } else {
+        // A missing line cannot be told apart from an unreported one, so the
+        // negative case is stated instead of skipped.
+        parts.push("Иерархический: нет".to_string());
     }
     if let Some(code_length) = meta_info_child_text(props, "CodeLength") {
         if code_length.parse::<i64>().unwrap_or(0) > 0 {
             parts.push(format!("Код({code_length})"));
+        } else {
+            parts.push("Код: нет".to_string());
         }
     }
     if let Some(description_length) = meta_info_child_text(props, "DescriptionLength") {
         if description_length.parse::<i64>().unwrap_or(0) > 0 {
             parts.push(format!("Наименование({description_length})"));
+        }
+    }
+    if let Some(presentation) = meta_info_child_text(props, "DefaultPresentation") {
+        let presentation = match presentation.as_str() {
+            "AsDescription" => "наименование",
+            "AsCode" => "код",
+            other => other,
+        };
+        if !presentation.is_empty() {
+            parts.push(format!("Основное представление: {presentation}"));
         }
     }
     if !parts.is_empty() {
@@ -20016,26 +20072,90 @@ mod meta_info_logical_target_tests {
     fn meta_info_reads_the_descriptor_named_by_a_logical_address() {
         let context = workspace("reads");
 
-        let outcome = analyze_meta_info(&info_args("Catalog.Items"), &context);
+        let execution = analyze_meta_info_with_data(&info_args("Catalog.Items"), &context);
 
-        assert!(outcome.ok, "{outcome:?}");
-        let stdout = outcome.stdout.unwrap();
+        assert!(execution.outcome.ok, "{:?}", execution.outcome);
+        let stdout = execution.outcome.stdout.unwrap();
         assert!(stdout.contains("Справочник: Items"), "{stdout}");
-        assert!(stdout.contains("Адрес: main / Catalog.Items"), "{stdout}");
+        let resolved = execution.data.expect("a resolved target is reported");
+        assert_eq!(resolved.source_set, "main");
+        assert_eq!(
+            resolved.metadata_path.as_ref().map(|path| path.as_str()),
+            Some("Catalog.Items")
+        );
         let _ = fs::remove_dir_all(&context.workspace_root);
     }
 
+    /// The profile accepts a Russian kind alias and answers with the canonical
+    /// English address, so the answer can be fed back to any logical tool.
     #[test]
     fn meta_info_accepts_a_russian_kind_alias_and_answers_with_the_canonical_address() {
         let context = workspace("alias");
 
-        let outcome = analyze_meta_info(&info_args("Справочник.Items"), &context);
+        let execution = analyze_meta_info_with_data(&info_args("Справочник.Items"), &context);
 
-        assert!(outcome.ok, "{outcome:?}");
-        assert!(outcome
+        assert!(execution.outcome.ok, "{:?}", execution.outcome);
+        assert_eq!(
+            execution
+                .data
+                .and_then(|resolved| resolved.metadata_path)
+                .map(|path| path.as_str().to_string()),
+            Some("Catalog.Items".to_string())
+        );
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    /// Subordination is the structural fact that separates one catalog from
+    /// another; reading it required opening the raw XML before.
+    #[test]
+    fn meta_info_reports_owners_and_their_absence() {
+        let context = workspace("owners");
+        let subordinate = context.workspace_root.join("src/Catalogs/Series.xml");
+        fs::write(
+            &subordinate,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20"><Catalog><Properties><Name>Series</Name><Owners><xr:Item>Catalog.Items</xr:Item><xr:Item>Catalog.Kinds</xr:Item></Owners></Properties></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            context.workspace_root.join("src/Catalogs/Plain.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Plain</Name><Owners/></Properties></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+
+        let subordinate = analyze_meta_info(&info_args("Catalog.Series"), &context);
+        let plain = analyze_meta_info(&info_args("Catalog.Plain"), &context);
+
+        assert!(subordinate.ok, "{subordinate:?}");
+        assert!(subordinate
             .stdout
             .unwrap()
-            .contains("Адрес: main / Catalog.Items"),);
+            .contains("Владельцы (2): Catalog.Items, Catalog.Kinds"),);
+        assert!(plain.ok, "{plain:?}");
+        assert!(plain.stdout.unwrap().contains("Владельцы: нет"));
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    /// A silent property cannot be told apart from an unreported one, which is
+    /// what forced a reader to the XML to learn a catalog is flat.
+    #[test]
+    fn meta_info_states_catalog_properties_including_their_negatives() {
+        let context = workspace("catalog-properties");
+        fs::write(
+            context.workspace_root.join("src/Catalogs/Flat.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Flat</Name><Hierarchical>false</Hierarchical><CodeLength>0</CodeLength><DescriptionLength>150</DescriptionLength><DefaultPresentation>AsCode</DefaultPresentation></Properties><ChildObjects><Form>ФормаЭлемента</Form></ChildObjects></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+
+        let outcome = analyze_meta_info(&info_args("Catalog.Flat"), &context);
+
+        assert!(outcome.ok, "{outcome:?}");
+        let stdout = outcome.stdout.unwrap();
+        assert!(stdout.contains("Иерархический: нет"), "{stdout}");
+        assert!(stdout.contains("Код: нет"), "{stdout}");
+        assert!(stdout.contains("Наименование(150)"), "{stdout}");
+        assert!(stdout.contains("Основное представление: код"), "{stdout}");
+        // Forms used to appear in overview only for reports and data processors.
+        assert!(stdout.contains("Формы: ФормаЭлемента"), "{stdout}");
         let _ = fs::remove_dir_all(&context.workspace_root);
     }
 

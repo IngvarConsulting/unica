@@ -122,6 +122,14 @@ class ParityScenario:
     fixtures: tuple[FileFixture, ...] = ()
     setup_steps: tuple[SetupStep, ...] = ()
     compare_files: bool = False
+    # A migrated tool selects its target logically while the reference model
+    # still selects a file. Parity then compares the analysis, not the
+    # selector: both sides must describe the same object identically.
+    reference_arguments: dict[str, Any] | None = None
+
+    @property
+    def script_arguments(self) -> dict[str, Any]:
+        return self.arguments if self.reference_arguments is None else self.reference_arguments
 
 
 @dataclasses.dataclass(frozen=True)
@@ -858,6 +866,11 @@ SUCCESS_SCENARIOS = [
         skill="meta-info",
         script="meta-info.py",
         arguments={
+            "sourceSet": "main",
+            "metadataPath": "Catalog.ParityCatalog",
+            "Mode": "overview",
+        },
+        reference_arguments={
             "ObjectPath": "src/Catalogs/ParityCatalog.xml",
             "Mode": "overview",
         },
@@ -868,7 +881,10 @@ SUCCESS_SCENARIOS = [
                 arguments={"JsonPath": "fixtures/meta-catalog.json", "OutputDir": "src"},
             ),
         ),
-        fixtures=(FileFixture("meta-catalog.json", "fixtures/meta-catalog.json"),),
+        fixtures=(
+            FileFixture("meta-catalog.json", "fixtures/meta-catalog.json"),
+            FileFixture("meta-info/v8project.yaml", "v8project.yaml"),
+        ),
         expect_ok=True,
         compare_files=True,
     ),
@@ -978,11 +994,20 @@ SUCCESS_SCENARIOS = [
         skill="meta-info",
         script="meta-info.py",
         arguments={
+            "sourceSet": "main",
+            "metadataPath": "Catalog.Валюты",
+            "Mode": "full",
+            "Limit": 200,
+        },
+        reference_arguments={
             "ObjectPath": "src/Catalogs/Валюты.xml",
             "Mode": "full",
             "Limit": 200,
         },
-        fixtures=(FileFixture(BSP_META_CATALOG_FIXTURE, "src/Catalogs/Валюты.xml"),),
+        fixtures=(
+            FileFixture(BSP_META_CATALOG_FIXTURE, "src/Catalogs/Валюты.xml"),
+            FileFixture("meta-info/v8project.yaml", "v8project.yaml"),
+        ),
         expect_ok=True,
     ),
     ParityScenario(
@@ -1005,6 +1030,12 @@ SUCCESS_SCENARIOS = [
         skill="meta-info",
         script="meta-info.py",
         arguments={
+            "sourceSet": "main",
+            "metadataPath": "Document.АктОбУничтоженииПерсональныхДанных",
+            "Mode": "full",
+            "Limit": 200,
+        },
+        reference_arguments={
             "ObjectPath": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
             "Mode": "full",
             "Limit": 200,
@@ -1014,6 +1045,7 @@ SUCCESS_SCENARIOS = [
                 BSP_META_DOCUMENT_FIXTURE,
                 "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
             ),
+            FileFixture("meta-info/v8project.yaml", "v8project.yaml"),
         ),
         expect_ok=True,
     ),
@@ -1042,11 +1074,20 @@ SUCCESS_SCENARIOS = [
         skill="meta-info",
         script="meta-info.py",
         arguments={
+            "sourceSet": "main",
+            "metadataPath": "Report.АнализВерсийОбъектов",
+            "Mode": "full",
+            "Limit": 200,
+        },
+        reference_arguments={
             "ObjectPath": "src/Reports/АнализВерсийОбъектов.xml",
             "Mode": "full",
             "Limit": 200,
         },
-        fixtures=(FileFixture(BSP_META_REPORT_FIXTURE, "src/Reports/АнализВерсийОбъектов.xml"),),
+        fixtures=(
+            FileFixture(BSP_META_REPORT_FIXTURE, "src/Reports/АнализВерсийОбъектов.xml"),
+            FileFixture("meta-info/v8project.yaml", "v8project.yaml"),
+        ),
         expect_ok=True,
     ),
     ParityScenario(
@@ -1069,6 +1110,12 @@ SUCCESS_SCENARIOS = [
         skill="meta-info",
         script="meta-info.py",
         arguments={
+            "sourceSet": "main",
+            "metadataPath": "CommonModule.GoogleПереводчик",
+            "Mode": "full",
+            "Limit": 200,
+        },
+        reference_arguments={
             "ObjectPath": "src/CommonModules/GoogleПереводчик.xml",
             "Mode": "full",
             "Limit": 200,
@@ -1079,6 +1126,7 @@ SUCCESS_SCENARIOS = [
                 BSP_META_COMMON_MODULE_BSL_FIXTURE,
                 "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
             ),
+            FileFixture("meta-info/v8project.yaml", "v8project.yaml"),
         ),
         expect_ok=True,
     ),
@@ -1108,11 +1156,20 @@ SUCCESS_SCENARIOS = [
         skill="meta-info",
         script="meta-info.py",
         arguments={
+            "sourceSet": "main",
+            "metadataPath": "Enum.ВажностьПроблемыУчета",
+            "Mode": "full",
+            "Limit": 200,
+        },
+        reference_arguments={
             "ObjectPath": "src/Enums/ВажностьПроблемыУчета.xml",
             "Mode": "full",
             "Limit": 200,
         },
-        fixtures=(FileFixture(BSP_META_ENUM_FIXTURE, "src/Enums/ВажностьПроблемыУчета.xml"),),
+        fixtures=(
+            FileFixture(BSP_META_ENUM_FIXTURE, "src/Enums/ВажностьПроблемыУчета.xml"),
+            FileFixture("meta-info/v8project.yaml", "v8project.yaml"),
+        ),
         expect_ok=True,
     ),
     ParityScenario(
@@ -1135,6 +1192,12 @@ SUCCESS_SCENARIOS = [
         skill="meta-info",
         script="meta-info.py",
         arguments={
+            "sourceSet": "main",
+            "metadataPath": "InformationRegister.АдминистративнаяИерархия",
+            "Mode": "full",
+            "Limit": 200,
+        },
+        reference_arguments={
             "ObjectPath": "src/InformationRegisters/АдминистративнаяИерархия.xml",
             "Mode": "full",
             "Limit": 200,
@@ -1144,6 +1207,7 @@ SUCCESS_SCENARIOS = [
                 BSP_META_INFORMATION_REGISTER_FIXTURE,
                 "src/InformationRegisters/АдминистративнаяИерархия.xml",
             ),
+            FileFixture("meta-info/v8project.yaml", "v8project.yaml"),
         ),
         expect_ok=True,
     ),
@@ -3913,14 +3977,10 @@ MISSING_INPUT_SCENARIOS = [
         {"ObjectPath": "missing/Catalog.xml", "Operation": "modify-property", "Value": "Synonym=Missing"},
         False,
     ),
-    ParityScenario(
-        "meta-info-missing-object",
-        "unica.meta.info",
-        "meta-info",
-        "meta-info.py",
-        {"ObjectPath": "missing/Catalog.xml", "Mode": "brief"},
-        False,
-    ),
+    # `unica.meta.info` has no missing-input scenario: the reference model fails
+    # on a missing file, the tool fails on an address it cannot prove, and those
+    # are different contracts by construction. The typed refusal is covered by
+    # `meta_info_reports_an_unknown_address_without_naming_a_path`.
     ParityScenario(
         "meta-remove-missing-config",
         "unica.meta.remove",
@@ -4954,7 +5014,9 @@ source-set:
             self.prepare_workspace(direct_ws, scenario, setup_mode="reference")
             self.prepare_workspace(mcp_ws, scenario, setup_mode="mcp", cache_dir=mcp_cache)
 
-            direct = run_unica_reference_model(scenario.skill, scenario.script, scenario.arguments, direct_ws)
+            direct = run_unica_reference_model(
+                scenario.skill, scenario.script, scenario.script_arguments, direct_ws
+            )
             mcp = self.call_mcp(scenario, mcp_ws, mcp_cache)
 
             direct_ok = direct.returncode == 0
@@ -4972,7 +5034,9 @@ source-set:
             if mcp.get("command") is not None:
                 self.assertEqual(
                     normalize_command(
-                        command_for_script(scenario.skill, scenario.script, scenario.arguments),
+                        command_for_script(
+                            scenario.skill, scenario.script, scenario.script_arguments
+                        ),
                         direct_ws,
                     ),
                     normalize_command(mcp["command"], mcp_ws),

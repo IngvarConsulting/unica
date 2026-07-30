@@ -1,4 +1,4 @@
-use super::{code, form, registry, NativeOperationAdapter};
+use super::{code, form, meta, registry, NativeOperationAdapter};
 use crate::{application::AdapterOutcome, domain::workspace::WorkspaceContext};
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -25,7 +25,7 @@ impl NativeOperationAdapter {
                     } else {
                         code::apply_with_data(args, context)
                     };
-                    return typed_mutation_result(execution.outcome, execution.data, "code patch");
+                    return typed_operation_result(execution.outcome, execution.data, "code patch");
                 }
                 Some(registry::TypedMutationHandler::FormEdit) if form::has_edit_payload(args) => {
                     let execution = if dry_run {
@@ -33,11 +33,15 @@ impl NativeOperationAdapter {
                     } else {
                         form::apply_with_data(args, context)
                     };
-                    return typed_mutation_result(execution.outcome, execution.data, "form edit");
+                    return typed_operation_result(execution.outcome, execution.data, "form edit");
                 }
                 Some(registry::TypedMutationHandler::FormEdit) => {}
                 None => {}
             }
+        }
+        if operation == "meta-info" {
+            let execution = meta::analyze_meta_info_with_data(args, context);
+            return typed_operation_result(execution.outcome, execution.data, "meta info");
         }
 
         Self::invoke(operation, tool_name, args, context, dry_run, mutating).map(|adapter| {
@@ -49,7 +53,8 @@ impl NativeOperationAdapter {
     }
 }
 
-fn typed_mutation_result<T: Serialize>(
+/// Serializes a handler's typed payload beside its human-readable outcome.
+fn typed_operation_result<T: Serialize>(
     adapter: AdapterOutcome,
     data: Option<T>,
     operation: &str,
