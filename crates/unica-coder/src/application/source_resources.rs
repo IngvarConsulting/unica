@@ -1,9 +1,10 @@
 use super::ports::{ApplicationPorts, HandlerOutcome};
 use super::AdapterOutcome;
 use crate::domain::cancellation::CancellationToken;
+use crate::domain::events::DomainEvent;
 use crate::domain::source_resources::{
-    ResourceScope, SourceResourceError, SourceResourceErrorCode, SOURCE_READ_LIMIT_MAX,
-    SOURCE_RESOURCE_PAGE_LIMIT_MAX,
+    ResourceScope, SourceApplyResult, SourceResourceError, SourceResourceErrorCode,
+    SOURCE_READ_LIMIT_MAX, SOURCE_REPLACEMENT_MAX_BYTES, SOURCE_RESOURCE_PAGE_LIMIT_MAX,
 };
 use crate::domain::source_target::{
     MetadataAddress, SourceTarget, PLATFORM_XML_8_3_27_FORMAT_2_20,
@@ -15,6 +16,7 @@ use serde_json::{Map, Value};
 pub enum SourceResourceOperation {
     Resources,
     Read,
+    Apply,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,14 +47,30 @@ pub(crate) struct SourceReadRequest {
     pub(crate) limit: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SourceApplyRequest {
+    pub(crate) snapshot_id: String,
+    pub(crate) resource_id: String,
+    pub(crate) expected_hash: String,
+    pub(crate) content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SourceApplyExecution {
+    pub(crate) result: SourceApplyResult,
+    pub(crate) event: Option<DomainEvent>,
+    pub(crate) projected_event: Option<DomainEvent>,
+}
+
 pub(crate) fn invoke(
     operation: SourceResourceOperation,
     ports: &dyn ApplicationPorts,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
+    dry_run: bool,
     cancellation: &CancellationToken,
 ) -> Result<HandlerOutcome, String> {
-    let (summary, data) = match operation {
+    let (summary, data, events, projected_events, changes) = match operation {
         SourceResourceOperation::Resources => {
             let page = ports
                 .source_resources(resources_request(args)?, context, cancellation)
@@ -64,6 +82,9 @@ pub(crate) fn invoke(
                 ),
                 serde_json::to_value(page)
                     .map_err(|error| format!("failed to serialize source.resources: {error}"))?,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
             )
         }
         SourceResourceOperation::Read => {
@@ -74,10 +95,64 @@ pub(crate) fn invoke(
                 format!("source.read returned {} byte(s)", read.length),
                 serde_json::to_value(read)
                     .map_err(|error| format!("failed to serialize source.read: {error}"))?,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )
+        }
+        SourceResourceOperation::Apply => {
+            let execution = ports
+                .apply_source_resource(apply_request(args)?, context, dry_run, cancellation)
+                .map_err(|error| error.to_string())?;
+            let summary = if execution.result.no_op {
+                "unica.source.apply replacement is already present".to_string()
+            } else if dry_run {
+                "dry run: unica.source.apply planned one BSL resource replacement".to_string()
+            } else {
+                "unica.source.apply replaced one BSL resource".to_string()
+            };
+            let changes = (!dry_run && !execution.result.no_op)
+                .then(|| {
+                    format!(
+                        "{} + {}: replaced BSL resource",
+                        execution.result.source_set,
+                        execution
+                            .result
+                            .target
+                            .metadata_path
+                            .as_ref()
+                            .map(|address| address.as_str())
+                            .unwrap_or("<source-root>")
+                    )
+                })
+                .into_iter()
+                .collect();
+            let events = execution.event.into_iter().collect();
+            let projected_events = execution.projected_event.into_iter().collect();
+            (
+                summary,
+                serde_json::to_value(execution.result)
+                    .map_err(|error| format!("failed to serialize source.apply: {error}"))?,
+                events,
+                projected_events,
+                changes,
             )
         }
     };
-    Ok(HandlerOutcome::with_data(AdapterOutcome::ok(summary), data))
+    let mut adapter = AdapterOutcome::ok(summary);
+    adapter.changes = changes;
+    if events.is_empty() && projected_events.is_empty() {
+        Ok(HandlerOutcome::with_data(adapter, data))
+    } else if projected_events.is_empty() {
+        Ok(HandlerOutcome::with_data_and_events(adapter, data, events))
+    } else {
+        Ok(HandlerOutcome::with_data_events_and_projection(
+            adapter,
+            data,
+            events,
+            projected_events,
+        ))
+    }
 }
 
 fn resources_request(args: &Map<String, Value>) -> Result<SourceResourcesRequest, String> {
@@ -170,6 +245,43 @@ fn read_request(args: &Map<String, Value>) -> Result<SourceReadRequest, String> 
         resource_id: required_string(args, "resourceId")?,
         offset,
         limit: bounded_limit(args, SOURCE_READ_LIMIT_MAX, SOURCE_READ_LIMIT_MAX)?,
+    })
+}
+
+fn apply_request(args: &Map<String, Value>) -> Result<SourceApplyRequest, String> {
+    if args
+        .get("contentEncoding")
+        .is_some_and(|value| value.as_str() != Some("utf-8"))
+    {
+        return Err(SourceResourceError::new(
+            SourceResourceErrorCode::InvalidRequest,
+            "contentEncoding must be utf-8",
+        )
+        .to_string());
+    }
+    let content = args
+        .get("content")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            SourceResourceError::new(
+                SourceResourceErrorCode::InvalidRequest,
+                "content must be a UTF-8 string",
+            )
+            .to_string()
+        })?
+        .to_string();
+    if content.len() > SOURCE_REPLACEMENT_MAX_BYTES {
+        return Err(SourceResourceError::new(
+            SourceResourceErrorCode::ContentTooLarge,
+            "replacement content exceeds the one MiB decoded byte limit",
+        )
+        .to_string());
+    }
+    Ok(SourceApplyRequest {
+        snapshot_id: required_string(args, "snapshotId")?,
+        resource_id: required_string(args, "resourceId")?,
+        expected_hash: required_string(args, "expectedHash")?,
+        content,
     })
 }
 
@@ -312,5 +424,78 @@ mod tests {
         .unwrap_err();
 
         assert!(error.contains("limit_exceeded"), "{error}");
+    }
+
+    #[test]
+    fn source_apply_accepts_one_utf8_replacement_and_no_public_path() {
+        let request = apply_request(
+            json!({
+                "snapshotId": "snapshot",
+                "resourceId": "resource",
+                "expectedHash": "sha256:before",
+                "content": "Procedure Run()\\nEndProcedure\\n",
+                "contentEncoding": "utf-8"
+            })
+            .as_object()
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            request,
+            SourceApplyRequest {
+                snapshot_id: "snapshot".to_string(),
+                resource_id: "resource".to_string(),
+                expected_hash: "sha256:before".to_string(),
+                content: "Procedure Run()\\nEndProcedure\\n".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn source_apply_rejects_multiple_resources_and_non_utf8_encoding() {
+        let multiple = apply_request(
+            json!({
+                "snapshotId": "snapshot",
+                "resourceId": ["one", "two"],
+                "expectedHash": "sha256:before",
+                "content": "Procedure Run()\\nEndProcedure\\n"
+            })
+            .as_object()
+            .unwrap(),
+        )
+        .unwrap_err();
+        assert!(multiple.contains("invalid_request"), "{multiple}");
+
+        let encoding = apply_request(
+            json!({
+                "snapshotId": "snapshot",
+                "resourceId": "resource",
+                "expectedHash": "sha256:before",
+                "content": "Procedure Run()\\nEndProcedure\\n",
+                "contentEncoding": "base64"
+            })
+            .as_object()
+            .unwrap(),
+        )
+        .unwrap_err();
+        assert!(encoding.contains("invalid_request"), "{encoding}");
+    }
+
+    #[test]
+    fn source_apply_rejects_decoded_content_over_one_mib_before_provider_call() {
+        let error = apply_request(
+            json!({
+                "snapshotId": "snapshot",
+                "resourceId": "resource",
+                "expectedHash": "sha256:before",
+                "content": "x".repeat(1024 * 1024 + 1)
+            })
+            .as_object()
+            .unwrap(),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("content_too_large"), "{error}");
     }
 }

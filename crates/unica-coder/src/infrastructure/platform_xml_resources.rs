@@ -1,21 +1,35 @@
 use crate::application::source_resources::{
-    ContinueResourceSnapshotRequest, OpenResourceSnapshotRequest, SourceReadRequest,
-    SourceResourcesRequest,
+    ContinueResourceSnapshotRequest, OpenResourceSnapshotRequest, SourceApplyExecution,
+    SourceApplyRequest, SourceReadRequest, SourceResourcesRequest,
 };
+use crate::application::SupportGuardRequirement;
 use crate::domain::cancellation::CancellationToken;
+use crate::domain::events::{DomainEvent, SourceResourcesReplaced};
 use crate::domain::source_resources::{
     EolProfile, ResourceAccess, ResourceCompleteness, ResourceLimits, ResourceManifestPage,
-    ResourceRole, ResourceScope, SourceReadResult, SourceResource, SourceResourceError,
-    SourceResourceErrorCode, TextEncoding, TextProfile, SOURCE_MANIFEST_RESOURCE_MAX,
-    SOURCE_READ_LIMIT_MAX, SOURCE_RESOURCE_PAGE_LIMIT_MAX, SOURCE_SNAPSHOT_TTL_SECONDS,
+    ResourceRole, ResourceScope, SourceApplyResult, SourceChangedRange, SourceReadResult,
+    SourceResource, SourceResourceError, SourceResourceErrorCode, SourceValidationEvidence,
+    TextEncoding, TextProfile, SOURCE_MANIFEST_RESOURCE_MAX, SOURCE_READ_LIMIT_MAX,
+    SOURCE_REPLACEMENT_MAX_BYTES, SOURCE_RESOURCE_PAGE_LIMIT_MAX, SOURCE_SNAPSHOT_TTL_SECONDS,
 };
-use crate::domain::source_target::{ResolvedTarget, TargetKind};
+use crate::domain::source_target::{ResolvedTarget, SourceTargetErrorCode, TargetKind};
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::native_operations::common::{
+    detect_format_version, guard_code_patch_resolved_target,
+};
+use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
+use crate::infrastructure::native_operations::text_snapshot::{
+    LineEnding, LineEndingProfile, SourceTextSnapshot,
+};
 use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
 use crate::infrastructure::platform::secure_read::read_root_relative_regular_file;
 use crate::infrastructure::platform_xml_source_targets::{
-    platform_xml_resource_evidence, resolve_platform_xml_target,
+    platform_xml_resource_evidence, resolve_platform_xml_target, ClosedPlatformXmlTarget,
 };
+use crate::infrastructure::support_guard::{
+    evaluate_resolved_support_guard, ResolvedSupportGuardCheck,
+};
+use diffy::{apply as apply_diff, DiffOptions, Patch};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
@@ -48,6 +62,7 @@ impl SourceResourceClock for MonotonicClock {
 
 struct StoredResource {
     public: SourceResource,
+    path: PathBuf,
     bytes: Arc<[u8]>,
 }
 
@@ -58,6 +73,7 @@ struct StoredSnapshot {
     workspace_epoch: u64,
     source_set: String,
     target: ResolvedTarget,
+    handle: ClosedPlatformXmlTarget,
     scope: ResourceScope,
     completeness: ResourceCompleteness,
     manifest_revision: String,
@@ -65,6 +81,16 @@ struct StoredSnapshot {
     page_size: usize,
     resources: Vec<StoredResource>,
     byte_size: usize,
+}
+
+struct ApplySnapshot {
+    snapshot_id: String,
+    source_set: String,
+    target: ResolvedTarget,
+    handle: ClosedPlatformXmlTarget,
+    resource: SourceResource,
+    path: PathBuf,
+    preimage: Arc<[u8]>,
 }
 
 pub(crate) struct PlatformXmlResourceProvider {
@@ -215,6 +241,251 @@ impl PlatformXmlResourceProvider {
         })
     }
 
+    pub(crate) fn apply(
+        &self,
+        request: SourceApplyRequest,
+        context: &WorkspaceContext,
+        dry_run: bool,
+        cancellation: &CancellationToken,
+    ) -> Result<SourceApplyExecution, SourceResourceError> {
+        self.check_cancelled(cancellation)?;
+        if request.content.len() > SOURCE_REPLACEMENT_MAX_BYTES {
+            return Err(public_error(
+                SourceResourceErrorCode::ContentTooLarge,
+                "replacement content exceeds the one MiB decoded byte limit",
+            ));
+        }
+        let snapshot = self.apply_snapshot(&request, context)?;
+        self.check_cancelled(cancellation)?;
+        let evidence = platform_xml_resource_evidence(context, &snapshot.handle)
+            .map_err(map_reauthorization_error)?;
+        if evidence.target_path != snapshot.path {
+            return Err(public_error(
+                SourceResourceErrorCode::StaleRevision,
+                "logical source resource binding changed after the snapshot",
+            ));
+        }
+        detect_format_version(&evidence.target_path, context).map_err(|_| {
+            public_error(
+                SourceResourceErrorCode::FormatDenied,
+                "the current Platform XML format is not writable",
+            )
+        })?;
+        authorize_support(&evidence.target_path, context)?;
+        let current = read_root_relative_regular_file(
+            &evidence.source_root,
+            &evidence.target_path,
+            snapshot.preimage.len(),
+            |_| {},
+        )
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::FileTooLarge {
+                public_error(
+                    SourceResourceErrorCode::StaleRevision,
+                    "source resource size changed after the snapshot",
+                )
+            } else {
+                public_error(
+                    SourceResourceErrorCode::ContainmentDenied,
+                    "source resource cannot be safely reauthorized",
+                )
+            }
+        })?;
+        if current.bytes.as_slice() != snapshot.preimage.as_ref() {
+            return Err(public_error(
+                SourceResourceErrorCode::StaleRevision,
+                "source resource bytes changed after the snapshot",
+            ));
+        }
+        self.check_cancelled(cancellation)?;
+
+        let postimage = normalized_replacement(
+            snapshot.preimage.as_ref(),
+            snapshot.resource.text_profile.as_ref(),
+            &request.content,
+        )?;
+        validate_bsl(&postimage)?;
+        let no_op = postimage == snapshot.preimage.as_ref();
+        let metadata_path = snapshot
+            .target
+            .metadata_path
+            .as_ref()
+            .ok_or_else(|| {
+                public_error(
+                    SourceResourceErrorCode::AtomicityUnproven,
+                    "source.apply requires one exact module target",
+                )
+            })?
+            .as_str()
+            .to_string();
+        let post_hash = sha256_hash(&postimage);
+        let result = SourceApplyResult {
+            snapshot_id: snapshot.snapshot_id.clone(),
+            resource_id: snapshot.resource.resource_id.clone(),
+            source_set: snapshot.source_set.clone(),
+            target: snapshot.target.clone(),
+            role: snapshot.resource.role,
+            pre_hash: snapshot.resource.hash.clone(),
+            post_hash: post_hash.clone(),
+            no_op,
+            changed_ranges: changed_ranges(snapshot.preimage.as_ref(), &postimage)?,
+            diff: replacement_diff(&metadata_path, snapshot.preimage.as_ref(), &postimage)?,
+            validation: SourceValidationEvidence {
+                kind: "bsl-analyzer-parser".to_string(),
+                status: "passed".to_string(),
+            },
+        };
+        if no_op {
+            return Ok(SourceApplyExecution {
+                result,
+                event: None,
+                projected_event: None,
+            });
+        }
+        let event = DomainEvent::source_resources_replaced(SourceResourcesReplaced {
+            source_set: snapshot.source_set,
+            owner: logical_owner(&metadata_path),
+            roles: vec![snapshot.resource.role],
+            preimage_hashes: vec![snapshot.resource.hash],
+            postimage_hashes: vec![post_hash],
+            affected_targets: vec![metadata_path],
+        });
+        if dry_run {
+            return Ok(SourceApplyExecution {
+                result,
+                event: None,
+                projected_event: Some(event),
+            });
+        }
+
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .replace_bytes(
+                &evidence.target_path,
+                snapshot.preimage.as_ref(),
+                postimage.clone(),
+            )
+            .map_err(map_transaction_error)?;
+        let revalidated =
+            guard_code_patch_resolved_target(&mut transaction, &snapshot.handle, context)
+                .map_err(map_transaction_error)?;
+        if revalidated != evidence.target_path {
+            return Err(public_error(
+                SourceResourceErrorCode::StaleRevision,
+                "logical source resource binding changed before publication",
+            ));
+        }
+        authorize_support(&revalidated, context)?;
+        self.run_phase_hook();
+        self.check_cancelled(cancellation)?;
+        let report = transaction.commit().map_err(map_transaction_error)?;
+        if report.updated != [evidence.target_path.clone()] || !report.created.is_empty() {
+            return Err(public_error(
+                SourceResourceErrorCode::IntegrityFailed,
+                "source resource transaction reported an unexpected publication set",
+            ));
+        }
+        let published = read_root_relative_regular_file(
+            &evidence.source_root,
+            &evidence.target_path,
+            postimage.len(),
+            |_| {},
+        )
+        .map_err(|_| {
+            public_error(
+                SourceResourceErrorCode::IntegrityFailed,
+                "published source resource could not be verified",
+            )
+        })?;
+        if published.bytes != postimage {
+            return Err(public_error(
+                SourceResourceErrorCode::IntegrityFailed,
+                "published source resource hash does not match the mutation plan",
+            ));
+        }
+        Ok(SourceApplyExecution {
+            result,
+            event: Some(event),
+            projected_event: None,
+        })
+    }
+
+    fn apply_snapshot(
+        &self,
+        request: &SourceApplyRequest,
+        context: &WorkspaceContext,
+    ) -> Result<ApplySnapshot, SourceResourceError> {
+        let mut snapshots = self.snapshots.lock().map_err(|_| {
+            public_error(
+                SourceResourceErrorCode::SourceUnavailable,
+                "resource snapshot store is unavailable",
+            )
+        })?;
+        if snapshots
+            .get(&request.snapshot_id)
+            .is_some_and(|snapshot| self.clock.now() >= snapshot.expires_at)
+        {
+            snapshots.remove(&request.snapshot_id);
+            return Err(public_error(
+                SourceResourceErrorCode::SnapshotExpired,
+                "resource snapshot has expired",
+            ));
+        }
+        let snapshot = snapshots.get(&request.snapshot_id).ok_or_else(|| {
+            public_error(
+                SourceResourceErrorCode::SnapshotNotFound,
+                "resource snapshot was not issued by this application instance",
+            )
+        })?;
+        self.validate_snapshot(snapshot, context)?;
+        if snapshot.completeness != ResourceCompleteness::Complete {
+            return Err(public_error(
+                SourceResourceErrorCode::SnapshotIncomplete,
+                "source.apply requires a complete resource snapshot",
+            ));
+        }
+        if snapshot.resources.len() != 1 {
+            return Err(public_error(
+                SourceResourceErrorCode::AtomicityUnproven,
+                "source.apply first contract requires exactly one snapshotted resource",
+            ));
+        }
+        let resource = snapshot
+            .resources
+            .iter()
+            .find(|resource| resource.public.resource_id == request.resource_id)
+            .ok_or_else(|| {
+                public_error(
+                    SourceResourceErrorCode::ResourceNotFound,
+                    "resource does not belong to the supplied snapshot",
+                )
+            })?;
+        if resource.public.role != ResourceRole::BslModule
+            || !resource.public.access.contains(&ResourceAccess::Replace)
+            || resource.public.text_profile.is_none()
+        {
+            return Err(public_error(
+                SourceResourceErrorCode::ResourceNotReplaceable,
+                "the snapshotted resource role is not replaceable",
+            ));
+        }
+        if request.expected_hash != resource.public.hash {
+            return Err(public_error(
+                SourceResourceErrorCode::HashMismatch,
+                "expectedHash does not match the immutable resource snapshot",
+            ));
+        }
+        Ok(ApplySnapshot {
+            snapshot_id: snapshot.snapshot_id.clone(),
+            source_set: snapshot.source_set.clone(),
+            target: snapshot.target.clone(),
+            handle: snapshot.handle.clone(),
+            resource: resource.public.clone(),
+            path: resource.path.clone(),
+            preimage: Arc::clone(&resource.bytes),
+        })
+    }
+
     fn open_snapshot(
         &self,
         request: OpenResourceSnapshotRequest,
@@ -284,7 +555,11 @@ impl PlatformXmlResourceProvider {
         for (path, role) in candidates.into_iter().take(SOURCE_MANIFEST_RESOURCE_MAX) {
             self.check_cancelled(cancellation)?;
             let remaining = MAX_SNAPSHOT_BYTES - byte_size;
-            let resource = snapshot_resource(&source_root, &path, role, remaining)?;
+            let replace_allowed = completeness == ResourceCompleteness::Complete
+                && request.scope == ResourceScope::SelfOnly
+                && role == ResourceRole::BslModule;
+            let resource =
+                snapshot_resource(&source_root, &path, role, replace_allowed, remaining)?;
             byte_size += resource.bytes.len();
             stored_resources.push(resource);
             self.observe_construction_for_test(byte_size);
@@ -304,6 +579,7 @@ impl PlatformXmlResourceProvider {
             workspace_epoch: context.workspace_epoch,
             source_set: resolution.resolved.source_set.clone(),
             target: resolution.resolved,
+            handle: resolution.handle,
             scope: request.scope,
             completeness,
             manifest_revision: revision,
@@ -498,10 +774,264 @@ impl PlatformXmlResourceProvider {
     fn observe_construction_for_test(&self, _bytes: usize) {}
 }
 
+fn normalized_replacement(
+    preimage: &[u8],
+    observed: Option<&TextProfile>,
+    content: &str,
+) -> Result<Vec<u8>, SourceResourceError> {
+    let observed = observed.ok_or_else(|| {
+        public_error(
+            SourceResourceErrorCode::ResourceNotReplaceable,
+            "the snapshotted BSL resource is not UTF-8 text",
+        )
+    })?;
+    let snapshot = SourceTextSnapshot::from_bytes(preimage).map_err(|_| {
+        public_error(
+            SourceResourceErrorCode::StaleRevision,
+            "the snapshotted BSL preimage is not valid UTF-8",
+        )
+    })?;
+    if matches!(snapshot.line_endings(), LineEndingProfile::Mixed { .. })
+        || observed.eol == EolProfile::Mixed
+    {
+        return Err(public_error(
+            SourceResourceErrorCode::ValidationFailed,
+            "mixed EOL in the snapshotted BSL resource cannot be preserved safely",
+        ));
+    }
+    let content = content.strip_prefix('\u{feff}').unwrap_or(content);
+    let replacement_profile = text_profile(content.as_bytes()).ok_or_else(|| {
+        public_error(
+            SourceResourceErrorCode::ValidationFailed,
+            "replacement content is not valid UTF-8",
+        )
+    })?;
+    if replacement_profile.eol == EolProfile::Mixed {
+        return Err(public_error(
+            SourceResourceErrorCode::ValidationFailed,
+            "replacement BSL content must use one uniform EOL style",
+        ));
+    }
+    let target_eol = match observed.eol {
+        EolProfile::Lf => Some(LineEnding::Lf),
+        EolProfile::Crlf => Some(LineEnding::CrLf),
+        EolProfile::Cr => Some(LineEnding::Cr),
+        EolProfile::None => None,
+        EolProfile::Mixed => unreachable!("mixed observed EOL was rejected"),
+    };
+    let payload = match target_eol {
+        Some(eol) => canonicalize_eol(content).replace('\n', eol.as_str()),
+        None => content.to_string(),
+    };
+    let mut bytes = Vec::with_capacity(observed.bom_prefix_bytes + payload.len());
+    bytes.extend_from_slice(preimage.get(..observed.bom_prefix_bytes).ok_or_else(|| {
+        public_error(
+            SourceResourceErrorCode::StaleRevision,
+            "snapshotted BOM profile no longer matches the preimage",
+        )
+    })?);
+    bytes.extend_from_slice(payload.as_bytes());
+    Ok(bytes)
+}
+
+fn canonicalize_eol(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+fn validate_bsl(bytes: &[u8]) -> Result<(), SourceResourceError> {
+    let text = std::str::from_utf8(bytes).map_err(|_| {
+        public_error(
+            SourceResourceErrorCode::ValidationFailed,
+            "replacement BSL module must remain UTF-8",
+        )
+    })?;
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let parsed = bsl_parser::parse(text);
+    if parsed.errors().is_empty() {
+        Ok(())
+    } else {
+        Err(public_error(
+            SourceResourceErrorCode::ValidationFailed,
+            "replacement BSL module did not pass the parser",
+        ))
+    }
+}
+
+fn changed_ranges(
+    before: &[u8],
+    after: &[u8],
+) -> Result<Vec<SourceChangedRange>, SourceResourceError> {
+    if before == after {
+        return Ok(Vec::new());
+    }
+    let before_text = std::str::from_utf8(before).map_err(|_| {
+        public_error(
+            SourceResourceErrorCode::ValidationFailed,
+            "snapshotted BSL module must be UTF-8",
+        )
+    })?;
+    let after_text = std::str::from_utf8(after).map_err(|_| {
+        public_error(
+            SourceResourceErrorCode::ValidationFailed,
+            "replacement BSL module must be UTF-8",
+        )
+    })?;
+    let mut start = before
+        .iter()
+        .zip(after.iter())
+        .take_while(|(left, right)| left == right)
+        .count();
+    while start > 0 && (!before_text.is_char_boundary(start) || !after_text.is_char_boundary(start))
+    {
+        start -= 1;
+    }
+    let mut suffix = before[start..]
+        .iter()
+        .rev()
+        .zip(after[start..].iter().rev())
+        .take_while(|(left, right)| left == right)
+        .count();
+    while suffix > 0
+        && (!before_text.is_char_boundary(before.len() - suffix)
+            || !after_text.is_char_boundary(after.len() - suffix))
+    {
+        suffix -= 1;
+    }
+    let end = after.len() - suffix;
+    let (start_line, start_column) = line_column(after_text, start)?;
+    let (end_line, end_column) = line_column(after_text, end)?;
+    Ok(vec![SourceChangedRange {
+        start_byte: start,
+        end_byte: end,
+        start_line,
+        start_column,
+        end_line,
+        end_column,
+    }])
+}
+
+fn line_column(text: &str, offset: usize) -> Result<(usize, usize), SourceResourceError> {
+    let prefix = text.get(..offset).ok_or_else(|| {
+        public_error(
+            SourceResourceErrorCode::ValidationFailed,
+            "replacement changed range is not on a UTF-8 boundary",
+        )
+    })?;
+    let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
+    let column = prefix
+        .rsplit_once('\n')
+        .map_or(prefix, |(_, current)| current)
+        .chars()
+        .count()
+        + 1;
+    Ok((line, column))
+}
+
+fn replacement_diff(
+    metadata_path: &str,
+    before: &[u8],
+    after: &[u8],
+) -> Result<String, SourceResourceError> {
+    if before == after {
+        return Ok(String::new());
+    }
+    let before = std::str::from_utf8(before).map_err(|_| {
+        public_error(
+            SourceResourceErrorCode::ValidationFailed,
+            "snapshotted BSL module must be UTF-8",
+        )
+    })?;
+    let after = std::str::from_utf8(after).map_err(|_| {
+        public_error(
+            SourceResourceErrorCode::ValidationFailed,
+            "replacement BSL module must be UTF-8",
+        )
+    })?;
+    let mut options = DiffOptions::new();
+    options
+        .set_original_filename(format!("a/{metadata_path}"))
+        .set_modified_filename(format!("b/{metadata_path}"));
+    let rendered = options.create_patch(before, after).to_string();
+    let patch = Patch::from_str(&rendered).map_err(|_| {
+        public_error(
+            SourceResourceErrorCode::IntegrityFailed,
+            "generated BSL replacement diff cannot be parsed",
+        )
+    })?;
+    let rebuilt = apply_diff(before, &patch).map_err(|_| {
+        public_error(
+            SourceResourceErrorCode::IntegrityFailed,
+            "generated BSL replacement diff cannot be applied",
+        )
+    })?;
+    if rebuilt.as_bytes() != after.as_bytes() {
+        return Err(public_error(
+            SourceResourceErrorCode::IntegrityFailed,
+            "generated BSL replacement diff does not reproduce the postimage",
+        ));
+    }
+    Ok(rendered)
+}
+
+fn authorize_support(target: &Path, context: &WorkspaceContext) -> Result<(), SourceResourceError> {
+    match evaluate_resolved_support_guard(target, SupportGuardRequirement::Editable, context) {
+        ResolvedSupportGuardCheck::Allow | ResolvedSupportGuardCheck::Warn(_) => Ok(()),
+        ResolvedSupportGuardCheck::Block(_) => Err(public_error(
+            SourceResourceErrorCode::SupportDenied,
+            "the current support state does not allow BSL replacement",
+        )),
+    }
+}
+
+fn map_reauthorization_error(
+    error: crate::domain::source_target::SourceTargetError,
+) -> SourceResourceError {
+    let code = if error.code == SourceTargetErrorCode::ContainmentDenied {
+        SourceResourceErrorCode::ContainmentDenied
+    } else {
+        SourceResourceErrorCode::StaleRevision
+    };
+    public_error(code, "logical source resource could not be reauthorized")
+}
+
+fn map_transaction_error(error: String) -> SourceResourceError {
+    let lowered = error.to_ascii_lowercase();
+    let code = if lowered.contains("symbolic link")
+        || lowered.contains("reparse point")
+        || lowered.contains("containment")
+        || lowered.contains("outside")
+    {
+        SourceResourceErrorCode::ContainmentDenied
+    } else if lowered.contains("format") || lowered.contains("version") {
+        SourceResourceErrorCode::FormatDenied
+    } else if lowered.contains("changed")
+        || lowered.contains("stale")
+        || lowered.contains("preimage")
+        || lowered.contains("read guard")
+        || lowered.contains("absence guard")
+    {
+        SourceResourceErrorCode::StaleRevision
+    } else {
+        SourceResourceErrorCode::IntegrityFailed
+    };
+    public_error(code, "source resource transaction could not be published")
+}
+
+fn logical_owner(metadata_path: &str) -> String {
+    let mut segments = metadata_path.split('.').collect::<Vec<_>>();
+    segments.pop();
+    if segments.is_empty() {
+        "Configuration".to_string()
+    } else {
+        segments.join(".")
+    }
+}
+
 fn snapshot_resource(
     root: &Path,
     path: &Path,
     role: ResourceRole,
+    replace_allowed: bool,
     maximum_bytes: usize,
 ) -> Result<StoredResource, SourceResourceError> {
     let bytes = read_root_relative_regular_file(root, path, maximum_bytes, |_| {})
@@ -537,11 +1067,16 @@ fn snapshot_resource(
             size: bytes.len(),
             hash: sha256_hash(&bytes),
             text_profile,
-            access: vec![ResourceAccess::Read],
+            access: if replace_allowed {
+                vec![ResourceAccess::Read, ResourceAccess::Replace]
+            } else {
+                vec![ResourceAccess::Read]
+            },
             limits: ResourceLimits {
                 max_read_bytes: SOURCE_READ_LIMIT_MAX,
             },
         },
+        path: path.to_path_buf(),
         bytes: Arc::from(bytes),
     })
 }
@@ -752,10 +1287,11 @@ fn public_error(code: SourceResourceErrorCode, message: impl Into<String>) -> So
 mod tests {
     use super::*;
     use crate::application::source_resources::{
-        ContinueResourceSnapshotRequest, OpenResourceSnapshotRequest, SourceReadRequest,
-        SourceResourcesRequest,
+        ContinueResourceSnapshotRequest, OpenResourceSnapshotRequest, SourceApplyRequest,
+        SourceReadRequest, SourceResourcesRequest,
     };
     use crate::domain::cancellation::CancellationToken;
+    use crate::domain::events::DomainEventKind;
     use crate::domain::source_resources::{
         EolProfile, ResourceCompleteness, ResourceRole, ResourceScope, SourceResourceErrorCode,
         TextEncoding, SOURCE_READ_LIMIT_MAX,
@@ -764,6 +1300,10 @@ mod tests {
         MetadataAddress, SourceTarget, PLATFORM_XML_8_3_27_FORMAT_2_20,
     };
     use crate::domain::workspace::WorkspaceContext;
+    use crate::infrastructure::native_operations::single_file_publisher::with_before_commit_hook;
+    use crate::infrastructure::platform::testing::{
+        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+    };
     use std::fs;
     use std::sync::{
         atomic::{AtomicU64, Ordering},
@@ -804,6 +1344,11 @@ mod tests {
             fs::write(
                 root.join("v8project.yaml"),
                 "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+            )
+            .unwrap();
+            fs::write(
+                root.join(".v8-project.json"),
+                r#"{"editingAllowedCheck":"off"}"#,
             )
             .unwrap();
             fs::write(
@@ -890,7 +1435,10 @@ mod tests {
         assert_eq!(page.completeness, ResourceCompleteness::Complete);
         assert_eq!(page.resources.len(), 1);
         assert_eq!(page.resources[0].role, ResourceRole::BslModule);
-        assert_eq!(page.resources[0].access.len(), 1);
+        assert_eq!(
+            page.resources[0].access,
+            [ResourceAccess::Read, ResourceAccess::Replace]
+        );
         let snapshot = Uuid::parse_str(&page.snapshot_id).unwrap();
         let resource = Uuid::parse_str(&page.resources[0].resource_id).unwrap();
         assert_eq!(snapshot.get_version(), Some(Version::Random));
@@ -1403,5 +1951,420 @@ mod tests {
         assert!(!error
             .message
             .contains(fixture.root.to_string_lossy().as_ref()));
+    }
+
+    fn apply_request(page: &ResourceManifestPage, content: &str) -> SourceApplyRequest {
+        SourceApplyRequest {
+            snapshot_id: page.snapshot_id.clone(),
+            resource_id: page.resources[0].resource_id.clone(),
+            expected_hash: page.resources[0].hash.clone(),
+            content: content.to_string(),
+        }
+    }
+
+    #[test]
+    fn source_apply_preview_and_apply_publish_identical_bom_crlf_bytes_and_one_event() {
+        let fixture = Fixture::new(b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\n");
+        let module = fixture.root.join("src/CommonModules/Shared/Ext/Module.bsl");
+        let descriptor = fixture.root.join("src/CommonModules/Shared.xml");
+        let registration = fixture.root.join("src/Configuration.xml");
+        let descriptor_before = fs::read(&descriptor).unwrap();
+        let registration_before = fs::read(&registration).unwrap();
+        let (provider, _) = provider();
+        let page = provider
+            .resources(
+                fixture.module_request(ResourceScope::SelfOnly, 50),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            page.resources[0].access,
+            [ResourceAccess::Read, ResourceAccess::Replace]
+        );
+        let request = apply_request(
+            &page,
+            "Procedure Changed()\n    Message(\"ok\");\nEndProcedure\n",
+        );
+
+        let preview = provider
+            .apply(
+                request.clone(),
+                &fixture.context,
+                true,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert!(preview.event.is_none());
+        assert!(!preview.result.no_op);
+        assert!(!preview.result.changed_ranges.is_empty());
+        assert!(preview.result.diff.contains("CommonModule.Shared.Module"));
+        assert_eq!(
+            fs::read(&module).unwrap(),
+            b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\n"
+        );
+
+        let applied = provider
+            .apply(request, &fixture.context, false, &CancellationToken::new())
+            .unwrap();
+        assert_eq!(applied.result.post_hash, preview.result.post_hash);
+        assert_eq!(applied.result.diff, preview.result.diff);
+        assert_eq!(
+            fs::read(&module).unwrap(),
+            b"\xef\xbb\xbfProcedure Changed()\r\n    Message(\"ok\");\r\nEndProcedure\r\n"
+        );
+        let event = applied.event.expect("successful apply emits one event");
+        assert_eq!(event.kind, DomainEventKind::SourceResourcesReplaced);
+        assert_eq!(event.details.as_ref().unwrap().source_set, "main");
+        assert_eq!(
+            event.details.as_ref().unwrap().affected_targets,
+            ["CommonModule.Shared.Module"]
+        );
+        assert_eq!(fs::read(&descriptor).unwrap(), descriptor_before);
+        assert_eq!(fs::read(&registration).unwrap(), registration_before);
+    }
+
+    #[test]
+    fn source_apply_noop_emits_no_event_and_writes_nothing() {
+        let before = b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\n";
+        let fixture = Fixture::new(before);
+        let module = fixture.root.join("src/CommonModules/Shared/Ext/Module.bsl");
+        let (provider, _) = provider();
+        let page = provider
+            .resources(
+                fixture.module_request(ResourceScope::SelfOnly, 50),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        let outcome = provider
+            .apply(
+                apply_request(&page, "Procedure Run()\nEndProcedure\n"),
+                &fixture.context,
+                false,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        assert!(outcome.result.no_op);
+        assert!(outcome.result.changed_ranges.is_empty());
+        assert!(outcome.result.diff.is_empty());
+        assert!(outcome.event.is_none());
+        assert_eq!(fs::read(module).unwrap(), before);
+    }
+
+    #[test]
+    fn source_apply_rejects_hash_mismatch_and_stale_snapshot_preimage() {
+        let fixture = Fixture::new(b"Procedure Run()\nEndProcedure\n");
+        let module = fixture.root.join("src/CommonModules/Shared/Ext/Module.bsl");
+        let (provider, _) = provider();
+        let page = provider
+            .resources(
+                fixture.module_request(ResourceScope::SelfOnly, 50),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut wrong_hash = apply_request(&page, "Procedure Changed()\nEndProcedure\n");
+        wrong_hash.expected_hash = "sha256:wrong".to_string();
+        assert_eq!(
+            provider
+                .apply(
+                    wrong_hash,
+                    &fixture.context,
+                    false,
+                    &CancellationToken::new(),
+                )
+                .unwrap_err()
+                .code,
+            SourceResourceErrorCode::HashMismatch
+        );
+
+        fs::write(&module, b"Procedure Concurrent()\nEndProcedure\n").unwrap();
+        assert_eq!(
+            provider
+                .apply(
+                    apply_request(&page, "Procedure Changed()\nEndProcedure\n"),
+                    &fixture.context,
+                    false,
+                    &CancellationToken::new(),
+                )
+                .unwrap_err()
+                .code,
+            SourceResourceErrorCode::StaleRevision
+        );
+        assert_eq!(
+            fs::read(&module).unwrap(),
+            b"Procedure Concurrent()\nEndProcedure\n"
+        );
+    }
+
+    #[test]
+    fn source_apply_rejects_partial_snapshot_and_non_bsl_role() {
+        let fixture = Fixture::new(b"Procedure Run()\nEndProcedure\n");
+        let (provider, _) = provider();
+        let partial = provider
+            .resources(
+                fixture.module_request(ResourceScope::Aggregate, 50),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            provider
+                .apply(
+                    apply_request(&partial, "Procedure Changed()\nEndProcedure\n"),
+                    &fixture.context,
+                    true,
+                    &CancellationToken::new(),
+                )
+                .unwrap_err()
+                .code,
+            SourceResourceErrorCode::SnapshotIncomplete
+        );
+
+        let descriptor = provider
+            .resources(
+                fixture.root_request(ResourceScope::SelfOnly, 50),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            provider
+                .apply(
+                    apply_request(&descriptor, "<Configuration/>"),
+                    &fixture.context,
+                    true,
+                    &CancellationToken::new(),
+                )
+                .unwrap_err()
+                .code,
+            SourceResourceErrorCode::ResourceNotReplaceable
+        );
+    }
+
+    #[test]
+    fn source_apply_rejects_mixed_eol_and_bsl_parse_failure() {
+        let fixture = Fixture::new(b"Procedure Run()\r\nEndProcedure\r\n");
+        let (provider, _) = provider();
+        let page = provider
+            .resources(
+                fixture.module_request(ResourceScope::SelfOnly, 50),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        for content in [
+            "Procedure Changed()\r\n    Message(\"x\");\nEndProcedure\r\n",
+            "Procedure Broken(\n",
+        ] {
+            let error = provider
+                .apply(
+                    apply_request(&page, content),
+                    &fixture.context,
+                    true,
+                    &CancellationToken::new(),
+                )
+                .unwrap_err();
+            assert_eq!(error.code, SourceResourceErrorCode::ValidationFailed);
+        }
+    }
+
+    #[test]
+    fn source_apply_reauthorizes_support_format_owner_source_map_and_containment() {
+        let replacement = "Procedure Changed()\nEndProcedure\n";
+
+        let support_fixture = Fixture::new(b"Procedure Run()\nEndProcedure\n");
+        let (support_provider, _) = provider();
+        let support_page = support_provider
+            .resources(
+                support_fixture.module_request(ResourceScope::SelfOnly, 50),
+                &support_fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        fs::create_dir_all(support_fixture.root.join("src/Ext")).unwrap();
+        fs::write(
+            support_fixture
+                .root
+                .join("src/Ext/ParentConfigurations.bin"),
+            concat!(
+                "\u{feff}{6,1,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,",
+                "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",",
+                "\"VendorConf\",0}"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            support_fixture.root.join(".v8-project.json"),
+            r#"{"editingAllowedCheck":"deny"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            support_provider
+                .apply(
+                    apply_request(&support_page, replacement),
+                    &support_fixture.context,
+                    true,
+                    &CancellationToken::new(),
+                )
+                .unwrap_err()
+                .code,
+            SourceResourceErrorCode::SupportDenied
+        );
+
+        let format_fixture = Fixture::new(b"Procedure Run()\nEndProcedure\n");
+        let (format_provider, _) = provider();
+        let format_page = format_provider
+            .resources(
+                format_fixture.module_request(ResourceScope::SelfOnly, 50),
+                &format_fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let configuration = format_fixture.root.join("src/Configuration.xml");
+        let configuration_text = fs::read_to_string(&configuration).unwrap();
+        fs::write(&configuration, configuration_text.replace("2.20", "2.21")).unwrap();
+        assert_eq!(
+            format_provider
+                .apply(
+                    apply_request(&format_page, replacement),
+                    &format_fixture.context,
+                    true,
+                    &CancellationToken::new(),
+                )
+                .unwrap_err()
+                .code,
+            SourceResourceErrorCode::FormatDenied
+        );
+
+        let source_map_fixture = Fixture::new(b"Procedure Run()\nEndProcedure\n");
+        let (source_map_provider, _) = provider();
+        let source_map_page = source_map_provider
+            .resources(
+                source_map_fixture.module_request(ResourceScope::SelfOnly, 50),
+                &source_map_fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        fs::write(
+            source_map_fixture.root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: EXTENSION\n    path: src\n",
+        )
+        .unwrap();
+        assert_eq!(
+            source_map_provider
+                .apply(
+                    apply_request(&source_map_page, replacement),
+                    &source_map_fixture.context,
+                    true,
+                    &CancellationToken::new(),
+                )
+                .unwrap_err()
+                .code,
+            SourceResourceErrorCode::ContainmentDenied
+        );
+
+        let link_fixture = Fixture::new(b"Procedure Run()\nEndProcedure\n");
+        let (link_provider, _) = provider();
+        let link_page = link_provider
+            .resources(
+                link_fixture.module_request(ResourceScope::SelfOnly, 50),
+                &link_fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let module = link_fixture
+            .root
+            .join("src/CommonModules/Shared/Ext/Module.bsl");
+        let external = link_fixture.root.join("replacement.bsl");
+        fs::write(&external, b"Procedure External()\nEndProcedure\n").unwrap();
+        fs::remove_file(&module).unwrap();
+        if create_file_link_fixture_for_test(&external, &module).unwrap()
+            == FileLinkFixtureOutcome::Created
+        {
+            assert_eq!(
+                link_provider
+                    .apply(
+                        apply_request(&link_page, replacement),
+                        &link_fixture.context,
+                        true,
+                        &CancellationToken::new(),
+                    )
+                    .unwrap_err()
+                    .code,
+                SourceResourceErrorCode::ContainmentDenied
+            );
+        }
+    }
+
+    #[test]
+    fn source_apply_rolls_back_owner_race_and_cancel_before_publication() {
+        let fixture = Fixture::new(b"Procedure Run()\nEndProcedure\n");
+        let module = fixture.root.join("src/CommonModules/Shared/Ext/Module.bsl");
+        let descriptor = fixture.root.join("src/CommonModules/Shared.xml");
+        let before = fs::read(&module).unwrap();
+        let (race_provider, _) = provider();
+        let page = race_provider
+            .resources(
+                fixture.module_request(ResourceScope::SelfOnly, 50),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let descriptor_for_hook = descriptor.clone();
+        let error = with_before_commit_hook(
+            move |_| {
+                fs::write(
+                    &descriptor_for_hook,
+                    "<MetaDataObject concurrent=\"true\"/>",
+                )
+                .unwrap()
+            },
+            || {
+                race_provider.apply(
+                    apply_request(&page, "Procedure Changed()\nEndProcedure\n"),
+                    &fixture.context,
+                    false,
+                    &CancellationToken::new(),
+                )
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, SourceResourceErrorCode::StaleRevision);
+        assert_eq!(fs::read(&module).unwrap(), before);
+
+        let cancelled_fixture = Fixture::new(b"Procedure Run()\nEndProcedure\n");
+        let (cancelled_provider, _) = provider();
+        let cancelled_page = cancelled_provider
+            .resources(
+                cancelled_fixture.module_request(ResourceScope::SelfOnly, 50),
+                &cancelled_fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let cancel_at_commit = cancellation.clone();
+        cancelled_provider.set_phase_hook_for_test(move || cancel_at_commit.cancel());
+        let error = cancelled_provider
+            .apply(
+                apply_request(&cancelled_page, "Procedure Changed()\nEndProcedure\n"),
+                &cancelled_fixture.context,
+                false,
+                &cancellation,
+            )
+            .unwrap_err();
+        assert_eq!(error.code, SourceResourceErrorCode::Cancelled);
+        assert_eq!(
+            fs::read(
+                cancelled_fixture
+                    .root
+                    .join("src/CommonModules/Shared/Ext/Module.bsl")
+            )
+            .unwrap(),
+            b"Procedure Run()\nEndProcedure\n"
+        );
     }
 }

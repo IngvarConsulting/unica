@@ -544,6 +544,11 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
+            root.join(".v8-project.json"),
+            r#"{"editingAllowedCheck":"off"}"#,
+        )
+        .unwrap();
+        std::fs::write(
             source.join("Configuration.xml"),
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Main</Name></Properties></Configuration></MetaDataObject>"#,
         )
@@ -705,6 +710,75 @@ mod tests {
         assert_eq!(read["data"]["textProfile"]["eol"], "crlf");
         assert!(read["data"]["length"].as_u64().unwrap() <= 9);
         assert_no_private_source_resource_keys(&read);
+
+        let apply_args = json!({
+            "cwd": root,
+            "snapshotId": resources["data"]["snapshotId"],
+            "resourceId": resources["data"]["resources"][0]["resourceId"],
+            "expectedHash": resources["data"]["resources"][0]["hash"],
+            "content": "Procedure Changed()\nEndProcedure\n",
+            "contentEncoding": "utf-8"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let preview: Value = serde_json::from_str(
+            &call_tool_text(
+                &app,
+                "unica.source.apply",
+                &apply_args,
+                CancellationToken::new(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(preview["ok"].as_bool().unwrap());
+        assert_eq!(preview["cache"]["mode"], "dry-run");
+        assert_eq!(
+            preview["cache"]["events"],
+            json!(["SourceResourcesReplaced"])
+        );
+        assert_eq!(
+            preview["cache"]["invalidated"],
+            json!(["bsl_diagnostics", "bsl_index"])
+        );
+        assert_eq!(
+            std::fs::read(source.join("CommonModules/Shared/Ext/Module.bsl")).unwrap(),
+            b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\n"
+        );
+        assert!(
+            !root.join(".build/unica/state.json").exists(),
+            "preview must project cache impact without persisting workspace state"
+        );
+        assert_no_private_source_resource_keys(&preview);
+
+        let mut applied_args = apply_args;
+        applied_args.insert("dryRun".to_string(), json!(false));
+        let applied: Value = serde_json::from_str(
+            &call_tool_text(
+                &app,
+                "unica.source.apply",
+                &applied_args,
+                CancellationToken::new(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(applied["ok"].as_bool().unwrap());
+        assert_eq!(
+            applied["cache"]["events"],
+            json!(["SourceResourcesReplaced"])
+        );
+        assert_eq!(
+            applied["cache"]["invalidated"],
+            json!(["bsl_diagnostics", "bsl_index"])
+        );
+        assert_eq!(
+            std::fs::read(source.join("CommonModules/Shared/Ext/Module.bsl")).unwrap(),
+            b"\xef\xbb\xbfProcedure Changed()\r\nEndProcedure\r\n"
+        );
+        assert_eq!(applied["data"]["postHash"], preview["data"]["postHash"]);
+        assert_no_private_source_resource_keys(&applied);
 
         let other_app_error = call_tool_text(
             &UnicaApplication::new(),

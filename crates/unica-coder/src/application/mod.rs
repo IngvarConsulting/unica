@@ -219,6 +219,19 @@ pub fn tools() -> Vec<ToolSpec> {
             },
         },
         ToolSpec {
+            name: "unica.source.apply",
+            description:
+                "Preview or replace one existing BSL resource from a complete immutable snapshot.",
+            mutating: true,
+            cache_access: CacheAccess {
+                reads: &[],
+                writes: &["bsl_index", "bsl_diagnostics"],
+            },
+            handler: ToolHandler::SourceResources {
+                operation: SourceResourceOperation::Apply,
+            },
+        },
+        ToolSpec {
             name: "unica.build.dump",
             description: "Dump source set through the internal build/runtime adapter.",
             mutating: true,
@@ -555,19 +568,27 @@ fn call_tool(
             source_navigation::invoke(operation, ports, args, &context, cancellation)?
         }
         ToolHandler::SourceResources { operation } => {
-            source_resources::invoke(operation, ports, args, &context, cancellation)?
+            source_resources::invoke(operation, ports, args, &context, dry_run, cancellation)?
         }
         _ => ports.invoke_handler(spec, args, &context, dry_run, cancellation)?,
     };
     let mut outcome = handler_outcome.adapter;
+    let handler_events = handler_outcome.events;
+    let projected_events = handler_outcome.projected_events;
     if let Some(warning) = support_guard_warning {
         outcome.warnings.insert(0, warning);
     }
     if let Some(warning) = format_guard_warning {
         outcome.warnings.insert(0, warning);
     }
-    let events = if should_emit_events(spec, args, dry_run, &outcome) {
-        domain_events(spec, args)
+    let events = if dry_run && !projected_events.is_empty() {
+        projected_events
+    } else if should_emit_events(spec, args, dry_run, &outcome) {
+        if handler_events.is_empty() {
+            domain_events(spec, args)
+        } else {
+            handler_events
+        }
     } else {
         Vec::new()
     };
@@ -1878,6 +1899,19 @@ mod tests {
                 } if actual == operation
             ));
         }
+
+        let apply = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.source.apply")
+            .unwrap();
+        assert!(apply.mutating);
+        assert_eq!(apply.cache_access.writes, ["bsl_index", "bsl_diagnostics"]);
+        assert!(matches!(
+            apply.handler,
+            ToolHandler::SourceResources {
+                operation: SourceResourceOperation::Apply
+            }
+        ));
     }
 
     #[test]

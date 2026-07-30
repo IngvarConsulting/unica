@@ -4,7 +4,9 @@ use crate::application::ports::{
 use crate::application::source_navigation::{
     SourceChildrenRequest, SourceChildrenResult, SourceResolveRequest, SourceResolveResult,
 };
-use crate::application::source_resources::{SourceReadRequest, SourceResourcesRequest};
+use crate::application::source_resources::{
+    SourceApplyExecution, SourceApplyRequest, SourceReadRequest, SourceResourcesRequest,
+};
 use crate::application::{project_map, project_status, AdapterOutcome, ToolHandler, ToolSpec};
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
@@ -149,6 +151,17 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         self.source_resources.read(request, context, cancellation)
     }
 
+    fn apply_source_resource(
+        &self,
+        request: SourceApplyRequest,
+        context: &WorkspaceContext,
+        dry_run: bool,
+        cancellation: &CancellationToken,
+    ) -> Result<SourceApplyExecution, SourceResourceError> {
+        self.source_resources
+            .apply(request, context, dry_run, cancellation)
+    }
+
     fn evaluate_support_guard(
         &self,
         spec: ToolSpec,
@@ -279,6 +292,8 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                 adapter: outcome.outcome,
                 data: None,
                 job: outcome.job,
+                events: Vec::new(),
+                projected_events: Vec::new(),
             }),
             ToolHandler::CodeIntelligence { .. } => Err(format!(
                 "{} must be dispatched through the provider-neutral code intelligence registry",

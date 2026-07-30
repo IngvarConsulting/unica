@@ -49,7 +49,7 @@ impl CacheImpact {
                 self.invalidate(["metadata_graph", "form_graph", "bsl_diagnostics"]);
                 self.refresh(["metadata_graph"]);
             }
-            DomainEventKind::ModuleChanged => {
+            DomainEventKind::ModuleChanged | DomainEventKind::SourceResourcesReplaced => {
                 self.invalidate(["bsl_index", "bsl_diagnostics"]);
             }
             DomainEventKind::RoleChanged => {
@@ -104,4 +104,32 @@ impl CacheImpact {
 
 pub fn path_for_report(path: &Path) -> String {
     path.display().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CacheImpact;
+    use crate::domain::events::{DomainEvent, SourceResourcesReplaced};
+    use crate::domain::source_resources::ResourceRole;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn source_apply_invalidates_exactly_bsl_index_and_diagnostics() {
+        let event = DomainEvent::source_resources_replaced(SourceResourcesReplaced {
+            source_set: "main".to_string(),
+            owner: "CommonModule.Shared".to_string(),
+            roles: vec![ResourceRole::BslModule],
+            preimage_hashes: vec!["sha256:before".to_string()],
+            postimage_hashes: vec!["sha256:after".to_string()],
+            affected_targets: vec!["CommonModule.Shared.Module".to_string()],
+        });
+
+        let impact = CacheImpact::from_events(&[event]);
+
+        assert_eq!(
+            impact.invalidated,
+            BTreeSet::from(["bsl_diagnostics".to_string(), "bsl_index".to_string(),])
+        );
+        assert!(impact.eager_refresh.is_empty());
+    }
 }

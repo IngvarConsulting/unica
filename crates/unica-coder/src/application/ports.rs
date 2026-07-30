@@ -2,7 +2,9 @@ use super::{AdapterOutcome, ToolSpec};
 use crate::application::source_navigation::{
     SourceChildrenRequest, SourceChildrenResult, SourceResolveRequest, SourceResolveResult,
 };
-use crate::application::source_resources::{SourceReadRequest, SourceResourcesRequest};
+use crate::application::source_resources::{
+    SourceApplyExecution, SourceApplyRequest, SourceReadRequest, SourceResourcesRequest,
+};
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
@@ -20,6 +22,8 @@ pub(crate) struct HandlerOutcome {
     pub(crate) adapter: AdapterOutcome,
     pub(crate) data: Option<Value>,
     pub(crate) job: Option<Value>,
+    pub(crate) events: Vec<DomainEvent>,
+    pub(crate) projected_events: Vec<DomainEvent>,
 }
 
 impl HandlerOutcome {
@@ -28,6 +32,8 @@ impl HandlerOutcome {
             adapter,
             data: None,
             job: None,
+            events: Vec::new(),
+            projected_events: Vec::new(),
         }
     }
 
@@ -36,6 +42,37 @@ impl HandlerOutcome {
             adapter,
             data: Some(data),
             job: None,
+            events: Vec::new(),
+            projected_events: Vec::new(),
+        }
+    }
+
+    pub(crate) fn with_data_and_events(
+        adapter: AdapterOutcome,
+        data: Value,
+        events: Vec<DomainEvent>,
+    ) -> Self {
+        Self {
+            adapter,
+            data: Some(data),
+            job: None,
+            events,
+            projected_events: Vec::new(),
+        }
+    }
+
+    pub(crate) fn with_data_events_and_projection(
+        adapter: AdapterOutcome,
+        data: Value,
+        events: Vec<DomainEvent>,
+        projected_events: Vec<DomainEvent>,
+    ) -> Self {
+        Self {
+            adapter,
+            data: Some(data),
+            job: None,
+            events,
+            projected_events,
         }
     }
 }
@@ -134,6 +171,19 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         ))
     }
 
+    fn apply_source_resource(
+        &self,
+        _request: SourceApplyRequest,
+        _context: &WorkspaceContext,
+        _dry_run: bool,
+        _cancellation: &CancellationToken,
+    ) -> Result<SourceApplyExecution, SourceResourceError> {
+        Err(SourceResourceError::new(
+            crate::domain::source_resources::SourceResourceErrorCode::SourceUnavailable,
+            "source resource provider is not configured",
+        ))
+    }
+
     fn evaluate_format_guard(
         &self,
         _spec: ToolSpec,
@@ -174,6 +224,8 @@ pub(crate) trait ApplicationPorts: Send + Sync {
 mod tests {
     use super::HandlerOutcome;
     use crate::application::AdapterOutcome;
+    use crate::domain::events::{DomainEvent, SourceResourcesReplaced};
+    use crate::domain::source_resources::ResourceRole;
     use serde_json::json;
 
     #[test]
@@ -182,6 +234,8 @@ mod tests {
 
         assert_eq!(outcome.data, None);
         assert_eq!(outcome.job, None);
+        assert!(outcome.events.is_empty());
+        assert!(outcome.projected_events.is_empty());
     }
 
     #[test]
@@ -191,6 +245,29 @@ mod tests {
 
         assert_eq!(outcome.data, Some(data));
         assert_eq!(outcome.job, None);
+        assert!(outcome.events.is_empty());
+        assert!(outcome.projected_events.is_empty());
         assert_eq!(outcome.adapter.stdout, None);
+    }
+
+    #[test]
+    fn handler_outcome_carries_verified_events_separately_from_request_arguments() {
+        let event = DomainEvent::source_resources_replaced(SourceResourcesReplaced {
+            source_set: "main".to_string(),
+            owner: "CommonModule.Shared".to_string(),
+            roles: vec![ResourceRole::BslModule],
+            preimage_hashes: vec!["sha256:before".to_string()],
+            postimage_hashes: vec!["sha256:after".to_string()],
+            affected_targets: vec!["CommonModule.Shared.Module".to_string()],
+        });
+
+        let outcome = HandlerOutcome::with_data_and_events(
+            AdapterOutcome::ok("applied"),
+            json!({"noOp": false}),
+            vec![event.clone()],
+        );
+
+        assert_eq!(outcome.events, vec![event]);
+        assert!(outcome.projected_events.is_empty());
     }
 }
