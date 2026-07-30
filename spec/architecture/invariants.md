@@ -274,6 +274,18 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `tests/ci/test_release_assessment.py`
 - **Scope:** runtime, packaged
 
+### INV-MCP-OUTLINE-DATA — Outline возвращает типизированные данные
+
+- **Rule:** Успешный `unica.code.outline` публикует доказанную структуру модуля
+  только как типизированный объект `data` общего конверта без `stdout`, вид
+  метода имеет каноническое значение `procedure` или `function`, а каждый
+  параметр представлен отдельными полями имени, передачи по значению и
+  выражения по умолчанию вместо сырого текста объявления.
+- **Decision:** ADR-0021
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/bsl_outline.rs`
+- **Check:** `ci-test` — `crates/unica-coder/tests/platform/code_intelligence_symlinked_workspace.rs`
+- **Scope:** source, runtime
+
 ## SKILL — маршрутизация скиллов
 
 ### INV-SKILL-DECLARED-ROUTING — Скиллы маршрутизируются через MCP `unica`
@@ -425,7 +437,7 @@ Unica. Каждая запись формулирует одно нормати�
   не проверяет готовность индекса, не запускает его скрытый сервис и не меняет
   состояние рабочего пространства, а недоказуемая структура завершает вызов
   отказом вместо частичного дерева.
-- **Decision:** ADR-0020
+- **Decision:** ADR-0021
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/bsl_outline.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/code_intelligence.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/rlm_navigation.rs`

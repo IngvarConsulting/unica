@@ -157,3 +157,17 @@ ADR-0020. При отказе `data` и `stdout` отсутствуют, при�
 После реализации выполняются целевые тесты outline, code-intelligence и
 публичного конверта, затем полные `cargo fmt`, `cargo clippy`, Rust-, CI- и
 dev-наборы, строгая архитектурная проверка и `git diff --check`.
+
+## Доставка
+
+Контракт реализован красно-зелёными публичными регрессиями
+`code_outline_answers_from_the_current_file_without_touching_the_index` и
+`code_outline_without_methods_keeps_totals_in_typed_data`: до изменения они
+падали на присутствующем `stdout`, после изменения проверяют точный объект
+`data`, канонический вид метода, структурированные многострочные параметры и
+сохранение totals при скрытых методах. Отдельная регрессия
+`code_outline_failure_publishes_neither_typed_nor_text_partial_result`
+удерживает отсутствие частичного результата при ошибке парсера.
+
+Нормативным владельцем доставленного выбора остаётся ADR-0021, а проверяемое
+следствие результата принадлежит `INV-MCP-OUTLINE-DATA`.
