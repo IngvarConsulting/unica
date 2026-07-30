@@ -93,9 +93,12 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         &self,
         request: SourceResolveRequest,
         context: &WorkspaceContext,
+        cancellation: &CancellationToken,
     ) -> Result<SourceResolveResult, String> {
         crate::infrastructure::platform_xml_source_targets::resolve_platform_xml_source_navigation(
-            context, &request,
+            context,
+            &request,
+            cancellation,
         )
     }
 
@@ -103,9 +106,12 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         &self,
         request: SourceChildrenRequest,
         context: &WorkspaceContext,
+        cancellation: &CancellationToken,
     ) -> Result<SourceChildrenResult, String> {
         crate::infrastructure::platform_xml_source_targets::children_platform_xml_source_navigation(
-            context, &request,
+            context,
+            &request,
+            cancellation,
         )
     }
 

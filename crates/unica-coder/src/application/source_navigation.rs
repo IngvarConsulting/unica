@@ -160,7 +160,8 @@ pub(crate) fn invoke(
     }
     let (summary, data) = match operation {
         SourceNavigationOperation::Resolve => {
-            let result = ports.resolve_source_navigation(resolve_request(args)?, context)?;
+            let result =
+                ports.resolve_source_navigation(resolve_request(args)?, context, cancellation)?;
             (
                 format!(
                     "source.resolve returned {} canonical candidate(s)",
@@ -171,7 +172,8 @@ pub(crate) fn invoke(
             )
         }
         SourceNavigationOperation::Children => {
-            let result = ports.children_source_navigation(children_request(args)?, context)?;
+            let result =
+                ports.children_source_navigation(children_request(args)?, context, cancellation)?;
             (
                 format!(
                     "source.children returned {} immediate child node(s)",

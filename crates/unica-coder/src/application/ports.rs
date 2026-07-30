@@ -92,6 +92,7 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         &self,
         _request: SourceResolveRequest,
         _context: &WorkspaceContext,
+        _cancellation: &CancellationToken,
     ) -> Result<SourceResolveResult, String> {
         Err("source navigation resolver is not configured".to_string())
     }
@@ -100,6 +101,7 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         &self,
         _request: SourceChildrenRequest,
         _context: &WorkspaceContext,
+        _cancellation: &CancellationToken,
     ) -> Result<SourceChildrenResult, String> {
         Err("source navigation traversal is not configured".to_string())
     }

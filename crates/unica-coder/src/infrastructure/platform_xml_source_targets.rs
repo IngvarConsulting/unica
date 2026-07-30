@@ -3,13 +3,14 @@ use crate::application::source_navigation::{
     SourceLocation, SourceMatchKind, SourceNavigationMode, SourceNode, SourceNodeAddressability,
     SourceNodeKind, SourceResolveCandidate, SourceResolveRequest, SourceResolveResult,
 };
+use crate::domain::cancellation::{cancelled_error, CancellationToken};
 use crate::domain::project_sources::{
     classify_already_read_config_dump_info_xml, ConfigDumpInfoXmlKind,
 };
 use crate::domain::project_sources::{SourceFormat, SourceSetKind};
 use crate::domain::source_target::{
-    MetadataAddress, ResolvedTarget, SourceTarget, SourceTargetError, SourceTargetErrorCode,
-    TargetKind,
+    MetadataAddress, MetadataAddressPrefix, ResolvedTarget, SourceTarget, SourceTargetError,
+    SourceTargetErrorCode, TargetKind,
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::{
@@ -22,6 +23,8 @@ use crate::infrastructure::source_roots::{
     normalize_path_identity, resolve_named_source_set, NamedSourceSetError,
     NamedSourceSetErrorKind, ResolvedNamedSourceSet,
 };
+#[cfg(test)]
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
@@ -30,6 +33,37 @@ use std::path::{Component, Path, PathBuf};
 const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 const MAX_NAVIGATION_INVENTORY_ENTRIES: usize = 4_096;
 const MAX_NAVIGATION_DESCRIPTOR_BYTES: u64 = 8 * 1024 * 1024;
+
+#[cfg(test)]
+thread_local! {
+    static NAVIGATION_PROVIDER_ENTRY_HOOK: RefCell<Option<Box<dyn FnOnce()>>> =
+        RefCell::new(None);
+}
+
+#[cfg(test)]
+fn set_navigation_provider_entry_hook_for_test(hook: impl FnOnce() + 'static) {
+    NAVIGATION_PROVIDER_ENTRY_HOOK.with(|slot| {
+        let previous = slot.replace(Some(Box::new(hook)));
+        assert!(previous.is_none(), "navigation provider entry hook leaked");
+    });
+}
+
+#[cfg(test)]
+fn run_navigation_provider_entry_hook_for_test() {
+    NAVIGATION_PROVIDER_ENTRY_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+fn check_navigation_cancellation(cancellation: &CancellationToken) -> Result<(), String> {
+    if cancellation.is_cancelled() {
+        Err(cancelled_error("source navigation stopped"))
+    } else {
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone)]
 struct NavigableItem {
@@ -57,30 +91,40 @@ struct NavigationInventory {
 pub(crate) fn resolve_platform_xml_source_navigation(
     context: &WorkspaceContext,
     request: &SourceResolveRequest,
+    cancellation: &CancellationToken,
 ) -> Result<SourceResolveResult, String> {
-    let inventory = navigation_inventory(context, &request.source_set)?;
-    let query = MetadataAddress::parse(
-        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-        request.query.trim(),
-    )
+    check_navigation_cancellation(cancellation)?;
+    let inventory = navigation_inventory(context, &request.source_set, cancellation)?;
+    let query = match request.mode {
+        SourceNavigationMode::Exact => MetadataAddress::parse(
+            crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+            request.query.trim(),
+        )
+        .map(|address| address.as_str().to_string()),
+        SourceNavigationMode::Prefix => MetadataAddressPrefix::parse(
+            crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+            request.query.trim(),
+        )
+        .map(|prefix| prefix.as_str().to_string()),
+    }
     .map_err(|error| error.to_string())?;
-    let mut matches = inventory
-        .items
-        .iter()
-        .filter(|item| {
-            request
-                .target_kind
-                .is_none_or(|target_kind| item.target_kind == target_kind)
-                && match request.mode {
-                    SourceNavigationMode::Exact => item.address == query,
-                    SourceNavigationMode::Prefix => {
-                        item.address.as_str().starts_with(query.as_str())
-                    }
-                }
-        })
-        .cloned()
-        .collect::<Vec<_>>();
+    let mut matches = Vec::new();
+    for item in &inventory.items {
+        check_navigation_cancellation(cancellation)?;
+        if request
+            .target_kind
+            .is_none_or(|target_kind| item.target_kind == target_kind)
+            && match request.mode {
+                SourceNavigationMode::Exact => item.address.as_str() == query,
+                SourceNavigationMode::Prefix => item.address.as_str().starts_with(&query),
+            }
+        {
+            matches.push(item.clone());
+        }
+    }
+    check_navigation_cancellation(cancellation)?;
     matches.sort_by(|left, right| left.address.as_str().cmp(right.address.as_str()));
+    check_navigation_cancellation(cancellation)?;
 
     if request.mode == SourceNavigationMode::Exact {
         if inventory.completeness != NavigationCompleteness::Complete {
@@ -100,10 +144,7 @@ pub(crate) fn resolve_platform_xml_source_navigation(
 
     let cursor_key = format!(
         "resolve:{}:{:?}:{:?}:{}",
-        inventory.source_set,
-        request.mode,
-        request.target_kind,
-        query.as_str()
+        inventory.source_set, request.mode, request.target_kind, query
     );
     let (start, end, next_cursor) = page_bounds(
         request.cursor.as_deref(),
@@ -144,18 +185,21 @@ pub(crate) fn resolve_platform_xml_source_navigation(
 pub(crate) fn children_platform_xml_source_navigation(
     context: &WorkspaceContext,
     request: &SourceChildrenRequest,
+    cancellation: &CancellationToken,
 ) -> Result<SourceChildrenResult, String> {
-    let inventory = navigation_inventory(context, &request.source_set)?;
+    check_navigation_cancellation(cancellation)?;
+    let inventory = navigation_inventory(context, &request.source_set, cancellation)?;
     let external_artifact_children_unscanned = request.metadata_path.is_some()
         && matches!(
             inventory.source_set_kind,
             SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
         );
     let mut children = if let Some(parent) = request.metadata_path.as_ref() {
-        children_of_address(&inventory, parent)?
+        children_of_address(&inventory, parent, cancellation)?
     } else {
-        root_children(&inventory)
+        root_children(&inventory, cancellation)?
     };
+    check_navigation_cancellation(cancellation)?;
     children.sort_by(|left, right| {
         left.display_name.cmp(&right.display_name).then_with(|| {
             left.metadata_path
@@ -164,6 +208,7 @@ pub(crate) fn children_platform_xml_source_navigation(
                 .cmp(&right.metadata_path.as_ref().map(MetadataAddress::as_str))
         })
     });
+    check_navigation_cancellation(cancellation)?;
     let parent_key = request
         .metadata_path
         .as_ref()
@@ -195,9 +240,12 @@ pub(crate) fn children_platform_xml_source_navigation(
 fn navigation_inventory(
     context: &WorkspaceContext,
     source_set: &str,
+    cancellation: &CancellationToken,
 ) -> Result<NavigationInventory, String> {
+    check_navigation_cancellation(cancellation)?;
     let selected = resolve_named_source_set(context, source_set)
         .map_err(|error| public_source_set_error(source_set, error).to_string())?;
+    check_navigation_cancellation(cancellation)?;
     if selected.source_set.source_format != SourceFormat::PlatformXml {
         return Err(format!(
             "sourceSet `{source_set}` is not addressable by the Platform XML source provider"
@@ -213,17 +261,27 @@ fn navigation_inventory(
     };
     match selected.source_set.kind {
         SourceSetKind::Configuration | SourceSetKind::Extension => {
+            check_navigation_cancellation(cancellation)?;
             validate_navigation_owner(context, &selected)?;
-            collect_configuration_navigation(&selected.path, context, &mut inventory);
+            check_navigation_cancellation(cancellation)?;
+            collect_configuration_navigation(
+                &selected.path,
+                context,
+                &mut inventory,
+                cancellation,
+            )?;
         }
         SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport => {
-            collect_external_navigation(&selected.path, &mut inventory)?;
+            collect_external_navigation(&selected.path, &mut inventory, cancellation)?;
         }
     }
+    check_navigation_cancellation(cancellation)?;
     inventory
         .items
         .sort_by(|left, right| left.address.as_str().cmp(right.address.as_str()));
+    check_navigation_cancellation(cancellation)?;
     for pair in inventory.items.windows(2) {
+        check_navigation_cancellation(cancellation)?;
         if pair[0].address == pair[1].address {
             return Err(format!(
                 "ambiguous descriptor identity `{}` in sourceSet `{}`",
@@ -266,9 +324,14 @@ fn collect_configuration_navigation(
     source_root: &Path,
     context: &WorkspaceContext,
     inventory: &mut NavigationInventory,
-) {
+    cancellation: &CancellationToken,
+) -> Result<(), String> {
+    #[cfg(test)]
+    run_navigation_provider_entry_hook_for_test();
+    check_navigation_cancellation(cancellation)?;
     let mut inspected_metadata_entries = 0;
     for kind in METADATA_KINDS {
+        check_navigation_cancellation(cancellation)?;
         let directory = source_root.join(kind.directory);
         let metadata = match fs::symlink_metadata(&directory) {
             Ok(metadata) => metadata,
@@ -293,6 +356,7 @@ fn collect_configuration_navigation(
             }
         };
         for entry in entries {
+            check_navigation_cancellation(cancellation)?;
             if inspected_metadata_entries >= MAX_NAVIGATION_INVENTORY_ENTRIES {
                 inventory.completeness = NavigationCompleteness::Partial;
                 break;
@@ -306,6 +370,7 @@ fn collect_configuration_navigation(
             if path.extension().and_then(|value| value.to_str()) != Some("xml") {
                 continue;
             }
+            check_navigation_cancellation(cancellation)?;
             match descriptor_name(&path, kind.tag) {
                 Ok(name) => add_address(
                     inventory,
@@ -315,6 +380,7 @@ fn collect_configuration_navigation(
                 ),
                 Err(()) => inventory.completeness = NavigationCompleteness::Partial,
             }
+            check_navigation_cancellation(cancellation)?;
         }
     }
 
@@ -326,8 +392,10 @@ fn collect_configuration_navigation(
         &mut files,
         &mut inspected_file_entries,
         inventory,
-    );
+        cancellation,
+    )?;
     for relative in files {
+        check_navigation_cancellation(cancellation)?;
         if relative.extension().and_then(|value| value.to_str()) != Some("bsl") {
             continue;
         }
@@ -338,13 +406,20 @@ fn collect_configuration_navigation(
                 continue;
             }
         };
-        if validate_platform_xml_module_descriptors(context, source_root, &identity.descriptors)
-            .is_err()
-            || !module_owner_identity_is_proven(source_root, &identity)
-        {
+        if !navigation_module_descriptors_are_regular(
+            context,
+            source_root,
+            &identity,
+            cancellation,
+        )? {
             inventory.completeness = NavigationCompleteness::Partial;
             continue;
         }
+        if !module_descriptor_identity_is_proven(source_root, &identity, cancellation)? {
+            inventory.completeness = NavigationCompleteness::Partial;
+            continue;
+        }
+        check_navigation_cancellation(cancellation)?;
         let module_address = identity.address.clone();
         let module_display = module_address
             .as_str()
@@ -368,26 +443,91 @@ fn collect_configuration_navigation(
             display_name: module_display,
         });
     }
+    Ok(())
 }
 
-fn module_owner_identity_is_proven(
+fn navigation_module_descriptors_are_regular(
+    context: &WorkspaceContext,
     source_root: &Path,
     identity: &PlatformXmlModuleIdentity,
-) -> bool {
+    cancellation: &CancellationToken,
+) -> Result<bool, String> {
+    for descriptor in &identity.descriptors {
+        check_navigation_cancellation(cancellation)?;
+        if validate_platform_xml_module_descriptors(
+            context,
+            source_root,
+            std::slice::from_ref(descriptor),
+        )
+        .is_err()
+        {
+            return Ok(false);
+        }
+        check_navigation_cancellation(cancellation)?;
+    }
+    Ok(true)
+}
+
+fn module_descriptor_identity_is_proven(
+    source_root: &Path,
+    identity: &PlatformXmlModuleIdentity,
+    cancellation: &CancellationToken,
+) -> Result<bool, String> {
     let parts = identity.address.segments().collect::<Vec<_>>();
     if parts.len() == 1 {
-        return true;
+        return Ok(identity.descriptors.len() == 1);
     }
-    let Some(descriptor) = identity.descriptors.first() else {
-        return false;
+    let proven = match (parts.as_slice(), identity.descriptors.as_slice()) {
+        ([owner_kind, owner_name, _], [owner_descriptor]) => descriptor_identity_matches(
+            source_root,
+            owner_descriptor,
+            owner_kind,
+            owner_name,
+            cancellation,
+        )?,
+        (
+            [owner_kind, owner_name, child_kind @ ("Form" | "Command"), child_name, _],
+            [owner_descriptor, child_descriptor],
+        ) => {
+            descriptor_identity_matches(
+                source_root,
+                owner_descriptor,
+                owner_kind,
+                owner_name,
+                cancellation,
+            )? && descriptor_identity_matches(
+                source_root,
+                child_descriptor,
+                child_kind,
+                child_name,
+                cancellation,
+            )?
+        }
+        _ => false,
     };
-    descriptor_name(&source_root.join(descriptor), parts[0]).is_ok_and(|name| name == parts[1])
+    Ok(proven)
+}
+
+fn descriptor_identity_matches(
+    source_root: &Path,
+    descriptor: &Path,
+    expected_kind: &str,
+    expected_name: &str,
+    cancellation: &CancellationToken,
+) -> Result<bool, String> {
+    check_navigation_cancellation(cancellation)?;
+    let matches = descriptor_name(&source_root.join(descriptor), expected_kind)
+        .is_ok_and(|name| name == expected_name);
+    check_navigation_cancellation(cancellation)?;
+    Ok(matches)
 }
 
 fn collect_external_navigation(
     source_root: &Path,
     inventory: &mut NavigationInventory,
+    cancellation: &CancellationToken,
 ) -> Result<(), String> {
+    check_navigation_cancellation(cancellation)?;
     let entries = fs::read_dir(source_root).map_err(|_| {
         format!(
             "external sourceSet `{}` root is unavailable",
@@ -401,6 +541,7 @@ fn collect_external_navigation(
     };
     let mut candidates = Vec::new();
     for (inspected, entry) in entries.enumerate() {
+        check_navigation_cancellation(cancellation)?;
         if inspected >= MAX_NAVIGATION_INVENTORY_ENTRIES {
             inventory.completeness = NavigationCompleteness::Partial;
             break;
@@ -419,6 +560,7 @@ fn collect_external_navigation(
     }
     candidates.sort();
     for path in candidates {
+        check_navigation_cancellation(cancellation)?;
         let raw = match read_navigation_descriptor(&path) {
             Ok(raw) => raw,
             Err(()) => {
@@ -426,6 +568,7 @@ fn collect_external_navigation(
                 continue;
             }
         };
+        check_navigation_cancellation(cancellation)?;
         if path
             .file_name()
             .and_then(|name| name.to_str())
@@ -444,6 +587,7 @@ fn collect_external_navigation(
             ),
             Err(()) => observe_external_path(inventory, &path),
         }
+        check_navigation_cancellation(cancellation)?;
     }
     Ok(())
 }
@@ -454,20 +598,23 @@ fn collect_regular_files_bounded(
     files: &mut Vec<PathBuf>,
     inspected_entries: &mut usize,
     inventory: &mut NavigationInventory,
-) {
+    cancellation: &CancellationToken,
+) -> Result<(), String> {
+    check_navigation_cancellation(cancellation)?;
     if *inspected_entries >= MAX_NAVIGATION_INVENTORY_ENTRIES {
         inventory.completeness = NavigationCompleteness::Partial;
-        return;
+        return Ok(());
     }
     let entries = match fs::read_dir(directory) {
         Ok(entries) => entries,
         Err(_) => {
             inventory.completeness = NavigationCompleteness::Partial;
-            return;
+            return Ok(());
         }
     };
     let mut paths = Vec::new();
     for entry in entries {
+        check_navigation_cancellation(cancellation)?;
         if *inspected_entries >= MAX_NAVIGATION_INVENTORY_ENTRIES {
             inventory.completeness = NavigationCompleteness::Partial;
             break;
@@ -480,6 +627,7 @@ fn collect_regular_files_bounded(
     }
     paths.sort();
     for path in paths {
+        check_navigation_cancellation(cancellation)?;
         let metadata = match fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
             Err(_) => {
@@ -490,7 +638,14 @@ fn collect_regular_files_bounded(
         if metadata_is_link_or_reparse_point(&metadata) {
             inventory.completeness = NavigationCompleteness::Partial;
         } else if metadata.is_dir() {
-            collect_regular_files_bounded(source_root, &path, files, inspected_entries, inventory);
+            collect_regular_files_bounded(
+                source_root,
+                &path,
+                files,
+                inspected_entries,
+                inventory,
+                cancellation,
+            )?;
         } else if metadata.is_file() {
             match path.strip_prefix(source_root) {
                 Ok(relative) => files.push(relative.to_path_buf()),
@@ -498,6 +653,7 @@ fn collect_regular_files_bounded(
             }
         }
     }
+    Ok(())
 }
 
 fn descriptor_name(path: &Path, expected_kind: &str) -> Result<String, ()> {
@@ -596,63 +752,74 @@ fn observe_external_path(inventory: &mut NavigationInventory, path: &Path) {
     });
 }
 
-fn root_children(inventory: &NavigationInventory) -> Vec<SourceNode> {
+fn root_children(
+    inventory: &NavigationInventory,
+    cancellation: &CancellationToken,
+) -> Result<Vec<SourceNode>, String> {
     let mut children = Vec::new();
     match inventory.source_set_kind {
         SourceSetKind::Configuration | SourceSetKind::Extension => {
-            children.extend(
-                inventory
-                    .root_collections
-                    .iter()
-                    .map(|collection| SourceNode {
-                        display_name: collection.clone(),
-                        node_kind: SourceNodeKind::Collection,
-                        addressability: SourceNodeAddressability::Unaddressable,
-                        completeness: inventory.completeness,
-                        metadata_path: None,
-                        target_kind: None,
-                        location: None,
-                    }),
-            );
-            children.extend(
-                inventory
-                    .items
-                    .iter()
-                    .filter(|item| item.address.as_str().split('.').count() == 1)
-                    .map(|item| addressed_node(inventory, item)),
-            );
+            for collection in &inventory.root_collections {
+                check_navigation_cancellation(cancellation)?;
+                children.push(SourceNode {
+                    display_name: collection.clone(),
+                    node_kind: SourceNodeKind::Collection,
+                    addressability: SourceNodeAddressability::Unaddressable,
+                    completeness: inventory.completeness,
+                    metadata_path: None,
+                    target_kind: None,
+                    location: None,
+                });
+            }
+            for item in &inventory.items {
+                check_navigation_cancellation(cancellation)?;
+                if item.address.as_str().split('.').count() == 1 {
+                    children.push(addressed_node(inventory, item));
+                }
+            }
         }
         SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport => {
-            children.extend(
-                inventory
-                    .items
-                    .iter()
-                    .filter(|item| item.target_kind == TargetKind::MetadataObject)
-                    .map(|item| addressed_node(inventory, item)),
-            );
-            children.extend(inventory.observed_root_items.iter().map(|item| SourceNode {
-                display_name: item.display_name.clone(),
-                node_kind: SourceNodeKind::Item,
-                addressability: SourceNodeAddressability::Unaddressable,
-                completeness: NavigationCompleteness::Partial,
-                metadata_path: None,
-                target_kind: None,
-                location: Some(SourceLocation::Unaddressable {
-                    source_set: inventory.source_set.clone(),
-                    owner_metadata_path: None,
-                    path: item.relative_path.clone(),
-                }),
-            }));
+            for item in &inventory.items {
+                check_navigation_cancellation(cancellation)?;
+                if item.target_kind == TargetKind::MetadataObject {
+                    children.push(addressed_node(inventory, item));
+                }
+            }
+            for item in &inventory.observed_root_items {
+                check_navigation_cancellation(cancellation)?;
+                children.push(SourceNode {
+                    display_name: item.display_name.clone(),
+                    node_kind: SourceNodeKind::Item,
+                    addressability: SourceNodeAddressability::Unaddressable,
+                    completeness: NavigationCompleteness::Partial,
+                    metadata_path: None,
+                    target_kind: None,
+                    location: Some(SourceLocation::Unaddressable {
+                        source_set: inventory.source_set.clone(),
+                        owner_metadata_path: None,
+                        path: item.relative_path.clone(),
+                    }),
+                });
+            }
         }
     }
-    children
+    Ok(children)
 }
 
 fn children_of_address(
     inventory: &NavigationInventory,
     parent: &MetadataAddress,
+    cancellation: &CancellationToken,
 ) -> Result<Vec<SourceNode>, String> {
-    let Some(parent_item) = inventory.items.iter().find(|item| &item.address == parent) else {
+    let mut parent_item = None;
+    for item in &inventory.items {
+        check_navigation_cancellation(cancellation)?;
+        if &item.address == parent {
+            parent_item = Some(item);
+            break;
+        }
+    }
+    let Some(parent_item) = parent_item else {
         return Err(format!(
             "metadataPath `{}` was not found in sourceSet `{}`",
             parent.as_str(),
@@ -673,6 +840,7 @@ fn children_of_address(
     let mut collections = BTreeSet::new();
     let mut children = Vec::new();
     for item in &inventory.items {
+        check_navigation_cancellation(cancellation)?;
         let parts = item.address.segments().collect::<Vec<_>>();
         if parts.len() <= parent_parts.len() || parts[..parent_parts.len()] != parent_parts[..] {
             continue;
@@ -687,15 +855,18 @@ fn children_of_address(
             });
         }
     }
-    children.extend(collections.into_iter().map(|collection| SourceNode {
-        display_name: collection,
-        node_kind: SourceNodeKind::Collection,
-        addressability: SourceNodeAddressability::Unaddressable,
-        completeness: inventory.completeness,
-        metadata_path: None,
-        target_kind: None,
-        location: None,
-    }));
+    for collection in collections {
+        check_navigation_cancellation(cancellation)?;
+        children.push(SourceNode {
+            display_name: collection,
+            node_kind: SourceNodeKind::Collection,
+            addressability: SourceNodeAddressability::Unaddressable,
+            completeness: inventory.completeness,
+            metadata_path: None,
+            target_kind: None,
+            location: None,
+        });
+    }
     Ok(children)
 }
 
@@ -1654,13 +1825,16 @@ fn unsupported_module_layout() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        children_platform_xml_source_navigation, resolve_platform_xml_source_navigation,
+        children_platform_xml_source_navigation as children_platform_xml_source_navigation_cancellable,
+        resolve_platform_xml_source_navigation as resolve_platform_xml_source_navigation_cancellable,
         resolve_platform_xml_target, revalidate_platform_xml_target,
+        set_navigation_provider_entry_hook_for_test,
     };
     use crate::application::source_navigation::{
         NavigationCompleteness, SourceChildrenRequest, SourceLocation, SourceMatchKind,
         SourceNavigationMode, SourceNodeAddressability, SourceNodeKind, SourceResolveRequest,
     };
+    use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
     use crate::domain::source_target::{
         MetadataAddress, SourceTarget, SourceTargetErrorCode, PLATFORM_XML_8_3_27_FORMAT_2_20,
     };
@@ -1676,6 +1850,28 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static TEMP_NONCE: AtomicU64 = AtomicU64::new(0);
+
+    fn resolve_platform_xml_source_navigation(
+        context: &WorkspaceContext,
+        request: &SourceResolveRequest,
+    ) -> Result<crate::application::source_navigation::SourceResolveResult, String> {
+        resolve_platform_xml_source_navigation_cancellable(
+            context,
+            request,
+            &CancellationToken::new(),
+        )
+    }
+
+    fn children_platform_xml_source_navigation(
+        context: &WorkspaceContext,
+        request: &SourceChildrenRequest,
+    ) -> Result<crate::application::source_navigation::SourceChildrenResult, String> {
+        children_platform_xml_source_navigation_cancellable(
+            context,
+            request,
+            &CancellationToken::new(),
+        )
+    }
 
     #[test]
     fn platform_xml_source_targets_resolve_identical_addresses_in_configuration_and_extension() {
@@ -2312,6 +2508,190 @@ mod tests {
     }
 
     #[test]
+    fn source_navigation_rejects_nested_modules_with_mismatched_child_descriptor_identity() {
+        let context = fixture(
+            "navigation-nested-child-identity",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_configuration_descriptor(&root, false);
+        write_metadata_descriptor(&root, "Catalogs", "Catalog", "Items", "Items");
+        write_nested_module_fixture(
+            &root,
+            "Catalogs/Items/Forms/Order/Ext/Form/Module.bsl",
+            "Catalogs/Items/Forms/Order/Ext/Form.xml",
+            "Form",
+            "DifferentForm",
+        );
+        write_nested_module_fixture(
+            &root,
+            "Catalogs/Items/Commands/Print/Ext/CommandModule.bsl",
+            "Catalogs/Items/Commands/Print/Ext/Command.xml",
+            "Form",
+            "Print",
+        );
+        write_nested_module_fixture_xml(
+            &root,
+            "Catalogs/Items/Forms/Legacy/Ext/Form/Module.bsl",
+            "Catalogs/Items/Forms/Legacy/Ext/Form.xml",
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.19"><Form><Properties><Name>Legacy</Name></Properties></Form></MetaDataObject>"#,
+        );
+        write_nested_module_fixture_xml(
+            &root,
+            "Catalogs/Items/Commands/NoNamespace/Ext/CommandModule.bsl",
+            "Catalogs/Items/Commands/NoNamespace/Ext/Command.xml",
+            r#"<MetaDataObject version="2.20"><Command><Properties><Name>NoNamespace</Name></Properties></Command></MetaDataObject>"#,
+        );
+
+        for metadata_path in [
+            "Catalog.Items.Form.Order.FormModule",
+            "Catalog.Items.Command.Print.CommandModule",
+            "Catalog.Items.Form.Legacy.FormModule",
+            "Catalog.Items.Command.NoNamespace.CommandModule",
+        ] {
+            let result = resolve_platform_xml_source_navigation(
+                &context,
+                &SourceResolveRequest {
+                    source_set: "main".to_string(),
+                    query: metadata_path.to_string(),
+                    mode: SourceNavigationMode::Exact,
+                    target_kind: Some(crate::domain::source_target::TargetKind::Module),
+                    limit: 50,
+                    cursor: None,
+                },
+            )
+            .unwrap();
+
+            assert!(
+                result.candidates.is_empty(),
+                "mismatched nested descriptor must not prove {metadata_path}"
+            );
+            assert_eq!(result.completeness, NavigationCompleteness::Partial);
+        }
+        cleanup(&context);
+    }
+
+    #[test]
+    fn source_navigation_prefix_accepts_typed_kind_and_module_prefixes_without_fuzzy_choice() {
+        let context = fixture(
+            "navigation-typed-prefix",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_configuration_descriptor(&root, false);
+        write_metadata_descriptor(&root, "Catalogs", "Catalog", "Items", "Items");
+        fs::create_dir_all(root.join("Catalogs/Items/Ext")).unwrap();
+        fs::write(
+            root.join("Catalogs/Items/Ext/ManagerModule.bsl"),
+            "Procedure Run()\nEndProcedure\n",
+        )
+        .unwrap();
+
+        let kind = resolve_platform_xml_source_navigation(
+            &context,
+            &SourceResolveRequest {
+                source_set: "main".to_string(),
+                query: "Catalog".to_string(),
+                mode: SourceNavigationMode::Prefix,
+                target_kind: None,
+                limit: 50,
+                cursor: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            kind.candidates
+                .iter()
+                .map(|candidate| candidate.metadata_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Catalog.Items", "Catalog.Items.ManagerModule"]
+        );
+
+        for query in [
+            "Catalog.Items.Man",
+            "Catalogs.Items.Man",
+            "Справочники.Items.Man",
+        ] {
+            let result = resolve_platform_xml_source_navigation(
+                &context,
+                &SourceResolveRequest {
+                    source_set: "main".to_string(),
+                    query: query.to_string(),
+                    mode: SourceNavigationMode::Prefix,
+                    target_kind: Some(crate::domain::source_target::TargetKind::Module),
+                    limit: 50,
+                    cursor: None,
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                result
+                    .candidates
+                    .iter()
+                    .map(|candidate| candidate.metadata_path.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["Catalog.Items.ManagerModule"],
+                "{query} must return the canonical candidate without fuzzy ranking"
+            );
+        }
+
+        for malformed in [
+            "Catalog..Man",
+            "Unknown.Items",
+            "Catalog.Items.Unknown",
+            "Catalog.Items.Form.Order.Unknown",
+        ] {
+            assert!(
+                resolve_platform_xml_source_navigation(
+                    &context,
+                    &SourceResolveRequest {
+                        source_set: "main".to_string(),
+                        query: malformed.to_string(),
+                        mode: SourceNavigationMode::Prefix,
+                        target_kind: None,
+                        limit: 50,
+                        cursor: None,
+                    },
+                )
+                .is_err(),
+                "{malformed} must fail typed prefix validation"
+            );
+        }
+        cleanup(&context);
+    }
+
+    #[test]
+    fn source_navigation_cancels_after_provider_entry_before_traversal_continues() {
+        let context = fixture(
+            "navigation-cancel-after-entry",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_configuration_descriptor(&root, false);
+        write_real_module_fixture(&root, "CommonModule", "Shared");
+        let cancellation = CancellationToken::new();
+        let cancel_after_entry = cancellation.clone();
+        set_navigation_provider_entry_hook_for_test(move || cancel_after_entry.cancel());
+
+        let error = resolve_platform_xml_source_navigation_cancellable(
+            &context,
+            &SourceResolveRequest {
+                source_set: "main".to_string(),
+                query: "CommonModule".to_string(),
+                mode: SourceNavigationMode::Prefix,
+                target_kind: None,
+                limit: 50,
+                cursor: None,
+            },
+            &cancellation,
+        )
+        .unwrap_err();
+
+        assert!(error.starts_with(CANCELLED_PREFIX), "{error}");
+        cleanup(&context);
+    }
+
+    #[test]
     fn source_navigation_children_walk_one_level_and_distinguish_collections_from_items() {
         let context = fixture(
             "navigation-one-level",
@@ -2663,6 +3043,55 @@ mod tests {
             "Procedure Run()\nEndProcedure\n",
         )
         .unwrap();
+    }
+
+    fn write_metadata_descriptor(
+        root: &Path,
+        directory: &str,
+        kind: &str,
+        file_stem: &str,
+        name: &str,
+    ) {
+        let directory = root.join(directory);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join(format!("{file_stem}.xml")),
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{kind}><Properties><Name>{name}</Name></Properties></{kind}></MetaDataObject>"#
+            ),
+        )
+        .unwrap();
+    }
+
+    fn write_nested_module_fixture(
+        root: &Path,
+        module: &str,
+        descriptor: &str,
+        child_kind: &str,
+        descriptor_name: &str,
+    ) {
+        write_nested_module_fixture_xml(
+            root,
+            module,
+            descriptor,
+            &format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{child_kind}><Properties><Name>{descriptor_name}</Name></Properties></{child_kind}></MetaDataObject>"#
+            ),
+        );
+    }
+
+    fn write_nested_module_fixture_xml(
+        root: &Path,
+        module: &str,
+        descriptor: &str,
+        descriptor_xml: &str,
+    ) {
+        let module = root.join(module);
+        let descriptor = root.join(descriptor);
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        fs::create_dir_all(descriptor.parent().unwrap()).unwrap();
+        fs::write(module, "Procedure Run()\nEndProcedure\n").unwrap();
+        fs::write(descriptor, descriptor_xml).unwrap();
     }
 
     fn write_external_descriptor(root: &Path, kind: &str, file_stem: &str, name: &str) {

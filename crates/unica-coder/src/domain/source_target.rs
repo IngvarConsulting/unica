@@ -42,6 +42,19 @@ impl MetadataAddress {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct MetadataAddressPrefix(String);
+
+impl MetadataAddressPrefix {
+    pub(crate) fn parse(profile: &str, raw: &str) -> Result<Self, SourceTargetError> {
+        AddressProfile::new(profile)?.parse_prefix(raw)
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 impl fmt::Display for MetadataAddress {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
@@ -179,6 +192,81 @@ impl AddressProfile {
             canonical.push(parts.last().copied().unwrap_or_default());
         }
         Ok(MetadataAddress(canonical.join(".")))
+    }
+
+    fn parse_prefix(self, raw: &str) -> Result<MetadataAddressPrefix, SourceTargetError> {
+        let parts = raw.split('.').collect::<Vec<_>>();
+        if parts.is_empty() || parts.iter().any(|part| part.is_empty()) {
+            return Err(SourceTargetError::invalid(
+                "metadata address prefix contains an empty segment",
+            ));
+        }
+        if parts.len() > 5 {
+            return Err(SourceTargetError::invalid(
+                "metadata address prefix has an unsupported segment count",
+            ));
+        }
+
+        if parts.len() == 1 {
+            if let Ok(kind) = canonical_kind_or_collection(parts[0]) {
+                return Ok(MetadataAddressPrefix(kind.to_string()));
+            }
+            if ROOT_MODULE_TERMINALS
+                .iter()
+                .any(|terminal| terminal.starts_with(parts[0]))
+            {
+                return Ok(MetadataAddressPrefix(parts[0].to_string()));
+            }
+            return Err(SourceTargetError::invalid(format!(
+                "unknown metadata address prefix root `{}`",
+                parts[0]
+            )));
+        }
+
+        let mut canonical = Vec::with_capacity(parts.len());
+        canonical.push(canonical_kind_or_collection(parts[0])?);
+        canonical.push(parts[1]);
+        match parts.len() {
+            2 => {}
+            3 => {
+                if let Ok(child_kind) = canonical_nested_kind(parts[2]) {
+                    canonical.push(child_kind);
+                } else if MODULE_TERMINALS
+                    .iter()
+                    .any(|terminal| terminal.starts_with(parts[2]))
+                {
+                    canonical.push(parts[2]);
+                } else {
+                    return Err(SourceTargetError::invalid(format!(
+                        "unknown metadata address prefix transition `{}`",
+                        parts[2]
+                    )));
+                }
+            }
+            4 => {
+                canonical.push(canonical_nested_kind(parts[2])?);
+                canonical.push(parts[3]);
+            }
+            5 => {
+                let child_kind = canonical_nested_kind(parts[2])?;
+                canonical.push(child_kind);
+                canonical.push(parts[3]);
+                let terminal = match child_kind {
+                    "Form" => "FormModule",
+                    "Command" => "CommandModule",
+                    _ => unreachable!("nested kind parser is closed"),
+                };
+                if !terminal.starts_with(parts[4]) {
+                    return Err(SourceTargetError::invalid(format!(
+                        "metadata address prefix terminal `{}` is invalid after `{child_kind}`",
+                        parts[4]
+                    )));
+                }
+                canonical.push(parts[4]);
+            }
+            _ => unreachable!("prefix segment count was bounded"),
+        }
+        Ok(MetadataAddressPrefix(canonical.join(".")))
     }
 }
 
@@ -420,37 +508,62 @@ fn canonical_kind(raw: &str) -> Result<&'static str, SourceTargetError> {
     )))
 }
 
+fn canonical_kind_or_collection(raw: &str) -> Result<&'static str, SourceTargetError> {
+    ADDRESS_KINDS
+        .iter()
+        .find(|kind| {
+            kind.canonical == raw
+                || kind.russian_aliases.contains(&raw)
+                || kind.collection_aliases.contains(&raw)
+        })
+        .map(|kind| kind.canonical)
+        .ok_or_else(|| SourceTargetError::invalid(format!("unknown metadata kind `{raw}`")))
+}
+
+fn canonical_nested_kind(raw: &str) -> Result<&'static str, SourceTargetError> {
+    let canonical = canonical_kind_or_collection(raw)?;
+    if matches!(canonical, "Form" | "Command") {
+        Ok(canonical)
+    } else {
+        Err(SourceTargetError::invalid(format!(
+            "unsupported nested metadata kind `{raw}`"
+        )))
+    }
+}
+
+const MODULE_TERMINALS: &[&str] = &[
+    "Module",
+    "ObjectModule",
+    "ManagerModule",
+    "RecordSetModule",
+    "ValueManagerModule",
+    "FormModule",
+    "CommandModule",
+    "ManagedApplicationModule",
+    "OrdinaryApplicationModule",
+    "SessionModule",
+    "ExternalConnectionModule",
+];
+
+const ROOT_MODULE_TERMINALS: &[&str] = &[
+    "ManagedApplicationModule",
+    "OrdinaryApplicationModule",
+    "SessionModule",
+    "ExternalConnectionModule",
+];
+
 pub(crate) fn is_module_terminal(value: &str) -> bool {
-    matches!(
-        value,
-        "Module"
-            | "ObjectModule"
-            | "ManagerModule"
-            | "RecordSetModule"
-            | "ValueManagerModule"
-            | "FormModule"
-            | "CommandModule"
-            | "ManagedApplicationModule"
-            | "OrdinaryApplicationModule"
-            | "SessionModule"
-            | "ExternalConnectionModule"
-    )
+    MODULE_TERMINALS.contains(&value)
 }
 
 fn is_root_module_terminal(value: &str) -> bool {
-    matches!(
-        value,
-        "ManagedApplicationModule"
-            | "OrdinaryApplicationModule"
-            | "SessionModule"
-            | "ExternalConnectionModule"
-    )
+    ROOT_MODULE_TERMINALS.contains(&value)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        AddressProfile, MetadataAddress, SourceTargetErrorCode, TargetKind,
+        AddressProfile, MetadataAddress, MetadataAddressPrefix, SourceTargetErrorCode, TargetKind,
         PLATFORM_XML_8_3_27_FORMAT_2_20,
     };
 
@@ -531,6 +644,47 @@ mod tests {
 
         assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressInvalid);
         assert!(error.message.contains("kind"));
+    }
+
+    #[test]
+    fn source_target_prefix_profile_canonicalizes_aliases_and_keeps_partial_final_segments() {
+        for (raw, expected) in [
+            ("Catalog", "Catalog"),
+            ("Catalog.Items.Man", "Catalog.Items.Man"),
+            ("Catalogs.Items.Man", "Catalog.Items.Man"),
+            ("Справочники.Items.Man", "Catalog.Items.Man"),
+            ("Catalog.Items.Forms.Ord", "Catalog.Items.Form.Ord"),
+            (
+                "Catalog.Items.Form.Order.FormM",
+                "Catalog.Items.Form.Order.FormM",
+            ),
+        ] {
+            let prefix =
+                MetadataAddressPrefix::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw).unwrap();
+            assert_eq!(prefix.as_str(), expected, "{raw}");
+        }
+    }
+
+    #[test]
+    fn source_target_prefix_profile_rejects_unknown_transitions_and_malformed_forms() {
+        for raw in [
+            "",
+            ".",
+            "Catalog..Man",
+            "Unknown.Items",
+            "Catalog.Items.Unknown",
+            "Catalog.Items.Form.Order.Unknown",
+            "Catalog.Items.ManagerModule.Extra",
+            "Catalog.Items.Command.Print.FormM",
+        ] {
+            let error =
+                MetadataAddressPrefix::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw).unwrap_err();
+            assert_eq!(
+                error.code,
+                SourceTargetErrorCode::MetadataAddressInvalid,
+                "{raw}"
+            );
+        }
     }
 
     #[test]
