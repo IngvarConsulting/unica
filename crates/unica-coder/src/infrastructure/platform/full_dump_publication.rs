@@ -26,6 +26,10 @@ use crate::infrastructure::platform::filesystem::hard_link_count;
 use crate::infrastructure::platform::filesystem::{
     file_identity, metadata_is_link_or_reparse_point, restrict_stage_to_owner, FileIdentity,
 };
+#[cfg(windows)]
+use crate::infrastructure::platform::filesystem::{
+    create_owner_only_directory, create_owner_only_file, open_directory_nofollow,
+};
 use crate::infrastructure::platform_xml_owner::root_version_literal;
 use crate::infrastructure::plugin_runtime::find_plugin_root;
 use crate::infrastructure::project_sources::classify_physical_source_inventory;
@@ -66,6 +70,54 @@ const PLATFORM_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 pub(crate) enum FullDumpInvocation {
     BuildDump,
     RuntimeExecute,
+}
+
+#[cfg(all(test, windows))]
+mod windows_anchor_tests {
+    use super::DirectoryAnchor;
+    use crate::infrastructure::platform::filesystem::verify_owner_only_acl;
+    use std::ffi::OsStr;
+    use std::fs;
+    use std::path::PathBuf;
+
+    #[test]
+    fn windows_anchor_detects_parent_name_replacement() {
+        let root = unique_temp_root("anchor-replacement");
+        let parent = root.join("parent");
+        fs::create_dir_all(&parent).unwrap();
+        let anchor = DirectoryAnchor::capture_exact(&parent).unwrap();
+        let moved = root.join("moved");
+        fs::rename(&parent, &moved).unwrap();
+        fs::create_dir(&parent).unwrap();
+
+        let error = anchor.verify_path_binding().unwrap_err();
+
+        assert!(error.contains("identity"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_anchor_creates_a_private_bound_child() {
+        let root = unique_temp_root("anchor-child");
+        fs::create_dir_all(&root).unwrap();
+        let anchor = DirectoryAnchor::capture_exact(&root).unwrap();
+        let child_path = root.join("child");
+
+        let child = anchor
+            .create_child(OsStr::new("child"), &child_path)
+            .unwrap();
+
+        child.verify_path_binding().unwrap();
+        verify_owner_only_acl(&child.directory).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn unique_temp_root(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "unica-full-dump-{name}-{}",
+            uuid::Uuid::new_v4()
+        ))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1701,7 +1753,11 @@ fn open_regular_child_nofollow(parent: &File, name: &OsStr) -> std::io::Result<F
 }
 
 #[cfg(unix)]
-fn create_regular_child_owner_only(parent: &File, name: &OsStr) -> std::io::Result<File> {
+fn create_regular_child_owner_only(
+    parent: &File,
+    name: &OsStr,
+    _display_path: &Path,
+) -> std::io::Result<File> {
     let name = CString::new(name.as_bytes())?;
     // SAFETY: parent remains open for the call and name is a live
     // NUL-terminated string. The file starts owner-only; there is no
@@ -1722,8 +1778,21 @@ fn create_regular_child_owner_only(parent: &File, name: &OsStr) -> std::io::Resu
     }
 }
 
-#[cfg(not(unix))]
-fn create_regular_child_owner_only(_parent: &File, _name: &OsStr) -> std::io::Result<File> {
+#[cfg(windows)]
+fn create_regular_child_owner_only(
+    _parent: &File,
+    _name: &OsStr,
+    display_path: &Path,
+) -> std::io::Result<File> {
+    create_owner_only_file(display_path)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn create_regular_child_owner_only(
+    _parent: &File,
+    _name: &OsStr,
+    _display_path: &Path,
+) -> std::io::Result<File> {
     Err(std::io::Error::new(
         ErrorKind::Unsupported,
         "secure openat config creation is unavailable on this host",
@@ -1776,7 +1845,7 @@ struct DirectoryAnchor {
 }
 
 impl DirectoryAnchor {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn capture_exact(path: &Path) -> Result<Self, String> {
         if !path.is_absolute() {
             return Err(format!(
@@ -1879,7 +1948,7 @@ impl DirectoryAnchor {
         ))
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn try_clone(&self) -> Result<Self, String> {
         let directory = self.directory.try_clone().map_err(|error| {
             format!(
@@ -1894,7 +1963,7 @@ impl DirectoryAnchor {
         })
     }
 
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     fn try_clone(&self) -> Result<Self, String> {
         Err(format!(
             "secure directory anchors are unavailable on this host: {}",
@@ -1966,7 +2035,48 @@ impl DirectoryAnchor {
         })
     }
 
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    fn create_child(&self, _name: &OsStr, display_path: &Path) -> Result<Self, String> {
+        self.verify_path_binding()?;
+        let directory = create_owner_only_directory(display_path).map_err(|error| {
+            format!(
+                "failed to create private directory {}: {error}",
+                display_path.display()
+            )
+        })?;
+        let identity = file_identity(&directory).map_err(|error| {
+            format!(
+                "failed to inspect private directory identity {}: {error}",
+                display_path.display()
+            )
+        })?;
+        self.verify_path_binding()?;
+        let rebound = open_directory_nofollow(display_path).map_err(|error| {
+            format!(
+                "failed to bind newly created private directory {}: {error}",
+                display_path.display()
+            )
+        })?;
+        let rebound_identity = file_identity(&rebound).map_err(|error| {
+            format!(
+                "failed to recheck private directory identity {}: {error}",
+                display_path.display()
+            )
+        })?;
+        if rebound_identity != identity {
+            return Err(format!(
+                "private directory identity changed during creation: {}",
+                display_path.display()
+            ));
+        }
+        Ok(Self {
+            path: display_path.to_path_buf(),
+            identity,
+            directory,
+        })
+    }
+
+    #[cfg(not(any(unix, windows)))]
     fn create_child(&self, _name: &OsStr, display_path: &Path) -> Result<Self, String> {
         Err(format!(
             "secure mkdirat private directories are unavailable on this host: {}",
@@ -1974,7 +2084,7 @@ impl DirectoryAnchor {
         ))
     }
 
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     fn capture_exact(path: &Path) -> Result<Self, String> {
         Err(format!(
             "secure directory anchors are unavailable on this host: {}",
@@ -1982,7 +2092,7 @@ impl DirectoryAnchor {
         ))
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn verify_path_binding(&self) -> Result<(), String> {
         let directory = open_directory_nofollow(&self.path).map_err(|error| {
             format!(
@@ -2005,7 +2115,7 @@ impl DirectoryAnchor {
         Ok(())
     }
 
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     fn verify_path_binding(&self) -> Result<(), String> {
         Err(format!(
             "secure directory anchors are unavailable on this host: {}",
@@ -2145,6 +2255,7 @@ impl PrivateDumpStage {
         let file = create_regular_child_owner_only(
             &self.execution_anchor.directory,
             OsStr::new(EFFECTIVE_CONFIG_NAME),
+            &self.effective_config,
         )
         .map_err(|error| {
             format!(
